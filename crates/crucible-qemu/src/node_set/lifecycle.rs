@@ -289,9 +289,9 @@ impl QemuNodeSet {
     ///
     /// Returns [`BackendError`] when any node is absent or not at the exact
     /// checkpoint boundary. No node is paused or otherwise mutated.
-    pub fn prevalidate_terminal_lifecycle_snapshots(
+    pub fn prevalidate_terminal_lifecycle_snapshots<'a>(
         &mut self,
-        nodes: &[NodeId],
+        nodes: impl IntoIterator<Item = &'a NodeId>,
         checkpoint: &crucible::Checkpoint,
     ) -> Result<(), BackendError> {
         for node in nodes {

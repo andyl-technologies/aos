@@ -4,6 +4,7 @@ use super::*;
 
 mod persistence;
 mod process_ownership;
+mod staging;
 pub(in crate::vm_lifecycle) use persistence::LifecycleStatePersistence;
 pub(super) use persistence::map_journal_limit;
 #[cfg(test)]
@@ -12,150 +13,7 @@ pub(in crate::vm_lifecycle) use persistence::{
     PRODUCTION_RUN_STATE_FILE, decode_prior_run_state, decode_run_json_bounded,
     persist_run_state_atomic,
 };
-
-pub(super) struct PreparedTerminalReplacement {
-    pub(super) decision: QemuNodeLifecycleDecision,
-    pub(super) snapshot: QemuVmSnapshot,
-    pub(super) source_run_directory: PathBuf,
-    pub(super) run_directory: PathBuf,
-    pub(super) launch: ProductionLiveNodeStepGateConfig,
-    pub(super) generation: u64,
-    pub(super) replacement: Option<ProductionVmNodeLaunch>,
-    pub(super) service_state: ProductionNodeServiceState,
-    pub(super) debug_backend_path: Option<PathBuf>,
-    pub(super) crash_detector: String,
-}
-
-pub(super) struct PreparedLifecyclePrecommit {
-    pub(super) checkpoint: Arc<Checkpoint>,
-    pub(super) actions: Vec<ContentHash>,
-}
-
-pub(super) fn lifecycle_resource_error(
-    field: &'static str,
-    current: usize,
-    requested: usize,
-    limits: FaultResourceLimits,
-) -> SchedulerError {
-    SchedulerError::ResourceLimit {
-        field,
-        current: u64::try_from(current).unwrap_or(u64::MAX),
-        requested: u64::try_from(requested).unwrap_or(u64::MAX),
-        configured: limits.configured(field).unwrap_or(0),
-        hard: FaultResourceLimits::compiled_maximum()
-            .configured(field)
-            .unwrap_or(0),
-    }
-}
-
-fn lifecycle_transition_text(transition: crucible::model::NodeLifecycleTransition) -> &'static str {
-    match transition {
-        crucible::model::NodeLifecycleTransition::Boot => "Boot",
-        crucible::model::NodeLifecycleTransition::Crash => "Crash",
-        crucible::model::NodeLifecycleTransition::Reset => "Reset",
-        crucible::model::NodeLifecycleTransition::PowerOff => "PowerOff",
-        crucible::model::NodeLifecycleTransition::PowerCycle => "PowerCycle",
-        crucible::model::NodeLifecycleTransition::PermanentFailure => "PermanentFailure",
-    }
-}
-
-pub(super) fn try_lifecycle_string(
-    value: &str,
-    current: usize,
-    limits: FaultResourceLimits,
-) -> Result<String, SchedulerError> {
-    let mut owned = String::new();
-    owned
-        .try_reserve_exact(value.len())
-        .map_err(|_| lifecycle_resource_error("nodes", current, 1, limits))?;
-    owned.push_str(value);
-    Ok(owned)
-}
-
-fn try_lifecycle_hash(
-    value: ContentHash,
-    current: usize,
-    limits: FaultResourceLimits,
-) -> Result<String, SchedulerError> {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::new();
-    encoded
-        .try_reserve_exact(64)
-        .map_err(|_| lifecycle_resource_error("event_log_bytes", current, 64, limits))?;
-    for byte in value.bytes {
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    Ok(encoded)
-}
-
-fn try_lifecycle_transition(
-    transition: crucible::model::NodeLifecycleTransition,
-    current: usize,
-    limits: FaultResourceLimits,
-) -> Result<String, SchedulerError> {
-    let mut storage = try_lifecycle_string("PermanentFailure", current, limits)?;
-    storage.clear();
-    storage.push_str(lifecycle_transition_text(transition));
-    Ok(storage)
-}
-
-fn replace_lifecycle_hash(storage: &mut String, value: ContentHash) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    debug_assert!(storage.capacity() >= 64);
-    storage.clear();
-    for byte in value.bytes {
-        storage.push(HEX[(byte >> 4) as usize] as char);
-        storage.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-}
-
-fn lifecycle_hash_matches(storage: &str, value: ContentHash) -> bool {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    storage.len() == 64
-        && storage
-            .as_bytes()
-            .chunks_exact(2)
-            .zip(value.bytes)
-            .all(|(encoded, byte)| {
-                encoded[0] == HEX[(byte >> 4) as usize] && encoded[1] == HEX[(byte & 0x0f) as usize]
-            })
-}
-
-pub(super) fn try_lifecycle_crash_detector(
-    node: &str,
-    generation: u64,
-    current: usize,
-    limits: FaultResourceLimits,
-) -> Result<String, SchedulerError> {
-    let mut digits = [0_u8; 20];
-    let mut cursor = digits.len();
-    let mut remaining = generation;
-    loop {
-        cursor -= 1;
-        digits[cursor] = b'0' + (remaining % 10) as u8;
-        remaining /= 10;
-        if remaining == 0 {
-            break;
-        }
-    }
-    let required = 10_usize
-        .checked_add(node.len())
-        .and_then(|length| length.checked_add(12))
-        .and_then(|length| length.checked_add(digits.len() - cursor))
-        .ok_or_else(|| lifecycle_resource_error("event_log_bytes", current, usize::MAX, limits))?;
-    let mut detector = String::new();
-    detector
-        .try_reserve_exact(required)
-        .map_err(|_| lifecycle_resource_error("event_log_bytes", current, required, limits))?;
-    detector.push_str("lifecycle-");
-    detector.push_str(node);
-    detector.push_str("-generation-");
-    for digit in &digits[cursor..] {
-        detector.push(*digit as char);
-    }
-    Ok(detector)
-}
+pub(in crate::vm_lifecycle::quantum_loop) use staging::*;
 
 impl ProductionVmLifecycleLoop {
     pub(super) fn begin_terminal_lifecycle_intent(
@@ -167,6 +25,18 @@ impl ProductionVmLifecycleLoop {
     ) -> Result<PreparedLifecyclePrecommit, SchedulerError> {
         let mut nodes = Vec::new();
         nodes
+            .try_reserve_exact(intents.len())
+            .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
+        self.run_manifest
+            .staged_processes
+            .try_reserve_exact(intents.len())
+            .map_err(|()| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
+        let mut process_owners = Vec::new();
+        process_owners
+            .try_reserve_exact(intents.len())
+            .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
+        let mut terminal_decisions = Vec::new();
+        terminal_decisions
             .try_reserve_exact(intents.len())
             .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
         let completed_exit_count = self.lifecycle_journal.completed_exits.len();
@@ -232,8 +102,31 @@ impl ProductionVmLifecycleLoop {
                 current_generation
             };
             let current_process = self.inner.backend().process_identity(&intent.node)?;
+            let journal_node = try_lifecycle_string(&intent.node.name, nodes.len(), limits)?;
+            let manifest_node = try_lifecycle_string(&intent.node.name, nodes.len(), limits)?;
+            let manifest_executable =
+                try_lifecycle_path(&current_process.executable, nodes.len(), limits)?;
+            let journal_executable =
+                try_lifecycle_path(&current_process.executable, nodes.len(), limits)?;
+            process_owners.push(Some(PreparedLifecycleProcessOwner {
+                action: intent.action,
+                decision_node: Some(NodeId {
+                    name: try_lifecycle_string(&intent.node.name, nodes.len(), limits)?,
+                }),
+                manifest_node,
+                manifest_identity: QemuProcessIdentity {
+                    process_id: 0,
+                    start_time_ticks: 0,
+                    executable: manifest_executable,
+                },
+                journal_identity: QemuProcessIdentity {
+                    process_id: 0,
+                    start_time_ticks: 0,
+                    executable: journal_executable,
+                },
+            }));
             nodes.push(ProductionLifecycleJournalNode {
-                node: try_lifecycle_string(&intent.node.name, nodes.len(), limits)?,
+                node: journal_node,
                 current_process,
                 replacement_process: None,
                 current_generation,
@@ -270,7 +163,7 @@ impl ProductionVmLifecycleLoop {
                 message: String::from("lifecycle transaction sequence exhausted"),
             })?;
         self.lifecycle_journal.phase = ProductionLifecycleJournalPhase::Intent;
-        self.lifecycle_journal.nodes = nodes;
+        self.lifecycle_journal.nodes = nodes.into();
         self.reserve_lifecycle_state_encoding(
             limits,
             runtime_event_records,
@@ -280,6 +173,8 @@ impl ProductionVmLifecycleLoop {
         Ok(PreparedLifecyclePrecommit {
             checkpoint,
             actions,
+            process_owners,
+            terminal_decisions,
         })
     }
 
@@ -357,21 +252,36 @@ impl ProductionVmLifecycleLoop {
 
     pub(super) fn record_prepared_lifecycle_processes(
         &mut self,
-        prepared: &[PreparedTerminalReplacement],
+        prepared: &mut [PreparedTerminalReplacement],
     ) -> Result<(), SchedulerError> {
         for item in prepared {
-            let identity = item
-                .replacement
-                .as_ref()
-                .map(ProductionVmNodeLaunch::node)
-                .map(QemuNode::process_identity)
-                .transpose()
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "capture staged process identity for `{}`: {error}",
-                        item.decision.node.name
-                    ),
-                })?;
+            let identity = match (&item.replacement, item.process_owner.as_mut()) {
+                (Some(replacement), Some(owner)) => {
+                    let (process_id, start_time_ticks) = replacement
+                        .node()
+                        .process_identity_components(&owner.manifest_identity.executable)
+                        .map_err(|error| SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "capture staged process identity for `{}`: {error}",
+                                item.decision.node.name
+                            ),
+                        })?;
+                    owner.manifest_identity.process_id = process_id;
+                    owner.manifest_identity.start_time_ticks = start_time_ticks;
+                    owner.journal_identity.process_id = process_id;
+                    owner.journal_identity.start_time_ticks = start_time_ticks;
+                    Some(())
+                }
+                (None, Some(_)) => None,
+                (_, None) => {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "staged lifecycle node `{}` lost its preallocated process owner",
+                            item.decision.node.name
+                        ),
+                    });
+                }
+            };
             let journal_node = self
                 .lifecycle_journal
                 .nodes
@@ -383,11 +293,20 @@ impl ProductionVmLifecycleLoop {
                         item.decision.node.name
                     ),
                 })?;
-            if let Some(identity) = identity {
+            if identity.is_some() {
+                let owner =
+                    item.process_owner
+                        .take()
+                        .ok_or_else(|| SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "staged lifecycle node `{}` lost its process owner",
+                                item.decision.node.name
+                            ),
+                        })?;
                 if self
                     .run_manifest
                     .staged_processes
-                    .contains_key(&item.decision.node.name)
+                    .contains_key(&owner.manifest_node)
                 {
                     return Err(SchedulerError::BoundaryViolation {
                         message: format!(
@@ -398,9 +317,15 @@ impl ProductionVmLifecycleLoop {
                 }
                 self.run_manifest
                     .staged_processes
-                    .insert(item.decision.node.name.clone(), identity.clone());
-                journal_node.replacement_process = Some(identity);
+                    .insert_reserved(owner.manifest_node, owner.manifest_identity)
+                    .map_err(|()| SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "staged lifecycle process reservation was exhausted after commit",
+                        ),
+                    })?;
+                journal_node.replacement_process = Some(owner.journal_identity);
             } else {
+                item.process_owner.take();
                 journal_node.replacement_process = None;
             }
         }
