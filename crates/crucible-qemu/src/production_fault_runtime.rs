@@ -5,7 +5,7 @@
 //! surface. An empty plan has no hidden evaluator and remains a valid inert
 //! production configuration.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crucible::model::{
@@ -44,7 +44,7 @@ pub use checkpoint_codec::ProductionFaultRuntimeCheckpointCodecError;
 mod fallible_clone;
 use fallible_clone::{
     try_clone_action, try_clone_fault_events, try_clone_fault_id,
-    try_clone_node_id as try_clone_ledger_node_id, try_clone_target,
+    try_clone_node_id as try_clone_ledger_node_id, try_clone_string, try_clone_target,
 };
 
 /// Complete resumable state for the production fault runtime.
@@ -244,7 +244,7 @@ pub struct ProductionFaultRuntime {
     pending_qemu_observations: Vec<FaultObservation>,
     pending_qemu_events: PendingQemuEventMap,
     pending_node_lifecycle: Vec<QemuNodeLifecycleDecision>,
-    pending_node_boot: BTreeSet<NodeId>,
+    pending_node_boot: Vec<NodeId>,
     pending_search_choices: Vec<(FaultCoordinate, Vec<BindingSearchChoice>)>,
 }
 
@@ -257,6 +257,7 @@ mod construction;
 pub(crate) use construction::validate_qemu_fingerprints;
 #[path = "production_fault_runtime/evaluation.rs"]
 mod evaluation;
+use evaluation::runtime_collection_reservation;
 #[path = "production_fault_runtime/evidence.rs"]
 mod evidence;
 

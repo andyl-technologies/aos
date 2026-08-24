@@ -19,7 +19,7 @@ impl ProductionFaultRuntime {
         let Some(runtime) = self.runtime.as_ref() else {
             return Ok(BindingEvaluation::default());
         };
-        let preview = runtime.preview_opportunity(opportunity, same_coordinate_sequence)?;
+        let mut preview = runtime.preview_opportunity(opportunity, same_coordinate_sequence)?;
         validate_production_event_state(
             &self.emitted_events,
             &preview.emitted_events,
@@ -29,9 +29,11 @@ impl ProductionFaultRuntime {
             self.resource_limits,
         )?;
         let staged_qemu_ledger = self.stage_qemu_action_ledger(&preview.actions)?;
+        let publication =
+            StagedEvaluationPublication::stage(self, opportunity.coordinate(), &mut preview)?;
         let maximum_event_records = self.apply_event_staging_capacity(
             nodes,
-            &preview.emitted_events,
+            publication.emitted_events(),
             Some(&staged_qemu_ledger),
         )?;
         let mut sink = ProductionFaultActionSink::new_with_event_limit(
@@ -51,8 +53,10 @@ impl ProductionFaultRuntime {
         )?;
         let qemu_commits = sink.take_qemu_commit_evidence();
         if evaluation.actions != preview.actions
-            || evaluation.emitted_events != preview.emitted_events
+            || evaluation.emitted_events != publication.emitted_events()
             || evaluation.state_machine_events != preview.state_machine_events
+            || evaluation.search_choices != publication.search_choices()
+            || evaluation.observations.len() != publication.expected_observations()
         {
             runtime.poison();
             return Err(FaultExecutionError::CheckpointPresence.into());
@@ -64,10 +68,7 @@ impl ProductionFaultRuntime {
             }
             return Err(error);
         }
-        self.emitted_events
-            .extend(evaluation.emitted_events.iter().cloned());
-        self.retain_search_choices(opportunity.coordinate(), &evaluation.search_choices);
-        self.apply_event_staging_capacity(nodes, &[], None)?;
+        publication.publish(self);
         Ok(evaluation)
     }
 
@@ -91,7 +92,7 @@ impl ProductionFaultRuntime {
         let Some(runtime) = self.runtime.as_ref() else {
             return Ok(BindingEvaluation::default());
         };
-        let preview = runtime.preview_opportunity(opportunity, same_coordinate_sequence)?;
+        let mut preview = runtime.preview_opportunity(opportunity, same_coordinate_sequence)?;
         validate_production_event_state(
             &self.emitted_events,
             &preview.emitted_events,
@@ -100,6 +101,8 @@ impl ProductionFaultRuntime {
             &self.pending_qemu_events,
             self.resource_limits,
         )?;
+        let publication =
+            StagedEvaluationPublication::stage(self, opportunity.coordinate(), &mut preview)?;
         let runtime = self
             .runtime
             .as_mut()
@@ -109,15 +112,15 @@ impl ProductionFaultRuntime {
             same_coordinate_sequence,
             &mut self.host,
         )?;
-        if evaluation.emitted_events != preview.emitted_events
+        if evaluation.emitted_events != publication.emitted_events()
             || evaluation.state_machine_events != preview.state_machine_events
+            || evaluation.search_choices != publication.search_choices()
+            || evaluation.observations.len() != publication.expected_observations()
         {
             runtime.poison();
             return Err(FaultExecutionError::CheckpointPresence.into());
         }
-        self.emitted_events
-            .extend(evaluation.emitted_events.iter().cloned());
-        self.retain_search_choices(opportunity.coordinate(), &evaluation.search_choices);
+        publication.publish(self);
         Ok(evaluation)
     }
 

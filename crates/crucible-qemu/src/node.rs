@@ -2692,4 +2692,4 @@ fn channel_error_to_shutdown_error(error: QemuNodeChannelError) -> QemuShutdownT
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 #[path = "node_tests.rs"]
-mod tests;
+pub(crate) mod tests;

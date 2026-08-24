@@ -1,6 +1,68 @@
 //! Recovery-event, rejection, resource-limit, and identity tests.
 
 use super::*;
+
+#[test]
+fn live_host_fault_event_drain_reaches_production_authentication() {
+    let action = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
+    let event = lifecycle_event(&action);
+    let commit = CommittedQemuActionEvidence {
+        command_sequence: event.header.rule_command_sequence,
+        command_kind: event.header.command_kind as u16,
+        before_hash: event.header.before_hash,
+        after_hash: event.header.after_hash,
+    };
+    let host_runtime =
+        crate::supervision::host_io_runtime::tests::staged_fault_event_runtime(event.clone())
+            .unwrap_or_else(|error| panic!("real host runtime should stage the event: {error}"));
+    let mut nodes = QemuNodeSet::new();
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    let _prior = nodes.insert(
+        node.clone(),
+        crate::node::tests::host_io_runtime::scripted_node_with_live_host_runtime(host_runtime)
+            .unwrap_or_else(|error| panic!("live-host test node should build: {error}")),
+    );
+    let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), FaultResourceLimits::default())
+        .unwrap_or_else(|error| panic!("empty test plan should be valid: {error}"));
+    let mut runtime = ProductionFaultRuntime::new(
+        plan,
+        None,
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"live-host-event-authentication"),
+        test_host_manifests(),
+        &nodes,
+    )
+    .unwrap_or_else(|error| panic!("production runtime should initialize: {error}"));
+    runtime
+        .update_qemu_action_ledger(std::slice::from_ref(&action), vec![(action.id(), commit)])
+        .unwrap_or_else(|error| panic!("authenticated action should enter the ledger: {error}"));
+
+    runtime
+        .drain_qemu_observations(&mut nodes, action.coordinate, 0)
+        .unwrap_or_else(|error| panic!("production host drain should authenticate: {error}"));
+
+    assert_eq!(runtime.pending_qemu_events.len(), 0);
+    assert_eq!(runtime.pending_qemu_observations.len(), 1);
+    assert_eq!(
+        runtime.pending_qemu_observations[0].coordinate,
+        action.coordinate
+    );
+    assert_eq!(runtime.pending_node_lifecycle.len(), 1);
+    assert_eq!(
+        nodes
+            .staged_fault_event_count()
+            .unwrap_or_else(|error| panic!("staged event count should be readable: {error}")),
+        0
+    );
+    nodes
+        .take(&node)
+        .unwrap_or_else(|| panic!("live-host test node should remain present"))
+        .shutdown_child()
+        .unwrap_or_else(|error| panic!("live-host test node should shut down: {error}"));
+}
+
 #[test]
 fn production_checkpoints_referenced_storage_recovery_events() {
     let active = signal_id("stall-transition");
@@ -224,6 +286,7 @@ fn rejected_qemu_event_validation_retains_the_raw_event() {
             virtual_nanos: 1,
             retired_instructions: Some(1),
         },
+        0,
     );
 
     assert!(result.is_err());

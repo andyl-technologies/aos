@@ -1,6 +1,7 @@
 //! Transactional QEMU generation replacement and exact-snapshot operations.
 
 use super::*;
+use crate::QemuNodeLifecycleDecision;
 
 impl QemuNodeSet {
     /// Atomically replaces or removes a validated set of node generations.
@@ -72,12 +73,12 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
-    /// Contains and removes a set of indeterminate QEMU generations.
+    /// Contains every node named by one owned lifecycle publication batch.
     ///
-    /// Each process still present is force-killed and synchronously reaped;
-    /// graceful control paths are intentionally not used for an ambiguous
-    /// lifecycle transaction. An already removed generation is already
-    /// contained and is therefore idempotently accepted.
+    /// Decisions and boot requests remain in their preallocated publication
+    /// containers, so containment after visible APPLY does not need to build a
+    /// second node list. Every named process is attempted even after an earlier
+    /// cleanup error.
     ///
     /// # Errors
     ///
@@ -85,9 +86,17 @@ impl QemuNodeSet {
     /// reaped. All named nodes are removed even when one cleanup reports an
     /// error.
     #[cfg(target_os = "linux")]
-    pub fn quarantine_terminal_nodes(&mut self, nodes: &[NodeId]) -> Result<(), BackendError> {
+    pub fn quarantine_terminal_lifecycle_work(
+        &mut self,
+        decisions: &[QemuNodeLifecycleDecision],
+        boot_requests: &[NodeId],
+    ) -> Result<(), BackendError> {
         let mut first_error = None;
-        for node in nodes {
+        for node in decisions
+            .iter()
+            .map(|decision| &decision.node)
+            .chain(boot_requests)
+        {
             if let Some(mut backend) = self.nodes.remove(node)
                 && let Err(error) = backend.force_quarantine_and_reap()
                 && first_error.is_none()
