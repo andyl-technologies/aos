@@ -165,7 +165,7 @@ impl ProductionFaultRuntime {
             pending_qemu_observations: Vec::new(),
             pending_qemu_events: PendingQemuEventMap::new(),
             pending_node_lifecycle: Vec::new(),
-            pending_node_boot: BTreeSet::new(),
+            pending_node_boot: Vec::new(),
             pending_search_choices: Vec::new(),
         })
     }
@@ -327,7 +327,7 @@ impl ProductionFaultRuntime {
             pending_qemu_observations,
             pending_qemu_events,
             pending_node_lifecycle: Vec::new(),
-            pending_node_boot: BTreeSet::new(),
+            pending_node_boot: Vec::new(),
             pending_search_choices: Vec::new(),
         })
     }

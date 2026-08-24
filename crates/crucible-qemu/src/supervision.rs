@@ -12,7 +12,7 @@ mod block_node_gate;
 pub(crate) mod bounded_scheduler_preemption;
 mod deadline;
 mod device_host_work;
-mod host_io_runtime;
+pub(crate) mod host_io_runtime;
 mod host_parallel_gate;
 mod network_io_gate;
 mod network_io_servicer;

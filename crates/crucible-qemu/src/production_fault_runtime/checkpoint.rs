@@ -247,7 +247,7 @@ impl ProductionFaultRuntime {
     /// The host uses this edge to resume a natively paused power-off
     /// generation before the scheduler can select it again.
     #[must_use]
-    pub fn node_boot_requests(&self) -> &BTreeSet<NodeId> {
+    pub fn node_boot_requests(&self) -> &[NodeId] {
         &self.pending_node_boot
     }
 
@@ -256,21 +256,19 @@ impl ProductionFaultRuntime {
         self.pending_node_boot.clear();
     }
 
+    /// Transfers the complete authenticated lifecycle batch to its sole host consumer.
+    #[must_use]
+    pub fn take_node_lifecycle_work(&mut self) -> (Vec<QemuNodeLifecycleDecision>, Vec<NodeId>) {
+        (
+            std::mem::take(&mut self.pending_node_lifecycle),
+            std::mem::take(&mut self.pending_node_boot),
+        )
+    }
+
     /// Removes finite explorer choices after the scheduler has recorded them.
     #[must_use]
     pub fn drain_search_choices(&mut self) -> Vec<(FaultCoordinate, Vec<BindingSearchChoice>)> {
         std::mem::take(&mut self.pending_search_choices)
-    }
-
-    pub(super) fn retain_search_choices(
-        &mut self,
-        coordinate: FaultCoordinate,
-        choices: &[BindingSearchChoice],
-    ) {
-        if !choices.is_empty() {
-            self.pending_search_choices
-                .push((coordinate, choices.to_vec()));
-        }
     }
 
     /// Removes committed host impulses for exact device-opportunity execution.

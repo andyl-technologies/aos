@@ -273,9 +273,15 @@ in
           run_exact_qemu_test \
             node::tests::fault_event_budget::production_restore_rejects_fault_event_published_by_fingerprint
           run_exact_qemu_test \
+            production_fault_runtime::runtime_tests::recovery_tests::live_host_fault_event_drain_reaches_production_authentication
+          run_exact_qemu_test \
             production_fault_runtime::checkpoint_codec::preflight::tests::preflight_applies_event_records_as_one_aggregate_ceiling
           run_exact_qemu_test \
             production_fault_runtime::runtime_tests::recovery_tests::qemu_event_staging_uses_remaining_aggregate_ledger_capacity
+          run_exact_qemu_test \
+            production_fault_runtime::evaluation::publication::tests::production_evaluation_publication_is_owned_before_commit
+          run_exact_qemu_test \
+            production_fault_runtime::lifecycle_tests::lifecycle_work_transfer_preserves_owned_buffers_and_clears_checkpoint_edge
           run_exact_plugin_test \
             fault_command::tests::bridge_translates_capabilities_and_local_rejections_at_logical_time
           run_exact_plugin_test \

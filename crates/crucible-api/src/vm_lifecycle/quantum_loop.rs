@@ -955,26 +955,24 @@ impl ProductionVmLifecycleLoop {
     fn quarantine_terminal_lifecycle_transaction(
         &mut self,
         decisions: &[QemuNodeLifecycleDecision],
+        boot_requests: &[NodeId],
         primary: impl std::fmt::Display,
     ) -> SchedulerError {
-        let affected_nodes = decisions
-            .iter()
-            .map(|decision| decision.node.clone())
-            .collect::<Vec<_>>();
-        let journal = self.advance_lifecycle_journal(ProductionLifecycleJournalPhase::Quarantined);
         let quarantine = self
             .inner
             .backend_mut()
-            .quarantine_terminal_nodes(&affected_nodes);
-        let activities = affected_nodes
+            .quarantine_terminal_lifecycle_work(decisions, boot_requests);
+        let scheduler = self.contain_terminal_lifecycle_scheduler(decisions, boot_requests);
+        for node in decisions
             .iter()
-            .cloned()
-            .map(|node| (node, SchedulerNodeActivity::Done))
-            .collect::<Vec<_>>();
-        let scheduler = self
-            .inner
-            .loop_impl_mut()
-            .set_vm_node_activities(&activities);
+            .map(|decision| &decision.node)
+            .chain(boot_requests)
+        {
+            if let Some(state) = self.node_service_states.get_mut(node) {
+                *state = ProductionNodeServiceState::PermanentlyFailed;
+            }
+        }
+        let journal = self.advance_lifecycle_journal(ProductionLifecycleJournalPhase::Quarantined);
         SchedulerError::BoundaryViolation {
             message: format!(
                 "terminal lifecycle transaction failed ({primary}); journal containment: {}; process containment: {}; scheduler containment: {}",
@@ -988,17 +986,45 @@ impl ProductionVmLifecycleLoop {
     fn quarantine_terminal_lifecycle_transaction_with_staged(
         &mut self,
         decisions: &[QemuNodeLifecycleDecision],
+        boot_requests: &[NodeId],
         prepared: &mut [PreparedTerminalReplacement],
         primary: impl std::fmt::Display,
     ) -> SchedulerError {
         let staged = Self::abort_staged_terminal_replacements(prepared);
         self.quarantine_terminal_lifecycle_transaction(
             decisions,
+            boot_requests,
             format!(
                 "{primary}; staged-process containment: {}",
                 staged.map_or_else(|error| error.to_string(), |()| String::from("reaped"))
             ),
         )
+    }
+
+    fn contain_terminal_lifecycle_scheduler(
+        &mut self,
+        decisions: &[QemuNodeLifecycleDecision],
+        boot_requests: &[NodeId],
+    ) -> Result<(), SchedulerError> {
+        for node in decisions
+            .iter()
+            .map(|decision| &decision.node)
+            .chain(boot_requests)
+        {
+            self.inner
+                .loop_impl()
+                .validate_vm_node_activity_target(node)?;
+        }
+        for node in decisions
+            .iter()
+            .map(|decision| &decision.node)
+            .chain(boot_requests)
+        {
+            self.inner
+                .loop_impl_mut()
+                .set_vm_node_activity(node, SchedulerNodeActivity::Done)?;
+        }
+        Ok(())
     }
 
     fn terminal_lifecycle_checkpoint(&mut self) -> Result<Checkpoint, SchedulerError> {
@@ -1646,10 +1672,7 @@ impl ProductionVmLifecycleLoop {
         }
     }
 
-    fn activate_node_boot_requests(
-        &mut self,
-        requests: &std::collections::BTreeSet<NodeId>,
-    ) -> Result<(), SchedulerError> {
+    fn activate_node_boot_requests(&mut self, requests: &[NodeId]) -> Result<(), SchedulerError> {
         for node in requests {
             match self.node_service_states.get(node).copied() {
                 Some(ProductionNodeServiceState::PoweredOff) => {}
@@ -1676,20 +1699,19 @@ impl ProductionVmLifecycleLoop {
                 }
             }
         }
+        self.inner
+            .loop_impl_mut()
+            .set_vm_nodes_activity(requests, SchedulerNodeActivity::Runnable)?;
         for node in requests {
             self.inner.backend_mut().boot_powered_off_generation(node)?;
         }
-        let activities = requests
-            .iter()
-            .cloned()
-            .map(|node| (node, SchedulerNodeActivity::Runnable))
-            .collect::<Vec<_>>();
-        self.inner
-            .loop_impl_mut()
-            .set_vm_node_activities(&activities)?;
         for node in requests {
-            self.node_service_states
-                .insert(node.clone(), ProductionNodeServiceState::Running);
+            let Some(state) = self.node_service_states.get_mut(node) else {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from("validated boot node disappeared before commit"),
+                });
+            };
+            *state = ProductionNodeServiceState::Running;
         }
         Ok(())
     }
@@ -1977,45 +1999,69 @@ impl ProductionVmLifecycleLoop {
                 pending_outputs,
             )?
         };
-        let (decisions, boot_requests) = {
-            let runtime =
-                self.fault_runtime
-                    .lock()
-                    .map_err(|_| SchedulerError::BoundaryViolation {
-                        message: String::from("production fault runtime lock is poisoned"),
-                    })?;
-            (
-                runtime.node_lifecycle_decisions().to_vec(),
-                runtime.node_boot_requests().clone(),
-            )
-        };
+        let (decisions, boot_requests) = self
+            .fault_runtime
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("production fault runtime lock is poisoned"),
+            })?
+            .take_node_lifecycle_work();
+        if let Err(error) = self.apply_signal_fault_lifecycle_work(&decisions, &boot_requests) {
+            self.fault_runtime
+                .lock()
+                .map_err(|_| SchedulerError::BoundaryViolation {
+                    message: String::from("production fault runtime lock is poisoned"),
+                })?
+                .poison();
+            return Err(error);
+        }
+        Ok(append)
+    }
+
+    fn apply_signal_fault_lifecycle_work(
+        &mut self,
+        decisions: &[QemuNodeLifecycleDecision],
+        boot_requests: &[NodeId],
+    ) -> Result<(), SchedulerError> {
         let has_lifecycle = !decisions.is_empty();
-        if has_lifecycle {
-            self.begin_terminal_lifecycle_transaction(&decisions)?;
+        if has_lifecycle && let Err(error) = self.begin_terminal_lifecycle_transaction(decisions) {
+            return Err(self.quarantine_terminal_lifecycle_transaction(
+                decisions,
+                boot_requests,
+                error,
+            ));
         }
-        if let Err(error) = self.activate_node_boot_requests(&boot_requests) {
-            return Err(self.quarantine_terminal_lifecycle_transaction(&decisions, error));
+        if let Err(error) = self.activate_node_boot_requests(boot_requests) {
+            return Err(self.quarantine_terminal_lifecycle_transaction(
+                decisions,
+                boot_requests,
+                error,
+            ));
         }
-        let mut prepared = match self.prepare_terminal_replacements(&decisions) {
+        let mut prepared = match self.prepare_terminal_replacements(decisions) {
             Ok(prepared) => prepared,
             Err(capture_error) => {
-                return Err(
-                    self.quarantine_terminal_lifecycle_transaction(&decisions, capture_error)
-                );
+                return Err(self.quarantine_terminal_lifecycle_transaction(
+                    decisions,
+                    boot_requests,
+                    capture_error,
+                ));
             }
         };
         if has_lifecycle && let Err(error) = self.record_prepared_lifecycle_processes(&prepared) {
             return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                &decisions,
+                decisions,
+                boot_requests,
                 &mut prepared,
                 error,
             ));
         }
-        let observed_exit_codes = match self.supervise_terminal_lifecycle_exits(&decisions) {
+        let observed_exit_codes = match self.supervise_terminal_lifecycle_exits(decisions) {
             Ok(observed) => observed,
             Err(error) => {
                 return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                    &decisions,
+                    decisions,
+                    boot_requests,
                     &mut prepared,
                     error,
                 ));
@@ -2025,58 +2071,58 @@ impl ProductionVmLifecycleLoop {
             .iter()
             .map(|replacement| replacement.decision.node.clone())
             .collect::<Vec<_>>();
-        if let Err(error) = self
-            .inner
-            .backend()
-            .validate_terminal_exits_reaped(&retiring)
-        {
-            return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                &decisions,
-                &mut prepared,
-                error,
-            ));
+        for replacement in &prepared {
+            if let Err(error) = self
+                .inner
+                .backend()
+                .validate_terminal_exits_reaped(std::slice::from_ref(&replacement.decision.node))
+            {
+                return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
+                    decisions,
+                    boot_requests,
+                    &mut prepared,
+                    error,
+                ));
+            }
         }
         if has_lifecycle
             && let Err(error) =
                 self.advance_lifecycle_journal(ProductionLifecycleJournalPhase::ExitsReaped)
         {
             return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                &decisions,
+                decisions,
+                boot_requests,
                 &mut prepared,
                 error,
             ));
         }
         if let Err(error) = self.finish_reaped_node_leases(&retiring) {
             return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                &decisions,
+                decisions,
+                boot_requests,
                 &mut prepared,
                 error,
             ));
         }
         if let Err(error) = self.commit_terminal_replacements(&mut prepared) {
             return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                &decisions,
+                decisions,
+                boot_requests,
                 &mut prepared,
                 error,
             ));
         }
         if has_lifecycle
             && let Err(error) =
-                self.retain_completed_lifecycle_exits(&decisions, &observed_exit_codes)
+                self.retain_completed_lifecycle_exits(decisions, &observed_exit_codes)
         {
-            return Err(self.quarantine_terminal_lifecycle_transaction(&decisions, error));
+            return Err(self.quarantine_terminal_lifecycle_transaction(
+                decisions,
+                boot_requests,
+                error,
+            ));
         }
-        if !decisions.is_empty() {
-            let mut runtime =
-                self.fault_runtime
-                    .lock()
-                    .map_err(|_| SchedulerError::BoundaryViolation {
-                        message: String::from("production fault runtime lock is poisoned"),
-                    })?;
-            runtime.acknowledge_node_lifecycle_decisions();
-            runtime.acknowledge_node_boot_requests();
-        }
-        Ok(append)
+        Ok(())
     }
 }
 
@@ -2116,152 +2162,5 @@ fn trusted_debug_listener(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crucible::SchedulerOperationalFailureClass;
-
-    #[test]
-    fn stopped_checkpoint_artifact_keeps_the_pinned_source_without_copying() {
-        let directory = tempfile::tempdir()
-            .unwrap_or_else(|error| panic!("create checkpoint artifact directory: {error}"));
-        let source = directory.path().join("active-overlay.qcow2");
-        let bytes = b"stopped exact checkpoint bytes";
-        fs::write(&source, bytes).unwrap_or_else(|error| panic!("write stopped artifact: {error}"));
-
-        let artifact = checkpoint_artifact_from_stopped_file(&source, "test")
-            .unwrap_or_else(|error| panic!("authenticate stopped artifact: {error}"));
-
-        assert_eq!(artifact.identity, ContentHash::from_bytes(bytes));
-        assert_eq!(artifact.length, bytes.len() as u64);
-        assert!(artifact.chunks.is_empty());
-        assert!(matches!(
-            artifact.source,
-            ProductionCheckpointArtifactSource::File(ref path) if path == &source
-        ));
-        let entries = fs::read_dir(directory.path())
-            .unwrap_or_else(|error| panic!("read artifact directory: {error}"));
-        assert_eq!(entries.count(), 1);
-    }
-
-    #[test]
-    fn exact_capture_reports_publication_and_release_failures_together() {
-        let publication: Result<(), SchedulerError> = Err(SchedulerError::BoundaryViolation {
-            message: String::from("publication failed"),
-        });
-        let cleanup = Err(SchedulerError::BoundaryViolation {
-            message: String::from("resume failed"),
-        });
-
-        let error = match combine_exact_capture_result(publication, cleanup) {
-            Ok(()) => panic!("both failures must reject capture"),
-            Err(error) => error,
-        };
-
-        assert!(error.to_string().contains("publication failed"));
-        assert!(error.to_string().contains("resume failed"));
-    }
-
-    #[test]
-    fn attempt_quantum_reports_modeled_and_post_boundary_failures_together() {
-        let operation: Result<(), SchedulerError> = Err(SchedulerError::BoundaryViolation {
-            message: String::from("modeled quantum failed"),
-        });
-        let boundary = Err(LifecycleApiError::AttemptOperational {
-            class: SchedulerOperationalFailureClass::Canceled,
-            message: String::from("attempt cancellation failed closed"),
-        });
-
-        let error = match combine_attempt_quantum_boundary(operation, boundary) {
-            Ok(()) => panic!("both failures must reject the quantum"),
-            Err(error) => error,
-        };
-
-        assert!(error.to_string().contains("modeled quantum failed"));
-        assert!(
-            error
-                .to_string()
-                .contains("attempt cancellation failed closed")
-        );
-        assert!(matches!(
-            error,
-            SchedulerError::OperationalBoundary {
-                class: SchedulerOperationalFailureClass::Canceled,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn attempt_quantum_admission_preserves_retryable_class() {
-        let error = attempt_boundary_scheduler_error(
-            "admit production attempt scheduler quantum",
-            LifecycleApiError::AttemptOperational {
-                class: SchedulerOperationalFailureClass::Retryable,
-                message: String::from("resource controller temporarily unavailable"),
-            },
-        );
-
-        assert!(matches!(
-            error,
-            SchedulerError::OperationalBoundary {
-                class: SchedulerOperationalFailureClass::Retryable,
-                ..
-            }
-        ));
-        assert!(
-            error
-                .to_string()
-                .contains("resource controller temporarily unavailable")
-        );
-    }
-
-    fn debug_config(allow_requested_loopback_listen: bool) -> ProductionVmDebugConfig {
-        ProductionVmDebugConfig {
-            node: None,
-            operator_listen: String::from("127.0.0.1:0"),
-            all_nodes: allow_requested_loopback_listen,
-            allow_requested_loopback_listen,
-        }
-    }
-
-    #[test]
-    fn daemon_debug_policy_accepts_an_explicit_loopback_listener() {
-        let listen = GdbListen::new("127.0.0.1:9000")
-            .unwrap_or_else(|error| panic!("loopback listener should parse: {error}"));
-
-        let requested = trusted_debug_listener(&debug_config(true), &listen)
-            .unwrap_or_else(|error| panic!("daemon listener should be admitted: {error}"));
-
-        assert_eq!(requested, SocketAddr::from(([127, 0, 0, 1], 9000)));
-    }
-
-    #[test]
-    fn fixed_debug_policy_rejects_a_different_listener() {
-        let listen = GdbListen::new("127.0.0.1:9000")
-            .unwrap_or_else(|error| panic!("loopback listener should parse: {error}"));
-
-        let error = match trusted_debug_listener(&debug_config(false), &listen) {
-            Ok(address) => panic!("fixed listener policy admitted {address}"),
-            Err(error) => error,
-        };
-
-        assert!(
-            error
-                .to_string()
-                .contains("does not match configured listener")
-        );
-    }
-
-    #[test]
-    fn daemon_debug_policy_rejects_a_non_loopback_listener() {
-        let listen = GdbListen::new("0.0.0.0:9000")
-            .unwrap_or_else(|error| panic!("socket listener should parse: {error}"));
-
-        let error = match trusted_debug_listener(&debug_config(true), &listen) {
-            Ok(address) => panic!("daemon listener policy admitted {address}"),
-            Err(error) => error,
-        };
-
-        assert!(error.to_string().contains("must be loopback"));
-    }
-}
+#[path = "quantum_loop/tests.rs"]
+mod tests;
