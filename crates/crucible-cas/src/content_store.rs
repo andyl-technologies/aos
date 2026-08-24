@@ -351,6 +351,21 @@ impl BlobHandle {
         }
     }
 
+    /// Replaces the stream source while preserving this handle's integrity state.
+    ///
+    /// Composition layers use this only for transparent observation wrappers
+    /// whose declared length and bytes are identical to the wrapped handle.
+    pub(crate) fn with_observed_source(self, source: Arc<dyn BlobSource>) -> Self {
+        debug_assert_eq!(source.logical_length(), self.logical_length);
+        Self {
+            source,
+            logical_length: self.logical_length,
+            authenticated_id: self.authenticated_id,
+            integrity_id: self.integrity_id,
+            self_authenticating: self.self_authenticating,
+        }
+    }
+
     /// Returns the source's declared logical length.
     #[must_use]
     pub fn logical_length(&self) -> u64 {

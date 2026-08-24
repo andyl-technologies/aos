@@ -243,6 +243,16 @@ pub struct StoreNodeMetrics {
     pub read_calls: u64,
     /// Declared logical bytes made available by successful read calls.
     pub read_logical_bytes: u64,
+    /// Attempts to open streams from returned read handles.
+    pub read_stream_opens: u64,
+    /// Streams drained through authenticated end-of-file.
+    pub read_stream_completions: u64,
+    /// Streams dropped before their authenticated end-of-file.
+    pub read_stream_abandons: u64,
+    /// Stream-open, read, length, or deferred-authentication failures.
+    pub read_stream_failures: u64,
+    /// Logical bytes actually delivered through opened read streams.
+    pub read_stream_bytes: u64,
     /// Logical immutable puts attempted.
     pub put_calls: u64,
     /// Declared logical bytes accepted by successful put calls.
@@ -445,9 +455,9 @@ impl StoreGraph {
 
     /// Returns a deterministic snapshot of every admitted metrics node.
     ///
-    /// Counters describe synchronous store-method outcomes. Deferred stream
-    /// consumption and authentication after a read handle is returned are not
-    /// included in this initial operational view.
+    /// Counters distinguish synchronous store-method outcomes from consumption
+    /// of returned streams, including authenticated completion, partial-reader
+    /// abandonment, and deferred failures.
     #[must_use]
     pub fn metrics(&self) -> Vec<StoreNodeMetricsDescription> {
         self.metrics
@@ -461,6 +471,11 @@ impl StoreGraph {
                         contains_hits: snapshot.contains_hits,
                         read_calls: snapshot.read_calls,
                         read_logical_bytes: snapshot.read_logical_bytes,
+                        read_stream_opens: snapshot.read_stream_opens,
+                        read_stream_completions: snapshot.read_stream_completions,
+                        read_stream_abandons: snapshot.read_stream_abandons,
+                        read_stream_failures: snapshot.read_stream_failures,
+                        read_stream_bytes: snapshot.read_stream_bytes,
                         put_calls: snapshot.put_calls,
                         put_logical_bytes: snapshot.put_logical_bytes,
                         failures: snapshot.failures,

@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use tempfile::TempDir;
 
-use super::composition::{ReadThroughStore, RoutedStore, TieredStore, WriteThroughStore};
+use super::composition::{
+    MetricsStore, ReadThroughStore, RoutedStore, TieredStore, WriteThroughStore,
+};
 use super::directory::{DirectoryBlobBackend, DirectoryRefBackend};
 use super::graph::{StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeKind, StoreNodeSpec};
 use super::memory::{MemoryBlobBackend, MemoryRefBackend};
@@ -1790,7 +1792,7 @@ fn packed_store_graph_is_admitted_and_requires_an_isolated_persistent_root() {
 }
 
 #[test]
-fn read_through_and_metrics_nodes_report_exact_synchronous_operations() {
+fn read_through_and_metrics_nodes_report_exact_operations_and_streams() {
     let root = node_id("root-metrics");
     let read_through = node_id("read-through");
     let cache_metrics = node_id("cache-metrics");
@@ -1875,6 +1877,11 @@ fn read_through_and_metrics_nodes_report_exact_synchronous_operations() {
     assert_eq!(root_snapshot.put_logical_bytes, bytes.len() as u64);
     assert_eq!(root_snapshot.read_calls, 2);
     assert_eq!(root_snapshot.read_logical_bytes, bytes.len() as u64 + 5);
+    assert_eq!(root_snapshot.read_stream_opens, 2);
+    assert_eq!(root_snapshot.read_stream_completions, 2);
+    assert_eq!(root_snapshot.read_stream_abandons, 0);
+    assert_eq!(root_snapshot.read_stream_failures, 0);
+    assert_eq!(root_snapshot.read_stream_bytes, bytes.len() as u64 + 5);
     assert_eq!(root_snapshot.contains_calls, 1);
     assert_eq!(root_snapshot.contains_hits, 1);
     assert_eq!(root_snapshot.failures, 0);
@@ -1889,7 +1896,61 @@ fn read_through_and_metrics_nodes_report_exact_synchronous_operations() {
     assert_eq!(source_snapshot.put_calls, 1);
     assert_eq!(source_snapshot.read_calls, 1);
     assert_eq!(source_snapshot.read_logical_bytes, bytes.len() as u64);
+    assert_eq!(source_snapshot.read_stream_opens, 2);
+    assert_eq!(source_snapshot.read_stream_completions, 2);
+    assert_eq!(source_snapshot.read_stream_abandons, 0);
+    assert_eq!(source_snapshot.read_stream_failures, 0);
+    assert_eq!(source_snapshot.read_stream_bytes, 2 * bytes.len() as u64);
     assert_eq!(source_snapshot.failures, 0);
+}
+
+#[test]
+fn metrics_distinguish_complete_abandoned_and_failed_deferred_reads() {
+    let child = Arc::new(MemoryBlobBackend::new("metrics-child", 1_024));
+    let (store, state) = MetricsStore::new("metrics", child.clone());
+    let bytes = b"authenticated stream";
+    let id = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
+    put_bytes(child.as_ref(), id, bytes).expect("seed metrics child");
+
+    let complete = store.read(id, None).expect("complete handle");
+    assert_eq!(
+        complete.read_all(TEST_READ_LIMIT).expect("complete read"),
+        bytes
+    );
+    let partial = store.read(id, None).expect("partial handle");
+    let mut reader = partial.open().expect("open partial stream");
+    let mut prefix = [0_u8; 4];
+    reader.read_exact(&mut prefix).expect("read partial prefix");
+    drop(reader);
+
+    let snapshot = state.snapshot();
+    assert_eq!(snapshot.read_calls, 2);
+    assert_eq!(snapshot.read_stream_opens, 2);
+    assert_eq!(snapshot.read_stream_completions, 1);
+    assert_eq!(snapshot.read_stream_abandons, 1);
+    assert_eq!(snapshot.read_stream_failures, 0);
+    assert_eq!(snapshot.read_stream_bytes, bytes.len() as u64 + 4);
+
+    let broken = Arc::new(FixedReadBackend {
+        source: BlobHandle::new(Arc::new(MismatchedLengthSource {
+            declared: 4,
+            bytes: b"abc",
+        })),
+    });
+    let (broken_metrics, broken_state) = MetricsStore::new("broken-metrics", broken);
+    assert!(matches!(
+        broken_metrics
+            .read(id, None)
+            .expect("deferred failure handle")
+            .read_all(TEST_READ_LIMIT),
+        Err(StoreError::InvalidSourceLength { .. })
+    ));
+    let snapshot = broken_state.snapshot();
+    assert_eq!(snapshot.read_stream_opens, 1);
+    assert_eq!(snapshot.read_stream_completions, 0);
+    assert_eq!(snapshot.read_stream_abandons, 0);
+    assert_eq!(snapshot.read_stream_failures, 1);
+    assert_eq!(snapshot.read_stream_bytes, 3);
 }
 
 #[test]
@@ -2273,6 +2334,38 @@ impl BlobSource for MismatchedLengthSource {
 
     fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
         Ok(Box::new(Cursor::new(self.bytes)))
+    }
+}
+
+struct FixedReadBackend {
+    source: BlobHandle,
+}
+
+impl ImmutableBlobBackend for FixedReadBackend {
+    fn name(&self) -> &str {
+        "fixed-read"
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::default()
+    }
+
+    fn contains(&self, _id: ContentId) -> Result<bool, StoreError> {
+        Ok(true)
+    }
+
+    fn read(&self, _id: ContentId, _range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        Ok(self.source.clone())
+    }
+
+    fn put_if_absent(
+        &self,
+        _id: ContentId,
+        _source: &BlobHandle,
+    ) -> Result<PutReceipt, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "fixed-read test put",
+        })
     }
 }
 

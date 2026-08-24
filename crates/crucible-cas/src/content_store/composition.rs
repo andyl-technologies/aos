@@ -302,6 +302,11 @@ pub(crate) struct MetricsState {
     contains_hits: AtomicU64,
     read_calls: AtomicU64,
     read_logical_bytes: AtomicU64,
+    read_stream_opens: AtomicU64,
+    read_stream_completions: AtomicU64,
+    read_stream_abandons: AtomicU64,
+    read_stream_failures: AtomicU64,
+    read_stream_bytes: AtomicU64,
     put_calls: AtomicU64,
     put_logical_bytes: AtomicU64,
     failures: AtomicU64,
@@ -313,6 +318,11 @@ pub(crate) struct MetricsSnapshot {
     pub contains_hits: u64,
     pub read_calls: u64,
     pub read_logical_bytes: u64,
+    pub read_stream_opens: u64,
+    pub read_stream_completions: u64,
+    pub read_stream_abandons: u64,
+    pub read_stream_failures: u64,
+    pub read_stream_bytes: u64,
     pub put_calls: u64,
     pub put_logical_bytes: u64,
     pub failures: u64,
@@ -331,9 +341,101 @@ impl MetricsState {
             contains_hits: self.contains_hits.load(Ordering::Relaxed),
             read_calls: self.read_calls.load(Ordering::Relaxed),
             read_logical_bytes: self.read_logical_bytes.load(Ordering::Relaxed),
+            read_stream_opens: self.read_stream_opens.load(Ordering::Relaxed),
+            read_stream_completions: self.read_stream_completions.load(Ordering::Relaxed),
+            read_stream_abandons: self.read_stream_abandons.load(Ordering::Relaxed),
+            read_stream_failures: self.read_stream_failures.load(Ordering::Relaxed),
+            read_stream_bytes: self.read_stream_bytes.load(Ordering::Relaxed),
             put_calls: self.put_calls.load(Ordering::Relaxed),
             put_logical_bytes: self.put_logical_bytes.load(Ordering::Relaxed),
             failures: self.failures.load(Ordering::Relaxed),
+        }
+    }
+}
+
+struct MetricsBlobSource {
+    source: BlobHandle,
+    state: Arc<MetricsState>,
+}
+
+impl BlobSource for MetricsBlobSource {
+    fn logical_length(&self) -> u64 {
+        self.source.logical_length()
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        MetricsState::increment(&self.state.read_stream_opens, 1);
+        match self.source.open() {
+            Ok(reader) => Ok(Box::new(MetricsBlobReader {
+                reader,
+                state: Arc::clone(&self.state),
+                expected: self.source.logical_length(),
+                observed: 0,
+                terminal: false,
+            })),
+            Err(error) => {
+                MetricsState::increment(&self.state.read_stream_failures, 1);
+                Err(error)
+            }
+        }
+    }
+}
+
+struct MetricsBlobReader {
+    reader: Box<dyn Read + Send>,
+    state: Arc<MetricsState>,
+    expected: u64,
+    observed: u64,
+    terminal: bool,
+}
+
+impl Read for MetricsBlobReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if output.is_empty() || self.terminal {
+            return Ok(0);
+        }
+        match self.reader.read(output) {
+            Ok(0) => {
+                self.terminal = true;
+                if self.observed == self.expected {
+                    MetricsState::increment(&self.state.read_stream_completions, 1);
+                } else {
+                    MetricsState::increment(&self.state.read_stream_failures, 1);
+                }
+                Ok(0)
+            }
+            Ok(read) => {
+                let delivered = u64::try_from(read).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "immutable blob read length exceeded u64",
+                    )
+                })?;
+                MetricsState::increment(&self.state.read_stream_bytes, delivered);
+                self.observed = self.observed.saturating_add(delivered);
+                if self.observed > self.expected {
+                    self.terminal = true;
+                    MetricsState::increment(&self.state.read_stream_failures, 1);
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "immutable blob stream exceeded its declared length",
+                    ));
+                }
+                Ok(read)
+            }
+            Err(error) => {
+                self.terminal = true;
+                MetricsState::increment(&self.state.read_stream_failures, 1);
+                Err(error)
+            }
+        }
+    }
+}
+
+impl Drop for MetricsBlobReader {
+    fn drop(&mut self) {
+        if !self.terminal {
+            MetricsState::increment(&self.state.read_stream_abandons, 1);
         }
     }
 }
@@ -397,7 +499,11 @@ impl ImmutableBlobBackend for MetricsStore {
         match result {
             Ok(blob) => {
                 MetricsState::increment(&self.state.read_logical_bytes, blob.logical_length());
-                Ok(blob)
+                let source = Arc::new(MetricsBlobSource {
+                    source: blob.clone(),
+                    state: Arc::clone(&self.state),
+                });
+                Ok(blob.with_observed_source(source))
             }
             Err(error) => {
                 MetricsState::increment(&self.state.failures, 1);
