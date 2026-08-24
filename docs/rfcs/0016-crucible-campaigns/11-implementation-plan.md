@@ -1217,8 +1217,12 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   Exact attempt/execution-basis/proposal/completion explanation now also proves
   the coordinator-accepted planner step for planner-issued proposals and
   renders its fixed-point guidance decomposition and accounting. Aggregate
-  ranking across unselected proposals and richer filtered or aggregated views
-  remain open.
+  ranking now has a public owner-independent per-request projection: it
+  revalidates each retained offer/guidance pair against the by-value policy,
+  recomputes the decomposed fixed-point score, and returns best-first order with
+  the exact packaged-planner edge/position tie-break. A proof-bearing query that
+  follows and aggregates the authenticated multi-page planner-step/request
+  chain, plus richer filtered or aggregated views, remains open.
 - [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
   projection in generation-bound GC retention plans. Snapshot-bound semantic
   and operational root inventory plus the exclusive generation-bound memory,

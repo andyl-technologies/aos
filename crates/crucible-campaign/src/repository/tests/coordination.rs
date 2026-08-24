@@ -1960,6 +1960,20 @@ fn canonical_puct_planner_ranks_every_ready_offer_and_replays_owner_guidance() {
             .count(),
         2
     );
+    let rankings = request
+        .ranked_candidates()
+        .expect("rank authenticated PUCT candidates");
+    assert_eq!(rankings.len(), 2);
+    assert_eq!(rankings[0].guidance().position(), guided_position);
+    assert!(rankings[0].score().total_micros() > rankings[1].score().total_micros());
+    assert_eq!(
+        rankings[0].proposal().branch_point(),
+        rankings[0].guidance().position().branch_point()
+    );
+    assert_eq!(
+        rankings[0].proposal().request(),
+        rankings[0].guidance().position().source()
+    );
 
     let output = CanonicalPuctPlanner
         .plan(&request)
@@ -1968,6 +1982,7 @@ fn canonical_puct_planner_ranks_every_ready_offer_and_replays_owner_guidance() {
         panic!("complete PUCT page must issue")
     };
     assert_eq!(*selected, guided_position);
+    assert_eq!(*selected, rankings[0].guidance().position());
     assert_eq!(
         output.proposal().explanation().terms_micros()["selected-parent-visits"],
         1
