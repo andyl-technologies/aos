@@ -87,10 +87,12 @@ pub use exploration::{
     BranchRequestCause, CandidateSource, ContinuationProjection, ContinuationState,
     ExpansionCredit, ExpansionState, ExpansionStatistics, FeedbackWait, FiniteCandidateSource,
     GUIDANCE_MICROS_PER_UNIT, GuidanceEvidence, MAX_BRANCH_EDGE_VISIT_PROJECTION_BYTES,
-    MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS, PlannerDisposition, PlannerProposalDisposition,
-    PlannerStep, PlannerStepProposal, PlanningAccounting, PlanningScanCursor, PlanningScanPage,
-    PlanningScanPosition, PlanningUsage, ProgressiveWideningDecision, Proposal, PuctEdgeStatistics,
-    PuctScore, StopCondition,
+    MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS, MAX_BRANCH_NOVELTY_IDENTITIES,
+    MAX_BRANCH_NOVELTY_IDENTITY_VISITS, MAX_BRANCH_NOVELTY_OBSERVATIONS,
+    MAX_BRANCH_NOVELTY_PROJECTION_BYTES, MAX_BRANCH_NOVELTY_ROOT_ENTRIES, PlannerDisposition,
+    PlannerProposalDisposition, PlannerStep, PlannerStepProposal, PlanningAccounting,
+    PlanningScanCursor, PlanningScanPage, PlanningScanPosition, PlanningUsage,
+    ProgressiveWideningDecision, Proposal, PuctEdgeStatistics, PuctScore, StopCondition,
 };
 pub use finding::{
     Finding, FindingExactPins, FindingKind, FindingMinimizationAttempt,

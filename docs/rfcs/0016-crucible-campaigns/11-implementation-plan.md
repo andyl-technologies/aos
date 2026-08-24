@@ -249,10 +249,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   `BranchEdgeId` visit partition from idempotent observation credits and scoped
   path segments, with restart equality and duplicate-credit protection. A
   policy-bound projection divides one-million-micro uniform prior mass exactly,
-  reserves fairness for the least-visited canonical edge, holds reward/novelty
-  neutral, and derives the active policy's exact edge scores with restart
-  equality. Reward, novelty, finding, model/explicit-prior, interval-feedback,
-  and the planner/generator integrations that consume these owners remain open.
+  reserves fairness for the least-visited canonical edge, folds globally unique
+  coverage identities from the exact canonical observation set under explicit
+  root/observation/identity/byte bounds, holds reward neutral, and derives the
+  active policy's exact edge scores with restart equality. Reward, finding,
+  model/explicit-prior, interval-feedback, and the planner/generator
+  integrations that consume these owners remain open.
 - [x] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.
@@ -297,8 +299,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   the current retained corpus has no unproposed mutation and closes only at its
   proposal budget. Static continuation projection remains valid after modeled
   observations exist: it binds the exact observation root and projects exact
-  completed visits from canonical branch-point credit sets while leaving richer
-  reward, novelty, and finding statistics zero. The independent exact PUCT
+  completed visits from canonical branch-point credit sets. The independent
+  exact PUCT
   arithmetic primitive is available but intentionally cannot affect this
   engine's canonical ordering. Other
   generated requests remain conservatively `Open` and
@@ -746,9 +748,9 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   daemon-owned long-lived coordinator runtime is implemented. Process startup
   can now attach that runtime to one explicitly named existing campaign with
   the packaged planner and one authenticated local executor; automatic
-  campaign discovery, dynamic/multiple attachment, richer owner-built
-  reward/novelty/finding projections, and complete fixed-point PUCT ranking
-  remain open. The first `CampaignService`
+  campaign discovery, dynamic/multiple attachment, owner-built reward/finding
+  projections, and complete fixed-point PUCT ranking remain open. The first
+  `CampaignService`
   checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
   bounded by-value creation, authenticated current-head reads,

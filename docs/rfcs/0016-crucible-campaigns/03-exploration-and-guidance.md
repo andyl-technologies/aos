@@ -406,17 +406,32 @@ cannot add credit. One projection admits at most 65,536 credits and 128 MiB of
 canonical credit, observation, attempt, and path bodies. It is identical after
 restart and fails closed for legacy unscoped paths.
 
-The repository also derives a policy-bound neutral-input PUCT projection from
-that partition. For `K > 0` completed edges, it assigns `floor(S / K)` prior
+The repository also derives a policy-bound PUCT projection from that partition.
+For `K > 0` completed edges, it assigns `floor(S / K)` prior
 micros to every edge and assigns the `S mod K` remainder one micro at a time in
 ascending `BranchEdgeId` order. The prior mass therefore sums to exactly `S`.
 Exactly one least-visited edge owns the fairness reservation, with
-`BranchEdgeId` breaking visit-count ties. Reward and novelty remain zero. The
-active tree-search policy then produces the exact decomposed fixed-point score
-for every edge. Empty branch points receive no synthetic edge, prior, or
-fairness reservation. This projection is identical after restart and is not
+`BranchEdgeId` breaking visit-count ties.
+
+Coverage novelty is owner-recomputed from the exact snapshot. The owner takes
+the union of coverage identities named by canonical observations credited to
+the requested branch point, then counts each target identity across every
+canonical observation in that snapshot. An identity is a novelty event only
+when its global occurrence count is exactly one. Each such event is credited
+once to the semantic edge of its credited observation; an edge's Boolean PUCT
+novelty predicate is true when its event count is nonzero. Shared identities,
+duplicate causes, and conflicting observations therefore add no novelty. The
+fold scans at most 1,000,000 observation-root entries and 65,536 canonical
+observations, visits at most 1,000,000 coverage identities, retains at most
+65,536 branch-relevant identities, and charges at most 128 MiB of unique
+canonical observation and coverage bodies. It is read-only and identical after
+restart/import.
+
+Reward remains zero. The active tree-search policy produces the exact
+decomposed fixed-point score for every edge. Empty branch points receive no
+synthetic edge, prior, novelty, or fairness reservation. This projection is not
 yet consumed by canonical planner ordering. Model/explicit priors, reward,
-novelty, finding inputs, and the path-ranking planner integration remain open.
+finding inputs, and the path-ranking planner integration remain open.
 
 The first executable closed-planner checkpoint deliberately establishes the
 pure paged frontier loop before adaptive scoring. Engine
@@ -425,13 +440,13 @@ coordinator's exact authenticated continuation state and next legal candidate
 for every served source, considers only `Ready` sources, and chooses the least
 canonical `PlanningScanPosition`. It carries that offer across pages and issues
 only at EOF. This ordering is deterministic fairness bootstrap behavior, not a
-claim that PUCT is complete. Introducing reward, novelty, finding, prior, or
+claim that PUCT is complete. Introducing reward, finding, prior, or
 edge-visit terms requires the complete owner-built projections and exact
 arithmetic above and a new engine implementation version. The exact scorer,
-edge-visit partition, uniform-prior fallback, and fairness owner are now
-implemented and conformance-tested independently of ranking; the remaining
-owner-built inputs and ranking engine remain the gate that prevents them from
-changing campaign behavior prematurely.
+edge-visit partition, coverage-novelty fold, uniform-prior fallback, and
+fairness owner are now implemented and conformance-tested independently of
+ranking; the remaining owner-built inputs and ranking engine remain the gate
+that prevents them from changing campaign behavior prematurely.
 
 ## 03.5 Guidance signals and objectives
 

@@ -18,6 +18,16 @@ struct FiniteExpansionInputs {
     completed_visits: u64,
 }
 
+struct BranchCreditedObservation {
+    edge: crate::BranchEdgeId,
+    coverage: crate::CoverageProjectionId,
+}
+
+struct BranchEdgeVisitEvidence {
+    statistics: crate::BranchEdgeVisitStatistics,
+    observations: Vec<BranchCreditedObservation>,
+}
+
 struct MixtureComponentState {
     values: Vec<ChoiceValue>,
     cursor: usize,
@@ -1612,16 +1622,18 @@ impl CampaignRepository {
     ) -> Result<crate::BranchEdgeVisitStatistics, CampaignRepositoryError> {
         self.validate_complete_head(snapshot.content_id())?;
         let loaded = self.read_snapshot(snapshot.content_id())?;
-        self.project_branch_edge_visits_at(&loaded, branch_point)
+        self.project_branch_edge_visit_evidence(&loaded, branch_point)
+            .map(|evidence| evidence.statistics)
     }
 
-    /// Rebuilds the active policy's neutral-input PUCT scores for one branch point.
+    /// Rebuilds the active policy's bounded PUCT scores for one branch point.
     ///
     /// The projection authenticates the exact snapshot once, derives its
-    /// completed edge-visit partition, assigns a canonical uniform prior, and
-    /// reserves fairness for the least-visited edge. Reward and novelty remain
-    /// neutral until their evidence owners are implemented. The active policy
-    /// must select tree search; this method never changes planner ordering.
+    /// completed edge-visit partition, assigns a canonical uniform prior,
+    /// projects globally unique coverage identities onto credited edges, and
+    /// reserves fairness for the least-visited edge. Reward remains neutral
+    /// until its evidence owner is implemented. The active policy must select
+    /// tree search; this method never changes planner ordering.
     ///
     /// # Errors
     ///
@@ -1641,26 +1653,35 @@ impl CampaignRepository {
                 "branch-puct-projection-requires-tree-search-policy",
             ));
         };
-        crate::BranchPuctProjection::new_uniform(
+        let evidence = self.project_branch_edge_visit_evidence(&loaded, branch_point)?;
+        let novelty = self.project_branch_novelty_events(&loaded, &evidence)?;
+        crate::BranchPuctProjection::new_with_novelty(
             loaded.snapshot.active_policy(),
             *puct,
-            self.project_branch_edge_visits_at(&loaded, branch_point)?,
+            evidence.statistics,
+            novelty,
         )
         .map_err(Into::into)
     }
 
-    fn project_branch_edge_visits_at(
+    fn project_branch_edge_visit_evidence(
         &self,
         loaded: &LoadedSnapshot,
         branch_point: crate::BranchPointId,
-    ) -> Result<crate::BranchEdgeVisitStatistics, CampaignRepositoryError> {
+    ) -> Result<BranchEdgeVisitEvidence, CampaignRepositoryError> {
         let Some(index) = self.merkle.get(
             loaded.snapshot.roots().observations,
             branch_credit_index_key(branch_point),
         )?
         else {
-            return crate::BranchEdgeVisitStatistics::new(branch_point, 0, BTreeMap::new())
-                .map_err(Into::into);
+            return Ok(BranchEdgeVisitEvidence {
+                statistics: crate::BranchEdgeVisitStatistics::new(
+                    branch_point,
+                    0,
+                    BTreeMap::new(),
+                )?,
+                observations: Vec::new(),
+            });
         };
         let parent_visits = self.merkle.inspect_shallow(index)?.entry_count();
         if parent_visits > crate::MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS {
@@ -1670,6 +1691,13 @@ impl CampaignRepository {
         let mut after = None;
         let mut evidence_bytes = 0_usize;
         let mut edge_visits = BTreeMap::<crate::BranchEdgeId, u64>::new();
+        let mut observations = Vec::new();
+        observations
+            .try_reserve_exact(
+                usize::try_from(parent_visits)
+                    .map_err(|_| integrity("branch-edge-visit-projection-count"))?,
+            )
+            .map_err(|_| integrity("branch-edge-visit-projection-count"))?;
         let mut visited = 0_u64;
         loop {
             let page = self.merkle.scan(index, after, PROJECTION_SCAN_PAGE_ITEMS)?;
@@ -1717,6 +1745,10 @@ impl CampaignRepository {
                 *visits = visits
                     .checked_add(1)
                     .ok_or_else(|| integrity("branch-edge-visit-count-overflow"))?;
+                observations.push(BranchCreditedObservation {
+                    edge,
+                    coverage: observation.coverage(),
+                });
                 visited = visited
                     .checked_add(1)
                     .ok_or_else(|| integrity("branch-edge-visit-count-overflow"))?;
@@ -1729,8 +1761,141 @@ impl CampaignRepository {
         if visited != parent_visits {
             return Err(integrity("branch-edge-visit-credit-scan-mismatch"));
         }
-        crate::BranchEdgeVisitStatistics::new(branch_point, parent_visits, edge_visits)
-            .map_err(Into::into)
+        Ok(BranchEdgeVisitEvidence {
+            statistics: crate::BranchEdgeVisitStatistics::new(
+                branch_point,
+                parent_visits,
+                edge_visits,
+            )?,
+            observations,
+        })
+    }
+
+    fn project_branch_novelty_events(
+        &self,
+        loaded: &LoadedSnapshot,
+        evidence: &BranchEdgeVisitEvidence,
+    ) -> Result<BTreeMap<crate::BranchEdgeId, u64>, CampaignRepositoryError> {
+        if evidence.observations.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let mut work_bytes = 0_usize;
+        let mut identity_visits = 0_u64;
+        let mut targets = BTreeSet::new();
+        let mut coverage_targets =
+            BTreeMap::<crate::CoverageProjectionId, Vec<crate::CampaignHash>>::new();
+        for credited in &evidence.observations {
+            if coverage_targets.contains_key(&credited.coverage) {
+                continue;
+            }
+            let coverage = self.read_coverage_projection(credited.coverage.content_id())?;
+            work_bytes = charge_branch_novelty_work(work_bytes, coverage.canonical_bytes().len())?;
+            identity_visits = charge_branch_novelty_identity_visits(
+                identity_visits,
+                coverage.identities().len(),
+            )?;
+            targets.extend(coverage.identities().iter().copied());
+            if targets.len() > crate::MAX_BRANCH_NOVELTY_IDENTITIES {
+                return Err(integrity("branch-novelty-identity-count"));
+            }
+            coverage_targets.insert(
+                credited.coverage,
+                coverage.identities().iter().copied().collect(),
+            );
+        }
+        if targets.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let observation_root = loaded.snapshot.roots().observations;
+        let root_entries = self.merkle.inspect_shallow(observation_root)?.entry_count();
+        if root_entries > crate::MAX_BRANCH_NOVELTY_ROOT_ENTRIES {
+            return Err(integrity("branch-novelty-observation-root-entry-count"));
+        }
+        let mut frequencies = targets
+            .iter()
+            .copied()
+            .map(|identity| (identity, 0_u64))
+            .collect::<BTreeMap<_, _>>();
+        let mut canonical_observations = 0_u64;
+        let mut scanned_entries = 0_u64;
+        let mut after = None;
+        loop {
+            let page = self
+                .merkle
+                .scan(observation_root, after, PROJECTION_SCAN_PAGE_ITEMS)?;
+            for (key, content) in page.entries() {
+                scanned_entries = scanned_entries
+                    .checked_add(1)
+                    .ok_or_else(|| integrity("branch-novelty-observation-root-entry-count"))?;
+                if *key != map_key_content("observations.observation", *content) {
+                    continue;
+                }
+                canonical_observations = canonical_observations
+                    .checked_add(1)
+                    .ok_or_else(|| integrity("branch-novelty-observation-count"))?;
+                if canonical_observations > crate::MAX_BRANCH_NOVELTY_OBSERVATIONS {
+                    return Err(integrity("branch-novelty-observation-count"));
+                }
+                let observation = self.decode_observation(*content)?;
+                work_bytes =
+                    charge_branch_novelty_work(work_bytes, observation.canonical_bytes().len())?;
+                let coverage_id = observation.coverage();
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    coverage_targets.entry(coverage_id)
+                {
+                    let coverage = self.read_coverage_projection(coverage_id.content_id())?;
+                    work_bytes =
+                        charge_branch_novelty_work(work_bytes, coverage.canonical_bytes().len())?;
+                    identity_visits = charge_branch_novelty_identity_visits(
+                        identity_visits,
+                        coverage.identities().len(),
+                    )?;
+                    entry.insert(
+                        coverage
+                            .identities()
+                            .intersection(&targets)
+                            .copied()
+                            .collect(),
+                    );
+                }
+                for identity in &coverage_targets[&coverage_id] {
+                    let frequency = frequencies
+                        .get_mut(identity)
+                        .ok_or_else(|| integrity("branch-novelty-target-cache-mismatch"))?;
+                    *frequency = frequency
+                        .checked_add(1)
+                        .ok_or_else(|| integrity("branch-novelty-frequency-overflow"))?;
+                }
+            }
+            let Some(next) = page.next_after() else {
+                break;
+            };
+            after = Some(next);
+        }
+        if scanned_entries != root_entries || frequencies.values().any(|frequency| *frequency == 0)
+        {
+            return Err(integrity("branch-novelty-observation-scan-mismatch"));
+        }
+
+        let mut edge_events = BTreeMap::<crate::BranchEdgeId, u64>::new();
+        for credited in &evidence.observations {
+            let events = coverage_targets[&credited.coverage]
+                .iter()
+                .filter(|identity| frequencies.get(identity) == Some(&1))
+                .count();
+            if events == 0 {
+                continue;
+            }
+            let events = u64::try_from(events)
+                .map_err(|_| integrity("branch-novelty-event-count-overflow"))?;
+            let total = edge_events.entry(credited.edge).or_default();
+            *total = total
+                .checked_add(events)
+                .ok_or_else(|| integrity("branch-novelty-event-count-overflow"))?;
+        }
+        Ok(edge_events)
     }
 
     fn finite_continuation_page(
@@ -2235,6 +2400,34 @@ fn charge_branch_edge_visit_evidence(
         .ok_or_else(|| integrity("branch-edge-visit-projection-byte-limit"))?;
     if total > crate::MAX_BRANCH_EDGE_VISIT_PROJECTION_BYTES {
         return Err(integrity("branch-edge-visit-projection-byte-limit"));
+    }
+    Ok(total)
+}
+
+pub(super) fn charge_branch_novelty_work(
+    prior: usize,
+    bytes: usize,
+) -> Result<usize, CampaignRepositoryError> {
+    let total = prior
+        .checked_add(bytes)
+        .ok_or_else(|| integrity("branch-novelty-projection-byte-limit"))?;
+    if total > crate::MAX_BRANCH_NOVELTY_PROJECTION_BYTES {
+        return Err(integrity("branch-novelty-projection-byte-limit"));
+    }
+    Ok(total)
+}
+
+pub(super) fn charge_branch_novelty_identity_visits(
+    prior: u64,
+    identities: usize,
+) -> Result<u64, CampaignRepositoryError> {
+    let identities =
+        u64::try_from(identities).map_err(|_| integrity("branch-novelty-identity-visit-limit"))?;
+    let total = prior
+        .checked_add(identities)
+        .ok_or_else(|| integrity("branch-novelty-identity-visit-limit"))?;
+    if total > crate::MAX_BRANCH_NOVELTY_IDENTITY_VISITS {
+        return Err(integrity("branch-novelty-identity-visit-limit"));
     }
     Ok(total)
 }
