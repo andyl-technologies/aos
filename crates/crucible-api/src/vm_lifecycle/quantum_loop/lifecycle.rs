@@ -85,12 +85,8 @@ impl ProductionVmLifecycleLoop {
                         intent.node.name
                     ),
                 })?;
-            let next_generation = if matches!(
+            let next_generation = if lifecycle_intent_may_require_successor_generation(
                 intent.requested_transition,
-                crucible::model::NodeLifecycleTransition::Crash
-                    | crucible::model::NodeLifecycleTransition::PowerOff
-                    | crucible::model::NodeLifecycleTransition::Reset
-                    | crucible::model::NodeLifecycleTransition::PowerCycle
             ) {
                 current_generation.checked_add(1).ok_or_else(|| {
                     SchedulerError::BoundaryViolation {
