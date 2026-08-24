@@ -1,6 +1,7 @@
 //! Exact VMState and host-continuation capture at completed boundaries.
 
 use super::*;
+use std::sync::Arc;
 
 impl QemuNode {
     /// Captures QEMU VMState and the Apache host-I/O continuation as one pair.
@@ -20,7 +21,7 @@ impl QemuNode {
         node: &NodeId,
         checkpoint: Checkpoint,
     ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
-        self.capture_exact_snapshot_inner(node, checkpoint, true, true, false)
+        self.capture_exact_snapshot_inner(node, Arc::new(checkpoint), true, true, false)
     }
 
     /// Captures an exact snapshot while preserving an intentional QEMU pause.
@@ -38,7 +39,7 @@ impl QemuNode {
         node: &NodeId,
         checkpoint: Checkpoint,
     ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
-        self.capture_exact_snapshot_inner(node, checkpoint, false, false, false)
+        self.capture_exact_snapshot_inner(node, Arc::new(checkpoint), false, false, false)
     }
 
     /// Captures a running node while keeping successful artifacts immutable.
@@ -57,7 +58,7 @@ impl QemuNode {
         node: &NodeId,
         checkpoint: Checkpoint,
     ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
-        self.capture_exact_snapshot_inner(node, checkpoint, false, true, false)
+        self.capture_exact_snapshot_inner(node, Arc::new(checkpoint), false, true, false)
     }
 
     /// Resumes a running node after its paused exact artifacts are durable.
@@ -90,6 +91,14 @@ impl QemuNode {
         &mut self,
         node: &NodeId,
         checkpoint: Checkpoint,
+    ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
+        self.capture_terminal_lifecycle_snapshot_shared(node, Arc::new(checkpoint))
+    }
+
+    pub(crate) fn capture_terminal_lifecycle_snapshot_shared(
+        &mut self,
+        node: &NodeId,
+        checkpoint: Arc<Checkpoint>,
     ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
         self.capture_exact_snapshot_inner(node, checkpoint, false, false, true)
     }
@@ -161,7 +170,7 @@ impl QemuNode {
     fn capture_exact_snapshot_inner(
         &mut self,
         node: &NodeId,
-        checkpoint: Checkpoint,
+        checkpoint: Arc<Checkpoint>,
         resume_after_capture: bool,
         resume_after_pre_save_failure: bool,
         terminal_lifecycle_stop: bool,
@@ -292,7 +301,7 @@ impl QemuNode {
                 next_fault_event_sequence: self.next_fault_event_sequence,
             };
             crate::QemuVmSnapshot::from_live_capture(
-                checkpoint.clone(),
+                Arc::clone(&checkpoint),
                 host_io,
                 node,
                 crate::QemuReplayOracleValidation::NotRun,

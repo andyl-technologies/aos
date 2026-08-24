@@ -3,6 +3,26 @@
 use super::*;
 
 #[test]
+fn permanent_failure_retires_and_removes_the_authoritative_generation() -> Result<(), Box<dyn Error>>
+{
+    let log = shared_log();
+    let identity = node_id("vm-a");
+    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+    node.force_quarantine_and_reap()?;
+    let mut nodes = QemuNodeSet::new();
+    assert!(nodes.insert(identity.clone(), node).is_none());
+
+    let plan = nodes.prepare_terminal_replacements(vec![identity.clone()])?;
+    let retired = nodes.commit_terminal_replacements(plan, vec![None]);
+
+    assert!(nodes.is_empty());
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].0, identity);
+    assert!(nodes.fault_capabilities(&retired[0].0).is_err());
+    Ok(())
+}
+
+#[test]
 fn exact_snapshot_rejects_staged_fault_event_ownership() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
     let mut node =
@@ -107,8 +127,10 @@ fn terminal_lifecycle_capture_uses_the_existing_qemu_stop_fence() -> Result<(), 
     );
 
     let snapshot = node.capture_terminal_lifecycle_snapshot(&node_identity, checkpoint.clone())?;
+    let cloned = snapshot.clone();
 
     assert_eq!(snapshot.checkpoint(), &checkpoint);
+    assert!(std::ptr::eq(snapshot.checkpoint(), cloned.checkpoint()));
     assert_eq!(
         recorded(&log),
         vec![

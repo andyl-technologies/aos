@@ -9,6 +9,7 @@ use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, EngineError,
     MaterializedState, NodeBlobRef, RuntimeState, ScenarioDef, ScheduleError, World,
 };
+use std::sync::Arc;
 use thiserror::Error;
 
 use crate::{
@@ -35,7 +36,7 @@ pub use node_executor::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuVmSnapshot {
     /// The checkpoint that owns the cached VM snapshot.
-    checkpoint: Checkpoint,
+    checkpoint: Arc<Checkpoint>,
     /// Apache-side device continuation captured at the same scheduler boundary.
     host_io: crate::QemuHostIoCheckpoint,
     /// Scheduler-facing Apache node continuation captured at the same boundary.
@@ -183,7 +184,7 @@ impl QemuVmSnapshot {
     /// Returns [`QemuVmRealizationError::InvalidCheckpoint`] when the host-I/O
     /// continuation was captured for a different VMState checkpoint.
     pub(crate) fn from_live_capture(
-        checkpoint: Checkpoint,
+        checkpoint: Arc<Checkpoint>,
         host_io: crate::QemuHostIoCheckpoint,
         node: crate::QemuNodeContinuationCheckpoint,
         replay_oracle_validation: QemuReplayOracleValidation,
@@ -215,7 +216,7 @@ impl QemuVmSnapshot {
 
     /// Returns the materialized scheduler checkpoint paired with this snapshot.
     #[must_use]
-    pub const fn checkpoint(&self) -> &Checkpoint {
+    pub fn checkpoint(&self) -> &Checkpoint {
         &self.checkpoint
     }
 
@@ -294,7 +295,7 @@ impl QemuVmSnapshot {
             message: format!("cannot authenticate generated snapshot state: {error}"),
         })?;
         Ok(Self {
-            checkpoint,
+            checkpoint: Arc::new(checkpoint),
             host_io,
             node,
             replay_oracle_validation,
@@ -913,7 +914,7 @@ fn instantiate_qemu_vm_inner(
                 configuration: config,
                 runtime,
                 branch: QemuVmRealizationKind::ExactSnapshotLoadvm {
-                    checkpoint: snapshot.checkpoint,
+                    checkpoint: Arc::unwrap_or_clone(snapshot.checkpoint),
                 },
             });
         }

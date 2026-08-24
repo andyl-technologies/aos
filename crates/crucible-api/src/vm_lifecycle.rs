@@ -4,15 +4,6 @@
 //! [`SingleScheduler`], one live QEMU node per World VM, and the node-addressed
 //! backend loop consumed by [`LifecycleControlPlane`](crate::LifecycleControlPlane).
 
-use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write as _;
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::Arc;
-use std::time::Duration;
-
 use crate::vm_resume::{
     PRODUCTION_ROOT_OVERLAY_FILE_NAME, PRODUCTION_VMSTATE_FILE_NAME, ProductionAppRandomConfig,
     ProductionGdbstubChannelConfig, ProductionGuestArchitecture, ProductionLiveNodeStepGateConfig,
@@ -21,8 +12,9 @@ use crate::vm_resume::{
     launch_production_live_node_exact_snapshot_paused,
 };
 use crucible::model::{
-    FaultCoordinate, HostFaultAdapterManifests, OwnedDagSignalArtifactProvider,
-    ResolvedEffectTrace, SignalArtifactProvider, SignalBoundarySnapshot,
+    FaultCoordinate, FaultResourceLimits, HostFaultAdapterManifests,
+    OwnedDagSignalArtifactProvider, ResolvedEffectTrace, SignalArtifactProvider,
+    SignalBoundarySnapshot,
 };
 use crucible::{
     Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, Checkpoint, CheckpointKind,
@@ -40,11 +32,20 @@ use crucible::{
 };
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
-    QemuNode, QemuNodeLifecycleDecision, QemuProcessIdentity, QemuVmSnapshot,
-    linux_process_identity, quarantine_orphaned_qemu_process,
+    QemuNode, QemuNodeLifecycleDecision, QemuNodeLifecycleIntent, QemuProcessIdentity,
+    QemuVmSnapshot, linux_process_identity, quarantine_orphaned_qemu_process,
 };
+use std::collections::BTreeMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write as _;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::{LifecycleApiError, debug_gateway::DebugGatewayProcess};
+use quantum_loop::LifecycleJournalPersistence;
 
 mod assets;
 use assets::*;
@@ -506,6 +507,7 @@ pub struct ProductionVmLifecycleLoop {
     node_lease_cleanup_failed: bool,
     node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
     lifecycle_journal: ProductionLifecycleJournal,
+    lifecycle_persistence: LifecycleJournalPersistence,
     run_manifest: ProductionRunManifest,
     scenario: ScenarioDef,
     source: ScenarioDefForm,
@@ -1190,7 +1192,6 @@ mod quantum_loop;
 mod runtime;
 mod search;
 mod storage_faults;
-
 // crucible-lint: allow stringly-error -- private run-directory persistence diagnostics are immediately wrapped in LifecycleApiError.
 fn persist_atomic_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let next = path.with_extension("json.next");
@@ -1209,7 +1210,6 @@ fn persist_atomic_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()
         .and_then(|directory| directory.sync_all())
         .map_err(|error| format!("flush directory {}: {error}", parent.display()))
 }
-
 // crucible-lint: allow stringly-error -- private run-directory decoding diagnostics are immediately wrapped in LifecycleApiError.
 fn decode_run_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
     let bytes = fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
@@ -1365,6 +1365,12 @@ fn production_run_directory(
                 .processes
                 .values()
                 .chain(manifest.staged_processes.values())
+                .chain(
+                    journal
+                        .nodes
+                        .iter()
+                        .filter_map(|node| node.replacement_process.as_ref()),
+                )
             {
                 quarantine_orphaned_qemu_process(identity, config.completion_timeout).map_err(
                     |error| {
@@ -2358,6 +2364,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
         node_lease_cleanup_failed: false,
         node_service_states,
         lifecycle_journal,
+        lifecycle_persistence: LifecycleJournalPersistence::new(run_directory.path()),
         run_manifest,
         scenario: scenario.clone(),
         source: source.clone(),

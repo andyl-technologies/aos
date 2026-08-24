@@ -305,6 +305,7 @@ fn classify_scheduler_error(
         SchedulerError::NotImplemented { .. }
         | SchedulerError::Backend(_)
         | SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)
         | SchedulerError::TopologyActivationInPast { .. } => None,
     };
