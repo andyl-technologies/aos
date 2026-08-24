@@ -636,7 +636,7 @@ fn production_run_directory(
                 runtime_event_records,
                 runtime_event_log_bytes,
             )
-            .map_err(|message| loop_factory_error(format!("recover run state: {message}")))?;
+            .map_err(durable_run_state_api_error)?;
         }
     }
     let next_index = run_indexes.last().map_or(Ok(0), |(index, _)| {
@@ -674,7 +674,7 @@ fn production_run_directory(
         0,
         0,
     )
-    .map_err(|message| loop_factory_error(format!("initialize run state: {message}")))?;
+    .map_err(durable_run_state_api_error)?;
     drop(lock);
     Ok((
         ProductionRunDirectory {
@@ -1189,7 +1189,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
             .processes
             .insert_reserved(vm.id.name.clone(), process_identity)
             .map_err(|()| loop_factory_error("initial QEMU process reservation was exhausted"))?;
-        if let Err(message) = persist_run_state_atomic(
+        if let Err(error) = persist_run_state_atomic(
             &run_directory.path().join(PRODUCTION_RUN_STATE_FILE),
             &run_manifest,
             &lifecycle_journal,
@@ -1198,9 +1198,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
             0,
         ) {
             let _ = backends.shutdown();
-            return Err(loop_factory_error(format!(
-                "persist initial QEMU process ownership: {message}"
-            )));
+            return Err(durable_run_state_api_error(error));
         }
     }
 

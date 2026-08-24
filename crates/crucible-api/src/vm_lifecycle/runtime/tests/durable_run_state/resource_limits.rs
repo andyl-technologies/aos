@@ -175,6 +175,54 @@ fn durable_run_state_persists_one_aggregate_envelope() {
 }
 
 #[test]
+fn durable_run_state_writer_preserves_resource_limit_coordinates() {
+    let root =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
+    let current = recovery_process(7, "/aos/qemu-current");
+    let manifest = recovery_manifest(current.clone(), None);
+    let journal = recovery_journal(
+        ProductionLifecycleJournalPhase::Intent,
+        current,
+        None,
+    );
+    let limits = FaultResourceLimits {
+        event_records: 1,
+        ..FaultResourceLimits::default()
+    };
+
+    let error = persist_run_state_atomic(
+        &root.path().join(PRODUCTION_RUN_STATE_FILE),
+        &manifest,
+        &journal,
+        limits,
+        1,
+        0,
+    )
+    .err()
+    .unwrap_or_else(|| panic!("aggregate writer admission should reject the second record"));
+    assert!(matches!(
+        &error,
+        DurableRunStateError::ResourceLimit {
+            field: "event_records",
+            current: 1,
+            requested: 1,
+            configured: 1,
+            hard,
+        } if *hard == FaultResourceLimits::compiled_maximum().event_records
+    ));
+    assert!(matches!(
+        durable_run_state_api_error(error),
+        LifecycleApiError::ResourceLimit(LifecycleResourceLimit {
+            field: "event_records",
+            current: 1,
+            requested: 1,
+            configured: 1,
+            hard,
+        }) if hard == FaultResourceLimits::compiled_maximum().event_records
+    ));
+}
+
+#[test]
 fn durable_run_state_preflights_aggregate_bytes_before_owned_decode() {
     let root =
         tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));

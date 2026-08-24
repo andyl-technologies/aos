@@ -91,29 +91,31 @@ pub(in crate::vm_lifecycle) fn persist_run_state_atomic(
     limits: FaultResourceLimits,
     runtime_event_records: u64,
     runtime_event_log_bytes: u64,
-) -> Result<usize, String> {
-    validate_borrowed_run_state_strings(manifest, journal)?;
-    for (role, count) in [
-        ("current process", manifest.processes.len()),
-        ("staged process", manifest.staged_processes.len()),
-        ("lifecycle node", journal.nodes.len()),
+) -> Result<usize, DurableRunStateError> {
+    validate_borrowed_run_state_strings(manifest, journal).map_err(DurableRunStateError::from)?;
+    for count in [
+        manifest.processes.len(),
+        manifest.staged_processes.len(),
+        journal.nodes.len(),
     ] {
         limits
             .reserve("nodes", 0, u64::try_from(count).unwrap_or(u64::MAX))
-            .map_err(|error| format!("admit durable {role} count: {error}"))?;
+            .map_err(recovery::map_limit)?;
     }
     let lifecycle_records = journal
         .nodes
         .len()
         .checked_add(journal.completed_exits.len())
-        .ok_or_else(|| String::from("durable lifecycle record count overflow"))?;
+        .ok_or_else(|| DurableRunStateError::Invalid {
+            message: String::from("durable lifecycle record count overflow"),
+        })?;
     limits
         .reserve(
             "event_records",
             runtime_event_records,
             u64::try_from(lifecycle_records).unwrap_or(u64::MAX),
         )
-        .map_err(|error| format!("admit durable lifecycle record count: {error}"))?;
+        .map_err(recovery::map_limit)?;
     let state = ProductionRunStateRef {
         version: PRODUCTION_RUN_STATE_VERSION,
         runtime_event_records,
@@ -123,39 +125,55 @@ pub(in crate::vm_lifecycle) fn persist_run_state_atomic(
     };
     let mut counter = CountingJournalWriter::default();
     serde_json::to_writer_pretty(&mut counter, &state)
-        .map_err(|error| format!("measure durable lifecycle state: {error}"))?;
+        .map_err(|error| DurableRunStateError::Invalid {
+            message: format!("measure durable lifecycle state: {error}"),
+        })?;
     limits
         .reserve(
             "event_log_bytes",
             runtime_event_log_bytes,
             u64::try_from(counter.length).unwrap_or(u64::MAX),
         )
-        .map_err(|error| format!("admit durable lifecycle state: {error}"))?;
+        .map_err(recovery::map_limit)?;
     let mut encoding = Vec::new();
-    encoding
-        .try_reserve_exact(counter.length)
-        .map_err(|_| format!("reserve {} durable state bytes", counter.length))?;
+    encoding.try_reserve_exact(counter.length).map_err(|_| {
+        DurableRunStateError::ResourceLimit {
+            field: "event_log_bytes",
+            current: runtime_event_log_bytes,
+            requested: u64::try_from(counter.length).unwrap_or(u64::MAX),
+            configured: limits.event_log_bytes,
+            hard: FaultResourceLimits::compiled_maximum().event_log_bytes,
+        }
+    })?;
     serde_json::to_writer_pretty(
         FixedJournalWriter {
             destination: &mut encoding,
         },
         &state,
     )
-    .map_err(|error| format!("encode durable lifecycle state: {error}"))?;
+    .map_err(|error| DurableRunStateError::Invalid {
+        message: format!("encode durable lifecycle state: {error}"),
+    })?;
     let next = path.with_extension("next");
-    let mut file = File::create(&next)
-        .map_err(|error| format!("create durable state {}: {error}", next.display()))?;
+    let mut file = File::create(&next).map_err(|error| DurableRunStateError::Invalid {
+        message: format!("create durable state {}: {error}", next.display()),
+    })?;
     file.write_all(&encoding)
         .and_then(|()| file.sync_all())
-        .map_err(|error| format!("flush durable state {}: {error}", next.display()))?;
-    fs::rename(&next, path)
-        .map_err(|error| format!("commit durable state {}: {error}", path.display()))?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("durable state path {} has no parent", path.display()))?;
+        .map_err(|error| DurableRunStateError::Invalid {
+            message: format!("flush durable state {}: {error}", next.display()),
+        })?;
+    fs::rename(&next, path).map_err(|error| DurableRunStateError::Invalid {
+        message: format!("commit durable state {}: {error}", path.display()),
+    })?;
+    let parent = path.parent().ok_or_else(|| DurableRunStateError::Invalid {
+        message: format!("durable state path {} has no parent", path.display()),
+    })?;
     File::open(parent)
         .and_then(|directory| directory.sync_all())
-        .map_err(|error| format!("flush durable state directory: {error}"))?;
+        .map_err(|error| DurableRunStateError::Invalid {
+            message: format!("flush durable state directory: {error}"),
+        })?;
     Ok(encoding.capacity())
 }
 
