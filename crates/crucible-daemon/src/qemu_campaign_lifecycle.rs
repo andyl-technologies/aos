@@ -121,7 +121,7 @@ where
                 QemuAttemptProductionVmLifecycleError::ResumeCheckpointUnsupported(checkpoint),
             );
         }
-        if source.scenario_def().id() != scenario.id() {
+        if source.scenario_def() != *scenario {
             return Err(QemuAttemptProductionVmLifecycleError::ScenarioIdentityMismatch);
         }
         let maximum_nodes = source.world().vm_nodes().len();

@@ -211,6 +211,34 @@ fn exact_resume_is_rejected_before_resource_installation() {
 }
 
 #[test]
+fn drifted_scenario_identity_fields_are_rejected_before_resource_installation() {
+    let limits = resources(1);
+    let counters = Arc::new(GuardCounters::default());
+    let context = context(limits, ExecutionCancellation::default());
+    let mut factory = factory(limits, false, Arc::clone(&counters));
+    let source = crucible::crash_restart_scenario()
+        .expect("built-in scenario fixture")
+        .scenario;
+    let reconstructed = source.scenario_def();
+    let drifted = crucible::ScenarioDef::from_trusted_identity(
+        reconstructed.id(),
+        crucible::Seed::from_u64(0xabad_1dea),
+        reconstructed.app_random_draw_cap(),
+    );
+
+    let error = factory
+        .begin_fresh(&drifted, &source, &context)
+        .err()
+        .expect("drifted scenario fields must fail closed");
+
+    assert!(matches!(
+        error,
+        QemuAttemptProductionVmLifecycleError::ScenarioIdentityMismatch
+    ));
+    assert_eq!(counters.begins.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn mismatched_guard_contract_is_released_before_rejection() {
     let requested = resources(1);
     let installed = AttemptResourceLimits::new(
