@@ -74,6 +74,18 @@ impl QemuNodeSet {
         Ok(())
     }
 
+    /// Releases one installed restored generation from its native QEMU pause.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or QMP cannot resume
+    /// the restored guest.
+    pub fn resume_restored_generation(&mut self, node: &NodeId) -> Result<(), BackendError> {
+        self.node_mut(node)?
+            .boot_powered_off_generation()
+            .map_err(BackendError::from)
+    }
+
     /// Boots one prepared power-off process generation.
     ///
     /// # Errors
@@ -81,9 +93,7 @@ impl QemuNodeSet {
     /// Returns [`BackendError`] when the node is absent or QMP cannot resume
     /// the restored guest.
     pub fn boot_powered_off_generation(&mut self, node: &NodeId) -> Result<(), BackendError> {
-        self.node_mut(node)?
-            .boot_powered_off_generation()
-            .map_err(BackendError::from)
+        self.resume_restored_generation(node)
     }
 
     /// Contains every node named by one owned lifecycle publication batch.

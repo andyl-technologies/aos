@@ -1047,17 +1047,7 @@ impl ProductionVmLifecycleLoop {
     ) -> Result<(), SchedulerError> {
         let node = &prepared.decision.node;
         let launched = match prepared.service_state {
-            ProductionNodeServiceState::Running => {
-                Some(launch_production_live_node_exact_snapshot(
-                    &prepared.launch,
-                    &prepared.run_directory,
-                    &node.name,
-                    "crucible-router",
-                    &prepared.crash_detector,
-                    &prepared.snapshot,
-                ))
-            }
-            ProductionNodeServiceState::PoweredOff => {
+            ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff => {
                 Some(launch_production_live_node_exact_snapshot_paused(
                     &prepared.launch,
                     &prepared.run_directory,
@@ -1201,6 +1191,22 @@ impl ProductionVmLifecycleLoop {
             *slot = handle;
         }
         drop(block_devices);
+
+        // Every Crash replacement is restored under the native QEMU pause.
+        // Publish Runnable scheduler ownership and install the authoritative
+        // backend generation before releasing guest execution.
+        for item in prepared
+            .iter()
+            .filter(|item| item.service_state == ProductionNodeServiceState::Running)
+        {
+            self.inner.loop_impl().require_vm_node_activity(
+                &item.decision.node,
+                SchedulerNodeActivity::Runnable,
+            )?;
+            self.inner
+                .backend_mut()
+                .resume_restored_generation(&item.decision.node)?;
+        }
 
         for item in prepared.drain(..) {
             let node = item.decision.node;
