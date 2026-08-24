@@ -19,6 +19,9 @@ impl ProductionFaultRuntime {
         {
             return Err(ProductionFaultRuntimeError::PendingQemuFaultEvents);
         }
+        if self.lifecycle_work_in_flight.is_some() {
+            return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
+        }
         if !self.pending_search_choices.is_empty() {
             return Err(ProductionFaultRuntimeError::PendingSearchChoices);
         }
@@ -257,12 +260,61 @@ impl ProductionFaultRuntime {
     }
 
     /// Transfers the complete authenticated lifecycle batch to its sole host consumer.
+    ///
+    /// The runtime retains a checkpoint barrier until the returned owner is
+    /// passed to [`Self::acknowledge_node_lifecycle_work`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError::PendingNodeLifecycleWork`] when a
+    /// prior transferred batch has not been acknowledged.
     #[must_use]
-    pub fn take_node_lifecycle_work(&mut self) -> (Vec<QemuNodeLifecycleDecision>, Vec<NodeId>) {
-        (
-            std::mem::take(&mut self.pending_node_lifecycle),
-            std::mem::take(&mut self.pending_node_boot),
-        )
+    pub fn take_node_lifecycle_work(
+        &mut self,
+    ) -> Result<QemuNodeLifecycleWork, ProductionFaultRuntimeError> {
+        if self.lifecycle_work_in_flight.is_some() {
+            return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
+        }
+        let has_work =
+            !self.pending_node_lifecycle.is_empty() || !self.pending_node_boot.is_empty();
+        let token = if has_work {
+            let token = self.lifecycle_work_sequence;
+            self.lifecycle_work_sequence = self.lifecycle_work_sequence.checked_add(1).ok_or(
+                FaultResourceLimitError::Representation {
+                    field: "event_records",
+                    value: u64::MAX,
+                },
+            )?;
+            self.lifecycle_work_in_flight = Some(token);
+            Some(token)
+        } else {
+            None
+        };
+        Ok(QemuNodeLifecycleWork {
+            token,
+            decisions: std::mem::take(&mut self.pending_node_lifecycle),
+            boot_requests: std::mem::take(&mut self.pending_node_boot),
+        })
+    }
+
+    /// Acknowledges complete host consumption of one transferred lifecycle batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError::PendingNodeLifecycleWork`] when
+    /// `work` is not the runtime's current sole transferred owner.
+    pub fn acknowledge_node_lifecycle_work(
+        &mut self,
+        work: QemuNodeLifecycleWork,
+    ) -> Result<(), ProductionFaultRuntimeError> {
+        if self.lifecycle_work_in_flight != work.token
+            || (work.token.is_none()
+                && (!work.decisions.is_empty() || !work.boot_requests.is_empty()))
+        {
+            return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
+        }
+        self.lifecycle_work_in_flight = None;
+        Ok(())
     }
 
     /// Removes finite explorer choices after the scheduler has recorded them.

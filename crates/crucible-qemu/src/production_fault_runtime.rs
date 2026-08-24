@@ -196,6 +196,11 @@ pub enum ProductionFaultRuntimeError {
     /// Explorer choices have not yet crossed into the scheduler frontier log.
     #[error("cannot checkpoint while signal-fault search choices await scheduler admission")]
     PendingSearchChoices,
+    /// Authenticated lifecycle work has left the runtime but is not yet resolved.
+    #[error(
+        "cannot checkpoint or transfer lifecycle work while an owned lifecycle batch is in flight"
+    )]
+    PendingNodeLifecycleWork,
     /// A scenario-owned production resource reservation failed.
     #[error(transparent)]
     ResourceLimit(#[from] FaultResourceLimitError),
@@ -230,6 +235,32 @@ pub struct QemuNodeLifecycleDecision {
     pub event_evidence: ContentHash,
 }
 
+/// Opaque ownership of one authenticated lifecycle publication batch.
+///
+/// The production runtime retains a matching checkpoint barrier until this
+/// value is returned through its acknowledgement method. Dropping the value
+/// therefore fails closed: the runtime cannot checkpoint or transfer another
+/// batch after losing the sole host-side owner.
+pub struct QemuNodeLifecycleWork {
+    token: Option<u64>,
+    decisions: Vec<QemuNodeLifecycleDecision>,
+    boot_requests: Vec<NodeId>,
+}
+
+impl QemuNodeLifecycleWork {
+    /// Returns the terminal lifecycle decisions in authenticated event order.
+    #[must_use]
+    pub fn decisions(&self) -> &[QemuNodeLifecycleDecision] {
+        &self.decisions
+    }
+
+    /// Returns the boot requests in committed action order.
+    #[must_use]
+    pub fn boot_requests(&self) -> &[NodeId] {
+        &self.boot_requests
+    }
+}
+
 /// Owning signal runtime coupled to host devices and live patched QEMU.
 pub struct ProductionFaultRuntime {
     plan_id: ContentHash,
@@ -245,6 +276,8 @@ pub struct ProductionFaultRuntime {
     pending_qemu_events: PendingQemuEventMap,
     pending_node_lifecycle: Vec<QemuNodeLifecycleDecision>,
     pending_node_boot: Vec<NodeId>,
+    lifecycle_work_sequence: u64,
+    lifecycle_work_in_flight: Option<u64>,
     pending_search_choices: Vec<(FaultCoordinate, Vec<BindingSearchChoice>)>,
 }
 
