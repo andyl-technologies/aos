@@ -45,6 +45,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{LifecycleApiError, debug_gateway::DebugGatewayProcess};
+use quantum_loop::LifecycleJournalPersistence;
 
 mod assets;
 use assets::*;
@@ -493,6 +494,7 @@ pub struct ProductionVmLifecycleLoop {
     node_generations: BTreeMap<NodeId, u64>,
     node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
     lifecycle_journal: ProductionLifecycleJournal,
+    lifecycle_persistence: LifecycleJournalPersistence,
     run_manifest: ProductionRunManifest,
     scenario: ScenarioDef,
     source: ScenarioDefForm,
@@ -508,7 +510,6 @@ pub struct ProductionVmLifecycleLoop {
     debug_runtime_evidence: Vec<ProductionVmDebugRuntimeEvidence>,
     _run_directory: ProductionRunDirectory,
 }
-
 mod config;
 mod helpers;
 mod network_faults;
@@ -516,7 +517,6 @@ mod quantum_loop;
 mod runtime;
 mod search;
 mod storage_faults;
-
 // crucible-lint: allow stringly-error -- private run-directory persistence diagnostics are immediately wrapped in LifecycleApiError.
 fn persist_atomic_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let next = path.with_extension("json.next");
@@ -535,7 +535,6 @@ fn persist_atomic_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()
         .and_then(|directory| directory.sync_all())
         .map_err(|error| format!("flush directory {}: {error}", parent.display()))
 }
-
 // crucible-lint: allow stringly-error -- private run-directory decoding diagnostics are immediately wrapped in LifecycleApiError.
 fn decode_run_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
     let bytes = fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
@@ -1558,6 +1557,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
         node_generations,
         node_service_states,
         lifecycle_journal,
+        lifecycle_persistence: LifecycleJournalPersistence::new(run_directory.path()),
         run_manifest,
         scenario: scenario.clone(),
         source: source.clone(),

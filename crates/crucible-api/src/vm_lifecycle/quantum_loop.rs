@@ -3,6 +3,7 @@
 use super::*;
 
 mod lifecycle;
+pub(super) use lifecycle::LifecycleJournalPersistence;
 use lifecycle::{
     PreparedLifecyclePrecommit, PreparedTerminalReplacement, lifecycle_resource_error,
     try_lifecycle_crash_detector, try_lifecycle_string,

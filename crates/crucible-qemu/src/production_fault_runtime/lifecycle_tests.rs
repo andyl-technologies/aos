@@ -4,11 +4,33 @@ use super::test_support::*;
 use super::*;
 
 #[test]
-fn lifecycle_intent_preview_includes_only_pending_active_qemu_actions() {
-    let active = lifecycle_action(NodeLifecycleTransition::Crash, NodeBootPolicy::Immediate);
-    let mut inactive =
-        lifecycle_action(NodeLifecycleTransition::PowerOff, NodeBootPolicy::Immediate);
-    inactive.binding = object_id("node-power-off");
+fn lifecycle_intent_preview_is_action_exact_and_ignores_active_hang_rules() {
+    let terminal = lifecycle_action(NodeLifecycleTransition::Crash, NodeBootPolicy::Immediate);
+    let mut active_hang = terminal.clone();
+    active_hang.kind = BindingActionKind::UpsertPersistent;
+    active_hang.binding = object_id("node-hang-a");
+    active_hang.effect = Arc::new(
+        EffectRequest::new(
+            EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::Persistent,
+            EffectSpecification::Node(NodeEffectSpecification::Hang {
+                scope: NodeHangScope::Node,
+                recovery_event: object_id("node-recovered"),
+                watchdog_policy: NodeWatchdogPolicy::TransitionAfter {
+                    timeout_nanos: PositiveU64::new("timeout_nanos", 17)
+                        .unwrap_or_else(|error| panic!("test timeout should be valid: {error}")),
+                    transition: NodeLifecycleTransition::PowerOff,
+                    downtime_nanos: 0,
+                    boot_policy: NodeBootPolicy::Immediate,
+                    volatile_state_policy: NodeStatePolicy::Preserve,
+                    device_state_policy: NodeStatePolicy::Clear,
+                },
+            }),
+        )
+        .unwrap_or_else(|error| panic!("test hang effect should be valid: {error}")),
+    );
+    let mut second_hang = active_hang.clone();
+    second_hang.binding = object_id("node-hang-b");
     let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("empty test plan should be valid: {error}"));
     let nodes = QemuNodeSet::new();
@@ -23,25 +45,34 @@ fn lifecycle_intent_preview_includes_only_pending_active_qemu_actions() {
     .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));
     runtime
         .qemu_issued_actions
-        .try_insert(active.id(), active.clone())
-        .unwrap_or_else(|error| panic!("active action should enter the test ledger: {error}"));
+        .try_insert(active_hang.id(), active_hang.clone())
+        .unwrap_or_else(|error| panic!("first hang should enter the test ledger: {error}"));
     runtime
         .qemu_issued_actions
-        .try_insert(inactive.id(), inactive)
-        .unwrap_or_else(|error| panic!("inactive action should enter the test ledger: {error}"));
+        .try_insert(second_hang.id(), second_hang.clone())
+        .unwrap_or_else(|error| panic!("second hang should enter the test ledger: {error}"));
     runtime
         .qemu_active_rule_ids
-        .try_insert(active.id())
-        .unwrap_or_else(|error| panic!("active action identity should enter the set: {error}"));
+        .try_insert(active_hang.id())
+        .unwrap_or_else(|error| panic!("first hang identity should enter the set: {error}"));
     runtime
-        .pending_qemu_events
-        .try_insert(
-            NodeId {
+        .qemu_active_rule_ids
+        .try_insert(second_hang.id())
+        .unwrap_or_else(|error| panic!("second hang identity should enter the set: {error}"));
+    let event = lifecycle_event(&terminal);
+    runtime.pending_node_lifecycle.push(
+        node_lifecycle_decision(
+            &NodeId {
                 name: "node-a".to_owned(),
             },
-            vec![lifecycle_event(&active)],
+            terminal.id(),
+            &event,
+            0,
+            FaultResourceLimits::default(),
         )
-        .unwrap_or_else(|error| panic!("pending lifecycle event should enter the map: {error}"));
+        .unwrap_or_else(|error| panic!("terminal evidence should authenticate: {error}"))
+        .unwrap_or_else(|| panic!("terminal evidence should produce lifecycle work")),
+    );
 
     let intents = runtime
         .preview_node_lifecycle_intents(
@@ -55,7 +86,7 @@ fn lifecycle_intent_preview_includes_only_pending_active_qemu_actions() {
         .unwrap_or_else(|error| panic!("lifecycle intent preview should succeed: {error}"));
 
     assert_eq!(intents.len(), 1);
-    assert_eq!(intents[0].action, active.id());
+    assert_eq!(intents[0].action, terminal.id());
     assert_eq!(intents[0].node.name, "node-a");
     assert_eq!(
         intents[0].requested_transition,

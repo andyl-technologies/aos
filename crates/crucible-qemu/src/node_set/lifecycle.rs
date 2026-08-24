@@ -179,7 +179,14 @@ impl QemuNodeSet {
                         plan.retired.push((node, current));
                     }
                 }
-                None => self.permanently_closed.push(node),
+                None => {
+                    let current = self.nodes.remove(&node);
+                    debug_assert!(current.is_some());
+                    if let Some(current) = current {
+                        plan.retired.push((node.clone(), current));
+                    }
+                    self.permanently_closed.push(node);
+                }
             }
         }
         plan.retired
