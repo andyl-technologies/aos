@@ -335,6 +335,10 @@ in
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_impossible_permanent_failure_ownership
           run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_accepts_boot_successor_reservation_before_authentication
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_saturated_terminal_successor_generation
+          run_exact_api_test \
             vm_lifecycle::quantum_loop::lifecycle::staging::tests::terminal_precommit_reserves_effective_successor_generation
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_unpublishable_replacement_transitions

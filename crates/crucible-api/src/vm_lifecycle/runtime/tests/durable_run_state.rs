@@ -473,6 +473,50 @@ fn durable_run_state_rejects_unpublishable_replacement_transitions() {
 }
 
 #[test]
+fn durable_run_state_accepts_boot_successor_reservation_before_authentication() {
+    let current = recovery_process(7, "/aos/qemu-current");
+    let manifest = recovery_manifest(current.clone(), None);
+    for phase in [
+        ProductionLifecycleJournalPhase::Intent,
+        ProductionLifecycleJournalPhase::Quarantined,
+    ] {
+        let mut journal = recovery_journal(phase, current.clone(), None);
+        journal.nodes[0].transition = String::from("Boot");
+        journal.nodes[0].expected_exit_code = None;
+        quantum_loop::validate_recovered_lifecycle_journal(
+            &journal,
+            &manifest,
+            FaultResourceLimits::default(),
+        )
+        .unwrap_or_else(|error| {
+            panic!("pre-authentication Boot successor reservation should recover: {error}")
+        });
+    }
+}
+
+#[test]
+fn durable_run_state_rejects_saturated_terminal_successor_generation() {
+    let current = recovery_process(7, "/aos/qemu-current");
+    let manifest = recovery_manifest(current.clone(), None);
+    let mut journal = recovery_journal(
+        ProductionLifecycleJournalPhase::Intent,
+        current,
+        None,
+    );
+    journal.nodes[0].current_generation = u64::MAX;
+    journal.nodes[0].next_generation = u64::MAX;
+
+    let error = quantum_loop::validate_recovered_lifecycle_journal(
+        &journal,
+        &manifest,
+        FaultResourceLimits::default(),
+    )
+    .err()
+    .unwrap_or_else(|| panic!("a saturated terminal successor must fail closed"));
+    assert!(error.contains("invalid canonical fields"));
+}
+
+#[test]
 fn durable_run_state_rejects_unjournaled_staged_process_owner() {
     let current = recovery_process(7, "/aos/qemu-current");
     let staged = recovery_process(8, "/aos/qemu-staged");

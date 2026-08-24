@@ -11,8 +11,7 @@ pub(super) use lifecycle::{
 pub(super) use lifecycle::{HARD_RUN_STATE_JSON_BYTES, validate_recovered_lifecycle_journal};
 use lifecycle::{
     PreparedLifecyclePrecommit, PreparedLifecycleTerminal, PreparedTerminalReplacement,
-    lifecycle_resource_error, map_journal_limit, try_lifecycle_crash_detector,
-    try_lifecycle_string,
+    map_journal_limit, try_lifecycle_crash_detector,
 };
 
 struct PendingExactCapture {
@@ -936,12 +935,11 @@ impl ProductionVmLifecycleLoop {
                 terminal.iter().map(|item| &item.decision.node),
                 &lifecycle_precommit.checkpoint,
             )?;
-        let mut prepared = Vec::new();
-        prepared
-            .try_reserve_exact(terminal.len())
-            .map_err(|_| lifecycle_resource_error("nodes", 0, terminal.len(), limits))?;
+        let mut prepared = std::mem::take(&mut lifecycle_precommit.prepared_replacements);
+        debug_assert!(prepared.capacity() >= terminal.len());
         for terminal in terminal {
             let decision = terminal.decision;
+            let mut process_owner = terminal.process_owner;
             let service_state = match decision.effective_transition {
                 crucible::model::NodeLifecycleTransition::Crash => {
                     ProductionNodeServiceState::Running
@@ -1086,7 +1084,9 @@ impl ProductionVmLifecycleLoop {
                 replacement: None,
                 service_state,
                 crash_detector,
-                process_owner: Some(terminal.process_owner),
+                backend_node: process_owner.backend_node.take(),
+                observed_exit_node: process_owner.observed_exit_node.take(),
+                process_owner: Some(process_owner),
             });
         }
         for replacement in &mut prepared {
@@ -1257,7 +1257,7 @@ impl ProductionVmLifecycleLoop {
     fn commit_terminal_replacements(
         &mut self,
         prepared: &mut Vec<PreparedTerminalReplacement>,
-        limits: FaultResourceLimits,
+        lifecycle_precommit: &mut PreparedLifecyclePrecommit,
     ) -> Result<(), SchedulerError> {
         if prepared.is_empty() {
             return Ok(());
@@ -1269,10 +1269,8 @@ impl ProductionVmLifecycleLoop {
                 ),
             });
         }
-        let mut block_handles = Vec::new();
-        block_handles
-            .try_reserve_exact(prepared.len())
-            .map_err(|_| lifecycle_resource_error("nodes", 0, prepared.len(), limits))?;
+        let mut block_handles = std::mem::take(&mut lifecycle_precommit.block_handles);
+        debug_assert!(block_handles.capacity() >= prepared.len());
         for item in prepared.iter() {
             self.inner
                 .loop_impl()
@@ -1306,18 +1304,17 @@ impl ProductionVmLifecycleLoop {
             }
             self.validate_terminal_process_ownership(&item.decision.node, item.service_state)?;
         }
-        let mut replacement_nodes = Vec::new();
-        replacement_nodes
-            .try_reserve_exact(prepared.len())
-            .map_err(|_| lifecycle_resource_error("nodes", 0, prepared.len(), limits))?;
-        for item in prepared.iter() {
-            replacement_nodes.push(NodeId {
-                name: try_lifecycle_string(
-                    &item.decision.node.name,
-                    replacement_nodes.len(),
-                    limits,
-                )?,
-            });
+        let mut replacement_nodes = std::mem::take(&mut lifecycle_precommit.replacement_nodes);
+        debug_assert!(replacement_nodes.capacity() >= prepared.len());
+        for item in prepared.iter_mut() {
+            replacement_nodes.push(item.backend_node.take().ok_or_else(|| {
+                SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal replacement for `{}` lost its precommit backend owner",
+                        item.decision.node.name
+                    ),
+                }
+            })?);
         }
         let plan = self
             .inner
@@ -1337,11 +1334,9 @@ impl ProductionVmLifecycleLoop {
                 message: String::from("terminal replacement lost a prevalidated block owner"),
             });
         }
-        let mut replacement_values = Vec::new();
-        replacement_values
-            .try_reserve_exact(prepared.len())
-            .map_err(|_| lifecycle_resource_error("nodes", 0, prepared.len(), limits))?;
         let mut replacement_leases = BTreeMap::new();
+        let mut replacement_values = std::mem::take(&mut lifecycle_precommit.replacement_values);
+        debug_assert!(replacement_values.capacity() >= prepared.len());
         for item in prepared.iter_mut() {
             let replacement = item.replacement.take().map(|replacement| {
                 let (node, lease) = replacement.into_parts();
@@ -1457,22 +1452,13 @@ impl ProductionVmLifecycleLoop {
 
     fn supervise_terminal_lifecycle_exits(
         &mut self,
-        decisions: &[QemuNodeLifecycleDecision],
-        limits: FaultResourceLimits,
-    ) -> Result<Vec<(NodeId, i32)>, SchedulerError> {
-        let terminal_count = decisions
-            .iter()
-            .filter(|decision| decision.expected_exit_code.is_some())
-            .count();
+        prepared: &mut [PreparedTerminalReplacement],
+        observed_exit_codes: &mut Vec<(NodeId, i32)>,
+    ) -> Result<(), SchedulerError> {
         let mut first_error = None;
-        let mut observed_exit_codes = Vec::new();
-        observed_exit_codes
-            .try_reserve_exact(terminal_count)
-            .map_err(|_| lifecycle_resource_error("nodes", 0, terminal_count, limits))?;
-        for decision in decisions
-            .iter()
-            .filter(|decision| decision.expected_exit_code.is_some())
-        {
+        debug_assert!(observed_exit_codes.capacity() >= prepared.len());
+        for item in prepared.iter() {
+            let decision = &item.decision;
             let generation = self
                 .node_generations
                 .get(&decision.node)
@@ -1501,10 +1487,8 @@ impl ProductionVmLifecycleLoop {
                 first_error = Some(error.to_string());
             }
         }
-        for decision in decisions
-            .iter()
-            .filter(|decision| decision.expected_exit_code.is_some())
-        {
+        for item in prepared.iter_mut() {
+            let decision = &item.decision;
             let expected =
                 decision
                     .expected_exit_code
@@ -1517,16 +1501,15 @@ impl ProductionVmLifecycleLoop {
                 decision.action,
             ) {
                 Ok(actual) => {
-                    observed_exit_codes.push((
-                        NodeId {
-                            name: try_lifecycle_string(
-                                &decision.node.name,
-                                observed_exit_codes.len(),
-                                limits,
-                            )?,
-                        },
-                        actual,
-                    ));
+                    let node = item.observed_exit_node.take().ok_or_else(|| {
+                        SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "terminal lifecycle node `{}` lost its precommit exit owner",
+                                decision.node.name
+                            ),
+                        }
+                    })?;
+                    observed_exit_codes.push((node, actual));
                 }
                 Err(error) if first_error.is_none() => {
                     first_error = Some(error.to_string());
@@ -1539,7 +1522,7 @@ impl ProductionVmLifecycleLoop {
                 message: format!("terminal lifecycle process supervision failed: {message}"),
             })
         } else {
-            Ok(observed_exit_codes)
+            Ok(())
         }
     }
 
@@ -1992,7 +1975,7 @@ impl ProductionVmLifecycleLoop {
         decisions: &[QemuNodeLifecycleDecision],
         boot_requests: &[NodeId],
         resource_limits: FaultResourceLimits,
-        lifecycle_precommit: Option<&mut PreparedLifecyclePrecommit>,
+        mut lifecycle_precommit: Option<&mut PreparedLifecyclePrecommit>,
     ) -> Result<(), SchedulerError> {
         let has_lifecycle = !decisions.is_empty();
         if let Err(error) = self.activate_node_boot_requests(boot_requests) {
@@ -2005,7 +1988,7 @@ impl ProductionVmLifecycleLoop {
         let mut prepared = match self.prepare_terminal_replacements(
             decisions,
             resource_limits,
-            lifecycle_precommit,
+            lifecycle_precommit.as_deref_mut(),
         ) {
             Ok(prepared) => prepared,
             Err(capture_error) => {
@@ -2025,22 +2008,26 @@ impl ProductionVmLifecycleLoop {
                 error,
             ));
         }
-        let observed_exit_codes =
-            match self.supervise_terminal_lifecycle_exits(decisions, resource_limits) {
-                Ok(observed) => observed,
-                Err(error) => {
-                    return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                        decisions,
-                        boot_requests,
-                        &mut prepared,
-                        error,
-                    ));
+        if !prepared.is_empty() {
+            let precommit = lifecycle_precommit.as_deref_mut().ok_or_else(|| {
+                SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "terminal lifecycle supervision lost its precommit storage",
+                    ),
                 }
-            };
-        let retiring = prepared
-            .iter()
-            .map(|replacement| replacement.decision.node.clone())
-            .collect::<Vec<_>>();
+            })?;
+            if let Err(error) = self.supervise_terminal_lifecycle_exits(
+                &mut prepared,
+                &mut precommit.observed_exit_codes,
+            ) {
+                return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
+                    decisions,
+                    boot_requests,
+                    &mut prepared,
+                    error,
+                ));
+            }
+        }
         for replacement in &prepared {
             if let Err(error) = self
                 .inner
@@ -2066,25 +2053,40 @@ impl ProductionVmLifecycleLoop {
                 error,
             ));
         }
-        if let Err(error) = self.finish_reaped_node_leases(&retiring) {
-            return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                decisions,
-                boot_requests,
-                &mut prepared,
-                error,
-            ));
+        for replacement in &prepared {
+            if let Err(error) =
+                self.finish_reaped_node_leases(std::slice::from_ref(&replacement.decision.node))
+            {
+                return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
+                    decisions,
+                    boot_requests,
+                    &mut prepared,
+                    error,
+                ));
+            }
         }
-        if let Err(error) = self.commit_terminal_replacements(&mut prepared, resource_limits) {
-            return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                decisions,
-                boot_requests,
-                &mut prepared,
-                error,
-            ));
+        if !prepared.is_empty() {
+            let precommit = lifecycle_precommit.as_deref_mut().ok_or_else(|| {
+                SchedulerError::BoundaryViolation {
+                    message: String::from("terminal lifecycle commit lost its precommit storage"),
+                }
+            })?;
+            if let Err(error) = self.commit_terminal_replacements(&mut prepared, precommit) {
+                return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
+                    decisions,
+                    boot_requests,
+                    &mut prepared,
+                    error,
+                ));
+            }
         }
         if has_lifecycle
-            && let Err(error) =
-                self.retain_completed_lifecycle_exits(decisions, &observed_exit_codes)
+            && let Err(error) = self.retain_completed_lifecycle_exits(
+                decisions,
+                lifecycle_precommit
+                    .as_deref()
+                    .map_or(&[], |precommit| precommit.observed_exit_codes.as_slice()),
+            )
         {
             return Err(self.quarantine_terminal_lifecycle_transaction(
                 decisions,

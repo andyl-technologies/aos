@@ -394,7 +394,7 @@ pub(in crate::vm_lifecycle) fn validate_recovered_lifecycle_journal(
             ));
         }
         if node.current_generation == 0
-            || !valid_lifecycle_generation(node)
+            || !valid_lifecycle_generation(&journal.phase, node)
             || !valid_lifecycle_transition(&node.transition)
             || !valid_lifecycle_hash(&node.action_sha256)
             || !valid_lifecycle_hash(&node.evidence_sha256)
@@ -508,12 +508,24 @@ fn quarantined_process_ownership_is_recoverable(
         && node.next_generation == node.current_generation
 }
 
-fn valid_lifecycle_generation(node: &ProductionLifecycleJournalNode) -> bool {
+fn valid_lifecycle_generation(
+    phase: &ProductionLifecycleJournalPhase,
+    node: &ProductionLifecycleJournalNode,
+) -> bool {
+    let successor_generation = node.current_generation.checked_add(1);
     match node.transition.as_str() {
         "Crash" | "Reset" | "PowerOff" | "PowerCycle" => {
-            node.next_generation == node.current_generation.saturating_add(1)
+            successor_generation == Some(node.next_generation)
         }
-        "Boot" | "PermanentFailure" => node.next_generation == node.current_generation,
+        "Boot" => {
+            node.next_generation == node.current_generation
+                || (matches!(
+                    phase,
+                    ProductionLifecycleJournalPhase::Intent
+                        | ProductionLifecycleJournalPhase::Quarantined
+                ) && successor_generation == Some(node.next_generation))
+        }
+        "PermanentFailure" => node.next_generation == node.current_generation,
         _ => false,
     }
 }
