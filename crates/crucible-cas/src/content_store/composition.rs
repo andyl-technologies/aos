@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use super::*;
 
@@ -300,15 +301,20 @@ impl ImmutableBlobBackend for ReadThroughStore {
 pub(crate) struct MetricsState {
     contains_calls: AtomicU64,
     contains_hits: AtomicU64,
+    contains_elapsed_nanoseconds: AtomicU64,
     read_calls: AtomicU64,
     read_logical_bytes: AtomicU64,
+    read_elapsed_nanoseconds: AtomicU64,
     read_stream_opens: AtomicU64,
+    read_stream_open_elapsed_nanoseconds: AtomicU64,
     read_stream_completions: AtomicU64,
     read_stream_abandons: AtomicU64,
     read_stream_failures: AtomicU64,
     read_stream_bytes: AtomicU64,
+    read_stream_read_elapsed_nanoseconds: AtomicU64,
     put_calls: AtomicU64,
     put_logical_bytes: AtomicU64,
+    put_elapsed_nanoseconds: AtomicU64,
     failures: AtomicU64,
 }
 
@@ -316,15 +322,20 @@ pub(crate) struct MetricsState {
 pub(crate) struct MetricsSnapshot {
     pub contains_calls: u64,
     pub contains_hits: u64,
+    pub contains_elapsed_nanoseconds: u64,
     pub read_calls: u64,
     pub read_logical_bytes: u64,
+    pub read_elapsed_nanoseconds: u64,
     pub read_stream_opens: u64,
+    pub read_stream_open_elapsed_nanoseconds: u64,
     pub read_stream_completions: u64,
     pub read_stream_abandons: u64,
     pub read_stream_failures: u64,
     pub read_stream_bytes: u64,
+    pub read_stream_read_elapsed_nanoseconds: u64,
     pub put_calls: u64,
     pub put_logical_bytes: u64,
+    pub put_elapsed_nanoseconds: u64,
     pub failures: u64,
 }
 
@@ -335,19 +346,32 @@ impl MetricsState {
         });
     }
 
+    fn record_elapsed(counter: &AtomicU64, started: Instant) {
+        Self::increment(counter, metrics_elapsed_nanoseconds(started));
+    }
+
     pub(crate) fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
             contains_calls: self.contains_calls.load(Ordering::Relaxed),
             contains_hits: self.contains_hits.load(Ordering::Relaxed),
+            contains_elapsed_nanoseconds: self.contains_elapsed_nanoseconds.load(Ordering::Relaxed),
             read_calls: self.read_calls.load(Ordering::Relaxed),
             read_logical_bytes: self.read_logical_bytes.load(Ordering::Relaxed),
+            read_elapsed_nanoseconds: self.read_elapsed_nanoseconds.load(Ordering::Relaxed),
             read_stream_opens: self.read_stream_opens.load(Ordering::Relaxed),
+            read_stream_open_elapsed_nanoseconds: self
+                .read_stream_open_elapsed_nanoseconds
+                .load(Ordering::Relaxed),
             read_stream_completions: self.read_stream_completions.load(Ordering::Relaxed),
             read_stream_abandons: self.read_stream_abandons.load(Ordering::Relaxed),
             read_stream_failures: self.read_stream_failures.load(Ordering::Relaxed),
             read_stream_bytes: self.read_stream_bytes.load(Ordering::Relaxed),
+            read_stream_read_elapsed_nanoseconds: self
+                .read_stream_read_elapsed_nanoseconds
+                .load(Ordering::Relaxed),
             put_calls: self.put_calls.load(Ordering::Relaxed),
             put_logical_bytes: self.put_logical_bytes.load(Ordering::Relaxed),
+            put_elapsed_nanoseconds: self.put_elapsed_nanoseconds.load(Ordering::Relaxed),
             failures: self.failures.load(Ordering::Relaxed),
         }
     }
@@ -365,7 +389,10 @@ impl BlobSource for MetricsBlobSource {
 
     fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
         MetricsState::increment(&self.state.read_stream_opens, 1);
-        match self.source.open() {
+        let started = metrics_now();
+        let result = self.source.open();
+        MetricsState::record_elapsed(&self.state.read_stream_open_elapsed_nanoseconds, started);
+        match result {
             Ok(reader) => Ok(Box::new(MetricsBlobReader {
                 reader,
                 state: Arc::clone(&self.state),
@@ -394,7 +421,10 @@ impl Read for MetricsBlobReader {
         if output.is_empty() || self.terminal {
             return Ok(0);
         }
-        match self.reader.read(output) {
+        let started = metrics_now();
+        let result = self.reader.read(output);
+        MetricsState::record_elapsed(&self.state.read_stream_read_elapsed_nanoseconds, started);
+        match result {
             Ok(0) => {
                 self.terminal = true;
                 if self.observed == self.expected {
@@ -478,7 +508,9 @@ impl ImmutableBlobBackend for MetricsStore {
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         MetricsState::increment(&self.state.contains_calls, 1);
+        let started = metrics_now();
         let result = self.child.contains(id);
+        MetricsState::record_elapsed(&self.state.contains_elapsed_nanoseconds, started);
         match result {
             Ok(present) => {
                 if present {
@@ -495,7 +527,9 @@ impl ImmutableBlobBackend for MetricsStore {
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
         MetricsState::increment(&self.state.read_calls, 1);
+        let started = metrics_now();
         let result = self.child.read(id, range);
+        MetricsState::record_elapsed(&self.state.read_elapsed_nanoseconds, started);
         match result {
             Ok(blob) => {
                 MetricsState::increment(&self.state.read_logical_bytes, blob.logical_length());
@@ -514,7 +548,9 @@ impl ImmutableBlobBackend for MetricsStore {
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
         MetricsState::increment(&self.state.put_calls, 1);
+        let started = metrics_now();
         let result = self.child.put_if_absent(id, source);
+        MetricsState::record_elapsed(&self.state.put_elapsed_nanoseconds, started);
         match result {
             Ok(receipt) => {
                 MetricsState::increment(&self.state.put_logical_bytes, source.logical_length());
@@ -526,6 +562,18 @@ impl ImmutableBlobBackend for MetricsStore {
             }
         }
     }
+}
+
+// crucible-lint: allow clippy-disallowed-method -- host monotonic time feeds only path-free operational counters.
+#[allow(clippy::disallowed_methods)]
+fn metrics_now() -> Instant {
+    Instant::now()
+}
+
+// crucible-lint: allow clippy-disallowed-method -- host monotonic time feeds only path-free operational counters.
+#[allow(clippy::disallowed_methods)]
+fn metrics_elapsed_nanoseconds(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// Write-through mirror for immutable logical objects.
