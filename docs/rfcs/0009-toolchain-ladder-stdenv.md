@@ -449,6 +449,23 @@ do not make frontend discovery depend on glob state inherited from an early
 bootstrap shell. A suppressed glob misleadingly reports that only C is
 supported even though the g++ source component was unpacked.
 
+Apply the same rule to both language-fragment scans in GCC 8.5.0, enumerating
+every descriptor shipped in its complete source tree. The first scan resolves
+declared inter-frontend requirements such as Objective-C++ requiring both
+Objective-C and C++; LTO is enabled independently. The second scan must discover
+LTO and the target-library ownership of disabled languages. Assert every
+descriptor before configure, then require the installed `g++`, `cc1plus`, and
+`lto1` executables and compile and run a C++ LTO program before publishing the
+compiler. A cached downstream package is not evidence for this producer
+boundary: operational validation of this change must realize the changed GCC
+derivation before building a consumer.
+
+Invoke every native GCC configure script through the exact store-qualified
+`CONFIG_SHELL`, and export the same path as `SHELL`; exporting the variables
+without using the interpreter does not override a generated script's shebang.
+Keep the focused hostile-shebang/noglob fixture so this shared builder contract
+cannot regress independently of a multi-hour compiler realization.
+
 ## Expected outcome
 
 The ~22,400 toolchain LOC should drop by well over half: the POSIX-tools
