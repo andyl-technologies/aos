@@ -258,6 +258,7 @@ pub enum CampaignFact {
     ObservationPublished(ObservationId),
     ObservationCredited(ObservationId),
     FindingPublished(FindingId),
+    ObjectiveEvaluationPublished(ObjectiveEvaluationId),
     PolicyActivated(PolicyActivation),
     BudgetGranted(BudgetGrant),
     ControlRequested(ControlRequest),
@@ -293,14 +294,18 @@ Campaign-fact schema v3 adds this transition. Schema v4 adds
 the child configuration-to-path membership described in §01.6. Schema v5 adds
 `PinCommandAccepted(PinRequest)`, which binds the caller's command ID, exact
 parent snapshot, configuration, retention tier or removal, and bounded reason
-in one owner-validated transition. Every variant that predates
+in one owner-validated transition. Schema v6 adds
+`ObjectiveEvaluationPublished(ObjectiveEvaluationId)`, which makes one exact
+active-policy evaluation of one canonical observation authoritative. Every
+variant that predates
 `CampaignDerived` continues to encode as schema v2, preserving its canonical
 bytes and `CampaignFactId`; only `CampaignDerived` encodes as v3, only
 `ObservationCredited` encodes as v4, and only `PinCommandAccepted` encodes as
-v5. Schema-v2 through schema-v4 fact bodies and envelopes remain canonically
-readable for existing history. A body cannot carry a variant introduced by
-another version, and body/envelope version mismatches fail closed. Historical
-schema-v2 `ObservationPublished` successors are
+v5, and only `ObjectiveEvaluationPublished` encodes as v6. Schema-v2 through
+schema-v5 fact bodies and envelopes remain canonically readable for existing
+history. A body cannot carry a variant introduced by another version, and
+body/envelope version mismatches fail closed. Historical schema-v2
+`ObservationPublished` successors are
 validated against either their original observation-only delta or the interim
 credit-bearing delta; new publication always uses the unambiguous schema-v4
 owner.
@@ -313,6 +318,19 @@ the parent's authenticated graph. Acceptance inserts the v5 fact under both
 unpinning writes a `retention = None` tombstone at the same pin key rather than
 deleting historical intent. Imported and restarted histories recompute these
 two exact root deltas and the ordinary parent-result locator.
+
+The objective owner derives
+`H("crucible.campaign-objective-evaluation.v1", policy_content_id_text ||
+observation_content_id_text)` and maps it to the exact evaluation ID in
+`roots.observations`. The policy must be active and the observation must own its
+attempt's canonical observation key in the parent snapshot. The owner validates
+the evaluation's policy contract, child configuration, property filtering, and
+exact scalar recomputation before its first write. The successor changes only
+`roots.observations` and the ordinary parent-result coordination locator.
+Exact-evaluation replay resolves before staleness after later mutations; a
+different evaluation for the same `(policy, observation)` basis fails closed.
+Import and restart validation recompute the same key, basis, and two root
+deltas.
 
 The language-neutral canonical field order is:
 
@@ -431,6 +449,7 @@ pub struct PlannerCandidateGuidance {
     pub edge: BranchEdgeId,
     pub statistics: PuctEdgeStatistics,
     pub novelty_events: u64,
+    pub objective_reward_micros: i64,
     pub finding_events: BTreeMap<FindingKind, u64>,
 }
 ```
@@ -474,7 +493,7 @@ decoder continues to admit schema-v3 content IDs so an existing
 dereferencing that legacy ID as a current planner-step record still fails
 closed because only a schema-v4 envelope is executable or owner-validatable.
 
-`PlannerCandidateGuidance` is the schema-v1, at-most-64-KiB owner projection
+`PlannerCandidateGuidance` is the schema-v2, at-most-64-KiB owner projection
 used by canonical frontier engine version 2. Its exact envelope children are
 the input view, active policy, served branch request, and exact choice domain.
 It repeats the offer tuple plus authenticated semantic edge and decomposed PUCT
@@ -484,6 +503,11 @@ guidance envelope as a child. Local acceptance, restart, and imported-snapshot
 validation reconstruct the exact records from the owning snapshot; a
 structurally canonical substituted score, semantic domain, reward count, or
 offer tuple fails closed.
+Schema v2 inserts `objective_reward_micros` after `novelty_events`; it is the
+owner-derived signed scalar-objective sum for that edge. Schema-v1 guidance
+remains canonically readable and retains its original body, envelope, and
+`PlannerCandidateGuidanceId`; owner recomputation preserves v1 when
+authenticating historical requests. New requests always carry v2.
 
 `ContinueScan` is accepted only for a non-complete served page and its cursor
 must equal that page's last position. `NoWork` is accepted only for a complete

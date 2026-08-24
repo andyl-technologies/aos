@@ -8,8 +8,9 @@ use crate::{
     ExecutorClient, ExecutorControlService, ExecutorResumeService, ExecutorService,
     ExecutorStatusService, FindingExactPins, FindingKind, FindingMinimizationAttempt,
     FindingMinimizationEvidence, FindingSignature, FindingTarget, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ResumeAttemptExecutionDisposition,
-    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, Objective, ObjectiveGoal,
+    ObjectiveValue, ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
+    ResumeAttemptExecutionResponse, evaluate_objectives,
 };
 
 struct CompletingExecutor {
@@ -2584,7 +2585,25 @@ fn strict_observations_commit_in_global_admission_order() {
 
 #[test]
 fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomputed() {
-    let (repository, lineage, policy) = fixture();
+    let (repository, lineage, base_policy) = fixture();
+    let objective_name = "recovery.score";
+    let policy = CampaignPolicy::new(
+        base_policy.scenario(),
+        base_policy.campaign_seed(),
+        base_policy.mode(),
+        base_policy.explorer().clone(),
+        base_policy.choice_policies().clone(),
+        BTreeMap::from([(
+            objective_name.to_owned(),
+            Objective::new(objective_name, ObjectiveGoal::Maximize, 1_000_000).expect("objective"),
+        )]),
+        base_policy.guidance().clone(),
+        base_policy.stop_conditions().clone(),
+        base_policy.fairness(),
+        base_policy.retention(),
+        base_policy.admits_scenario_defaults(),
+    )
+    .expect("objective-guided finite-expansion policy");
     let genesis = repository
         .create("finite-expansion", &lineage, &policy, &BTreeMap::new())
         .expect("create");
@@ -3156,6 +3175,27 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
             &nested_observation,
         )
         .expect("publish nested observation");
+    let before_objective = repository
+        .project_branch_puct(nested_observed.new_snapshot, nested_branch_point)
+        .expect("project nested PUCT before objective publication");
+    assert!(before_objective.edge_objective_reward_micros().is_empty());
+    let nested_properties = repository
+        .load_property_verdict_set(nested_observation.properties())
+        .expect("nested objective properties");
+    let nested_evaluation = evaluate_objectives(
+        &policy,
+        &nested_observation,
+        &nested_properties,
+        BTreeMap::from([(objective_name.to_owned(), ObjectiveValue::Signed(-3))]),
+    )
+    .expect("nested objective evaluation");
+    let evaluated = repository
+        .publish_objective_evaluation(
+            "finite-expansion",
+            nested_observed.new_snapshot,
+            &nested_evaluation,
+        )
+        .expect("publish nested objective evaluation");
     let nested_root_id = repository
         .project_finite_expansion(
             nested_observed.new_snapshot,
@@ -3197,7 +3237,7 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         &BTreeMap::from([(nested_edge, 1)])
     );
     let root_puct = repository
-        .project_branch_puct(nested_observed.new_snapshot, first_request.branch_point())
+        .project_branch_puct(evaluated.new_snapshot, first_request.branch_point())
         .expect("project root PUCT statistics");
     assert_eq!(root_puct.branch_point(), first_request.branch_point());
     assert_eq!(root_puct.policy(), policy.id().expect("policy id"));
@@ -3212,7 +3252,11 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         root_edge_statistics.prior_micros(),
         crate::GUIDANCE_MICROS_PER_UNIT
     );
-    assert_eq!(root_edge_statistics.reward_sum_micros(), 0);
+    assert_eq!(
+        root_puct.edge_objective_reward_micros(),
+        &BTreeMap::from([(first_edge, -3_000_000)])
+    );
+    assert_eq!(root_edge_statistics.reward_sum_micros(), -3_000_000);
     assert!(root_edge_statistics.is_novel());
     assert!(root_edge_statistics.is_fairness_reserved());
     // The conflict above repeats the root-only identity but is not canonical;
@@ -3228,13 +3272,21 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
     );
     assert!(root_puct.edge_scores().contains_key(&first_edge));
     let nested_puct = repository
-        .project_branch_puct(nested_observed.new_snapshot, nested_branch_point)
+        .project_branch_puct(evaluated.new_snapshot, nested_branch_point)
         .expect("project nested PUCT statistics");
     assert_eq!(
         nested_puct.edge_novelty_events(),
         &BTreeMap::from([(nested_edge, 1)])
     );
     assert!(nested_puct.edge_statistics()[&nested_edge].is_novel());
+    assert_eq!(
+        nested_puct.edge_objective_reward_micros(),
+        &BTreeMap::from([(nested_edge, -3_000_000)])
+    );
+    assert_eq!(
+        nested_puct.edge_scores()[&nested_edge].mean_reward_micros(),
+        -3_000_000
+    );
     let nested_restarted =
         CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
     assert_eq!(
@@ -3257,13 +3309,13 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
     );
     assert_eq!(
         nested_restarted
-            .project_branch_puct(nested_observed.new_snapshot, first_request.branch_point())
+            .project_branch_puct(evaluated.new_snapshot, first_request.branch_point())
             .expect("restart-project root PUCT statistics"),
         root_puct
     );
     assert_eq!(
         nested_restarted
-            .project_branch_puct(nested_observed.new_snapshot, nested_branch_point)
+            .project_branch_puct(evaluated.new_snapshot, nested_branch_point)
             .expect("restart-project nested PUCT statistics"),
         nested_puct
     );
@@ -3547,6 +3599,38 @@ fn branch_guidance_work_budgets_accept_only_the_exact_boundary() {
         ),
         Err(CampaignRepositoryError::Integrity {
             reason: "branch-finding-occurrence-visit-limit"
+        })
+    ));
+    assert_eq!(
+        super::super::projection::charge_branch_objective_evaluations(
+            crate::MAX_BRANCH_OBJECTIVE_EVALUATIONS - 1,
+        )
+        .expect("exact objective evaluation boundary"),
+        crate::MAX_BRANCH_OBJECTIVE_EVALUATIONS
+    );
+    assert!(matches!(
+        super::super::projection::charge_branch_objective_evaluations(
+            crate::MAX_BRANCH_OBJECTIVE_EVALUATIONS,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "branch-objective-evaluation-count"
+        })
+    ));
+    assert_eq!(
+        super::super::projection::charge_branch_objective_work(
+            crate::MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES - 1,
+            1,
+        )
+        .expect("exact objective byte boundary"),
+        crate::MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES
+    );
+    assert!(matches!(
+        super::super::projection::charge_branch_objective_work(
+            crate::MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES,
+            1,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "branch-objective-projection-byte-limit"
         })
     ));
     assert_eq!(

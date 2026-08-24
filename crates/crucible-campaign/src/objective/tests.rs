@@ -156,6 +156,34 @@ fn exact_objective_evaluation_round_trips_and_recomputes_basis() {
 }
 
 #[test]
+fn fixed_rewards_convert_to_puct_micros_with_exact_truncation_and_saturation() {
+    assert_eq!(
+        FixedReward::from_parts(false, vec![3], vec![2])
+            .expect("positive reward")
+            .to_micros_saturating(),
+        1_500_000
+    );
+    assert_eq!(
+        FixedReward::from_parts(true, vec![1], vec![3])
+            .expect("negative reward")
+            .to_micros_saturating(),
+        -333_333
+    );
+    assert_eq!(
+        FixedReward::from_parts(false, vec![0xff; 16], vec![1])
+            .expect("large positive reward")
+            .to_micros_saturating(),
+        i64::MAX
+    );
+    assert_eq!(
+        FixedReward::from_parts(true, vec![0xff; 16], vec![1])
+            .expect("large negative reward")
+            .to_micros_saturating(),
+        i64::MIN
+    );
+}
+
+#[test]
 fn compact_policy_contract_rejects_copied_component_forgery() {
     let policy = policy(&[("recovery.latency", ObjectiveGoal::Minimize, 1_000_000)]);
     let (observation, properties) = observation_basis("forged-policy-contract");

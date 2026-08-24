@@ -701,8 +701,9 @@ from each exact child configuration artifact to every authenticated cumulative
 path that reached it; direct non-genesis admission checks membership in that
 set. The compact expansion cache retains neutral guidance fields. Separate
 exact-snapshot coverage-novelty and policy-weighted finding-reward folds
-described in RFC 03 are now implemented read-only. Objective reward remains
-neutral. Canonical frontier engine version 2 consumes their exact decomposed
+described in RFC 03 are now implemented read-only. Exact owner-published
+objective evaluations add their signed scalar reward through the same bounded
+batch. Canonical frontier engine version 2 consumes the exact decomposed
 PUCT evidence only through the bounded request-batch contract in RFC 03; it
 cannot trust or read compact expansion-cache guidance fields. Loading an
 `ExpansionState` repeats the complete source-snapshot validation and owner
@@ -741,8 +742,8 @@ admission is rejected.
   cache MUST keep reward, novelty, and finding fields neutral. A separate PUCT
   projection MAY use only the bounded exact-snapshot coverage and weighted-
   finding owners in RFC 03; canonical frontier engine version 2 consumes that
-  projection through exact owner-built guidance records, while objective reward
-  remains neutral.
+  projection through exact owner-built guidance records, including signed
+  objective reward.
 
 ## 04.15 Atomic observation publication
 

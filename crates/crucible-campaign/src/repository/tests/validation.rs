@@ -125,6 +125,167 @@ fn survivor_decision_publication_is_failure_atomic_and_replayable() {
 }
 
 #[test]
+fn objective_evaluation_publication_is_snapshot_owned_replayable_and_failure_atomic() {
+    let (repository, lineage, base, blobs) = counted_fixture();
+    let objective_name = "latency";
+    let policy = CampaignPolicy::new(
+        base.scenario(),
+        base.campaign_seed(),
+        base.mode(),
+        base.explorer().clone(),
+        base.choice_policies().clone(),
+        BTreeMap::from([(
+            objective_name.to_owned(),
+            Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000).expect("objective"),
+        )]),
+        base.guidance().clone(),
+        base.stop_conditions().clone(),
+        base.fairness(),
+        base.retention(),
+        base.admits_scenario_defaults(),
+    )
+    .expect("objective policy");
+    repository.publish_policy(&policy).expect("publish policy");
+    let name = "objective-evaluation-owner";
+    let (_genesis, admitted, observation) =
+        admitted_observation_fixture(&repository, &lineage, &policy, name);
+    let properties = repository
+        .load_property_verdict_set(observation.properties())
+        .expect("properties");
+    let evaluation = evaluate_objectives(
+        &policy,
+        &observation,
+        &properties,
+        BTreeMap::from([(objective_name.to_owned(), ObjectiveValue::Unsigned(7))]),
+    )
+    .expect("evaluation");
+
+    let before = blobs.object_count().expect("objects before rejection");
+    let rejected =
+        repository.publish_objective_evaluation(name, admitted.new_snapshot, &evaluation);
+    assert!(
+        matches!(
+            rejected,
+            Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
+        ),
+        "{rejected:?}"
+    );
+    assert_eq!(
+        blobs.object_count().expect("objects after rejection"),
+        before
+    );
+
+    let observed = repository
+        .publish_observation(name, admitted.new_snapshot, &observation)
+        .expect("publish observation");
+    let published = repository
+        .publish_objective_evaluation(name, observed.new_snapshot, &evaluation)
+        .expect("publish objective evaluation");
+    assert_eq!(published.prior_snapshot, observed.new_snapshot);
+    assert_eq!(
+        published.evaluation,
+        evaluation.id().expect("evaluation ID")
+    );
+    assert!(!published.replayed);
+    let published_snapshot = repository
+        .read_snapshot(published.new_snapshot.content_id())
+        .expect("objective publication snapshot");
+    let transition = published_snapshot
+        .snapshot
+        .transition()
+        .expect("objective publication transition");
+    assert_eq!(transition.content_id().schema_version(), 6);
+    assert_eq!(
+        repository
+            .read_fact(transition.content_id())
+            .expect("objective publication fact"),
+        CampaignFact::ObjectiveEvaluationPublished(published.evaluation)
+    );
+    let observed_snapshot = repository
+        .read_snapshot(observed.new_snapshot.content_id())
+        .expect("objective parent snapshot");
+    let mut forged_roots = published_snapshot.snapshot.roots();
+    forged_roots.observations = repository
+        .merkle
+        .insert(
+            observed_snapshot.snapshot.roots().observations,
+            CampaignHash::derive("test-objective-evaluation-wrong-key", b"wrong"),
+            published.evaluation.content_id(),
+        )
+        .expect("forge wrong objective index key")
+        .content_id();
+    let forged_snapshot = CampaignSnapshot::successor(
+        observed.new_snapshot,
+        published_snapshot.snapshot.lineage(),
+        published_snapshot.snapshot.active_policy(),
+        forged_roots,
+        transition,
+    )
+    .expect("forged objective successor");
+    let forged_content = repository
+        .put_snapshot(&forged_snapshot)
+        .expect("put forged objective successor");
+    assert!(matches!(
+        repository.validate_complete_head(forged_content),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "objective-evaluation-transition-observation-root"
+        })
+    ));
+
+    let conflicting = evaluate_objectives(
+        &policy,
+        &observation,
+        &properties,
+        BTreeMap::from([(objective_name.to_owned(), ObjectiveValue::Unsigned(8))]),
+    )
+    .expect("conflicting evaluation");
+    let before_conflict = blobs.object_count().expect("objects before conflict");
+    assert!(matches!(
+        repository.publish_objective_evaluation(name, published.new_snapshot, &conflicting),
+        Err(CampaignRepositoryError::AlreadyExists)
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after conflict"),
+        before_conflict
+    );
+
+    let advanced = repository
+        .apply_control(
+            name,
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "test-objective-evaluation-control",
+                    b"resume",
+                )),
+                expected_snapshot: published.new_snapshot,
+                action: CampaignControlAction::Resume,
+            },
+        )
+        .expect("advance after objective evaluation");
+    repository
+        .validated_heads
+        .lock()
+        .expect("validated-head cache")
+        .clear();
+    assert_eq!(
+        repository
+            .head(name)
+            .expect("restart-validate objective head")
+            .snapshot_id(),
+        advanced.new_snapshot
+    );
+    assert_eq!(
+        repository
+            .publish_objective_evaluation(name, observed.new_snapshot, &evaluation)
+            .expect("replay objective evaluation after later mutation"),
+        ObjectiveEvaluationPublicationResult {
+            replayed: true,
+            ..published
+        }
+    );
+}
+
+#[test]
 fn canonical_frontier_planner_basis_is_complete_and_idempotent() {
     let (repository, _lineage, _policy, blobs) = counted_fixture();
     let before = blobs.object_count().expect("objects before planner basis");

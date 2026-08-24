@@ -322,6 +322,14 @@ impl CampaignRepository {
                                 choice_cache,
                             )?;
                         }
+                        CampaignFact::ObjectiveEvaluationPublished(evaluation) => {
+                            self.validate_objective_evaluation_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                evaluation,
+                                choice_cache,
+                            )?;
+                        }
                         CampaignFact::AttemptClosed {
                             attempt,
                             ordinal,
@@ -1311,6 +1319,10 @@ impl CampaignRepository {
                 {
                     anchors.insert(attempt);
                 }
+            }
+            CampaignFact::ObjectiveEvaluationPublished(evaluation_id) => {
+                let evaluation = self.read_objective_evaluation(evaluation_id.content_id())?;
+                anchors.insert(evaluation.observation().content_id());
             }
             CampaignFact::ChoiceOpportunityDiscovered { .. }
             | CampaignFact::ControlRequested(_)

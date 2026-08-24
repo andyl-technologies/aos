@@ -281,6 +281,31 @@ impl CampaignRepository {
         }))
     }
 
+    pub(super) fn find_objective_evaluation_result(
+        &self,
+        content_id: ContentId,
+        evaluation: ObjectiveEvaluationId,
+    ) -> Result<Option<ObjectiveEvaluationPublicationResult>, CampaignRepositoryError> {
+        let key = mutation_result_content_key("objective-evaluation", evaluation.content_id());
+        let Ok((result_content, loaded, fact)) = self.mutation_result_snapshot(content_id, key)
+        else {
+            return Ok(None);
+        };
+        if fact != CampaignFact::ObjectiveEvaluationPublished(evaluation) {
+            return Err(integrity("objective-evaluation-result-index-type-mismatch"));
+        }
+        let prior_snapshot = loaded
+            .snapshot
+            .parent()
+            .ok_or_else(|| integrity("objective-evaluation-transition-has-no-parent"))?;
+        Ok(Some(ObjectiveEvaluationPublicationResult {
+            prior_snapshot,
+            new_snapshot: CampaignSnapshotId::from_content_id(result_content)?,
+            evaluation,
+            replayed: true,
+        }))
+    }
+
     pub(super) fn find_non_modeled_attempt_result(
         &self,
         content_id: ContentId,
@@ -420,6 +445,9 @@ impl CampaignRepository {
             CampaignFact::ObservationPublished(observation)
             | CampaignFact::ObservationCredited(observation) => {
                 mutation_result_content_key("observation", observation.content_id())
+            }
+            CampaignFact::ObjectiveEvaluationPublished(evaluation) => {
+                mutation_result_content_key("objective-evaluation", evaluation.content_id())
             }
             CampaignFact::AttemptClosed { attempt, .. } => {
                 mutation_result_content_key("attempt-closure", attempt.content_id())

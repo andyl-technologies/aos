@@ -677,6 +677,124 @@ fn snapshot_planning_view_excludes_pins_and_coordination_but_snapshot_identity_d
 }
 
 #[test]
+fn planner_candidate_guidance_v2_retains_objective_reward_and_v1_identity() {
+    let input_view = stored_id!(CampaignViewId, ObjectKind::CampaignFact, "guidance-view");
+    let policy_value = CampaignPolicy::new(
+        ScenarioDefId::from_hash(hash("guidance-scenario")),
+        CampaignSeed::from_bytes([0x37; 32]),
+        CampaignMode::Strict,
+        ExplorerPolicy::TreeSearch {
+            puct: PuctPolicy::new(0, 0, 0),
+            widening: None,
+        },
+        BTreeMap::new(),
+        BTreeMap::from([(
+            "guidance-objective".to_owned(),
+            Objective::new("guidance-objective", ObjectiveGoal::Maximize, 1_000_000)
+                .expect("guidance objective"),
+        )]),
+        BTreeMap::new(),
+        BTreeSet::new(),
+        FairnessPolicy::new(1, 1).expect("guidance fairness"),
+        RetentionPolicy::new(false, 1, false, false),
+        false,
+    )
+    .expect("guidance policy");
+    let policy = policy_value.id().expect("guidance policy ID");
+    let request = stored_id!(
+        BranchRequestId,
+        ObjectKind::CampaignFact,
+        "guidance-request"
+    );
+    let branch_point = BranchPointId::from_hash(hash("guidance-branch-point"));
+    let position = PlanningScanPosition::new(branch_point, request);
+    let domain = stored_id!(ChoiceDomainId, ObjectKind::CampaignFact, "guidance-domain");
+    let domain_semantics = ChoiceDomainSemanticId::from_hash(hash("guidance-domain-semantics"));
+    let value = ChoiceValue::Boolean(true);
+    let edge = Selection::campaign_edge_id(branch_point, domain_semantics, &value);
+    let statistics = PuctEdgeStatistics::new(1, 1, -500_000, 1_000_000, false, true)
+        .expect("objective statistics");
+    let current = PlannerCandidateGuidance::new(
+        input_view,
+        policy,
+        position,
+        domain,
+        domain_semantics,
+        value.clone(),
+        1,
+        edge,
+        statistics,
+        0,
+        -500_000,
+        BTreeMap::new(),
+    )
+    .expect("v2 candidate guidance");
+    assert_eq!(current.objective_reward_micros(), -500_000);
+    assert_eq!(
+        current
+            .score_for_policy(&policy_value, input_view)
+            .expect("objective guidance score")
+            .mean_reward_micros(),
+        -500_000
+    );
+    assert_eq!(
+        PlannerCandidateGuidance::from_canonical_bytes(&current.canonical_bytes())
+            .expect("v2 guidance round trip"),
+        current
+    );
+    assert_eq!(
+        current
+            .id()
+            .expect("v2 guidance ID")
+            .content_id()
+            .schema_version(),
+        2
+    );
+
+    let legacy_statistics =
+        PuctEdgeStatistics::new(1, 1, 0, 1_000_000, false, true).expect("legacy statistics");
+    let mut legacy_encoder = Encoder::new();
+    1_u32.encode(&mut legacy_encoder);
+    input_view.encode(&mut legacy_encoder);
+    policy.encode(&mut legacy_encoder);
+    position.encode(&mut legacy_encoder);
+    domain.encode(&mut legacy_encoder);
+    domain_semantics.encode(&mut legacy_encoder);
+    value.encode(&mut legacy_encoder);
+    1_u64.encode(&mut legacy_encoder);
+    edge.encode(&mut legacy_encoder);
+    legacy_statistics.encode(&mut legacy_encoder);
+    0_u64.encode(&mut legacy_encoder);
+    BTreeMap::<FindingKind, u64>::new().encode(&mut legacy_encoder);
+    let legacy_bytes = legacy_encoder.finish();
+    let legacy = PlannerCandidateGuidance::from_canonical_bytes(&legacy_bytes)
+        .expect("legacy guidance remains readable");
+    assert_eq!(legacy.canonical_bytes(), legacy_bytes);
+    assert_eq!(legacy.objective_reward_micros(), 0);
+    assert_eq!(
+        legacy
+            .score_for_policy(&policy_value, input_view)
+            .expect("legacy neutral guidance score")
+            .mean_reward_micros(),
+        0
+    );
+    let legacy_envelope = ObjectEnvelope::for_record_versioned(
+        CampaignRecordKind::PlannerCandidateGuidance,
+        1,
+        super::object::content_children(legacy.content_children())
+            .expect("legacy guidance children"),
+        legacy_bytes,
+    )
+    .expect("legacy guidance envelope");
+    assert_eq!(
+        legacy.id().expect("legacy guidance identity").content_id(),
+        legacy_envelope.content_id()
+    );
+    ObjectEnvelope::from_canonical_bytes(&legacy_envelope.canonical_bytes())
+        .expect("legacy guidance envelope remains readable");
+}
+
+#[test]
 fn lineage_and_invocation_identities_name_every_compatibility_input() {
     let protocols = BTreeMap::from([
         ("guest-choice".to_owned(), 1),

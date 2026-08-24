@@ -31,6 +31,7 @@ struct BranchEdgeVisitEvidence {
 
 type BranchFindingEvents = BTreeMap<crate::BranchEdgeId, BTreeMap<crate::FindingKind, u64>>;
 type BranchPointFindingEvents = BTreeMap<crate::BranchPointId, BranchFindingEvents>;
+type BranchObjectiveRewards = BTreeMap<crate::BranchPointId, BTreeMap<crate::BranchEdgeId, i64>>;
 
 struct MixtureComponentState {
     values: Vec<ChoiceValue>,
@@ -1717,6 +1718,11 @@ impl CampaignRepository {
         .collect::<BTreeMap<_, _>>();
         let finding_events =
             self.project_branch_finding_events(loaded, &evidence, &finding_weights)?;
+        let mut objective_rewards = self.project_branch_objective_rewards(
+            loaded,
+            &policy,
+            std::iter::once((branch_point, &evidence)),
+        )?;
         crate::BranchPuctProjection::new_with_evidence(
             loaded.snapshot.active_policy(),
             *puct,
@@ -1724,6 +1730,7 @@ impl CampaignRepository {
             novelty,
             finding_weights,
             finding_events,
+            objective_rewards.remove(&branch_point).unwrap_or_default(),
         )
         .map_err(Into::into)
     }
@@ -1758,6 +1765,13 @@ impl CampaignRepository {
         .collect::<BTreeMap<_, _>>();
         let mut finding_events =
             self.project_branch_finding_events_batch(loaded, &evidence, &finding_weights)?;
+        let mut objective_rewards = self.project_branch_objective_rewards(
+            loaded,
+            &policy,
+            evidence
+                .iter()
+                .map(|(branch_point, evidence)| (*branch_point, evidence)),
+        )?;
         evidence
             .into_iter()
             .map(|(branch_point, evidence)| {
@@ -1768,6 +1782,7 @@ impl CampaignRepository {
                     novelty.remove(&branch_point).unwrap_or_default(),
                     finding_weights.clone(),
                     finding_events.remove(&branch_point).unwrap_or_default(),
+                    objective_rewards.remove(&branch_point).unwrap_or_default(),
                 )
                 .map(|projection| (branch_point, projection))
                 .map_err(Into::into)
@@ -1780,6 +1795,7 @@ impl CampaignRepository {
         loaded: &LoadedSnapshot,
         projection: &crate::BranchPuctProjection,
         offer: &Proposal,
+        schema_version: u32,
         domain_cache: &mut BTreeMap<crate::ChoiceDomainId, Arc<ChoiceDomain>>,
         domain_bytes: &mut usize,
     ) -> Result<crate::PlannerCandidateGuidance, CampaignRepositoryError> {
@@ -1796,7 +1812,8 @@ impl CampaignRepository {
         let edge =
             crate::Selection::campaign_edge_id(offer.branch_point(), semantic_id, offer.value());
         let evidence = projection.candidate_evidence(edge)?;
-        crate::PlannerCandidateGuidance::new(
+        crate::PlannerCandidateGuidance::new_for_schema(
+            schema_version,
             loaded.snapshot.planning_view().id()?,
             loaded.snapshot.active_policy(),
             crate::PlanningScanPosition::new(offer.branch_point(), offer.request()),
@@ -1807,6 +1824,7 @@ impl CampaignRepository {
             edge,
             evidence.statistics,
             evidence.novelty_events,
+            evidence.objective_reward_micros,
             evidence.finding_events,
         )
         .map_err(Into::into)
@@ -2331,6 +2349,150 @@ impl CampaignRepository {
             return Err(integrity("branch-finding-root-scan-mismatch"));
         }
         Ok(edge_events)
+    }
+
+    fn project_branch_objective_rewards<'a>(
+        &self,
+        loaded: &LoadedSnapshot,
+        policy_value: &crate::CampaignPolicy,
+        evidence: impl IntoIterator<Item = (crate::BranchPointId, &'a BranchEdgeVisitEvidence)>,
+    ) -> Result<BranchObjectiveRewards, CampaignRepositoryError> {
+        let mut targets =
+            BTreeMap::<ObservationId, Vec<(crate::BranchPointId, crate::BranchEdgeId)>>::new();
+        for (branch_point, branch) in evidence {
+            for credited in &branch.observations {
+                targets
+                    .entry(credited.observation)
+                    .or_default()
+                    .push((branch_point, credited.edge));
+            }
+        }
+        if targets.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let policy = loaded.snapshot.active_policy();
+        if policy_value.id()? != policy {
+            return Err(integrity("branch-objective-policy-basis-mismatch"));
+        }
+        let objective_contract = policy_value.objective_contract_hash();
+        let observation_root = loaded.snapshot.roots().observations;
+        let mut decoded = BTreeMap::<ContentId, (ObservationId, i64)>::new();
+        let mut properties =
+            BTreeMap::<crate::PropertyVerdictSetId, Arc<crate::PropertyVerdictSet>>::new();
+        let mut charged = BTreeSet::<ContentId>::new();
+        let mut evaluation_count = 0_usize;
+        let mut work_bytes = 0_usize;
+        let mut reward_sums =
+            BTreeMap::<crate::BranchPointId, BTreeMap<crate::BranchEdgeId, i128>>::new();
+        for (observation, edges) in targets {
+            let Some(content) = self.merkle.get(
+                observation_root,
+                objective_evaluation_key(policy, observation),
+            )?
+            else {
+                continue;
+            };
+            let reward = if let Some((retained_observation, reward)) = decoded.get(&content) {
+                if *retained_observation != observation {
+                    return Err(integrity(
+                        "branch-objective-evaluation-index-reuses-content",
+                    ));
+                }
+                *reward
+            } else {
+                evaluation_count = charge_branch_objective_evaluations(evaluation_count)?;
+                let evaluation_envelope = self
+                    .require_record_kind(content, crate::CampaignRecordKind::ObjectiveEvaluation)?;
+                work_bytes = charge_branch_objective_record(
+                    work_bytes,
+                    content,
+                    evaluation_envelope.body().len(),
+                    &mut charged,
+                )?;
+                let evaluation =
+                    crate::ObjectiveEvaluation::from_canonical_bytes(evaluation_envelope.body())?;
+                if evaluation.id()?.content_id() != content {
+                    return Err(integrity("objective-evaluation-envelope-shape"));
+                }
+                if evaluation.policy() != policy || evaluation.observation() != observation {
+                    return Err(integrity("branch-objective-evaluation-index-mismatch"));
+                }
+                let observation_envelope = self.require_record_kind(
+                    observation.content_id(),
+                    crate::CampaignRecordKind::Observation,
+                )?;
+                work_bytes = charge_branch_objective_record(
+                    work_bytes,
+                    observation.content_id(),
+                    observation_envelope.body().len(),
+                    &mut charged,
+                )?;
+                let observation_value =
+                    crate::Observation::from_canonical_bytes(observation_envelope.body())?;
+                if observation_value.id()? != observation {
+                    return Err(integrity("observation-envelope-shape"));
+                }
+                let properties_id = observation_value.properties();
+                let properties_value = if let Some(value) = properties.get(&properties_id) {
+                    Arc::clone(value)
+                } else {
+                    let envelope = self.require_record_kind(
+                        properties_id.content_id(),
+                        crate::CampaignRecordKind::PropertyVerdictSet,
+                    )?;
+                    work_bytes = charge_branch_objective_record(
+                        work_bytes,
+                        properties_id.content_id(),
+                        envelope.body().len(),
+                        &mut charged,
+                    )?;
+                    let value = Arc::new(crate::PropertyVerdictSet::from_canonical_bytes(
+                        envelope.body(),
+                    )?);
+                    if value.id()? != properties_id {
+                        return Err(integrity("property-verdict-set-envelope-shape"));
+                    }
+                    properties.insert(properties_id, Arc::clone(&value));
+                    value
+                };
+                evaluation.validate_compact_basis(
+                    policy,
+                    objective_contract,
+                    &observation_value,
+                    properties_value.as_ref(),
+                )?;
+                let reward = evaluation
+                    .scalar_reward()
+                    .map_or(0, crate::FixedReward::to_micros_saturating);
+                decoded.insert(content, (observation, reward));
+                reward
+            };
+            if reward == 0 {
+                continue;
+            }
+            for (branch_point, edge) in edges {
+                let total = reward_sums
+                    .entry(branch_point)
+                    .or_default()
+                    .entry(edge)
+                    .or_default();
+                *total += i128::from(reward);
+            }
+        }
+        Ok(reward_sums
+            .into_iter()
+            .filter_map(|(branch_point, edge_sums)| {
+                let rewards = edge_sums
+                    .into_iter()
+                    .filter_map(|(edge, total)| {
+                        let reward = total.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+                        (reward != 0).then_some((edge, reward))
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                (!rewards.is_empty()).then_some((branch_point, rewards))
+            })
+            .collect())
     }
 
     fn project_branch_finding_events_batch(
@@ -3014,6 +3176,43 @@ pub(super) fn charge_branch_finding_occurrence_visits(
         .ok_or_else(|| integrity("branch-finding-occurrence-visit-limit"))?;
     if total > crate::MAX_BRANCH_FINDING_OCCURRENCE_VISITS {
         return Err(integrity("branch-finding-occurrence-visit-limit"));
+    }
+    Ok(total)
+}
+
+pub(super) fn charge_branch_objective_work(
+    prior: usize,
+    bytes: usize,
+) -> Result<usize, CampaignRepositoryError> {
+    let total = prior
+        .checked_add(bytes)
+        .ok_or_else(|| integrity("branch-objective-projection-byte-limit"))?;
+    if total > crate::MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES {
+        return Err(integrity("branch-objective-projection-byte-limit"));
+    }
+    Ok(total)
+}
+
+fn charge_branch_objective_record(
+    prior: usize,
+    id: ContentId,
+    bytes: usize,
+    charged: &mut BTreeSet<ContentId>,
+) -> Result<usize, CampaignRepositoryError> {
+    if !charged.insert(id) {
+        return Ok(prior);
+    }
+    charge_branch_objective_work(prior, bytes)
+}
+
+pub(super) fn charge_branch_objective_evaluations(
+    prior: usize,
+) -> Result<usize, CampaignRepositoryError> {
+    let total = prior
+        .checked_add(1)
+        .ok_or_else(|| integrity("branch-objective-evaluation-count"))?;
+    if total > crate::MAX_BRANCH_OBJECTIVE_EVALUATIONS {
+        return Err(integrity("branch-objective-evaluation-count"));
     }
     Ok(total)
 }

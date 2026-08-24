@@ -253,7 +253,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   coverage identities from the exact canonical observation set under explicit
   root/observation/identity/byte bounds, folds owner-verified finding
   occurrences through three closed positive policy-guidance signals under
-  finding-root/occurrence/body bounds, holds objective reward neutral, and
+  finding-root/occurrence/body bounds, folds exact owner-published objective
+  evaluations through a 65,536-record/128-MiB shared batch, and
   derives the active policy's exact edge scores with restart equality. Canonical
   frontier engine version 2 now consumes those completed/prospective uniform-
   prior, novelty, finding-reward, and fairness terms from exact owner-built
@@ -261,9 +262,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   publishes guidance only after zero-write preflight, and reruns identically on
   restart/import. The request projector batches unique branch points, scans the
   canonical observation/finding roots once, charges 65,536 aggregate credits,
-  128 MiB of credit/path bodies, and 128 MiB of unique choice-domain bodies.
-  Objective reward, model/explicit prior, interval feedback, and generator
-  integrations that consume those remaining owners remain open.
+  128 MiB of credit/path bodies, 65,536 unique objective evaluations and 128
+  MiB of their deduplicated evaluation/observation/property basis bodies, and
+  128 MiB of unique choice-domain bodies.
+  Model/explicit prior, interval feedback, and generator integrations that
+  consume those remaining owners remain open.
 - [x] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.
@@ -766,8 +769,8 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   daemon-owned long-lived coordinator runtime is implemented. Process startup
   can now attach that runtime to one explicitly named existing campaign with
   the packaged planner and one authenticated local executor; automatic
-  campaign discovery, dynamic/multiple attachment, owner-built objective reward,
-  and model/explicit-prior ranking remain open. The first `CampaignService`
+  campaign discovery, dynamic/multiple attachment, and model/explicit-prior
+  ranking remain open. The first `CampaignService`
   checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
   bounded by-value creation, authenticated current-head reads,

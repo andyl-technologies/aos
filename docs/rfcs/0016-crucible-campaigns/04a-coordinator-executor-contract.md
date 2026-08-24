@@ -1147,11 +1147,11 @@ disposition.
 
 The same engine name at implementation version 2 additionally advertises
 `canonical-frontier-puct-v1`. Every Ready position has one exact offer and one
-`PlannerCandidateGuidanceV1`; non-Ready positions have neither. The guidance
+`PlannerCandidateGuidanceV2`; non-Ready positions have neither. The guidance
 body is bounded to 64 KiB and encodes, in order:
 
 ```text
-schema_version = 1
+schema_version = 2
 input_view: CampaignViewId
 policy: CampaignPolicyId
 position: PlanningScanPosition
@@ -1162,17 +1162,22 @@ ordinal: u64
 edge: BranchEdgeId
 statistics: PuctEdgeStatistics
 novelty_events: u64
+objective_reward_micros: i64
 finding_events: map<FindingKind, u64>  # at most three positive entries
 ```
 
 Its envelope children are the exact input view, policy, served request, and
 domain. `edge` MUST derive from the branch point, semantic domain, and value;
-the novelty count MUST agree with the Boolean statistic; the reward sum MUST
-equal the saturating sum of the by-value policy's configured closed finding
-weights times occurrence counts. Completed edges reuse exact authenticated
-statistics. An unseen offered edge is the sole prospective addition to the
-completed set, with zero visits/reward/novelty/findings, a uniform prior over
-that set plus itself, and fairness reserved.
+the novelty count MUST agree with the Boolean statistic; the objective field
+MUST equal the bounded owner projection in RFC 03; and the reward sum MUST equal
+the saturating addition of that signed field and the by-value policy's
+configured closed finding weights times occurrence counts. Completed edges
+reuse exact authenticated statistics. An unseen offered edge is the sole
+prospective addition to the completed set, with zero visits/reward/novelty/
+objective/findings, a uniform prior over that set plus itself, and fairness
+reserved. Schema-v1 bodies omit `objective_reward_micros`, remain canonical
+with neutral objective reward, and are accepted through identity-preserving
+historical recomputation; new request construction emits v2.
 
 The owner computes one batch per page. Aggregate credited observations and
 credit/path bodies retain the RFC 03 65,536-record/128-MiB limits; the canonical
