@@ -2,6 +2,55 @@
 
 use super::*;
 
+fn recovery_process(process_id: u32, executable: &str) -> QemuProcessIdentity {
+    QemuProcessIdentity {
+        process_id,
+        start_time_ticks: u64::from(process_id) + 100,
+        executable: PathBuf::from(executable),
+    }
+}
+
+fn recovery_manifest(
+    current: QemuProcessIdentity,
+    staged: Option<QemuProcessIdentity>,
+) -> ProductionRunManifest {
+    ProductionRunManifest {
+        version: 2,
+        scenario: "3".repeat(64),
+        owner: recovery_process(1, "/aos/controller"),
+        processes: BTreeMap::from([(String::from("node-a"), current)]),
+        staged_processes: staged
+            .map(|identity| BTreeMap::from([(String::from("node-a"), identity)]))
+            .unwrap_or_default(),
+        clean_shutdown: false,
+        recovered_after_host_exit: false,
+    }
+}
+
+fn recovery_journal(
+    phase: ProductionLifecycleJournalPhase,
+    current: QemuProcessIdentity,
+    replacement: Option<QemuProcessIdentity>,
+) -> ProductionLifecycleJournal {
+    ProductionLifecycleJournal {
+        version: 1,
+        transaction: 1,
+        phase,
+        nodes: vec![ProductionLifecycleJournalNode {
+            node: String::from("node-a"),
+            current_process: current,
+            replacement_process: replacement,
+            current_generation: 1,
+            next_generation: 2,
+            transition: String::from("Crash"),
+            action_sha256: "1".repeat(64),
+            evidence_sha256: "2".repeat(64),
+            expected_exit_code: Some(70),
+        }],
+        completed_exits: Vec::new(),
+    }
+}
+
 #[test]
 fn durable_run_state_allows_concurrent_sessions_for_one_scenario() {
     let root =
@@ -229,6 +278,58 @@ fn durable_run_state_accepts_a_prepared_replacement_at_the_exact_node_limit() {
         decoded_journal.phase,
         ProductionLifecycleJournalPhase::Prepared
     ));
+}
+
+#[test]
+fn durable_run_state_rejects_prepared_ownership_in_intent_or_committed_phase() {
+    let current = recovery_process(7, "/aos/qemu-current");
+    let replacement = recovery_process(8, "/aos/qemu-replacement");
+    let manifest = recovery_manifest(current.clone(), Some(replacement.clone()));
+
+    for phase in [
+        ProductionLifecycleJournalPhase::Intent,
+        ProductionLifecycleJournalPhase::Committed,
+    ] {
+        let journal = recovery_journal(phase, current.clone(), Some(replacement.clone()));
+        let error = quantum_loop::validate_recovered_lifecycle_journal(
+            &journal,
+            &manifest,
+            FaultResourceLimits::default(),
+        )
+        .err()
+        .unwrap_or_else(|| panic!("impossible phase ownership should fail closed"));
+        assert!(
+            error.contains("cannot retain live node ownership")
+                || error.contains("not bound to manifest process ownership")
+        );
+    }
+}
+
+#[test]
+fn durable_run_state_accepts_both_quarantined_manifest_commit_windows() {
+    let current = recovery_process(7, "/aos/qemu-current");
+    let replacement = recovery_process(8, "/aos/qemu-replacement");
+    let journal = recovery_journal(
+        ProductionLifecycleJournalPhase::Quarantined,
+        current.clone(),
+        None,
+    );
+
+    let unpublished = recovery_manifest(current, Some(replacement.clone()));
+    quantum_loop::validate_recovered_lifecycle_journal(
+        &journal,
+        &unpublished,
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("pre-rename quarantine state should recover: {error}"));
+
+    let published = recovery_manifest(replacement, None);
+    quantum_loop::validate_recovered_lifecycle_journal(
+        &journal,
+        &published,
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("post-rename quarantine state should recover: {error}"));
 }
 
 #[test]
