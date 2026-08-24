@@ -174,12 +174,16 @@ The lineage and policy arguments are canonical binary records:
   create network-recovery \
   --lineage ./worked-network-fixture/lineage.bin \
   --policy ./worked-network-fixture/policy.bin \
+  --start-command "$START_COMMAND" \
   --format json
 ```
 
-The response contains the immutable genesis snapshot. Save exact IDs from JSON
-instead of scraping tables. Status and watch authenticate one exact head and
-lifecycle projection:
+`--start-command` is optional. When present, creation is followed by a separate
+idempotent start against the exact returned genesis snapshot; the version-2
+acceptance report contains both results. The two mutations are retry-safe but
+not atomic, so retry the same create/start inputs if creation succeeds and the
+start response is indeterminate. Save exact IDs from JSON instead of scraping
+tables. Status and watch authenticate one exact head and lifecycle projection:
 
 ```sh
 ./result/bin/crucible campaign --socket "$CAMPAIGN_SOCKET" \
@@ -202,12 +206,19 @@ indeterminate transport result.
 
 ```sh
 crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator \
+  start network-recovery --expected "$SNAPSHOT" --command "$START_COMMAND"
+
+crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator \
   resume network-recovery --expected "$SNAPSHOT" --command "$COMMAND"
 
 crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator \
   pause network-recovery --expected "$NEXT" --command "$PAUSE_COMMAND" \
   --active drain
 ```
+
+`start` and `resume` apply the same checked lifecycle transition. Use `start`
+for the first transition from a newly created campaign and `resume` after a
+pause; their reports preserve that operator intent.
 
 Run each command with `--help` before scripting it. Pause policies are semantic:
 `drain` waits for admitted work, `retry` preserves canceled work as retryable,

@@ -342,6 +342,8 @@ enum CampaignCommand {
     Findings(CampaignPageArgs),
     /// Inspect one exact branch request and its current continuation state.
     FrontierObject(CampaignFrontierObjectArgs),
+    /// Begin issuing work for a newly created campaign.
+    Start(CampaignMutationBasisArgs),
     /// Begin or resume issuing campaign work.
     Resume(CampaignMutationBasisArgs),
     /// Pause new work under an explicit active-attempt policy.

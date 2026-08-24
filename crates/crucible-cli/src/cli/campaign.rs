@@ -1638,6 +1638,11 @@ fn campaign_mutation_spec(
     CliError,
 > {
     match command {
+        CampaignCommand::Start(basis) => Ok((
+            mutation_basis_ref(basis),
+            "start",
+            CampaignControlAction::Resume,
+        )),
         CampaignCommand::Resume(basis) => Ok((
             mutation_basis_ref(basis),
             "resume",
@@ -3531,6 +3536,18 @@ mod tests {
     }
 
     #[test]
+    fn campaign_start_uses_the_checked_resume_transition() {
+        let command = CampaignCommand::Start(mutation_basis("start"));
+        let report = mutate_over_loopback(&command);
+
+        assert_eq!(report.operation, "start");
+        assert_eq!(report.command, hash("start").to_hex());
+        assert_eq!(report.prior_snapshot, snapshot("current").to_string());
+        assert_eq!(report.new_snapshot, snapshot("started").to_string());
+        assert!(!report.replayed);
+    }
+
+    #[test]
     fn campaign_pin_uses_the_checked_loopback_transport() {
         let configuration = ConfigurationId::from_hash(hash("pin-configuration"));
         let command = CampaignCommand::Pin(CampaignPinArgs {
@@ -3550,6 +3567,12 @@ mod tests {
 
     #[test]
     fn campaign_mutation_actions_preserve_exact_operator_intent() {
+        let start = CampaignCommand::Start(mutation_basis("start"));
+        let (basis, operation, action) = campaign_mutation_spec(&start).expect("start mutation");
+        assert_eq!(basis.command, hash("start").to_hex());
+        assert_eq!(operation, "start");
+        assert!(matches!(action, CampaignControlAction::Resume));
+
         let resume = CampaignCommand::Resume(mutation_basis("resume"));
         assert!(matches!(
             campaign_mutation_spec(&resume).expect("resume mutation").2,
@@ -4174,6 +4197,29 @@ mod tests {
                 }),
                 ..
             }) if name == "created" && start_command.as_deref() == Some(create_start.as_str())
+        ));
+
+        let start = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "start",
+            "created",
+            "--expected",
+            &snapshot("created").to_string(),
+            "--command",
+            &hash("start").to_hex(),
+        ])
+        .expect("campaign start arguments");
+        assert!(matches!(
+            start.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::Start(_),
+                ..
+            })
         ));
 
         let derive = Cli::try_parse_from([

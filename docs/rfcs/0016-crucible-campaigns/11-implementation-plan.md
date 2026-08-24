@@ -1188,9 +1188,12 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   opening repository state. `campaign create --start-command COMMAND` now
   submits a separate idempotent `Resume` against the exact returned genesis
   snapshot and reports both checked results; creation and start are deliberately
-  retry-safe rather than atomic. Operator branch porcelain now resolves an exact
-  declaration name, selectable ID, or semantic tag through the proof-bearing
-  choice index and separately authorized opportunity/declaration/domain reads.
+  retry-safe rather than atomic. The standalone `campaign start` command now
+  applies the same exact-preconditioned, idempotent `Resume` transition while
+  retaining `start` as the reported operator intent. Operator branch porcelain
+  now resolves an exact declaration name, selectable ID, or semantic tag
+  through the proof-bearing choice index and separately authorized
+  opportunity/declaration/domain reads.
   Up to sixteen repeated predicates form a conjunction; resolution scans to
   authenticated EOF under a 4,096-opportunity ceiling and rejects absent or
   ambiguous matches before publication. Rich manifest authoring and policy-file
