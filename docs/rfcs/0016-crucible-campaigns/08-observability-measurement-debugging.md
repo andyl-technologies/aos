@@ -112,6 +112,27 @@ Model-owned virtual time, node icount, event counts, network drops, and storage
 completions require `virtual_nanoseconds`, `instructions`, `events`, `packets`,
 and `operations` respectively.
 
+Model-owned samples are a pure projection of the authenticated dense scheduler
+log. `virtual_time` emits the entry's virtual-time tick value at every entry;
+`node_icount` emits the entry's icount only when its node stamp equals the
+declared node; `modeled_event_count` emits `1` for an exact matching
+`trigger_fired.event`; `network_modeled_drop_count` emits `1` for each
+`message_dropped` whose required `link` equals the optional declared link (or
+for every declared-network link when omitted); `storage_completion_count`
+emits `1` for each `io_completion.node` matching the declared node; and
+`scheduler_event_count` emits `1` for every scheduler entry. A required typed
+attribute that is absent or has another type, or a model event whose closed
+source is not the catalog-admitted engine/scenario/node authority, fails replay
+rather than silently undercounting. Guest and model samples are merged only
+after independent source validation and before the common window and
+aggregation evaluator.
+
+Projection admits at most 4,000,000 model-metric-by-event visits, 1,000,000
+emitted samples, and 64 MiB of aggregate canonical sample JSON. These checks
+use checked arithmetic and run before proportional allocation. The same log
+and definitions therefore produce byte-identical samples regardless of host
+timing or adapter call order.
+
 The pure replay result is
 `crucible.model.measurement-evaluation.v1`. Evaluation first authenticates a
 dense scheduler-log range, then admits at most 1,000,000 normalized samples and

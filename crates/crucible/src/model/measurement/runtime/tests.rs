@@ -533,3 +533,350 @@ fn duplicate_and_non_dense_inputs_fail_closed() -> Result<(), Box<dyn Error>> {
     ));
     Ok(())
 }
+
+#[test]
+fn model_sources_project_exact_replay_samples() -> Result<(), Box<dyn Error>> {
+    let fixture = crate::happy_path_scenario()?;
+    let server = node("server");
+    let link = LinkId::for_endpoints(&node("client"), &server);
+    let event = EventId::from_name("pass-on-quiescence");
+    let definitions = MeasurementDefinitions::new(
+        fixture.scenario.world(),
+        fixture.scenario.plan(),
+        fixture.scenario.properties(),
+        vec![MeasurementDefinition {
+            id: MeasurementId::parse("model-owned")?,
+            begin: BoundarySelector::ScenarioGenesis,
+            end: BoundarySelector::SchedulerQuiescence,
+            timeout: None,
+            cohort: CohortPolicy::All(vec![server.clone()]),
+            metrics: vec![
+                model_metric(
+                    "virtual-time",
+                    "virtual_nanoseconds",
+                    MetricSource::VirtualTime,
+                )?,
+                model_metric(
+                    "node-icount",
+                    "instructions",
+                    MetricSource::NodeIcount {
+                        node: server.clone(),
+                    },
+                )?,
+                model_metric(
+                    "event-count",
+                    "events",
+                    MetricSource::ModeledEventCount {
+                        event: event.clone(),
+                    },
+                )?,
+                model_metric(
+                    "network-drops",
+                    "packets",
+                    MetricSource::NetworkModeledDropCount {
+                        link: Some(link.clone()),
+                    },
+                )?,
+                model_metric(
+                    "storage-completions",
+                    "operations",
+                    MetricSource::StorageCompletionCount {
+                        node: server.clone(),
+                    },
+                )?,
+                model_metric(
+                    "scheduler-events",
+                    "events",
+                    MetricSource::SchedulerEventCount,
+                )?,
+            ],
+        }],
+    )?;
+
+    let entries = vec![
+        retained_model_event(
+            0,
+            10,
+            &server,
+            "tick",
+            BTreeMap::from([
+                (
+                    String::from("icount"),
+                    EventAttributeValue::Icount(Icount { retired: 10 }),
+                ),
+                (
+                    String::from("virtual_time"),
+                    EventAttributeValue::VirtualTime(VirtualTime { ticks: 10 }),
+                ),
+            ]),
+        )?,
+        retained_model_event(
+            1,
+            20,
+            &server,
+            "trigger_fired",
+            BTreeMap::from([
+                (
+                    String::from("action"),
+                    EventAttributeValue::String(String::from("pass")),
+                ),
+                (
+                    String::from("at"),
+                    EventAttributeValue::VirtualTime(VirtualTime { ticks: 20 }),
+                ),
+                (
+                    String::from("condition"),
+                    EventAttributeValue::String(String::from("quiescent")),
+                ),
+                (String::from("event"), EventAttributeValue::Event(event)),
+            ]),
+        )?,
+        retained_model_event(
+            2,
+            30,
+            &server,
+            "message_dropped",
+            BTreeMap::from([
+                (
+                    String::from("from"),
+                    EventAttributeValue::Node(node("client")),
+                ),
+                (String::from("link"), EventAttributeValue::String(link.name)),
+                (
+                    String::from("reason"),
+                    EventAttributeValue::String(String::from("modeled-loss")),
+                ),
+                (
+                    String::from("to"),
+                    EventAttributeValue::Node(server.clone()),
+                ),
+            ]),
+        )?,
+        retained_model_event(
+            3,
+            40,
+            &server,
+            "io_completion",
+            BTreeMap::from([
+                (
+                    String::from("consumer"),
+                    EventAttributeValue::Node(server.clone()),
+                ),
+                (
+                    String::from("delivery_icount"),
+                    EventAttributeValue::Icount(Icount { retired: 40 }),
+                ),
+                (
+                    String::from("node"),
+                    EventAttributeValue::Node(server.clone()),
+                ),
+                (
+                    String::from("payload"),
+                    EventAttributeValue::Bytes(vec![1, 2, 3]),
+                ),
+                (
+                    String::from("producer"),
+                    EventAttributeValue::Node(server.clone()),
+                ),
+                (String::from("sequence"), EventAttributeValue::U64(0)),
+                (
+                    String::from("virtual_time"),
+                    EventAttributeValue::VirtualTime(VirtualTime { ticks: 40 }),
+                ),
+            ]),
+        )?,
+    ];
+
+    let first = derive_model_measurement_samples(&definitions, &entries)?;
+    let replayed = derive_model_measurement_samples(&definitions, &entries)?;
+    assert_eq!(first, replayed);
+    assert_eq!(first.len(), 15);
+    assert_eq!(
+        samples_for_metric(&first, "virtual-time"),
+        vec![10, 20, 30, 40]
+    );
+    assert_eq!(
+        samples_for_metric(&first, "node-icount"),
+        vec![10, 20, 30, 40]
+    );
+    assert_eq!(samples_for_metric(&first, "event-count"), vec![1]);
+    assert_eq!(samples_for_metric(&first, "network-drops"), vec![1]);
+    assert_eq!(samples_for_metric(&first, "storage-completions"), vec![1]);
+    assert_eq!(
+        samples_for_metric(&first, "scheduler-events"),
+        vec![1, 1, 1, 1]
+    );
+    Ok(())
+}
+
+#[test]
+fn malformed_model_source_events_fail_closed() -> Result<(), Box<dyn Error>> {
+    let fixture = crate::happy_path_scenario()?;
+    let server = node("server");
+    let definitions = MeasurementDefinitions::new(
+        fixture.scenario.world(),
+        fixture.scenario.plan(),
+        fixture.scenario.properties(),
+        vec![MeasurementDefinition {
+            id: MeasurementId::parse("network")?,
+            begin: BoundarySelector::ScenarioGenesis,
+            end: BoundarySelector::SchedulerQuiescence,
+            timeout: None,
+            cohort: CohortPolicy::All(vec![server.clone()]),
+            metrics: vec![model_metric(
+                "drops",
+                "packets",
+                MetricSource::NetworkModeledDropCount { link: None },
+            )?],
+        }],
+    )?;
+    let malformed = retained_model_event(0, 1, &server, "message_dropped", BTreeMap::new())?;
+
+    assert!(matches!(
+        derive_model_measurement_samples(&definitions, &[malformed]),
+        Err(MeasurementEvaluationError::InvalidModelSourceEvent {
+            sequence: 0,
+            kind: "message_dropped"
+        })
+    ));
+
+    let forged_guest_drop = SchedulerEventLogEntry::from_retained_open_event(
+        0,
+        crate::EventLogTime::from_virtual_time(VirtualTime { ticks: 1 })
+            .with_icount(server.clone(), Icount { retired: 1 }),
+        EventSource::Guest { node: server },
+        EventLevel::Info,
+        SchedulerEventLogClass::Causal,
+        crate::EventPayload::new(
+            "message_dropped",
+            BTreeMap::from([(
+                String::from("link"),
+                EventAttributeValue::String(
+                    LinkId::for_endpoints(&node("client"), &node("server")).name,
+                ),
+            )]),
+        ),
+    )?;
+    assert!(matches!(
+        derive_model_measurement_samples(&definitions, &[forged_guest_drop]),
+        Err(MeasurementEvaluationError::InvalidModelSourceEvent {
+            sequence: 0,
+            kind: "message_dropped"
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn model_source_projection_rejects_visit_amplification_before_sampling()
+-> Result<(), Box<dyn Error>> {
+    let fixture = crate::happy_path_scenario()?;
+    let server = node("server");
+    let definitions = (0..4)
+        .map(|measurement| {
+            let metrics = (0..MAX_METRICS_PER_MEASUREMENT)
+                .map(|metric| {
+                    model_metric(
+                        &format!("scheduler-{metric}"),
+                        "events",
+                        MetricSource::SchedulerEventCount,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(MeasurementDefinition {
+                id: MeasurementId::parse(format!("bounded-{measurement}"))?,
+                begin: BoundarySelector::ScenarioGenesis,
+                end: BoundarySelector::SchedulerQuiescence,
+                timeout: None,
+                cohort: CohortPolicy::All(vec![server.clone()]),
+                metrics,
+            })
+        })
+        .collect::<Result<Vec<_>, MeasurementDefinitionError>>()?;
+    let definitions = MeasurementDefinitions::new(
+        fixture.scenario.world(),
+        fixture.scenario.plan(),
+        fixture.scenario.properties(),
+        definitions,
+    )?;
+    let entries = (0_u64..977)
+        .map(|sequence| {
+            retained_model_event(
+                sequence,
+                sequence,
+                &server,
+                "tick",
+                BTreeMap::from([
+                    (
+                        String::from("icount"),
+                        EventAttributeValue::Icount(Icount { retired: sequence }),
+                    ),
+                    (
+                        String::from("virtual_time"),
+                        EventAttributeValue::VirtualTime(VirtualTime { ticks: sequence }),
+                    ),
+                ]),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    assert_eq!(
+        definitions
+            .definitions()
+            .iter()
+            .map(|definition| definition.metrics.len())
+            .sum::<usize>()
+            * entries.len(),
+        4_001_792
+    );
+    assert!(matches!(
+        derive_model_measurement_samples(&definitions, &entries),
+        Err(MeasurementEvaluationError::LimitExceeded {
+            limit: "model-measurement-event-visits"
+        })
+    ));
+    Ok(())
+}
+
+fn model_metric(
+    id: &str,
+    unit: &str,
+    source: MetricSource,
+) -> Result<MetricDefinition, MeasurementDefinitionError> {
+    Ok(MetricDefinition {
+        id: MetricId::parse(id)?,
+        value_type: MetricValueType::UnsignedInteger,
+        unit: UnitId::parse(unit)?,
+        source,
+        aggregation: Aggregation::Sum,
+    })
+}
+
+fn retained_model_event(
+    sequence: u64,
+    ticks: u64,
+    node: &NodeId,
+    kind: &str,
+    attributes: BTreeMap<String, EventAttributeValue>,
+) -> Result<SchedulerEventLogEntry, crate::SchedulerError> {
+    SchedulerEventLogEntry::from_retained_open_event(
+        sequence,
+        crate::EventLogTime::from_virtual_time(VirtualTime { ticks })
+            .with_icount(node.clone(), Icount { retired: ticks }),
+        EventSource::Engine,
+        EventLevel::Info,
+        SchedulerEventLogClass::Causal,
+        crate::EventPayload::new(kind, attributes),
+    )
+}
+
+fn samples_for_metric(samples: &[MeasurementRuntimeSample], metric: &str) -> Vec<u64> {
+    samples
+        .iter()
+        .filter(|sample| sample.metric().as_str() == metric)
+        .map(|sample| match sample.value() {
+            MeasurementSampleValue::Unsigned(value) => *value,
+            value => panic!("model projector emitted non-unsigned sample: {value:?}"),
+        })
+        .collect()
+}
