@@ -225,6 +225,30 @@ fn control_acknowledgement_order_wraps_without_accepting_stale_serials() {
 }
 
 #[test]
+fn fault_result_publication_waits_for_the_full_control_pump() {
+    let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
+    let request = slot
+        .request_control_boundary()
+        .unwrap_or_else(|error| panic!("control request should publish: {error}"));
+
+    // A result can become visible while the plugin is still translating the
+    // paired QEMU occurrence event. The even request token remains unacknowledged
+    // throughout that window and must not be treated as a completed pump.
+    assert!(!control_boundary_request_is_acknowledged(
+        request,
+        &slot.snapshot(),
+    ));
+
+    slot.publish_control_boundary(0, 0, 0)
+        .unwrap_or_else(|error| panic!("control boundary should publish: {error}"));
+    slot.acknowledge_control_boundary();
+    assert!(control_boundary_request_is_acknowledged(
+        request,
+        &slot.snapshot(),
+    ));
+}
+
+#[test]
 fn completed_clamp_accepts_preserved_future_idle_deadline() {
     let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
     slot.arm_external_state_restore_ceiling(200)
