@@ -72,7 +72,7 @@ fn ninep_result_evidence_excludes_locked_replay_authorization() {
         operation: NinepOperation::Read,
         frame: Vec::new(),
     };
-    let response = QemuLive9pResponseEvidence {
+    let response = LiveNinepResponseEvidence {
         completion_icount: 23,
         transport_sequence: 3,
         status: crucible_device::ResponseStatus::Ok,

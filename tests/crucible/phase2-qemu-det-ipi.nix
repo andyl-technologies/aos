@@ -24,7 +24,6 @@
     memoryMib = 128;
     vcpuCount = 2;
   };
-
   taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -83,6 +82,14 @@
         label = "delivery icount field";
         needle = ''"delivery_icount\":%" PRIu64'';
       }
+      {
+        label = "commanded probe targets the authenticated SIPI sender";
+        needle = "const unsigned int target_vcpu = src_vcpu;";
+      }
+      {
+        label = "opt-in probe delivery remains observable without extended fingerprinting";
+        needle = "if (trace_file == NULL || (!extended_fingerprint && !det_ipi_probe))";
+      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -105,6 +112,8 @@ in
         pkgs.gawk
         pkgs.grep
         pkgs.jq
+        qemuPackage
+        pkgs.crucible-qemu-trace-plugin
       ];
 
       phases = [
@@ -142,22 +151,30 @@ in
 
             for label in a b; do
               jq -e -s '
-                [ .[] | select(.kind == "det_ipi") ] as $events
-                | ($events | length) > 0
-                and any($events[]; .delivery_mode == 0)
-                and any($events[]; .delivery_mode == 5)
-                and any($events[]; .delivery_mode == 6)
+                [ .[] | select(.kind == "det_ipi") ]
+                | sort_by(.det_ipi_event) as $events
+                | ($events | length) == 3
+                and ([ $events[].det_ipi_event ] == [1, 2, 3])
+                and ([ $events[].event_id ] == [1, 2, 3])
+                and ($events[0].delivery_mode == 5)
+                and ($events[0].vector == 4294967295)
+                and ($events[1].delivery_mode == 6)
+                and ($events[1].vector == 16)
+                and ($events[2].delivery_mode == 0)
+                and ($events[2].vector == 81)
+                and ($events[0].src_vcpu == $events[1].src_vcpu)
+                and ($events[0].dst_vcpu == $events[1].dst_vcpu)
+                and ($events[2].src_vcpu == $events[1].dst_vcpu)
+                and ($events[2].dst_vcpu == $events[1].src_vcpu)
+                and ($events[0].delivery_icount == $events[1].delivery_icount)
+                and ($events[1].delivery_icount == $events[2].delivery_icount)
                 and all($events[]; (
-                  .det_ipi_event > 0
-                  and .event_id > 0
-                  and .delivery_icount >= 0
+                  .delivery_icount >= 0
                   and .src_vcpu >= 0
                   and .src_vcpu < 2
                   and .dst_vcpu >= 0
                   and .dst_vcpu < 2
                   and .src_vcpu != .dst_vcpu
-                  and .delivery_mode >= 0
-                  and .vector >= 0
                 ))
               ' "$out/trace-$label.jsonl" >/dev/null
 
@@ -192,6 +209,61 @@ in
               exit 1
             fi
 
+            # Ordinary TCG has no deterministic IPI queue or RR cursor. Run
+            # the same probe against executing firmware with extended
+            # fingerprinting disabled, then require the callback stream to
+            # remain empty. This isolates accelerator fallback from S11's
+            # sim-only register-capture and stop-boundary assertions.
+            non_sim_trace="$TMPDIR/non-sim-trace.jsonl"
+            non_sim_log="$TMPDIR/non-sim-qemu.log"
+            non_sim_launch="$TMPDIR/non-sim-launch.txt"
+            trace_plugin="${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-qemu-trace-plugin.so"
+            qemu_binary="${qemuPackage}/bin/qemu-system-x86_64"
+            printf '%s\n' \
+              'machine=q35' \
+              'accelerator=tcg,thread=single' \
+              'icount=shift=0,sleep=off,align=off' \
+              'vcpus=2' \
+              'det_ipi_probe=on' \
+              > "$non_sim_launch"
+            launch_digest=$(sha256sum "$non_sim_launch" | gawk '{ print $1 }')
+            qemu_digest=$(sha256sum "$qemu_binary" | gawk '{ print $1 }')
+            plugin_digest=$(sha256sum "$trace_plugin" | gawk '{ print $1 }')
+            plugin_arg="$trace_plugin,out=$non_sim_trace,cadence=65536,extended=off,mem_events=off,vcpus=2,det_ipi_probe=on,launch_digest=$launch_digest,qemu_build_digest=$qemu_digest,plugin_build_digest=$plugin_digest"
+
+            set +e
+            timeout -k 1 3 "$qemu_binary" \
+              -L "${qemuPackage}/share/qemu" \
+              -nodefaults \
+              -no-user-config \
+              -display none \
+              -machine q35 \
+              -accel tcg,thread=single \
+              -icount shift=0,sleep=off,align=off \
+              -cpu qemu64 \
+              -m 64 \
+              -smp 2 \
+              -rtc base=2026-01-01T00:00:00,clock=vm \
+              -monitor none \
+              -serial none \
+              -no-reboot \
+              -plugin "$plugin_arg" \
+              > "$non_sim_log" 2>&1
+            non_sim_status=$?
+            set -e
+            [ "$non_sim_status" -eq 124 ] || {
+              cat "$non_sim_log" >&2
+              echo "ordinary-TCG negative exited unexpectedly: $non_sim_status" >&2
+              exit 1
+            }
+            test -s "$non_sim_trace"
+            jq -e -s '
+              ([ .[] | select(.kind == "det_ipi") ] | length) == 0
+              and any(.[]; ((.kind // "sample") == "sample") and .retired > 0)
+            ' "$non_sim_trace" >/dev/null
+            cp "$non_sim_trace" "$out/non-sim-trace.jsonl"
+            cp "$non_sim_log" "$out/non-sim-qemu.log"
+
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
@@ -214,11 +286,18 @@ in
             deterministic_ipi_event_count_match=true
             deterministic_ipi_delivery_icount_trace_match=true
             deterministic_ipi_source_target_distinct=true
+            deterministic_ipi_causal_triple=init-sipi-commanded-fixed
+            deterministic_ipi_commanded_vector=81
+            deterministic_ipi_commanded_reverse_path=true
+            deterministic_ipi_causal_delivery_icount_match=true
             rr_handoff_proof_scope=canonical-long-horizon-s11
             sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,thread=single,stop_at=4194304,det_ipi_probe=enabled)
             patched_fixture_exercised=true
             stock_negative_control=true
-            stock_negative_control_scope=non-sim-and-self-IPI-use-upstream-path
+            stock_negative_control_scope=executed-non-sim-fallback
+            stock_negative_control_det_ipi_events=0
+            stock_negative_control_guest_execution=true
+            stock_negative_control_trace_source=ordinary-tcg-firmware(det_ipi_probe=enabled,extended=off)
             qemu_package=${qemuPackage}
             qemu_package_version=${qemuPackage.version}
             RESULT

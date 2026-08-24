@@ -10,7 +10,7 @@ use crucible::{
 use super::{
     DRIVE_POLL_INTERVAL, GATE_DOMAIN, GATE_NODE, NinepIoDiagnosticsSnapshot, QemuLive9pIoGateConfig,
 };
-pub(super) use crate::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
+pub(super) use crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 use crate::{CrucibleShmem9pDevice, QemuLaunchArtifact, QemuVmLaunchConfig};
 
 /// The determinism-relevant device subset of a run's 9p observations.

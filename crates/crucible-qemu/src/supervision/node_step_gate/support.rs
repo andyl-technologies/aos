@@ -3,8 +3,8 @@
 use std::os::unix::net::UnixStream;
 
 use super::*;
-pub(super) use crate::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 use crate::supervision::HostSupervisionDeadline;
+pub(super) use crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 
 const X86_64_MACHINE_TYPE: &str = "pc-q35-9.2";
 const X86_64_CPU_MODEL: &str = "qemu64,-rdrand,-rdseed";
@@ -220,19 +220,31 @@ pub(super) fn prime_guest_off_boot_barrier(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Carries the state needed to continue a boot-time retained-network capture.
+pub(super) struct BootNetworkBackpressureContinuation<'a> {
+    pub(super) block: Option<&'a mut QemuLiveBlockIoServicer>,
+    pub(super) ninep: Option<&'a mut QemuLive9pIoServicer>,
+    pub(super) payload: &'a [u8],
+    pub(super) capture_icount: u64,
+    pub(super) initial_network: crate::QemuNetworkTransportCheckpoint,
+    pub(super) emitted_frames: Vec<crate::QemuNodeEmittedFrame>,
+}
+
 pub(super) fn continue_boot_network_backpressure_capture(
     setup: &crate::QemuHostPluginSetup,
     timeout: Duration,
     identity: QemuLiveNodeIdentity<'_>,
     coverage: QemuLaunchPluginSwitch,
-    block: Option<&mut QemuLiveBlockIoServicer>,
-    ninep: Option<&mut QemuLive9pIoServicer>,
-    payload: &[u8],
-    capture_icount: u64,
-    initial_network: crate::QemuNetworkTransportCheckpoint,
-    mut emitted_frames: Vec<crate::QemuNodeEmittedFrame>,
+    continuation: BootNetworkBackpressureContinuation<'_>,
 ) -> Result<PrimeGuestOutcome, QemuLiveNodeStepGateError> {
+    let BootNetworkBackpressureContinuation {
+        block,
+        ninep,
+        payload,
+        capture_icount,
+        initial_network,
+        mut emitted_frames,
+    } = continuation;
     if capture_icount <= 1 {
         return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
             reason: String::from("continued boot backpressure capture must be later than icount 1"),
@@ -356,8 +368,11 @@ fn drive_mapped_prime_chain(
                 })?
                 .retired;
             if report_progress && completed_current >= next_progress_icount {
-                eprintln!(
-                    "crucible-live-network-io phase=retained-capture status=retry-progress icount={completed_current}"
+                tracing::debug!(
+                    phase = "retained-capture",
+                    status = "retry-progress",
+                    icount = completed_current,
+                    "crucible live network I/O"
                 );
                 next_progress_icount = completed_current.saturating_add(250_000_000);
             }
@@ -577,44 +592,9 @@ pub(super) fn gate_async_policy(completion_timeout: Duration) -> QemuAsyncDriver
     )
 }
 
-pub(super) fn launch_artifact(kind: &str, path: &Path) -> QemuLaunchArtifact {
-    let path = path_text(path);
-    QemuLaunchArtifact::new(
-        crucible::ContentHash::from_canonical_material(GATE_DOMAIN, &format!("{kind}={path}")),
-        path,
-    )
-}
-
-pub(super) fn path_text(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
-}
-
-pub(super) fn node_id(name: &str) -> NodeId {
-    NodeId {
-        name: name.to_owned(),
-    }
-}
-
-/// Send authorizer for the single-node run.
-///
-/// The gate has one VM and one router slot and never routes a real cross-node
-/// frame, so authorization is unconditional.
-pub(super) struct GateSendAuthorizer;
-
-impl SchedulerSendAuthorizer for GateSendAuthorizer {
-    fn authorize_cross_node_send(
-        &self,
-        producer: &SchedulerNodeId,
-        consumer: &SchedulerNodeId,
-    ) -> Result<SchedulerSendAuthorization, SchedulerError> {
-        Ok(SchedulerSendAuthorization {
-            producer: producer.clone(),
-            consumer: consumer.clone(),
-            topology_epoch: 0,
-        })
-    }
-}
-
+#[path = "support/tail.rs"]
+mod tail;
+pub(super) use tail::{GateSendAuthorizer, launch_artifact, node_id, path_text};
 #[cfg(test)]
 #[path = "support/tests.rs"]
 mod tests;

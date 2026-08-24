@@ -1696,15 +1696,17 @@ maybe_command_det_ipi_probe(
     unsigned int dst_vcpu,
     unsigned int delivery_mode)
 {
-  const unsigned int target_vcpu = (src_vcpu + 1) % tracked_vcpus;
-
   if (!det_ipi_probe || det_ipi_probe_commanded || tracked_vcpus < 2 ||
       delivery_mode != 6 || src_vcpu >= tracked_vcpus ||
-      dst_vcpu >= tracked_vcpus ||
-      target_vcpu >= tracked_vcpus) {
+      dst_vcpu >= tracked_vcpus) {
     return;
   }
 
+  /* Route the commanded FIXED probe back to the authenticated sender of the
+   * inter-vCPU SIPI. The drain callback can run with the SIPI destination as
+   * current_cpu, so deriving this target from the sender's neighbor can turn
+   * the probe into an accidental self-interrupt. */
+  const unsigned int target_vcpu = src_vcpu;
   if (qemu_plugin_inject_preemption(
           delivery_icount,
           delivery_icount,
@@ -1730,7 +1732,11 @@ on_det_ipi_delivery(
   (void)userdata;
 
   det_ipi_events++;
-  if (trace_file == NULL || !extended_fingerprint) {
+  /* The explicitly enabled IPI probe is also a negative-control observation
+   * surface under ordinary TCG, where extended sim fingerprint capture is not
+   * available. Keep ordinary non-extended traces unchanged, but never hide a
+   * deterministic delivery from an opted-in probe. */
+  if (trace_file == NULL || (!extended_fingerprint && !det_ipi_probe)) {
     return;
   }
 

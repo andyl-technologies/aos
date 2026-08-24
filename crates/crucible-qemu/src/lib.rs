@@ -44,7 +44,6 @@
 mod async_driver;
 #[cfg(target_os = "linux")]
 mod block_realization_gate;
-mod bounded_scheduler_preemption;
 mod checkpoint;
 mod console_observation;
 mod coverage;
@@ -123,7 +122,6 @@ pub use block_realization_gate::{
     BlockRealizationGateConfig, BlockRealizationGateError, BlockRealizationReport,
     run_block_realization_gate,
 };
-pub use bounded_scheduler_preemption::BoundedSchedulerPreemptionError;
 pub use checkpoint::{
     QemuHostIoCheckpoint, QemuHostIoCheckpointCodecError, QemuLive9pIoServicerCheckpoint,
     QemuLiveBlockIoServicerCheckpoint, QemuNetworkTransportCheckpoint,
@@ -361,6 +359,8 @@ pub use storage_fault_resolver::{
     resolve_storage_array_rebuild_service, resolve_volatile_cache_loss,
     storage_array_rebuild_fault_opportunity, storage_recovery_event_key,
 };
+#[cfg(target_os = "linux")]
+pub use supervision::bounded_scheduler_preemption::BoundedSchedulerPreemptionError;
 #[cfg(target_os = "linux")]
 pub use supervision::{
     BlockIoAdvanceOutcome, BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, BlockNodeOutcome,

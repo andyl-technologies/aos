@@ -116,7 +116,7 @@ in
             stop_observation_honors_timeout_without_a_state_change \
             watchdog_expiry_directly_resumes_stopped_target; do
             grep -Fxq \
-              "bounded_scheduler_preemption::tests::$test_name: test" \
+              "supervision::bounded_scheduler_preemption::tests::$test_name: test" \
               "$scheduler_test_list"
           done
           cargo test \
@@ -126,7 +126,7 @@ in
             --manifest-path crates/Cargo.toml \
             -p crucible-qemu \
             --lib \
-            bounded_scheduler_preemption::tests:: \
+            supervision::bounded_scheduler_preemption::tests:: \
             -- \
             --test-threads=1
           grep -Fxq \
@@ -203,6 +203,10 @@ in
           grep -Fxq 'retained_frame_fresh_process_restored=true' "$report"
           grep -Fxq 'retained_frame_durable_envelope_restored=true' "$report"
           grep -Fxq 'retained_frame_first_retry_icount=3000000001' "$report"
+          retained_ack_icount="$(grep '^retained_frame_guest_ack_emit_icount=' "$report")"
+          retained_ack_icount="''${retained_ack_icount#*=}"
+          test "$retained_ack_icount" -ge 3000000001
+          grep -Eq '^retained_frame_guest_ack_sequence=[0-9]+$' "$report"
           grep -Fxq 'deterministic_under_scheduler_preemption=true' "$report"
           grep -Eq '^hostile_probe_emit_icount=[1-9][0-9]*$' "$report"
           grep -Eq '^absolute_probe_origin_equal=(true|false)$' "$report"

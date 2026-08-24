@@ -612,7 +612,7 @@ mod tests {
             let _ = std::fs::remove_file(&ready_path);
             let mut child = Command::new(executable)
                 .arg("--exact")
-                .arg("bounded_scheduler_preemption::tests::preemption_target_process")
+                .arg("supervision::bounded_scheduler_preemption::tests::preemption_target_process")
                 .arg("--ignored")
                 .arg("--nocapture")
                 .arg("--test-threads=1")
