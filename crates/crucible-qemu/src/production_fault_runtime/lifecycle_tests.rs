@@ -167,9 +167,9 @@ fn terminal_lifecycle_evidence_reconstructs_the_pre_exit_digest() {
 }
 
 #[test]
-fn ready_exhaustion_names_the_effective_terminal_transition() {
-    let reset = lifecycle_action(
-        NodeLifecycleTransition::Reset,
+fn boot_ready_exhaustion_preserves_requested_intent_and_effective_terminal_decision() {
+    let boot = lifecycle_action(
+        NodeLifecycleTransition::Boot,
         NodeBootPolicy::RequireReady {
             ready_marker: object_id("guest-ready"),
             maximum_attempts: crucible::model::BoundedCount::new(CountLimit::LargeStateEntries, 2)
@@ -178,7 +178,7 @@ fn ready_exhaustion_names_the_effective_terminal_transition() {
             exhausted: NodeLifecycleTransition::PowerOff,
         },
     );
-    let mut event = lifecycle_event(&reset);
+    let mut event = lifecycle_event(&boot);
     let pre_exit_hash = [11_u8; 32];
     let mut material = [0_u8; 48];
     material[0..8].copy_from_slice(b"CRUCTRM1");
@@ -199,13 +199,13 @@ fn ready_exhaustion_names_the_effective_terminal_transition() {
         &(LIFECYCLE_TERMINAL_PRE_EXIT_VALID | LIFECYCLE_TERMINAL_EXIT_REQUIRED).to_le_bytes(),
     );
     event.header.after_hash = after_hash;
-    assert!(validate_node_event_evidence(&event, &reset).is_ok());
+    assert!(validate_node_event_evidence(&event, &boot).is_ok());
 
     let decision = node_lifecycle_decision(
         &NodeId {
             name: "node-a".to_owned(),
         },
-        reset.id(),
+        boot.id(),
         &event,
         0,
         FaultResourceLimits::default(),
@@ -214,13 +214,60 @@ fn ready_exhaustion_names_the_effective_terminal_transition() {
     .unwrap_or_else(|| panic!("exhaustion should produce a supervision decision"));
     assert_eq!(
         decision.requested_transition,
-        NodeLifecycleTransition::Reset
+        NodeLifecycleTransition::Boot
     );
     assert_eq!(
         decision.effective_transition,
         NodeLifecycleTransition::PowerOff
     );
     assert_eq!(decision.expected_exit_code, Some(71));
+
+    let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), FaultResourceLimits::default())
+        .unwrap_or_else(|error| panic!("empty test plan should be valid: {error}"));
+    let mut runtime = ProductionFaultRuntime::new(
+        plan,
+        None,
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"boot-ready-exhaustion"),
+        test_host_manifests(),
+        &QemuNodeSet::new(),
+    )
+    .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));
+    runtime.pending_node_lifecycle.push(decision);
+
+    let intents = runtime
+        .preview_node_lifecycle_intents(
+            FaultCoordinate {
+                virtual_nanos: 17,
+                retired_instructions: None,
+            },
+            0,
+            &mut QemuNodeSet::new(),
+        )
+        .unwrap_or_else(|error| panic!("exhausted Boot intent should preview: {error}"));
+    assert_eq!(intents.len(), 1);
+    assert_eq!(intents[0].requested_transition, NodeLifecycleTransition::Boot);
+
+    let work = runtime
+        .take_node_lifecycle_work()
+        .unwrap_or_else(|error| panic!("exhausted Boot work should transfer: {error}"));
+    assert_eq!(work.decisions().len(), 1);
+    assert_eq!(
+        work.decisions()[0].requested_transition,
+        NodeLifecycleTransition::Boot
+    );
+    assert_eq!(
+        work.decisions()[0].effective_transition,
+        NodeLifecycleTransition::PowerOff
+    );
+    assert_eq!(
+        work.decisions()[0].cause,
+        LIFECYCLE_TERMINAL_CAUSE_READY_EXHAUSTED
+    );
+    assert_eq!(work.decisions()[0].expected_exit_code, Some(71));
+    runtime
+        .acknowledge_node_lifecycle_work(work)
+        .unwrap_or_else(|error| panic!("exhausted Boot work should acknowledge: {error}"));
 }
 
 #[test]

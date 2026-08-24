@@ -31,7 +31,9 @@ impl From<String> for DurableRunStateError {
     }
 }
 
-pub(super) fn map_limit(error: FaultResourceLimitError) -> DurableRunStateError {
+pub(in crate::vm_lifecycle::quantum_loop::lifecycle::persistence) fn map_limit(
+    error: FaultResourceLimitError,
+) -> DurableRunStateError {
     match error {
         FaultResourceLimitError::Exceeded {
             field,
