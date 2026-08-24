@@ -95,7 +95,7 @@ impl SingleScheduler {
     /// Returns [`SingleSchedulerCheckpointError`] if a device or network owner
     /// cannot encode its independently validated continuation.
     pub fn checkpoint(&self) -> Result<SingleSchedulerCheckpoint, SingleSchedulerCheckpointError> {
-        if self.lock_held {
+        if self.lock_held || !self.app_random_branch_selections.is_empty() {
             return Err(SingleSchedulerCheckpointError::Transient);
         }
         let device_state = self
@@ -445,6 +445,7 @@ impl SingleSchedulerCheckpoint {
         staged.decision_seed = Seed::from_bytes(self.wire.decision_seed);
         staged.decision_rng_cursor = self.wire.decision_rng_cursor.clone();
         staged.branch_network_choices = self.wire.branch_network_choices.clone();
+        staged.app_random_branch_selections.clear();
         staged.search_frontiers = search_frontiers;
         staged.trigger_actions = self.wire.trigger_actions.clone();
         staged.frontier = VirtualTime {

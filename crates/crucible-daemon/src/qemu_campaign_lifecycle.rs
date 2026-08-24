@@ -32,6 +32,9 @@ use crate::{
     QemuAttemptResourceGuardFactory,
 };
 
+mod app_random_branch_replay;
+use app_random_branch_replay::app_random_branch_replay;
+
 /// Failure to bind an admitted attempt to a fresh production VM lifecycle.
 #[derive(Debug, Error)]
 pub enum QemuAttemptProductionVmLifecycleError {
@@ -60,6 +63,9 @@ pub enum QemuAttemptProductionVmLifecycleError {
     /// The production lifecycle rejected construction under the installed guard.
     #[error("build guarded production VM lifecycle: {0}")]
     Lifecycle(#[source] LifecycleApiError),
+    /// The resolved start configuration does not form an executable branch plan.
+    #[error("derive exact app-random branch replay: {0}")]
+    InvalidAppRandomBranchReplay(String),
 }
 
 /// Factory that binds one admitted attempt to the guarded production lifecycle.
@@ -227,6 +233,7 @@ pub trait QemuFreshAttemptLifecycleFactory {
         &mut self,
         scenario: &ScenarioDef,
         source: &ScenarioDefForm,
+        start: &Configuration,
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>>;
 }
@@ -520,6 +527,16 @@ where
         source: &ScenarioDefForm,
         context: &AttemptExecutionContext,
     ) -> Result<ProductionVmLifecycleLoop, QemuAttemptProductionVmLifecycleError> {
+        self.begin_fresh_with_config(scenario, source, context, self.config.clone())
+    }
+
+    fn begin_fresh_with_config(
+        &mut self,
+        scenario: &ScenarioDef,
+        source: &ScenarioDefForm,
+        context: &AttemptExecutionContext,
+        config: ProductionVmLifecycleConfig,
+    ) -> Result<ProductionVmLifecycleLoop, QemuAttemptProductionVmLifecycleError> {
         if let Some(checkpoint) = context.resume_checkpoint() {
             return Err(
                 QemuAttemptProductionVmLifecycleError::ResumeCheckpointUnsupported(checkpoint),
@@ -535,7 +552,6 @@ where
             ));
         }
 
-        let config = self.config.clone();
         self.with_attempt_launcher(context, maximum_nodes, |launcher| {
             build_production_vm_lifecycle_loop_with_launcher(scenario, source, &config, launcher)
         })
@@ -583,9 +599,32 @@ where
         &mut self,
         scenario: &ScenarioDef,
         source: &ScenarioDefForm,
+        start: &Configuration,
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
-        self.begin_fresh(scenario, source, context)
+        let (selections, plans) = app_random_branch_replay(start).map_err(|message| {
+            AttemptWorkerFailure::Terminal(
+                QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay(message),
+            )
+        })?;
+        if plans.keys().any(|node| {
+            !source
+                .world()
+                .vm_nodes()
+                .iter()
+                .any(|vm| vm.id == *node && vm.white_box == crucible::WhiteBoxPolicy::Enabled)
+        }) {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay(String::from(
+                    "app-random branch plan names a missing or white-box-disabled VM",
+                )),
+            ));
+        }
+        let config = self
+            .config
+            .clone()
+            .with_app_random_branch_replay(selections, plans);
+        self.begin_fresh_with_config(scenario, source, context, config)
             .map_err(classify_production_lifecycle_failure)
     }
 }
@@ -622,7 +661,7 @@ where
         }
         let mut lifecycle = self
             .lifecycles
-            .start_fresh_lifecycle(&scenario, input.scenario(), context)
+            .start_fresh_lifecycle(&scenario, input.scenario(), start, context)
             .map_err(map_fresh_lifecycle_failure)?;
         let materialization = materialize_fresh_start(&mut lifecycle, start, context);
         let driven = materialization.and_then(|materialization| {
@@ -665,7 +704,9 @@ fn unsupported_fresh_replay_decision(target: &Configuration) -> Option<usize> {
         .iter()
         .position(|decision| match decision {
             Decision::Override(_) | Decision::AppRandom(_) => true,
-            Decision::Selection(selection) => !selection.is_app_random_model_sample(),
+            Decision::Selection(selection) => {
+                !selection.is_app_random_model_sample() && !selection.is_campaign_branch()
+            }
             Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Preemption(_) => false,
         })
 }
@@ -815,6 +856,7 @@ fn classify_production_lifecycle_failure(
         QemuAttemptProductionVmLifecycleError::ResumeCheckpointUnsupported(_)
         | QemuAttemptProductionVmLifecycleError::ScenarioIdentityMismatch
         | QemuAttemptProductionVmLifecycleError::InvalidNodeCount(_)
+        | QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay(_)
         | QemuAttemptProductionVmLifecycleError::ResourceInstallation(_)
         | QemuAttemptProductionVmLifecycleError::ResourceContractMismatch
         | QemuAttemptProductionVmLifecycleError::ResourceContractCleanup(_)

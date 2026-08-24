@@ -5,11 +5,14 @@
 //! This dual-licensed L1 crate implements independently implementable framing,
 //! versioned codecs, and golden vectors over owned buffers, without QEMU headers,
 //! callbacks, native pointers, or private types. Its Unix descriptor handover
-//! attaches the shared-memory and wake descriptors to the setup frame.
+//! attaches the shared-memory, wake, and immutable app-random branch-plan
+//! descriptors to the setup frame.
 //!
 //! Module map: the crate root owns the frame-format constants, closed tag
 //! registry, message bodies, pure codec, frame I/O helpers, handshake
 //! orchestration, setup descriptor passing, and control/data split contract.
+//! `app_random_branch_plan` owns the sealed setup-plan body;
+//! `app_random_transport` owns the app-random observation transport;
 //! `doorbell_abi` owns the shared white-box doorbell instruction ABI;
 //! `doorbell_frame` owns the shared white-box doorbell marker frame ABI; `doorbell_marker`
 //! owns the marker-kind vocabulary and body codecs; `preemption` owns deterministic IPI arithmetic;
@@ -17,7 +20,7 @@
 //!
 //! Unsafe boundary discipline: raw `sendmsg`/`recvmsg` and ancillary-buffer
 //! details stay private; public callers use safe setup descriptor handover wrappers.
-//! These validate the fixed two-fd order and descriptor count before exposing
+//! These validate the fixed three-fd order and descriptor count before exposing
 //! owned close-on-exec descriptors.
 //!
 //! Wire-format:
@@ -32,6 +35,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
+pub mod app_random_branch_plan;
 pub mod app_random_transport;
 mod codec_fuzz;
 pub mod debug_gateway;
@@ -105,9 +109,9 @@ pub const FRAME_LENGTH_INCLUDES_TAG: bool = true;
 /// Whether all multi-byte integers in frame payloads use big-endian order.
 pub const FRAME_INTEGERS_ARE_BIG_ENDIAN: bool = true;
 /// Lowest control-protocol version this crate can negotiate.
-pub const CONTROL_PROTOCOL_MIN_VERSION: u32 = 1;
+pub const CONTROL_PROTOCOL_MIN_VERSION: u32 = 2;
 /// Highest control-protocol version this crate can negotiate.
-pub const CONTROL_PROTOCOL_VERSION: u32 = 1;
+pub const CONTROL_PROTOCOL_VERSION: u32 = 2;
 /// Byte length of plugin-to-host per-vCPU register digests.
 pub const PLUGIN_NVCPU_REGISTER_DIGEST_BYTES: usize = 32;
 
@@ -601,7 +605,7 @@ pub enum HostMsg {
 
 /// Number of file descriptors attached to a `Setup` frame.
 #[cfg(unix)]
-pub const SETUP_DESCRIPTOR_COUNT: usize = 2;
+pub const SETUP_DESCRIPTOR_COUNT: usize = 3;
 /// `SetupAck.status` value meaning the plugin is ready to run via shared memory.
 pub const SETUP_ACK_STATUS_READY: u8 = 0;
 /// Generic `SetupAck.status` value for setup failures without a narrower code.
@@ -615,6 +619,8 @@ pub struct SetupDescriptorFds {
     pub shmem_fd: RawFd,
     /// Wake descriptor, sent second in the `SCM_RIGHTS` list.
     pub wake_fd: RawFd,
+    /// Sealed app-random branch-plan descriptor, sent third.
+    pub app_random_branch_plan_fd: RawFd,
 }
 
 /// Owned descriptors received from an inbound `Setup` frame.
@@ -625,6 +631,8 @@ pub struct ReceivedSetupDescriptors {
     pub shmem_fd: OwnedFd,
     /// Wake descriptor received second in the `SCM_RIGHTS` list.
     pub wake_fd: OwnedFd,
+    /// Sealed app-random branch-plan descriptor received third.
+    pub app_random_branch_plan_fd: OwnedFd,
 }
 
 /// A decoded `Setup` frame plus its attached descriptors.
@@ -2060,7 +2068,8 @@ fn ensure_waiting_for_setup_ack(state: ControlLifecycleState) -> Result<(), Cont
 /// Sends a `Setup` frame and its fixed-order descriptors over a Unix socket.
 ///
 /// The descriptors are attached as `SCM_RIGHTS` ancillary data using
-/// `sendmsg`, in the RFC-defined order `[shmem_fd, wake_fd]`.
+/// `sendmsg`, in the RFC-defined order
+/// `[shmem_fd, wake_fd, app_random_branch_plan_fd]`.
 ///
 /// # Errors
 ///
@@ -2075,21 +2084,25 @@ pub fn send_setup_with_descriptors(
     descriptors: SetupDescriptorFds,
 ) -> Result<(), DescriptorHandoverError> {
     let frame = control_encode_host_msg(&HostMsg::Setup { region_len });
-    let fds = [descriptors.shmem_fd, descriptors.wake_fd];
+    let fds = [
+        descriptors.shmem_fd,
+        descriptors.wake_fd,
+        descriptors.app_random_branch_plan_fd,
+    ];
     send_frame_with_fds(socket_fd, &frame, &fds)
 }
 
 /// Receives a `Setup` frame and its fixed-order descriptors from a Unix socket.
 ///
-/// The frame must carry exactly two `SCM_RIGHTS` descriptors. The returned
+/// The frame must carry exactly three `SCM_RIGHTS` descriptors. The returned
 /// descriptors are owned, marked close-on-exec, and returned in the RFC-defined
-/// order: shmem first, wake second.
+/// order: shmem first, wake second, immutable app-random branch plan third.
 ///
 /// # Errors
 ///
 /// Returns [`DescriptorHandoverError`] when the socket closes early, the
 /// ancillary data is truncated or malformed, the descriptor count is not
-/// exactly two, or the frame does not decode to [`HostMsg::Setup`].
+/// exactly three, or the frame does not decode to [`HostMsg::Setup`].
 #[cfg(unix)]
 pub fn recv_setup_with_descriptors(
     socket_fd: RawFd,
@@ -2468,21 +2481,26 @@ fn append_rights_fds(
 fn setup_descriptors_from_raw_fds(
     fds: Vec<RawFd>,
 ) -> Result<ReceivedSetupDescriptors, DescriptorHandoverError> {
-    let [shmem_fd, wake_fd] = match <[RawFd; SETUP_DESCRIPTOR_COUNT]>::try_from(fds) {
-        Ok(fds) => fds,
-        Err(fds) => {
-            let count = fds.len();
-            close_raw_fds(fds);
-            return Err(DescriptorHandoverError::WrongDescriptorCount { count });
-        }
-    };
+    let [shmem_fd, wake_fd, app_random_branch_plan_fd] =
+        match <[RawFd; SETUP_DESCRIPTOR_COUNT]>::try_from(fds) {
+            Ok(fds) => fds,
+            Err(fds) => {
+                let count = fds.len();
+                close_raw_fds(fds);
+                return Err(DescriptorHandoverError::WrongDescriptorCount { count });
+            }
+        };
 
     if let Err(error) = set_cloexec_on_raw_fd(shmem_fd) {
-        close_raw_fds(vec![shmem_fd, wake_fd]);
+        close_raw_fds(vec![shmem_fd, wake_fd, app_random_branch_plan_fd]);
         return Err(error);
     }
     if let Err(error) = set_cloexec_on_raw_fd(wake_fd) {
-        close_raw_fds(vec![shmem_fd, wake_fd]);
+        close_raw_fds(vec![shmem_fd, wake_fd, app_random_branch_plan_fd]);
+        return Err(error);
+    }
+    if let Err(error) = set_cloexec_on_raw_fd(app_random_branch_plan_fd) {
+        close_raw_fds(vec![shmem_fd, wake_fd, app_random_branch_plan_fd]);
         return Err(error);
     }
 
@@ -2491,6 +2509,7 @@ fn setup_descriptors_from_raw_fds(
         ReceivedSetupDescriptors {
             shmem_fd: OwnedFd::from_raw_fd(shmem_fd),
             wake_fd: OwnedFd::from_raw_fd(wake_fd),
+            app_random_branch_plan_fd: OwnedFd::from_raw_fd(app_random_branch_plan_fd),
         }
     };
     Ok(descriptors)

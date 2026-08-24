@@ -1204,7 +1204,7 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
 
     let material = command.command_line_hash_material();
     for expected in [
-        "crucible.qemu-launch-command.v1",
+        "crucible.qemu-launch-command.v2",
         "command_line_in_hash=executable-and-argv",
         "executable=/nix/store/11111111111111111111111111111111-aos-qemu/bin/qemu-system-x86_64",
         "argv[0]=-nodefaults",

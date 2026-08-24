@@ -33,6 +33,8 @@ mod marker;
 pub(crate) use api::LiveWhiteboxApis;
 use api::{QemuPluginRegDescriptor, QemuPluginRegister};
 use app_random::LiveAppRandomState;
+use crucible_protocol::app_random_branch_plan::AppRandomBranchPlan;
+use crucible_protocol::app_random_transport::app_random_stream_name_belongs_to_node;
 pub use error::LiveWhiteboxError;
 use error::write_stderr;
 use location::{LiveWhiteboxInstructionLocation, LiveWhiteboxTbEntry};
@@ -122,6 +124,7 @@ impl LiveWhiteboxState {
         request_shutdown: QemuRequestShutdownFn,
         shmem: LiveWhiteboxShmem,
         app_random_config: Option<&PluginAppRandomConfig>,
+        app_random_branch_plan: &AppRandomBranchPlan,
     ) -> Result<Self, LiveWhiteboxError> {
         let architecture = target.architecture;
         let expected_attestation = match architecture {
@@ -169,11 +172,28 @@ impl LiveWhiteboxState {
             });
         }
 
+        if app_random_config.is_none() && !app_random_branch_plan.entries().is_empty() {
+            return Err(LiveWhiteboxError::RegistrationPlan {
+                message: "app-random branch plan requires an enabled app-random producer"
+                    .to_owned(),
+            });
+        }
+        if app_random_config.is_some_and(|config| {
+            app_random_branch_plan.entries().iter().any(|entry| {
+                !app_random_stream_name_belongs_to_node(entry.stream_name(), config.node_name())
+            })
+        }) {
+            return Err(LiveWhiteboxError::RegistrationPlan {
+                message: "app-random branch plan names another producer node".to_owned(),
+            });
+        }
         let app_random = app_random_config
             .map(|config| {
                 doorbell
                     .require_guest_input_capability(capabilities)
-                    .map(|capability| LiveAppRandomState::new(config, capability))
+                    .map(|capability| {
+                        LiveAppRandomState::new(config, app_random_branch_plan, capability)
+                    })
             })
             .transpose()
             .map_err(|source| LiveWhiteboxError::RegistrationPlan {

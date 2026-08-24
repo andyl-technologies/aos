@@ -422,6 +422,7 @@ impl OwnedCallbackRuntimeState {
             request_shutdown,
             live_whitebox::LiveWhiteboxShmem::new(marker_output, guest_introspection_rings),
             args.app_random(),
+            state.setup.app_random_branch_plan(),
         )?;
         let mut callback_state = Box::pin(callback_state);
         // SAFETY: the independently boxed state is pinned and retained by this

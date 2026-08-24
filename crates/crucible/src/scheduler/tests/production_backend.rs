@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::{
-    AppRandomDecision, BackendEffect, BackendSnapshot, MockSimulationBackend, StepObservation,
+    AppRandomDecision, AppRandomSelectable, BackendEffect, BackendSnapshot, MockSimulationBackend,
+    SelectionDecision, StepObservation,
 };
 
 #[test]
@@ -71,6 +72,61 @@ fn production_scenario_binding_preserves_the_submitted_configuration_identity() 
         runtime.canonical_configuration(),
         Configuration::genesis(scenario)
     );
+}
+
+#[test]
+fn live_app_random_consumes_an_exact_parent_campaign_selection() {
+    let mut scheduler = test_scheduler(Vec::new(), Vec::new());
+    let configuration = scheduler.configuration().clone();
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    let stream = RngStreamId::from_name("app-random/node:6:node-a/stream:6:branch");
+    let mut seeded = configuration
+        .def
+        .seed()
+        .decision_rng()
+        .fork_in_domain(&stream.domain, &stream.name);
+    let raw = seeded.next_u64();
+    let selected = raw ^ 1;
+    let live = AppRandomDecision {
+        node,
+        stream: stream.clone(),
+        request_id: 9,
+        width: 64,
+        value: selected,
+    };
+    let parent = step(
+        &configuration,
+        Decision::RngDraw(RngDecision { stream, value: raw }),
+    );
+    let selectable = AppRandomSelectable::from_decision(&configuration.def, &live)
+        .expect("live app-random request should reconstruct");
+    let selection = selectable
+        .branch_selection(&parent, selected)
+        .expect("exact parent should admit campaign selection");
+    scheduler
+        .install_app_random_branch_selections([(parent.id(), SelectionDecision::new(&selection))])
+        .expect("campaign selection should install");
+    assert!(matches!(
+        scheduler.checkpoint(),
+        Err(SingleSchedulerCheckpointError::Transient)
+    ));
+
+    let (recorded, discoveries, advanced, _append) = QuantumLoop::append_backend_causal_decisions(
+        &mut scheduler,
+        vec![Decision::AppRandom(live)],
+    )
+    .expect("live selected value should authenticate");
+
+    assert_eq!(scheduler.pending_branch_effect_choice_count(), 0);
+    assert_eq!(advanced.id(), step(&parent, recorded[1].clone()).id());
+    assert_eq!(discoveries.len(), 1);
+    assert!(matches!(
+        recorded.as_slice(),
+        [Decision::RngDraw(draw), Decision::Selection(selection)]
+            if draw.value == raw && selection.is_campaign_branch()
+    ));
 }
 
 #[test]

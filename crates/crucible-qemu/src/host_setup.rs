@@ -7,13 +7,13 @@
 //! before deterministic guest execution.
 
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 
 use crucible_protocol::{
     CONTROL_PROTOCOL_VERSION, ControlLifecycleIoError, ControlLifecycleState,
     ControlLifecycleStream, HostHandshakeConfig, NegotiatedHandshake, SchedulableNodeSetup,
-    SetupDescriptorFds,
+    SetupDescriptorFds, app_random_branch_plan::AppRandomBranchPlan,
 };
 use crucible_shmem::{
     ABI_VERSION, DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR,
@@ -305,6 +305,34 @@ pub fn complete_qemu_host_plugin_setup(
     slot_index: u32,
     required_capabilities: &QemuFaultCapabilityRequirement,
 ) -> Result<QemuHostPluginSetup, QemuHostPluginSetupError> {
+    complete_qemu_host_plugin_setup_with_app_random_branch_plan(
+        resources,
+        config,
+        slot_index,
+        required_capabilities,
+        &AppRandomBranchPlan::default(),
+    )
+}
+
+/// Runs host-side setup with one immutable app-random branch replay plan.
+///
+/// The plan is encoded into a fully sealed memfd before the control handshake
+/// and transferred as the third control-protocol v2 `Setup` descriptor. Empty
+/// plans use the same canonical descriptor contract, so setup never relies on
+/// optional descriptor counts.
+///
+/// # Errors
+///
+/// Returns [`QemuHostPluginSetupError`] for the failures documented by
+/// [`complete_qemu_host_plugin_setup`], or when the plan memfd cannot be
+/// created, populated, or sealed before descriptor handoff.
+pub fn complete_qemu_host_plugin_setup_with_app_random_branch_plan(
+    resources: QemuSpawnSetupResources,
+    config: RegionConfig,
+    slot_index: u32,
+    required_capabilities: &QemuFaultCapabilityRequirement,
+    app_random_branch_plan: &AppRandomBranchPlan,
+) -> Result<QemuHostPluginSetup, QemuHostPluginSetupError> {
     let allocation = RegionAllocation::new(config)
         .map_err(|source| QemuHostPluginSetupError::RegionLayout { source })?;
     let layout = allocation.layout();
@@ -318,6 +346,8 @@ pub fn complete_qemu_host_plugin_setup(
     let bytes = allocation
         .setup_region_bytes()
         .map_err(|source| QemuHostPluginSetupError::RegionSerialization { source })?;
+    let app_random_branch_plan_fd =
+        sealed_app_random_branch_plan_fd(&app_random_branch_plan.encode())?;
     let (control_socket, shmem_fd, wake_fd, region_len, fault_node_hash) = resources.into_parts();
     if required_capabilities
         .target_manifest()
@@ -403,6 +433,7 @@ pub fn complete_qemu_host_plugin_setup(
             SetupDescriptorFds {
                 shmem_fd: shmem_fd.as_raw_fd(),
                 wake_fd: wake_fd.as_raw_fd(),
+                app_random_branch_plan_fd: app_random_branch_plan_fd.as_raw_fd(),
             },
         )
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
@@ -504,6 +535,60 @@ pub fn complete_qemu_host_plugin_setup(
         system_manifest,
         ready_markers: required_capabilities.ready_markers().clone(),
     })
+}
+
+fn sealed_app_random_branch_plan_fd(bytes: &[u8]) -> Result<OwnedFd, QemuHostPluginSetupError> {
+    let name = c"crucible-app-random-branch-plan";
+    let raw_fd = unsafe {
+        // SAFETY: `name` is a live NUL-terminated C string and memfd_create
+        // returns a new descriptor or -1 without retaining the pointer.
+        libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
+    };
+    if raw_fd < 0 {
+        return Err(setup_io_error(
+            "create app-random branch-plan memfd",
+            io::Error::last_os_error(),
+        ));
+    }
+    let fd = unsafe {
+        // SAFETY: successful memfd_create returned one uniquely owned descriptor.
+        OwnedFd::from_raw_fd(raw_fd)
+    };
+    let length = libc::off_t::try_from(bytes.len()).map_err(|_error| {
+        setup_io_error(
+            "size app-random branch-plan memfd",
+            io::Error::new(io::ErrorKind::InvalidInput, "branch plan is too large"),
+        )
+    })?;
+    let status = unsafe {
+        // SAFETY: `fd` is a live memfd and `length` is range-checked.
+        libc::ftruncate(fd.as_raw_fd(), length)
+    };
+    if status != 0 {
+        return Err(setup_io_error(
+            "size app-random branch-plan memfd",
+            io::Error::last_os_error(),
+        ));
+    }
+    write_shmem_setup_region(fd.as_raw_fd(), bytes).map_err(|error| match error {
+        QemuHostPluginSetupError::Io { source, .. } => {
+            setup_io_error("write app-random branch-plan memfd", source)
+        }
+        other => other,
+    })?;
+    let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
+    let status = unsafe {
+        // SAFETY: `fd` is a live sealable memfd and `seals` is the reviewed
+        // immutable-descriptor policy.
+        libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, seals)
+    };
+    if status != 0 {
+        return Err(setup_io_error(
+            "seal app-random branch-plan memfd",
+            io::Error::last_os_error(),
+        ));
+    }
+    Ok(fd)
 }
 
 fn enqueue_target_manifest_query(

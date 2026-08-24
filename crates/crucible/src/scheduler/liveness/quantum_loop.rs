@@ -220,11 +220,37 @@ impl QuantumLoop for SingleScheduler {
                     ),
                 });
             };
-            let discovery = recorder
-                .normalize_app_random_request(expected)
+            let parent = recorder
+                .app_random_selection_parent(&expected)
                 .map_err(|error| SchedulerError::BoundaryViolation {
                     message: format!("live backend app-random decision was rejected: {error}"),
                 })?;
+            let discovery = if let Some(selection) = self.app_random_branch_selections.get(&parent)
+            {
+                let selection =
+                    selection
+                        .selection()
+                        .map_err(|error| SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "installed app-random branch selection is not canonical: {error}"
+                            ),
+                        })?;
+                let discovery = recorder
+                    .apply_app_random_selection(expected, &selection)
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "live backend app-random branch selection was rejected: {error}"
+                        ),
+                    })?;
+                self.app_random_branch_selections.remove(&parent);
+                discovery
+            } else {
+                recorder
+                    .normalize_app_random_request(expected)
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!("live backend app-random decision was rejected: {error}"),
+                    })?
+            };
             discovered_choices.push(discovery);
         }
         let configuration = recorder.into_configuration();

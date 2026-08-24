@@ -55,7 +55,11 @@ pub fn app_random_stream_name_is_canonical(stream_name: &str) -> bool {
     app_random_stream_name_components(stream_name).is_some()
 }
 
-fn app_random_stream_name_components(stream_name: &str) -> Option<(&str, &str)> {
+/// Parses one canonical app-random stream name into its node and guest tag.
+///
+/// Returns `None` when the length-framed syntax is noncanonical or malformed.
+#[must_use]
+pub fn app_random_stream_name_components(stream_name: &str) -> Option<(&str, &str)> {
     let framed_node = stream_name.strip_prefix("app-random/node:")?;
     let (declared_node_len, node_and_stream) = framed_node.split_once(':')?;
     let node_len = parse_canonical_length(declared_node_len)?;

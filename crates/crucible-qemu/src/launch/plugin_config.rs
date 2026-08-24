@@ -49,6 +49,8 @@ pub struct QemuLaunchAppRandomConfig {
     pub draw_offset: u64,
     /// Per-stream positions already consumed before this process launches.
     pub stream_positions: BTreeMap<String, u64>,
+    /// Immutable node-local campaign selections supplied during setup.
+    branch_plan: crucible_protocol::app_random_branch_plan::AppRandomBranchPlan,
 }
 
 impl QemuLaunchAppRandomConfig {
@@ -75,6 +77,7 @@ impl QemuLaunchAppRandomConfig {
             branch_after_draws: None,
             draw_offset: 0,
             stream_positions: BTreeMap::new(),
+            branch_plan: crucible_protocol::app_random_branch_plan::AppRandomBranchPlan::default(),
         }
     }
 
@@ -124,6 +127,24 @@ impl QemuLaunchAppRandomConfig {
         self.draw_offset = draw_offset;
         self.stream_positions = stream_positions;
         self
+    }
+
+    /// Returns this configuration with an immutable campaign branch plan.
+    #[must_use]
+    pub fn with_branch_plan(
+        mut self,
+        branch_plan: crucible_protocol::app_random_branch_plan::AppRandomBranchPlan,
+    ) -> Self {
+        self.branch_plan = branch_plan;
+        self
+    }
+
+    /// Returns the immutable campaign branch plan for this node generation.
+    #[must_use]
+    pub const fn branch_plan(
+        &self,
+    ) -> &crucible_protocol::app_random_branch_plan::AppRandomBranchPlan {
+        &self.branch_plan
     }
 }
 
@@ -303,6 +324,17 @@ impl QemuLaunchPluginConfig {
         self.coverage
     }
 
+    /// Returns the immutable app-random plan passed during setup.
+    #[must_use]
+    pub fn app_random_branch_plan(
+        &self,
+    ) -> &crucible_protocol::app_random_branch_plan::AppRandomBranchPlan {
+        match &self.app_random {
+            Some(config) => config.branch_plan(),
+            None => empty_app_random_branch_plan(),
+        }
+    }
+
     /// Returns the single-VM fingerprint sampling switch passed to the plugin.
     #[must_use]
     pub const fn fingerprint(&self) -> QemuLaunchPluginSwitch {
@@ -464,6 +496,20 @@ impl QemuLaunchPluginConfig {
             {
                 return Err(QemuLaunchCommandError::InvalidAppRandomContinuationConfiguration);
             }
+            if app_random
+                .branch_plan
+                .entries()
+                .iter()
+                .any(|entry| {
+                    entry.draw_index() >= app_random.draw_cap
+                        || !crucible_protocol::app_random_transport::app_random_stream_name_belongs_to_node(
+                            entry.stream_name(),
+                            &app_random.node_name,
+                        )
+                })
+            {
+                return Err(QemuLaunchCommandError::InvalidAppRandomBranchConfiguration);
+            }
         }
         if let Some((target_icount, output_path)) = &self.state_dump {
             if self.fingerprint != QemuLaunchPluginSwitch::On || *target_icount == 0 {
@@ -479,6 +525,14 @@ impl QemuLaunchPluginConfig {
         }
         Ok(())
     }
+}
+
+fn empty_app_random_branch_plan()
+-> &'static crucible_protocol::app_random_branch_plan::AppRandomBranchPlan {
+    static EMPTY: std::sync::OnceLock<
+        crucible_protocol::app_random_branch_plan::AppRandomBranchPlan,
+    > = std::sync::OnceLock::new();
+    EMPTY.get_or_init(Default::default)
 }
 
 fn lowercase_hex(bytes: &[u8]) -> String {
@@ -558,6 +612,29 @@ mod tests {
             "6170702d72616e646f6d2f6e6f64653a313a612f73747265616d3a343a62657461:1;\
              6170702d72616e646f6d2f6e6f64653a313a612f73747265616d3a353a616c706861:2"
         );
+    }
+
+    #[test]
+    fn app_random_branch_plan_must_name_the_launched_node() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let stream = crucible_protocol::app_random_transport::app_random_stream_name("b", "draw");
+        let entry = crucible_protocol::app_random_branch_plan::AppRandomBranchPlanEntry::new(
+            0, 7, 9, [0x5a; 32], stream,
+        )?;
+        let plan =
+            crucible_protocol::app_random_branch_plan::AppRandomBranchPlan::new(vec![entry])?;
+        let config = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0)
+            .with_whitebox(QemuLaunchPluginSwitch::On)
+            .with_whitebox_setup(
+                super::whitebox_setup::QemuWhiteboxSetupValidation::test_x86_unclaimed(),
+            )
+            .with_app_random(QemuLaunchAppRandomConfig::new(11, 8, "a").with_branch_plan(plan));
+
+        assert_eq!(
+            config.validate(),
+            Err(QemuLaunchCommandError::InvalidAppRandomBranchConfiguration)
+        );
+        Ok(())
     }
 
     #[test]

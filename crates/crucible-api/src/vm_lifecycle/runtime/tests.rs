@@ -342,6 +342,35 @@ fn initially_violated_scenario() -> ScenarioDefForm {
 }
 
 #[test]
+fn app_random_plugin_plan_requires_the_same_scheduler_selection_set()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = initially_violated_scenario();
+    let node = source.world().vm_nodes()[0].id.clone();
+    let stream =
+        crucible_protocol::app_random_transport::app_random_stream_name(&node.name, "branch");
+    let entry = crucible_protocol::app_random_branch_plan::AppRandomBranchPlanEntry::new(
+        0, 7, 9, [0x5a; 32], stream,
+    )?;
+    let plan = crucible_protocol::app_random_branch_plan::AppRandomBranchPlan::new(vec![entry])?;
+    let config = ProductionVmLifecycleConfig::new(
+        "missing-qemu",
+        "missing-plugin",
+        "missing-kernel",
+        "missing-root",
+        "missing-run-state",
+    )
+    .with_app_random_branch_replay(BTreeMap::new(), BTreeMap::from([(node, plan)]));
+
+    let Err(error) = validate_app_random_branch_replay_config(source.world().vm_nodes(), &config)
+    else {
+        panic!("unpaired plugin plan must fail before launch");
+    };
+
+    assert!(error.to_string().contains("differ in count"));
+    Ok(())
+}
+
+#[test]
 fn production_lifecycle_lends_generation_preparation_before_path_access() {
     let root =
         tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));

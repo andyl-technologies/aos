@@ -115,6 +115,7 @@ impl LiveInstallFixture {
             .wake_file
             .try_clone()
             .unwrap_or_else(|error| panic!("wake file should clone: {error}"));
+        let branch_plan = crate::setup::test_app_random_branch_plan_fd();
         let region_len = self.region_len;
         let node_count = self.node_count;
         thread::spawn(move || {
@@ -134,6 +135,7 @@ impl LiveInstallFixture {
                 SetupDescriptorFds {
                     shmem_fd: region.as_raw_fd(),
                     wake_fd: wake.as_raw_fd(),
+                    app_random_branch_plan_fd: branch_plan.as_raw_fd(),
                 },
             )
             .unwrap_or_else(|error| panic!("host setup should send: {error}"));

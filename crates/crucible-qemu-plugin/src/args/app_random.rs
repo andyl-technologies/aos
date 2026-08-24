@@ -33,6 +33,19 @@ pub struct PluginAppRandomConfig {
 }
 
 impl PluginAppRandomConfig {
+    #[cfg(test)]
+    pub(crate) fn test_config(root_seed: u64, draw_cap: u64, node_name: &str) -> Self {
+        Self {
+            root_seed,
+            draw_cap,
+            node_name: node_name.to_owned(),
+            branch_seed: None,
+            branch_after_draws: None,
+            draw_offset: 0,
+            stream_positions: BTreeMap::new(),
+        }
+    }
+
     /// Returns the scenario root seed.
     #[must_use]
     pub const fn root_seed(&self) -> u64 {

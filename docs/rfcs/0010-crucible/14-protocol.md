@@ -152,16 +152,20 @@ range (mirroring the conventional `0xF0`/`0xF1` handshake numbering).
 
 ### 3.4 Descriptor passing (`SCM_RIGHTS`)
 
-The shmem region and the wake fd are kernel objects, not bytes, so they are
+The shmem region, wake fd, and immutable branch plan are kernel objects, not
+inline control bytes, so they are
 passed as ancillary data on the control socket rather than serialized into a
 payload.
 
-- **[PROTO-8]** The host MUST hand the plugin exactly two file descriptors — the
+- **[PROTO-8]** Control-protocol v2 requires the host to hand the plugin exactly
+  three file descriptors — the
   **shmem fd** (a `memfd` or equivalent mapping the region of
   [`13-shmem-abi.md`](13-shmem-abi.md)) and the node's **wake fd** (an `eventfd`
-  used as the edge-triggered nudge) — as `SCM_RIGHTS` ancillary data attached to
-  the `Setup` frame (§3.7). The fds MUST be attached in a fixed order: shmem fd
-  first, wake fd second. The plugin MUST read exactly two fds from the `Setup`
+  used as the edge-triggered nudge), followed by a sealed regular memfd carrying
+  the node-local app-random branch plan — as `SCM_RIGHTS` ancillary data attached
+  to the `Setup` frame (§3.7). The fds MUST be attached in a fixed order: shmem
+  fd first, wake fd second, branch-plan fd third. The plugin MUST read exactly
+  three fds from the `Setup`
   frame's ancillary data; receiving any other count MUST be a setup failure
   (§5.4). *Gate:* `gate:abi-conformance`. *Spec:* §3.4, §3.7.
 
@@ -210,7 +214,7 @@ payload.
 
 ### 3.7 `Setup` (host → plugin, tag `0x01`)
 
-`Setup` carries the two descriptors as ancillary data (§3.4). Its byte payload
+`Setup` carries the three descriptors as ancillary data (§3.4). Its byte payload
 is the shmem region size, so the plugin can `mmap` exactly the right length and
 reject a truncated region.
 
@@ -219,14 +223,24 @@ reject a truncated region.
    0      8    region_len : u64 BE. Total byte length of the shmem region to
                             map. MUST match the region length implied by
                             node_count and the layout of 13-shmem-abi.md.
- -- ancillary (SCM_RIGHTS): [shmem_fd, wake_fd] in that order (PROTO-8) --
+ -- ancillary (SCM_RIGHTS): [shmem_fd, wake_fd, app_random_branch_plan_fd]
+                             in that order (PROTO-8) --
 ```
 
 - **[PROTO-12]** The host MUST send `Setup` after `HelloAck`, carrying
-  `region_len` and the two descriptors (§3.4). The plugin MUST `mmap` the shmem
+  `region_len` and the three descriptors (§3.4). The plugin MUST `mmap` the shmem
   fd for exactly `region_len` bytes, validate the region header/ABI marker per
-  [`13-shmem-abi.md`](13-shmem-abi.md), arm the wake fd, and only then reply
-  `SetupAck`. *Gate:* `gate:abi-conformance`. *Spec:* §3.7, §5.
+  [`13-shmem-abi.md`](13-shmem-abi.md), arm the wake fd, and authenticate the
+  third descriptor as a regular memfd sealed against write, growth, shrink, and
+  seal changes. The branch-plan body is at most 4 MiB and has the exact grammar
+  `8-byte "CRUCABP1" magic | u32 BE version=1 | u32 BE entry_count | entries`,
+  with no trailing bytes and at most 4,096 entries. Each entry is
+  `u64 BE draw_index | u64 BE expected_raw_value | u64 BE selected_value |
+  32-byte SelectionId digest | u16 BE stream_name_len |
+  UTF-8 canonical_stream_name`; draw indices are strictly increasing and a
+  stream name is 1..=1,024 bytes in the canonical length-framed app-random
+  syntax. Only then may the plugin reply `SetupAck`. *Gate:*
+  `gate:abi-conformance`. *Spec:* §3.7, §5.
 
 ### 3.8 `SetupAck` (plugin → host, tag `0x02`)
 
@@ -272,7 +286,7 @@ handshake:
    │   (or close socket on mismatch, §5.4)   │
    │                                         │
    │── Setup-wait... ───────────────────────│
-   │◄─ Setup(region_len) + [shmem_fd,wake_fd]│
+   │◄─ Setup(region_len) + [shmem,wake,plan]  │
    │── SetupAck(status=0) ──────────────────►│
    │                                         │
    │        ... run entirely via shmem ...    │
@@ -311,7 +325,7 @@ handshake:
  1. connect      host creates socketpair; plugin opens its end at load.
  2. Hello        plugin -> host  (proto + abi versions)
  3. HelloAck     host -> plugin  (negotiated proto, abi, slot, node_count)
- 4. Setup        host -> plugin  (region_len + [shmem_fd, wake_fd])
+ 4. Setup        host -> plugin  (region_len + [shmem_fd, wake_fd, branch_plan_fd])
  5. SetupAck     plugin -> host  (status = ready)
  6. RUN          all sync via shmem cells + SPSC queues + wake fd;
                  the control socket is SILENT for the whole run.
@@ -452,10 +466,11 @@ The control channel is determinism-neutral by construction.
   and `HostMsg` with typed errors (empty, unknown tag, short/long payload,
   oversize length) and the frame read/write helpers (truncated prefix/payload
   rejected). — satisfies [PROTO-5], [PROTO-6], [PROTO-22]; spec §6.
-- [x] **T-PROTO-3** Implement the `SCM_RIGHTS` descriptor handover on `Setup`:
-  host attaches `[shmem_fd, wake_fd]` in fixed order; plugin reads exactly two
-  fds and fails setup on any other count. — satisfies [PROTO-8], [PROTO-9],
-  [PROTO-12]; spec §3.4, §3.7.
+- [x] **T-PROTO-3** Implement the control-protocol v2 `SCM_RIGHTS` descriptor
+  handover on `Setup`: host attaches
+  `[shmem_fd, wake_fd, app_random_branch_plan_fd]` in fixed order; plugin reads
+  exactly three fds and fails setup on any other count. — satisfies [PROTO-8],
+  [PROTO-9], [PROTO-12]; spec §3.4, §3.7.
 - [x] **T-PROTO-4** Implement the handshake: plugin sends `Hello(proto, abi)`,
   host negotiates `proto = min(...)`, cross-checks `abi` exactly against the
   shmem ABI version, and replies `HelloAck(proto, abi, slot_index, node_count)`;

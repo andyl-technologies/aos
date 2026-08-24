@@ -102,6 +102,9 @@ pub struct ProductionVmLifecycleConfig {
     debug: Option<ProductionVmDebugConfig>,
     branch: Option<ProductionVmBranchConfig>,
     branch_network_choices: Vec<crucible::OverrideDecision>,
+    app_random_branch_selections: BTreeMap<ContentHash, crucible::SelectionDecision>,
+    app_random_branch_plans:
+        BTreeMap<NodeId, crucible_protocol::app_random_branch_plan::AppRandomBranchPlan>,
     signal_artifacts: Option<Arc<dyn DagStore>>,
     fault_replay: Option<ResolvedEffectTrace>,
     world_artifacts: Option<Arc<dyn DagStore>>,
@@ -126,6 +129,14 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
             .field("debug", &self.debug)
             .field("branch", &self.branch)
             .field("branch_network_choices", &self.branch_network_choices)
+            .field(
+                "app_random_branch_selection_count",
+                &self.app_random_branch_selections.len(),
+            )
+            .field(
+                "app_random_branch_plan_node_count",
+                &self.app_random_branch_plans.len(),
+            )
             .field(
                 "signal_artifacts_configured",
                 &self.signal_artifacts.is_some(),
@@ -1602,6 +1613,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
         ));
     }
     let nodes = source.world().vm_nodes();
+    validate_app_random_branch_replay_config(nodes, config)?;
     let first = nodes
         .first()
         .ok_or_else(|| loop_factory_error("scenario World has no VM nodes"))?;
@@ -1762,7 +1774,14 @@ fn build_production_vm_lifecycle_loop_with_restore(
                 })?
             } else {
                 production_app_random_launch_config(scenario, config.branch.as_ref(), &vm.id)
-            };
+            }
+            .with_branch_plan(
+                config
+                    .app_random_branch_plans
+                    .get(&vm.id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
             launch = launch.with_app_random(app_random);
         }
         if !source.world().links().is_empty() {
@@ -2083,6 +2102,13 @@ fn build_production_vm_lifecycle_loop_with_restore(
             .map_err(|error| {
                 loop_factory_error(format!("install QEMU network branch choices: {error}"))
             })?;
+        scheduler
+            .install_app_random_branch_selections(config.app_random_branch_selections.clone())
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "install QEMU app-random branch selections: {error}"
+                ))
+            })?;
     }
     let trigger_graph = source
         .plan()
@@ -2381,4 +2407,87 @@ fn build_production_vm_lifecycle_loop_with_restore(
         )));
     }
     Ok(lifecycle)
+}
+
+fn validate_app_random_branch_replay_config(
+    nodes: &[crucible::WorldNode],
+    config: &ProductionVmLifecycleConfig,
+) -> Result<(), LifecycleApiError> {
+    let mut planned_selection_ids = BTreeMap::<[u8; 32], usize>::new();
+    let mut planned_count = 0_usize;
+    for (node, plan) in &config.app_random_branch_plans {
+        if !nodes
+            .iter()
+            .any(|vm| vm.id == *node && vm.white_box == crucible::WhiteBoxPolicy::Enabled)
+        {
+            return Err(loop_factory_error(format!(
+                "app-random branch plan names missing or white-box-disabled node `{}`",
+                node.name
+            )));
+        }
+        for entry in plan.entries() {
+            if !crucible_protocol::app_random_transport::app_random_stream_name_belongs_to_node(
+                entry.stream_name(),
+                &node.name,
+            ) {
+                return Err(loop_factory_error(format!(
+                    "app-random branch plan for `{}` contains a foreign stream",
+                    node.name
+                )));
+            }
+            planned_count = planned_count
+                .checked_add(1)
+                .ok_or_else(|| loop_factory_error("app-random branch plan entry count overflow"))?;
+            if planned_count
+                > crucible_protocol::app_random_branch_plan::MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES
+            {
+                return Err(loop_factory_error(
+                    "app-random branch replay exceeds the aggregate selection bound",
+                ));
+            }
+            let count = planned_selection_ids
+                .entry(entry.selection_id())
+                .or_default();
+            *count = count.checked_add(1).ok_or_else(|| {
+                loop_factory_error("app-random branch selection multiplicity overflow")
+            })?;
+        }
+    }
+
+    if planned_count != config.app_random_branch_selections.len() {
+        return Err(loop_factory_error(
+            "app-random scheduler selections and plugin plan entries differ in count",
+        ));
+    }
+    for decision in config.app_random_branch_selections.values() {
+        let selection = decision.selection().map_err(|error| {
+            loop_factory_error(format!(
+                "decode configured app-random branch selection: {error}"
+            ))
+        })?;
+        let selection_id = selection
+            .id()
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "derive configured app-random branch selection identity: {error}"
+                ))
+            })?
+            .content_id()
+            .digest();
+        let Some(count) = planned_selection_ids.get_mut(&selection_id) else {
+            return Err(loop_factory_error(
+                "app-random scheduler selection is absent from the plugin plans",
+            ));
+        };
+        *count -= 1;
+        if *count == 0 {
+            planned_selection_ids.remove(&selection_id);
+        }
+    }
+    if !planned_selection_ids.is_empty() {
+        return Err(loop_factory_error(
+            "app-random plugin plan contains an uninstalled scheduler selection",
+        ));
+    }
+    Ok(())
 }
