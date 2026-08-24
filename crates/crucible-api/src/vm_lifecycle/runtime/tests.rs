@@ -274,6 +274,8 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         source.world().fault_topology().clone(),
         source.world().links().to_vec(),
     );
+    let run_directory = ProductionRunDirectory::temporary()
+        .unwrap_or_else(|error| panic!("test run directory should build: {error}"));
 
     ProductionVmLifecycleLoop {
         inner: BackendQuantumLoop::with_network_output_interceptor(scheduler, nodes, interceptor),
@@ -308,6 +310,7 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
             nodes: Vec::new(),
             completed_exits: Vec::new(),
         },
+        lifecycle_persistence: LifecycleJournalPersistence::new(run_directory.path()),
         run_manifest: ProductionRunManifest {
             version: 2,
             scenario: scenario.id().to_hex(),
@@ -331,11 +334,9 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         debug_gateway_teardown_required: false,
         indeterminate_debug_candidate: None,
         debug_runtime_evidence: Vec::new(),
-        _run_directory: ProductionRunDirectory::temporary()
-            .unwrap_or_else(|error| panic!("test run directory should build: {error}")),
+        _run_directory: run_directory,
     }
 }
-
 #[test]
 fn production_guest_assets_are_kept_per_architecture() {
     let config = ProductionVmLifecycleConfig::new(
@@ -372,7 +373,6 @@ fn production_guest_assets_are_kept_per_architecture() {
         Some("console=ttyAMA0")
     );
 }
-
 #[test]
 fn production_native_aarch64_assets_do_not_create_an_x86_fallback() {
     let config = ProductionVmLifecycleConfig::new_for_guest_architecture(

@@ -2,6 +2,9 @@
 
 use super::*;
 
+mod persistence;
+pub(in crate::vm_lifecycle) use persistence::LifecycleJournalPersistence;
+
 pub(super) struct PreparedTerminalReplacement {
     pub(super) decision: QemuNodeLifecycleDecision,
     pub(super) snapshot: QemuVmSnapshot,
@@ -145,41 +148,6 @@ pub(super) fn try_lifecycle_crash_detector(
 }
 
 impl ProductionVmLifecycleLoop {
-    pub(super) fn persist_lifecycle_journal(&self) -> Result<(), SchedulerError> {
-        let path = self._run_directory.path().join("lifecycle-journal.json");
-        let next = self._run_directory.path().join("lifecycle-journal.next");
-        let bytes = serde_json::to_vec_pretty(&self.lifecycle_journal).map_err(|error| {
-            SchedulerError::BoundaryViolation {
-                message: format!("encode lifecycle transaction journal: {error}"),
-            }
-        })?;
-        let mut file = File::create(&next).map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!(
-                "create lifecycle transaction journal {}: {error}",
-                next.display()
-            ),
-        })?;
-        file.write_all(&bytes)
-            .and_then(|()| file.sync_all())
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!(
-                    "flush lifecycle transaction journal {}: {error}",
-                    next.display()
-                ),
-            })?;
-        fs::rename(&next, &path).map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!(
-                "commit lifecycle transaction journal {}: {error}",
-                path.display()
-            ),
-        })?;
-        File::open(self._run_directory.path())
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("flush lifecycle journal directory: {error}"),
-            })
-    }
-
     pub(super) fn begin_terminal_lifecycle_intent(
         &mut self,
         intents: &[QemuNodeLifecycleIntent],
@@ -189,6 +157,25 @@ impl ProductionVmLifecycleLoop {
         nodes
             .try_reserve_exact(intents.len())
             .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
+        let completed_exit_count = self.lifecycle_journal.completed_exits.len();
+        limits
+            .reserve(
+                "event_records",
+                u64::try_from(completed_exit_count).map_err(|_| {
+                    lifecycle_resource_error("event_records", usize::MAX, 0, limits)
+                })?,
+                u64::try_from(intents.len()).map_err(|_| {
+                    lifecycle_resource_error("event_records", 0, usize::MAX, limits)
+                })?,
+            )
+            .map_err(|_| {
+                lifecycle_resource_error(
+                    "event_records",
+                    completed_exit_count,
+                    intents.len(),
+                    limits,
+                )
+            })?;
         self.lifecycle_journal
             .completed_exits
             .try_reserve_exact(intents.len())
@@ -267,6 +254,7 @@ impl ProductionVmLifecycleLoop {
             })?;
         self.lifecycle_journal.phase = ProductionLifecycleJournalPhase::Intent;
         self.lifecycle_journal.nodes = nodes;
+        self.reserve_lifecycle_journal_encoding(limits)?;
         self.persist_lifecycle_journal()?;
         Ok(PreparedLifecyclePrecommit { checkpoints })
     }

@@ -263,6 +263,8 @@ in
           run_exact_qemu_test \
             node::tests::exact_lifecycle::exact_snapshot_rejects_staged_fault_event_ownership
           run_exact_qemu_test \
+            node::tests::exact_lifecycle::permanent_failure_retires_and_removes_the_authoritative_generation
+          run_exact_qemu_test \
             node::tests::fault_event_budget::node_set_arms_one_node_from_one_aggregate_fault_event_budget
           run_exact_qemu_test \
             node::tests::fault_event_budget::fault_event_limit_rejects_before_consuming_staged_ownership
@@ -283,7 +285,7 @@ in
           run_exact_qemu_test \
             production_fault_runtime::lifecycle_tests::lifecycle_work_transfer_preserves_buffers_and_holds_checkpoint_barrier_until_ack
           run_exact_qemu_test \
-            production_fault_runtime::lifecycle_tests::lifecycle_intent_preview_includes_only_pending_active_qemu_actions
+            production_fault_runtime::lifecycle_tests::lifecycle_intent_preview_is_action_exact_and_ignores_active_hang_rules
           run_exact_plugin_test \
             fault_command::tests::bridge_translates_capabilities_and_local_rejections_at_logical_time
           run_exact_plugin_test \
