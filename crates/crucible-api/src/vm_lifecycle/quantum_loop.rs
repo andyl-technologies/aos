@@ -9,7 +9,7 @@ pub(super) use lifecycle::{
 };
 use lifecycle::{
     PreparedLifecyclePrecommit, PreparedTerminalReplacement, lifecycle_resource_error,
-    try_lifecycle_crash_detector, try_lifecycle_string,
+    map_journal_limit, try_lifecycle_crash_detector, try_lifecycle_string,
 };
 
 impl QuantumLoop for ProductionVmLifecycleLoop {
@@ -1791,8 +1791,13 @@ impl ProductionVmLifecycleLoop {
                     })?;
             let (event_records, event_log_bytes) = runtime
                 .lifecycle_journal_resource_usage()
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("measure lifecycle journal resource base: {error}"),
+                .map_err(|error| match error {
+                    crucible_qemu::ProductionFaultRuntimeError::ResourceLimit(error) => {
+                        map_journal_limit(error, runtime.resource_limits())
+                    }
+                    error => SchedulerError::BoundaryViolation {
+                        message: format!("measure lifecycle journal resource base: {error}"),
+                    },
                 })?;
             (runtime.resource_limits(), event_records, event_log_bytes)
         };

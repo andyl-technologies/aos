@@ -4,6 +4,7 @@ use super::*;
 
 mod persistence;
 pub(in crate::vm_lifecycle) use persistence::LifecycleJournalPersistence;
+pub(super) use persistence::map_journal_limit;
 pub(in crate::vm_lifecycle) use persistence::{
     decode_prior_run_state, decode_run_json_bounded, persist_recovered_lifecycle_journal,
     validate_recovered_lifecycle_journal,
