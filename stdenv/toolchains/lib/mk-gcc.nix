@@ -119,6 +119,7 @@ in
         export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
         export PATH="${path}"
         export CONFIG_SHELL="${prev.bash}/bin/bash"
+        export SHELL="$CONFIG_SHELL"
 
         cd "$TMPDIR"
         ${spec.preUnpack or ""}
@@ -136,7 +137,7 @@ in
 
         ${spec.preConfigure or ""}
 
-        ${configureEnvPrefix}"$TMPDIR/${sourceDir}/configure" \
+        ${configureEnvPrefix}"$CONFIG_SHELL" "$TMPDIR/${sourceDir}/configure" \
           ${configureArgsText}
 
         ${spec.postConfigure or ""}
