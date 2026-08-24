@@ -890,6 +890,33 @@ impl ProductionVmNodeLaunch {
 /// containment authority from their `Drop` path when lifecycle construction,
 /// unwinding, or caller abandonment prevents an explicit [`Self::finish`].
 pub trait ProductionVmNodeLauncher: Send {
+    /// Admits one scheduler quantum under the retained attempt authority.
+    ///
+    /// Attempt-scoped launchers use this boundary to check sticky cancellation
+    /// and atomically charge the aggregate execution-quantum ceiling before any
+    /// scheduler, host-fault, or guest state can advance. The packaged launcher
+    /// has no external attempt contract and therefore uses the default no-op.
+    /// A failed admission must not consume modeled state or begin guest work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] after cancellation, resource exhaustion,
+    /// or loss of the retained attempt authority.
+    fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError>;
+
+    /// Checks the retained attempt authority after one scheduler quantum.
+    ///
+    /// This post-boundary check makes cancellation or host-enforcement failure
+    /// that raced the final guest operation observable before the lifecycle
+    /// returns its modeled outcome. The packaged launcher uses the default
+    /// no-op because it has no external attempt contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the attempt became canceled or its
+    /// resource enforcement can no longer be authenticated.
+    fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError>;
+
     /// Launches one requested node generation.
     ///
     /// Before spawning any process, the implementation creates the generation
@@ -958,6 +985,14 @@ impl ProductionVmNodeLease for PackagedProductionVmNodeLease {
 }
 
 impl ProductionVmNodeLauncher for PackagedProductionVmNodeLauncher {
+    fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
     fn launch(
         &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,

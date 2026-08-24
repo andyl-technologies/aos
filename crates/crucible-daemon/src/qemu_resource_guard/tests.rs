@@ -5,6 +5,8 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crucible_api::ProductionVmNodeLauncher;
+
 use super::*;
 
 #[derive(Debug, Default)]
@@ -221,6 +223,25 @@ fn guard_charges_the_exact_quantum_ceiling() {
         Err(QemuVmRealizationError::Executor { .. })
     ));
     guard.finish().expect("finish composed guard");
+}
+
+#[test]
+fn production_lifecycle_launcher_charges_the_attempt_quantum_ceiling() {
+    let resources = resources(2);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, counters);
+    let guard = factory
+        .begin(resources, ExecutionCancellation::default())
+        .expect("composed resource guard");
+    let owner =
+        QemuAttemptGenerationResourceOwner::new(guard, 1).expect("generation resource owner");
+    let mut launcher = crate::QemuAttemptProductionVmNodeLauncher::new(owner);
+
+    assert!(launcher.begin_execution_quantum().is_ok());
+    assert!(launcher.check_operational_boundary().is_ok());
+    assert!(launcher.begin_execution_quantum().is_ok());
+    assert!(launcher.begin_execution_quantum().is_err());
+    launcher.finish().expect("finish lifecycle launcher");
 }
 
 #[test]
