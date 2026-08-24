@@ -4,7 +4,7 @@
 //! rename cannot publish half of an ownership transition:
 //!
 //! ```text
-//! {"version":1,"runtime_event_records":0,"runtime_event_log_bytes":0,"manifest":{...},"journal":{...}}
+//! {"version":2,"runtime_event_records":0,"runtime_event_log_bytes":0,"manifest":{...},"journal":{...}}
 //! ```
 
 use super::*;
@@ -16,7 +16,7 @@ pub(in crate::vm_lifecycle) use recovery::validate_recovered_lifecycle_journal;
 pub(in crate::vm_lifecycle) use recovery::{decode_prior_run_state, decode_run_json_bounded};
 
 const HARD_RUN_STATE_JSON_BYTES: u64 = 67_108_864;
-const PRODUCTION_RUN_STATE_VERSION: u32 = 1;
+const PRODUCTION_RUN_STATE_VERSION: u32 = 2;
 pub(in crate::vm_lifecycle) const PRODUCTION_RUN_STATE_FILE: &str = "run-state.json";
 
 #[derive(serde::Serialize)]
@@ -309,6 +309,15 @@ fn ensure_lifecycle_encoding_capacity(
         .map_err(|_| required.saturating_sub(current))
 }
 
+fn decimal_digits(mut value: u64) -> usize {
+    let mut digits = 1;
+    while value >= 10 {
+        value /= 10;
+        digits += 1;
+    }
+    digits
+}
+
 impl ProductionVmLifecycleLoop {
     pub(super) fn refresh_lifecycle_state_resource_usage(
         &mut self,
@@ -332,11 +341,13 @@ impl ProductionVmLifecycleLoop {
                     },
                 })?
         };
-        self.reserve_lifecycle_state_encoding(
+        self.admit_lifecycle_state_encoding(
             limits,
             runtime_event_records,
             runtime_event_log_bytes,
-        )
+            false,
+        )?;
+        Ok(())
     }
 
     pub(super) fn reserve_lifecycle_state_encoding(
@@ -344,9 +355,37 @@ impl ProductionVmLifecycleLoop {
         limits: FaultResourceLimits,
         runtime_event_records: u64,
         runtime_event_log_bytes: u64,
-    ) -> Result<(), SchedulerError> {
+    ) -> Result<usize, SchedulerError> {
+        self.admit_lifecycle_state_encoding(
+            limits,
+            runtime_event_records,
+            runtime_event_log_bytes,
+            true,
+        )
+    }
+
+    fn admit_lifecycle_state_encoding(
+        &mut self,
+        limits: FaultResourceLimits,
+        runtime_event_records: u64,
+        runtime_event_log_bytes: u64,
+        allow_storage_growth: bool,
+    ) -> Result<usize, SchedulerError> {
         validate_borrowed_run_state_strings(&self.run_manifest, &self.lifecycle_journal)
             .map_err(|message| SchedulerError::BoundaryViolation { message })?;
+        let lifecycle_records = self
+            .lifecycle_journal
+            .nodes
+            .len()
+            .checked_add(self.lifecycle_journal.completed_exits.len())
+            .ok_or_else(|| lifecycle_resource_error("event_records", usize::MAX, 1, limits))?;
+        limits
+            .reserve(
+                "event_records",
+                runtime_event_records,
+                u64::try_from(lifecycle_records).unwrap_or(u64::MAX),
+            )
+            .map_err(|error| map_journal_limit(error, limits))?;
         let mut counter = CountingJournalWriter::default();
         let state = ProductionRunStateRef {
             version: PRODUCTION_RUN_STATE_VERSION,
@@ -382,7 +421,10 @@ impl ProductionVmLifecycleLoop {
                         escaped_node.checked_add(escaped_path)?.checked_add(256)?;
                     total.checked_add(identity_growth.checked_mul(2)?)
                 });
+        let numeric_growth = (20_usize.saturating_sub(decimal_digits(runtime_event_records)))
+            .checked_add(20_usize.saturating_sub(decimal_digits(runtime_event_log_bytes)));
         let required = replacement_growth
+            .and_then(|growth| numeric_growth.and_then(|digits| growth.checked_add(digits)))
             .and_then(|growth| counter.length.checked_add(growth))
             .ok_or_else(|| lifecycle_resource_error("event_log_bytes", 0, usize::MAX, limits))?;
         limits
@@ -393,13 +435,22 @@ impl ProductionVmLifecycleLoop {
             )
             .map_err(|error| map_journal_limit(error, limits))?;
         let current = self.lifecycle_persistence.encoding.capacity();
-        ensure_lifecycle_encoding_capacity(&mut self.lifecycle_persistence.encoding, required)
-            .map_err(|additional| {
-                lifecycle_resource_error("event_log_bytes", current, additional, limits)
-            })?;
+        if allow_storage_growth {
+            ensure_lifecycle_encoding_capacity(&mut self.lifecycle_persistence.encoding, required)
+                .map_err(|additional| {
+                    lifecycle_resource_error("event_log_bytes", current, additional, limits)
+                })?;
+        } else if current < required {
+            return Err(lifecycle_resource_error(
+                "event_log_bytes",
+                current,
+                required.saturating_sub(current),
+                limits,
+            ));
+        }
         self.lifecycle_persistence.runtime_event_records = runtime_event_records;
         self.lifecycle_persistence.runtime_event_log_bytes = runtime_event_log_bytes;
-        Ok(())
+        Ok(required)
     }
 
     pub(in crate::vm_lifecycle) fn persist_lifecycle_state(

@@ -265,6 +265,70 @@ fn production_checkpoint_preserves_runtime_resource_limit_coordinates() {
 }
 
 #[test]
+fn external_event_reservation_is_charged_before_boundary_apply() {
+    let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), FaultResourceLimits::default())
+        .unwrap_or_else(|error| panic!("empty reservation plan should be valid: {error}"));
+    let limits = plan.resource_limits();
+    let mut nodes = QemuNodeSet::new();
+    let mut runtime = ProductionFaultRuntime::new(
+        plan,
+        None,
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"external-event-reservation"),
+        test_host_manifests(),
+        &nodes,
+    )
+    .unwrap_or_else(|error| panic!("reservation runtime should initialize: {error}"));
+    let action = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
+    let identity = action.id();
+    runtime
+        .qemu_issued_actions
+        .try_insert(identity, action)
+        .unwrap_or_else(|error| panic!("test action should enter the issued ledger: {error}"));
+    runtime
+        .qemu_action_commits
+        .try_insert(
+            identity,
+            CommittedQemuActionEvidence {
+                command_sequence: 1,
+                command_kind: crucible_shmem::FaultCommandKind::NodeLifecycle as u16,
+                before_hash: [1; 32],
+                after_hash: [2; 32],
+            },
+        )
+        .unwrap_or_else(|error| panic!("test action should enter the commit ledger: {error}"));
+
+    let error = runtime
+        .evaluate_boundary_with_event_reservation(
+            FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            0,
+            &mut nodes,
+            limits.event_records - 1,
+            0,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("external reservation should leave no action-record capacity"));
+    assert!(matches!(
+        error,
+        ProductionFaultRuntimeError::ResourceLimit(FaultResourceLimitError::Exceeded {
+            field: "event_records",
+            current,
+            requested,
+            configured,
+            hard,
+        }) if current == limits.event_records - 1
+            && requested == 2
+            && configured == limits.event_records
+            && hard == FaultResourceLimits::compiled_maximum().event_records
+    ));
+    assert_eq!(runtime.qemu_issued_actions.len(), 1);
+    assert_eq!(runtime.qemu_action_commits.len(), 1);
+}
+
+#[test]
 fn production_availability_survives_checkpoint_restore() {
     let target = ResolvedFaultTarget::NetworkSegment {
         segment: object_id("segment-left-right"),

@@ -1774,10 +1774,23 @@ impl ProductionVmLifecycleLoop {
                 runtime_event_log_bytes,
             )?)
         };
+        let (reserved_event_records, reserved_event_log_bytes) =
+            lifecycle_precommit.as_ref().map_or((0, 0), |precommit| {
+                (
+                    precommit.reserved_event_records,
+                    precommit.reserved_event_log_bytes,
+                )
+            });
         let evaluation = {
             let (scheduler, backend, interceptor, pending_outputs) =
                 self.inner.network_transaction_parts_mut();
-            interceptor.evaluate_boundary(fault_coordinate, scheduler, backend, pending_outputs)
+            interceptor.evaluate_boundary_with_event_reservation(
+                fault_coordinate,
+                scheduler,
+                backend,
+                pending_outputs,
+                (reserved_event_records, reserved_event_log_bytes),
+            )
         };
         let append = match evaluation {
             Ok(append) => append,
