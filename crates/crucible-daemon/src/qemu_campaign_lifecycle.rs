@@ -208,14 +208,14 @@ impl QemuFreshAttemptLifecycle<'_> {
     }
 }
 
-/// Factory for one guarded fresh lifecycle used by the campaign runner.
+/// Factory for one guarded scenario-genesis lifecycle used by the campaign runner.
 pub trait QemuFreshAttemptLifecycleFactory {
     /// Exact lifecycle owner created for one attempt.
     type Lifecycle: QemuFreshAttemptLifecycleOwner;
     /// Factory-specific admission or construction failure.
     type Error;
 
-    /// Starts one fresh lifecycle under the admitted attempt context.
+    /// Starts one scenario-genesis lifecycle under the admitted attempt context.
     ///
     /// # Errors
     ///
@@ -270,14 +270,18 @@ pub trait QemuFreshAttemptDriver {
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>>;
 }
 
-/// Fresh-process QEMU campaign runner with runner-owned final teardown.
+/// Genesis-start QEMU campaign runner with runner-owned final teardown.
+///
+/// This runner does not reconstruct a nonempty configuration schedule. It
+/// rejects every non-genesis discovery or branch start before resource
+/// installation so a caller cannot mistake a fresh process for thin replay.
 pub struct QemuFreshExecutionRunner<F, D> {
     lifecycles: F,
     driver: D,
 }
 
 impl<F, D> QemuFreshExecutionRunner<F, D> {
-    /// Creates a fresh runner from its guarded lifecycle factory and modeled driver.
+    /// Creates a genesis-start runner from its guarded lifecycle factory and modeled driver.
     #[must_use]
     pub const fn new(lifecycles: F, driver: D) -> Self {
         Self { lifecycles, driver }
@@ -320,6 +324,9 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
     /// The fresh runner was asked to execute a durable resume incarnation.
     #[error("fresh production QEMU runner cannot resume exact checkpoint `{0}`")]
     ResumeCheckpointUnsupported(ExactCheckpointId),
+    /// The fresh lifecycle can realize only the scenario genesis configuration.
+    #[error("fresh production QEMU runner cannot realize non-genesis start configuration `{0:?}`")]
+    StartConfigurationUnsupported(crucible::ContentHash),
     /// Guarded lifecycle admission or construction failed.
     #[error("fresh production QEMU lifecycle construction failed")]
     Lifecycle(F),
@@ -485,6 +492,15 @@ where
             ));
         }
         let scenario = input.scenario().scenario_def();
+        let start = match input.start() {
+            crate::CrucibleResolvedAttemptStart::Discover { configuration } => configuration,
+            crate::CrucibleResolvedAttemptStart::Branch { selected, .. } => selected,
+        };
+        if start != &crucible::Configuration::genesis(scenario.clone()) {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartConfigurationUnsupported(start.id()),
+            ));
+        }
         let mut lifecycle = self
             .lifecycles
             .start_fresh_lifecycle(&scenario, input.scenario(), context)

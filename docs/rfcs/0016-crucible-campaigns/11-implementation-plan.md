@@ -491,10 +491,14 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   passes the drained event-log suffix to a distinct result-sealing phase.
   Cleanup failure takes terminal precedence while retaining an earlier driver
   diagnostic, and the runner itself rejects exact-resume roots before lifecycle
-  construction. A concrete fresh modeled driver now begins from the exact
-  authenticated discovery or selected-branch child, preserves typed scheduler
-  failures, stops at the requested choice/marker/time/event or terminal
-  boundary, rejects uncommitted network output, and retains dense event state
+  construction. The fresh runner also rejects every non-genesis discovery or
+  selected-branch start before installing resources: the production lifecycle
+  starts at scenario genesis, so it cannot be presented as thin replay until
+  exact schedule replay and live producer selection injection are wired. A
+  concrete modeled driver now projects an already-materialized exact discovery
+  or selected-branch child, preserves typed scheduler failures, stops at the
+  requested choice/marker/time/event or terminal boundary, rejects uncommitted
+  network output, and retains dense event state
   under exact 1,000,000-entry/64-MiB-material bounds plus choice state under the
   canonical 65,530-record/128-MiB bounds with shared immutable contracts. Its post-shutdown seal incorporates the final drained
   suffix, runs bounded offline property evaluation, derives
@@ -502,8 +506,8 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   scenario and child artifacts, and emits a complete `ObservationCandidate`.
   It deliberately emits no undeclared measurements; measurement definitions,
   raw event-log evidence, and objective aggregation remain T-CAM-3 work.
-  Concrete driver selection, fresh exact-cache, baked/thin image provisioning,
-  and production worker composition remain open. Real-node exact-checkpoint
+  Concrete driver selection, non-genesis replay/selection materialization,
+  fresh exact-cache, and production worker composition remain open. Real-node exact-checkpoint
   capture is now an
   executor-owned, guard-retaining operation: it
   seals and exact-binds configuration, node icount, and event-log continuation
