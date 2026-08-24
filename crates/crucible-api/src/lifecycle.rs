@@ -39,6 +39,13 @@ use crate::{
     StreamingApiError, negotiate_rpc_protocol,
 };
 
+#[path = "lifecycle/hex.rs"]
+mod hex;
+use hex::{hex_string, optional_hex_string};
+#[path = "lifecycle/resource_limit.rs"]
+mod resource_limit;
+pub use resource_limit::LifecycleResourceLimit;
+
 /// Default actor mailbox capacity for lifecycle-created sessions.
 pub const LIFECYCLE_SESSION_MAILBOX_CAPACITY: usize = 16;
 
@@ -762,10 +769,6 @@ fn action_material(action: &Action) -> String {
     }
 }
 
-fn optional_hex_string(value: Option<&str>) -> String {
-    value.map_or_else(|| String::from("none"), hex_string)
-}
-
 fn log_level_material(level: LogLevel) -> &'static str {
     match level {
         LogLevel::Debug => "debug",
@@ -780,17 +783,6 @@ fn breakpoint_policy_material(policy: BreakpointPolicy) -> &'static str {
         BreakpointPolicy::OneShot => "one-shot",
         BreakpointPolicy::Repeatable => "repeatable",
     }
-}
-
-fn hex_string(value: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let bytes = value.as_bytes();
-    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        output.push(char::from(HEX[usize::from(byte >> 4)]));
-        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    output
 }
 
 /// Error returned by lifecycle unary API methods.
@@ -901,6 +893,9 @@ pub enum LifecycleApiError {
     /// The session has no active stable GDB endpoint to relay.
     #[error("session debugger is not attached")]
     DebugEndpointUnavailable,
+    /// A production resource reservation exceeded its authored or compiled bound.
+    #[error(transparent)]
+    ResourceLimit(#[from] LifecycleResourceLimit),
     /// The delegated execution backend could not be constructed.
     #[error("session execution backend construction failed: {message}")]
     LoopFactory {

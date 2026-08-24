@@ -6,8 +6,8 @@ mod lifecycle;
 #[cfg(test)]
 pub(super) use lifecycle::validate_recovered_lifecycle_journal;
 pub(super) use lifecycle::{
-    LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE, decode_prior_run_state,
-    decode_run_json_bounded, persist_run_state_atomic,
+    DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
+    decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
 };
 use lifecycle::{
     PreparedLifecyclePrecommit, PreparedLifecycleTerminal, PreparedTerminalReplacement,
