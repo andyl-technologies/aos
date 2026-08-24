@@ -12,8 +12,7 @@ pub(super) use lifecycle::{HARD_RUN_STATE_JSON_BYTES, validate_recovered_lifecyc
 use lifecycle::{
     PreparedLifecycleFaultCoordinators, PreparedLifecyclePrecommit, PreparedLifecycleTerminal,
     PreparedTerminalReplacement, map_journal_limit,
-    release_restored_generation_after_scheduler_publication,
-    select_preowned_terminal_generation,
+    release_restored_generation_after_scheduler_publication, select_preowned_terminal_generation,
 };
 
 impl QuantumLoop for ProductionVmLifecycleLoop {
@@ -777,15 +776,14 @@ impl ProductionVmLifecycleLoop {
                     &decision.node,
                     Arc::clone(&lifecycle_precommit.checkpoint),
                 )?;
-            let ownership = process_owner
-                .terminal_ownership
-                .take()
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
+            let ownership = process_owner.terminal_ownership.take().ok_or_else(|| {
+                SchedulerError::BoundaryViolation {
                     message: format!(
                         "terminal lifecycle node `{}` reused its precommit restart ownership",
                         decision.node.name
                     ),
-                })?;
+                }
+            })?;
             let (selected, current_ownership) = select_preowned_terminal_generation(
                 ownership.current,
                 ownership.successor,
@@ -798,6 +796,20 @@ impl ProductionVmLifecycleLoop {
                 ),
             })?;
             let source_paths = current_ownership.map(|current| current.artifact_paths);
+            let next_network_sequence = u32::try_from(
+                snapshot
+                    .node_continuation()
+                    .next_plugin_network_output_sequence(),
+            )
+            .map_err(|_error| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "terminal network TX continuation for `{}` exceeds the plugin ABI",
+                    decision.node.name
+                ),
+            })?;
+            let launch = selected
+                .launch
+                .with_network_tx_next_sequence(next_network_sequence);
             let run_directory = selected.run_directory;
             fs::create_dir_all(&run_directory).map_err(|error| {
                 SchedulerError::BoundaryViolation {
@@ -825,7 +837,7 @@ impl ProductionVmLifecycleLoop {
                 decision,
                 snapshot,
                 run_directory,
-                launch: selected.launch,
+                launch,
                 generation: selected.generation,
                 replacement: None,
                 service_state,
@@ -954,7 +966,7 @@ impl ProductionVmLifecycleLoop {
 
     fn commit_terminal_replacements(
         &mut self,
-        prepared: &mut Vec<PreparedTerminalReplacement>,
+        prepared: &mut [PreparedTerminalReplacement],
         lifecycle_precommit: &mut PreparedLifecyclePrecommit,
     ) -> Result<(), SchedulerError> {
         if prepared.is_empty() {
@@ -1057,48 +1069,44 @@ impl ProductionVmLifecycleLoop {
         }
         drop(block_devices);
 
-        // Every Crash replacement is restored under the native QEMU pause.
-        // Publish Runnable scheduler ownership and install the authoritative
-        // backend generation before releasing guest execution.
-        for item in prepared
-            .iter()
-            .filter(|item| item.service_state == ProductionNodeServiceState::Running)
-        {
-            release_restored_generation_after_scheduler_publication(
-                self,
-                &item.decision.node,
-            )?;
-        }
-
-        for item in prepared.drain(..) {
-            let node = item.decision.node;
-            self.commit_terminal_process_ownership(&node, item.service_state)?;
-            *self.node_service_states.get_mut(&node).ok_or_else(|| {
+        for item in prepared.iter_mut() {
+            let node = &item.decision.node;
+            self.commit_terminal_process_ownership(node, item.service_state)?;
+            *self.node_service_states.get_mut(node).ok_or_else(|| {
                 SchedulerError::BoundaryViolation {
                     message: String::from("validated lifecycle service owner disappeared"),
                 }
             })? = item.service_state;
-            *self.node_run_directories.get_mut(&node).ok_or_else(|| {
-                SchedulerError::BoundaryViolation {
-                    message: String::from("validated lifecycle directory owner disappeared"),
-                }
-            })? = item.run_directory;
-            *self.node_generations.get_mut(&node).ok_or_else(|| {
+            std::mem::swap(
+                self.node_run_directories.get_mut(node).ok_or_else(|| {
+                    SchedulerError::BoundaryViolation {
+                        message: String::from("validated lifecycle directory owner disappeared"),
+                    }
+                })?,
+                &mut item.run_directory,
+            );
+            *self.node_generations.get_mut(node).ok_or_else(|| {
                 SchedulerError::BoundaryViolation {
                     message: String::from("validated lifecycle generation owner disappeared"),
                 }
             })? = item.generation;
-            *self.launch_configs.get_mut(&node).ok_or_else(|| {
-                SchedulerError::BoundaryViolation {
-                    message: String::from("validated lifecycle launch owner disappeared"),
-                }
-            })? = item.launch;
-            if let Some(path) = item.debug_backend_path {
-                *self.debug_backend_paths.get_mut(&node).ok_or_else(|| {
+            std::mem::swap(
+                self.launch_configs.get_mut(node).ok_or_else(|| {
                     SchedulerError::BoundaryViolation {
-                        message: String::from("validated lifecycle debug owner disappeared"),
+                        message: String::from("validated lifecycle launch owner disappeared"),
                     }
-                })? = path;
+                })?,
+                &mut item.launch,
+            );
+            if let Some(path) = item.debug_backend_path.as_mut() {
+                std::mem::swap(
+                    self.debug_backend_paths.get_mut(node).ok_or_else(|| {
+                        SchedulerError::BoundaryViolation {
+                            message: String::from("validated lifecycle debug owner disappeared"),
+                        }
+                    })?,
+                    path,
+                );
             }
         }
         Ok(())
@@ -1180,7 +1188,7 @@ impl ProductionVmLifecycleLoop {
         }
     }
 
-    fn activate_node_boot_requests(&mut self, requests: &[NodeId]) -> Result<(), SchedulerError> {
+    fn commit_node_boot_requests(&mut self, requests: &[NodeId]) -> Result<(), SchedulerError> {
         for node in requests {
             match self.node_service_states.get(node).copied() {
                 Some(ProductionNodeServiceState::PoweredOff) => {}
@@ -1210,9 +1218,6 @@ impl ProductionVmLifecycleLoop {
         self.inner
             .loop_impl_mut()
             .set_vm_nodes_activity(requests, SchedulerNodeActivity::Runnable)?;
-        for node in requests {
-            self.inner.backend_mut().boot_powered_off_generation(node)?;
-        }
         for node in requests {
             let Some(state) = self.node_service_states.get_mut(node) else {
                 return Err(SchedulerError::BoundaryViolation {
@@ -1623,8 +1628,14 @@ impl ProductionVmLifecycleLoop {
         let mut lifecycle_precommit = if lifecycle_intents.is_empty() {
             None
         } else {
+            let scheduler_checkpoint = self.inner.loop_impl().checkpoint().map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!("capture lifecycle scheduler continuation: {error}"),
+                }
+            })?;
             Some(self.begin_terminal_lifecycle_intent(
                 &lifecycle_intents,
+                &scheduler_checkpoint,
                 resource_limits,
                 runtime_event_records,
                 runtime_event_log_bytes,
@@ -1709,15 +1720,96 @@ impl ProductionVmLifecycleLoop {
                 .poison();
             return Err(error);
         }
-        self.fault_runtime
-            .lock()
-            .map_err(|_| SchedulerError::BoundaryViolation {
-                message: String::from("production fault runtime lock is poisoned"),
-            })?
-            .acknowledge_node_lifecycle_work(lifecycle_work)
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("acknowledge production lifecycle work: {error}"),
-            })?;
+        let fault_runtime = Arc::clone(&self.fault_runtime);
+        let mut release_runtime = match fault_runtime.lock() {
+            Ok(runtime) => runtime,
+            Err(_) => {
+                return Err(self.quarantine_terminal_lifecycle_transaction(
+                    lifecycle_work.decisions(),
+                    lifecycle_work.boot_requests(),
+                    SchedulerError::BoundaryViolation {
+                        message: String::from("production fault runtime lock is poisoned"),
+                    },
+                ));
+            }
+        };
+        let lifecycle_release =
+            match release_runtime.acknowledge_node_lifecycle_work(lifecycle_work) {
+                Ok(release) => release,
+                Err(work) => {
+                    release_runtime.poison();
+                    drop(release_runtime);
+                    return Err(self.quarantine_terminal_lifecycle_transaction(
+                        work.decisions(),
+                        work.boot_requests(),
+                        SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "acknowledge production lifecycle work: lifecycle owner mismatch",
+                            ),
+                        },
+                    ));
+                }
+            };
+        // Hold this same guard from acknowledgement through release completion.
+        // A newly resumed generation can immediately enter a block or 9p
+        // coordinator on another host thread; that callback waits here until
+        // the barrier is cleared instead of interleaving canonical fault state.
+        for decision in lifecycle_release.decisions() {
+            let service_state = match decision.effective_transition {
+                crucible::model::NodeLifecycleTransition::Crash => {
+                    ProductionNodeServiceState::Running
+                }
+                crucible::model::NodeLifecycleTransition::PowerOff => {
+                    ProductionNodeServiceState::PoweredOff
+                }
+                crucible::model::NodeLifecycleTransition::PermanentFailure => {
+                    ProductionNodeServiceState::PermanentlyFailed
+                }
+                _ => continue,
+            };
+            if let Err(error) = release_restored_generation_after_scheduler_publication(
+                self,
+                &decision.node,
+                service_state,
+            ) {
+                release_runtime.poison();
+                drop(release_runtime);
+                return Err(self.quarantine_terminal_lifecycle_transaction(
+                    lifecycle_release.decisions(),
+                    lifecycle_release.boot_requests(),
+                    error,
+                ));
+            }
+        }
+        for node in lifecycle_release.boot_requests() {
+            if let Err(error) = release_restored_generation_after_scheduler_publication(
+                self,
+                node,
+                ProductionNodeServiceState::Running,
+            ) {
+                release_runtime.poison();
+                drop(release_runtime);
+                return Err(self.quarantine_terminal_lifecycle_transaction(
+                    lifecycle_release.decisions(),
+                    lifecycle_release.boot_requests(),
+                    error,
+                ));
+            }
+        }
+        if let Err(release) = release_runtime.complete_node_lifecycle_release(lifecycle_release) {
+            release_runtime.poison();
+            drop(release_runtime);
+            return Err(self.quarantine_terminal_lifecycle_transaction(
+                release.decisions(),
+                release.boot_requests(),
+                SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "complete production lifecycle release: lifecycle owner mismatch",
+                    ),
+                },
+            ));
+        }
+        drop(release_runtime);
         Ok(append)
     }
 
@@ -1728,17 +1820,16 @@ impl ProductionVmLifecycleLoop {
         mut lifecycle_precommit: Option<&mut PreparedLifecyclePrecommit>,
     ) -> Result<(), SchedulerError> {
         let has_lifecycle = !decisions.is_empty();
-        if let Err(error) = self.activate_node_boot_requests(boot_requests) {
+        if let Err(error) = self.commit_node_boot_requests(boot_requests) {
             return Err(self.quarantine_terminal_lifecycle_transaction(
                 decisions,
                 boot_requests,
                 error,
             ));
         }
-        let mut prepared = match self.prepare_terminal_replacements(
-            decisions,
-            lifecycle_precommit.as_deref_mut(),
-        ) {
+        let mut prepared = match self
+            .prepare_terminal_replacements(decisions, lifecycle_precommit.as_deref_mut())
+        {
             Ok(prepared) => prepared,
             Err(capture_error) => {
                 return Err(self.quarantine_terminal_lifecycle_transaction(
@@ -1805,9 +1896,7 @@ impl ProductionVmLifecycleLoop {
         if !prepared.is_empty() {
             let precommit = lifecycle_precommit.as_deref_mut().ok_or_else(|| {
                 SchedulerError::BoundaryViolation {
-                    message: String::from(
-                        "terminal lifecycle commit lost its precommit storage",
-                    ),
+                    message: String::from("terminal lifecycle commit lost its precommit storage"),
                 }
             })?;
             if let Err(error) = self.commit_terminal_replacements(&mut prepared, precommit) {

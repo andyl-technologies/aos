@@ -44,11 +44,33 @@ into the action before QEMU preparation. The production sink compares it with
 the live boundary before issuing PREPARE or APPLY, so replay cannot resample a
 different boundary and detect the mismatch only after a mutation.
 
+A terminal replacement is a fresh plugin process, not merely restored VMState.
+The host publishes process, scheduler, manifest, generation, launch, and
+coordinator ownership, persists the completed lifecycle journal, transitions
+the sole lifecycle-work token into a release barrier, and only then permits a
+Crash successor to resume. The same release policy leaves PowerOff and
+PermanentFailure retained without invoking scheduler publication or QEMU
+resume.
+
+The successor launch is rebound to the terminal snapshot's next network-TX
+sequence and the scheduler checkpoint's app-random stream positions. QEMU runs
+a throwaway boot-barrier quantum before loading VMState, so the plugin retains
+prebuilt launch continuations and reapplies them exactly once when it first
+observes the pending logical-time restore generation. This reset precedes both
+device callbacks and the restore acknowledgement; repeated pre-ack callbacks
+cannot rewind either cursor.
+
 ## Evidence
 
 The shared-cause live gate drives a real two-node QEMU world to an exact virtual
 event while the target guest is halted, applies a production lifecycle mutation,
 and requires both the primary execution and a fresh-process restore to produce
-the same mutation and storage consequences. The plugin regression separately
-requires every drained control callback to pump commands before release-
-acknowledging its host token.
+the same mutation and storage consequences. The same bounded live run then
+applies PowerOff and PermanentFailure together at a later exact event. Its two
+authenticated result rows require generation advance plus retained process
+ownership under scheduler `Halted` for PowerOff, and unchanged generation plus
+absent process ownership under scheduler `Done` for PermanentFailure. A
+release-policy regression additionally proves that neither non-running state
+invokes the scheduler-publication or restored-generation resume operations.
+The plugin regression separately requires every drained control callback to
+pump commands before release-acknowledging its host token.

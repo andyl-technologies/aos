@@ -180,11 +180,7 @@ fn durable_run_state_writer_preserves_resource_limit_coordinates() {
         tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
     let current = recovery_process(7, "/aos/qemu-current");
     let manifest = recovery_manifest(current.clone(), None);
-    let journal = recovery_journal(
-        ProductionLifecycleJournalPhase::Intent,
-        current,
-        None,
-    );
+    let journal = recovery_journal(ProductionLifecycleJournalPhase::Intent, current, None);
     let limits = FaultResourceLimits {
         event_records: 1,
         ..FaultResourceLimits::default()

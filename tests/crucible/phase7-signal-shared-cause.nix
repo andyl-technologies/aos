@@ -91,6 +91,11 @@ in
           grep -Fxq 'node_effective_icount_authenticated=true' result
           grep -Fxq 'exact_checkpoint_evidence_match=true' result
           grep -Fxq 'locked_effect_replay_evidence_match=true' result
+          grep '^terminal_row=' result > terminal-rows
+          test "$(wc -l < terminal-rows)" -eq 2
+          test "$(sort -u terminal-rows | wc -l)" -eq 2
+          grep -Fxq 'terminal_row=node-a|transition=power_off|generation_delta=1|service_state=powered_off|scheduler_activity=halted|process_ownership=exact' terminal-rows
+          grep -Fxq 'terminal_row=node-b|transition=permanent_failure|generation_delta=0|service_state=permanently_failed|scheduler_activity=done|process_ownership=absent' terminal-rows
           mkdir -p "$out"
           cp result "$out/result"
           printf 'attr_path=%s\n' "$ATTR_PATH" >> "$out/result"

@@ -32,8 +32,9 @@ use crucible::model::{
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentAddressedBlobRef, ContentHash, Icount,
     LinkDef, LinkLossProbability, NodeId, NodeTemplate, Plan, Properties, QuantumLoop,
-    QuantumRequest, ReadyPoint, ScenarioDefForm, Seed, SimDuration, WhiteBoxPolicy, World,
-    WorldBlockLatency, WorldIoCoreConfig, WorldIoNode, WorldNode, WorldNodeDef,
+    QuantumRequest, ReadyPoint, ScenarioDefForm, SchedulerNodeActivity, Seed, SimDuration,
+    WhiteBoxPolicy, World, WorldBlockLatency, WorldIoCoreConfig, WorldIoNode, WorldNode,
+    WorldNodeDef,
 };
 use crucible_api::{
     ProductionFaultEvidenceSnapshot, ProductionRootImageFormat, ProductionVmLifecycleConfig,
@@ -43,7 +44,10 @@ use crucible_api::{
 
 #[path = "crucible_qemu_signal_shared_cause/evidence.rs"]
 mod evidence;
-use evidence::{exact_shared_event_effects, reached_restarted_node};
+use evidence::{exact_shared_event_effects, exact_terminal_matrix, reached_restarted_node};
+#[path = "crucible_qemu_signal_shared_cause/terminal_matrix.rs"]
+mod terminal_matrix;
+use terminal_matrix::*;
 
 const EVENT_NANOS: u64 = 8_000_000_000;
 const DEVICE_BYTES: u64 = 1_048_576;
@@ -147,6 +151,7 @@ fn persistent_queue_binding(
 
 fn shared_cause_plan(device: ContentHash) -> Result<FaultSignalPlan, Box<dyn Error>> {
     let event = signal_id("rack-power-loss")?;
+    let (terminal_matrix_event, terminal_matrix_node) = terminal_matrix_signal()?;
     let queue_enabled = signal_id("queue-enabled")?;
     let schema = signal_id("rack-power-event-v1")?;
     let program = crucible::model::SignalProgram::new(
@@ -174,6 +179,7 @@ fn shared_cause_plan(device: ContentHash) -> Result<FaultSignalPlan, Box<dyn Err
                     }],
                 }),
             },
+            terminal_matrix_node,
             SignalNode {
                 id: queue_enabled.clone(),
                 domain: SignalDomain::VirtualTime,
@@ -184,10 +190,14 @@ fn shared_cause_plan(device: ContentHash) -> Result<FaultSignalPlan, Box<dyn Err
                 },
             },
         ],
-        vec![event.clone(), queue_enabled.clone()],
+        vec![
+            event.clone(),
+            terminal_matrix_event.clone(),
+            queue_enabled.clone(),
+        ],
         SignalResourceLimits::default(),
     )?;
-    let bindings = vec![
+    let mut bindings = vec![
         persistent_queue_binding(&queue_enabled, &program)?,
         event_binding(
             "shared-power-forwarder",
@@ -229,6 +239,7 @@ fn shared_cause_plan(device: ContentHash) -> Result<FaultSignalPlan, Box<dyn Err
             &program,
         )?,
     ];
+    bindings.extend(terminal_matrix_bindings(&terminal_matrix_event, &program)?);
     Ok(FaultSignalPlan::new(
         vec![program],
         bindings,
@@ -426,35 +437,6 @@ fn build_source() -> Result<(ScenarioDefForm, Arc<MemoryDagStore>), Box<dyn Erro
     Ok((source, artifacts))
 }
 
-fn drive_to_restarted_node(
-    lifecycle: &mut ProductionVmLifecycleLoop,
-    mut configuration: Configuration,
-    phase: &'static str,
-) -> Result<ProductionFaultEvidenceSnapshot, Box<dyn Error>> {
-    for quantum in 0..64 {
-        eprintln!("shared-cause phase={phase} quantum={quantum} begin");
-        let outcome = lifecycle.drive_quantum(QuantumRequest {
-            configuration,
-            control: Vec::new(),
-        })?;
-        configuration = outcome.configuration;
-        let evidence = lifecycle.fault_evidence_snapshot()?;
-        eprintln!(
-            "shared-cause phase={phase} quantum={quantum} frontier={} generation={:?}",
-            evidence.frontier.ticks,
-            evidence
-                .nodes
-                .iter()
-                .find(|node| node.node.name == "node-a")
-                .map(|node| node.generation),
-        );
-        if reached_restarted_node(&evidence) {
-            return Ok(evidence);
-        }
-    }
-    Err("node-a did not restart after the shared-cause event within 64 quanta".into())
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     let [qemu, plugin, kernel, root_image, initrd, run_state_root] = args.as_slice() else {
@@ -531,7 +513,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("production lifecycle did not return an exact execution closure")?;
     eprintln!("shared-cause phase=capture complete");
 
-    let after = drive_to_restarted_node(&mut lifecycle, configuration, "primary")?;
+    let (after, after_configuration) =
+        drive_to_restarted_node(&mut lifecycle, configuration, "primary")?;
     if after.network_outages.is_empty()
         || !after.network_queues.is_empty()
         || after
@@ -565,6 +548,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .locked_effect_trace
         .clone()
         .ok_or("locked replay trace absent")?;
+    let terminal_matrix = drive_to_terminal_matrix(&mut lifecycle, after_configuration, &after)?;
+    if lifecycle.live_node_count() != 1 || !exact_terminal_matrix(&after, &terminal_matrix) {
+        return Err("production terminal lifecycle ownership matrix is not exact".into());
+    }
     lifecycle.shutdown()?;
 
     let mut checkpoint = Checkpoint::new(
@@ -581,7 +568,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &config,
         &checkpoint,
     )?;
-    let restored_after =
+    let (restored_after, _) =
         drive_to_restarted_node(&mut restored, checkpoint_configuration, "restored")?;
     restored.shutdown()?;
     if restored_after != after {
@@ -591,7 +578,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let replay_config = config.clone().with_fault_replay(locked);
     let mut replay = build_production_vm_lifecycle_loop(&scenario, &source, &replay_config)?;
     let replay_configuration = Configuration::genesis(scenario);
-    let replay_after = drive_to_restarted_node(&mut replay, replay_configuration, "replay")?;
+    let (replay_after, _) = drive_to_restarted_node(&mut replay, replay_configuration, "replay")?;
     replay.shutdown()?;
     if replay_after != after {
         return Err("locked-effect replay changed shared-cause evidence".into());
@@ -607,5 +594,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("node_effective_icount_authenticated=true");
     println!("exact_checkpoint_evidence_match=true");
     println!("locked_effect_replay_evidence_match=true");
+    println!(
+        "terminal_row=node-a|transition=power_off|generation_delta=1|service_state=powered_off|scheduler_activity=halted|process_ownership=exact"
+    );
+    println!(
+        "terminal_row=node-b|transition=permanent_failure|generation_delta=0|service_state=permanently_failed|scheduler_activity=done|process_ownership=absent"
+    );
     Ok(())
 }
