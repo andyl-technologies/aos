@@ -843,13 +843,15 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   the handoff identities.
   A proof-bearing attempt explanation authenticates the semantic attempt and
   execution-basis admission in accounting, its optional branch proposal in
-  exploration, and its canonical completion or absence in observations. The
-  checked CLI renders the exact path, cause, admission ordinal, selection,
-  proposal, and completion identities without granting arbitrary record reads.
+  exploration, its planner invocation result in coordination, and its canonical
+  completion or absence in observations. The checked CLI renders the exact
+  path, cause, admission ordinal, selection, proposal, completion, accepted
+  planner step, fixed-point guidance terms, and coordinator accounting without
+  granting arbitrary record reads.
   The local
   Unix-stream binding
   now dispatches all thirty-four current success messages plus one stable
-  request-bound error envelope under a version-16, 64-MiB-body,
+  request-bound error envelope under a version-17, 64-MiB-body,
   absolute-deadline frame.
   `QueryCampaignGraph` authorization covers the complete anchoring snapshot
   metadata and all root IDs; bodies named by those IDs retain separate access
@@ -1202,9 +1204,11 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   composes separately authorized observation and reproduction reads for one
   exact indexed finding, rejects cross-finding/configuration/fingerprint drift,
   and renders its causal, evidence, occurrence, stop, and replay basis.
-  Exact attempt/execution-basis/proposal/completion explanation is implemented;
-  aggregate proposal-ranking and richer filtered or aggregated views remain
-  open.
+  Exact attempt/execution-basis/proposal/completion explanation now also proves
+  the coordinator-accepted planner step for planner-issued proposals and
+  renders its fixed-point guidance decomposition and accounting. Aggregate
+  ranking across unselected proposals and richer filtered or aggregated views
+  remain open.
 - [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
   projection in generation-bound GC retention plans. Snapshot-bound semantic
   and operational root inventory plus the exclusive generation-bound memory,

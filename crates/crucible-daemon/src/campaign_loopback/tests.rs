@@ -621,7 +621,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
     .expect("write frame");
     let mut bytes = [0_u8; 19];
     reader.read_exact(&mut bytes).expect("read frame");
-    assert_eq!(&bytes, b"CRUCCS16\x01\0\0\0\0\0\0\x03abc");
+    assert_eq!(&bytes, b"CRUCCS17\x01\0\0\0\0\0\0\x03abc");
 
     for (kind, reserved, length, reason) in [
         (
@@ -672,6 +672,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
         b"CRUCCS13",
         b"CRUCCS14",
         b"CRUCCS15",
+        b"CRUCCS16",
     ] {
         let (mut legacy_client, mut legacy_server) =
             UnixStream::pair().expect("legacy stream pair");

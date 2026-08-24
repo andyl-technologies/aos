@@ -1050,7 +1050,7 @@ fn planner_step_key(step: PlannerStepId) -> CampaignHash {
     map_key_content("coordination.planner-step", step.content_id())
 }
 
-fn planner_invocation_result_key(invocation: PlannerInvocationId) -> CampaignHash {
+pub(crate) fn planner_invocation_result_key(invocation: PlannerInvocationId) -> CampaignHash {
     map_key_content(
         "coordination.planner-invocation-result",
         invocation.content_id(),

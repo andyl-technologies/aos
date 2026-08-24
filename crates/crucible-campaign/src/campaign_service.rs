@@ -2544,30 +2544,44 @@ where
             .repository
             .attempt_execution_basis_with_proof(roots.accounting, request.attempt())?;
         let path = self.repository.load_branch_path(attempt.path())?;
-        let (selection, proposal, proposal_proof) = match attempt.start() {
-            crate::AttemptStart::Discover { .. } => (None, None, None),
-            crate::AttemptStart::Branch { selection, .. } => {
-                let resolved = self.repository.resolve_selection(selection)?;
-                let crate::AttemptAdmissionRole::ExecutionBasis {
-                    proposal: Some(proposal),
-                    ..
-                } = admission.role()
-                else {
-                    return Err(CampaignRepositoryError::Integrity {
-                        reason: "campaign-attempt-branch-execution-basis-has-no-proposal",
-                    }
-                    .into());
-                };
-                let (proposal, proof) = self
-                    .repository
-                    .proposal_with_proof(roots.exploration, proposal)?;
-                (
-                    Some(resolved.selection().clone()),
-                    Some(proposal),
-                    Some(proof),
-                )
-            }
-        };
+        let (selection, proposal, proposal_proof, planner_step, planner_step_proof) =
+            match attempt.start() {
+                crate::AttemptStart::Discover { .. } => (None, None, None, None, None),
+                crate::AttemptStart::Branch { selection, .. } => {
+                    let resolved = self.repository.resolve_selection(selection)?;
+                    let crate::AttemptAdmissionRole::ExecutionBasis {
+                        proposal: Some(proposal),
+                        ..
+                    } = admission.role()
+                    else {
+                        return Err(CampaignRepositoryError::Integrity {
+                            reason: "campaign-attempt-branch-execution-basis-has-no-proposal",
+                        }
+                        .into());
+                    };
+                    let (proposal, proof) = self
+                        .repository
+                        .proposal_with_proof(roots.exploration, proposal)?;
+                    let (planner_step, planner_step_proof) = match proposal.planner_invocation() {
+                        Some(invocation) => {
+                            let (step, proof) =
+                                self.repository.planner_step_for_invocation_with_proof(
+                                    roots.coordination,
+                                    invocation,
+                                )?;
+                            (Some(step), Some(proof))
+                        }
+                        None => (None, None),
+                    };
+                    (
+                        Some(resolved.selection().clone()),
+                        Some(proposal),
+                        Some(proof),
+                        planner_step,
+                        planner_step_proof,
+                    )
+                }
+            };
         let (observation, observation_proof) = self
             .repository
             .attempt_observation_with_proof(roots.observations, request.attempt())?;
@@ -2579,10 +2593,12 @@ where
             path,
             selection,
             proposal,
+            planner_step,
             observation,
             attempt_proof,
             admission_proof,
             proposal_proof,
+            planner_step_proof,
             observation_proof,
         )?)
     }

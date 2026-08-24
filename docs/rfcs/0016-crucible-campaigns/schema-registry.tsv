@@ -70,7 +70,7 @@ crucible.campaign.query-campaign-findings-response	1	crucible-campaign::campaign
 crucible.campaign.get-campaign-finding-object-request	1	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.campaign.get-campaign-finding-object-response	1	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.campaign.explain-campaign-attempt-request	1	crucible-campaign::campaign_service	component-message	gate:component-contract
-crucible.campaign.explain-campaign-attempt-response	1	crucible-campaign::campaign_service	component-message	gate:component-contract
+crucible.campaign.explain-campaign-attempt-response	2	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.campaign.get-campaign-graph-object-request	1	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.campaign.get-campaign-graph-object-response	1	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.campaign.query-campaign-choices-request	1	crucible-campaign::campaign_service	component-message	gate:component-contract

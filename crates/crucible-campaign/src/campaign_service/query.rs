@@ -6,8 +6,11 @@ use super::*;
 use crate::{
     Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptId, AttemptStart, BranchPath,
     BranchRequestId, ChoiceDomain, ChoiceOpportunity, ContinuationProjection, Finding, FindingId,
-    Observation, Proposal, ReproductionArtifact, SelectableDeclaration, Selection, SelectionOrigin,
+    Observation, PlannerStep, Proposal, ReproductionArtifact, SelectableDeclaration, Selection,
+    SelectionOrigin,
 };
+
+const EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_SCHEMA_VERSION: u32 = 2;
 
 /// Maximum entries returned by one campaign graph page.
 pub const MAX_CAMPAIGN_QUERY_PAGE_ITEMS: u32 = crate::MAX_PROVEN_PAGE_ITEMS as u32;
@@ -1477,10 +1480,12 @@ pub struct ExplainCampaignAttemptResponse {
     path: BranchPath,
     selection: Option<Selection>,
     proposal: Option<Proposal>,
+    planner_step: Option<PlannerStep>,
     observation: Option<Observation>,
     attempt_proof: MerkleMapLookupProof,
     admission_proof: MerkleMapLookupProof,
     proposal_proof: Option<MerkleMapLookupProof>,
+    planner_step_proof: Option<MerkleMapLookupProof>,
     observation_proof: MerkleMapLookupProof,
 }
 
@@ -1490,8 +1495,8 @@ impl ExplainCampaignAttemptResponse {
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] when any snapshot, accounting,
-    /// exploration, path, selection, proposal, completion, or encoded-size
-    /// invariant is invalid.
+    /// exploration, coordination, path, selection, proposal, planner-step,
+    /// completion, or encoded-size invariant is invalid.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         request: &ExplainCampaignAttemptRequest,
@@ -1501,14 +1506,16 @@ impl ExplainCampaignAttemptResponse {
         path: BranchPath,
         selection: Option<Selection>,
         proposal: Option<Proposal>,
+        planner_step: Option<PlannerStep>,
         observation: Option<Observation>,
         attempt_proof: MerkleMapLookupProof,
         admission_proof: MerkleMapLookupProof,
         proposal_proof: Option<MerkleMapLookupProof>,
+        planner_step_proof: Option<MerkleMapLookupProof>,
         observation_proof: MerkleMapLookupProof,
     ) -> Result<Self, CampaignCodecError> {
         let response = Self {
-            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            schema_version: EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_SCHEMA_VERSION,
             request_digest: request.request_digest(),
             snapshot_body,
             attempt,
@@ -1516,10 +1523,12 @@ impl ExplainCampaignAttemptResponse {
             path,
             selection,
             proposal,
+            planner_step,
             observation,
             attempt_proof,
             admission_proof,
             proposal_proof,
+            planner_step_proof,
             observation_proof,
         };
         response.validate_body_for(request)?;
@@ -1561,6 +1570,15 @@ impl ExplainCampaignAttemptResponse {
     #[must_use]
     pub const fn proposal(&self) -> Option<&Proposal> {
         self.proposal.as_ref()
+    }
+
+    /// Returns the coordinator-accepted planner step that selected the proposal.
+    ///
+    /// Operator and exhaustive proposals have no planner step. Legacy
+    /// version-one responses also omit this evidence.
+    #[must_use]
+    pub const fn planner_step(&self) -> Option<&PlannerStep> {
+        self.planner_step.as_ref()
     }
 
     /// Returns the canonical completion, or `None` when the proof authenticates absence.
@@ -1640,6 +1658,7 @@ impl ExplainCampaignAttemptResponse {
         }
 
         self.validate_start_and_proposal(proposal)?;
+        self.validate_planner_evidence()?;
 
         let observation_id = self.observation.as_ref().map(Observation::id).transpose()?;
         if let Some(observation) = &self.observation
@@ -1737,6 +1756,57 @@ impl ExplainCampaignAttemptResponse {
             }
         }
     }
+
+    fn validate_planner_evidence(&self) -> Result<(), CampaignCodecError> {
+        if self.schema_version == 1 {
+            if self.planner_step.is_some() || self.planner_step_proof.is_some() {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "legacy campaign attempt explanation carries planner evidence",
+                });
+            }
+            return Ok(());
+        }
+
+        let invocation = self
+            .proposal
+            .as_ref()
+            .and_then(Proposal::planner_invocation);
+        match (invocation, &self.planner_step, &self.planner_step_proof) {
+            (None, None, None) => Ok(()),
+            (Some(invocation), Some(step), Some(proof)) => {
+                let proposal = self
+                    .proposal
+                    .as_ref()
+                    .ok_or(CampaignCodecError::InvalidValue {
+                        reason: "campaign planner evidence has no proposal",
+                    })?;
+                let proposal_id = proposal.id()?;
+                let step_id = step.id()?;
+                verify_exact_lookup(
+                    self.snapshot_body.roots().coordination,
+                    crate::repository::planner_invocation_result_key(invocation),
+                    proof,
+                    Some(step_id.content_id()),
+                    "campaign planner-step proof is invalid",
+                )?;
+                if step.invocation() != invocation
+                    || step.policy() != proposal.policy()
+                    || step.input_view() != proposal.guidance_basis()
+                    || step.selected_branch_point() != Some(proposal.branch_point())
+                    || step.selected_source() != Some(proposal.request())
+                    || !step.issued_proposals().contains(&proposal_id)
+                {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "campaign planner evidence disagrees with selected proposal",
+                    });
+                }
+                Ok(())
+            }
+            _ => Err(CampaignCodecError::InvalidValue {
+                reason: "campaign planner evidence presence disagrees with proposal authority",
+            }),
+        }
+    }
 }
 
 impl Canonical for ExplainCampaignAttemptResponse {
@@ -1749,17 +1819,29 @@ impl Canonical for ExplainCampaignAttemptResponse {
         self.path.encode(encoder);
         self.selection.encode(encoder);
         self.proposal.encode(encoder);
+        if self.schema_version >= EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_SCHEMA_VERSION {
+            self.planner_step.encode(encoder);
+        }
         self.observation.encode(encoder);
         self.attempt_proof.encode(encoder);
         self.admission_proof.encode(encoder);
         self.proposal_proof.encode(encoder);
+        if self.schema_version >= EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_SCHEMA_VERSION {
+            self.planner_step_proof.encode(encoder);
+        }
         self.observation_proof.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_service_version(u32::decode(decoder)?)?;
+        let schema_version = u32::decode(decoder)?;
+        if schema_version != 1 && schema_version != EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_SCHEMA_VERSION
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported campaign attempt explanation response version",
+            });
+        }
         let response = Self {
-            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            schema_version,
             request_digest: CampaignHash::decode(decoder)?,
             snapshot_body: CampaignSnapshot::decode(decoder)?,
             attempt: Attempt::decode(decoder)?,
@@ -1767,10 +1849,22 @@ impl Canonical for ExplainCampaignAttemptResponse {
             path: BranchPath::decode(decoder)?,
             selection: Option::decode(decoder)?,
             proposal: Option::decode(decoder)?,
+            planner_step: if schema_version >= EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_SCHEMA_VERSION {
+                Option::decode(decoder)?
+            } else {
+                None
+            },
             observation: Option::decode(decoder)?,
             attempt_proof: MerkleMapLookupProof::decode(decoder)?,
             admission_proof: MerkleMapLookupProof::decode(decoder)?,
             proposal_proof: Option::decode(decoder)?,
+            planner_step_proof: if schema_version
+                >= EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_SCHEMA_VERSION
+            {
+                Option::decode(decoder)?
+            } else {
+                None
+            },
             observation_proof: MerkleMapLookupProof::decode(decoder)?,
         };
         ensure_message_size(&response, "explain-campaign-attempt-response-encoded-bytes")?;
@@ -2979,7 +3073,7 @@ impl Canonical for GetCampaignGraphObjectResponse {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
     use crucible_cas::content_store::{MemoryBlobBackend, ObjectKind};
@@ -2991,9 +3085,11 @@ mod tests {
         CampaignViewId, CandidateSource, ChoiceClassContext, ChoiceCoordinate, ChoiceDomainId,
         ChoiceOpportunityId, ChoiceSource, ChoiceValue, ConfigurationArtifact,
         ConfigurationArtifactId, ConfigurationId, ContinuationState, CoverageProjectionId,
-        FindingKind, FindingOccurrenceSet, FindingSignature, MeasurementSetId, ObservationId,
-        PropertyVerdictSetId, ReproductionArtifactId, ScenarioArtifactId, ScenarioDefId,
-        StopCondition, StopOutcome,
+        FindingKind, FindingOccurrenceSet, FindingSignature, GuidanceEvidence, MeasurementSetId,
+        ObservationId, PlannerDisposition, PlannerEngineId, PlannerInvocationId, PlannerStateId,
+        PlanningAccounting, PlanningScanPosition, PlanningUsage, PolicyArtifactId,
+        PropertyVerdictSetId, ReproductionArtifactId, RetainedPlannerRequestId, ScenarioArtifactId,
+        ScenarioDefId, StopCondition, StopOutcome,
     };
 
     fn hash(label: &str) -> CampaignHash {
@@ -3698,6 +3794,12 @@ mod tests {
             StopCondition::NextChoice,
         )
         .expect("attempt request");
+        let planner_invocation = PlannerInvocationId::from_content_id(ContentId::for_bytes(
+            ObjectKind::Policy,
+            2,
+            b"attempt-planner-invocation",
+        ))
+        .expect("attempt planner invocation ID");
         let proposal = Proposal::new(
             branch_point,
             request.id().expect("attempt request ID"),
@@ -3709,7 +3811,7 @@ mod tests {
                 b"attempt-policy",
             ))
             .expect("attempt policy ID"),
-            None,
+            Some(planner_invocation),
             1,
             CampaignViewId::from_content_id(ContentId::for_bytes(
                 ObjectKind::CampaignFact,
@@ -3720,6 +3822,65 @@ mod tests {
         )
         .expect("attempt proposal");
         let proposal_id = proposal.id().expect("attempt proposal ID");
+        let planner_step = PlannerStep::new(
+            None,
+            planner_invocation,
+            RetainedPlannerRequestId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Policy,
+                1,
+                b"attempt-retained-planner-request",
+            ))
+            .expect("attempt retained planner request ID"),
+            hash("attempt-planner-request-digest"),
+            proposal.policy(),
+            PlannerEngineId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Policy,
+                1,
+                b"attempt-planner-engine",
+            ))
+            .expect("attempt planner engine ID"),
+            PolicyArtifactId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Policy,
+                1,
+                b"attempt-planner-artifact",
+            ))
+            .expect("attempt planner artifact ID"),
+            proposal.guidance_basis(),
+            PlannerDisposition::Issue {
+                selected: PlanningScanPosition::new(branch_point, proposal.request()),
+                issued_branch_requests: Vec::new(),
+                issued_proposals: vec![proposal_id],
+            },
+            PlannerStateId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Policy,
+                1,
+                b"attempt-planner-state",
+            ))
+            .expect("attempt planner state ID"),
+            PlanningUsage {
+                branch_requests: 0,
+                proposals: 1,
+                input_objects: 3,
+                input_bytes: 1_024,
+                fuel: 7,
+            },
+            PlanningAccounting {
+                branch_requests: 0,
+                proposals: 1,
+                attempts: 1,
+                deduplicated: 0,
+                input_objects: 3,
+                input_bytes: 1_024,
+                fuel: 7,
+            },
+            GuidanceEvidence::new(BTreeMap::from([
+                ("selected-exploitation-micros".to_owned(), 125_000),
+                ("selected-total-micros".to_owned(), 375_000),
+            ]))
+            .expect("attempt planner guidance evidence"),
+        )
+        .expect("attempt planner step");
+        let planner_step_id = planner_step.id().expect("attempt planner step ID");
         let attempt = Attempt::new(
             AttemptStart::Branch {
                 edge,
@@ -3797,6 +3958,13 @@ mod tests {
                 observation_id.content_id(),
             )
             .expect("attempt observation root");
+        let coordination = map
+            .insert(
+                empty.content_id(),
+                crate::repository::planner_invocation_result_key(planner_invocation),
+                planner_step_id.content_id(),
+            )
+            .expect("attempt planner result root");
         let roots = CampaignRoots {
             graph: empty.content_id(),
             exploration: exploration.content_id(),
@@ -3806,7 +3974,7 @@ mod tests {
             findings: empty.content_id(),
             pins: empty.content_id(),
             accounting: accounting.content_id(),
-            coordination: empty.content_id(),
+            coordination: coordination.content_id(),
         };
         let snapshot_body = CampaignSnapshot::genesis(
             CampaignLineageId::from_content_id(ContentId::for_bytes(
@@ -3855,6 +4023,12 @@ mod tests {
                 crate::repository::attempt_observation_key(attempt_id),
             )
             .expect("attempt observation proof");
+        let (_, planner_step_proof) = map
+            .get_with_proof(
+                coordination.content_id(),
+                crate::repository::planner_invocation_result_key(planner_invocation),
+            )
+            .expect("attempt planner-step proof");
         let response = ExplainCampaignAttemptResponse::new(
             &explanation_request,
             snapshot_body,
@@ -3863,10 +4037,12 @@ mod tests {
             path,
             Some(selection),
             Some(proposal),
+            Some(planner_step),
             Some(observation),
             attempt_proof,
             admission_proof,
             Some(proposal_proof),
+            Some(planner_step_proof),
             observation_proof,
         )
         .expect("attempt explanation response");
@@ -3885,6 +4061,25 @@ mod tests {
                 .expect("attempt response decode"),
             response
         );
+        assert_eq!(
+            response
+                .planner_step()
+                .expect("planner evidence")
+                .evidence()
+                .terms_micros()["selected-total-micros"],
+            375_000
+        );
+        let mut legacy = response.clone();
+        legacy.schema_version = 1;
+        legacy.planner_step = None;
+        legacy.planner_step_proof = None;
+        let legacy_bytes = legacy.canonical_bytes();
+        let legacy_decoded = ExplainCampaignAttemptResponse::from_canonical_bytes(&legacy_bytes)
+            .expect("legacy attempt explanation response");
+        assert_eq!(legacy_decoded.canonical_bytes(), legacy_bytes);
+        legacy_decoded
+            .validate_for(&explanation_request)
+            .expect("legacy explanation binding");
 
         let mut wrong = response.clone();
         let Some(proposal) = wrong.proposal.as_mut() else {
@@ -3902,6 +4097,33 @@ mod tests {
         )
         .expect("wrong attempt proposal");
         assert!(wrong.validate_for(&explanation_request).is_err());
+
+        let mut wrong_step = response.clone();
+        let Some(step) = wrong_step.planner_step.as_mut() else {
+            unreachable!("planner evidence")
+        };
+        *step = PlannerStep::new(
+            step.parent(),
+            step.invocation(),
+            step.request(),
+            step.request_digest(),
+            step.policy(),
+            step.engine(),
+            step.policy_artifact(),
+            CampaignViewId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                b"wrong-attempt-guidance-view",
+            ))
+            .expect("wrong guidance view"),
+            step.disposition().clone(),
+            step.next_state(),
+            step.usage_claim(),
+            step.accounting(),
+            step.evidence().clone(),
+        )
+        .expect("wrong planner step");
+        assert!(wrong_step.validate_for(&explanation_request).is_err());
     }
 
     #[test]
@@ -4016,8 +4238,10 @@ mod tests {
             None,
             None,
             None,
+            None,
             attempt_proof,
             admission_proof,
+            None,
             None,
             observation_proof,
         )
