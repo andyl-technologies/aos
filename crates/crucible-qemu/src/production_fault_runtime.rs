@@ -244,6 +244,8 @@ pub struct QemuNodeLifecycleIntent {
     pub action: ContentHash,
     /// Authored or watchdog-selected lifecycle transition.
     pub requested_transition: NodeLifecycleTransition,
+    /// Authenticated terminal-event evidence already pending before this boundary.
+    pub event_evidence: Option<ContentHash>,
 }
 
 /// Opaque ownership of one authenticated lifecycle publication batch.

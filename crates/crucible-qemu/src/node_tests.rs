@@ -24,6 +24,8 @@ use crate::{
 
 use super::*;
 
+#[path = "node/tests/child_exit.rs"]
+mod child_exit;
 #[path = "node/tests/fault_command.rs"]
 mod fault_command;
 #[path = "node/tests/host_io_runtime.rs"]
@@ -36,56 +38,6 @@ mod shutdown_and_preemption;
 type SharedLog = Arc<Mutex<Vec<ChannelCall>>>;
 type SharedFaultCommands = Arc<Mutex<Vec<(FaultCommandHeaderV1, Vec<u8>)>>>;
 type SharedFaultEvents = Arc<Mutex<VecDeque<DequeuedFaultEvent>>>;
-
-#[test]
-fn child_poll_preserves_clean_exit_status_and_disarms_drop_cleanup() -> Result<(), Box<dyn Error>> {
-    let child = Command::new("true").spawn()?;
-    let mut child = QemuNodeChild::new(child);
-    wait_for_test_child_exit_pending(&child)?;
-    let status = child
-        .try_wait_natural_exit()?
-        .ok_or("child remained live after closing its output pipe")?;
-
-    assert!(status.success());
-    assert!(child.reaped());
-    drop(child);
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
-fn child_poll_preserves_signal_termination_as_unclean() -> Result<(), Box<dyn Error>> {
-    use std::os::unix::process::ExitStatusExt as _;
-
-    let child = Command::new("sleep").arg("60").spawn()?;
-    let mut child = QemuNodeChild::new(child);
-    signal_child(
-        child.child.id(),
-        libc::SIGTERM,
-        "terminate child test fixture",
-    )?;
-    wait_for_test_child_exit_pending(&child)?;
-    let status = child
-        .try_wait_natural_exit()?
-        .ok_or("signaled child remained live after closing its output pipe")?;
-
-    assert!(!status.success());
-    assert_eq!(status.signal(), Some(libc::SIGTERM));
-    assert!(child.reaped());
-    Ok(())
-}
-
-fn wait_for_test_child_exit_pending(child: &QemuNodeChild) -> Result<(), Box<dyn Error>> {
-    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
-
-    let pid = Pid::from_child(&child.child);
-    waitid(
-        WaitId::Pid(pid),
-        WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
-    )?
-    .ok_or("waitid returned no status for a blocking child-exit wait")?;
-    Ok(())
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ChannelCall {
@@ -298,6 +250,27 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
 
     fn fault_event_pending(&mut self) -> Result<bool, QemuNodeChannelError> {
         Ok(!self.fault_events.lock().unwrap().is_empty())
+    }
+
+    fn fault_event_count(&mut self) -> Result<usize, QemuNodeChannelError> {
+        Ok(self.fault_events.lock().unwrap().len())
+    }
+
+    fn snapshot_fault_events(
+        &mut self,
+        destination: &mut Vec<DequeuedFaultEvent>,
+        canonical_payload_bytes: &mut usize,
+        configured_payload_bytes: usize,
+        configured_inline_payload_bytes: usize,
+    ) -> Result<(), QemuNodeError> {
+        let events = self.fault_events.lock().unwrap();
+        fault_event_budget::snapshot_scripted_fault_events(
+            &events,
+            destination,
+            canonical_payload_bytes,
+            configured_payload_bytes,
+            configured_inline_payload_bytes,
+        )
     }
 
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
@@ -583,6 +556,10 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
         &mut self,
     ) -> Result<Vec<DequeuedFaultEvent>, QemuAsyncDriverRuntimeError> {
         Ok(std::mem::take(&mut self.staged_fault_events))
+    }
+
+    fn staged_fault_events(&self) -> &[DequeuedFaultEvent] {
+        &self.staged_fault_events
     }
 
     fn staged_fault_events_pending(&self) -> bool {

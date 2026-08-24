@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "tests/durable_run_state.rs"]
+mod durable_run_state;
+
 fn hash(domain: &str) -> ContentHash {
     ContentHash::from_canonical_material("debug-runtime-evidence-test", domain)
 }
@@ -405,51 +408,6 @@ fn production_lifecycle_lends_generation_preparation_before_path_access() {
 }
 
 #[test]
-fn durable_run_state_allows_concurrent_sessions_for_one_scenario() {
-    let root =
-        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
-    let source = initially_violated_scenario();
-    let scenario = source.scenario_def();
-    let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
-    let (first, _, _) = production_run_directory(&scenario, &config)
-        .unwrap_or_else(|error| panic!("first run owner should acquire: {error}"));
-    let (second, _, _) = production_run_directory(&scenario, &config)
-        .unwrap_or_else(|error| panic!("concurrent session should acquire: {error}"));
-    assert_ne!(first.path(), second.path());
-}
-
-#[test]
-fn durable_run_state_recovers_an_unfinished_run_before_reuse() {
-    let root =
-        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
-    let source = initially_violated_scenario();
-    let scenario = source.scenario_def();
-    let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
-    let (first, mut first_manifest, _) = production_run_directory(&scenario, &config)
-        .unwrap_or_else(|error| panic!("first run should build: {error}"));
-    let first_path = first.path().to_path_buf();
-    first_manifest.owner.process_id = u32::MAX;
-    persist_atomic_json(&first_path.join("run-manifest.json"), &first_manifest)
-        .unwrap_or_else(|error| panic!("dead owner fixture should persist: {error}"));
-    drop(first);
-
-    let (second, _, _) = production_run_directory(&scenario, &config)
-        .unwrap_or_else(|error| panic!("recovered run should build: {error}"));
-    assert_ne!(first_path, second.path());
-    let recovered: ProductionRunManifest = decode_run_json(&first_path.join("run-manifest.json"))
-        .unwrap_or_else(|error| panic!("recovered manifest should decode: {error}"));
-    assert!(recovered.clean_shutdown);
-    assert!(recovered.recovered_after_host_exit);
-    let journal: ProductionLifecycleJournal =
-        decode_run_json(&first_path.join("lifecycle-journal.json"))
-            .unwrap_or_else(|error| panic!("recovered journal should decode: {error}"));
-    assert!(matches!(
-        journal.phase,
-        ProductionLifecycleJournalPhase::Quarantined
-    ));
-}
-
-#[test]
 fn durable_run_state_recovers_every_incomplete_transaction_phase() {
     for phase in [
         ProductionLifecycleJournalPhase::Intent,
@@ -462,8 +420,12 @@ fn durable_run_state_recovers_every_incomplete_transaction_phase() {
         let scenario = source.scenario_def();
         let config =
             ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
-        let (first, mut manifest, mut journal) = production_run_directory(&scenario, &config)
-            .unwrap_or_else(|error| panic!("first run should build: {error}"));
+        let (first, mut manifest, mut journal) = production_run_directory(
+            &scenario,
+            &config,
+            source.plan().fault_signals().resource_limits(),
+        )
+        .unwrap_or_else(|error| panic!("first run should build: {error}"));
         let first_path = first.path().to_path_buf();
         manifest.owner.process_id = u32::MAX;
         persist_atomic_json(&first_path.join("run-manifest.json"), &manifest)
@@ -474,8 +436,12 @@ fn durable_run_state_recovers_every_incomplete_transaction_phase() {
             .unwrap_or_else(|error| panic!("crash-point journal should persist: {error}"));
         drop(first);
 
-        let (_second, _, _) = production_run_directory(&scenario, &config)
-            .unwrap_or_else(|error| panic!("incomplete transaction should recover: {error}"));
+        let (_second, _, _) = production_run_directory(
+            &scenario,
+            &config,
+            source.plan().fault_signals().resource_limits(),
+        )
+        .unwrap_or_else(|error| panic!("incomplete transaction should recover: {error}"));
         let recovered: ProductionLifecycleJournal =
             decode_run_json(&first_path.join("lifecycle-journal.json"))
                 .unwrap_or_else(|error| panic!("recovered journal should decode: {error}"));
@@ -494,16 +460,24 @@ fn durable_run_state_fails_closed_on_a_corrupt_journal() {
     let source = initially_violated_scenario();
     let scenario = source.scenario_def();
     let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
-    let (first, _, _) = production_run_directory(&scenario, &config)
-        .unwrap_or_else(|error| panic!("first run should build: {error}"));
+    let (first, _, _) = production_run_directory(
+        &scenario,
+        &config,
+        source.plan().fault_signals().resource_limits(),
+    )
+    .unwrap_or_else(|error| panic!("first run should build: {error}"));
     let journal = first.path().join("lifecycle-journal.json");
     drop(first);
     fs::write(&journal, b"not-json")
         .unwrap_or_else(|error| panic!("corrupt journal fixture should write: {error}"));
 
-    let error = production_run_directory(&scenario, &config)
-        .err()
-        .unwrap_or_else(|| panic!("corrupt journal should fail closed"));
+    let error = production_run_directory(
+        &scenario,
+        &config,
+        source.plan().fault_signals().resource_limits(),
+    )
+    .err()
+    .unwrap_or_else(|| panic!("corrupt journal should fail closed"));
     assert!(
         error
             .to_string()
@@ -518,16 +492,24 @@ fn durable_run_state_fails_closed_on_a_corrupt_manifest() {
     let source = initially_violated_scenario();
     let scenario = source.scenario_def();
     let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
-    let (first, _, _) = production_run_directory(&scenario, &config)
-        .unwrap_or_else(|error| panic!("first run should build: {error}"));
+    let (first, _, _) = production_run_directory(
+        &scenario,
+        &config,
+        source.plan().fault_signals().resource_limits(),
+    )
+    .unwrap_or_else(|error| panic!("first run should build: {error}"));
     let manifest = first.path().join("run-manifest.json");
     drop(first);
     fs::write(&manifest, b"not-json")
         .unwrap_or_else(|error| panic!("corrupt manifest fixture should write: {error}"));
 
-    let error = production_run_directory(&scenario, &config)
-        .err()
-        .unwrap_or_else(|| panic!("corrupt manifest should fail closed"));
+    let error = production_run_directory(
+        &scenario,
+        &config,
+        source.plan().fault_signals().resource_limits(),
+    )
+    .err()
+    .unwrap_or_else(|| panic!("corrupt manifest should fail closed"));
     assert!(error.to_string().contains("invalid prior run manifest"));
 }
 

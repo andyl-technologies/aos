@@ -2,7 +2,8 @@
 
 use crucible_shmem::{
     DequeuedFaultEvent, DequeuedFaultResult, FaultCommandHeaderV1, dequeue_fault_event,
-    dequeue_fault_result, enqueue_fault_command, fault_event_pending,
+    dequeue_fault_result, enqueue_fault_command, fault_event_count, fault_event_pending,
+    snapshot_fault_events,
 };
 
 use super::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError};
@@ -103,5 +104,52 @@ impl QemuMappedQuantumShmemHotPath {
             .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?;
         fault_event_pending(transport.ring, transport.slots)
             .map_err(|source| QemuMappedQuantumShmemHotPathError::FaultTransport { source })
+    }
+
+    /// Returns the number of published events without consuming them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuMappedQuantumShmemHotPathError`] for absent or corrupt
+    /// event transport geometry.
+    pub fn fault_event_count(&mut self) -> Result<usize, QemuMappedQuantumShmemHotPathError> {
+        let transport = self
+            .region
+            .fault_event_transport_mut(self.config.vm_slot)
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?;
+        fault_event_count(transport.ring, transport.slots)
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::FaultTransport { source })
+    }
+
+    /// Authenticates and copies published events without releasing transport ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuMappedQuantumShmemHotPathError`] when the transport is
+    /// absent or corrupt, destination storage is insufficient, or event
+    /// evidence does not authenticate.
+    pub fn snapshot_fault_events(
+        &mut self,
+        destination: &mut Vec<DequeuedFaultEvent>,
+        canonical_payload_bytes: &mut usize,
+        configured_payload_bytes: usize,
+        configured_inline_payload_bytes: usize,
+    ) -> Result<(), QemuMappedQuantumShmemHotPathError> {
+        let transport = self
+            .region
+            .fault_event_transport_mut(self.config.vm_slot)
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?;
+        snapshot_fault_events(
+            transport.ring,
+            transport.slots,
+            transport.arena_header,
+            transport.arena,
+            transport.arena_region_offset,
+            destination,
+            canonical_payload_bytes,
+            configured_payload_bytes,
+            configured_inline_payload_bytes,
+        )
+        .map_err(|source| QemuMappedQuantumShmemHotPathError::FaultEvent { source })
     }
 }

@@ -568,6 +568,26 @@ pub trait QemuShmemHotPathChannel: Send {
     /// Returns [`QemuNodeChannelError`] when the event transport is invalid.
     fn fault_event_pending(&mut self) -> Result<bool, QemuNodeChannelError>;
 
+    /// Returns the number of published installed-rule events without consuming them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the event transport is invalid.
+    fn fault_event_count(&mut self) -> Result<usize, QemuNodeChannelError>;
+
+    /// Authenticates and copies installed-rule events without consuming them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the transport is invalid,
+    /// destination storage is insufficient, or evidence does not authenticate.
+    fn snapshot_fault_events(
+        &mut self,
+        destination: &mut Vec<DequeuedFaultEvent>,
+        canonical_payload_bytes: &mut usize,
+        configured_payload_bytes: usize,
+        configured_inline_payload_bytes: usize,
+    ) -> Result<(), QemuNodeError>;
     /// Advances the node to `horizon` or until it pauses earlier.
     ///
     /// This helper is retained for direct channel tests and already-completed

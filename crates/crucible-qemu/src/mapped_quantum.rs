@@ -737,6 +737,55 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             .map_err(|source| source.into_channel_error("fault_event_pending"))
     }
 
+    fn fault_event_count(&mut self) -> Result<usize, QemuNodeChannelError> {
+        QemuMappedQuantumShmemHotPath::fault_event_count(self)
+            .map_err(|source| source.into_channel_error("fault_event_count"))
+    }
+
+    fn snapshot_fault_events(
+        &mut self,
+        destination: &mut Vec<crucible_shmem::DequeuedFaultEvent>,
+        canonical_payload_bytes: &mut usize,
+        configured_payload_bytes: usize,
+        configured_inline_payload_bytes: usize,
+    ) -> Result<(), crate::QemuNodeError> {
+        QemuMappedQuantumShmemHotPath::snapshot_fault_events(
+            self,
+            destination,
+            canonical_payload_bytes,
+            configured_payload_bytes,
+            configured_inline_payload_bytes,
+        )
+        .map_err(|error| match error {
+            QemuMappedQuantumShmemHotPathError::FaultEvent {
+                source:
+                    crucible_shmem::FaultEventError::PreviewPayloadCapacity {
+                        current,
+                        requested,
+                        configured,
+                    },
+            } => crate::QemuNodeError::FaultEventPayloadStorage {
+                current,
+                requested,
+                configured,
+            },
+            QemuMappedQuantumShmemHotPathError::FaultEvent {
+                source:
+                    crucible_shmem::FaultEventError::PreviewInlinePayloadCapacity {
+                        requested,
+                        configured,
+                    },
+            } => crate::QemuNodeError::FaultEventInlinePayloadStorage {
+                requested,
+                configured,
+            },
+            error => crate::QemuNodeError::from_channel(
+                crate::QemuNodeChannelPlane::ShmemHotPath,
+                error.into_channel_error("snapshot_fault_events"),
+            ),
+        })
+    }
+
     fn coverage_enabled(&self) -> bool {
         self.coverage_bridge.is_some()
     }
@@ -862,89 +911,5 @@ mod support;
 use support::*;
 
 #[cfg(test)]
-mod fingerprint_tests {
-    // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
-    #![allow(clippy::unwrap_used)]
-
-    use crucible_shmem::{FingerprintSample, FingerprintSampleVcpu};
-
-    use super::*;
-
-    fn sample() -> FingerprintSample {
-        let mut sample = FingerprintSample {
-            sample_icount: 41,
-            vcpu_count: 1,
-            rr_current_vcpu: 0,
-            rr_position_in_quantum: 41,
-            rr_switch_quantum: 4096,
-            component_failures: 0,
-            ram_bytes: 4096,
-            ram_digest: [0x11; 32],
-            device_state_bytes: 512,
-            device_state_digest: [0x22; 32],
-            device_state_schema_digest: [0x33; 32],
-            ..FingerprintSample::default()
-        };
-        sample.vcpus[0] = FingerprintSampleVcpu {
-            register_digest: [0x44; 32],
-            register_file_bytes: 256,
-            retired_instruction_count: 0,
-        };
-        sample
-    }
-
-    #[test]
-    fn black_box_fingerprint_covers_live_register_ram_and_device_state() {
-        let node = crucible::NodeId {
-            name: String::from("vm-a"),
-        };
-        let baseline = black_box_execution_fingerprint(&node, &sample()).unwrap();
-
-        let mut changed = sample();
-        changed.vcpus[0].register_digest[0] ^= 1;
-        assert_ne!(
-            baseline,
-            black_box_execution_fingerprint(&node, &changed).unwrap()
-        );
-        changed = sample();
-        changed.ram_digest[0] ^= 1;
-        assert_ne!(
-            baseline,
-            black_box_execution_fingerprint(&node, &changed).unwrap()
-        );
-        changed = sample();
-        changed.device_state_digest[0] ^= 1;
-        assert_ne!(
-            baseline,
-            black_box_execution_fingerprint(&node, &changed).unwrap()
-        );
-    }
-
-    #[test]
-    fn black_box_fingerprint_excludes_unused_vcpu_slots() {
-        let node = crucible::NodeId {
-            name: String::from("vm-a"),
-        };
-        let baseline = black_box_execution_fingerprint(&node, &sample()).unwrap();
-        let mut changed = sample();
-        changed.vcpus[1].register_digest = [0xff; 32];
-        assert_eq!(
-            baseline,
-            black_box_execution_fingerprint(&node, &changed).unwrap()
-        );
-    }
-
-    #[test]
-    fn black_box_fingerprint_rejects_incomplete_samples() {
-        let node = crucible::NodeId {
-            name: String::from("vm-a"),
-        };
-        let mut failed = sample();
-        failed.component_failures = 1;
-        assert!(black_box_execution_fingerprint(&node, &failed).is_err());
-
-        let mut empty = sample();
-        empty.vcpu_count = 0;
-        assert!(black_box_execution_fingerprint(&node, &empty).is_err());
-    }
-}
+#[path = "mapped_quantum/fingerprint_tests.rs"]
+mod fingerprint_tests;
