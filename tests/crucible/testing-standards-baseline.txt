@@ -36,6 +36,8 @@ crucible-qemu	src/node/tests/fault_command	retry	1
 crucible-qemu	src/node_factory	thread::sleep	1
 crucible-qemu	src/node_factory/tests	thread::sleep	1
 crucible-qemu	src/node_tests	retry	1
+crucible-qemu	src/node_tests/fault_event_budget	retry	1
+crucible-qemu	src/node_tests/fingerprint	retry	1
 crucible-qemu	src/production_fault_runtime/evidence	retry	1
 crucible-qemu	src/production_fault_runtime/lifecycle_tests	retry	1
 crucible-qemu	src/production_fault_runtime/test_support	retry	1

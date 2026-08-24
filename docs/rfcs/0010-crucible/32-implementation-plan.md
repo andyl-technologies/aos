@@ -43,7 +43,7 @@ IO 16  QEMU 16  API 14  DBG 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11
 DCE 10  PAT 9  TIME 9  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:78619d6d854cedfa`
+Checklist sync digest: `rfc0010-checklist-v1:aa91dc5ceebb7cd4`
 
 ### Adversarial completion audit (2026-07-09)
 
