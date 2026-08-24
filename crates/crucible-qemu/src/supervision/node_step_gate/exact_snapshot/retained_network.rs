@@ -37,8 +37,8 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
     guest_ack_payload: &[u8],
     completion_ceiling: u64,
 ) -> Result<QemuLiveRetainedNetworkSnapshotReport, QemuLiveNodeStepGateError> {
-    const CAPTURE_ICOUNT: u64 = 1;
-    const DRIVE_INCREMENT: u64 = 100_000_000;
+    const CAPTURE_ICOUNT: u64 = 3_000_000_000;
+    const DRIVE_CHUNK_ICOUNT: u64 = 250_000_000;
 
     if frame_payload.is_empty()
         || guest_ack_payload
@@ -63,7 +63,7 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
 
     let capture_config = config
         .clone()
-        .with_boot_network_backpressure_capture(frame_payload.to_vec());
+        .with_boot_network_backpressure_capture_at(frame_payload.to_vec(), CAPTURE_ICOUNT);
     let identity = node_id(GATE_NODE);
     let mut source = build_live_node(
         &capture_config,
@@ -94,6 +94,7 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
         })?;
     let (retained_frame, source_attempts, source_last_attempt_icount) =
         retained_transport_head(&source_transport, frame_payload)?;
+    eprintln!("crucible-live-network-io phase=retained-capture status=frame-retained");
 
     let checkpoint = retained_network_checkpoint(&identity, CAPTURE_ICOUNT);
     let snapshot = source
@@ -128,6 +129,7 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
     source.force_crash_and_reap_for_gate().map_err(|error| {
         QemuLiveNodeStepGateError::node_op("force crash retained network source", error)
     })?;
+    eprintln!("crucible-live-network-io phase=retained-capture status=durably-published");
     drop(source);
     drop(snapshot);
 
@@ -182,6 +184,7 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
             ),
         });
     }
+    eprintln!("crucible-live-network-io phase=retained-restore status=state-verified");
 
     let first_retry_icount = restored_last_attempt_icount
         .checked_add(crucible_shmem::FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT)
@@ -265,8 +268,6 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
         });
     }
 
-    let mut guest_acknowledgement_seen = false;
-    let mut retained_frame_consumed = false;
     let remaining_retry_steps =
         u64::from(crucible_shmem::MAX_FRAME_DELIVERY_ATTEMPTS.saturating_sub(restored_attempts));
     let retry_capacity_ceiling = restored_last_attempt_icount.saturating_add(
@@ -279,66 +280,75 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
             ),
         });
     }
-    // Every retained retry is an intentional quantum boundary, even when the
-    // requested target is much farther ahead. Derive the loop bound from the
-    // canonical retry interval instead of imposing a 128-step test limit that
-    // could stop before a real guest finishes booting.
-    let max_drive_steps = completion_ceiling
-        .saturating_sub(first_retry_icount)
-        .checked_div(crucible_shmem::FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT)
-        .unwrap_or(0)
-        .saturating_add(2);
-    for _ in 0..max_drive_steps {
-        let current = restored
-            .current_icount()
-            .map_err(|error| {
-                QemuLiveNodeStepGateError::node_op("read retained retry icount", error)
+    // The first exact retry above proves the canonical deadline and state
+    // transition directly. Drive the remaining finite retry chain through the
+    // public production node-set scheduler path. That path reissues each
+    // delivery-capped quantum under MAX_FRAME_DELIVERY_ATTEMPTS. Chunking only
+    // the caller's requested ceiling lets the gate observe the exact guest ACK
+    // without executing the remainder of the 4B-icount boot horizon after the
+    // proof is complete; it does not skip or coalesce any 4M-icount retry.
+    // Taking a full control-plane transport checkpoint after every retry would
+    // add hundreds of unrelated snapshot handshakes before Linux enables RX.
+    let mut restored_nodes = QemuNodeSet::new();
+    if restored_nodes.insert(identity.clone(), restored).is_some() {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: String::from("retained restore node identity collided"),
+        });
+    }
+    let mut guest_acknowledgement_seen = false;
+    loop {
+        let current = crucible::SimulationBackend::node_now(&restored_nodes, &identity)
+            .map_err(|error| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                reason: format!("read production retained retry coordinate failed: {error}"),
             })?
-            .retired;
+            .ticks;
         if current >= completion_ceiling {
             break;
         }
-        let idle = restored.idle_state().map_err(|error| {
-            QemuLiveNodeStepGateError::node_op("read retained retry idle state", error)
-        })?;
-        let incremental = current.saturating_add(DRIVE_INCREMENT);
-        let target = idle
-            .next_deadline
-            .filter(|deadline| deadline.retired > current)
-            .map_or(incremental, |deadline| incremental.max(deadline.retired))
+        let target = current
+            .saturating_add(DRIVE_CHUNK_ICOUNT)
             .min(completion_ceiling);
-        restored
-            .advance_to_ceiling(Icount { retired: target })
-            .map_err(|error| {
-                QemuLiveNodeStepGateError::node_op("advance fresh retained retry", error)
+        crucible::SimulationBackend::step_node_to(
+            &mut restored_nodes,
+            &identity,
+            VirtualTime { ticks: target },
+        )
+        .map_err(|error| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: format!("drive production retained retry chain failed: {error}"),
+        })?;
+        let outputs = crucible::SimulationBackend::drain_network_outputs(&mut restored_nodes)
+            .map_err(|error| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                reason: format!("drain restored guest network outputs failed: {error}"),
             })?;
-        let outputs =
-            crucible::SimulationBackend::drain_network_outputs(&mut restored).map_err(|error| {
-                QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                    reason: format!("drain restored guest network outputs failed: {error}"),
-                }
-            })?;
-        guest_acknowledgement_seen |= outputs.iter().any(|frame| {
+        guest_acknowledgement_seen = outputs.iter().any(|frame| {
             guest_ack_payload
                 == crate::supervision::network_io_servicer::LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD
                 && crate::supervision::network_io_servicer::is_live_network_backpressure_ack(
                     &frame.payload,
                 )
         });
-        let transport = restored
-            .checkpoint_network_transport_for_gate()
-            .map_err(|error| {
-                QemuLiveNodeStepGateError::node_op("inspect retained retry completion", error)
-            })?;
-        retained_frame_consumed = !transport
-            .inbound
-            .frames
-            .iter()
-            .any(|frame| frame.delivery_key() == retained_frame);
-        if guest_acknowledgement_seen && retained_frame_consumed {
+        eprintln!(
+            "crucible-live-network-io phase=retained-restore status=retry-progress icount={target} guest_ack={guest_acknowledgement_seen}"
+        );
+        if guest_acknowledgement_seen {
             break;
         }
     }
+    let mut restored = restored_nodes.take(&identity).ok_or_else(|| {
+        QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: String::from("production retry chain lost the retained restore node"),
+        }
+    })?;
+    let final_transport = restored
+        .checkpoint_network_transport_for_gate()
+        .map_err(|error| {
+            QemuLiveNodeStepGateError::node_op("inspect retained retry completion", error)
+        })?;
+    let retained_frame_consumed = !final_transport
+        .inbound
+        .frames
+        .iter()
+        .any(|frame| frame.delivery_key() == retained_frame);
     if !guest_acknowledgement_seen || !retained_frame_consumed {
         let final_icount = restored
             .current_icount()
@@ -346,15 +356,6 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
                 QemuLiveNodeStepGateError::node_op("read failed retained retry icount", error)
             })?
             .retired;
-        let final_transport =
-            restored
-                .checkpoint_network_transport_for_gate()
-                .map_err(|error| {
-                    QemuLiveNodeStepGateError::node_op(
-                        "inspect failed retained retry transport",
-                        error,
-                    )
-                })?;
         return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
             reason: format!(
                 "fresh retained retry incomplete at icount {final_icount}/{completion_ceiling}: guest_ack={guest_acknowledgement_seen}, consumed={retained_frame_consumed}, inbound={:?}",
@@ -362,6 +363,7 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
             ),
         });
     }
+    eprintln!("crucible-live-network-io phase=retained-restore status=guest-acknowledged");
     restored
         .shutdown_child()
         .map_err(|error| QemuLiveNodeStepGateError::Shutdown { source: error })?;
