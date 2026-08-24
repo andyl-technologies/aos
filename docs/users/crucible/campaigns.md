@@ -39,13 +39,33 @@ Build the complete suite first:
 nix build .#pkg-crucible
 ```
 
+Generate the RFC-0016 worked-network reference fixture into a new private
+directory:
+
+```sh
+./result/bin/crucible campaign fixture worked-network \
+  --output ./worked-network-fixture \
+  --format json
+```
+
+The generator refuses to overwrite an existing directory. It writes owner-only
+canonical scenario, schedule, lineage, policy, and dependency-ordered generator
+files, then validates the emitted import manifest before returning success. The
+fixture contains the RFC topology (three routers and two traffic endpoints),
+semantic recovery boundaries, measurement contracts, safety properties, and a
+progressive-PUCT policy. Its VM records deliberately carry no product kernel or
+root-image references: this checked fixture exercises the complete
+import/create/control-plane path, while the final §14 operator flight must use a
+separately authored scenario containing the actual supported product build.
+
 Campaign creation uses content identities, not large artifact bodies in a
 control message. Import manifests therefore list dependency-ordered canonical
 scenario/configuration pairs and generator records. Validate every manifest
 offline before opening repository state:
 
 ```sh
-./result/bin/crucible campaign validate-import campaign-import.toml \
+./result/bin/crucible campaign validate-import \
+  ./worked-network-fixture/import.toml \
   --format json
 ```
 
@@ -54,8 +74,9 @@ files, and does not contact a daemon. The manifest accepted by `serve` is the
 same strict format. The currently authoritative field grammar is shown by the
 `CampaignImportManifest` decoder in the CLI and frozen by its tests; RFC-0016's
 [worked network campaign](../../rfcs/0016-crucible-campaigns/13-worked-network-campaign.md)
-explains the modeled network policy, but its future-looking snippets are not a
-substitute for `crucible campaign --help`.
+explains the modeled network policy represented by the generated fixture; its
+future-looking execution narrative is not a substitute for
+`crucible campaign --help`.
 
 ## Start the single-host owner
 
@@ -71,7 +92,7 @@ the socket becomes visible:
   --campaign-state ./campaign-state \
   --campaign-policy ./campaign-peers.toml \
   --campaign-component-authority ./campaign-authority.toml \
-  --campaign-import-manifest ./campaign-import.toml
+  --campaign-import-manifest ./worked-network-fixture/import.toml
 ```
 
 Use a private directory and the default owner-only socket mode. The listener
@@ -151,8 +172,8 @@ The lineage and policy arguments are canonical binary records:
   --socket /run/user/1000/crucible/campaign.sock \
   --principal operator \
   create network-recovery \
-  --lineage ./lineage.bin \
-  --policy ./policy.bin \
+  --lineage ./worked-network-fixture/lineage.bin \
+  --policy ./worked-network-fixture/policy.bin \
   --format json
 ```
 

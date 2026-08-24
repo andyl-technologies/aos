@@ -292,10 +292,10 @@ enum Commands {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignArgs {
-    /// Connected daemon socket; required except for offline import validation.
+    /// Connected daemon socket; required except for offline fixture and import operations.
     #[arg(long, value_name = "path")]
     socket: Option<PathBuf>,
-    /// Authenticated principal; required except for offline import validation.
+    /// Authenticated principal; required except for offline fixture and import operations.
     #[arg(long, value_name = "principal")]
     principal: Option<String>,
     #[command(subcommand)]
@@ -304,6 +304,8 @@ struct CampaignArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum CampaignCommand {
+    /// Generate executable, verifier-backed campaign reference fixtures.
+    Fixture(CampaignFixtureArgs),
     /// Validate strict campaign import manifests without opening repository state.
     ValidateImport(CampaignValidateImportArgs),
     /// Create a named campaign from canonical imported lineage and policy records.
@@ -356,6 +358,25 @@ enum CampaignCommand {
     Pin(CampaignPinArgs),
     /// Remove one semantic configuration pin.
     Unpin(CampaignUnpinArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFixtureArgs {
+    #[command(subcommand)]
+    fixture: CampaignFixtureCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignFixtureCommand {
+    /// Generate the adaptive network-recovery campaign from RFC-0016.
+    WorkedNetwork(CampaignWorkedNetworkFixtureArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignWorkedNetworkFixtureArgs {
+    /// New directory that will receive the complete fixture.
+    #[arg(long, value_name = "DIR", required = true)]
+    output: PathBuf,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

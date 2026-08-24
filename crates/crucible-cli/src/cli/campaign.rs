@@ -7,6 +7,8 @@ use super::*;
 
 #[path = "campaign/explain.rs"]
 mod explain;
+#[path = "campaign/fixture.rs"]
+mod fixture;
 #[path = "campaign/object.rs"]
 mod object;
 #[path = "campaign/snapshot.rs"]
@@ -19,6 +21,7 @@ use explain::{
     validate_campaign_attempt_explain_command, validate_campaign_explain_command,
     validate_campaign_finding_explain_command,
 };
+use fixture::{generate_worked_network_fixture, render_worked_network_fixture};
 use object::{query_campaign_object, render_campaign_object, validate_campaign_object_basis};
 use snapshot::{
     query_campaign_snapshot, render_campaign_snapshot, validate_campaign_snapshot_command,
@@ -197,6 +200,18 @@ enum CampaignChoiceSelector {
 }
 
 pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<(), CliError> {
+    if let CampaignCommand::Fixture(fixture) = &args.command {
+        let report = match &fixture.fixture {
+            CampaignFixtureCommand::WorkedNetwork(worked) => {
+                generate_worked_network_fixture(&worked.output)?
+            }
+        };
+        println!(
+            "{}",
+            render_worked_network_fixture(&report, cli.output_format())?
+        );
+        return Ok(());
+    }
     if let CampaignCommand::ValidateImport(validate) = &args.command {
         let report = validate_campaign_import_manifests(&validate.manifests)?;
         println!(
@@ -232,6 +247,11 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         CampaignCommand::ValidateImport(_) => {
             return Err(backend_error(
                 "offline campaign import validation reached the connected dispatch path",
+            ));
+        }
+        CampaignCommand::Fixture(_) => {
+            return Err(backend_error(
+                "offline campaign fixture generation reached the connected dispatch path",
             ));
         }
         CampaignCommand::Create(_) | CampaignCommand::Derive(_) => {
@@ -313,6 +333,7 @@ fn prepare_campaign_command(
     principal: &CampaignPrincipal,
 ) -> Result<Option<PreparedCampaignCommand>, CliError> {
     match command {
+        CampaignCommand::Fixture(_) => Ok(None),
         CampaignCommand::ValidateImport(_) => Ok(None),
         CampaignCommand::Create(create) => {
             let campaign = campaign_name(&create.name)?;
@@ -1600,6 +1621,7 @@ fn campaign_mutation_spec(
             ))
         }
         CampaignCommand::ValidateImport(_)
+        | CampaignCommand::Fixture(_)
         | CampaignCommand::Create(_)
         | CampaignCommand::Derive(_)
         | CampaignCommand::Branch(_)
@@ -3633,6 +3655,28 @@ mod tests {
 
     #[test]
     fn campaign_status_and_watch_parse_under_the_nested_cli() {
+        let fixture = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "fixture",
+            "worked-network",
+            "--output",
+            "/tmp/worked-network",
+        ])
+        .expect("offline worked-network fixture arguments");
+        assert!(matches!(
+            fixture.command,
+            Commands::Campaign(CampaignArgs {
+                socket: None,
+                principal: None,
+                command: CampaignCommand::Fixture(CampaignFixtureArgs {
+                    fixture: CampaignFixtureCommand::WorkedNetwork(
+                        CampaignWorkedNetworkFixtureArgs { ref output },
+                    ),
+                }),
+            }) if output == &PathBuf::from("/tmp/worked-network")
+        ));
+
         let validate = Cli::try_parse_from([
             "crucible",
             "campaign",

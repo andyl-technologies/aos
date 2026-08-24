@@ -68,7 +68,12 @@ be the only operator signing the final flight.
 
 The release fixture is the network recovery campaign in
 [`13-worked-network-campaign.md`](13-worked-network-campaign.md), promoted from
-an illustrative example to an executable operator fixture. It contains:
+an illustrative example to an executable operator fixture. The public
+`crucible campaign fixture worked-network --output DIR` command produces its
+canonical import/create/control-plane basis. Final operator evidence replaces
+the intentionally artifact-free VM definitions with the actual supported
+product build while preserving the declared topology, boundaries,
+measurements, properties, and policy shape. The release flight contains:
 
 - at least three product router VMs and two traffic endpoints;
 - the actual supported product build and guest integration library, not a stub
