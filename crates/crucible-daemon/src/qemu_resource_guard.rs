@@ -12,7 +12,7 @@ use std::fmt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use crucible::NodeId;
+use crucible::{NodeId, SchedulerOperationalFailureClass};
 use crucible_api::{LifecycleApiError, ProductionVmNodeGeneration, ProductionVmNodeLease};
 use crucible_campaign::AttemptResourceLimits;
 use crucible_qemu::{
@@ -710,16 +710,16 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`LifecycleApiError::LoopFactory`] after terminal cleanup,
+    /// Returns [`LifecycleApiError::AttemptOperational`] after terminal cleanup,
     /// cancellation, resource exhaustion, or enforcement-state failure.
     pub fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
         if self.terminal {
-            return Err(generation_error(
+            return Err(terminal_attempt_operational_error(
                 "QEMU attempt generation owner is already terminal",
             ));
         }
         self.guard.check_operational_boundary().map_err(|error| {
-            generation_error(format!("check QEMU attempt operational boundary: {error}"))
+            attempt_operational_error("check QEMU attempt operational boundary", error)
         })
     }
 }
@@ -776,16 +776,16 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`LifecycleApiError::LoopFactory`] on cancellation, terminal
+    /// Returns [`LifecycleApiError::AttemptOperational`] on cancellation, terminal
     /// ownership, or exact quantum/resource exhaustion.
     pub fn charge_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
         if self.terminal {
-            return Err(generation_error(
+            return Err(terminal_attempt_operational_error(
                 "QEMU attempt generation owner is already terminal",
             ));
         }
         self.guard.charge_execution_quantum().map_err(|error| {
-            generation_error(format!("charge QEMU generation execution quantum: {error}"))
+            attempt_operational_error("charge QEMU generation execution quantum", error)
         })
     }
 }
@@ -915,6 +915,44 @@ impl Drop for QemuAttemptGenerationLease {
 
 fn generation_error(message: impl Into<String>) -> LifecycleApiError {
     LifecycleApiError::LoopFactory {
+        message: message.into(),
+    }
+}
+
+fn attempt_operational_error(
+    operation: &'static str,
+    error: QemuVmRealizationError,
+) -> LifecycleApiError {
+    let class = match &error {
+        QemuVmRealizationError::StoreUnavailable { .. }
+        | QemuVmRealizationError::ExecutorUnavailable { .. } => {
+            SchedulerOperationalFailureClass::Retryable
+        }
+        QemuVmRealizationError::Canceled { .. } => SchedulerOperationalFailureClass::Canceled,
+        QemuVmRealizationError::ReapQuarantined { .. }
+        | QemuVmRealizationError::Store { .. }
+        | QemuVmRealizationError::Executor { .. }
+        | QemuVmRealizationError::ForkPrefix(_)
+        | QemuVmRealizationError::ForkPrefixOutOfRange { .. }
+        | QemuVmRealizationError::AncestorPrefix(_)
+        | QemuVmRealizationError::InvalidCheckpoint { .. }
+        | QemuVmRealizationError::InvalidAncestor { .. }
+        | QemuVmRealizationError::RuntimeContentMismatch { .. }
+        | QemuVmRealizationError::SavevmPolicy { .. }
+        | QemuVmRealizationError::InvalidLoadvmAuthorization { .. }
+        | QemuVmRealizationError::ReadyPointPolicy { .. } => {
+            SchedulerOperationalFailureClass::Terminal
+        }
+    };
+    LifecycleApiError::AttemptOperational {
+        class,
+        message: format!("{operation}: {error}"),
+    }
+}
+
+fn terminal_attempt_operational_error(message: impl Into<String>) -> LifecycleApiError {
+    LifecycleApiError::AttemptOperational {
+        class: SchedulerOperationalFailureClass::Terminal,
         message: message.into(),
     }
 }

@@ -103,6 +103,7 @@ pub(in super::super) const fn is_recoverable_scheduler_rejection(error: &Schedul
         | SchedulerError::TimeConversion(_)
         | SchedulerError::TopologyActivationInPast { .. } => true,
         SchedulerError::Backend(error) => is_recoverable_backend_rejection(error),
+        SchedulerError::OperationalBoundary { .. } => false,
     }
 }
 

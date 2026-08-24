@@ -815,7 +815,8 @@ pub(super) fn lifecycle_error_response(error: LifecycleApiError) -> axum::respon
         | LifecycleApiError::StateDidNotAdvance { .. }
         | LifecycleApiError::ActorJoin { .. }
         | LifecycleApiError::ActorFailed { .. }
-        | LifecycleApiError::LoopFactory { .. } => typed_rpc_status_response(
+        | LifecycleApiError::LoopFactory { .. }
+        | LifecycleApiError::AttemptOperational { .. } => typed_rpc_status_response(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             crucible_api::RpcStatusCode::Internal,
             "internal",

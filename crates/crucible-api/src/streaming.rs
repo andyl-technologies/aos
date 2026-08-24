@@ -977,6 +977,7 @@ fn scheduler_error_rejection_kind(error: &SchedulerError) -> CommandRejectionKin
         SchedulerError::NotImplemented { .. } => CommandRejectionKind::Unsupported,
         SchedulerError::Backend(error) => backend_error_rejection_kind(error),
         SchedulerError::BoundaryViolation { .. } => CommandRejectionKind::Internal,
+        SchedulerError::OperationalBoundary { .. } => CommandRejectionKind::Internal,
         SchedulerError::TimeConversion(_) | SchedulerError::TopologyActivationInPast { .. } => {
             CommandRejectionKind::InvalidArgument
         }

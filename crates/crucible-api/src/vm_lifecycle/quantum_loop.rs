@@ -70,14 +70,30 @@ fn combine_attempt_quantum_boundary<T>(
     match (operation, boundary) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) => Err(error),
-        (Ok(_), Err(boundary)) => Err(SchedulerError::BoundaryViolation {
-            message: format!("check production attempt after scheduler quantum: {boundary}"),
-        }),
-        (Err(error), Err(boundary)) => Err(SchedulerError::BoundaryViolation {
-            message: format!(
-                "production scheduler quantum failed ({error}); post-quantum attempt boundary also failed ({boundary})"
+        (Ok(_), Err(boundary)) => Err(attempt_boundary_scheduler_error(
+            "check production attempt after scheduler quantum",
+            boundary,
+        )),
+        (Err(error), Err(boundary)) => Err(attempt_boundary_scheduler_error(
+            &format!(
+                "production scheduler quantum failed ({error}); post-quantum attempt boundary"
             ),
-        }),
+            boundary,
+        )),
+    }
+}
+
+fn attempt_boundary_scheduler_error(context: &str, error: LifecycleApiError) -> SchedulerError {
+    match error {
+        LifecycleApiError::AttemptOperational { class, message } => {
+            SchedulerError::OperationalBoundary {
+                class,
+                message: format!("{context} failed: {message}"),
+            }
+        }
+        error => SchedulerError::BoundaryViolation {
+            message: format!("{context} failed: {error}"),
+        },
     }
 }
 
@@ -88,8 +104,11 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
     ) -> Result<QuantumOutcome, SchedulerError> {
         self.node_launcher
             .begin_execution_quantum()
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("admit production attempt scheduler quantum: {error}"),
+            .map_err(|error| {
+                attempt_boundary_scheduler_error(
+                    "admit production attempt scheduler quantum",
+                    error,
+                )
             })?;
         let operation = (|| {
             self.reconcile_indeterminate_debug_ownership()?;
@@ -2099,6 +2118,7 @@ fn trusted_debug_listener(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crucible::SchedulerOperationalFailureClass;
 
     #[test]
     fn stopped_checkpoint_artifact_keeps_the_pinned_source_without_copying() {
@@ -2146,7 +2166,10 @@ mod tests {
         let operation: Result<(), SchedulerError> = Err(SchedulerError::BoundaryViolation {
             message: String::from("modeled quantum failed"),
         });
-        let boundary = Err(loop_factory_error("attempt cancellation failed closed"));
+        let boundary = Err(LifecycleApiError::AttemptOperational {
+            class: SchedulerOperationalFailureClass::Canceled,
+            message: String::from("attempt cancellation failed closed"),
+        });
 
         let error = match combine_attempt_quantum_boundary(operation, boundary) {
             Ok(()) => panic!("both failures must reject the quantum"),
@@ -2158,6 +2181,37 @@ mod tests {
             error
                 .to_string()
                 .contains("attempt cancellation failed closed")
+        );
+        assert!(matches!(
+            error,
+            SchedulerError::OperationalBoundary {
+                class: SchedulerOperationalFailureClass::Canceled,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn attempt_quantum_admission_preserves_retryable_class() {
+        let error = attempt_boundary_scheduler_error(
+            "admit production attempt scheduler quantum",
+            LifecycleApiError::AttemptOperational {
+                class: SchedulerOperationalFailureClass::Retryable,
+                message: String::from("resource controller temporarily unavailable"),
+            },
+        );
+
+        assert!(matches!(
+            error,
+            SchedulerError::OperationalBoundary {
+                class: SchedulerOperationalFailureClass::Retryable,
+                ..
+            }
+        ));
+        assert!(
+            error
+                .to_string()
+                .contains("resource controller temporarily unavailable")
         );
     }
 

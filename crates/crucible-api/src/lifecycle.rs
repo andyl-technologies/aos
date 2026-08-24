@@ -16,7 +16,8 @@ use crucible::{
     EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogOffset, ExecutionFingerprint,
     FingerprintSample, GdbListen, GenesisCheckpoint, LogLevel, NodeId, QuantumLoop, QuantumOutcome,
     QuantumRequest, ScenarioDef, ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogEntry,
-    SchedulerQuiescence, Seed, TemporalGraph, VirtualTime, WhiteBoxPolicy, bake,
+    SchedulerOperationalFailureClass, SchedulerQuiescence, Seed, TemporalGraph, VirtualTime,
+    WhiteBoxPolicy, bake,
 };
 use crucible_session::{
     BreakpointDisposition, BreakpointPolicy, CheckpointRef, CommandReply, DebugCapability,
@@ -904,6 +905,14 @@ pub enum LifecycleApiError {
     #[error("session execution backend construction failed: {message}")]
     LoopFactory {
         /// Deterministic backend-construction failure detail.
+        message: String,
+    },
+    /// Attempt-scoped resource enforcement stopped lifecycle progress.
+    #[error("attempt operational boundary failed: {message}")]
+    AttemptOperational {
+        /// Stable supervisor disposition, independent of diagnostic wording.
+        class: SchedulerOperationalFailureClass,
+        /// Deterministic operational diagnostic text.
         message: String,
     },
 }
