@@ -2138,8 +2138,14 @@ attempt-wide cancellation, host-enforcement, and execution-quanta guard; the
 packaged non-campaign launcher explicitly supplies no-op hooks rather than
 inheriting an optional accounting default. A modeled-quantum failure and a
 racing post-quantum enforcement failure are reported together.
-Campaign-worker selection and an independently admitted debugger
-world remain open; no unsupported mode falls back to the packaged authority. A
+The daemon's fresh campaign-lifecycle factory now rejects an exact-resume root,
+validates the reconstructed scenario identity and bounded VM-node count,
+installs the exact admitted resource and cancellation incarnation, and transfers
+that guard into the multi-generation launcher before lifecycle construction.
+A mismatched guard is released before rejection; construction failure transfers
+the installed guard to quarantine. Campaign-worker selection, modeled-result
+projection, and an independently admitted debugger world remain open; no
+unsupported mode falls back to the packaged authority. A
 concrete exact-resume adapter obtains one prepared generation directory from the
 guard, streams and authenticates the durable exact root into its pinned VMState
 inode, constructs the root-bound real-node launcher, and exposes only the

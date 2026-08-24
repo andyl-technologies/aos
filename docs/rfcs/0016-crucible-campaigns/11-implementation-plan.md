@@ -477,9 +477,13 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   The daemon launcher binds those calls to the attempt cancellation, host-limit,
   and exact quantum guard, while the packaged non-campaign launcher declares
   its no-op behavior explicitly. Concurrent modeled and post-boundary failures
-  remain jointly observable. Campaign-worker selection, fresh exact-cache,
-  baked/thin image provisioning, the modeled attempt driver, and production
-  worker/factory selection remain open. Real-node exact-
+  remain jointly observable. The daemon now composes fresh campaign lifecycle
+  construction with that launcher: it rejects exact-resume roots, validates the
+  scenario identity and VM-node bound before resource allocation, exact-checks
+  the installed limits and cancellation incarnation, and quarantines the guard
+  if lifecycle construction fails. Campaign-worker selection, modeled-result
+  projection, fresh exact-cache, baked/thin image provisioning, the modeled
+  attempt driver, and production worker selection remain open. Real-node exact-
   checkpoint capture is now an executor-owned, guard-retaining operation: it
   seals and exact-binds configuration, node icount, and event-log continuation
   before paused VMState/host-I/O capture. The real-node executor now completes
