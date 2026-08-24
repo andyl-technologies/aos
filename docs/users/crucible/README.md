@@ -145,6 +145,9 @@ For deeper work:
 - [Reproduction and branching](reproduction.md) explains `verify`, artifacts,
   `replay`, `save`, `resume`, and `fork`.
 - [Exploration](exploration.md) covers bounded search, fuzzing, and triage.
+- [Lazy campaigns](campaigns.md) covers the single-host campaign repository,
+  verified import, lifecycle control, authenticated inspection, and current
+  executor-attachment boundary.
 - [Interactive control and debugging](debugging.md) covers the current
   interactive and debugger surfaces.
 - [Daemon operation](daemon.md) documents the remote control plane and its
