@@ -14,10 +14,11 @@ use crate::{
     AdmissionOrdinal, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,
     BranchRequestId, CampaignCodecError, CampaignCommandId, CampaignHash, CampaignPolicyId,
     CampaignSnapshotId, CampaignViewId, CandidateGeneratorSpecId, ChoiceDomain, ChoiceDomainId,
-    ChoiceOpportunity, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifact,
-    ConfigurationArtifactId, ContinuationProjectionId, CreditId, DebugSessionId, ExpansionStateId,
-    ObservationId, PlannerEngineId, PlannerInvocationId, PlannerState, PlannerStateId,
-    PlannerStepId, PolicyArtifactId, ProposalId, RetainedPlannerRequestId, SelectionId,
+    ChoiceDomainSemanticId, ChoiceOpportunity, ChoiceOpportunityId, ChoiceValue,
+    ConfigurationArtifact, ConfigurationArtifactId, ContinuationProjectionId, CreditId,
+    DebugSessionId, ExpansionStateId, FindingKind, ObservationId, PlannerCandidateGuidanceId,
+    PlannerEngineId, PlannerInvocationId, PlannerState, PlannerStateId, PlannerStepId,
+    PolicyArtifactId, ProposalId, RetainedPlannerRequestId, SelectionId,
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
@@ -36,6 +37,7 @@ const MAX_EXACT_RECORD_BYTES: usize = 32 * 1024 * 1024;
 mod attempt;
 mod guidance;
 mod planner;
+mod planner_guidance;
 mod projection;
 mod proposal;
 mod request;
@@ -43,6 +45,7 @@ mod request;
 pub use attempt::*;
 pub use guidance::*;
 pub use planner::*;
+pub use planner_guidance::*;
 pub use projection::*;
 pub use proposal::*;
 pub use request::*;

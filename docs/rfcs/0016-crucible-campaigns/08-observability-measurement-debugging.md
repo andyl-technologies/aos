@@ -578,6 +578,11 @@ sets under the RFC 03 aggregate bounds, matches only canonical observations
 already credited to the requested branch point, and adds the configured
 positive millionth weight once per cluster occurrence. The compact event counts
 remain explainable by finding class; unconfigured classes do not affect reward.
+Canonical frontier engine version 2 consumes these counts only through the
+exact snapshot-bound `PlannerCandidateGuidanceV1` record. The coordinator
+recomputes the record and its saturating weighted reward before publication and
+again during restart/import validation; the planner never reads the finding
+root or occurrence bodies directly.
 
 The checked `QueryCampaignFindings` service reads at most four complete
 finding records in deterministic signature-index order from one exact current

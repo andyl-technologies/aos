@@ -105,11 +105,13 @@ pub enum CampaignRecordKind {
     ReproductionArtifact,
     /// Canonical stable finding cluster.
     Finding,
+    /// Snapshot-bound fixed-point guidance for one planner candidate.
+    PlannerCandidateGuidance,
 }
 
 impl CampaignRecordKind {
     /// Every campaign record schema admitted by this crate.
-    pub const ALL: [Self; 37] = [
+    pub const ALL: [Self; 38] = [
         Self::Lineage,
         Self::Policy,
         Self::Snapshot,
@@ -147,6 +149,7 @@ impl CampaignRecordKind {
         Self::ExpansionCredit,
         Self::ReproductionArtifact,
         Self::Finding,
+        Self::PlannerCandidateGuidance,
     ];
 
     /// Returns the globally registered canonical schema name.
@@ -190,6 +193,7 @@ impl CampaignRecordKind {
             Self::ExpansionCredit => "crucible.campaign.expansion-credit",
             Self::ReproductionArtifact => "crucible.campaign.reproduction-artifact",
             Self::Finding => "crucible.campaign.finding",
+            Self::PlannerCandidateGuidance => "crucible.campaign.planner-candidate-guidance",
         }
     }
 
@@ -231,6 +235,7 @@ impl CampaignRecordKind {
             Self::ConfigurationArtifact => ObjectKind::Configuration,
             Self::ExpansionState
             | Self::ContinuationProjection
+            | Self::PlannerCandidateGuidance
             | Self::CoverageProjection
             | Self::RankingExplanation => ObjectKind::Projection,
             Self::MeasurementSet
@@ -299,6 +304,7 @@ impl Canonical for CampaignRecordKind {
             Self::ObjectiveEvaluation => 34,
             Self::RankingExplanation => 35,
             Self::SurvivorSelection => 36,
+            Self::PlannerCandidateGuidance => 37,
         });
     }
 
@@ -341,6 +347,7 @@ impl Canonical for CampaignRecordKind {
             34 => Ok(Self::ObjectiveEvaluation),
             35 => Ok(Self::RankingExplanation),
             36 => Ok(Self::SurvivorSelection),
+            37 => Ok(Self::PlannerCandidateGuidance),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-record-kind",
                 tag,
@@ -769,6 +776,10 @@ fn expected_children(
         }
         CampaignRecordKind::Finding => {
             let value = Finding::from_canonical_bytes(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::PlannerCandidateGuidance => {
+            let value = crate::PlannerCandidateGuidance::from_canonical_bytes(body)?;
             content_children(value.content_children())
         }
         CampaignRecordKind::MerkleNode => Err(CampaignCodecError::InvalidValue {

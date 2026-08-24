@@ -91,10 +91,10 @@ pub use exploration::{
     MAX_BRANCH_FINDING_PROJECTION_BYTES, MAX_BRANCH_FINDING_ROOT_ENTRIES,
     MAX_BRANCH_NOVELTY_IDENTITIES, MAX_BRANCH_NOVELTY_IDENTITY_VISITS,
     MAX_BRANCH_NOVELTY_OBSERVATIONS, MAX_BRANCH_NOVELTY_PROJECTION_BYTES,
-    MAX_BRANCH_NOVELTY_ROOT_ENTRIES, PlannerDisposition, PlannerProposalDisposition, PlannerStep,
-    PlannerStepProposal, PlanningAccounting, PlanningScanCursor, PlanningScanPage,
-    PlanningScanPosition, PlanningUsage, ProgressiveWideningDecision, Proposal, PuctEdgeStatistics,
-    PuctScore, StopCondition,
+    MAX_BRANCH_NOVELTY_ROOT_ENTRIES, MAX_PLANNER_GUIDANCE_DOMAIN_BYTES, PlannerCandidateGuidance,
+    PlannerDisposition, PlannerProposalDisposition, PlannerStep, PlannerStepProposal,
+    PlanningAccounting, PlanningScanCursor, PlanningScanPage, PlanningScanPosition, PlanningUsage,
+    ProgressiveWideningDecision, Proposal, PuctEdgeStatistics, PuctScore, StopCondition,
 };
 pub use finding::{
     Finding, FindingExactPins, FindingKind, FindingMinimizationAttempt,
@@ -112,10 +112,10 @@ pub use identity::{
     ChoiceOpportunitySemanticId, ChoiceRngStreamId, ConfigurationArtifactId, ConfigurationId,
     ContinuationProjectionId, CoverageProjectionId, CreditId, DebugSessionId, ExactCheckpointId,
     ExpansionStateId, FindingId, MeasurementSetId, ObjectiveEvaluationId, ObservationId,
-    PlannerEngineId, PlannerInvocationId, PlannerStateId, PlannerStepId, PolicyArtifactId,
-    ProbabilityModelId, PropertyVerdictSetId, ProposalId, RankingExplanationId,
-    ReproductionArtifactId, RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId,
-    SelectableId, SelectableSemanticId, SelectionId, SurvivorSelectionId,
+    PlannerCandidateGuidanceId, PlannerEngineId, PlannerInvocationId, PlannerStateId,
+    PlannerStepId, PolicyArtifactId, ProbabilityModelId, PropertyVerdictSetId, ProposalId,
+    RankingExplanationId, ReproductionArtifactId, RetainedPlannerRequestId, ScenarioArtifactId,
+    ScenarioDefId, SelectableId, SelectableSemanticId, SelectionId, SurvivorSelectionId,
 };
 pub use merkle::{
     CampaignStoreError, MAX_PROVEN_PAGE_ITEMS, MerkleMap, MerkleMapLookupProof, MerkleMapPage,
@@ -142,7 +142,8 @@ pub use observation::{
 };
 pub use planner_service::{
     AuthorizedPlannerService, AuthorizedPlannerServiceError, CANONICAL_FRONTIER_OFFERS_CAPABILITY,
-    CampaignPlanningBundle, CanonicalFrontierPlanner, CanonicalFrontierPlannerBasis,
+    CANONICAL_FRONTIER_PUCT_CAPABILITY, CampaignPlanningBundle, CanonicalFrontierPlanner,
+    CanonicalFrontierPlannerBasis, CanonicalPuctPlanner, CanonicalPuctPlannerBasis,
     MAX_PLANNER_COMPONENT_MESSAGE_BYTES, MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS,
     MAX_RETAINED_PLANNER_REQUEST_BYTES, PlannerClient, PlannerClientError, PlannerEngineOutput,
     PlannerExecutionSupervisor, PlannerRequest, PlannerResponse, PlannerService, PurePlannerEngine,

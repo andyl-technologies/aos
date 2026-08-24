@@ -628,6 +628,12 @@ content_object_id!(
     "crucible.campaign.continuation-projection",
     "Identifies one authenticated per-request continuation projection."
 );
+content_object_id!(
+    PlannerCandidateGuidanceId,
+    ObjectKind::Projection,
+    "crucible.campaign.planner-candidate-guidance",
+    "Identifies one snapshot-bound PUCT input for a planner candidate."
+);
 semantic_id!(
     CreditId,
     "Identifies one idempotent observation-to-branch credit."

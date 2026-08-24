@@ -419,6 +419,20 @@ pub struct PlanningAccounting {
     pub input_bytes: u64,
     pub fuel: u64,
 }
+
+pub struct PlannerCandidateGuidance {
+    pub input_view: CampaignViewId,
+    pub policy: CampaignPolicyId,
+    pub position: PlanningScanPosition,
+    pub domain: ChoiceDomainId,
+    pub domain_semantics: ChoiceDomainSemanticId,
+    pub value: ChoiceValue,
+    pub ordinal: u64,
+    pub edge: BranchEdgeId,
+    pub statistics: PuctEdgeStatistics,
+    pub novelty_events: u64,
+    pub finding_events: BTreeMap<FindingKind, u64>,
+}
 ```
 
 `PlannerInvocation` schema v2 binds the exact coordinator-served continuation
@@ -459,6 +473,17 @@ decoder continues to admit schema-v3 content IDs so an existing
 `CampaignFact` schema-v2 `PlannerAdvanced` body remains canonically readable;
 dereferencing that legacy ID as a current planner-step record still fails
 closed because only a schema-v4 envelope is executable or owner-validatable.
+
+`PlannerCandidateGuidance` is the schema-v1, at-most-64-KiB owner projection
+used by canonical frontier engine version 2. Its exact envelope children are
+the input view, active policy, served branch request, and exact choice domain.
+It repeats the offer tuple plus authenticated semantic edge and decomposed PUCT
+statistics so an authority-free planner can validate and score the record using
+the request's by-value policy. An accepted retained request stores every
+guidance envelope as a child. Local acceptance, restart, and imported-snapshot
+validation reconstruct the exact records from the owning snapshot; a
+structurally canonical substituted score, semantic domain, reward count, or
+offer tuple fails closed.
 
 `ContinueScan` is accepted only for a non-complete served page and its cursor
 must equal that page's last position. `NoWork` is accepted only for a complete

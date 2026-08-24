@@ -566,7 +566,7 @@ impl CampaignRepository {
     fn validate_planner_request_inputs_with_mode(
         &self,
         request: &PlannerRequest,
-        allow_unpublished_offers: bool,
+        allow_unpublished_derived_inputs: bool,
     ) -> Result<(), CampaignRepositoryError> {
         self.require_record_kind(
             request.expected_snapshot().content_id(),
@@ -602,11 +602,20 @@ impl CampaignRepository {
             return Err(integrity("planner-request-by-value-basis-mismatch"));
         }
         let candidate_inputs = request.input_bundle().candidate_inputs(request)?;
-        let unpublished_offers = candidate_inputs
+        let mut unpublished_derived_inputs = candidate_inputs
             .values()
             .filter_map(|input| input.offer.as_ref())
             .map(Proposal::id)
+            .map(|result| result.map(|id| id.content_id()))
             .collect::<Result<BTreeSet<_>, _>>()?;
+        unpublished_derived_inputs.extend(
+            candidate_inputs
+                .values()
+                .filter_map(|input| input.guidance.as_ref())
+                .map(crate::PlannerCandidateGuidance::id)
+                .map(|result| result.map(|id| id.content_id()))
+                .collect::<Result<BTreeSet<_>, _>>()?,
+        );
         for object_id in request.input_bundle().object_ids() {
             match self.read_envelope(object_id) {
                 Ok(stored) => {
@@ -615,24 +624,56 @@ impl CampaignRepository {
                     }
                 }
                 Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
-                    if allow_unpublished_offers
-                        && unpublished_offers
-                            .iter()
-                            .any(|offer| offer.content_id() == object_id) => {}
+                    if allow_unpublished_derived_inputs
+                        && unpublished_derived_inputs.contains(&object_id) => {}
                 Err(error) => return Err(error),
             }
         }
         let snapshot = self.read_snapshot(request.expected_snapshot().content_id())?;
+        let guidance_points = candidate_inputs
+            .iter()
+            .filter_map(|(position, input)| {
+                input.guidance.as_ref().map(|_| position.branch_point())
+            })
+            .collect::<BTreeSet<_>>();
+        let puct_projections = if guidance_points.is_empty() {
+            BTreeMap::new()
+        } else {
+            self.project_branch_puct_batch_loaded(&snapshot, guidance_points)?
+        };
+        let mut domain_cache = BTreeMap::new();
+        let mut domain_bytes = 0_usize;
         for (position, input) in candidate_inputs {
             let expected_projection = self.planner_continuation_projection(&snapshot, position)?;
             if expected_projection != input.continuation {
                 return Err(integrity("planner-request-candidate-projection-mismatch"));
             }
-            if let Some(offer) = input.offer {
-                let expected =
-                    self.planner_candidate_input(&snapshot, request.invocation_id()?, position)?;
-                if expected != (input.continuation, Some(offer)) {
+            if let Some(offer) = &input.offer {
+                let expected = self.planner_candidate_input(
+                    &snapshot,
+                    request.invocation_id()?,
+                    position,
+                    &mut domain_cache,
+                    &mut domain_bytes,
+                )?;
+                if expected != (input.continuation, Some(offer.clone())) {
                     return Err(integrity("planner-request-candidate-projection-mismatch"));
+                }
+            }
+            if let Some(guidance) = &input.guidance {
+                let offer = input
+                    .offer
+                    .as_ref()
+                    .ok_or_else(|| integrity("planner-candidate-guidance-offer-is-missing"))?;
+                let expected = self.planner_candidate_guidance(
+                    &snapshot,
+                    &puct_projections[&position.branch_point()],
+                    offer,
+                    &mut domain_cache,
+                    &mut domain_bytes,
+                )?;
+                if &expected != guidance {
+                    return Err(integrity("planner-request-candidate-guidance-mismatch"));
                 }
             }
         }
@@ -644,13 +685,17 @@ impl CampaignRepository {
         request: &PlannerRequest,
         proposal: &PlannerStepProposal,
     ) -> Result<(), CampaignRepositoryError> {
-        let descriptor = CanonicalFrontierPlanner::descriptor()?;
-        if request.engine() != &descriptor {
+        let expected = if request.engine() == &CanonicalFrontierPlanner::descriptor()? {
+            CanonicalFrontierPlanner
+                .plan(request)
+                .map_err(CampaignRepositoryError::Codec)?
+        } else if request.engine() == &CanonicalPuctPlanner::descriptor()? {
+            CanonicalPuctPlanner
+                .plan(request)
+                .map_err(CampaignRepositoryError::Codec)?
+        } else {
             return Ok(());
-        }
-        let expected = CanonicalFrontierPlanner
-            .plan(request)
-            .map_err(CampaignRepositoryError::Codec)?;
+        };
         if expected.proposal() != proposal {
             return Err(integrity("builtin-planner-output-mismatch"));
         }
@@ -662,13 +707,17 @@ impl CampaignRepository {
         request: &PlannerRequest,
         step: &PlannerStep,
     ) -> Result<(), CampaignRepositoryError> {
-        let descriptor = CanonicalFrontierPlanner::descriptor()?;
-        if request.engine() != &descriptor {
+        let expected = if request.engine() == &CanonicalFrontierPlanner::descriptor()? {
+            CanonicalFrontierPlanner
+                .plan(request)
+                .map_err(CampaignRepositoryError::Codec)?
+        } else if request.engine() == &CanonicalPuctPlanner::descriptor()? {
+            CanonicalPuctPlanner
+                .plan(request)
+                .map_err(CampaignRepositoryError::Codec)?
+        } else {
             return Ok(());
-        }
-        let expected = CanonicalFrontierPlanner
-            .plan(request)
-            .map_err(CampaignRepositoryError::Codec)?;
+        };
         let expected = expected.proposal();
         let next_state = expected.next_state().id()?;
         let disposition = match expected.disposition() {
@@ -1018,6 +1067,17 @@ impl CampaignRepository {
             crate::CampaignRecordKind::ConfigurationArtifact,
             crate::object::content_children(artifact.content_children())?,
             artifact.canonical_bytes(),
+        )?)
+    }
+
+    pub(super) fn put_planner_candidate_guidance(
+        &self,
+        guidance: &crate::PlannerCandidateGuidance,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::PlannerCandidateGuidance,
+            crate::object::content_children(guidance.content_children())?,
+            guidance.canonical_bytes(),
         )?)
     }
 

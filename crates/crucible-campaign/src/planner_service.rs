@@ -35,6 +35,8 @@ const MAX_PLANNING_BUNDLE_OBJECTS: usize = 65_536;
 const RETAINED_PLANNER_REQUEST_FIXED_CHILDREN: usize = 7;
 /// Planner-engine capability for exact continuation and candidate offers.
 pub const CANONICAL_FRONTIER_OFFERS_CAPABILITY: &str = "canonical-frontier-offers-v1";
+/// Planner-engine capability for owner-built fixed-point candidate guidance.
+pub const CANONICAL_FRONTIER_PUCT_CAPABILITY: &str = "canonical-frontier-puct-v1";
 /// Maximum bundle-object count accepted by the initial coordinator store.
 pub const MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS: usize =
     MAX_PLANNING_BUNDLE_OBJECTS - RETAINED_PLANNER_REQUEST_FIXED_CHILDREN;
@@ -56,6 +58,7 @@ pub struct CampaignPlanningBundle {
 pub(crate) struct PlannerCandidateInput {
     pub(crate) continuation: ContinuationProjection,
     pub(crate) offer: Option<Proposal>,
+    pub(crate) guidance: Option<crate::PlannerCandidateGuidance>,
 }
 
 impl CampaignPlanningBundle {
@@ -147,8 +150,13 @@ impl CampaignPlanningBundle {
         }
 
         let invocation = request.invocation_id()?;
+        let puct = request
+            .engine
+            .capabilities()
+            .contains(CANONICAL_FRONTIER_PUCT_CAPABILITY);
         let mut continuations = BTreeMap::new();
         let mut offers = BTreeMap::new();
+        let mut guidance = BTreeMap::new();
         for id in self.object_ids() {
             let object = self.object(id)?.ok_or(CampaignCodecError::InvalidValue {
                 reason: "planner input bundle object disappeared during validation",
@@ -179,18 +187,36 @@ impl CampaignPlanningBundle {
                         });
                     }
                 }
+                crate::CampaignRecordKind::PlannerCandidateGuidance => {
+                    let projection =
+                        crate::PlannerCandidateGuidance::from_canonical_bytes(object.body())?;
+                    if guidance.insert(projection.position(), projection).is_some() {
+                        return Err(CampaignCodecError::InvalidValue {
+                            reason: "planner input bundle repeats candidate guidance",
+                        });
+                    }
+                }
                 _ => {}
             }
         }
 
-        let expected_offer = continuations.iter().find_map(|(position, projection)| {
-            (projection.state() == ContinuationState::Ready).then_some(*position)
-        });
-        if offers.len() != usize::from(expected_offer.is_some())
-            || offers.keys().next().copied() != expected_offer
+        let expected_offers = continuations
+            .iter()
+            .filter_map(|(position, projection)| {
+                (projection.state() == ContinuationState::Ready).then_some(*position)
+            })
+            .take(if puct { usize::MAX } else { 1 })
+            .collect::<BTreeSet<_>>();
+        if offers.keys().copied().collect::<BTreeSet<_>>() != expected_offers {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "planner candidate offers disagree with Ready continuations",
+            });
+        }
+        if (puct && guidance.keys().copied().collect::<BTreeSet<_>>() != expected_offers)
+            || (!puct && !guidance.is_empty())
         {
             return Err(CampaignCodecError::InvalidValue {
-                reason: "planner candidate offer is not the least Ready continuation",
+                reason: "planner candidate guidance disagrees with offered continuations",
             });
         }
 
@@ -203,6 +229,7 @@ impl CampaignPlanningBundle {
                         reason: "planner input bundle omits a continuation projection",
                     })?;
             let offer = offers.remove(position);
+            let candidate_guidance = guidance.remove(position);
             if let Some(offer) = &offer {
                 let source = self.object(position.source().content_id())?.ok_or(
                     CampaignCodecError::InvalidValue {
@@ -219,16 +246,24 @@ impl CampaignPlanningBundle {
                         reason: "planner candidate offer disagrees with its invocation basis",
                     });
                 }
+                if let Some(candidate_guidance) = &candidate_guidance {
+                    candidate_guidance.validate_for(
+                        offer,
+                        &request.policy,
+                        request.invocation.input_view(),
+                    )?;
+                }
             }
             inputs.insert(
                 *position,
                 PlannerCandidateInput {
                     continuation,
                     offer,
+                    guidance: candidate_guidance,
                 },
             );
         }
-        if !continuations.is_empty() || !offers.is_empty() {
+        if !continuations.is_empty() || !offers.is_empty() || !guidance.is_empty() {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "planner input bundle contains an unserved candidate projection",
             });
@@ -329,6 +364,9 @@ impl CampaignPlanningBundle {
                 pending.push(input.continuation.id()?.content_id());
                 if let Some(offer) = &input.offer {
                     pending.push(offer.id()?.content_id());
+                }
+                if let Some(guidance) = &input.guidance {
+                    pending.push(guidance.id()?.content_id());
                 }
             }
         }

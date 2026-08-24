@@ -29,6 +29,9 @@ struct BranchEdgeVisitEvidence {
     observations: Vec<BranchCreditedObservation>,
 }
 
+type BranchFindingEvents = BTreeMap<crate::BranchEdgeId, BTreeMap<crate::FindingKind, u64>>;
+type BranchPointFindingEvents = BTreeMap<crate::BranchPointId, BranchFindingEvents>;
+
 struct MixtureComponentState {
     values: Vec<ChoiceValue>,
     cursor: usize,
@@ -1356,6 +1359,8 @@ impl CampaignRepository {
         snapshot: &LoadedSnapshot,
         invocation_id: crate::PlannerInvocationId,
         position: crate::PlanningScanPosition,
+        domain_cache: &mut BTreeMap<crate::ChoiceDomainId, Arc<ChoiceDomain>>,
+        domain_bytes: &mut usize,
     ) -> Result<(ContinuationProjection, Option<Proposal>), CampaignRepositoryError> {
         let observations = snapshot.snapshot.roots().observations;
         let candidate_view = CandidateViewRoots::from_roots(snapshot.snapshot.roots());
@@ -1364,8 +1369,12 @@ impl CampaignRepository {
 
         let completed_visits =
             self.branch_completed_visits(observations, request.branch_point())?;
-        let domain = self.read_choice_domain(request.domain().content_id())?;
-        if self.candidate_source_profile(&request, &domain)?.is_none() {
+        let domain =
+            self.read_planner_guidance_domain(request.domain(), domain_cache, domain_bytes)?;
+        if self
+            .candidate_source_profile(&request, domain.as_ref())?
+            .is_none()
+        {
             let expected = ContinuationProjection::new(
                 position.source(),
                 position.branch_point(),
@@ -1376,8 +1385,12 @@ impl CampaignRepository {
             }
             return Ok((projection, None));
         }
-        let progress =
-            self.continuation_progress(candidate_view, position.source(), &request, &domain)?;
+        let progress = self.continuation_progress(
+            candidate_view,
+            position.source(),
+            &request,
+            domain.as_ref(),
+        )?;
         let state = continuation_state_after_progress(
             progress.profile,
             progress.proposed,
@@ -1400,7 +1413,12 @@ impl CampaignRepository {
             let value = match progress.next_candidate {
                 Some(value) => value,
                 None => self
-                    .candidate_at_with_feedback(&request, &domain, ordinal, completed_visits)?
+                    .candidate_at_with_feedback(
+                        &request,
+                        domain.as_ref(),
+                        ordinal,
+                        completed_visits,
+                    )?
                     .ok_or_else(|| integrity("planner-candidate-enumerator-is-not-implemented"))?,
             };
             Some(Proposal::new(
@@ -1417,6 +1435,26 @@ impl CampaignRepository {
             None
         };
         Ok((projection, offer))
+    }
+
+    fn read_planner_guidance_domain(
+        &self,
+        domain_id: crate::ChoiceDomainId,
+        domain_cache: &mut BTreeMap<crate::ChoiceDomainId, Arc<ChoiceDomain>>,
+        domain_bytes: &mut usize,
+    ) -> Result<Arc<ChoiceDomain>, CampaignRepositoryError> {
+        if let Some(domain) = domain_cache.get(&domain_id) {
+            return Ok(Arc::clone(domain));
+        }
+        let domain = self.read_choice_domain(domain_id.content_id())?;
+        if domain.id()? != domain_id {
+            return Err(integrity("planner-candidate-guidance-domain-mismatch"));
+        }
+        *domain_bytes =
+            charge_planner_guidance_domain_work(*domain_bytes, domain.canonical_bytes().len())?;
+        let domain = Arc::new(domain);
+        domain_cache.insert(domain_id, Arc::clone(&domain));
+        Ok(domain)
     }
 
     /// Projects and publishes one bounded static-continuation page.
@@ -1631,10 +1669,10 @@ impl CampaignRepository {
     ///
     /// The projection authenticates the exact snapshot once, derives its
     /// completed edge-visit partition, assigns a canonical uniform prior,
-    /// projects globally unique coverage identities onto credited edges, and
-    /// reserves fairness for the least-visited edge. Reward remains neutral
-    /// until its evidence owner is implemented. The active policy must select
-    /// tree search; this method never changes planner ordering.
+    /// projects globally unique coverage identities onto credited edges, folds
+    /// policy-weighted verified finding occurrences into reward, and reserves
+    /// fairness for the least-visited edge. The active policy must select tree
+    /// search.
     ///
     /// # Errors
     ///
@@ -1648,14 +1686,22 @@ impl CampaignRepository {
     ) -> Result<crate::BranchPuctProjection, CampaignRepositoryError> {
         self.validate_complete_head(snapshot.content_id())?;
         let loaded = self.read_snapshot(snapshot.content_id())?;
+        self.project_branch_puct_loaded(&loaded, branch_point)
+    }
+
+    pub(super) fn project_branch_puct_loaded(
+        &self,
+        loaded: &LoadedSnapshot,
+        branch_point: crate::BranchPointId,
+    ) -> Result<crate::BranchPuctProjection, CampaignRepositoryError> {
         let policy = self.read_policy(loaded.snapshot.active_policy().content_id())?;
         let crate::ExplorerPolicy::TreeSearch { puct, .. } = policy.explorer() else {
             return Err(integrity(
                 "branch-puct-projection-requires-tree-search-policy",
             ));
         };
-        let evidence = self.project_branch_edge_visit_evidence(&loaded, branch_point)?;
-        let novelty = self.project_branch_novelty_events(&loaded, &evidence)?;
+        let evidence = self.project_branch_edge_visit_evidence(loaded, branch_point)?;
+        let novelty = self.project_branch_novelty_events(loaded, &evidence)?;
         let finding_weights = [
             crate::FindingKind::PropertyViolation,
             crate::FindingKind::Divergence,
@@ -1670,7 +1716,7 @@ impl CampaignRepository {
         })
         .collect::<BTreeMap<_, _>>();
         let finding_events =
-            self.project_branch_finding_events(&loaded, &evidence, &finding_weights)?;
+            self.project_branch_finding_events(loaded, &evidence, &finding_weights)?;
         crate::BranchPuctProjection::new_with_evidence(
             loaded.snapshot.active_policy(),
             *puct,
@@ -1682,10 +1728,133 @@ impl CampaignRepository {
         .map_err(Into::into)
     }
 
+    pub(super) fn project_branch_puct_batch_loaded(
+        &self,
+        loaded: &LoadedSnapshot,
+        branch_points: impl IntoIterator<Item = crate::BranchPointId>,
+    ) -> Result<BTreeMap<crate::BranchPointId, crate::BranchPuctProjection>, CampaignRepositoryError>
+    {
+        let policy = self.read_policy(loaded.snapshot.active_policy().content_id())?;
+        let crate::ExplorerPolicy::TreeSearch { puct, .. } = policy.explorer() else {
+            return Err(integrity(
+                "branch-puct-projection-requires-tree-search-policy",
+            ));
+        };
+        let branch_points = branch_points.into_iter().collect::<BTreeSet<_>>();
+        let evidence = self.project_branch_edge_visit_evidence_batch(loaded, &branch_points)?;
+        let mut novelty = self.project_branch_novelty_events_batch(loaded, &evidence)?;
+        let finding_weights = [
+            crate::FindingKind::PropertyViolation,
+            crate::FindingKind::Divergence,
+            crate::FindingKind::Timeout,
+        ]
+        .into_iter()
+        .filter_map(|kind| {
+            policy
+                .guidance()
+                .get(kind.guidance_signal())
+                .map(|weight| (kind, weight.weight_micros()))
+        })
+        .collect::<BTreeMap<_, _>>();
+        let mut finding_events =
+            self.project_branch_finding_events_batch(loaded, &evidence, &finding_weights)?;
+        evidence
+            .into_iter()
+            .map(|(branch_point, evidence)| {
+                crate::BranchPuctProjection::new_with_evidence(
+                    loaded.snapshot.active_policy(),
+                    *puct,
+                    evidence.statistics,
+                    novelty.remove(&branch_point).unwrap_or_default(),
+                    finding_weights.clone(),
+                    finding_events.remove(&branch_point).unwrap_or_default(),
+                )
+                .map(|projection| (branch_point, projection))
+                .map_err(Into::into)
+            })
+            .collect()
+    }
+
+    pub(super) fn planner_candidate_guidance(
+        &self,
+        loaded: &LoadedSnapshot,
+        projection: &crate::BranchPuctProjection,
+        offer: &Proposal,
+        domain_cache: &mut BTreeMap<crate::ChoiceDomainId, Arc<ChoiceDomain>>,
+        domain_bytes: &mut usize,
+    ) -> Result<crate::PlannerCandidateGuidance, CampaignRepositoryError> {
+        if projection.branch_point() != offer.branch_point()
+            || projection.policy() != loaded.snapshot.active_policy()
+        {
+            return Err(integrity(
+                "planner-candidate-guidance-projection-basis-mismatch",
+            ));
+        }
+        let semantic_id = self
+            .read_planner_guidance_domain(offer.domain(), domain_cache, domain_bytes)?
+            .semantic_id();
+        let edge =
+            crate::Selection::campaign_edge_id(offer.branch_point(), semantic_id, offer.value());
+        let evidence = projection.candidate_evidence(edge)?;
+        crate::PlannerCandidateGuidance::new(
+            loaded.snapshot.planning_view().id()?,
+            loaded.snapshot.active_policy(),
+            crate::PlanningScanPosition::new(offer.branch_point(), offer.request()),
+            offer.domain(),
+            semantic_id,
+            offer.value().clone(),
+            offer.ordinal(),
+            edge,
+            evidence.statistics,
+            evidence.novelty_events,
+            evidence.finding_events,
+        )
+        .map_err(Into::into)
+    }
+
     fn project_branch_edge_visit_evidence(
         &self,
         loaded: &LoadedSnapshot,
         branch_point: crate::BranchPointId,
+    ) -> Result<BranchEdgeVisitEvidence, CampaignRepositoryError> {
+        let mut total_credits = 0_u64;
+        let mut evidence_bytes = 0_usize;
+        self.project_branch_edge_visit_evidence_bounded(
+            loaded,
+            branch_point,
+            &mut total_credits,
+            &mut evidence_bytes,
+        )
+    }
+
+    fn project_branch_edge_visit_evidence_batch(
+        &self,
+        loaded: &LoadedSnapshot,
+        branch_points: &BTreeSet<crate::BranchPointId>,
+    ) -> Result<BTreeMap<crate::BranchPointId, BranchEdgeVisitEvidence>, CampaignRepositoryError>
+    {
+        let mut total_credits = 0_u64;
+        let mut evidence_bytes = 0_usize;
+        branch_points
+            .iter()
+            .map(|branch_point| {
+                self.project_branch_edge_visit_evidence_bounded(
+                    loaded,
+                    *branch_point,
+                    &mut total_credits,
+                    &mut evidence_bytes,
+                )
+                .map(|evidence| (*branch_point, evidence))
+            })
+            .collect()
+    }
+
+    fn project_branch_edge_visit_evidence_bounded(
+        &self,
+        loaded: &LoadedSnapshot,
+        branch_point: crate::BranchPointId,
+        total_credits: &mut u64,
+        evidence_bytes: &mut usize,
     ) -> Result<BranchEdgeVisitEvidence, CampaignRepositoryError> {
         let Some(index) = self.merkle.get(
             loaded.snapshot.roots().observations,
@@ -1702,12 +1871,9 @@ impl CampaignRepository {
             });
         };
         let parent_visits = self.merkle.inspect_shallow(index)?.entry_count();
-        if parent_visits > crate::MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS {
-            return Err(integrity("branch-edge-visit-projection-count"));
-        }
+        *total_credits = charge_branch_edge_visit_credits(*total_credits, parent_visits)?;
 
         let mut after = None;
-        let mut evidence_bytes = 0_usize;
         let mut edge_visits = BTreeMap::<crate::BranchEdgeId, u64>::new();
         let mut observations = Vec::new();
         observations
@@ -1721,8 +1887,8 @@ impl CampaignRepository {
             let page = self.merkle.scan(index, after, PROJECTION_SCAN_PAGE_ITEMS)?;
             for (key, content) in page.entries() {
                 let credit = self.read_expansion_credit(*content)?;
-                evidence_bytes = charge_branch_edge_visit_evidence(
-                    evidence_bytes,
+                *evidence_bytes = charge_branch_edge_visit_evidence(
+                    *evidence_bytes,
                     credit.canonical_bytes().len(),
                 )?;
                 if credit.id().as_hash() != *key || credit.branch_point() != branch_point {
@@ -1730,18 +1896,18 @@ impl CampaignRepository {
                 }
 
                 let observation = self.decode_observation(credit.observation().content_id())?;
-                evidence_bytes = charge_branch_edge_visit_evidence(
-                    evidence_bytes,
+                *evidence_bytes = charge_branch_edge_visit_evidence(
+                    *evidence_bytes,
                     observation.canonical_bytes().len(),
                 )?;
                 let attempt = self.read_attempt(observation.attempt().content_id())?;
-                evidence_bytes = charge_branch_edge_visit_evidence(
-                    evidence_bytes,
+                *evidence_bytes = charge_branch_edge_visit_evidence(
+                    *evidence_bytes,
                     attempt.canonical_bytes().len(),
                 )?;
                 let path = self.read_branch_path(attempt.path().content_id())?;
-                evidence_bytes = charge_branch_edge_visit_evidence(
-                    evidence_bytes,
+                *evidence_bytes = charge_branch_edge_visit_evidence(
+                    *evidence_bytes,
                     path.canonical_bytes().len(),
                 )?;
                 if observation.path() != attempt.path() {
@@ -1917,6 +2083,149 @@ impl CampaignRepository {
         Ok(edge_events)
     }
 
+    fn project_branch_novelty_events_batch(
+        &self,
+        loaded: &LoadedSnapshot,
+        evidence: &BTreeMap<crate::BranchPointId, BranchEdgeVisitEvidence>,
+    ) -> Result<
+        BTreeMap<crate::BranchPointId, BTreeMap<crate::BranchEdgeId, u64>>,
+        CampaignRepositoryError,
+    > {
+        if evidence
+            .values()
+            .all(|branch| branch.observations.is_empty())
+        {
+            return Ok(BTreeMap::new());
+        }
+
+        let mut work_bytes = 0_usize;
+        let mut identity_visits = 0_u64;
+        let mut targets = BTreeSet::new();
+        let mut coverage_targets =
+            BTreeMap::<crate::CoverageProjectionId, Vec<crate::CampaignHash>>::new();
+        for branch in evidence.values() {
+            for credited in &branch.observations {
+                if coverage_targets.contains_key(&credited.coverage) {
+                    continue;
+                }
+                let coverage = self.read_coverage_projection(credited.coverage.content_id())?;
+                work_bytes =
+                    charge_branch_novelty_work(work_bytes, coverage.canonical_bytes().len())?;
+                identity_visits = charge_branch_novelty_identity_visits(
+                    identity_visits,
+                    coverage.identities().len(),
+                )?;
+                targets.extend(coverage.identities().iter().copied());
+                if targets.len() > crate::MAX_BRANCH_NOVELTY_IDENTITIES {
+                    return Err(integrity("branch-novelty-identity-count"));
+                }
+                coverage_targets.insert(
+                    credited.coverage,
+                    coverage.identities().iter().copied().collect(),
+                );
+            }
+        }
+        if targets.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let observation_root = loaded.snapshot.roots().observations;
+        let root_entries = self.merkle.inspect_shallow(observation_root)?.entry_count();
+        if root_entries > crate::MAX_BRANCH_NOVELTY_ROOT_ENTRIES {
+            return Err(integrity("branch-novelty-observation-root-entry-count"));
+        }
+        let mut frequencies = targets
+            .iter()
+            .copied()
+            .map(|identity| (identity, 0_u64))
+            .collect::<BTreeMap<_, _>>();
+        let mut canonical_observations = 0_u64;
+        let mut scanned_entries = 0_u64;
+        let mut after = None;
+        loop {
+            let page = self
+                .merkle
+                .scan(observation_root, after, PROJECTION_SCAN_PAGE_ITEMS)?;
+            for (key, content) in page.entries() {
+                scanned_entries = scanned_entries
+                    .checked_add(1)
+                    .ok_or_else(|| integrity("branch-novelty-observation-root-entry-count"))?;
+                if *key != map_key_content("observations.observation", *content) {
+                    continue;
+                }
+                canonical_observations = canonical_observations
+                    .checked_add(1)
+                    .ok_or_else(|| integrity("branch-novelty-observation-count"))?;
+                if canonical_observations > crate::MAX_BRANCH_NOVELTY_OBSERVATIONS {
+                    return Err(integrity("branch-novelty-observation-count"));
+                }
+                let observation = self.decode_observation(*content)?;
+                work_bytes =
+                    charge_branch_novelty_work(work_bytes, observation.canonical_bytes().len())?;
+                let coverage_id = observation.coverage();
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    coverage_targets.entry(coverage_id)
+                {
+                    let coverage = self.read_coverage_projection(coverage_id.content_id())?;
+                    work_bytes =
+                        charge_branch_novelty_work(work_bytes, coverage.canonical_bytes().len())?;
+                    identity_visits = charge_branch_novelty_identity_visits(
+                        identity_visits,
+                        coverage.identities().len(),
+                    )?;
+                    entry.insert(
+                        coverage
+                            .identities()
+                            .intersection(&targets)
+                            .copied()
+                            .collect(),
+                    );
+                }
+                for identity in &coverage_targets[&coverage_id] {
+                    let frequency = frequencies
+                        .get_mut(identity)
+                        .ok_or_else(|| integrity("branch-novelty-target-cache-mismatch"))?;
+                    *frequency = frequency
+                        .checked_add(1)
+                        .ok_or_else(|| integrity("branch-novelty-frequency-overflow"))?;
+                }
+            }
+            let Some(next) = page.next_after() else {
+                break;
+            };
+            after = Some(next);
+        }
+        if scanned_entries != root_entries || frequencies.values().any(|frequency| *frequency == 0)
+        {
+            return Err(integrity("branch-novelty-observation-scan-mismatch"));
+        }
+
+        let mut branch_events =
+            BTreeMap::<crate::BranchPointId, BTreeMap<crate::BranchEdgeId, u64>>::new();
+        for (branch_point, branch) in evidence {
+            for credited in &branch.observations {
+                let events = coverage_targets[&credited.coverage]
+                    .iter()
+                    .filter(|identity| frequencies.get(identity) == Some(&1))
+                    .count();
+                if events == 0 {
+                    continue;
+                }
+                let events = u64::try_from(events)
+                    .map_err(|_| integrity("branch-novelty-event-count-overflow"))?;
+                let total = branch_events
+                    .entry(*branch_point)
+                    .or_default()
+                    .entry(credited.edge)
+                    .or_default();
+                *total = total
+                    .checked_add(events)
+                    .ok_or_else(|| integrity("branch-novelty-event-count-overflow"))?;
+            }
+        }
+        Ok(branch_events)
+    }
+
     fn project_branch_finding_events(
         &self,
         loaded: &LoadedSnapshot,
@@ -2022,6 +2331,118 @@ impl CampaignRepository {
             return Err(integrity("branch-finding-root-scan-mismatch"));
         }
         Ok(edge_events)
+    }
+
+    fn project_branch_finding_events_batch(
+        &self,
+        loaded: &LoadedSnapshot,
+        evidence: &BTreeMap<crate::BranchPointId, BranchEdgeVisitEvidence>,
+        finding_weights: &BTreeMap<crate::FindingKind, u64>,
+    ) -> Result<BranchPointFindingEvents, CampaignRepositoryError> {
+        if finding_weights.is_empty()
+            || evidence
+                .values()
+                .all(|branch| branch.observations.is_empty())
+        {
+            return Ok(BTreeMap::new());
+        }
+
+        let mut targets =
+            BTreeMap::<ObservationId, Vec<(crate::BranchPointId, crate::BranchEdgeId)>>::new();
+        for (branch_point, branch) in evidence {
+            for credited in &branch.observations {
+                targets
+                    .entry(credited.observation)
+                    .or_default()
+                    .push((*branch_point, credited.edge));
+            }
+        }
+
+        let finding_root = loaded.snapshot.roots().findings;
+        let root_entries = self.merkle.inspect_shallow(finding_root)?.entry_count();
+        if root_entries > crate::MAX_BRANCH_FINDING_ROOT_ENTRIES {
+            return Err(integrity("branch-finding-root-entry-count"));
+        }
+        let mut work_bytes = 0_usize;
+        let mut occurrence_visits = 0_u64;
+        let mut scanned_findings = 0_u64;
+        let mut branch_events = BranchPointFindingEvents::new();
+        let mut after = None;
+        loop {
+            let page = self
+                .merkle
+                .scan(finding_root, after, PROJECTION_SCAN_PAGE_ITEMS)?;
+            for (key, content) in page.entries() {
+                scanned_findings = scanned_findings
+                    .checked_add(1)
+                    .ok_or_else(|| integrity("branch-finding-root-entry-count"))?;
+                let finding = self.decode_finding(*content)?;
+                work_bytes =
+                    charge_branch_finding_work(work_bytes, finding.canonical_bytes().len())?;
+                if *key != finding_signature_key(finding.signature().cluster_key()) {
+                    return Err(integrity("branch-finding-root-index-mismatch"));
+                }
+                let kind = finding.signature().kind();
+                if !finding_weights.contains_key(&kind) {
+                    continue;
+                }
+
+                let occurrence_count = u64::from(finding.occurrence_count());
+                occurrence_visits =
+                    charge_branch_finding_occurrence_visits(occurrence_visits, occurrence_count)?;
+                let mut scanned_occurrences = 0_u64;
+                let mut occurrence_after = None;
+                loop {
+                    let occurrences = self.merkle.scan(
+                        finding.occurrences(),
+                        occurrence_after,
+                        PROJECTION_SCAN_PAGE_ITEMS,
+                    )?;
+                    for (occurrence_key, occurrence_content) in occurrences.entries() {
+                        scanned_occurrences = scanned_occurrences
+                            .checked_add(1)
+                            .ok_or_else(|| integrity("branch-finding-occurrence-visit-limit"))?;
+                        if scanned_occurrences > occurrence_count {
+                            return Err(integrity("branch-finding-occurrence-scan-mismatch"));
+                        }
+                        let observation = ObservationId::from_content_id(*occurrence_content)?;
+                        if *occurrence_key != finding_occurrence_key(observation) {
+                            return Err(integrity("branch-finding-occurrence-index-mismatch"));
+                        }
+                        let Some(edges) = targets.get(&observation) else {
+                            continue;
+                        };
+                        for (branch_point, edge) in edges {
+                            let count = branch_events
+                                .entry(*branch_point)
+                                .or_default()
+                                .entry(*edge)
+                                .or_default()
+                                .entry(kind)
+                                .or_default();
+                            *count = count
+                                .checked_add(1)
+                                .ok_or_else(|| integrity("branch-finding-event-count-overflow"))?;
+                        }
+                    }
+                    let Some(next) = occurrences.next_after() else {
+                        break;
+                    };
+                    occurrence_after = Some(next);
+                }
+                if scanned_occurrences != occurrence_count {
+                    return Err(integrity("branch-finding-occurrence-scan-mismatch"));
+                }
+            }
+            let Some(next) = page.next_after() else {
+                break;
+            };
+            after = Some(next);
+        }
+        if scanned_findings != root_entries {
+            return Err(integrity("branch-finding-root-scan-mismatch"));
+        }
+        Ok(branch_events)
     }
 
     fn finite_continuation_page(
@@ -2530,6 +2951,19 @@ fn charge_branch_edge_visit_evidence(
     Ok(total)
 }
 
+pub(super) fn charge_branch_edge_visit_credits(
+    prior: u64,
+    credits: u64,
+) -> Result<u64, CampaignRepositoryError> {
+    let total = prior
+        .checked_add(credits)
+        .ok_or_else(|| integrity("branch-edge-visit-projection-count"))?;
+    if total > crate::MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS {
+        return Err(integrity("branch-edge-visit-projection-count"));
+    }
+    Ok(total)
+}
+
 pub(super) fn charge_branch_novelty_work(
     prior: usize,
     bytes: usize,
@@ -2580,6 +3014,19 @@ pub(super) fn charge_branch_finding_occurrence_visits(
         .ok_or_else(|| integrity("branch-finding-occurrence-visit-limit"))?;
     if total > crate::MAX_BRANCH_FINDING_OCCURRENCE_VISITS {
         return Err(integrity("branch-finding-occurrence-visit-limit"));
+    }
+    Ok(total)
+}
+
+pub(super) fn charge_planner_guidance_domain_work(
+    prior: usize,
+    bytes: usize,
+) -> Result<usize, CampaignRepositoryError> {
+    let total = prior
+        .checked_add(bytes)
+        .ok_or_else(|| integrity("planner-guidance-domain-byte-limit"))?;
+    if total > crate::MAX_PLANNER_GUIDANCE_DOMAIN_BYTES {
+        return Err(integrity("planner-guidance-domain-byte-limit"));
     }
     Ok(total)
 }

@@ -1813,6 +1813,259 @@ fn canonical_frontier_planner_carries_the_first_ready_offer_across_pages() {
     assert_eq!(retained, final_request_message);
 }
 
+#[test]
+fn canonical_puct_planner_ranks_every_ready_offer_and_replays_owner_guidance() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let genesis = repository
+        .create("canonical-puct", &lineage, &policy, &BTreeMap::new())
+        .expect("create canonical PUCT campaign");
+    let request_a = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "canonical-puct-a",
+    );
+    let first = repository
+        .submit_known_branch_request("canonical-puct", genesis.snapshot_id(), &request_a)
+        .expect("submit first PUCT request");
+    let request_b = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "canonical-puct-b",
+    );
+    let second = repository
+        .submit_known_branch_request("canonical-puct", first.new_snapshot, &request_b)
+        .expect("submit second PUCT request");
+    let mut requests = [request_a, request_b];
+    requests.sort_by_key(|request| {
+        PlanningScanPosition::new(request.branch_point(), request.id().expect("request id"))
+    });
+    let guided = requests[1].clone();
+    let guided_position = PlanningScanPosition::new(
+        guided.branch_point(),
+        guided.id().expect("guided request id"),
+    );
+
+    let completed_proposal = finite_proposal(
+        &guided,
+        &policy,
+        &repository.head("canonical-puct").expect("request head"),
+        ChoiceValue::Boolean(false),
+        1,
+    );
+    let proposed = repository
+        .issue_proposal("canonical-puct", second.new_snapshot, &completed_proposal)
+        .expect("issue completed-edge proposal");
+    let (selection, path, attempt) = branch_attempt(&repository, &guided, &completed_proposal);
+    let admitted = repository
+        .admit_proposal(
+            "canonical-puct",
+            proposed.new_snapshot,
+            proposed.proposal,
+            &selection,
+            &path,
+            &attempt,
+        )
+        .expect("admit completed-edge attempt");
+    let child = ConfigurationId::from_hash(CampaignHash::derive(
+        "test.canonical-puct",
+        b"completed-child",
+    ));
+    let child_content = repository
+        .publish_configuration_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            child,
+            1,
+            b"canonical PUCT completed child".to_vec(),
+        )
+        .expect("publish completed child");
+    let measurements = repository
+        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
+        .expect("publish measurements");
+    let properties = repository
+        .publish_property_verdict_set(
+            &PropertyVerdictSet::new(BTreeMap::new()).expect("properties"),
+        )
+        .expect("publish properties");
+    let coverage = repository
+        .publish_coverage_projection(
+            &CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
+        )
+        .expect("publish coverage");
+    let observation = Observation::new(
+        admitted.attempt,
+        child,
+        child_content,
+        path.id().expect("path id"),
+        StopOutcome::Reached(StopCondition::NextChoice),
+        measurements,
+        properties,
+        coverage,
+        BTreeSet::from([guided.opportunity()]),
+    )
+    .expect("completed observation");
+    let observed = repository
+        .publish_observation("canonical-puct", admitted.new_snapshot, &observation)
+        .expect("publish completed observation");
+
+    let basis = repository
+        .publish_canonical_puct_planner_basis()
+        .expect("publish PUCT planner basis");
+    let budget = PlanningBudget::new(1, 1, 32, 1024 * 1024, 100).expect("planner budget");
+    let invocation = repository
+        .prepare_planner_invocation(
+            "canonical-puct",
+            observed.new_snapshot,
+            basis.engine(),
+            basis.artifact(),
+            basis.initial_state(),
+            None,
+            2,
+            budget,
+        )
+        .expect("prepare PUCT invocation");
+    let request = repository
+        .build_planner_request(
+            observed.new_snapshot,
+            invocation.id().expect("invocation id"),
+        )
+        .expect("build PUCT request");
+    let kinds = request
+        .input_bundle()
+        .object_ids()
+        .map(|id| {
+            request
+                .input_bundle()
+                .object(id)
+                .expect("decode bundle object")
+                .expect("bundle object")
+                .record_kind()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|kind| **kind == crate::CampaignRecordKind::Proposal)
+            .count(),
+        2
+    );
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|kind| **kind == crate::CampaignRecordKind::PlannerCandidateGuidance)
+            .count(),
+        2
+    );
+
+    let output = CanonicalPuctPlanner
+        .plan(&request)
+        .expect("rank PUCT request");
+    let PlannerProposalDisposition::Issue { selected, .. } = output.proposal().disposition() else {
+        panic!("complete PUCT page must issue")
+    };
+    assert_eq!(*selected, guided_position);
+    assert_eq!(
+        output.proposal().explanation().terms_micros()["selected-parent-visits"],
+        1
+    );
+    assert!(output.proposal().explanation().terms_micros()["selected-total-micros"] > 0);
+
+    let before_tamper = blobs.object_count().expect("objects before tamper");
+    let tampered_objects = request
+        .input_bundle()
+        .object_ids()
+        .map(|id| {
+            let object = request
+                .input_bundle()
+                .object(id)
+                .expect("decode bundle object")
+                .expect("bundle object");
+            if object.record_kind() != crate::CampaignRecordKind::PlannerCandidateGuidance {
+                return object;
+            }
+            let guidance = crate::PlannerCandidateGuidance::from_canonical_bytes(object.body())
+                .expect("candidate guidance");
+            if guidance.position() != guided_position {
+                return object;
+            }
+            let statistics = guidance.statistics();
+            let forged_statistics = crate::PuctEdgeStatistics::new(
+                statistics.parent_visits(),
+                statistics.edge_visits(),
+                statistics.reward_sum_micros(),
+                statistics.prior_micros().saturating_sub(1),
+                statistics.is_novel(),
+                statistics.is_fairness_reserved(),
+            )
+            .expect("forged statistics");
+            let forged = crate::PlannerCandidateGuidance::new(
+                guidance.input_view(),
+                guidance.policy(),
+                guidance.position(),
+                guidance.domain(),
+                guidance.domain_semantics(),
+                guidance.value().clone(),
+                guidance.ordinal(),
+                guidance.edge(),
+                forged_statistics,
+                guidance.novelty_events(),
+                guidance.finding_events().clone(),
+            )
+            .expect("forged guidance");
+            ObjectEnvelope::for_record(
+                crate::CampaignRecordKind::PlannerCandidateGuidance,
+                crate::object::content_children(forged.content_children())
+                    .expect("forged guidance children"),
+                forged.canonical_bytes(),
+            )
+            .expect("forged guidance envelope")
+        })
+        .collect::<Vec<_>>();
+    let tampered = PlannerRequest::new(
+        request.expected_snapshot(),
+        request.invocation().clone(),
+        request.engine().clone(),
+        request.policy_artifact().clone(),
+        request.policy().clone(),
+        request.planner_state().clone(),
+        *request.input_view(),
+        CampaignPlanningBundle::new(tampered_objects).expect("tampered PUCT bundle"),
+    )
+    .expect("structurally valid owner-guidance forgery");
+    assert!(matches!(
+        repository.preflight_planner_request_inputs(&tampered),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-request-candidate-guidance-mismatch"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after tamper"),
+        before_tamper
+    );
+
+    let accepted = repository
+        .accept_planner_step(
+            "canonical-puct",
+            observed.new_snapshot,
+            output.proposal(),
+            output.proposal().usage_claim(),
+        )
+        .expect("accept PUCT output");
+    repository
+        .validated_heads
+        .lock()
+        .expect("validation cache")
+        .clear();
+    let replayed = repository
+        .load_planner_step_at(accepted.new_snapshot, accepted.step)
+        .expect("replay PUCT step after cache clear");
+    assert_eq!(replayed.disposition().selected(), Some(guided_position));
+}
+
 #[derive(Clone)]
 struct ExactCanonicalPlannerSupervisor {
     calls: Arc<std::sync::atomic::AtomicUsize>,

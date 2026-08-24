@@ -3465,6 +3465,23 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
 #[test]
 fn branch_guidance_work_budgets_accept_only_the_exact_boundary() {
     assert_eq!(
+        super::super::projection::charge_branch_edge_visit_credits(
+            crate::MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS - 1,
+            1,
+        )
+        .expect("exact aggregate credit boundary"),
+        crate::MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS
+    );
+    assert!(matches!(
+        super::super::projection::charge_branch_edge_visit_credits(
+            crate::MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS,
+            1,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "branch-edge-visit-projection-count"
+        })
+    ));
+    assert_eq!(
         super::super::projection::charge_branch_novelty_work(
             crate::MAX_BRANCH_NOVELTY_PROJECTION_BYTES - 1,
             1,
@@ -3530,6 +3547,23 @@ fn branch_guidance_work_budgets_accept_only_the_exact_boundary() {
         ),
         Err(CampaignRepositoryError::Integrity {
             reason: "branch-finding-occurrence-visit-limit"
+        })
+    ));
+    assert_eq!(
+        super::super::projection::charge_planner_guidance_domain_work(
+            crate::MAX_PLANNER_GUIDANCE_DOMAIN_BYTES - 1,
+            1,
+        )
+        .expect("exact planner guidance domain boundary"),
+        crate::MAX_PLANNER_GUIDANCE_DOMAIN_BYTES
+    );
+    assert!(matches!(
+        super::super::projection::charge_planner_guidance_domain_work(
+            crate::MAX_PLANNER_GUIDANCE_DOMAIN_BYTES,
+            1,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-guidance-domain-byte-limit"
         })
     ));
 }
