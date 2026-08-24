@@ -579,8 +579,9 @@ content_object_id!(
 content_object_id!(
     MeasurementSetId,
     ObjectKind::Observation,
+    [1, 2],
     "crucible.campaign.measurement-set",
-    "Identifies one canonical measurement set."
+    "Identifies one canonical measurement set; legacy claimed-series records remain readable."
 );
 content_object_id!(
     PropertyVerdictSetId,

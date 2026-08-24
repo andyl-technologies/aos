@@ -861,11 +861,7 @@ impl CampaignRepository {
         &self,
         value: &MeasurementSet,
     ) -> Result<ContentId, CampaignRepositoryError> {
-        self.put_envelope(ObjectEnvelope::for_record(
-            crate::CampaignRecordKind::MeasurementSet,
-            crate::object::content_children(value.content_children())?,
-            value.canonical_bytes(),
-        )?)
+        self.put_envelope(ObjectEnvelope::for_measurement_set(value)?)
     }
 
     pub(super) fn put_property_verdict_set(

@@ -3,6 +3,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use crucible::model::{
+    Aggregation, BoundarySelector, CohortPolicy, MeasurementDefinition, MeasurementDefinitions,
+    MeasurementId, MetricDefinition, MetricId, MetricSource, MetricValueType, UnitId,
+};
 use crucible::{
     Configuration, EventLog, EventLogOffset, Icount, MarkerId, NodeId, ObservableEvent, Plan,
     Properties, QuantumOutcome, QuantumTerminalVerdict, ScenarioDefForm, SchedulerError,
@@ -137,8 +141,50 @@ fn event_count_seals_final_drain_coverage_into_exact_candidate() {
         .map(|entry| CampaignHash::from_bytes(entry.observation.content_hash().bytes))
         .collect::<BTreeSet<_>>();
     assert_eq!(candidate.coverage().identities(), &expected);
+    assert_eq!(candidate.measurements().schema_version(), 2);
+    assert!(candidate.measurements().evaluation().is_some());
     assert!(candidate.properties().properties().is_empty());
     assert_eq!(owner.drives, 1);
+}
+
+#[test]
+fn measured_scenario_fails_closed_until_sample_producers_exist() {
+    let fixture = crucible::happy_path_scenario().expect("happy-path fixture");
+    let scenario = measured_scenario(&fixture.scenario);
+    let input = input_for_scenario(scenario, StopCondition::Terminal);
+    let configuration = starting_configuration(&input);
+    let mut log = EventLog::new();
+    let append = log
+        .append_observable_events(fixture.observations().iter().cloned())
+        .expect("happy-path event log");
+    let mut quantum = outcome(configuration, append.entries, append.offset, 38);
+    quantum.scheduler_quiescence = Some(SchedulerQuiescence::default());
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([Ok(quantum)]),
+        terminal: Some(QuantumTerminalVerdict::Passed),
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+    let mut driver = QemuFreshModeledDriver::new();
+
+    let pending = driver
+        .drive(
+            &mut lifecycle,
+            &input,
+            &context(),
+            QemuFreshStartMaterialization::genesis(),
+        )
+        .expect("terminal modeled stop");
+    let error = driver
+        .seal(pending, Vec::new())
+        .expect_err("measurement samples are not yet available");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(
+            QemuFreshModeledDriverError::MeasurementProducersUnavailable
+        )
+    ));
 }
 
 #[test]
@@ -463,6 +509,45 @@ fn input_for_scenario(scenario: ScenarioDefForm, stop: StopCondition) -> Crucibl
         path,
         CrucibleResolvedAttemptStart::Discover { configuration },
     )
+}
+
+fn measured_scenario(base: &ScenarioDefForm) -> ScenarioDefForm {
+    let node = base
+        .world()
+        .vm_nodes()
+        .first()
+        .expect("happy-path VM")
+        .id
+        .clone();
+    let measurements = MeasurementDefinitions::new(
+        base.world(),
+        base.plan(),
+        base.properties(),
+        vec![MeasurementDefinition {
+            id: MeasurementId::parse("driver-window").expect("measurement id"),
+            begin: BoundarySelector::ScenarioGenesis,
+            end: BoundarySelector::SchedulerQuiescence,
+            timeout: None,
+            cohort: CohortPolicy::All(vec![node]),
+            metrics: vec![MetricDefinition {
+                id: MetricId::parse("scheduler-events").expect("metric id"),
+                value_type: MetricValueType::UnsignedInteger,
+                unit: UnitId::parse("events").expect("unit id"),
+                source: MetricSource::SchedulerEventCount,
+                aggregation: Aggregation::Count,
+            }],
+        }],
+    )
+    .expect("measurement definitions");
+    ScenarioDefForm::from_components_with_measurements_and_app_random_draw_cap(
+        base.world(),
+        base.plan(),
+        base.properties(),
+        &measurements,
+        base.seed(),
+        base.app_random_draw_cap(),
+    )
+    .expect("measured scenario")
 }
 
 fn choice_discovery(scenario: ScenarioDefId) -> ChoiceDiscovery {

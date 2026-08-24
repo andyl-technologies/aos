@@ -141,16 +141,19 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   bounded v1 replay evaluator now authenticates dense scheduler entries,
   resolves compound/cohort boundaries and modeled timeouts, retains canonical
   satisfying evidence, and recomputes exact integer, rational, histogram, and
-  delta aggregates. Guest and model-owned sample producers plus campaign
-  observation integration remain open, so this task is not yet complete.
+  delta aggregates. Campaign measurement-set v2 retains the exact verified
+  evaluation/definition identities and payload behind a model-specific verifier
+  while preserving identity-exact v1 reads. Guest and model-owned sample
+  producers plus complete raw evidence attachment remain open, so this task is
+  not yet complete.
 - [ ] **T-CAM-3.2** Add guest measurement begin/sample/end and semantic-marker
   protocol messages with scenario validation and limits.
 - [ ] **T-CAM-3.3** Derive model-owned network, storage, scheduler, icount, and
   virtual-time metrics from canonical events.
 - [ ] **T-CAM-3.4** Implement observation, objective-evaluation, Pareto,
   lexicographic, top-`K`, fairness-reserve, and explanation records.
-  The canonical bounded observation, measurement-set, property-verdict-set,
-  and coverage-projection record layer is implemented; aggregate verification,
+  The canonical bounded observation, verified-evaluation measurement-set v2,
+  property-verdict-set, and coverage-projection record layer is implemented;
   objectives, ranking, explanations, and the Phase 3 flight remain open.
 - [ ] **T-CAM-3.5** Extend finding artifacts and retention policy with exact
   pre/post-failure pins and measurement/evidence closure.

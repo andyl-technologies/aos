@@ -9,26 +9,28 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crucible::model::MeasurementTerminalState;
 use crucible::{
     EventLogCoverageObservation, HostAssertionOutcomeKind, ObservableEventPayload,
     OfflineAssertionCheckError, OfflineAssertionChecker, QuantumOutcome, QuantumRequest,
     QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    SchedulerOperationalFailureClass, SchedulerQuiescence,
+    SchedulerOperationalFailureClass, SchedulerQuiescence, VirtualTime,
 };
 use crucible_campaign::{
     CampaignCodecError, CampaignHash, ChoiceDiscovery, ChoiceDomainId, ChoiceOpportunityId,
     CoverageProjection, MAX_OBSERVATION_CHOICE_DISCOVERIES, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
-    MeasurementSet, Observation, ObservationCandidate, PropertyEvidence, PropertyVerdict,
-    PropertyVerdictSet, SelectableId, StopCondition, StopOutcome,
+    Observation, ObservationCandidate, PropertyEvidence, PropertyVerdict, PropertyVerdictSet,
+    SelectableId, StopCondition, StopOutcome,
 };
 use crucible_cas::content_store::ContentId;
 use thiserror::Error;
 
 use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure, CrucibleArtifactError,
-    CrucibleAttemptExecution, CrucibleResolvedAttemptStart, QemuFreshAttemptDriver,
-    QemuFreshAttemptLifecycle, QemuFreshStartMaterialization,
+    CrucibleAttemptExecution, CrucibleMeasurementError, CrucibleResolvedAttemptStart,
+    QemuFreshAttemptDriver, QemuFreshAttemptLifecycle, QemuFreshStartMaterialization,
     encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
+    evaluate_crucible_measurement_set,
 };
 
 /// Maximum scheduler entries retained by one in-memory fresh-attempt projection.
@@ -61,6 +63,12 @@ pub enum QemuFreshModeledDriverError {
     /// Offline property evaluation rejected the complete retained event log.
     #[error("fresh campaign property evaluation failed: {0}")]
     Assertions(#[source] OfflineAssertionCheckError),
+    /// Measurement evaluation or campaign binding rejected the retained run.
+    #[error("fresh campaign measurement evaluation failed: {0}")]
+    Measurements(#[source] CrucibleMeasurementError),
+    /// The scenario requires sample producers not implemented by this driver slice.
+    #[error("fresh campaign measurement sample producers are not implemented")]
+    MeasurementProducersUnavailable,
     /// The lifecycle returned a child configuration for another scenario.
     #[error("fresh campaign lifecycle returned a configuration for another scenario")]
     ScenarioMismatch,
@@ -473,11 +481,12 @@ fn build_observation_candidate(
 
     let mut checker = OfflineAssertionChecker::new()
         .with_world_white_box_policies(pending.input.scenario().world());
-    if let Some(quiescence) = pending.terminal_quiescence {
+    if let Some(quiescence) = pending.terminal_quiescence.clone() {
         checker = checker.with_terminal_scheduler_quiescence(quiescence);
     }
     let report = checker.check_run(pending.input.scenario().properties(), &pending.event_log)?;
     let properties = property_verdicts(&report)?;
+    let measurements = campaign_measurements(&pending)?;
     let stop = stop_outcome(pending.stop, &report);
 
     let scenario_artifact = encode_crucible_scenario_artifact(pending.input.scenario())?;
@@ -490,7 +499,6 @@ fn build_observation_candidate(
         &scenario_artifact,
         &pending.configuration.schedule,
     )?;
-    let measurements = MeasurementSet::new(BTreeMap::new())?;
     let coverage = coverage_projection(&pending.event_log)?;
     let discovered_choices = pending.discoveries.into_values().collect::<Vec<_>>();
     let discovered_ids = discovered_choices
@@ -517,6 +525,35 @@ fn build_observation_candidate(
         observation,
     )
     .map_err(Into::into)
+}
+
+fn campaign_measurements(
+    pending: &QemuFreshPendingObservation,
+) -> Result<crucible_campaign::MeasurementSet, QemuFreshModeledDriverError> {
+    let definitions = pending.input.scenario().measurements();
+    if !definitions.definitions().is_empty() {
+        return Err(QemuFreshModeledDriverError::MeasurementProducersUnavailable);
+    }
+    let terminal = MeasurementTerminalState {
+        scenario_ready_at: Some(VirtualTime { ticks: 0 }),
+        at: pending
+            .event_log
+            .last()
+            .map_or(VirtualTime { ticks: 0 }, SchedulerEventLogEntry::at),
+        node_icounts: BTreeMap::new(),
+        scheduler_quiescent: pending
+            .terminal_quiescence
+            .as_ref()
+            .is_some_and(SchedulerQuiescence::is_quiescent),
+    };
+    evaluate_crucible_measurement_set(
+        definitions,
+        &pending.event_log,
+        Vec::new(),
+        &terminal,
+        BTreeSet::new(),
+    )
+    .map_err(QemuFreshModeledDriverError::Measurements)
 }
 
 fn property_verdicts(

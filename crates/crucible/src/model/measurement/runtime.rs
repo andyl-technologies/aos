@@ -22,7 +22,10 @@ pub const MAX_MEASUREMENT_EVENT_ENTRIES: usize = 1_000_000;
 /// Maximum terminal per-node counters accepted by one evaluation.
 pub const MAX_MEASUREMENT_TERMINAL_NODES: usize = 65_536;
 /// Maximum canonical bytes in one complete measurement evaluation.
-pub const MAX_MEASUREMENT_EVALUATION_BYTES: usize = 64 * 1024 * 1024;
+///
+/// The bound matches the campaign evaluation-payload ceiling so every valid
+/// evaluation can be retained without a second, narrower profile.
+pub const MAX_MEASUREMENT_EVALUATION_BYTES: usize = 32 * 1024 * 1024;
 
 /// One canonical exact rational represented as a reduced signed magnitude.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]

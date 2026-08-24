@@ -2408,6 +2408,23 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
             .expect("canonical measurements"),
         measurements
     );
+    assert_eq!(measurements.schema_version(), 1);
+    assert_eq!(
+        measurements
+            .id()
+            .expect("legacy measurement id")
+            .content_id()
+            .schema_version(),
+        1
+    );
+    let legacy_measurement_envelope =
+        ObjectEnvelope::for_measurement_set(&measurements).expect("legacy measurement envelope");
+    assert_eq!(legacy_measurement_envelope.content_id().schema_version(), 1);
+    assert_eq!(
+        ObjectEnvelope::from_canonical_bytes(&legacy_measurement_envelope.canonical_bytes())
+            .expect("canonical legacy measurement envelope"),
+        legacy_measurement_envelope
+    );
     assert!(
         MeasurementSeries::new(
             vec![MetricValue::Unsigned(1)],
@@ -2546,6 +2563,73 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
         Err(CampaignCodecError::LimitExceeded {
             limit: "observation-discovered-choice-count"
         })
+    ));
+}
+
+#[test]
+fn verified_measurement_payload_is_v2_and_retains_exact_children() {
+    let evidence = content_kind("evaluation evidence", ObjectKind::Trace);
+    let definitions = hash("measurement definitions");
+    let evaluation = hash("measurement evaluation");
+    let measurements = MeasurementSet::from_evaluation(
+        definitions,
+        1,
+        evaluation,
+        br#"{"measurement":{}}"#.to_vec(),
+        BTreeSet::from([evidence]),
+    )
+    .expect("verified measurement payload");
+    let decoded = MeasurementSet::from_canonical_bytes(&measurements.canonical_bytes())
+        .expect("canonical verified measurements");
+
+    assert_eq!(decoded, measurements);
+    assert_eq!(measurements.schema_version(), 2);
+    assert!(measurements.legacy_measurements().is_none());
+    let retained = measurements.evaluation().expect("evaluation payload");
+    assert_eq!(retained.definitions(), definitions);
+    assert_eq!(retained.payload_schema(), 1);
+    assert_eq!(retained.evaluation(), evaluation);
+    assert_eq!(retained.payload(), br#"{"measurement":{}}"#);
+    assert_eq!(retained.evidence(), &BTreeSet::from([evidence]));
+    assert_eq!(
+        measurements
+            .id()
+            .expect("measurement id")
+            .content_id()
+            .schema_version(),
+        2
+    );
+
+    let envelope = super::object::ObjectEnvelope::for_measurement_set(&measurements)
+        .expect("measurement envelope");
+    assert_eq!(envelope.children().len(), 1);
+    assert_eq!(
+        envelope.children().iter().next().expect("evidence").id(),
+        evidence
+    );
+    assert_eq!(
+        ObjectEnvelope::from_canonical_bytes(&envelope.canonical_bytes())
+            .expect("decoded measurement envelope"),
+        envelope
+    );
+    let mismatched = crucible_cas::content_envelope::ContentEnvelope::new(
+        "crucible.campaign.measurement-set",
+        1,
+        envelope.children().clone(),
+        measurements.canonical_bytes(),
+    )
+    .expect("structural mismatched measurement envelope");
+    assert!(matches!(
+        ObjectEnvelope::from_canonical_bytes(&mismatched.canonical_bytes()),
+        Err(CampaignCodecError::InvalidValue { .. })
+    ));
+    assert!(matches!(
+        MeasurementSet::from_evaluation(definitions, 0, evaluation, vec![1], BTreeSet::new(),),
+        Err(CampaignCodecError::InvalidValue { .. })
+    ));
+    assert!(matches!(
+        MeasurementSet::from_evaluation(definitions, 1, evaluation, Vec::new(), BTreeSet::new(),),
+        Err(CampaignCodecError::InvalidValue { .. })
     ));
 }
 
