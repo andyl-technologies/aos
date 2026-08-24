@@ -83,10 +83,10 @@ pub use executor_capability::{
 };
 pub use exploration::{
     Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptStart, BranchBudget,
-    BranchEdgeVisitStatistics, BranchPath, BranchPathSegment, BranchRequest, BranchRequestCause,
-    CandidateSource, ContinuationProjection, ContinuationState, ExpansionCredit, ExpansionState,
-    ExpansionStatistics, FeedbackWait, FiniteCandidateSource, GUIDANCE_MICROS_PER_UNIT,
-    GuidanceEvidence, MAX_BRANCH_EDGE_VISIT_PROJECTION_BYTES,
+    BranchEdgeVisitStatistics, BranchPath, BranchPathSegment, BranchPuctProjection, BranchRequest,
+    BranchRequestCause, CandidateSource, ContinuationProjection, ContinuationState,
+    ExpansionCredit, ExpansionState, ExpansionStatistics, FeedbackWait, FiniteCandidateSource,
+    GUIDANCE_MICROS_PER_UNIT, GuidanceEvidence, MAX_BRANCH_EDGE_VISIT_PROJECTION_BYTES,
     MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS, PlannerDisposition, PlannerProposalDisposition,
     PlannerStep, PlannerStepProposal, PlanningAccounting, PlanningScanCursor, PlanningScanPage,
     PlanningScanPosition, PlanningUsage, ProgressiveWideningDecision, Proposal, PuctEdgeStatistics,

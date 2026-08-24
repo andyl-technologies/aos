@@ -3,14 +3,15 @@
 //! This module owns the language-neutral integer arithmetic used by future
 //! adaptive planner engines. The repository supplies an owner-built completed-
 //! visit partition for each semantic edge, but this module deliberately does
-//! not select a continuation: reward, novelty, finding, and prior projections
-//! must land before a planner version may use these scores to change canonical
-//! ordering.
+//! not select a continuation: reward, novelty, finding, and nonuniform-prior
+//! projections must land before a planner version may use these scores to
+//! change canonical ordering.
 
 use std::{cmp::Ordering, collections::BTreeMap};
 
 use crate::{
-    BranchEdgeId, BranchPointId, CampaignCodecError, ProgressiveWideningPolicy, PuctPolicy,
+    BranchEdgeId, BranchPointId, CampaignCodecError, CampaignPolicyId, ProgressiveWideningPolicy,
+    PuctPolicy,
 };
 
 /// One whole unit in the campaign fixed-point representation.
@@ -84,6 +85,127 @@ impl BranchEdgeVisitStatistics {
     #[must_use]
     pub const fn edge_visits(&self) -> &BTreeMap<BranchEdgeId, u64> {
         &self.edge_visits
+    }
+}
+
+/// Policy-bound neutral-input PUCT projection for one semantic branch point.
+///
+/// This projection is the exact bootstrap used before reward and novelty
+/// owners are available. It assigns a canonical uniform prior across completed
+/// edges, reserves fairness for the least-visited edge (breaking ties by
+/// [`BranchEdgeId`]), and fixes reward and novelty at their neutral values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchPuctProjection {
+    branch_point: BranchPointId,
+    policy: CampaignPolicyId,
+    parent_visits: u64,
+    edge_statistics: BTreeMap<BranchEdgeId, PuctEdgeStatistics>,
+    edge_scores: BTreeMap<BranchEdgeId, PuctScore>,
+}
+
+impl BranchPuctProjection {
+    /// Builds a policy-bound projection with canonical uniform priors.
+    ///
+    /// The one-million-micro prior mass is divided by edge identity order. Each
+    /// edge receives the quotient and the first remainder edges receive one
+    /// additional micro, so a nonempty projection always sums to exactly one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the supplied visit partition is inconsistent or a
+    /// derived PUCT input violates the scorer's fixed-point contract.
+    pub(crate) fn new_uniform(
+        policy: CampaignPolicyId,
+        puct: PuctPolicy,
+        visits: BranchEdgeVisitStatistics,
+    ) -> Result<Self, CampaignCodecError> {
+        let branch_point = visits.branch_point;
+        let parent_visits = visits.parent_visits;
+        let edge_count = u64::try_from(visits.edge_visits.len()).map_err(|_| {
+            CampaignCodecError::LimitExceeded {
+                limit: "branch-edge-visit-projection-count",
+            }
+        })?;
+        let fairness_edge = visits
+            .edge_visits
+            .iter()
+            .min_by_key(|(edge, edge_visits)| (**edge_visits, **edge))
+            .map(|(edge, _)| *edge);
+        let (base_prior, remainder) = if edge_count == 0 {
+            (0, 0)
+        } else {
+            (
+                GUIDANCE_MICROS_PER_UNIT / edge_count,
+                GUIDANCE_MICROS_PER_UNIT % edge_count,
+            )
+        };
+
+        let mut edge_statistics = BTreeMap::new();
+        let mut edge_scores = BTreeMap::new();
+        for (index, (edge, edge_visits)) in visits.edge_visits.into_iter().enumerate() {
+            let index = u64::try_from(index).map_err(|_| CampaignCodecError::LimitExceeded {
+                limit: "branch-edge-visit-projection-count",
+            })?;
+            let prior_micros = base_prior + u64::from(index < remainder);
+            let statistics = PuctEdgeStatistics::new(
+                parent_visits,
+                edge_visits,
+                0,
+                prior_micros,
+                false,
+                fairness_edge == Some(edge),
+            )?;
+            let score = PuctScore::derive(puct, statistics)?;
+            edge_statistics.insert(edge, statistics);
+            edge_scores.insert(edge, score);
+        }
+
+        debug_assert!(
+            edge_count == 0 || {
+                edge_statistics
+                    .values()
+                    .map(|statistics| statistics.prior_micros())
+                    .sum::<u64>()
+                    == GUIDANCE_MICROS_PER_UNIT
+            }
+        );
+        Ok(Self {
+            branch_point,
+            policy,
+            parent_visits,
+            edge_statistics,
+            edge_scores,
+        })
+    }
+
+    /// Returns the exact semantic branch point receiving the scores.
+    #[must_use]
+    pub const fn branch_point(&self) -> BranchPointId {
+        self.branch_point
+    }
+
+    /// Returns the active policy whose PUCT weights produced the scores.
+    #[must_use]
+    pub const fn policy(&self) -> CampaignPolicyId {
+        self.policy
+    }
+
+    /// Returns the number of completed observations credited to the parent.
+    #[must_use]
+    pub const fn parent_visits(&self) -> u64 {
+        self.parent_visits
+    }
+
+    /// Returns exact neutral-input statistics in semantic edge order.
+    #[must_use]
+    pub const fn edge_statistics(&self) -> &BTreeMap<BranchEdgeId, PuctEdgeStatistics> {
+        &self.edge_statistics
+    }
+
+    /// Returns exact fixed-point scores in semantic edge order.
+    #[must_use]
+    pub const fn edge_scores(&self) -> &BTreeMap<BranchEdgeId, PuctScore> {
+        &self.edge_scores
     }
 }
 
@@ -519,6 +641,113 @@ mod tests {
                 reason: "branch-edge visits do not partition parent visits"
             })
         ));
+    }
+
+    #[test]
+    fn neutral_branch_puct_projection_is_uniform_exact_and_fair() {
+        let branch_point = BranchPointId::from_hash(crate::CampaignHash::derive(
+            "test.branch-puct-projection",
+            b"branch-point",
+        ));
+        let edges = [
+            b"first".as_slice(),
+            b"second".as_slice(),
+            b"third".as_slice(),
+        ]
+        .map(|label| {
+            BranchEdgeId::from_hash(crate::CampaignHash::derive(
+                "test.branch-puct-projection",
+                label,
+            ))
+        });
+        let visits = BranchEdgeVisitStatistics::new(
+            branch_point,
+            6,
+            BTreeMap::from([(edges[0], 2), (edges[1], 2), (edges[2], 2)]),
+        )
+        .expect("visit partition");
+        let policy =
+            CampaignPolicyId::from_content_id(crucible_cas::content_store::ContentId::for_bytes(
+                crucible_cas::content_store::ObjectKind::Policy,
+                1,
+                b"test.branch-puct-projection.policy",
+            ))
+            .expect("policy id");
+        let projection = BranchPuctProjection::new_uniform(
+            policy,
+            PuctPolicy::new(1_000_000, 50_000, 25_000),
+            visits,
+        )
+        .expect("neutral PUCT projection");
+
+        assert_eq!(projection.branch_point(), branch_point);
+        assert_eq!(projection.policy(), policy);
+        assert_eq!(projection.parent_visits(), 6);
+        assert_eq!(
+            projection
+                .edge_statistics()
+                .values()
+                .map(|statistics| statistics.prior_micros())
+                .sum::<u64>(),
+            GUIDANCE_MICROS_PER_UNIT
+        );
+        let canonical_edges = projection
+            .edge_statistics()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            projection.edge_statistics()[&canonical_edges[0]].prior_micros(),
+            333_334
+        );
+        assert_eq!(
+            projection.edge_statistics()[&canonical_edges[1]].prior_micros(),
+            333_333
+        );
+        assert_eq!(
+            projection.edge_statistics()[&canonical_edges[2]].prior_micros(),
+            333_333
+        );
+        assert!(projection.edge_statistics()[&canonical_edges[0]].is_fairness_reserved());
+        assert!(
+            projection
+                .edge_statistics()
+                .iter()
+                .filter(|(_, statistics)| statistics.is_fairness_reserved())
+                .count()
+                == 1
+        );
+        assert!(
+            projection.edge_statistics().values().all(|statistics| {
+                statistics.reward_sum_micros() == 0 && !statistics.is_novel()
+            })
+        );
+        assert_eq!(projection.edge_scores().len(), 3);
+    }
+
+    #[test]
+    fn empty_branch_puct_projection_has_no_synthetic_prior_or_fairness() {
+        let branch_point = BranchPointId::from_hash(crate::CampaignHash::derive(
+            "test.empty-branch-puct-projection",
+            b"branch-point",
+        ));
+        let policy =
+            CampaignPolicyId::from_content_id(crucible_cas::content_store::ContentId::for_bytes(
+                crucible_cas::content_store::ObjectKind::Policy,
+                1,
+                b"test.empty-branch-puct-projection.policy",
+            ))
+            .expect("policy id");
+        let projection = BranchPuctProjection::new_uniform(
+            policy,
+            PuctPolicy::new(1_000_000, 50_000, 25_000),
+            BranchEdgeVisitStatistics::new(branch_point, 0, BTreeMap::new())
+                .expect("empty visit partition"),
+        )
+        .expect("empty neutral PUCT projection");
+        assert_eq!(projection.parent_visits(), 0);
+        assert!(projection.edge_statistics().is_empty());
+        assert!(projection.edge_scores().is_empty());
     }
 
     #[test]

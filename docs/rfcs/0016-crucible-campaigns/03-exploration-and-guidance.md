@@ -404,8 +404,19 @@ observation must name one and only one matching scoped path segment; the result
 partitions parent visits by `BranchEdgeId`, so convergence and duplicate causes
 cannot add credit. One projection admits at most 65,536 credits and 128 MiB of
 canonical credit, observation, attempt, and path bodies. It is identical after
-restart and fails closed for legacy unscoped paths. Reward, novelty, finding,
-prior, and fairness inputs remain neutral and cannot yet change ordering.
+restart and fails closed for legacy unscoped paths.
+
+The repository also derives a policy-bound neutral-input PUCT projection from
+that partition. For `K > 0` completed edges, it assigns `floor(S / K)` prior
+micros to every edge and assigns the `S mod K` remainder one micro at a time in
+ascending `BranchEdgeId` order. The prior mass therefore sums to exactly `S`.
+Exactly one least-visited edge owns the fairness reservation, with
+`BranchEdgeId` breaking visit-count ties. Reward and novelty remain zero. The
+active tree-search policy then produces the exact decomposed fixed-point score
+for every edge. Empty branch points receive no synthetic edge, prior, or
+fairness reservation. This projection is identical after restart and is not
+yet consumed by canonical planner ordering. Model/explicit priors, reward,
+novelty, finding inputs, and the path-ranking planner integration remain open.
 
 The first executable closed-planner checkpoint deliberately establishes the
 pure paged frontier loop before adaptive scoring. Engine
@@ -416,10 +427,11 @@ canonical `PlanningScanPosition`. It carries that offer across pages and issues
 only at EOF. This ordering is deterministic fairness bootstrap behavior, not a
 claim that PUCT is complete. Introducing reward, novelty, finding, prior, or
 edge-visit terms requires the complete owner-built projections and exact
-arithmetic above and a new engine implementation version. The exact scorer and
-edge-visit projection are now implemented and conformance-tested independently
-of ranking; the remaining owner-built inputs and ranking engine remain the gate
-that prevents them from changing campaign behavior prematurely.
+arithmetic above and a new engine implementation version. The exact scorer,
+edge-visit partition, uniform-prior fallback, and fairness owner are now
+implemented and conformance-tested independently of ranking; the remaining
+owner-built inputs and ranking engine remain the gate that prevents them from
+changing campaign behavior prematurely.
 
 ## 03.5 Guidance signals and objectives
 

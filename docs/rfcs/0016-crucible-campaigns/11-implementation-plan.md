@@ -247,9 +247,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   with exact irrational comparison, initial allocation, visit-floor, ceiling,
   and overflow semantics. The repository now also rebuilds a bounded exact
   `BranchEdgeId` visit partition from idempotent observation credits and scoped
-  path segments, with restart equality and duplicate-credit protection. Reward,
-  novelty, finding, prior/fairness, interval-feedback, and the planner/generator
-  integrations that consume these pure owners remain open.
+  path segments, with restart equality and duplicate-credit protection. A
+  policy-bound projection divides one-million-micro uniform prior mass exactly,
+  reserves fairness for the least-visited canonical edge, holds reward/novelty
+  neutral, and derives the active policy's exact edge scores with restart
+  equality. Reward, novelty, finding, model/explicit-prior, interval-feedback,
+  and the planner/generator integrations that consume these owners remain open.
 - [x] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.
