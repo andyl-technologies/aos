@@ -571,6 +571,14 @@ class, relevant target/opportunity, and canonical causal evidence. It excludes
 executor, PID, wall time, and materialization tier. Rediscovery unions occurrence
 observations into one cluster.
 
+The exact-snapshot PUCT owner may consume only three closed policy-guidance
+signals from this root: `finding.property-violation`, `finding.divergence`, and
+`finding.timeout`. It scans current clusters and their authenticated occurrence
+sets under the RFC 03 aggregate bounds, matches only canonical observations
+already credited to the requested branch point, and adds the configured
+positive millionth weight once per cluster occurrence. The compact event counts
+remain explainable by finding class; unconfigured classes do not affect reward.
+
 The checked `QueryCampaignFindings` service reads at most four complete
 finding records in deterministic signature-index order from one exact current
 snapshot. Its minimal Merkle range proof authenticates every body identity,

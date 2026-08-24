@@ -866,12 +866,49 @@ fn executor_candidate_publication_is_immutable_and_does_not_advance_the_campaign
 
 #[test]
 fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
-    let (repository, lineage, policy, blobs) = counted_fixture();
+    let (repository, lineage, base_policy, blobs) = counted_fixture();
+    let finding_signal = FindingKind::Divergence.guidance_signal().to_owned();
+    let policy = CampaignPolicy::new(
+        base_policy.scenario(),
+        base_policy.campaign_seed(),
+        base_policy.mode(),
+        base_policy.explorer().clone(),
+        base_policy.choice_policies().clone(),
+        base_policy.objectives().clone(),
+        BTreeMap::from([(
+            finding_signal.clone(),
+            GuidanceWeight::new(finding_signal, 250_000).expect("finding guidance"),
+        )]),
+        base_policy.stop_conditions().clone(),
+        base_policy.fairness(),
+        base_policy.retention(),
+        base_policy.admits_scenario_defaults(),
+    )
+    .expect("finding-weighted policy");
     let (_, admitted, observation) =
         admitted_observation_fixture(&repository, &lineage, &policy, "finding-publication");
     let observed = repository
         .publish_observation("finding-publication", admitted.new_snapshot, &observation)
         .expect("publish observation");
+    let attempt = repository
+        .read_attempt(observation.attempt().content_id())
+        .expect("finding attempt");
+    let path = repository
+        .read_branch_path(attempt.path().content_id())
+        .expect("finding path");
+    let segment = path
+        .segments()
+        .and_then(|segments| segments.first())
+        .copied()
+        .expect("finding scoped branch segment");
+    let before_finding = repository
+        .project_branch_puct(observed.new_snapshot, segment.branch_point())
+        .expect("PUCT before finding publication");
+    assert!(before_finding.edge_finding_events().is_empty());
+    assert_eq!(
+        before_finding.edge_statistics()[&segment.edge()].reward_sum_micros(),
+        0
+    );
     let fingerprint = CampaignHash::derive("test-finding", b"replay divergence");
     let reproduction = repository
         .publish_reproduction_artifact(
@@ -906,6 +943,24 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
         )
         .expect("publish finding");
     assert!(!published.replayed);
+    let finding_puct = repository
+        .project_branch_puct(published.new_snapshot, segment.branch_point())
+        .expect("PUCT after finding publication");
+    assert_eq!(
+        finding_puct.edge_finding_events(),
+        &BTreeMap::from([(
+            segment.edge(),
+            BTreeMap::from([(FindingKind::Divergence, 1)]),
+        )])
+    );
+    assert_eq!(
+        finding_puct.edge_statistics()[&segment.edge()].reward_sum_micros(),
+        250_000
+    );
+    assert_eq!(
+        finding_puct.edge_scores()[&segment.edge()].mean_reward_micros(),
+        250_000
+    );
     let head = repository
         .head("finding-publication")
         .expect("finding head");
@@ -1019,6 +1074,13 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
             .expect("restart-style finding validation")
             .snapshot_id(),
         published.new_snapshot
+    );
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        restarted
+            .project_branch_puct(published.new_snapshot, segment.branch_point())
+            .expect("restart-project finding PUCT"),
+        finding_puct
     );
 
     let replayed = repository
@@ -3401,7 +3463,7 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
 }
 
 #[test]
-fn branch_novelty_work_budgets_accept_only_the_exact_boundary() {
+fn branch_guidance_work_budgets_accept_only_the_exact_boundary() {
     assert_eq!(
         super::super::projection::charge_branch_novelty_work(
             crate::MAX_BRANCH_NOVELTY_PROJECTION_BYTES - 1,
@@ -3434,6 +3496,40 @@ fn branch_novelty_work_budgets_accept_only_the_exact_boundary() {
         ),
         Err(CampaignRepositoryError::Integrity {
             reason: "branch-novelty-identity-visit-limit"
+        })
+    ));
+    assert_eq!(
+        super::super::projection::charge_branch_finding_work(
+            crate::MAX_BRANCH_FINDING_PROJECTION_BYTES - 1,
+            1,
+        )
+        .expect("exact finding byte boundary"),
+        crate::MAX_BRANCH_FINDING_PROJECTION_BYTES
+    );
+    assert!(matches!(
+        super::super::projection::charge_branch_finding_work(
+            crate::MAX_BRANCH_FINDING_PROJECTION_BYTES,
+            1,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "branch-finding-projection-byte-limit"
+        })
+    ));
+    assert_eq!(
+        super::super::projection::charge_branch_finding_occurrence_visits(
+            crate::MAX_BRANCH_FINDING_OCCURRENCE_VISITS - 1,
+            1,
+        )
+        .expect("exact finding occurrence boundary"),
+        crate::MAX_BRANCH_FINDING_OCCURRENCE_VISITS
+    );
+    assert!(matches!(
+        super::super::projection::charge_branch_finding_occurrence_visits(
+            crate::MAX_BRANCH_FINDING_OCCURRENCE_VISITS,
+            1,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "branch-finding-occurrence-visit-limit"
         })
     ));
 }

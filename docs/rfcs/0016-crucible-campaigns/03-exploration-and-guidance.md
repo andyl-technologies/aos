@@ -427,11 +427,25 @@ observations, visits at most 1,000,000 coverage identities, retains at most
 canonical observation and coverage bodies. It is read-only and identical after
 restart/import.
 
-Reward remains zero. The active tree-search policy produces the exact
+Owner-verified findings contribute a policy-weighted positive reward. The
+closed signal names are `finding.property-violation`, `finding.divergence`, and
+`finding.timeout`. For each configured signal, the owner scans the exact
+snapshot's current finding clusters and credits each authenticated occurrence
+whose canonical observation is credited to the requested branch point. One
+cluster occurrence contributes its signal weight once to that observation's
+semantic edge and therefore backpropagates through every branch point on the
+recorded path. Unconfigured classes contribute nothing. Per-edge event counts
+are retained in the projection for explanation; the weighted sum saturates at
+signed `i64::MAX` before entering PUCT. One fold scans at most 65,536 finding-
+root entries, 1,000,000 aggregate occurrence entries, and 128 MiB of canonical
+finding bodies. Complete snapshot authentication precedes the shallow bounded
+fold, so large reproduction bodies are not reparsed per projection.
+
+Objective reward remains zero. The active tree-search policy produces the exact
 decomposed fixed-point score for every edge. Empty branch points receive no
-synthetic edge, prior, novelty, or fairness reservation. This projection is not
-yet consumed by canonical planner ordering. Model/explicit priors, reward,
-finding inputs, and the path-ranking planner integration remain open.
+synthetic edge, prior, novelty, reward, or fairness reservation. This projection
+is not yet consumed by canonical planner ordering. Model/explicit priors,
+objective reward, and the path-ranking planner integration remain open.
 
 The first executable closed-planner checkpoint deliberately establishes the
 pure paged frontier loop before adaptive scoring. Engine
@@ -440,11 +454,11 @@ coordinator's exact authenticated continuation state and next legal candidate
 for every served source, considers only `Ready` sources, and chooses the least
 canonical `PlanningScanPosition`. It carries that offer across pages and issues
 only at EOF. This ordering is deterministic fairness bootstrap behavior, not a
-claim that PUCT is complete. Introducing reward, finding, prior, or
-edge-visit terms requires the complete owner-built projections and exact
-arithmetic above and a new engine implementation version. The exact scorer,
-edge-visit partition, coverage-novelty fold, uniform-prior fallback, and
-fairness owner are now implemented and conformance-tested independently of
+claim that PUCT is complete. Introducing objective reward, prior, or edge-visit
+terms requires the complete owner-built projections and exact arithmetic above
+and a new engine implementation version. The exact scorer, edge-visit
+partition, coverage-novelty fold, finding-reward fold, uniform-prior fallback,
+and fairness owner are now implemented and conformance-tested independently of
 ranking; the remaining owner-built inputs and ranking engine remain the gate
 that prevents them from changing campaign behavior prematurely.
 

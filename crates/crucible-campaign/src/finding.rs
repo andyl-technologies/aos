@@ -27,6 +27,12 @@ const MAX_FINDING_RECORD_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_FINDING_CAUSAL_EVIDENCE: usize = 4_096;
 /// Maximum observations clustered into one finding occurrence Merkle set.
 pub const MAX_FINDING_OCCURRENCES: u32 = 1_000_000;
+/// Guidance signal for one owner-verified property-violation occurrence.
+pub const GUIDANCE_SIGNAL_FINDING_PROPERTY_VIOLATION: &str = "finding.property-violation";
+/// Guidance signal for one owner-verified replay-divergence occurrence.
+pub const GUIDANCE_SIGNAL_FINDING_DIVERGENCE: &str = "finding.divergence";
+/// Guidance signal for one owner-verified timeout occurrence.
+pub const GUIDANCE_SIGNAL_FINDING_TIMEOUT: &str = "finding.timeout";
 /// Maximum optional exact checkpoints retained by one finding.
 pub const MAX_FINDING_EXACT_PINS: usize = 256;
 /// Maximum deterministic candidates retained by one minimization trace.
@@ -208,6 +214,18 @@ pub enum FindingKind {
     Divergence,
     /// A deterministic execution budget was exhausted.
     Timeout,
+}
+
+impl FindingKind {
+    /// Returns the stable policy-guidance signal for this finding class.
+    #[must_use]
+    pub const fn guidance_signal(self) -> &'static str {
+        match self {
+            Self::PropertyViolation => GUIDANCE_SIGNAL_FINDING_PROPERTY_VIOLATION,
+            Self::Divergence => GUIDANCE_SIGNAL_FINDING_DIVERGENCE,
+            Self::Timeout => GUIDANCE_SIGNAL_FINDING_TIMEOUT,
+        }
+    }
 }
 
 impl Canonical for FindingKind {
