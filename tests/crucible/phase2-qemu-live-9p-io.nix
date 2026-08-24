@@ -76,6 +76,8 @@ in
           set -eu
           vmlinuz=$(ls "$GUEST_KERNEL"/boot/vmlinuz-* | head -1)
           test -n "$vmlinuz"
+          grep -Fxq 'empty_poll_request_publication_race=passed' \
+            "${liveIoRunner}/regressions"
 
           run_dir="$TMPDIR/live-9p-io-run"
           mkdir -p "$run_dir"
@@ -120,7 +122,7 @@ in
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
             printf 'scope=certifying-live-9p-forward-and-completion\n'
-            printf 'proven=live-SLOT_9P_IO-request-servicing,device-horizon-advance,delayed-response-wall-time-inertness,guest-progress,run-twice-observation-determinism,tcg-successful-mount-control\n'
+            printf 'proven=live-SLOT_9P_IO-request-servicing,empty-poll-request-publication-race,device-horizon-advance,delayed-response-wall-time-inertness,guest-progress,run-twice-observation-determinism,tcg-successful-mount-control\n'
           } >> "$out/result"
         '';
       }

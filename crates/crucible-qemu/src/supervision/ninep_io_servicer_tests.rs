@@ -5,7 +5,7 @@ use std::io::Write;
 use std::os::fd::AsFd;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crucible_shmem::{RegionAllocation, RegionConfig};
+use crucible_shmem::{FrameEntry, RegionAllocation, RegionConfig};
 
 use super::*;
 
@@ -96,6 +96,47 @@ fn authorized_due_reply_remains_retryable_after_backpressure() {
     assert!(servicer.due_fault_opportunities(10).is_empty());
     assert!(servicer.has_authorized_due(10));
     assert!(!servicer.has_authorized_due(9));
+}
+
+#[test]
+fn empty_poll_cannot_advance_past_later_request_completion() {
+    let (_file, mut servicer) = transaction_fixture();
+
+    let idle = servicer
+        .service(10_000)
+        .unwrap_or_else(|error| panic!("service empty request ring: {error}"));
+    assert_eq!(idle.processed, 0);
+    assert_eq!(idle.delivered, 0);
+    assert_eq!(servicer.device.core().current_icount(), 0);
+
+    let version = b"9P2000.L";
+    let mut payload = Vec::new();
+    let size = 7 + 4 + 2 + version.len();
+    payload.extend_from_slice(&(size as u32).to_le_bytes());
+    payload.push(crucible_device::ninep::codec::TVERSION);
+    payload.extend_from_slice(&9_u16.to_le_bytes());
+    payload.extend_from_slice(&4096_u32.to_le_bytes());
+    payload.extend_from_slice(&(version.len() as u16).to_le_bytes());
+    payload.extend_from_slice(version);
+    let frame = FrameEntry::new(9_000, 0, 7, &payload)
+        .unwrap_or_else(|error| panic!("construct request frame: {error}"));
+    {
+        let pair = servicer
+            .ring_pair()
+            .unwrap_or_else(|error| panic!("map request ring: {error}"));
+        pair.first
+            .header
+            .enqueue(pair.first.entries, &frame)
+            .unwrap_or_else(|error| panic!("publish request frame: {error}"));
+    }
+
+    let serviced = servicer
+        .service(10_000)
+        .unwrap_or_else(|error| panic!("service delayed request publication: {error}"));
+    assert_eq!(serviced.processed, 1);
+    assert_eq!(serviced.delivered, 1);
+    assert_eq!(serviced.first_request_icount, Some(9_000));
+    assert_eq!(servicer.device.core().current_icount(), 10_000);
 }
 
 /// The fixed 9p tree is a pure constant: two independent constructions are

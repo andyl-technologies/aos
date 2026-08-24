@@ -859,10 +859,22 @@ impl QemuLive9pIoServicer {
             .flatten();
         before_delivery(inbox.processed, computed_completion_icount);
 
-        let delivery = device
-            .advance_to_shmem(guest_icount, response_header, response_entries, node_slot)
-            .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
-        *frames_delivered += delivery.delivered;
+        // `device_io_active` is release-published before the request frame. A
+        // host poll can therefore observe the hold while the request ring is
+        // still empty. Advancing an otherwise idle device in that window would
+        // let host scheduling move its clock past the request's immutable
+        // completion coordinate before the next poll observes the frame. An
+        // idle sub-node has no event to advance toward, so retain its cursor
+        // until intake computes a canonical completion.
+        let delivered = if device.core().next_exact_local_event().is_some() {
+            device
+                .advance_to_shmem(guest_icount, response_header, response_entries, node_slot)
+                .map_err(|source| QemuLive9pIoServicerError::Device { source })?
+                .delivered
+        } else {
+            0
+        };
+        *frames_delivered += delivered;
 
         // Publish the next device-completion deadline to the guest node slot so a
         // time-owning plugin whose guest is blocked on 9p I/O can idle-jump to it
@@ -873,7 +885,7 @@ impl QemuLive9pIoServicer {
 
         Ok(QemuLive9pIoServiceStep {
             processed: inbox.processed,
-            delivered: delivery.delivered,
+            delivered,
             first_request_icount: inbox.first_request_icount,
             computed_completion_icount,
             next_completion_icount,
