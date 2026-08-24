@@ -1,6 +1,6 @@
-//! Resolving an S3-compatible storage binding into per-object signed URLs.
+//! Resolving an S3-compatible binding into per-object signed URLs.
 //!
-//! A storage binding of kind `s3` or `r2` points a registry's (or cache's)
+//! A binding of kind `s3` or `r2` points a registry's (or cache's)
 //! surface at an **external, S3-compatible object store** — Amazon S3, Cloudflare
 //! R2 (via its S3 API), MinIO, Backblaze B2, and so on. The hub never holds the
 //! bytes; it reaches the origin over plain HTTP using short-lived presigned URLs
@@ -35,7 +35,7 @@
 //!   unsigned `GET` of the public origin URL; writes are refused (there is
 //!   nothing to sign with).
 
-use crate::db::StorageBindingRecord;
+use crate::db::BindingRecord;
 
 /// Maximum in-memory S3 object read used by metadata/indexing operations.
 /// Large machine objects use [`crate::fetch::SurfaceFetch::fetch_stream`].
@@ -134,7 +134,7 @@ impl S3Surface {
     /// Returns an error for an incomplete typed origin or a missing/malformed
     /// private credential capability. A non-object-store kind yields `Ok(None)`.
     pub fn from_binding(
-        binding: &StorageBindingRecord,
+        binding: &BindingRecord,
         sub_prefix: &str,
         resolved_credential: Option<&str>,
     ) -> Result<Option<S3Surface>> {
@@ -171,10 +171,7 @@ impl S3Surface {
             None => host,
         };
         if host.is_empty() {
-            bail!(
-                "storage binding '{}' has an empty endpoint host",
-                binding.name
-            );
+            bail!("binding '{}' has an empty endpoint host", binding.name);
         }
 
         let bucket = binding
@@ -196,9 +193,8 @@ impl S3Surface {
 
         let creds = match binding.access_mode.as_deref() {
             Some("private") => {
-                let plaintext = resolved_credential.context(
-                    "private storage binding requires a resolved credential-version capability",
-                )?;
+                let plaintext = resolved_credential
+                    .context("private binding requires a resolved credential-version capability")?;
                 let (access_key, rest) = plaintext
                     .split_once(':')
                     .context("storage credential must be access_key:secret_key:region")?;
@@ -218,7 +214,7 @@ impl S3Surface {
             Some("public") => {
                 anyhow::ensure!(
                     resolved_credential.is_none(),
-                    "public storage bindings must not resolve credentials"
+                    "public bindings must not resolve credentials"
                 );
                 None
             }
@@ -296,7 +292,7 @@ impl S3Surface {
             }
             None => {
                 if method.is_write() {
-                    bail!("public storage binding is read-only");
+                    bail!("public binding is read-only");
                 }
                 // A public origin needs no signature; the object is world-readable
                 // at its direct URL.
@@ -324,10 +320,7 @@ impl S3Surface {
         now: i64,
     ) -> Result<String> {
         crate::url_guard::validate_http_surface_path(path)?;
-        let creds = self
-            .creds
-            .as_ref()
-            .context("public storage binding is read-only")?;
+        let creds = self.creds.as_ref().context("public binding is read-only")?;
         let key = if self.key_prefix.is_empty() {
             path.to_string()
         } else {
@@ -381,7 +374,7 @@ impl S3Surface {
         let creds = self
             .creds
             .as_ref()
-            .context("public storage binding cannot list multipart uploads")?;
+            .context("public binding cannot list multipart uploads")?;
         let key = if self.key_prefix.is_empty() {
             path.to_string()
         } else {
@@ -504,7 +497,7 @@ impl S3Surface {
         now: i64,
     ) -> Result<String> {
         let Some(creds) = &self.creds else {
-            bail!("cannot list a public (credential-less) storage binding");
+            bail!("cannot list a public (credential-less) binding");
         };
         let (bucket, in_bucket) = self.bucket_split();
         let list_prefix = if in_bucket.is_empty() {
@@ -862,9 +855,9 @@ mod tests {
         );
     }
 
-    fn binding(kind: &str, access: &str, endpoint: Option<&str>) -> StorageBindingRecord {
+    fn binding(kind: &str, access: &str, endpoint: Option<&str>) -> BindingRecord {
         let endpoint = endpoint.map(|value| url::Url::parse(value).unwrap());
-        StorageBindingRecord {
+        BindingRecord {
             id: 1,
             org_id: Some(1),
             name: "store".into(),
@@ -886,7 +879,7 @@ mod tests {
             access_mode: (kind != "local_fs").then(|| access.into()),
             is_instance_default: false,
             created_at: 0,
-            ..StorageBindingRecord::default()
+            ..BindingRecord::default()
         }
     }
 

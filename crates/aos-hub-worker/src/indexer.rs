@@ -53,7 +53,7 @@ use crate::surface::{R2SurfaceProvider, R2SurfaceWriteProvider};
 /// registry's failure is recorded as its index state and logged, never aborting
 /// the run.
 ///
-/// `secrets` resolves a managed registry's external S3/R2 storage binding
+/// `secrets` resolves a managed registry's external S3/R2 binding
 /// credentials by immutable provider reference; a registry with
 /// no external binding reads from the hub R2 bucket.
 ///
@@ -126,7 +126,7 @@ pub async fn index_all(
 /// is one `list` per cache and no object reads. Each cache is independent — one
 /// failure is logged, never aborting the pass.
 ///
-/// `secrets` resolves a cache's external S3/R2 storage binding credentials when
+/// `secrets` resolves a cache's external S3/R2 binding credentials when
 /// its surface lives off the hub R2 bucket.
 ///
 /// # Errors

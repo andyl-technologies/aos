@@ -13,7 +13,7 @@
 //!   git-backed change-request flow performs go through it.
 //! - [`SurfaceWriteProvider`] — resolve the [`SurfaceWrite`] for a given
 //!   registry. The native hub returns a filesystem writer rooted at the
-//!   registry's storage binding; the Worker returns an R2-backed writer scoped
+//!   registry's binding; the Worker returns an R2-backed writer scoped
 //!   to the registry's prefix.
 //!
 //! Both carry the same target-conditional bound as the rest of the core ports

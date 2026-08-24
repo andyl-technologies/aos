@@ -33,8 +33,8 @@ registry and checked against the capability manifest.
 ```
 
 `/-/org/{org}/**` includes organization overview, projects, registries, binary
-caches, storage bindings, domains, network boundaries, delivery endpoints,
-storage gateways, topology defaults, IAM, SSO, signing keys, webhooks,
+caches, bindings, domains, network policies, endpoints,
+gateways, topology defaults, IAM, SSO, signing keys, webhooks,
 operations, audit, and danger workflows.
 
 Registry settings include overview, access, placements, placement policies,

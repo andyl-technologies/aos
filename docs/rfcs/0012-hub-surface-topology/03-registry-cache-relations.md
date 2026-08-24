@@ -47,13 +47,13 @@ mirror [node, ...]    equivalent replicas; every member must be complete
 ```
 
 A managed endpoint is indexed with a stable `binary_cache_id` and
-`delivery_route_id` in addition to the committed URL. External entries have no
+`route_id` in addition to the committed URL. External entries have no
 managed identity. Managed identity is never inferred solely from current URL
 string equality.
 
 The portable signed representation continues to contain an HTTP URL. New
 changes should prefer the cache's stable canonical URL. At cutover, every
-committed URL must either name a normal delivery route in the new topology or
+committed URL must either name a normal route in the new topology or
 be replaced through a signed registry change before the old route is removed.
 There is no legacy URL-alias subsystem.
 
@@ -152,11 +152,11 @@ A shared cache is not a special subtype. It is a binary cache with multiple
 independent integrations:
 
 ```text
-Registry A --consumer entry-------> Shared cache canonical route
+Registry A --consumer entry-------> Shared cache route advertisement
 Registry A --retention selector---> Shared cache
 Registry A --population target----> Shared cache
 
-Registry B --consumer entry-------> Shared cache canonical route
+Registry B --consumer entry-------> Shared cache route advertisement
 Registry B --retention selector---> Shared cache
 
 Registry C --retention selector---> Shared cache
@@ -178,16 +178,16 @@ share part of a closure or a physical NAR.
 
 ## Registries spanning caches and bindings
 
-A registry spans storage bindings by composing binary caches in its consumer
-stack, not by attaching cache storage bindings directly to the registry:
+A registry spans bindings by composing binary caches in its consumer
+stack, not by attaching cache bindings directly to the registry:
 
 ```text
 try
   mirror
-    cache-us canonical route -> cache-us placements on R2 and S3
-    cache-eu canonical route -> cache-eu placement on R2
+    cache-us route advertisement -> cache-us placements on R2 and S3
+    cache-eu route advertisement -> cache-eu placement on R2
   upstream public cache
-  registry's own canonical route
+  registry's own route advertisement
 ```
 
 This separates client fallback from the internal placement topology of any one

@@ -1,7 +1,7 @@
 //! The `aos-hub` binary: local-first registry hub server.
 //!
 //! Local-first operation is a hard requirement of RFC-0004: this binary, a
-//! SQLite database, and local storage bindings form a complete hub. Ordinary
+//! SQLite database, and local bindings form a complete hub. Ordinary
 //! organization, registry, cache, binding, and delivery administration uses
 //! the typed `aos hub` API; this process binary owns serving, indexing,
 //! validation, deployment, and recovery only. A one-machine serving loop is:
@@ -59,12 +59,12 @@ enum Command {
         /// Externally reachable base URL for setup snippets.
         #[arg(long)]
         external_url: Option<String>,
-        /// Masthead brand (company/operator name); overrides the stored one.
-        #[arg(long)]
-        brand: Option<String>,
         /// Seconds between background re-index runs (0 disables).
         #[arg(long, default_value_t = 60)]
         reindex_interval: u64,
+        /// File containing the stable HS256 key used to sign access tokens.
+        #[arg(long, env = "HUB_JWT_SECRET_FILE")]
+        jwt_secret_file: Option<PathBuf>,
         /// File containing the shared HMAC key used by a trusted TLS/VPN/L7
         /// ingress adapter to authenticate delivery assertions.
         #[arg(long, env = "HUB_DELIVERY_ATTESTATION_KEY_FILE")]
@@ -256,7 +256,7 @@ struct WorkerArgs {
     /// Bind the Worker to a custom domain (e.g. `aos.example.com`): `wrangler
     /// deploy` provisions its DNS record + edge cert, and its zone must be on the
     /// same Cloudflare account. Repeatable — pass `--domain` once per hostname to
-    /// bind several typed delivery endpoint domains.
+    /// bind several typed endpoint domains.
     ///
     /// The domains you pass are the Worker's complete managed custom-domain set:
     /// list every domain the Worker should serve. Omitting `--domain` entirely
@@ -390,8 +390,8 @@ async fn main() -> Result<()> {
             dev,
             seed,
             external_url,
-            brand,
             reindex_interval,
+            jwt_secret_file,
             delivery_attestation_key_file,
             domain_probe_signer_manifest_file,
             route_publication_manifest_file,
@@ -474,6 +474,21 @@ async fn main() -> Result<()> {
                 }
             }
             let mut app_state = AppState::new(db, external_url).await;
+            if let Some(path) = jwt_secret_file {
+                let secret = aos_hub::auth::seal::read_secret_file(&path)
+                    .with_context(|| format!("reading JWT signing secret at {}", path.display()))?;
+                anyhow::ensure!(
+                    secret.len() >= 32,
+                    "JWT signing secret must contain at least 32 bytes"
+                );
+                app_state.auth = Arc::new(aos_hub::auth::extract::AuthState {
+                    db: Arc::clone(&app_state.db),
+                    jwt_keys: aos_hub::auth::jwt::JwtKeys::from_secret(&secret),
+                    access_token_ttl: app_state.auth.access_token_ttl,
+                    ratelimit: Arc::clone(&app_state.ratelimit),
+                    trusted_proxy: app_state.trusted_proxy,
+                });
+            }
             app_state.image_snapshots = Some(image_snapshots);
             if let Some(snapshots) = app_state.image_snapshots.clone() {
                 let snapshot_db = Arc::clone(&app_state.db);
@@ -610,8 +625,7 @@ async fn main() -> Result<()> {
                 ),
             ));
             let mut route_adapters =
-                aos_hub_core::topology_probe::ControllerOwnedDeliveryRouteObservationProvider::new(
-                );
+                aos_hub_core::topology_probe::ControllerOwnedRouteObservationProvider::new();
             let mut has_route_adapter = false;
             match (
                 route_publication_manifest_file,
@@ -625,7 +639,7 @@ async fn main() -> Result<()> {
                     )
                     .context("route publication manifest is not UTF-8")?;
                     let direct = Arc::new(
-                        aos_hub_core::topology_probe::SignedManifestDeliveryRouteObservationProvider::from_signed_json(
+                        aos_hub_core::topology_probe::SignedManifestRouteObservationProvider::from_signed_json(
                             &signed_manifest,
                             &public_key,
                             now_secs(),
@@ -645,7 +659,7 @@ async fn main() -> Result<()> {
                 let api =
                     Arc::new(aos_hub::coreports::CloudflareControlPlaneClient::new(token).await?);
                 route_adapters = route_adapters.with_external(Arc::new(
-                    aos_hub_core::topology_probe::CloudflareDeliveryRouteControlPlane::new(
+                    aos_hub_core::topology_probe::CloudflareRouteControlPlane::new(
                         api,
                         Arc::clone(&route_http),
                     ),
@@ -764,14 +778,6 @@ async fn main() -> Result<()> {
                     }
                 }
             });
-            // Masthead brand (operator/company name): the --brand flag wins,
-            // else the persisted instance_config['brand'], else empty (the
-            // masthead then shows only the page crumbs).
-            let brand = match brand {
-                Some(brand) => brand,
-                None => state_brand(&app_state).await?,
-            };
-            aos_hub::ui::render::set_brand(brand);
             // The console footer label is single-sourced in core; set it to this
             // binary's name + version so the footer reflects the serving hub.
             aos_hub::ui::render::set_app_version(concat!("aos-hub ", env!("CARGO_PKG_VERSION")));
@@ -1242,15 +1248,6 @@ async fn prune_expired_invitation_secrets(db: &Database) {
             "expired invitation cleanup failed"
         );
     }
-}
-
-/// The persisted masthead brand (`instance_config['brand']`), or empty.
-async fn state_brand(app_state: &AppState) -> Result<String> {
-    Ok(app_state
-        .db
-        .instance_config_get("brand")
-        .await?
-        .unwrap_or_default())
 }
 
 /// Index every registered registry, logging failures without aborting;

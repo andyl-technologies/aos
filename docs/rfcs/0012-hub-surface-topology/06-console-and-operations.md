@@ -59,7 +59,7 @@ eviction remains a separate workflow reached from Storage & replicas.
 **Integrations** distinguishes registries that consume, retain, or populate the
 cache. A registry can appear in one, two, or all three columns.
 
-### Storage binding
+### Binding
 
 The binding page owns infrastructure facts:
 
@@ -70,7 +70,7 @@ The binding page owns infrastructure facts:
 - placements using the binding;
 - desired/observed authorities pinned to each write revision and rotation
   fan-out progress;
-- storage gateways;
+- gateways;
 - capacity and health; and
 - possible physical equivalence requiring confirmation.
 
@@ -96,7 +96,7 @@ Domain lifecycle includes DNS-name ownership verification, DNS target, and
 certificate issuance. It does not pretend an IP literal is a domain or own
 listeners, access providers, and routes.
 
-### Delivery endpoints
+### Endpoints
 
 Add the sibling client-origin inventory:
 
@@ -105,14 +105,14 @@ Add the sibling client-origin inventory:
 
 Endpoint state distinguishes **desired** listener/TLS configuration from
 **observed** deployment. Origins are rendered from typed scheme, DNS/IPv4/IPv6
-host, effective port, and network boundary rather than stored URL text.
+host, effective port, and network policy rather than stored URL text.
 Provider adapters reconcile what they can; an externally managed or in-VPN
 endpoint remains **declared**, not healthy, until an authorized probe confirms
 it. Cleartext posture is always visible. Worker deployment uses the complete
 managed Hub-endpoint set, while direct endpoints resolve to their declared
 CDN/gateway instead of the Worker.
 
-### Network boundaries
+### Network policies
 
 Add a sibling inventory for network realms and trusted ingress:
 
@@ -130,7 +130,7 @@ mismatched, or degraded observations display the concrete fail-closed effects.
 
 The route editor proceeds in explicit stages:
 
-1. Select or create a typed delivery endpoint from the full client origin.
+1. Select or create a typed endpoint from the full client origin.
 2. Choose a Hub-route base path and target surface; direct mode instead shows
    the path derived from gateway client base plus placement prefix.
 3. Choose delivery mode.

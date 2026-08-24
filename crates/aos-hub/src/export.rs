@@ -31,7 +31,7 @@
 //!   "tokens": [ { "id": "…", "scope": "acme/infra/prod/cdn",
 //!                 "permissions": ["publish"], "created_at": …,
 //!                 "expires_at": null, "last_used_at": … } ],   // NO hash/secret
-//!   "storage_bindings": [ { "name": "primary", "kind": "local_fs",
+//!   "bindings": [ { "name": "primary", "kind": "local_fs",
 //!                           "local_root_path": "/srv/aos-hub" } ], // NO credentials
 //!   "audit": [ { "action": "registry.visibility", "scope": "…", … } ],
 //!   "changesets": [ { "change_id": "…", "status": "applied", … } ]
@@ -129,7 +129,7 @@ pub struct ExportToken {
     pub last_used_at: Option<i64>,
 }
 
-/// One exported storage binding (paths only — no credentials).
+/// One exported binding (paths only — no credentials).
 #[derive(Debug, Clone, Serialize)]
 pub struct ExportBinding {
     /// Binding name, unique within the org.
@@ -214,8 +214,8 @@ pub struct ExportManifest {
     pub memberships: Vec<ExportMembership>,
     /// The org's tokens' metadata (no secrets).
     pub tokens: Vec<ExportToken>,
-    /// The org's storage bindings (no credentials).
-    pub storage_bindings: Vec<ExportBinding>,
+    /// The org's bindings (no credentials).
+    pub bindings: Vec<ExportBinding>,
     /// The org's audit slice.
     pub audit: Vec<ExportAudit>,
     /// The org's configuration-changeset history.
@@ -225,7 +225,7 @@ pub struct ExportManifest {
 /// Build an [`ExportManifest`] for one org from its SQL system of record.
 ///
 /// Gathers the org row, projects, registries, managed caches, memberships,
-/// token metadata (redacted), storage bindings, the audit slice at or below the
+/// token metadata (redacted), bindings, the audit slice at or below the
 /// org scope, and the changeset history. Resolves the org including soft-deleted
 /// ones (export runs during the offboarding grace window).
 ///
@@ -320,8 +320,8 @@ pub async fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest>
         )
         .collect();
 
-    let storage_bindings = db
-        .list_storage_bindings(org.id)
+    let bindings = db
+        .list_bindings(org.id)
         .await?
         .into_iter()
         .map(|b| ExportBinding {
@@ -377,7 +377,7 @@ pub async fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest>
         caches,
         memberships,
         tokens,
-        storage_bindings,
+        bindings,
         audit,
         changesets,
     })
@@ -404,9 +404,9 @@ pub async fn export_registry_surface(
         .reconciled_surface_reader(crate::db::SurfaceTarget::Registry(registry_id))
         .await?;
     let binding = db
-        .storage_binding(placement.storage_binding_id)
+        .binding(placement.binding_id)
         .await?
-        .context("export placement references a missing storage binding")?;
+        .context("export placement references a missing binding")?;
     if binding.kind != "local_fs" {
         return Ok(0);
     }

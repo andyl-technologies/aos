@@ -211,7 +211,7 @@ nar_size     = 4096
 # Empty here = a tightly-sandboxed container. k3s would list host network,
 # capabilities, cgroup-delegate, host-paths, kernel-modules, etc.
 [versions.platforms.x86_64-linux.permissions]
-# network = "private"  (default; "host" trades the network boundary away)
+# network = "private"  (default; "host" trades the network policy away)
 # capabilities = [...]; host-paths = [...]; kernel-modules = [...]; ...
 ```
 

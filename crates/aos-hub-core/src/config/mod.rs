@@ -3,7 +3,7 @@
 //!
 //! Half of the hub's configuration is a git repo (handled by phase 4); the
 //! other half — orgs, projects, members, roles, tokens metadata,
-//! visibility, and storage bindings — is the SQL system of record. This
+//! visibility, and bindings — is the SQL system of record. This
 //! module is the engine that makes *every* SQL-backed mutation a reviewed,
 //! revertible **change-set**, recorded in the append-only
 //! `change_requests` / `change_request_revisions` / `audit_log` tables (see the

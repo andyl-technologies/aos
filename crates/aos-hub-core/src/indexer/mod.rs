@@ -716,6 +716,16 @@ fn release_snapshot_artifacts(
                             store_hash: store_hash_component(&image.delivery.image_info.store_path),
                             store_path: image.delivery.image_info.store_path.clone(),
                         });
+                        if let Some(payload) = &image.delivery.update_payload {
+                            artifacts.push(ReleaseSnapshotArtifact {
+                                package_name: package.package.name.clone(),
+                                package_version: version.version.clone(),
+                                platform: platform.clone(),
+                                artifact_kind: "image".to_string(),
+                                store_hash: store_hash_component(&payload.store_path),
+                                store_path: payload.store_path.clone(),
+                            });
+                        }
                     }
                 }
             }
@@ -946,7 +956,7 @@ async fn verify_system_image_objects(
                         delivery: image.delivery.clone(),
                     });
                     if image.delivery.is_store_backed() {
-                        for (path, hash, size, role) in [
+                        let mut store_artifacts = vec![
                             (
                                 image.store_path.as_str(),
                                 image.nar_hash.as_str(),
@@ -959,7 +969,16 @@ async fn verify_system_image_objects(
                                 image.delivery.image_info.nar_size,
                                 ImageObjectRole::ImageInfo,
                             ),
-                        ] {
+                        ];
+                        if let Some(payload) = &image.delivery.update_payload {
+                            store_artifacts.push((
+                                payload.store_path.as_str(),
+                                payload.nar_hash.as_str(),
+                                payload.nar_size,
+                                ImageObjectRole::UpdatePayload,
+                            ));
+                        }
+                        for (path, hash, size, role) in store_artifacts {
                             insert_expected_image_artifact(
                                 &mut catalog_artifacts,
                                 path,
@@ -1143,6 +1162,14 @@ async fn verify_system_image_cache_objects(
                 image.delivery.image_info.nar_size,
                 "image metadata",
             ));
+            if let Some(payload) = &image.delivery.update_payload {
+                artifacts.push((
+                    payload.store_path.as_str(),
+                    payload.nar_hash.as_str(),
+                    payload.nar_size,
+                    "image update payload",
+                ));
+            }
         }
         for (store_path, signed_nar_hash, signed_nar_size, label) in artifacts {
             if !verified_store_paths.insert(store_path) {
@@ -1300,6 +1327,7 @@ const MAX_IMAGE_PUBLICATION_RECEIPT_BYTES: usize = 1024 * 1024;
 enum ImageObjectRole {
     Disk,
     ImageInfo,
+    UpdatePayload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1383,6 +1411,7 @@ fn validate_image_publication_receipt(
             role: match object.role.as_str() {
                 "disk" => ImageObjectRole::Disk,
                 "image-info" => ImageObjectRole::ImageInfo,
+                "update-payload" => ImageObjectRole::UpdatePayload,
                 _ => bail!("image publication receipt contains an unknown object role"),
             },
         };
@@ -1410,6 +1439,7 @@ fn image_catalog_digest(
             match identity.role {
                 ImageObjectRole::Disk => "disk",
                 ImageObjectRole::ImageInfo => "image-info",
+                ImageObjectRole::UpdatePayload => "update-payload",
             },
             u64::try_from(identity.byte_size)
                 .context("signed image catalog contains a negative object size")?,
@@ -1984,6 +2014,7 @@ mod tests {
                     match identity.role {
                         ImageObjectRole::Disk => "disk",
                         ImageObjectRole::ImageInfo => "image-info",
+                        ImageObjectRole::UpdatePayload => "update-payload",
                     },
                     identity.byte_size as u64,
                     identity.sha256.as_str(),

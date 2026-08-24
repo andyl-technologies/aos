@@ -107,12 +107,12 @@ impl aos_hub_core::topology_probe::StorageCredentialProbeProvider
 {
     async fn probe(
         &self,
-        binding: &aos_hub_core::db::StorageBindingRecord,
-        credential: &aos_hub_core::db::StorageBindingCredentialRevisionRecord,
+        binding: &aos_hub_core::db::BindingRecord,
+        credential: &aos_hub_core::db::BindingCredentialRevisionRecord,
         probe_token: &str,
     ) -> Result<aos_hub_core::topology_probe::StorageCredentialProbeEvidence> {
         anyhow::ensure!(
-            credential.storage_binding_id == binding.id,
+            credential.binding_id == binding.id,
             "credential probe binding identity is inconsistent"
         );
         anyhow::ensure!(
@@ -689,7 +689,7 @@ impl HubSurfaceProvider {
         self
     }
 
-    /// Attach the provider-backed resolver used by private storage bindings.
+    /// Attach the provider-backed resolver used by private bindings.
     #[must_use]
     pub fn with_credentials(
         mut self,
@@ -711,11 +711,11 @@ impl core_fetch::SurfaceProvider for HubSurfaceProvider {
     ) -> Result<Box<dyn core_fetch::SurfaceFetch>> {
         let binding = self
             .db
-            .storage_binding(placement.storage_binding_id)
+            .binding(placement.binding_id)
             .await?
             .ok_or_else(|| {
                 aos_hub_core::placement_read::terminal_read_error(format!(
-                    "placement '{}' references a missing storage binding",
+                    "placement '{}' references a missing binding",
                     placement.name
                 ))
             })?;
@@ -811,7 +811,7 @@ impl core_fetch::SurfaceProvider for HubSurfaceProvider {
                 )))
             }
             None => Err(aos_hub_core::placement_read::terminal_read_error(format!(
-                "placement '{}' uses unknown storage binding kind '{}'",
+                "placement '{}' uses unknown binding kind '{}'",
                 placement.name, binding.kind
             ))),
         }
@@ -819,7 +819,7 @@ impl core_fetch::SurfaceProvider for HubSurfaceProvider {
 }
 
 /// The native [`SurfaceWriteProvider`](core_sw::SurfaceWriteProvider): resolves
-/// a per-registry filesystem writer over the hub's storage bindings.
+/// a per-registry filesystem writer over the hub's bindings.
 ///
 /// Resolves the registry's storage-binding root — the *same* root
 /// [`HubSurfaceProvider`]/[`crate::fetch::LocalFsFetch`] read from — and returns
@@ -877,12 +877,12 @@ impl core_sw::SurfaceWriteProvider for HubSurfaceWriteProvider {
             })?;
         let binding = self
             .db
-            .storage_binding(placement.storage_binding_id)
+            .binding(placement.binding_id)
             .await?
             .with_context(|| {
                 format!(
-                    "placement '{}' references missing storage binding {}",
-                    placement.name, placement.storage_binding_id
+                    "placement '{}' references missing binding {}",
+                    placement.name, placement.binding_id
                 )
             })?;
         match BindingKind::parse(&binding.kind) {
@@ -920,7 +920,7 @@ impl core_sw::SurfaceWriteProvider for HubSurfaceWriteProvider {
                 placement.name
             ),
             None => bail!(
-                "placement '{}' uses unsupported storage binding kind '{}'",
+                "placement '{}' uses unsupported binding kind '{}'",
                 placement.name,
                 binding.kind
             ),
@@ -935,17 +935,17 @@ impl core_sw::SurfaceWriteProvider for HubSurfaceWriteProvider {
     ) -> Result<Box<dyn core_sw::SurfaceWrite>> {
         let binding = self
             .db
-            .storage_binding(placement.storage_binding_id)
+            .binding(placement.binding_id)
             .await?
             .with_context(|| {
                 format!(
-                    "placement '{}' references missing storage binding {}",
-                    placement.name, placement.storage_binding_id
+                    "placement '{}' references missing binding {}",
+                    placement.name, placement.binding_id
                 )
             })?;
         if binding.resource_version != expected_binding_resource_version {
             bail!(
-                "placement '{}' storage binding changed after deletion was planned",
+                "placement '{}' binding changed after deletion was planned",
                 placement.name
             );
         }
@@ -971,7 +971,7 @@ impl core_sw::SurfaceWriteProvider for HubSurfaceWriteProvider {
 }
 
 /// A filesystem-backed [`SurfaceWrite`](core_sw::SurfaceWrite) rooted at a
-/// registry's storage binding.
+/// registry's binding.
 ///
 /// Every logical surface path is resolved with the hub's
 /// [`safe_join`](crate::fetch::safe_join) (rejecting `..` and absolute
@@ -990,6 +990,10 @@ struct LocalFsWrite {
 
 #[async_trait]
 impl core_sw::SurfaceWrite for LocalFsWrite {
+    fn multipart_protocol_version(&self) -> Option<u32> {
+        Some(1)
+    }
+
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let target = crate::fetch::safe_join(&self.root, path)
             .with_context(|| format!("resolving surface path {path}"))?;
@@ -1498,9 +1502,9 @@ impl core_reindex::Reindexer for HubReindexer {
         }
         let binding = self
             .db
-            .storage_binding(placement.storage_binding_id)
+            .binding(placement.binding_id)
             .await?
-            .context("reindex placement references a missing storage binding")?;
+            .context("reindex placement references a missing binding")?;
         if BindingKind::parse(&binding.kind) != Some(BindingKind::LocalFs) {
             bail!("native inline reindex requires a local-fs read placement");
         }
@@ -2265,6 +2269,8 @@ mod multipart_tests {
         let dir = tempfile::tempdir().unwrap();
         let w = LocalFsWrite::new(dir.path().to_path_buf());
         let path = "nar/sha256-test.nar.zst";
+
+        assert_eq!(w.multipart_protocol_version(), Some(1));
 
         let upload_id = w.create_multipart(path).await.unwrap();
         // Upload out of order; complete must reassemble by part_number.

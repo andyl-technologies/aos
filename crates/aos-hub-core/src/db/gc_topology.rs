@@ -79,8 +79,8 @@ pub struct CacheWriteTicketRecord {
     pub placement_resource_version: i64,
     /// Placement write-spec version at authorization.
     pub placement_write_spec_version: i64,
-    /// Exact storage binding.
-    pub storage_binding_id: i64,
+    /// Exact binding.
+    pub binding_id: i64,
     /// Mutable binding row version pinned by this write.
     pub binding_resource_version: i64,
     /// Immutable reconciled binding-write revision.
@@ -573,8 +573,8 @@ pub struct ObjectDeletionAttemptReceipt {
     pub expected_size: Option<i64>,
     /// Complete inventory generation supplying the evidence.
     pub expected_inventory_generation: i64,
-    /// Exact storage binding captured by inventory.
-    pub storage_binding_id: i64,
+    /// Exact binding captured by inventory.
+    pub binding_id: i64,
     /// Exact mutable binding row version/location.
     pub binding_resource_version: i64,
     /// Exact immutable delete credential generation.
@@ -818,8 +818,8 @@ pub struct CacheGcPlanActionInput {
     pub expected_size: Option<i64>,
     /// Complete inventory generation supplying the evidence.
     pub expected_inventory_generation: i64,
-    /// Exact storage binding selected by inventory.
-    pub storage_binding_id: i64,
+    /// Exact binding selected by inventory.
+    pub binding_id: i64,
     /// Exact binding row version selected by inventory.
     pub binding_resource_version: i64,
     /// Validated delete credential generation reviewed by the plan.
@@ -1012,7 +1012,7 @@ fn cache_gc_manifest_digest(input: &CreateCacheGcPlan) -> Result<String> {
                 "expected_hash": action.expected_hash,
                 "expected_size": action.expected_size,
                 "expected_inventory_generation": action.expected_inventory_generation,
-                "storage_binding_id": action.storage_binding_id,
+                "binding_id": action.binding_id,
                 "binding_resource_version": action.binding_resource_version,
                 "delete_credential_generation": action.delete_credential_generation,
                 "estimated_reclaimable_bytes": action.estimated_reclaimable_bytes,
@@ -1190,7 +1190,7 @@ impl Database {
                  (ticket_id, cache_id, object_key, declared_size, upload_kind, placement_id,
                   prior_object_size, prior_object_hash, prior_object_etag, intended_object_hash,
                   placement_resource_version, placement_write_spec_version,
-                  storage_binding_id, binding_resource_version,
+                  binding_id, binding_resource_version,
                   binding_write_revision, write_credential_purpose,
                   write_credential_generation, starting_inventory_generation,
                   quota_org_id, quota_delta_bytes, quota_delta_objects, quota_state,
@@ -1204,13 +1204,13 @@ impl Database {
                         CASE WHEN ?6 IS NULL THEN 'none' ELSE 'pending' END,
                         'observing', 1, ?9, ?10
                  FROM surface_placement_effective placement
-                 JOIN storage_bindings binding
-                   ON binding.id = placement.storage_binding_id
-                 JOIN storage_binding_write_revisions revision
-                   ON revision.storage_binding_id = binding.id
+                 JOIN bindings binding
+                   ON binding.id = placement.binding_id
+                 JOIN binding_write_revisions revision
+                   ON revision.binding_id = binding.id
                   AND revision.revision = placement.authority_observed_binding_write_revision
-                 JOIN storage_binding_credential_revisions credential
-                   ON credential.storage_binding_id = revision.storage_binding_id
+                 JOIN binding_credential_revisions credential
+                   ON credential.binding_id = revision.binding_id
                   AND credential.purpose = revision.write_credential_purpose
                   AND credential.generation = revision.write_credential_generation
                  JOIN cache_gc_state state ON state.cache_id = placement.cache_id
@@ -1301,10 +1301,10 @@ impl Database {
                AND (quota_org_id = ?3 OR (quota_org_id IS NULL AND ?3 IS NULL))
                AND expires_at > ?10
                AND EXISTS (SELECT 1 FROM surface_placement_effective placement
-                 JOIN storage_bindings binding
-                   ON binding.id = placement.storage_binding_id
-                 JOIN storage_binding_credential_revisions credential
-                   ON credential.storage_binding_id = binding.id
+                 JOIN bindings binding
+                   ON binding.id = placement.binding_id
+                 JOIN binding_credential_revisions credential
+                   ON credential.binding_id = binding.id
                   AND credential.purpose = cache_write_tickets.write_credential_purpose
                   AND credential.generation = cache_write_tickets.write_credential_generation
                  JOIN cache_gc_state cache_state
@@ -1315,8 +1315,8 @@ impl Database {
                      = cache_write_tickets.placement_resource_version
                    AND placement.write_spec_version
                      = cache_write_tickets.placement_write_spec_version
-                   AND placement.storage_binding_id
-                     = cache_write_tickets.storage_binding_id
+                   AND placement.binding_id
+                     = cache_write_tickets.binding_id
                    AND placement.authority_observed_binding_write_revision
                      = cache_write_tickets.binding_write_revision
                    AND placement.effective_write_enabled = 1
@@ -1394,7 +1394,7 @@ impl Database {
              (ticket_id, cache_id, object_key, declared_size, upload_kind, placement_id,
               prior_object_size, prior_object_hash, prior_object_etag, intended_object_hash,
               placement_resource_version, placement_write_spec_version,
-              storage_binding_id, binding_resource_version, binding_write_revision,
+              binding_id, binding_resource_version, binding_write_revision,
               write_credential_purpose, write_credential_generation,
               presign_credential_purpose, presign_credential_generation,
               starting_inventory_generation, quota_org_id, quota_delta_bytes,
@@ -1409,19 +1409,19 @@ impl Database {
                     ?5, ?6, ?7, CASE WHEN ?5 IS NULL THEN 'none' ELSE 'pending' END,
                     'observing', 1, ?8, ?9
              FROM surface_placement_effective placement
-             JOIN storage_bindings binding ON binding.id = placement.storage_binding_id
-             JOIN storage_binding_write_revisions revision
-               ON revision.storage_binding_id = binding.id
+             JOIN bindings binding ON binding.id = placement.binding_id
+             JOIN binding_write_revisions revision
+               ON revision.binding_id = binding.id
               AND revision.revision = placement.authority_observed_binding_write_revision
-             JOIN storage_binding_credential_revisions write_credential
-               ON write_credential.storage_binding_id = revision.storage_binding_id
+             JOIN binding_credential_revisions write_credential
+               ON write_credential.binding_id = revision.binding_id
               AND write_credential.purpose = revision.write_credential_purpose
               AND write_credential.generation = revision.write_credential_generation
-             JOIN storage_binding_credential_heads presign_head
-               ON presign_head.storage_binding_id = binding.id
+             JOIN binding_credential_heads presign_head
+               ON presign_head.binding_id = binding.id
               AND presign_head.purpose = 'presign'
-             JOIN storage_binding_credential_revisions presign
-               ON presign.storage_binding_id = presign_head.storage_binding_id
+             JOIN binding_credential_revisions presign
+               ON presign.binding_id = presign_head.binding_id
               AND presign.purpose = presign_head.purpose
               AND presign.generation = presign_head.current_generation
              JOIN cache_gc_state state ON state.cache_id = placement.cache_id
@@ -1487,7 +1487,7 @@ impl Database {
             .query_opt(
                 "SELECT ticket_id, cache_id, object_key, declared_size, observed_final_size, uploaded_size, upload_kind,
                         placement_id, placement_resource_version,
-                        placement_write_spec_version, storage_binding_id,
+                        placement_write_spec_version, binding_id,
                         binding_resource_version, binding_write_revision,
                         write_credential_purpose, write_credential_generation,
                         presign_credential_purpose, presign_credential_generation,
@@ -1544,7 +1544,7 @@ impl Database {
                         ticket.declared_size, ticket.observed_final_size,
                         ticket.uploaded_size, ticket.upload_kind,
                         ticket.placement_id, ticket.placement_resource_version,
-                        ticket.placement_write_spec_version, ticket.storage_binding_id,
+                        ticket.placement_write_spec_version, ticket.binding_id,
                         ticket.binding_resource_version, ticket.binding_write_revision,
                         ticket.write_credential_purpose,
                         ticket.write_credential_generation,
@@ -1559,10 +1559,10 @@ impl Database {
                  JOIN surface_placement_effective placement
                    ON placement.id = ticket.placement_id
                   AND placement.cache_id = ticket.cache_id
-                 JOIN storage_bindings binding
-                   ON binding.id = ticket.storage_binding_id
-                 JOIN storage_binding_credential_revisions credential
-                   ON credential.storage_binding_id = ticket.storage_binding_id
+                 JOIN bindings binding
+                   ON binding.id = ticket.binding_id
+                 JOIN binding_credential_revisions credential
+                   ON credential.binding_id = ticket.binding_id
                   AND credential.purpose = ticket.write_credential_purpose
                   AND credential.generation = ticket.write_credential_generation
                  JOIN cache_gc_state cache_state ON cache_state.cache_id = ticket.cache_id
@@ -1578,7 +1578,7 @@ impl Database {
                    AND ticket.placement_resource_version = ?9
                    AND placement.resource_version = ticket.placement_resource_version
                    AND placement.write_spec_version = ticket.placement_write_spec_version
-                   AND placement.storage_binding_id = ticket.storage_binding_id
+                   AND placement.binding_id = ticket.binding_id
                    AND placement.authority_observed_binding_write_revision
                      = ticket.binding_write_revision
                    AND ticket.binding_write_revision = ?10
@@ -1628,7 +1628,7 @@ impl Database {
             .query(
                 "SELECT ticket_id, cache_id, object_key, declared_size, observed_final_size, uploaded_size, upload_kind,
                         placement_id, placement_resource_version,
-                        placement_write_spec_version, storage_binding_id,
+                        placement_write_spec_version, binding_id,
                         binding_resource_version, binding_write_revision,
                         write_credential_purpose, write_credential_generation,
                         presign_credential_purpose, presign_credential_generation,
@@ -1669,7 +1669,7 @@ impl Database {
             .query(
                 "SELECT ticket_id, cache_id, object_key, declared_size, observed_final_size, uploaded_size, upload_kind,
                         placement_id, placement_resource_version,
-                        placement_write_spec_version, storage_binding_id,
+                        placement_write_spec_version, binding_id,
                         binding_resource_version, binding_write_revision,
                         write_credential_purpose, write_credential_generation,
                         presign_credential_purpose, presign_credential_generation,
@@ -1954,20 +1954,20 @@ impl Database {
                AND declared_size = ?5
                AND direct_upload_acknowledged_at IS NULL
                AND EXISTS (SELECT 1 FROM surface_placement_effective placement
-                 JOIN storage_bindings binding ON binding.id = placement.storage_binding_id
-                 JOIN storage_binding_credential_revisions write_credential
-                   ON write_credential.storage_binding_id = binding.id
+                 JOIN bindings binding ON binding.id = placement.binding_id
+                 JOIN binding_credential_revisions write_credential
+                   ON write_credential.binding_id = binding.id
                   AND write_credential.purpose = cache_write_tickets.write_credential_purpose
                   AND write_credential.generation = cache_write_tickets.write_credential_generation
-                 JOIN storage_binding_credential_revisions presign
-                   ON presign.storage_binding_id = binding.id
+                 JOIN binding_credential_revisions presign
+                   ON presign.binding_id = binding.id
                   AND presign.purpose = cache_write_tickets.presign_credential_purpose
                   AND presign.generation = cache_write_tickets.presign_credential_generation
                  WHERE placement.id = cache_write_tickets.placement_id
                    AND placement.cache_id = cache_write_tickets.cache_id
                    AND placement.resource_version = cache_write_tickets.placement_resource_version
                    AND placement.write_spec_version = cache_write_tickets.placement_write_spec_version
-                   AND placement.storage_binding_id = cache_write_tickets.storage_binding_id
+                   AND placement.binding_id = cache_write_tickets.binding_id
                    AND placement.authority_observed_binding_write_revision = cache_write_tickets.binding_write_revision
                    AND binding.resource_version = cache_write_tickets.binding_resource_version
                    AND write_credential.validation_state = 'valid'
@@ -2399,7 +2399,7 @@ impl Database {
                         ticket.uploaded_size, ticket.upload_kind, ticket.placement_id,
                         ticket.placement_resource_version,
                         ticket.placement_write_spec_version,
-                        ticket.storage_binding_id, ticket.binding_resource_version,
+                        ticket.binding_id, ticket.binding_resource_version,
                         ticket.binding_write_revision,
                         ticket.write_credential_purpose,
                         ticket.write_credential_generation,
@@ -2415,14 +2415,14 @@ impl Database {
                  JOIN surface_placement_effective placement
                    ON placement.id = ticket.placement_id
                   AND placement.cache_id = ticket.cache_id
-                 JOIN storage_bindings binding
-                   ON binding.id = ticket.storage_binding_id
-                 JOIN storage_binding_credential_revisions credential
-                   ON credential.storage_binding_id = ticket.storage_binding_id
+                 JOIN bindings binding
+                   ON binding.id = ticket.binding_id
+                 JOIN binding_credential_revisions credential
+                   ON credential.binding_id = ticket.binding_id
                   AND credential.purpose = ticket.write_credential_purpose
                   AND credential.generation = ticket.write_credential_generation
-                 LEFT JOIN storage_binding_credential_revisions presign
-                   ON presign.storage_binding_id = ticket.storage_binding_id
+                 LEFT JOIN binding_credential_revisions presign
+                   ON presign.binding_id = ticket.binding_id
                   AND presign.purpose = ticket.presign_credential_purpose
                   AND presign.generation = ticket.presign_credential_generation
                  JOIN cache_gc_state state ON state.cache_id = ticket.cache_id
@@ -2434,7 +2434,7 @@ impl Database {
                    AND ticket.active_cache_slot = 1 AND ticket.expires_at > ?4
                    AND placement.resource_version = ticket.placement_resource_version
                    AND placement.write_spec_version = ticket.placement_write_spec_version
-                   AND placement.storage_binding_id = ticket.storage_binding_id
+                   AND placement.binding_id = ticket.binding_id
                    AND placement.authority_observed_binding_write_revision
                      = ticket.binding_write_revision
                    AND placement.effective_write_enabled = 1
@@ -2496,10 +2496,10 @@ impl Database {
                          AND part.state = 'confirmed')))
                    AND expires_at > ?3
                    AND EXISTS (SELECT 1 FROM surface_placement_effective placement
-                     JOIN storage_bindings binding
-                       ON binding.id = placement.storage_binding_id
-                     JOIN storage_binding_credential_revisions credential
-                       ON credential.storage_binding_id = binding.id
+                     JOIN bindings binding
+                       ON binding.id = placement.binding_id
+                     JOIN binding_credential_revisions credential
+                       ON credential.binding_id = binding.id
                       AND credential.purpose
                         = cache_write_tickets.write_credential_purpose
                       AND credential.generation
@@ -2510,8 +2510,8 @@ impl Database {
                          = cache_write_tickets.placement_resource_version
                        AND placement.write_spec_version
                          = cache_write_tickets.placement_write_spec_version
-                       AND placement.storage_binding_id
-                         = cache_write_tickets.storage_binding_id
+                       AND placement.binding_id
+                         = cache_write_tickets.binding_id
                        AND placement.authority_observed_binding_write_revision
                          = cache_write_tickets.binding_write_revision
                        AND binding.resource_version
@@ -2593,9 +2593,9 @@ impl Database {
             .backend
             .query(
                 "SELECT placement_id, placement_resource_version,
-                   placement_name, storage_binding_id,
-                   storage_binding_stable_id,
-                   storage_binding_resource_version, prefix, placement_kind,
+                   placement_name, binding_id,
+                   binding_stable_id,
+                   binding_resource_version, prefix, placement_kind,
                    desired_state, write_spec_version,
                    requires_conditional_writes
                  FROM cache_gc_generation_placements
@@ -2611,9 +2611,9 @@ impl Database {
                     "placement_id": row.get::<i64>(0)?,
                     "placement_resource_version": row.get::<i64>(1)?,
                     "placement_name": row.get::<String>(2)?,
-                    "storage_binding_id": row.get::<i64>(3)?,
-                    "storage_binding_stable_id": row.get::<String>(4)?,
-                    "storage_binding_resource_version": row.get::<i64>(5)?,
+                    "binding_id": row.get::<i64>(3)?,
+                    "binding_stable_id": row.get::<String>(4)?,
+                    "binding_resource_version": row.get::<i64>(5)?,
                     "prefix": row.get::<String>(6)?,
                     "placement_kind": row.get::<String>(7)?,
                     "desired_state": row.get::<String>(8)?,
@@ -2881,10 +2881,10 @@ impl Database {
                    AND destructive_enabled = 0
                    AND NOT EXISTS (
                      SELECT 1 FROM surface_placement_effective placement
-                     LEFT JOIN storage_bindings binding
-                       ON binding.id = placement.storage_binding_id
-                     LEFT JOIN storage_binding_write_revisions revision
-                       ON revision.storage_binding_id = placement.storage_binding_id
+                     LEFT JOIN bindings binding
+                       ON binding.id = placement.binding_id
+                     LEFT JOIN binding_write_revisions revision
+                       ON revision.binding_id = placement.binding_id
                       AND revision.revision = placement.authority_observed_binding_write_revision
                      WHERE placement.cache_id = ?1
                        AND (COALESCE(binding.kind, '') = 'r2'
@@ -3304,7 +3304,7 @@ impl Database {
                 || action.surface_object_id <= 0
                 || action.placement_id <= 0
                 || action.expected_inventory_generation <= 0
-                || action.storage_binding_id <= 0
+                || action.binding_id <= 0
                 || action.binding_resource_version <= 0
                 || action.delete_credential_generation <= 0
                 || action.expected_size.is_some_and(|size| size < 0)
@@ -3324,7 +3324,7 @@ impl Database {
                      (action_id, cache_id, plan_id, surface_object_id,
                       placement_id, phase, expected_etag, expected_hash,
                       expected_size, expected_inventory_generation,
-                      storage_binding_id, binding_resource_version,
+                      binding_id, binding_resource_version,
                       delete_credential_generation, estimated_reclaimable_bytes)
                      SELECT ?3, ?1, ?2, presence.surface_object_id,
                             presence.placement_id, ?6, ?7, ?8, ?9, ?10,
@@ -3334,14 +3334,14 @@ impl Database {
                      JOIN surface_placements placement
                        ON placement.id = presence.placement_id
                       AND placement.cache_id = presence.cache_id
-                     JOIN storage_bindings binding
-                       ON binding.id = placement.storage_binding_id
+                     JOIN bindings binding
+                       ON binding.id = placement.binding_id
                      JOIN cache_inventory_placement_scans scan
                        ON scan.cache_id = presence.cache_id
                       AND scan.placement_id = presence.placement_id
                       AND scan.generation = presence.observed_inventory_generation
-                     JOIN storage_binding_credential_revisions credential
-                       ON credential.storage_binding_id = binding.id
+                     JOIN binding_credential_revisions credential
+                       ON credential.binding_id = binding.id
                       AND credential.purpose = 'delete'
                       AND credential.generation = ?13
                      WHERE presence.cache_id = ?1
@@ -3365,14 +3365,14 @@ impl Database {
                        AND presence.observed_inventory_generation = ?10
                        AND state.inventory_generation = ?10
                        AND scan.completed_at IS NOT NULL
-                       AND scan.storage_binding_id = ?11
+                       AND scan.binding_id = ?11
                        AND scan.binding_resource_version = ?12
-                       AND placement.storage_binding_id = ?11
+                       AND placement.binding_id = ?11
                        AND binding.resource_version = ?12
                        AND credential.validation_state = 'valid'
                        AND EXISTS (SELECT 1
-                         FROM storage_binding_credential_heads credential_head
-                         WHERE credential_head.storage_binding_id = ?11
+                         FROM binding_credential_heads credential_head
+                         WHERE credential_head.binding_id = ?11
                            AND credential_head.purpose = 'delete'
                            AND credential_head.current_generation = ?13)
                        AND (presence.etag = ?7
@@ -3392,7 +3392,7 @@ impl Database {
                         action.expected_hash,
                         action.expected_size,
                         action.expected_inventory_generation,
-                        action.storage_binding_id,
+                        action.binding_id,
                         action.binding_resource_version,
                         action.delete_credential_generation,
                         action.estimated_reclaimable_bytes
@@ -3594,7 +3594,7 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT 1 FROM surface_placements placement
-             JOIN storage_bindings binding ON binding.id = placement.storage_binding_id
+             JOIN bindings binding ON binding.id = placement.binding_id
              WHERE placement.cache_id = ?1
                AND binding.kind IN ('r2', 'deployment_r2') LIMIT 1",
                 &vals![cache_id],
@@ -3717,8 +3717,8 @@ impl Database {
                 "INSERT INTO cache_gc_generation_placements
                  (cache_id, generation_id, placement_id,
                   placement_resource_version, placement_name,
-                  storage_binding_id, storage_binding_stable_id,
-                  storage_binding_resource_version, prefix, placement_kind,
+                  binding_id, binding_stable_id,
+                  binding_resource_version, prefix, placement_kind,
                   desired_state, write_spec_version,
                   requires_conditional_writes)
                  SELECT placement.cache_id, ?2, placement.id,
@@ -3729,8 +3729,8 @@ impl Database {
                         placement.write_spec_version,
                         placement.requires_conditional_writes
                  FROM surface_placements placement
-                 JOIN storage_bindings binding
-                   ON binding.id = placement.storage_binding_id
+                 JOIN bindings binding
+                   ON binding.id = placement.binding_id
                  JOIN cache_gc_generations generation
                    ON generation.cache_id = placement.cache_id
                   AND generation.generation_id = ?2
@@ -3895,20 +3895,20 @@ impl Database {
                      LEFT JOIN surface_placements placement
                        ON placement.id = captured.placement_id
                       AND placement.cache_id = captured.cache_id
-                     LEFT JOIN storage_bindings binding
-                       ON binding.id = placement.storage_binding_id
+                     LEFT JOIN bindings binding
+                       ON binding.id = placement.binding_id
                      WHERE captured.cache_id = ?1
                        AND captured.generation_id = ?2
                        AND (placement.id IS NULL
                          OR placement.resource_version
                            <> captured.placement_resource_version
                          OR placement.name <> captured.placement_name
-                         OR placement.storage_binding_id
-                           <> captured.storage_binding_id
+                         OR placement.binding_id
+                           <> captured.binding_id
                          OR COALESCE(binding.stable_id, '')
-                           <> captured.storage_binding_stable_id
+                           <> captured.binding_stable_id
                          OR binding.resource_version
-                           <> captured.storage_binding_resource_version
+                           <> captured.binding_resource_version
                          OR placement.prefix <> captured.prefix
                          OR placement.kind <> captured.placement_kind
                          OR placement.desired_state <> captured.desired_state
@@ -4978,12 +4978,12 @@ impl Database {
             Statement::new(
                 "INSERT INTO cache_inventory_placement_scans
                  (cache_id, generation, placement_id, placement_resource_version,
-                  storage_binding_id, binding_resource_version, selected_at)
+                  binding_id, binding_resource_version, selected_at)
                  SELECT ?1, ?2, placement.id, placement.resource_version,
                         binding.id, binding.resource_version, ?3
                  FROM surface_placements placement
-                 JOIN storage_bindings binding
-                   ON binding.id = placement.storage_binding_id
+                 JOIN bindings binding
+                   ON binding.id = placement.binding_id
                  WHERE placement.cache_id = ?1
                    AND placement.desired_state <> 'offline'",
                 vals![cache_id, generation, created_at],
@@ -5056,8 +5056,8 @@ impl Database {
               cache_inventory_generation, content_digest, published_at)
              SELECT ?1, placement.id, NULL, ?2, 'cache_inventory', ?3, ?5, ?6
              FROM surface_placements placement
-             JOIN storage_bindings binding
-               ON binding.id = placement.storage_binding_id
+             JOIN bindings binding
+               ON binding.id = placement.binding_id
              JOIN cache_inventory_generations inventory
                ON inventory.cache_id = placement.cache_id
               AND inventory.generation = ?3
@@ -5067,7 +5067,7 @@ impl Database {
                  WHERE scan.cache_id = ?2 AND scan.generation = ?3
                    AND scan.placement_id = ?4 AND scan.completed_at IS NULL
                    AND scan.placement_resource_version = placement.resource_version
-                   AND scan.storage_binding_id = binding.id
+                   AND scan.binding_id = binding.id
                    AND scan.binding_resource_version = binding.resource_version)",
                 vals![
                     manifest_id,
@@ -5090,12 +5090,12 @@ impl Database {
                    AND inventory.state = 'building' AND inventory.owner_token = ?7)
                AND placement_resource_version = (SELECT resource_version
                  FROM surface_placements WHERE id = ?3 AND cache_id = ?1)
-               AND storage_binding_id = (SELECT storage_binding_id
+               AND binding_id = (SELECT binding_id
                  FROM surface_placements WHERE id = ?3 AND cache_id = ?1)
                AND binding_resource_version = (SELECT binding.resource_version
                  FROM surface_placements placement
-                 JOIN storage_bindings binding
-                   ON binding.id = placement.storage_binding_id
+                 JOIN bindings binding
+                   ON binding.id = placement.binding_id
                  WHERE placement.id = ?3 AND placement.cache_id = ?1)",
                 vals![
                     cache_id,
@@ -5674,12 +5674,12 @@ impl Database {
                      LEFT JOIN surface_placements placement
                        ON placement.id = scan.placement_id
                       AND placement.cache_id = scan.cache_id
-                     LEFT JOIN storage_bindings binding
-                       ON binding.id = placement.storage_binding_id
+                     LEFT JOIN bindings binding
+                       ON binding.id = placement.binding_id
                      WHERE scan.cache_id = ?1 AND scan.generation = ?2
                        AND (placement.id IS NULL OR placement.desired_state = 'offline'
                          OR placement.resource_version <> scan.placement_resource_version
-                         OR placement.storage_binding_id <> scan.storage_binding_id
+                         OR placement.binding_id <> scan.binding_id
                          OR binding.resource_version <> scan.binding_resource_version))
                    AND NOT EXISTS (SELECT 1 FROM surface_placements placement
                      WHERE placement.cache_id = ?1
@@ -6006,7 +6006,7 @@ impl Database {
                 "SELECT action_id, surface_object_id, placement_id, phase,
                    expected_etag, expected_hash, expected_size,
                    expected_inventory_generation,
-                   storage_binding_id, binding_resource_version,
+                   binding_id, binding_resource_version,
                    delete_credential_generation,
                    estimated_reclaimable_bytes,
                    (SELECT COUNT(*) FROM cache_gc_action_dependencies dependency
@@ -6092,7 +6092,7 @@ impl Database {
                         expected_hash: row.get(5)?,
                         expected_size: row.get(6)?,
                         expected_inventory_generation: row.get(7)?,
-                        storage_binding_id: row.get(8)?,
+                        binding_id: row.get(8)?,
                         binding_resource_version: row.get(9)?,
                         delete_credential_generation: row.get(10)?,
                         estimated_reclaimable_bytes: row.get(11)?,
@@ -6194,10 +6194,10 @@ impl Database {
                    AND state.destructive_enabled = 1
                    AND NOT EXISTS (
                      SELECT 1 FROM surface_placement_effective placement
-                     LEFT JOIN storage_bindings binding
-                       ON binding.id = placement.storage_binding_id
-                     LEFT JOIN storage_binding_write_revisions revision
-                       ON revision.storage_binding_id = placement.storage_binding_id
+                     LEFT JOIN bindings binding
+                       ON binding.id = placement.binding_id
+                     LEFT JOIN binding_write_revisions revision
+                       ON revision.binding_id = placement.binding_id
                       AND revision.revision = placement.authority_observed_binding_write_revision
                      WHERE placement.cache_id = plan.cache_id
                        AND (COALESCE(binding.kind, '') = 'r2'
@@ -6244,20 +6244,20 @@ impl Database {
                      LEFT JOIN surface_placements placement
                        ON placement.id = captured.placement_id
                       AND placement.cache_id = captured.cache_id
-                     LEFT JOIN storage_bindings binding
-                       ON binding.id = placement.storage_binding_id
+                     LEFT JOIN bindings binding
+                       ON binding.id = placement.binding_id
                      WHERE captured.cache_id = plan.cache_id
                        AND captured.generation_id = plan.generation_id
                        AND (placement.id IS NULL
                          OR placement.resource_version
                            <> captured.placement_resource_version
                          OR placement.name <> captured.placement_name
-                         OR placement.storage_binding_id
-                           <> captured.storage_binding_id
+                         OR placement.binding_id
+                           <> captured.binding_id
                          OR COALESCE(binding.stable_id, '')
-                           <> captured.storage_binding_stable_id
+                           <> captured.binding_stable_id
                          OR binding.resource_version
-                           <> captured.storage_binding_resource_version
+                           <> captured.binding_resource_version
                          OR placement.prefix <> captured.prefix
                          OR placement.kind <> captured.placement_kind
                          OR placement.desired_state <> captured.desired_state
@@ -6298,14 +6298,14 @@ impl Database {
                      LEFT JOIN surface_placements placement
                        ON placement.id = action.placement_id
                       AND placement.cache_id = action.cache_id
-                     LEFT JOIN storage_bindings binding
-                       ON binding.id = action.storage_binding_id
-                     LEFT JOIN storage_binding_credential_revisions credential
-                       ON credential.storage_binding_id = action.storage_binding_id
+                     LEFT JOIN bindings binding
+                       ON binding.id = action.binding_id
+                     LEFT JOIN binding_credential_revisions credential
+                       ON credential.binding_id = action.binding_id
                       AND credential.purpose = 'delete'
                       AND credential.generation = action.delete_credential_generation
-                     LEFT JOIN storage_binding_credential_heads credential_head
-                       ON credential_head.storage_binding_id = action.storage_binding_id
+                     LEFT JOIN binding_credential_heads credential_head
+                       ON credential_head.binding_id = action.binding_id
                       AND credential_head.purpose = 'delete'
                      WHERE action.cache_id = plan.cache_id
                        AND action.plan_id = plan.plan_id
@@ -6314,7 +6314,7 @@ impl Database {
                          OR binding.id IS NULL
                          OR credential.generation IS NULL
                          OR credential_head.current_generation IS NULL
-                         OR placement.storage_binding_id <> action.storage_binding_id
+                         OR placement.binding_id <> action.binding_id
                          OR binding.resource_version <> action.binding_resource_version
                          OR binding.kind <> 's3'
                          OR binding.is_instance_default <> 0
@@ -6487,7 +6487,7 @@ impl Database {
             let expected_hash: Option<String> = row.get(5)?;
             let expected_size: Option<i64> = row.get(6)?;
             let expected_inventory_generation: i64 = row.get(7)?;
-            let storage_binding_id: i64 = row.get(8)?;
+            let binding_id: i64 = row.get(8)?;
             let binding_resource_version: i64 = row.get(9)?;
             let delete_credential_generation: i64 = row.get(10)?;
             let dependency_count: i64 = row.get(12)?;
@@ -6503,7 +6503,7 @@ impl Database {
                       operation_target_kind, operation_target_stable_id,
                       surface_object_id, placement_id, phase, expected_etag,
                       expected_hash, expected_size, expected_inventory_generation,
-                      storage_binding_id, binding_resource_version,
+                      binding_id, binding_resource_version,
                       delete_credential_generation,
                       state, active_slot, attempt_count, max_attempts,
                       confirmed_reclaimed_bytes, leaked_bytes, resource_version,
@@ -6529,7 +6529,7 @@ impl Database {
                         expected_hash,
                         expected_size,
                         expected_inventory_generation,
-                        storage_binding_id,
+                        binding_id,
                         binding_resource_version,
                         delete_credential_generation,
                         initial_state,
@@ -6565,7 +6565,7 @@ impl Database {
                           AND action.expected_size IS NULL))
                       AND existing.expected_inventory_generation
                         = action.expected_inventory_generation
-                      AND existing.storage_binding_id = action.storage_binding_id
+                      AND existing.binding_id = action.binding_id
                       AND existing.binding_resource_version = action.binding_resource_version
                       AND existing.delete_credential_generation
                         = action.delete_credential_generation
@@ -6723,13 +6723,13 @@ impl Database {
             "INSERT INTO object_deletion_attempt_receipts
              (request_id, cache_id, job_id, attempt_number, placement_id,
               surface_object_id, object_key, expected_etag, expected_hash,
-              expected_size, expected_inventory_generation, storage_binding_id,
+              expected_size, expected_inventory_generation, binding_id,
               binding_resource_version, delete_credential_generation,
               state, requested_at)
              SELECT ?4, job.cache_id, job.job_id, job.attempt_count,
                     job.placement_id, job.surface_object_id, object.object_key,
                     job.expected_etag, job.expected_hash, job.expected_size,
-                    job.expected_inventory_generation, job.storage_binding_id,
+                    job.expected_inventory_generation, job.binding_id,
                     job.binding_resource_version, job.delete_credential_generation,
                     'requested', ?5
              FROM object_deletion_jobs job
@@ -8827,7 +8827,7 @@ impl Database {
                 "SELECT request_id, cache_id, job_id, attempt_number,
                    placement_id, surface_object_id, object_key, expected_etag,
                    expected_hash, expected_size, expected_inventory_generation,
-                   storage_binding_id, binding_resource_version,
+                   binding_id, binding_resource_version,
                    delete_credential_generation, state, outcome,
                    response_etag, response_hash, response_size,
                    error_class, response_detail, requested_at, responded_at,
@@ -8857,7 +8857,7 @@ impl Database {
                    receipt.surface_object_id, receipt.object_key,
                    receipt.expected_etag, receipt.expected_hash,
                    receipt.expected_size, receipt.expected_inventory_generation,
-                   receipt.storage_binding_id, receipt.binding_resource_version,
+                   receipt.binding_id, receipt.binding_resource_version,
                    receipt.delete_credential_generation, receipt.state,
                    receipt.outcome, receipt.response_etag,
                    receipt.response_hash, receipt.response_size,
@@ -9591,24 +9591,24 @@ impl Database {
                                 "SELECT binding.id, binding.resource_version,
                                    credential.generation
                              FROM surface_placements placement
-                             JOIN storage_bindings binding
-                               ON binding.id = placement.storage_binding_id
+                             JOIN bindings binding
+                               ON binding.id = placement.binding_id
                              JOIN cache_inventory_placement_scans scan
                                ON scan.cache_id = placement.cache_id
                               AND scan.placement_id = placement.id
                               AND scan.generation = ?3
-                             JOIN storage_binding_credential_heads head
-                               ON head.storage_binding_id = binding.id
+                             JOIN binding_credential_heads head
+                               ON head.binding_id = binding.id
                               AND head.purpose = 'delete'
-                             JOIN storage_binding_credential_revisions credential
-                               ON credential.storage_binding_id = head.storage_binding_id
+                             JOIN binding_credential_revisions credential
+                               ON credential.binding_id = head.binding_id
                               AND credential.purpose = head.purpose
                               AND credential.generation = head.current_generation
                              WHERE placement.id = ?1 AND placement.cache_id = ?2
                                AND binding.kind = 's3'
                                AND binding.is_instance_default = 0
                                AND scan.completed_at IS NOT NULL
-                               AND scan.storage_binding_id = binding.id
+                               AND scan.binding_id = binding.id
                                AND scan.binding_resource_version = binding.resource_version
                                AND credential.validation_state = 'valid'",
                                 &vals![placement_id, cache_id, expected_inventory_generation],
@@ -9623,11 +9623,8 @@ impl Database {
                         }
                         capability
                     };
-                let Some((
-                    storage_binding_id,
-                    binding_resource_version,
-                    delete_credential_generation,
-                )) = deletion_capability
+                let Some((binding_id, binding_resource_version, delete_credential_generation)) =
+                    deletion_capability
                 else {
                     bail!(
                         "placement {placement_id} cannot enforce identity-checked deletion; migrate it to a validated S3 binding before enabling destructive GC"
@@ -9655,7 +9652,7 @@ impl Database {
                             expected_hash,
                             expected_size,
                             expected_inventory_generation,
-                            storage_binding_id,
+                            binding_id,
                             binding_resource_version,
                             delete_credential_generation,
                             estimated_reclaimable_bytes: expected_size.unwrap_or_default(),
@@ -9959,7 +9956,7 @@ fn row_to_cache_write_ticket(row: &Row) -> Result<CacheWriteTicketRecord> {
         placement_id: row.get(7)?,
         placement_resource_version: row.get(8)?,
         placement_write_spec_version: row.get(9)?,
-        storage_binding_id: row.get(10)?,
+        binding_id: row.get(10)?,
         binding_resource_version: row.get(11)?,
         binding_write_revision: row.get(12)?,
         write_credential_purpose: row.get(13)?,
@@ -10064,7 +10061,7 @@ fn row_to_object_deletion_attempt_receipt(row: &Row) -> Result<ObjectDeletionAtt
         expected_hash: row.get(8)?,
         expected_size: row.get(9)?,
         expected_inventory_generation: row.get(10)?,
-        storage_binding_id: row.get(11)?,
+        binding_id: row.get(11)?,
         binding_resource_version: row.get(12)?,
         delete_credential_generation: row.get(13)?,
         state: row.get(14)?,
@@ -10160,7 +10157,7 @@ impl Database {
                 .expecting(1),
                 Statement::new(
                     "INSERT INTO surface_placements
-                     (id, cache_id, name, storage_binding_id, consumer_scope_key,
+                     (id, cache_id, name, binding_id, consumer_scope_key,
                       binding_grant_generation, prefix, kind, desired_state,
                       created_at, updated_at)
                      VALUES (3, 2, 'flat-cache', 1,
@@ -10171,7 +10168,7 @@ impl Database {
                 .expecting(1),
                 Statement::new(
                     "INSERT INTO surface_placements
-                     (id, registry_id, name, storage_binding_id, consumer_scope_key,
+                     (id, registry_id, name, binding_id, consumer_scope_key,
                       binding_grant_generation, prefix, kind, desired_state,
                       created_at, updated_at)
                      VALUES (4, 2, 'flat-registry', 1,
@@ -10209,7 +10206,7 @@ impl Database {
                 Statement::new(
                     "INSERT INTO surface_placement_write_capabilities
                      (placement_id, placement_write_spec_version,
-                      storage_binding_id, binding_write_revision, created_at)
+                      binding_id, binding_write_revision, created_at)
                      VALUES (3, 1, 1, 1, 1), (4, 1, 1, 1, 1)",
                     vec![],
                 )
@@ -10320,7 +10317,7 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "INSERT INTO storage_bindings
+                    "INSERT INTO bindings
                      (id, org_id, name, kind, is_instance_default,
                       created_at, stable_id, owner_scope_key, object_bucket,
                       object_prefix, endpoint_scheme, endpoint_host_kind,
@@ -10335,8 +10332,8 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "INSERT INTO storage_binding_credential_revisions
-                     (storage_binding_id, purpose, generation, secret_version_ref,
+                    "INSERT INTO binding_credential_revisions
+                     (binding_id, purpose, generation, secret_version_ref,
                       validation_state, validated_at, credential_fingerprint,
                       created_by, created_at)
                      VALUES
@@ -10348,16 +10345,16 @@ impl Database {
                 )
                 .expecting(2),
                 Statement::new(
-                    "INSERT INTO storage_binding_credential_heads
-                     (storage_binding_id, purpose, current_generation,
+                    "INSERT INTO binding_credential_heads
+                     (binding_id, purpose, current_generation,
                       resource_version, updated_at)
                      VALUES (1, 'presign', 1, 1, 1)",
                     vec![],
                 )
                 .expecting(1),
                 Statement::new(
-                    "INSERT INTO storage_binding_write_revisions
-                     (storage_binding_id, revision, write_credential_version_ref,
+                    "INSERT INTO binding_write_revisions
+                     (binding_id, revision, write_credential_version_ref,
                       writes_supported, conditional_writes_supported,
                       revision_fingerprint, capability_fingerprint, created_at,
                       write_credential_purpose, write_credential_generation)
@@ -10367,16 +10364,16 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "INSERT INTO storage_binding_write_observations
-                     (storage_binding_id, revision, state, validated_at,
+                    "INSERT INTO binding_write_observations
+                     (binding_id, revision, state, validated_at,
                       observation_version)
                      VALUES (1, 1, 'valid', 1, 1)",
                     vec![],
                 )
                 .expecting(1),
                 Statement::new(
-                    "INSERT INTO storage_binding_consumer_scopes
-                     (storage_binding_id, consumer_scope_key, grant_generation,
+                    "INSERT INTO binding_consumer_scopes
+                     (binding_id, consumer_scope_key, grant_generation,
                       grant_kind, state, granted_by, granted_at, resource_version)
                      VALUES (1, 'org:00000000000000000000000000000001', 1,
                        'owner', 'active',
@@ -10386,7 +10383,7 @@ impl Database {
                 .expecting(1),
                 Statement::new(
                     "INSERT INTO surface_placements
-                     (id, cache_id, name, storage_binding_id, consumer_scope_key,
+                     (id, cache_id, name, binding_id, consumer_scope_key,
                       binding_grant_generation, prefix, kind, desired_state,
                       created_at, updated_at)
                      VALUES (1, 1, 'cache', 1,
@@ -10397,7 +10394,7 @@ impl Database {
                 .expecting(1),
                 Statement::new(
                     "INSERT INTO surface_placements
-                     (id, registry_id, name, storage_binding_id, consumer_scope_key,
+                     (id, registry_id, name, binding_id, consumer_scope_key,
                       binding_grant_generation, prefix, kind, desired_state,
                       created_at, updated_at)
                      VALUES (2, 1, 'registry', 1,
@@ -10436,7 +10433,7 @@ impl Database {
                 Statement::new(
                     "INSERT INTO surface_placement_write_capabilities
                      (placement_id, placement_write_spec_version,
-                      storage_binding_id, binding_write_revision, created_at)
+                      binding_id, binding_write_revision, created_at)
                      VALUES (1, 1, 1, 1, 1), (2, 1, 1, 1, 1)",
                     vec![],
                 )
@@ -10497,7 +10494,7 @@ impl Database {
                     "INSERT INTO cache_write_tickets
                      (ticket_id, cache_id, object_key, declared_size, upload_kind,
                       placement_id, placement_resource_version,
-                      placement_write_spec_version, storage_binding_id,
+                      placement_write_spec_version, binding_id,
                       binding_resource_version, binding_write_revision,
                       write_credential_purpose, write_credential_generation,
                       presign_credential_purpose, presign_credential_generation,
@@ -10611,7 +10608,7 @@ impl Database {
             .query_opt(
                 "SELECT ticket_id, cache_id, object_key, declared_size, observed_final_size,
                         uploaded_size, upload_kind, placement_id, placement_resource_version,
-                        placement_write_spec_version, storage_binding_id,
+                        placement_write_spec_version, binding_id,
                         binding_resource_version, binding_write_revision,
                         write_credential_purpose, write_credential_generation,
                         presign_credential_purpose, presign_credential_generation,
@@ -11228,7 +11225,7 @@ mod tests {
         db.backend
             .checked_batch(&[
                 Statement::new(
-                    "INSERT INTO storage_bindings
+                    "INSERT INTO bindings
                      (id, name, kind, is_instance_default, instance_default_key,
                       created_at, stable_id, owner_scope_key, local_root_path,
                       resource_version, updated_at)
@@ -11238,8 +11235,8 @@ mod tests {
                 )
                 .expecting(1),
                 Statement::new(
-                    "INSERT INTO storage_binding_consumer_scopes
-                     (storage_binding_id, consumer_scope_key, grant_generation,
+                    "INSERT INTO binding_consumer_scopes
+                     (binding_id, consumer_scope_key, grant_generation,
                       grant_kind, state, granted_by, granted_at, resource_version)
                      VALUES (1, 'instance', 1, 'owner', 'active', 'test', 1, 1)",
                     vec![],
@@ -11247,7 +11244,7 @@ mod tests {
                 .expecting(1),
                 Statement::new(
                     "INSERT INTO surface_placements
-                     (id, cache_id, name, storage_binding_id, consumer_scope_key,
+                     (id, cache_id, name, binding_id, consumer_scope_key,
                       binding_grant_generation, binding_grant_state, prefix, kind,
                       desired_state, desired_read_enabled, write_spec_version,
                       requires_conditional_writes, created_at, updated_at)
@@ -11563,7 +11560,7 @@ mod tests {
         db.backend
             .execute(
                 "INSERT INTO surface_placements
-                 (id, cache_id, name, storage_binding_id, consumer_scope_key,
+                 (id, cache_id, name, binding_id, consumer_scope_key,
                   binding_grant_generation, binding_grant_state, prefix, kind,
                   desired_state, desired_read_enabled, write_spec_version,
                   requires_conditional_writes, created_at, updated_at)
@@ -11665,7 +11662,7 @@ mod tests {
         db.backend
             .execute(
                 "INSERT INTO surface_placements
-                 (id, cache_id, name, storage_binding_id, consumer_scope_key,
+                 (id, cache_id, name, binding_id, consumer_scope_key,
                   binding_grant_generation, binding_grant_state, prefix, kind,
                   desired_state, desired_read_enabled, write_spec_version,
                   requires_conditional_writes, created_at, updated_at)
@@ -11736,7 +11733,7 @@ mod tests {
         db.backend
             .checked_batch(&[
                 Statement::new(
-                    "INSERT INTO storage_bindings
+                    "INSERT INTO bindings
                      (id, name, kind, is_instance_default, instance_default_key,
                       created_at, stable_id, owner_scope_key, local_root_path,
                       resource_version, updated_at)
@@ -11746,8 +11743,8 @@ mod tests {
                 )
                 .expecting(1),
                 Statement::new(
-                    "INSERT INTO storage_binding_credential_revisions
-                     (storage_binding_id, purpose, generation, secret_version_ref,
+                    "INSERT INTO binding_credential_revisions
+                     (binding_id, purpose, generation, secret_version_ref,
                       validation_state, validated_at, credential_fingerprint,
                       created_by, created_at)
                      VALUES (1, 'delete', 1, 'test-delete-secret', 'valid', 1,
@@ -11756,8 +11753,8 @@ mod tests {
                 )
                 .expecting(1),
                 Statement::new(
-                    "INSERT INTO storage_binding_consumer_scopes
-                     (storage_binding_id, consumer_scope_key, grant_generation,
+                    "INSERT INTO binding_consumer_scopes
+                     (binding_id, consumer_scope_key, grant_generation,
                       grant_kind, state, granted_by, granted_at, resource_version)
                      VALUES (1, 'instance', 1, 'owner', 'active', 'test', 1, 1)",
                     vec![],
@@ -11765,7 +11762,7 @@ mod tests {
                 .expecting(1),
                 Statement::new(
                     "INSERT INTO surface_placements
-                     (id, cache_id, name, storage_binding_id, consumer_scope_key,
+                     (id, cache_id, name, binding_id, consumer_scope_key,
                       binding_grant_generation, binding_grant_state, prefix, kind,
                       desired_state, desired_read_enabled, write_spec_version,
                       requires_conditional_writes, created_at, updated_at)
@@ -11812,7 +11809,7 @@ mod tests {
                       operation_target_kind, operation_target_stable_id,
                       surface_object_id, placement_id, phase, expected_etag,
                       expected_hash, expected_size, expected_inventory_generation,
-                      storage_binding_id, binding_resource_version,
+                      binding_id, binding_resource_version,
                       delete_credential_generation,
                       state, active_slot, max_attempts, next_attempt_at, created_at)
                      VALUES ('delete-job', 1, 'gc-operation', 'binary_cache',
@@ -12114,7 +12111,7 @@ mod tests {
         db.backend
             .batch(&[
                 Statement::new(
-                    "INSERT INTO storage_bindings
+                    "INSERT INTO bindings
                      (id, name, kind, is_instance_default, instance_default_key,
                       created_at, stable_id, owner_scope_key, local_root_path)
                      VALUES (10, 'objects', 'local_fs', 1, 'singleton', 1,
@@ -12122,15 +12119,15 @@ mod tests {
                     vec![],
                 ),
                 Statement::new(
-                    "INSERT INTO storage_binding_consumer_scopes
-                     (storage_binding_id, consumer_scope_key, grant_generation,
+                    "INSERT INTO binding_consumer_scopes
+                     (binding_id, consumer_scope_key, grant_generation,
                       grant_kind, state, granted_by, granted_at, resource_version)
                      VALUES (10, 'instance', 1, 'owner', 'active', 'test', 1, 1)",
                     vec![],
                 ),
                 Statement::new(
                     "INSERT INTO surface_placements
-                     (id, cache_id, name, storage_binding_id, consumer_scope_key,
+                     (id, cache_id, name, binding_id, consumer_scope_key,
                       binding_grant_generation, binding_grant_state, prefix, kind,
                       desired_state, created_at, updated_at)
                      VALUES (11, 1, 'primary', 10, 'instance', 1, 'active',

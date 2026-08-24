@@ -8,7 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -128,7 +128,7 @@ fn PopulationTargetCard(
                             </div>
                             {(!response.missing_store_hashes.is_empty()).then(|| view! {
                                 <details><summary>"Missing store hashes"</summary><div class="compact-list">
-                                    {response.missing_store_hashes.iter().map(|hash| view! { <code>{hash.clone()}</code> }).collect_view()}
+                                    {response.missing_store_hashes.iter().map(|hash| view! { <HashValue value=hash.clone()/> }).collect_view()}
                                 </div></details>
                             })}
                         }

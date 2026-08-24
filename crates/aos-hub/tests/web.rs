@@ -63,7 +63,7 @@ async fn serve_fixture(surface: &Path, fixture: &common::Fixture) -> (axum::Rout
         "",
     )
     .await;
-    common::configure_hub_delivery_route(
+    common::configure_hub_route(
         &db,
         SurfaceTarget::Registry(registry.id),
         placement.id,
@@ -577,7 +577,7 @@ async fn cache_browse_and_uninventoried_nar_fail_closed_over_plain_http() {
         .unwrap()
         .unwrap()
         .owner_scope_key;
-    common::configure_hub_delivery_route(
+    common::configure_hub_route(
         &db,
         SurfaceTarget::BinaryCache(cache),
         placement.id,
@@ -663,7 +663,7 @@ async fn private_cache_machine_read_is_gated_on_the_streaming_path() {
         .unwrap()
         .unwrap()
         .owner_scope_key;
-    common::configure_hub_delivery_route(
+    common::configure_hub_route(
         &db,
         SurfaceTarget::BinaryCache(cache),
         placement.id,
