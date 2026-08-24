@@ -144,6 +144,62 @@ pub trait QemuAttemptHostResourceFactory {
     ) -> Result<Self::Owner, QemuVmRealizationError>;
 }
 
+/// Cloneable bounded access to one exclusive host-resource allocator.
+///
+/// A production Linux allocator owns one cgroup and project-quota namespace
+/// for its complete lifetime, while the fixed executor pool gives each worker
+/// an independently owned execution model. This facade lets those workers
+/// share the one allocator without duplicating namespace authority. The mutex
+/// is held only while one attempt owner is allocated; guest execution and
+/// cleanup remain outside it in the returned owner.
+pub struct SharedQemuAttemptHostResourceFactory<H> {
+    host: Arc<Mutex<H>>,
+}
+
+impl<H> SharedQemuAttemptHostResourceFactory<H> {
+    /// Wraps one already-open exclusive allocator for fixed-worker sharing.
+    #[must_use]
+    pub fn new(host: H) -> Self {
+        Self {
+            host: Arc::new(Mutex::new(host)),
+        }
+    }
+
+    /// Returns the number of fixed-worker handles retaining the allocator.
+    #[must_use]
+    pub fn strong_count(&self) -> usize {
+        Arc::strong_count(&self.host)
+    }
+}
+
+impl<H> Clone for SharedQemuAttemptHostResourceFactory<H> {
+    fn clone(&self) -> Self {
+        Self {
+            host: Arc::clone(&self.host),
+        }
+    }
+}
+
+impl<H> QemuAttemptHostResourceFactory for SharedQemuAttemptHostResourceFactory<H>
+where
+    H: QemuAttemptHostResourceFactory,
+{
+    type Owner = H::Owner;
+
+    fn begin(
+        &mut self,
+        resources: AttemptResourceLimits,
+    ) -> Result<Self::Owner, QemuVmRealizationError> {
+        self.host
+            .lock()
+            .map_err(|_| QemuVmRealizationError::ExecutorUnavailable {
+                operation: "allocate shared QEMU attempt host resources",
+                message: String::from("host-resource allocator lock is poisoned"),
+            })?
+            .begin(resources)
+    }
+}
+
 /// Concrete Linux allocator for one indivisible QEMU process/storage owner.
 #[derive(Debug)]
 pub struct LinuxQemuAttemptHostResourceFactory {

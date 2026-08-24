@@ -3,6 +3,23 @@
 use super::*;
 
 impl ProductionVmLifecycleConfig {
+    /// Returns the durable lifecycle recovery root.
+    #[must_use]
+    pub fn run_state_root(&self) -> &std::path::Path {
+        &self.run_state_root
+    }
+
+    /// Returns this configuration with a distinct durable recovery root.
+    ///
+    /// Fixed worker pools use stable per-worker children so concurrent runs of
+    /// one scenario do not share the scenario-wide recovery lock. The caller
+    /// must preserve each worker-to-root assignment across daemon restart.
+    #[must_use]
+    pub fn with_run_state_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.run_state_root = root.into();
+        self
+    }
+
     /// Builds a local-QEMU lifecycle configuration with bounded defaults.
     ///
     /// `run_state_root` must be a durable writable directory. Each scenario
@@ -318,5 +335,23 @@ impl ProductionVmLifecycleConfig {
         self.quantum_budget
             .saturating_add(node_count)
             .saturating_add(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recovery_root_replacement_is_clone_local() {
+        let base =
+            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "shared-state");
+        let worker = base.clone().with_run_state_root("worker-state/worker-001");
+
+        assert_eq!(base.run_state_root(), Path::new("shared-state"));
+        assert_eq!(
+            worker.run_state_root(),
+            Path::new("worker-state/worker-001")
+        );
     }
 }

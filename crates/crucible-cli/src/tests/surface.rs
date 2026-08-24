@@ -1629,9 +1629,10 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "campaign_import_manifest",
                 "campaign_runtime",
                 "campaign_executor_socket",
+                "campaign_packaged_executor",
                 "campaign_socket_mode",
             ][..],
-            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_component_authority=Load distinct planner/debugger component authority keys from this file\ncampaign_import_manifest=Import verified campaign creation artifacts before binding the socket\ncampaign_runtime=Attach the packaged planner and one local executor to an existing campaign\ncampaign_executor_socket=Connect the attached campaign runtime to this owner-only Unix socket\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
+            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_component_authority=Load distinct planner/debugger component authority keys from this file\ncampaign_import_manifest=Import verified campaign creation artifacts before binding the socket\ncampaign_runtime=Attach the packaged planner and one local executor to an existing campaign\ncampaign_executor_socket=Connect the attached campaign runtime to this owner-only Unix socket\ncampaign_packaged_executor=Start the packaged local QEMU executor from this strict deployment file\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
         ),
         (
             "debug",
@@ -1790,6 +1791,31 @@ pub(super) fn cli_parser_enforces_every_normatively_required_input() {
             "missing required input must be a usage error for {argv:?}"
         );
     }
+
+    assert!(
+        Cli::try_parse_from([
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--campaign-socket",
+            "/tmp/campaign.sock",
+            "--campaign-state",
+            "/tmp/campaign-state",
+            "--campaign-policy",
+            "/tmp/campaign-policy",
+            "--campaign-component-authority",
+            "/tmp/component-authority",
+            "--campaign-runtime",
+            "attached",
+            "--campaign-executor-socket",
+            "/tmp/executor.sock",
+            "--campaign-packaged-executor",
+            "/tmp/executor.toml",
+        ])
+        .is_err(),
+        "packaged campaign execution must require the production QEMU backend"
+    );
 
     assert!(Cli::try_parse_from(["crucible", "verify", "--compare", "left", "right"]).is_ok());
     assert!(Cli::try_parse_from(["crucible", "fuzz", "family.toml"]).is_ok());
@@ -2196,7 +2222,7 @@ schedule = {:?}
     invalid_authority_bytes.extend_from_slice(&[0x31; 32]);
     invalid_authority_bytes.extend_from_slice(&[0x31; 32]);
     fs::write(&component_authority, invalid_authority_bytes).expect("replace component authority");
-    let error = match open_local_campaign_service(args) {
+    let error = match open_local_campaign_service(args, None) {
         Ok(_) => panic!("equal component authorities must fail before bind"),
         Err(error) => error,
     };
@@ -2264,7 +2290,7 @@ principal = "operator"
     let Commands::Serve(args) = &cli.command else {
         panic!("expected serve command");
     };
-    let error = match open_local_campaign_service(args) {
+    let error = match open_local_campaign_service(args, None) {
         Ok(_) => panic!("malformed campaign import must fail"),
         Err(error) => error,
     };

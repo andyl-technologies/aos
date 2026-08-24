@@ -497,8 +497,13 @@ per connection, and joins all connection workers on shutdown. Filesystem
 endpoint ownership uses a distinct lifetime lock and the same exact owner,
 stale-recovery, mode, and conditional-teardown rules as the campaign socket;
 both sockets may share one secure directory without sharing authority.
-Production QEMU worker selection and daemon flag wiring remain bootstrap
-responsibilities rather than a second user-facing service.
+The daemon can now own the single-host packaged QEMU executor through a strict
+deployment file and the existing campaign-runtime flags. That composition
+selects the concrete fresh/thin-replay worker, a fixed worker pool, durable
+ledger/checkpoint stores, resource ownership, and the authenticated loopback
+endpoint as one lifecycle; it does not create a second user-facing service.
+Concrete exact-resume worker selection remains an implementation gate and is
+not advertised by this packaged endpoint.
 
 The direct service contract implements strict request-bound `CreateCampaign`,
 `DeriveCampaign`, `GetCampaign`, historical `GetSnapshot`, coalesced
@@ -566,14 +571,17 @@ socket; attachment rechecks its inode and exact peer UID/GID around capability
 negotiation before starting planner or executor work. Restart reopens the same
 object/ref directories while stale-socket recovery remains exact-owner
 conditional.
-The separately hosted executor endpoint has one coupled lifecycle owner: a
+The separately hosted or daemon-packaged executor endpoint has one coupled lifecycle owner: a
 shutdown closes assignment admission, signals active attempts, interrupts
 connections, and joins both connection and semantic workers. Terminal semantic
 worker failure closes the listener instead of leaving an apparently live but
 unusable socket. Dropping the unserved owner retains the socket namespace until
-the same semantic join completes. Concrete QEMU worker selection and its daemon
-flags remain an implementation gate before this endpoint is exposed as
-production porcelain.
+the same semantic join completes. In daemon-packaged mode a strict version-one
+deployment file fixes aggregate capacity, worker count, cgroup/run roots,
+project-ID range, child credential, checkpoint ceiling, and exact compatibility
+profile before the endpoint is exposed. Fixed workers receive stable disjoint
+run-state roots. Only the concrete fresh/thin-replay worker is selected;
+exact-resume composition remains fail-closed and open.
 `--read-only` applies to both APIs and cannot be bypassed by a mutation grant in
 the campaign policy.
 

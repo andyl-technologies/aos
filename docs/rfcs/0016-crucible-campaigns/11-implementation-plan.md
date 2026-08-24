@@ -372,8 +372,13 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   connections, and joins both worker domains. Terminal semantic worker
   completion closes the listener, and worker poison takes precedence over an
   ordinary listener result. The unserved-owner drop backstop also joins the
-  semantic pool before releasing the endpoint namespace. Concrete QEMU worker
-  selection and daemon flag wiring remain open.
+  semantic pool before releasing the endpoint namespace. The daemon now also
+  composes the concrete fresh/thin-replay QEMU worker, shared aggregate host
+  allocator, disjoint stable per-worker recovery roots, durable assignment and
+  checkpoint stores, managed endpoint, runtime, and campaign service from one
+  strict owner-only deployment file. Worker count is fixed at startup and
+  cannot exceed the admitted slot ceiling. Exact-resume worker selection and
+  its concrete modeled driver remain open and are not advertised.
   A bounded `CampaignSupervisor` now composes one planner driver and one
   executor driver over the same repository, reloads exact lifecycle intent on
   every step, and performs at most one component operation. Running execution
@@ -602,8 +607,9 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   scenario and child artifacts, and emits a complete `ObservationCandidate`.
   It deliberately emits no undeclared measurements; measurement definitions,
   raw event-log evidence, and objective aggregation remain T-CAM-3 work.
-  Concrete driver selection, fresh exact-cache, and production worker
-  composition remain open. Real-node exact-checkpoint
+  The packaged daemon selects this fresh concrete driver and fixed-worker
+  composition, while fresh exact-cache and a concrete exact-resume modeled
+  driver remain open. Real-node exact-checkpoint
   capture is now an
   executor-owned, guard-retaining operation: it
   seals and exact-binds configuration, node icount, and event-log continuation
@@ -614,7 +620,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   independent positional cursor per open. The guarded session itself now turns
   that source into the linear captured-checkpoint token, records the successful
   capture as its backend reap attestation, and releases only the still-installed
-  host guard during finalization. Modeled driver and production worker/factory
+  host guard during finalization. Exact-resume modeled driver and worker/factory
   selection remain open. The daemon now prepares and durably publishes a
   registered version-three exact-checkpoint root over canonical snapshot
   metadata, the complete scheduler continuation, and a bounded, streamed

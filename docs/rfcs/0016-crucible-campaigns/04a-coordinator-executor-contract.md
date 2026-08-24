@@ -1591,8 +1591,9 @@ interrupts socket work; listener exit always shuts down and joins every
 semantic worker. Conversely, terminal completion of all semantic workers closes
 the listener, and a poisoned worker result takes precedence over an ordinary
 listener stop. Dropping an owner before serving performs the same synchronous
-worker join before releasing the endpoint namespace. Production QEMU worker
-selection and daemon flag wiring remain separate bootstrap responsibilities.
+worker join before releasing the endpoint namespace. The strict packaged
+deployment now wires that owner to the concrete fresh/thin-replay QEMU worker;
+exact-resume worker selection remains separate and fail-closed.
 
 The single-host daemon persists two bounded operational record families:
 
@@ -2243,9 +2244,11 @@ result sealing. Divergence, early terminal state, cancellation, or quantum
 exhaustion fails closed and still tears down the lifecycle. The runner MUST NOT
 substitute seed changes or a post-hoc schedule append for a `CampaignBranch`
 selection.
-Concrete fresh-driver selection,
-an independently admitted debugger world, and production worker composition
-remain open; no unsupported mode falls back to the packaged authority. The
+The daemon-packaged executor now selects the concrete fresh driver in a fixed
+worker pool with a shared aggregate resource owner and disjoint stable worker
+recovery roots. An independently admitted debugger world and concrete
+exact-resume worker/driver composition remain open; no unsupported mode falls
+back to the packaged authority. The
 concrete modeled driver accepts an already-materialized authenticated discovery
 child or selected branch child and advances only empty-control scheduler quanta. It
 checks cancellation and the exact-checkpoint request before and after each
@@ -2284,8 +2287,8 @@ concrete exact-resume adapter obtains one prepared generation directory from the
 guard, streams and authenticates the durable exact root into its pinned VMState
 inode, constructs the root-bound real-node launcher, and exposes only the
 guarded live facade to the session. Fresh exact-cache, baked-genesis, thin image
-provisioning, and production worker/factory selection remain mandatory before
-the guarded path may launch a campaign QEMU. A
+provisioning, and production exact-resume worker/factory selection remain
+mandatory before the guarded resume path may launch a campaign QEMU. A
 process-only Linux facade
 now validates a daemon-incarnation
 namespace, non-root child IDs, task and finish bounds before acquiring the
@@ -2337,7 +2340,7 @@ reader as a reopenable CAS source with an independent positional cursor per
 open. The guarded live session now performs that conversion itself, records the
 successful capture as the backend reap attestation, and releases only the host
 resource guard during `finish`; it cannot accidentally issue a second shutdown
-or hand modeled code the opaque source. The modeled driver and production
+or hand modeled code the opaque source. The exact-resume modeled driver and
 worker/factory selection remain open. The daemon then prepares a no-write,
 content-addressed version-three root over canonical snapshot metadata, the
 complete scheduler continuation, and the streamed opaque VMState child; stages

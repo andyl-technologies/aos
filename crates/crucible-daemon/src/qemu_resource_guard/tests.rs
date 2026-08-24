@@ -4,6 +4,7 @@
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 
 use crucible_api::ProductionVmNodeLauncher;
 
@@ -163,6 +164,41 @@ fn factory(
         signal_panics: false,
         finish_error: false,
     })
+}
+
+#[test]
+fn fixed_workers_share_one_host_allocator_without_sharing_attempt_owners() {
+    let resources = resources(2);
+    let counters = Arc::new(HostCounters::default());
+    let shared = SharedQemuAttemptHostResourceFactory::new(FakeHostFactory {
+        installed: resources,
+        counters: Arc::clone(&counters),
+        signal_error: false,
+        signal_panics: false,
+        finish_error: false,
+    });
+    let mut first = ComposedQemuAttemptResourceGuardFactory::new(shared.clone());
+    let mut second = ComposedQemuAttemptResourceGuardFactory::new(shared.clone());
+    assert_eq!(shared.strong_count(), 3);
+
+    let first = thread::spawn(move || {
+        let mut guard = first
+            .begin(resources, ExecutionCancellation::default())
+            .expect("first shared guard");
+        guard.finish().expect("finish first shared guard");
+    });
+    let second = thread::spawn(move || {
+        let mut guard = second
+            .begin(resources, ExecutionCancellation::default())
+            .expect("second shared guard");
+        guard.finish().expect("finish second shared guard");
+    });
+    first.join().expect("first worker");
+    second.join().expect("second worker");
+
+    assert_eq!(counters.begins.load(Ordering::SeqCst), 2);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 2);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
 }
 
 #[test]
