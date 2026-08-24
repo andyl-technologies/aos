@@ -911,5 +911,9 @@ mod support;
 use support::*;
 
 #[cfg(test)]
+#[path = "mapped_quantum/fault_event_tests.rs"]
+mod fault_event_tests;
+
+#[cfg(test)]
 #[path = "mapped_quantum/fingerprint_tests.rs"]
 mod fingerprint_tests;
