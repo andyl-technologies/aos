@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, Decision, RngDecision, RngStreamId, ScenarioDef,
-    SchedulerEventLogEntry, VirtualTime, step,
+    AppRandomDecision, Checkpoint, CheckpointKind, Configuration, Decision, NodeId, RngDecision,
+    RngStreamId, ScenarioDef, SchedulerEventLogEntry, VirtualTime, step,
 };
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
@@ -327,10 +327,32 @@ struct FakeFreshLifecycle {
 impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
     fn drive_quantum(
         &mut self,
-        _request: crucible::QuantumRequest,
+        request: crucible::QuantumRequest,
     ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
-        Err(crucible::SchedulerError::BoundaryViolation {
-            message: String::from("fake lifecycle does not drive scheduler quanta"),
+        self.order
+            .lock()
+            .expect("fresh lifecycle order")
+            .push("replay");
+        let configuration = step(
+            &request.configuration,
+            Decision::RngDraw(RngDecision {
+                stream: RngStreamId::from_name("fresh-runner-non-genesis"),
+                value: 7,
+            }),
+        );
+        Ok(crucible::QuantumOutcome {
+            configuration,
+            frontier: VirtualTime { ticks: 1 },
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: Vec::new(),
+            discovered_choices: Vec::new(),
+            event_log_entries: Vec::new(),
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: crucible::EventLogOffset::default(),
+            scheduler_quiescence: None,
         })
     }
 
@@ -418,6 +440,7 @@ impl QemuFreshAttemptDriver for FakeFreshDriver {
         lifecycle: &mut QemuFreshAttemptLifecycle<'_>,
         _input: &CrucibleAttemptExecution,
         _context: &AttemptExecutionContext,
+        _materialization: QemuFreshStartMaterialization,
     ) -> Result<Self::Pending, AttemptWorkerFailure<Self::Error>> {
         self.order
             .lock()
@@ -519,7 +542,7 @@ fn fresh_runner_rejects_resume_origin_before_factory_invocation() {
 }
 
 #[test]
-fn fresh_runner_rejects_non_genesis_start_before_factory_invocation() {
+fn fresh_runner_replays_supported_non_genesis_start_before_driver() {
     let order = Arc::new(Mutex::new(Vec::new()));
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -532,6 +555,150 @@ fn fresh_runner_rejects_non_genesis_start_before_factory_invocation() {
         },
     );
     let input = non_genesis_fresh_runner_input();
+    let outcome = runner
+        .execute(&input, &fresh_runner_context())
+        .expect("fresh runner must replay a supported non-genesis start");
+
+    assert!(matches!(
+        outcome.product(),
+        AttemptExecutionProduct::ExactCheckpoint(_)
+    ));
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "replay", "drive", "shutdown", "seal"]
+    );
+}
+
+#[test]
+fn fresh_runner_replay_divergence_cleans_up_without_calling_driver() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision {
+        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
+        value: 8,
+    }));
+
+    let error = runner
+        .execute(&input, &fresh_runner_context())
+        .expect_err("drifted replay prefix must fail closed");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+            QemuFreshStartReplayError::Diverged
+        ))
+    ));
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "replay", "shutdown"]
+    );
+}
+
+#[test]
+fn fresh_runner_replay_honors_cancellation_before_first_quantum() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let cancellation = ExecutionCancellation::default();
+    cancellation.cancel_for_test();
+
+    let error = runner
+        .execute(
+            &non_genesis_fresh_runner_input(),
+            &context(resources(4), cancellation),
+        )
+        .expect_err("canceled replay must fail before a scheduler quantum");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::StartReplay(
+            QemuFreshStartReplayError::Canceled
+        ))
+    ));
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "shutdown"]
+    );
+}
+
+#[test]
+fn fresh_runner_replay_is_bounded_by_admitted_quanta() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let decision = Decision::RngDraw(RngDecision {
+        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
+        value: 7,
+    });
+    let input = non_genesis_fresh_runner_input_with_decisions(vec![decision.clone(), decision]);
+
+    let error = runner
+        .execute(
+            &input,
+            &context(resources(1), ExecutionCancellation::default()),
+        )
+        .expect_err("replay must not exceed the attempt quantum ceiling");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+            QemuFreshStartReplayError::QuantumLimit
+        ))
+    ));
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "replay", "shutdown"]
+    );
+}
+
+#[test]
+fn fresh_runner_rejects_producer_override_before_factory_invocation() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let input =
+        non_genesis_fresh_runner_input_with_decision(Decision::AppRandom(AppRandomDecision {
+            node: NodeId {
+                name: String::from("node-a"),
+            },
+            stream: RngStreamId::from_name("fresh-runner-override"),
+            request_id: 1,
+            width: 8,
+            value: 7,
+        }));
     let expected = match input.start() {
         CrucibleResolvedAttemptStart::Discover { configuration } => configuration.id(),
         CrucibleResolvedAttemptStart::Branch { .. } => panic!("expected discovery fixture"),
@@ -539,13 +706,16 @@ fn fresh_runner_rejects_non_genesis_start_before_factory_invocation() {
 
     let error = runner
         .execute(&input, &fresh_runner_context())
-        .expect_err("fresh runner must reject a non-genesis start");
+        .expect_err("producer override must fail before fresh lifecycle construction");
 
     assert!(matches!(
         error,
         AttemptWorkerFailure::Terminal(
-            QemuFreshExecutionRunnerError::StartConfigurationUnsupported(actual)
-        ) if actual == expected
+            QemuFreshExecutionRunnerError::StartDecisionUnsupported {
+                configuration,
+                decision: 0,
+            }
+        ) if configuration == expected
     ));
     assert!(order.lock().expect("fresh lifecycle order").is_empty());
 }
@@ -691,15 +861,25 @@ fn fresh_runner_input() -> CrucibleAttemptExecution {
 }
 
 fn non_genesis_fresh_runner_input() -> CrucibleAttemptExecution {
+    non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision {
+        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
+        value: 7,
+    }))
+}
+
+fn non_genesis_fresh_runner_input_with_decision(decision: Decision) -> CrucibleAttemptExecution {
+    non_genesis_fresh_runner_input_with_decisions(vec![decision])
+}
+
+fn non_genesis_fresh_runner_input_with_decisions(
+    decisions: Vec<Decision>,
+) -> CrucibleAttemptExecution {
     let input = fresh_runner_input();
     let scenario = input.scenario().clone();
     let definition = scenario.scenario_def();
-    let configuration = step(
-        &Configuration::genesis(definition.clone()),
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-            value: 7,
-        }),
+    let configuration = decisions.into_iter().fold(
+        Configuration::genesis(definition.clone()),
+        |parent, decision| step(&parent, decision),
     );
     let scenario_id = input.lineage().scenario();
     let scenario_content = input.lineage().scenario_content();

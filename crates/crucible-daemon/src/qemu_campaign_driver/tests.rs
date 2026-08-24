@@ -68,6 +68,13 @@ fn event_count_seals_final_drain_coverage_into_exact_candidate() {
     let configuration = starting_configuration(&input);
     let node = node("node-a");
     let mut log = EventLog::new();
+    let prefix = log
+        .append_observable_events([ObservableEvent::coverage_marker(
+            Icount { retired: 0 },
+            node.clone(),
+            MarkerId::from_name("prefix-covered"),
+        )])
+        .expect("replayed prefix event-log segment");
     let first = log
         .append_observable_events([ObservableEvent::guest_marker(
             Icount { retired: 1 },
@@ -96,7 +103,12 @@ fn event_count_seals_final_drain_coverage_into_exact_candidate() {
     let mut driver = QemuFreshModeledDriver::new();
 
     let pending = driver
-        .drive(&mut lifecycle, &input, &context())
+        .drive(
+            &mut lifecycle,
+            &input,
+            &context(),
+            QemuFreshStartMaterialization::from_test_parts(prefix.entries.clone(), None, None),
+        )
         .expect("event-count stop");
     let product = driver
         .seal(pending, final_append.entries.clone())
@@ -113,13 +125,18 @@ fn event_count_seals_final_drain_coverage_into_exact_candidate() {
         candidate.observation().stop(),
         &StopOutcome::Reached(StopCondition::EventCount(1))
     );
-    let expected = crucible::event_log_coverage_projection(&final_append.entries).entries()[0]
-        .observation
-        .content_hash();
-    assert_eq!(
-        candidate.coverage().identities(),
-        &BTreeSet::from([CampaignHash::from_bytes(expected.bytes)])
-    );
+    let expected = prefix
+        .entries
+        .iter()
+        .chain(&final_append.entries)
+        .flat_map(|entry| {
+            crucible::event_log_coverage_projection(std::slice::from_ref(entry))
+                .entries()
+                .to_vec()
+        })
+        .map(|entry| CampaignHash::from_bytes(entry.observation.content_hash().bytes))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(candidate.coverage().identities(), &expected);
     assert!(candidate.properties().properties().is_empty());
     assert_eq!(owner.drives, 1);
 }
@@ -160,7 +177,12 @@ fn named_boundary_requires_the_exact_guest_marker() {
     let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
 
     QemuFreshModeledDriver::new()
-        .drive(&mut lifecycle, &input, &context())
+        .drive(
+            &mut lifecycle,
+            &input,
+            &context(),
+            QemuFreshStartMaterialization::genesis(),
+        )
         .expect("exact named boundary");
 
     assert_eq!(owner.drives, 2);
@@ -180,7 +202,12 @@ fn scheduler_operational_class_survives_the_concrete_driver() {
     let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
 
     let error = QemuFreshModeledDriver::new()
-        .drive(&mut lifecycle, &input, &context())
+        .drive(
+            &mut lifecycle,
+            &input,
+            &context(),
+            QemuFreshStartMaterialization::genesis(),
+        )
         .expect_err("retryable scheduler boundary");
 
     assert!(matches!(
@@ -211,7 +238,12 @@ fn next_choice_retains_the_complete_discovery_bundle() {
     let mut driver = QemuFreshModeledDriver::new();
 
     let pending = driver
-        .drive(&mut lifecycle, &input, &context())
+        .drive(
+            &mut lifecycle,
+            &input,
+            &context(),
+            QemuFreshStartMaterialization::genesis(),
+        )
         .expect("next-choice stop");
     let product = driver.seal(pending, Vec::new()).expect("choice candidate");
     let AttemptExecutionProduct::Observation(candidate) = product else {
@@ -249,7 +281,12 @@ fn terminal_run_projects_offline_property_verdicts() {
     let mut driver = QemuFreshModeledDriver::new();
 
     let pending = driver
-        .drive(&mut lifecycle, &input, &context())
+        .drive(
+            &mut lifecycle,
+            &input,
+            &context(),
+            QemuFreshStartMaterialization::genesis(),
+        )
         .expect("terminal modeled stop");
     let product = driver
         .seal(pending, Vec::new())
@@ -302,7 +339,12 @@ fn non_dense_final_drain_is_rejected_before_candidate_construction() {
     let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
     let mut driver = QemuFreshModeledDriver::new();
     let pending = driver
-        .drive(&mut lifecycle, &input, &context())
+        .drive(
+            &mut lifecycle,
+            &input,
+            &context(),
+            QemuFreshStartMaterialization::genesis(),
+        )
         .expect("event-count stop");
     let invalid = SchedulerEventLogEntry::guest_marker_observation(
         7,

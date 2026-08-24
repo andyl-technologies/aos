@@ -10,8 +10,9 @@
 //! substitutes for an exact-checkpoint resume.
 
 use crucible::{
-    QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ScenarioDef,
-    ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
+    Configuration, Decision, QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
+    ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
+    SchedulerOperationalFailureClass, SchedulerQuiescence,
 };
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
@@ -25,6 +26,7 @@ use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
     CrucibleAttemptExecution, CrucibleExecutionOutcome, CrucibleExecutionRunner,
     CrucibleMaterializationTier, MAX_QEMU_ATTEMPT_GENERATION_NODES,
+    MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES, MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
     QemuAttemptGenerationResourceOwner, QemuAttemptOperationalBoundary,
     QemuAttemptProcessResourceGuard, QemuAttemptProductionVmNodeLauncher, QemuAttemptResourceGuard,
     QemuAttemptResourceGuardFactory,
@@ -243,6 +245,12 @@ pub trait QemuFreshAttemptDriver {
 
     /// Drives the lifecycle to a modeled stop without returning an accepted product.
     ///
+    /// `materialization` contains the bounded event history, terminal state,
+    /// and quiescence reconstructed while the runner reached `input`'s exact
+    /// start. The driver must preserve that history when evaluating or sealing
+    /// cumulative modeled evidence, while stop conditions begin at the admitted
+    /// start rather than being satisfied by replayed prefix events.
+    ///
     /// # Errors
     ///
     /// Returns a classified retryable, canceled, or terminal modeled failure.
@@ -251,6 +259,7 @@ pub trait QemuFreshAttemptDriver {
         lifecycle: &mut QemuFreshAttemptLifecycle<'_>,
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
+        materialization: QemuFreshStartMaterialization,
     ) -> Result<Self::Pending, AttemptWorkerFailure<Self::Error>>;
 
     /// Seals one product after final lifecycle drain and resource cleanup.
@@ -270,11 +279,12 @@ pub trait QemuFreshAttemptDriver {
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>>;
 }
 
-/// Genesis-start QEMU campaign runner with runner-owned final teardown.
+/// Fresh-QEMU campaign runner with exact prefix replay and runner-owned teardown.
 ///
-/// This runner does not reconstruct a nonempty configuration schedule. It
-/// rejects every non-genesis discovery or branch start before resource
-/// installation so a caller cannot mistake a fresh process for thin replay.
+/// The runner reconstructs an admitted selection-free or standardized
+/// model-sampled schedule from scenario genesis before lending the lifecycle to
+/// its modeled driver. Producer-owned overrides remain rejected before resource
+/// installation until their versioned live injection protocol is available.
 pub struct QemuFreshExecutionRunner<F, D> {
     lifecycles: F,
     driver: D,
@@ -324,9 +334,19 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
     /// The fresh runner was asked to execute a durable resume incarnation.
     #[error("fresh production QEMU runner cannot resume exact checkpoint `{0}`")]
     ResumeCheckpointUnsupported(ExactCheckpointId),
-    /// The fresh lifecycle can realize only the scenario genesis configuration.
-    #[error("fresh production QEMU runner cannot realize non-genesis start configuration `{0:?}`")]
-    StartConfigurationUnsupported(crucible::ContentHash),
+    /// The target contains a producer-owned override with no live injection path.
+    #[error(
+        "fresh production QEMU runner cannot inject decision {decision} of configuration `{configuration:?}`"
+    )]
+    StartDecisionUnsupported {
+        /// Exact target configuration.
+        configuration: crucible::ContentHash,
+        /// Zero-based unsupported schedule position.
+        decision: usize,
+    },
+    /// Exact replay from scenario genesis failed.
+    #[error("fresh production QEMU start replay failed: {0}")]
+    StartReplay(#[source] QemuFreshStartReplayError),
     /// Guarded lifecycle admission or construction failed.
     #[error("fresh production QEMU lifecycle construction failed")]
     Lifecycle(F),
@@ -343,6 +363,102 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
         driver: D,
         /// Higher-priority cleanup failure.
         cleanup: SchedulerError,
+    },
+    /// Cleanup failed after start replay or another runner-owned phase failed.
+    #[error(
+        "fresh production QEMU lifecycle cleanup failed after runner failure `{failure}`: {cleanup}"
+    )]
+    CleanupAfterRunner {
+        /// Original runner failure retained for diagnosis.
+        failure: Box<QemuFreshExecutionRunnerError<F, D>>,
+        /// Higher-priority cleanup failure.
+        cleanup: SchedulerError,
+    },
+}
+
+/// Bounded history reconstructed before one fresh attempt begins.
+#[derive(Debug)]
+pub struct QemuFreshStartMaterialization {
+    event_log: Vec<SchedulerEventLogEntry>,
+    event_log_bytes: usize,
+    terminal_quiescence: Option<SchedulerQuiescence>,
+    terminal_verdict: Option<QuantumTerminalVerdict>,
+}
+
+impl QemuFreshStartMaterialization {
+    pub(crate) fn genesis() -> Self {
+        Self {
+            event_log: Vec::new(),
+            event_log_bytes: 0,
+            terminal_quiescence: None,
+            terminal_verdict: None,
+        }
+    }
+
+    /// Consumes the materialization into cumulative replay evidence and state.
+    ///
+    /// The byte count is the checked aggregate canonical material length of
+    /// `event_log`. `terminal_quiescence` and `terminal_verdict` describe the
+    /// exact admitted start after replay, not a later attempt quantum.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<SchedulerEventLogEntry>,
+        usize,
+        Option<SchedulerQuiescence>,
+        Option<QuantumTerminalVerdict>,
+    ) {
+        (
+            self.event_log,
+            self.event_log_bytes,
+            self.terminal_quiescence,
+            self.terminal_verdict,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_parts(
+        event_log: Vec<SchedulerEventLogEntry>,
+        terminal_quiescence: Option<SchedulerQuiescence>,
+        terminal_verdict: Option<QuantumTerminalVerdict>,
+    ) -> Self {
+        let event_log_bytes = event_log
+            .iter()
+            .map(SchedulerEventLogEntry::canonical_material_len)
+            .sum();
+        Self {
+            event_log,
+            event_log_bytes,
+            terminal_quiescence,
+            terminal_verdict,
+        }
+    }
+}
+
+/// Failure while reconstructing one exact fresh-QEMU start configuration.
+#[derive(Debug, Error)]
+pub enum QemuFreshStartReplayError {
+    /// The attempt was canceled before its start configuration was reached.
+    #[error("fresh start replay was canceled")]
+    Canceled,
+    /// The lifecycle scheduler rejected one replay quantum.
+    #[error("fresh start replay scheduler failed: {0}")]
+    Scheduler(#[source] SchedulerError),
+    /// Replay produced a schedule outside the exact requested prefix.
+    #[error("fresh start replay diverged from the requested schedule")]
+    Diverged,
+    /// The scenario stopped before reaching the requested configuration.
+    #[error("fresh start replay reached a terminal verdict before the requested configuration")]
+    Terminated,
+    /// Replay exhausted the attempt's admitted execution-quanta ceiling.
+    #[error("fresh start replay exhausted the admitted execution-quanta ceiling")]
+    QuantumLimit,
+    /// Replayed event history exceeded the observation projection bound.
+    #[error("fresh start replay exceeded `{limit}`")]
+    LimitExceeded {
+        /// Stable name of the exceeded limit.
+        limit: &'static str,
     },
 }
 
@@ -496,24 +612,30 @@ where
             crate::CrucibleResolvedAttemptStart::Discover { configuration } => configuration,
             crate::CrucibleResolvedAttemptStart::Branch { selected, .. } => selected,
         };
-        if start != &crucible::Configuration::genesis(scenario.clone()) {
+        if let Some(decision) = unsupported_fresh_replay_decision(start) {
             return Err(AttemptWorkerFailure::Terminal(
-                QemuFreshExecutionRunnerError::StartConfigurationUnsupported(start.id()),
+                QemuFreshExecutionRunnerError::StartDecisionUnsupported {
+                    configuration: start.id(),
+                    decision,
+                },
             ));
         }
         let mut lifecycle = self
             .lifecycles
             .start_fresh_lifecycle(&scenario, input.scenario(), context)
             .map_err(map_fresh_lifecycle_failure)?;
-        let driven = {
+        let materialization = materialize_fresh_start(&mut lifecycle, start, context);
+        let driven = materialization.and_then(|materialization| {
             let mut facade = QemuFreshAttemptLifecycle::new(&mut lifecycle);
-            self.driver.drive(&mut facade, input, context)
-        };
+            self.driver
+                .drive(&mut facade, input, context, materialization)
+                .map_err(map_fresh_driver_failure)
+        });
         let cleanup = lifecycle.shutdown();
 
         let (pending, final_events) = match (driven, cleanup) {
             (Ok(pending), Ok(events)) => (pending, events),
-            (Err(failure), Ok(_events)) => return Err(map_fresh_driver_failure(failure)),
+            (Err(failure), Ok(_events)) => return Err(failure),
             (Ok(_pending), Err(cleanup)) => {
                 return Err(AttemptWorkerFailure::Terminal(
                     QemuFreshExecutionRunnerError::Cleanup(cleanup),
@@ -521,7 +643,7 @@ where
             }
             (Err(failure), Err(cleanup)) => {
                 return Err(AttemptWorkerFailure::Terminal(
-                    cleanup_after_fresh_driver_failure(failure, cleanup),
+                    cleanup_after_fresh_runner_failure(failure, cleanup),
                 ));
             }
         };
@@ -533,6 +655,149 @@ where
             product,
             CrucibleMaterializationTier::ThinReplay,
         ))
+    }
+}
+
+fn unsupported_fresh_replay_decision(target: &Configuration) -> Option<usize> {
+    target
+        .schedule
+        .decisions()
+        .iter()
+        .position(|decision| match decision {
+            Decision::Override(_) | Decision::AppRandom(_) => true,
+            Decision::Selection(selection) => !selection.is_app_random_model_sample(),
+            Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Preemption(_) => false,
+        })
+}
+
+fn materialize_fresh_start<F, D>(
+    lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
+    target: &Configuration,
+    context: &AttemptExecutionContext,
+) -> Result<QemuFreshStartMaterialization, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
+{
+    let mut replay = QemuFreshStartMaterialization::genesis();
+    let mut current = Configuration::genesis(target.def.clone());
+    if current == *target {
+        return Ok(replay);
+    }
+
+    for _ in 0..context.resources().maximum_execution_quanta() {
+        if context.cancellation().is_canceled() {
+            return Err(AttemptWorkerFailure::Canceled(
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Canceled),
+            ));
+        }
+        let prior_len = current.schedule.len();
+        let outcome = lifecycle
+            .drive_quantum(QuantumRequest {
+                configuration: current,
+                control: Vec::new(),
+            })
+            .map_err(map_start_replay_scheduler_failure)?;
+        if context.cancellation().is_canceled() {
+            return Err(AttemptWorkerFailure::Canceled(
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Canceled),
+            ));
+        }
+
+        let next = &outcome.configuration;
+        let next_len = next.schedule.len();
+        if next.def != target.def
+            || next_len < prior_len
+            || next_len > target.schedule.len()
+            || next.schedule.decisions()[prior_len..]
+                != target.schedule.decisions()[prior_len..next_len]
+        {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Diverged),
+            ));
+        }
+
+        append_start_replay_events(&mut replay, &outcome.event_log_entries)?;
+        replay.terminal_quiescence = outcome.scheduler_quiescence;
+        current = outcome.configuration;
+        let terminal = lifecycle.terminal_verdict_for_stop();
+        if current == *target {
+            replay.terminal_verdict = terminal;
+            return Ok(replay);
+        }
+        if terminal.is_some() {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Terminated),
+            ));
+        }
+    }
+
+    Err(AttemptWorkerFailure::Terminal(
+        QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::QuantumLimit),
+    ))
+}
+
+fn append_start_replay_events<F, D>(
+    replay: &mut QemuFreshStartMaterialization,
+    entries: &[SchedulerEventLogEntry],
+) -> Result<(), AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>> {
+    let count = replay
+        .event_log
+        .len()
+        .checked_add(entries.len())
+        .ok_or_else(|| start_replay_limit_failure("fresh-campaign-event-log-entry-count"))?;
+    if count > MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES {
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::LimitExceeded {
+                limit: "fresh-campaign-event-log-entry-count",
+            }),
+        ));
+    }
+    let added = entries.iter().try_fold(0usize, |total, entry| {
+        total
+            .checked_add(entry.canonical_material_len())
+            .ok_or_else(|| start_replay_limit_failure("fresh-campaign-event-log-bytes"))
+    })?;
+    let bytes = replay
+        .event_log_bytes
+        .checked_add(added)
+        .ok_or_else(|| start_replay_limit_failure("fresh-campaign-event-log-bytes"))?;
+    if bytes > MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES {
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::LimitExceeded {
+                limit: "fresh-campaign-event-log-bytes",
+            }),
+        ));
+    }
+    replay.event_log.extend_from_slice(entries);
+    replay.event_log_bytes = bytes;
+    Ok(())
+}
+
+fn start_replay_limit_failure<F, D>(
+    limit: &'static str,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+        QemuFreshStartReplayError::LimitExceeded { limit },
+    ))
+}
+
+fn map_start_replay_scheduler_failure<F, D>(
+    error: SchedulerError,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    let class = match &error {
+        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
+        SchedulerError::NotImplemented { .. }
+        | SchedulerError::Backend(_)
+        | SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::TimeConversion(_)
+        | SchedulerError::TopologyActivationInPast { .. } => None,
+    };
+    let error =
+        QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Scheduler(error));
+    match class {
+        Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
+        Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
+        Some(SchedulerOperationalFailureClass::Terminal) | None => {
+            AttemptWorkerFailure::Terminal(error)
+        }
     }
 }
 
@@ -591,14 +856,22 @@ fn map_fresh_driver_failure<F, D>(
     }
 }
 
-fn cleanup_after_fresh_driver_failure<F, D>(
-    failure: AttemptWorkerFailure<D>,
+fn cleanup_after_fresh_runner_failure<F, D>(
+    failure: AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>,
     cleanup: SchedulerError,
 ) -> QemuFreshExecutionRunnerError<F, D> {
     let driver = match failure {
+        AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::Driver(error))
+        | AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::Driver(error))
+        | AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Driver(error)) => error,
         AttemptWorkerFailure::Retryable(error)
         | AttemptWorkerFailure::Canceled(error)
-        | AttemptWorkerFailure::Terminal(error) => error,
+        | AttemptWorkerFailure::Terminal(error) => {
+            return QemuFreshExecutionRunnerError::CleanupAfterRunner {
+                failure: Box::new(error),
+                cleanup,
+            };
+        }
     };
     QemuFreshExecutionRunnerError::CleanupAfterDriver { driver, cleanup }
 }
