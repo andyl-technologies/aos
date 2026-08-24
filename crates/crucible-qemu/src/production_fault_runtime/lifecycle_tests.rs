@@ -334,7 +334,7 @@ fn checkpoint_rejects_unacknowledged_node_boot_edge() {
 }
 
 #[test]
-fn lifecycle_work_transfer_preserves_owned_buffers_and_clears_checkpoint_edge() {
+fn lifecycle_work_transfer_preserves_buffers_and_holds_checkpoint_barrier_until_ack() {
     let action = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
     let event = lifecycle_event(&action);
     let node = NodeId {
@@ -366,13 +366,32 @@ fn lifecycle_work_transfer_preserves_owned_buffers_and_clears_checkpoint_edge() 
     let decision_storage = runtime.pending_node_lifecycle.as_ptr();
     let boot_storage = runtime.pending_node_boot.as_ptr();
 
-    let (decisions, boot_requests) = runtime.take_node_lifecycle_work();
+    let work = runtime
+        .take_node_lifecycle_work()
+        .unwrap_or_else(|error| panic!("lifecycle work should transfer: {error}"));
 
-    assert_eq!(decisions.as_ptr(), decision_storage);
-    assert_eq!(boot_requests.as_ptr(), boot_storage);
+    assert_eq!(work.decisions().as_ptr(), decision_storage);
+    assert_eq!(work.boot_requests().as_ptr(), boot_storage);
     assert!(runtime.node_lifecycle_decisions().is_empty());
     assert!(runtime.node_boot_requests().is_empty());
+    assert!(matches!(
+        runtime.checkpoint(&mut nodes),
+        Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork)
+    ));
+    assert!(matches!(
+        runtime.take_node_lifecycle_work(),
+        Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork)
+    ));
+    runtime
+        .acknowledge_node_lifecycle_work(work)
+        .unwrap_or_else(|error| panic!("owned lifecycle work should acknowledge: {error}"));
     runtime.checkpoint(&mut nodes).unwrap_or_else(|error| {
-        panic!("transferred lifecycle ownership should checkpoint: {error}")
+        panic!("acknowledged lifecycle ownership should checkpoint: {error}")
     });
+    let empty = runtime
+        .take_node_lifecycle_work()
+        .unwrap_or_else(|error| panic!("empty lifecycle work should transfer: {error}"));
+    runtime
+        .acknowledge_node_lifecycle_work(empty)
+        .unwrap_or_else(|error| panic!("empty lifecycle work should acknowledge: {error}"));
 }
