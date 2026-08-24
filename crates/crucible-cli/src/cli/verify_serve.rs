@@ -9,6 +9,10 @@ use std::os::unix::net::UnixStream;
 mod artifact_capture;
 pub(super) use artifact_capture::*;
 
+#[path = "verify_serve/packaged_executor.rs"]
+mod packaged_executor;
+use packaged_executor::prepare_cli_packaged_executor;
+
 use super::cli_campaign_import::apply_campaign_import_manifests;
 
 pub(super) async fn run_control_client_verify_workflow_async<C>(
@@ -954,7 +958,17 @@ where
         ),
         _ => None,
     };
-    let campaign_service = open_local_campaign_service(args)?;
+    let mut production_config = if args.production_qemu {
+        let backend = require_selftest_qemu_backend(cli)?;
+        let mut config = production_qemu_lifecycle_config(&backend)?;
+        if let Some(interval) = args.qemu_rendezvous_icount {
+            config = config.with_rendezvous_interval_icount(interval);
+        }
+        Some(config.with_debug_gdbstubs_for_all_nodes("127.0.0.1:0"))
+    } else {
+        None
+    };
+    let campaign_service = open_local_campaign_service(args, production_config.as_ref())?;
     let listener = tokio::net::TcpListener::bind(&args.listen)
         .await
         .map_err(|error| serve_error(format!("serve bind error: {error}")))?;
@@ -986,12 +1000,9 @@ where
         LifecycleServerMode::read_write()
     };
     if args.production_qemu {
-        let backend = require_selftest_qemu_backend(cli)?;
-        let mut config = production_qemu_lifecycle_config(&backend)?;
-        if let Some(interval) = args.qemu_rendezvous_icount {
-            config = config.with_rendezvous_interval_icount(interval);
-        }
-        let config = config.with_debug_gdbstubs_for_all_nodes("127.0.0.1:0");
+        let config = production_config
+            .take()
+            .ok_or_else(|| serve_error("production QEMU configuration disappeared"))?;
         let resume_config = config.clone();
         let mut control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
             "crucible-cli-qemu-daemon",
@@ -1061,6 +1072,7 @@ impl PreparedLocalCampaignService {
 
 pub(super) fn open_local_campaign_service(
     args: &ServeArgs,
+    production_qemu: Option<&crucible_api::ProductionVmLifecycleConfig>,
 ) -> Result<Option<PreparedLocalCampaignService>, CliError> {
     let (Some(socket), Some(state), Some(policy)) = (
         args.campaign_socket.as_ref(),
@@ -1099,11 +1111,24 @@ pub(super) fn open_local_campaign_service(
         .prepare()
         .map_err(|error| serve_error(format!("campaign service bootstrap error: {error}")))?;
     apply_campaign_import_manifests(&prepared, &args.campaign_import_manifest)?;
-    let runtime = match (
+    let (runtime, packaged_executor) = match (
         args.campaign_runtime.as_deref(),
         args.campaign_executor_socket.as_deref(),
     ) {
         (Some(campaign), Some(executor_socket)) => {
+            let packaged_executor = match args.campaign_packaged_executor.as_deref() {
+                Some(deployment) => Some(prepare_cli_packaged_executor(
+                    &prepared,
+                    args,
+                    campaign,
+                    executor_socket,
+                    deployment,
+                    production_qemu.ok_or_else(|| {
+                        serve_error("--campaign-packaged-executor requires --production-qemu")
+                    })?,
+                )?),
+                None => None,
+            };
             let stream = connect_campaign_executor(executor_socket)?;
             let planner = crucible_daemon::CanonicalPlannerProcessConfig::for_current_executable(
                 Duration::from_secs(30),
@@ -1121,24 +1146,29 @@ pub(super) fn open_local_campaign_service(
                 .map_err(|error| {
                     serve_error(format!("campaign runtime configuration error: {error}"))
                 })?;
-            Some(
-                prepared
-                    .prepare_runtime(stream, &runtime_config)
-                    .map_err(|error| {
-                        serve_error(format!("campaign runtime attachment error: {error}"))
-                    })?,
-            )
+            let runtime = Some(prepared.prepare_runtime(stream, &runtime_config).map_err(
+                |error| serve_error(format!("campaign runtime attachment error: {error}")),
+            )?);
+            (runtime, packaged_executor)
         }
-        (None, None) => None,
+        (None, None) => (None, None),
         _ => {
             return Err(usage_error(
                 "--campaign-runtime and --campaign-executor-socket must be provided together",
             ));
         }
     };
-    let service = match runtime {
-        Some(runtime) => prepared.bind_with_runtime(runtime),
-        None => prepared.bind(),
+    let service = match (runtime, packaged_executor) {
+        (Some(runtime), Some(executor)) => {
+            prepared.bind_with_runtime_and_executor(runtime, executor)
+        }
+        (Some(runtime), None) => prepared.bind_with_runtime(runtime),
+        (None, None) => prepared.bind(),
+        (None, Some(_)) => {
+            return Err(serve_error(
+                "packaged campaign executor has no attached runtime",
+            ));
+        }
     }
     .map_err(|error| serve_error(format!("campaign service bind error: {error}")))?;
     Ok(Some(PreparedLocalCampaignService {
@@ -1427,6 +1457,11 @@ pub(super) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError
     if args.campaign_runtime.is_some() != args.campaign_executor_socket.is_some() {
         return Err(usage_error(
             "--campaign-runtime and --campaign-executor-socket must be provided together",
+        ));
+    }
+    if args.campaign_packaged_executor.is_some() && !args.production_qemu {
+        return Err(usage_error(
+            "--campaign-packaged-executor requires --production-qemu",
         ));
     }
     if let Some(campaign) = args.campaign_runtime.as_deref() {

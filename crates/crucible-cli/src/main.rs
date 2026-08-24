@@ -1370,6 +1370,14 @@ struct ServeArgs {
         conflicts_with = "read_only"
     )]
     campaign_executor_socket: Option<PathBuf>,
+    /// Start the packaged local QEMU executor from this strict deployment file.
+    #[arg(
+        long,
+        value_name = "path",
+        requires_all = ["campaign_runtime", "production_qemu"],
+        conflicts_with = "read_only"
+    )]
+    campaign_packaged_executor: Option<PathBuf>,
     /// Set the managed campaign socket's Unix permission bits in octal.
     #[arg(
         long,

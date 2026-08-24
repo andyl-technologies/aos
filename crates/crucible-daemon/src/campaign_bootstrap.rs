@@ -25,12 +25,15 @@ use crucible_cas::content_store::{DirectoryBlobBackend, DirectoryRefBackend};
 use rustix::fs::{FlockOperation, Mode, OFlags, flock};
 
 use crate::{
-    AttachedCanonicalCampaignRuntime, CampaignLoopbackEndpointConfig,
+    AttachedCanonicalCampaignRuntime, AttachedPackagedQemuExecutor, CampaignLoopbackEndpointConfig,
     CampaignLoopbackEndpointError, CampaignLoopbackListenerError, CampaignLoopbackServer,
     CampaignLoopbackServerConfig, CampaignLoopbackServerReport, CampaignLoopbackServerShutdown,
     CanonicalCampaignRuntimeConfig, CanonicalCampaignRuntimeError, CrucibleArtifactError,
-    CrucibleCampaignArtifactStore, MAX_CAMPAIGN_POLICY_BYTES, PreparedCanonicalCampaignRuntime,
-    UnixPeerCampaignPolicy, UnixPeerCampaignPolicyLoadError, prepare_canonical_campaign_runtime,
+    CrucibleCampaignArtifactStore, MAX_CAMPAIGN_POLICY_BYTES, PackagedQemuExecutor,
+    PackagedQemuExecutorConfig, PackagedQemuExecutorError, PackagedQemuExecutorJoinError,
+    PackagedQemuExecutorStartError, PreparedCanonicalCampaignRuntime, UnixPeerCampaignPolicy,
+    UnixPeerCampaignPolicyLoadError, prepare_canonical_campaign_runtime,
+    prepare_packaged_qemu_executor,
 };
 
 const STATE_LOCK_FILE: &str = ".crucible-campaign-repository.lock";
@@ -281,6 +284,28 @@ pub struct PreparedCampaignLocalService {
 }
 
 impl PreparedCampaignLocalService {
+    /// Prepares one packaged QEMU executor against this exact repository.
+    ///
+    /// No executor thread is created. The returned owner binds its managed
+    /// endpoint and can be started before [`Self::prepare_runtime`] connects to
+    /// it, while retaining exact repository-incarnation identity for the final
+    /// service composition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError::RuntimeReadOnly`] in read-only
+    /// mode or [`CampaignLocalServiceError::PackagedExecutor`] when durable,
+    /// host-resource, worker, or endpoint preparation fails.
+    pub fn prepare_packaged_executor(
+        &self,
+        config: PackagedQemuExecutorConfig,
+    ) -> Result<PackagedQemuExecutor, CampaignLocalServiceError> {
+        if self.mode == CampaignLocalServiceMode::ReadOnly {
+            return Err(CampaignLocalServiceError::RuntimeReadOnly);
+        }
+        prepare_packaged_qemu_executor(Arc::clone(&self.repository), config).map_err(Into::into)
+    }
+
     /// Verifies and imports one exact Crucible scenario and configuration.
     ///
     /// # Errors
@@ -359,7 +384,7 @@ impl PreparedCampaignLocalService {
     /// Returns [`CampaignLocalServiceError`] when endpoint acquisition or
     /// listener construction fails.
     pub fn bind(self) -> Result<CampaignLocalService, CampaignLocalServiceError> {
-        self.bind_inner(None)
+        self.bind_inner(None, None)
     }
 
     /// Binds the managed endpoint and starts one prepared canonical runtime.
@@ -381,12 +406,35 @@ impl PreparedCampaignLocalService {
         if !runtime.uses_repository(&self.repository) {
             return Err(CampaignLocalServiceError::RuntimeRepositoryMismatch);
         }
-        self.bind_inner(Some(runtime))
+        self.bind_inner(Some(runtime), None)
+    }
+
+    /// Binds the endpoint with one runtime and its packaged executor owner.
+    ///
+    /// Both prepared values must name this exact repository incarnation.
+    /// Runtime or executor termination closes the CampaignService listener;
+    /// listener shutdown then joins both owners before repository release.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError`] for repository mismatch, endpoint
+    /// acquisition failure, or fixed runtime startup failure.
+    pub fn bind_with_runtime_and_executor(
+        self,
+        runtime: PreparedCanonicalCampaignRuntime,
+        executor: AttachedPackagedQemuExecutor,
+    ) -> Result<CampaignLocalService, CampaignLocalServiceError> {
+        if !runtime.uses_repository(&self.repository) || !executor.uses_repository(&self.repository)
+        {
+            return Err(CampaignLocalServiceError::RuntimeRepositoryMismatch);
+        }
+        self.bind_inner(Some(runtime), Some(executor))
     }
 
     fn bind_inner(
         self,
         runtime: Option<PreparedCanonicalCampaignRuntime>,
+        executor: Option<AttachedPackagedQemuExecutor>,
     ) -> Result<CampaignLocalService, CampaignLocalServiceError> {
         let Self {
             endpoint,
@@ -411,6 +459,7 @@ impl PreparedCampaignLocalService {
         Ok(CampaignLocalService {
             server,
             runtime,
+            executor,
             _state: state,
         })
     }
@@ -428,6 +477,7 @@ impl PreparedCampaignLocalService {
 pub struct CampaignLocalService {
     server: CampaignLoopbackServer<UnixPeerCampaignPolicy, CampaignLocalAuthorizer>,
     runtime: Option<AttachedCanonicalCampaignRuntime>,
+    executor: Option<AttachedPackagedQemuExecutor>,
     _state: CampaignStateOwner,
 }
 
@@ -470,9 +520,10 @@ impl CampaignLocalService {
         let Self {
             server,
             runtime,
+            executor,
             _state: state,
         } = self;
-        let monitor = runtime
+        let runtime_monitor = runtime
             .as_ref()
             .map(|runtime| {
                 let completion = runtime.completion_handle();
@@ -485,16 +536,56 @@ impl CampaignLocalService {
                     })
             })
             .transpose();
-        let monitor = match monitor {
+        let runtime_monitor = match runtime_monitor {
             Ok(monitor) => monitor,
             Err(source) => {
                 let runtime_result = runtime
                     .map(AttachedCanonicalCampaignRuntime::shutdown_and_join)
                     .transpose()
                     .map_err(CampaignLocalServiceError::Runtime);
+                let executor_result = executor
+                    .map(AttachedPackagedQemuExecutor::shutdown_and_join)
+                    .transpose()
+                    .map_err(CampaignLocalServiceError::PackagedExecutorJoin);
                 drop(state);
+                executor_result?;
                 runtime_result?;
                 return Err(CampaignLocalServiceError::RuntimeMonitorSpawn { source });
+            }
+        };
+        let executor_monitor = executor
+            .as_ref()
+            .map(|executor| {
+                let completion = executor.completion_handle();
+                let shutdown = server.shutdown_handle();
+                thread::Builder::new()
+                    .name(String::from("crucible-packaged-executor-monitor"))
+                    .spawn(move || {
+                        completion.wait();
+                        shutdown.shutdown();
+                    })
+            })
+            .transpose();
+        let executor_monitor = match executor_monitor {
+            Ok(monitor) => monitor,
+            Err(source) => {
+                let runtime_result = runtime
+                    .map(AttachedCanonicalCampaignRuntime::shutdown_and_join)
+                    .transpose()
+                    .map_err(CampaignLocalServiceError::Runtime);
+                let executor_result = executor
+                    .map(AttachedPackagedQemuExecutor::shutdown_and_join)
+                    .transpose()
+                    .map_err(CampaignLocalServiceError::PackagedExecutorJoin);
+                if let Some(monitor) = runtime_monitor {
+                    monitor
+                        .join()
+                        .map_err(|_| CampaignLocalServiceError::RuntimeMonitorPanicked)?;
+                }
+                drop(state);
+                executor_result?;
+                runtime_result?;
+                return Err(CampaignLocalServiceError::PackagedExecutorMonitorSpawn { source });
             }
         };
         let result = server.serve().map_err(CampaignLocalServiceError::Listener);
@@ -503,16 +594,27 @@ impl CampaignLocalService {
             .transpose()
             .map(|_| ())
             .map_err(CampaignLocalServiceError::Runtime);
-        if let Some(monitor) = monitor {
+        let executor_result = executor
+            .map(AttachedPackagedQemuExecutor::shutdown_and_join)
+            .transpose()
+            .map(|_| ())
+            .map_err(CampaignLocalServiceError::PackagedExecutorJoin);
+        if let Some(monitor) = runtime_monitor {
             monitor
                 .join()
                 .map_err(|_| CampaignLocalServiceError::RuntimeMonitorPanicked)?;
         }
+        if let Some(monitor) = executor_monitor {
+            monitor
+                .join()
+                .map_err(|_| CampaignLocalServiceError::PackagedExecutorMonitorPanicked)?;
+        }
         drop(state);
-        match (result, runtime_result) {
-            (_, Err(error)) => Err(error),
-            (Err(error), Ok(())) => Err(error),
-            (Ok(report), Ok(())) => Ok(report),
+        match (result, runtime_result, executor_result) {
+            (_, _, Err(error)) => Err(error),
+            (_, Err(error), Ok(())) => Err(error),
+            (Err(error), Ok(()), Ok(())) => Err(error),
+            (Ok(report), Ok(()), Ok(())) => Ok(report),
         }
     }
 }
@@ -571,6 +673,15 @@ pub enum CampaignLocalServiceError {
     /// Canonical planner/executor runtime preparation, start, or execution failed.
     #[error(transparent)]
     Runtime(#[from] CanonicalCampaignRuntimeError),
+    /// Packaged executor preparation failed before its owner thread started.
+    #[error(transparent)]
+    PackagedExecutor(#[from] PackagedQemuExecutorError),
+    /// The fixed packaged executor owner thread could not be created.
+    #[error(transparent)]
+    PackagedExecutorStart(#[from] PackagedQemuExecutorStartError),
+    /// The packaged executor listener or semantic workers failed while joined.
+    #[error(transparent)]
+    PackagedExecutorJoin(#[from] PackagedQemuExecutorJoinError),
     /// The bounded runtime monitor thread could not be created.
     #[error("campaign runtime monitor thread could not be created")]
     RuntimeMonitorSpawn {
@@ -580,6 +691,15 @@ pub enum CampaignLocalServiceError {
     /// The bounded runtime monitor thread escaped through an invariant panic.
     #[error("campaign runtime monitor thread panicked")]
     RuntimeMonitorPanicked,
+    /// The packaged-executor completion monitor could not be created.
+    #[error("packaged executor monitor thread could not be created")]
+    PackagedExecutorMonitorSpawn {
+        /// Underlying operating-system failure.
+        source: io::Error,
+    },
+    /// The packaged-executor completion monitor escaped through a panic.
+    #[error("packaged executor monitor thread panicked")]
+    PackagedExecutorMonitorPanicked,
     /// The fixed listener could not be configured or failed while serving.
     #[error(transparent)]
     Listener(#[from] CampaignLoopbackListenerError),

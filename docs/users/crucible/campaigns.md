@@ -23,10 +23,13 @@ The checked local API currently provides:
 - one packaged deterministic planner attached to one authenticated local
   executor endpoint.
 
-The daemon-side concrete QEMU worker selection and packaged local-executor
-startup are not yet operator porcelain. Today `--campaign-runtime` connects to
-an already-owned `--campaign-executor-socket`. Do not interpret the presence of
-campaign control commands as multi-host or unattended production readiness.
+The daemon can either attach `--campaign-runtime` to an independently owned
+`--campaign-executor-socket` or own a packaged local QEMU executor at that
+socket. Packaged mode composes a fixed worker pool, repository admission,
+durable assignment ledger, checkpoint store, resource owner, and loopback
+listener into the campaign service lifecycle. It advertises only the concrete
+fresh/thin-replay path; exact-resume worker selection still fails closed. Do not
+interpret this single-host composition as multi-host readiness.
 
 ## Build and validate inputs
 
@@ -88,6 +91,55 @@ The executor socket must already be owned with the required strict permissions
 and must advertise a compatibility profile and resource ceiling that admit the
 campaign lineage. Attachment fails before planner-basis publication when those
 facts disagree.
+
+To let the same daemon own that executor, add `--production-qemu` and an
+owner-only packaged-executor deployment file:
+
+```sh
+./result/bin/crucible serve \
+  --listen 127.0.0.1:9443 \
+  --trusted-unauthenticated-bind \
+  --production-qemu \
+  --campaign-socket /run/user/1000/crucible/campaign.sock \
+  --campaign-state ./campaign-state \
+  --campaign-policy ./campaign-peers.toml \
+  --campaign-component-authority ./campaign-authority.toml \
+  --campaign-runtime network-recovery \
+  --campaign-executor-socket /run/user/1000/crucible/executor.sock \
+  --campaign-packaged-executor ./campaign-executor.toml
+```
+
+The version-1 deployment file is strict TOML, must be an exact-owner regular
+file with mode `0600`, and is bounded to 64 KiB:
+
+```toml
+schema = "crucible.campaign-packaged-executor"
+version = 1
+cgroup_root = "/sys/fs/cgroup/crucible"
+run_root = "/var/lib/crucible/attempts"
+attempt_namespace = "campaign-local"
+first_project_id = 10000
+project_id_count = 4
+child_user_id = 2000
+child_group_id = 2000
+maximum_tasks = 64
+maximum_inodes = 4096
+finish_timeout_ms = 30000
+maximum_slots = 2
+maximum_vcpus = 4
+maximum_resident_bytes = 1073741824
+maximum_disk_bytes = 2147483648
+maximum_execution_quanta = 100000
+maximum_checkpoint_bytes = 1073741824
+worker_count = 2
+host_architecture = "x86_64"
+qemu_profile = "deterministic-tcg-v1"
+```
+
+The project-ID count must cover every slot, the worker count cannot exceed the
+slot ceiling, and the checkpoint ceiling cannot exceed writable-disk capacity.
+The configured lifecycle run root is partitioned into stable fixed-worker
+subdirectories so recovery state is not shared between concurrent workers.
 
 ## Create and inspect a campaign
 

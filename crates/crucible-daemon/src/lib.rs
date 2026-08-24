@@ -91,6 +91,7 @@ pub mod executor_server;
 pub mod executor_service;
 pub mod executor_supervisor;
 pub mod executor_worker;
+pub mod packaged_qemu_executor;
 #[cfg(target_os = "linux")]
 pub mod paused_checkpoint_promotion;
 pub mod planner_loopback;
@@ -194,6 +195,7 @@ pub use crucible_measurement::{
     evaluate_crucible_objectives, project_crucible_objective_values,
     verify_crucible_measurement_set,
 };
+pub use crucible_qemu::LinuxQemuAttemptHostConfig;
 pub use crucible_qemu_runner::{
     QemuAttemptExecutionRouter, QemuAttemptExecutionRouterError, QemuCrucibleAttemptSession,
     QemuCrucibleRealizationStore, QemuCrucibleSessionFactory, QemuExactThinExecutionRunner,
@@ -277,6 +279,11 @@ pub use executor_worker::{
     retry_pending_attempt_result, retry_pending_checkpoint_result, stage_prepared_attempt_result,
     stage_prepared_checkpoint_result,
 };
+pub use packaged_qemu_executor::{
+    AttachedPackagedQemuExecutor, PackagedQemuExecutor, PackagedQemuExecutorCompletion,
+    PackagedQemuExecutorConfig, PackagedQemuExecutorConfigError, PackagedQemuExecutorError,
+    PackagedQemuExecutorJoinError, PackagedQemuExecutorStartError, prepare_packaged_qemu_executor,
+};
 #[cfg(target_os = "linux")]
 pub use paused_checkpoint_promotion::{
     PausedCheckpointPromotionPreparationError, PausedCheckpointPromotionPublicationError,
@@ -317,6 +324,6 @@ pub use qemu_resource_guard::{
     LinuxQemuAttemptHostResourceFactory, LinuxQemuAttemptHostResourceOwner,
     MAX_QEMU_ATTEMPT_GENERATION_NODES, QemuAttemptCancellationSignal, QemuAttemptGenerationLease,
     QemuAttemptGenerationResourceOwner, QemuAttemptHostResourceFactory,
-    QemuAttemptHostResourceOwner,
+    QemuAttemptHostResourceOwner, SharedQemuAttemptHostResourceFactory,
 };
 pub use repository_admission::RepositoryAttemptAdmission;
