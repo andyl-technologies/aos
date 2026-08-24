@@ -752,17 +752,7 @@ impl ProductionVmLifecycleLoop {
             .backend_mut()
             .prevalidate_terminal_lifecycle_snapshots(
                 &terminal_nodes,
-                lifecycle_precommit
-                    .checkpoints
-                    .iter()
-                    .find_map(|(action, checkpoint)| {
-                        (*action == terminal[0].action).then_some(checkpoint)
-                    })
-                    .ok_or_else(|| SchedulerError::BoundaryViolation {
-                        message: String::from(
-                            "terminal lifecycle action has no precommit checkpoint",
-                        ),
-                    })?,
+                &lifecycle_precommit.checkpoint,
             )?;
         let mut prepared = Vec::new();
         prepared
@@ -788,24 +778,25 @@ impl ProductionVmLifecycleLoop {
                     });
                 }
             };
-            let checkpoint_index = lifecycle_precommit
-                .checkpoints
+            if !lifecycle_precommit
+                .actions
                 .iter()
-                .position(|(action, _checkpoint)| *action == decision.action)
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                .any(|action| *action == decision.action)
+            {
+                return Err(SchedulerError::BoundaryViolation {
                     message: format!(
                         "terminal lifecycle action for `{}` lost its precommit checkpoint",
                         decision.node.name
                     ),
-                })?;
-            let checkpoint = lifecycle_precommit
-                .checkpoints
-                .swap_remove(checkpoint_index)
-                .1;
+                });
+            }
             let snapshot = self
                 .inner
                 .backend_mut()
-                .capture_terminal_lifecycle_snapshot(&decision.node, checkpoint)?;
+                .capture_terminal_lifecycle_snapshot_shared(
+                    &decision.node,
+                    Arc::clone(&lifecycle_precommit.checkpoint),
+                )?;
             let current_directory =
                 self.node_run_directories
                     .get(&decision.node)

@@ -6,6 +6,7 @@ use crate::{
     QemuNodeContinuationCheckpoint, QemuReplayOracleValidation,
 };
 use crucible::{Checkpoint, ContentHash};
+use std::sync::Arc;
 
 use crate::checkpoint::bounded_cbor::{BoundedCborError, HARD_FAT_CHECKPOINT_BYTES, admit_input};
 
@@ -101,7 +102,7 @@ impl QemuVmSnapshot {
         )
         .map_err(map_node_error)?;
         let snapshot = Self {
-            checkpoint,
+            checkpoint: Arc::new(checkpoint),
             host_io,
             node,
             replay_oracle_validation,

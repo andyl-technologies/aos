@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::{QemuNodeLifecycleDecision, QemuNodeLifecycleIntent};
+use std::sync::Arc;
 
 impl QemuNodeSet {
     /// Atomically replaces or removes a validated set of node generations.
@@ -180,10 +181,10 @@ impl QemuNodeSet {
                     }
                 }
                 None => {
-                    let current = self.nodes.remove(&node);
+                    let current = self.nodes.remove_entry(&node);
                     debug_assert!(current.is_some());
                     if let Some(current) = current {
-                        plan.retired.push((node.clone(), current));
+                        plan.retired.push(current);
                     }
                     self.permanently_closed.push(node);
                 }
@@ -235,8 +236,22 @@ impl QemuNodeSet {
         node: &NodeId,
         checkpoint: crucible::Checkpoint,
     ) -> Result<QemuVmSnapshot, BackendError> {
+        self.capture_terminal_lifecycle_snapshot_shared(node, Arc::new(checkpoint))
+    }
+
+    /// Captures a terminal transition while sharing immutable scheduler state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] under the same conditions as
+    /// [`Self::capture_terminal_lifecycle_snapshot`].
+    pub fn capture_terminal_lifecycle_snapshot_shared(
+        &mut self,
+        node: &NodeId,
+        checkpoint: Arc<crucible::Checkpoint>,
+    ) -> Result<QemuVmSnapshot, BackendError> {
         self.node_mut(node)?
-            .capture_terminal_lifecycle_snapshot(node, checkpoint)
+            .capture_terminal_lifecycle_snapshot_shared(node, checkpoint)
             .map_err(BackendError::from)
     }
 
