@@ -287,6 +287,7 @@
 
           cat > "$TMPDIR/linker-warning-plus-unrelated-failure.log" <<'LOG'
           link-wrapper: warning: undefined reference to `qemu_plugin_expected'
+          collect2: error: ld returned 1 exit status
           ninja: build stopped: interrupted by user
           LOG
           extract_drop_one_build_evidence \
