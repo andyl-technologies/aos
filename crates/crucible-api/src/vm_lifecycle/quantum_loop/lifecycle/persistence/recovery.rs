@@ -302,6 +302,19 @@ pub(in crate::vm_lifecycle) fn validate_recovered_lifecycle_journal(
             journal.phase
         ));
     }
+    if matches!(journal.phase, ProductionLifecycleJournalPhase::Idle)
+        && (journal.transaction != 0 || !journal.completed_exits.is_empty())
+    {
+        return Err(String::from(
+            "idle lifecycle journal cannot retain transaction history",
+        ));
+    }
+    if !matches!(journal.phase, ProductionLifecycleJournalPhase::Idle) && journal.transaction == 0 {
+        return Err(format!(
+            "lifecycle journal phase {:?} requires a nonzero transaction",
+            journal.phase
+        ));
+    }
     if matches!(
         journal.phase,
         ProductionLifecycleJournalPhase::Intent
@@ -346,14 +359,20 @@ pub(in crate::vm_lifecycle) fn validate_recovered_lifecycle_journal(
             ));
         }
     }
-    for exit in &journal.completed_exits {
+    for (index, exit) in journal.completed_exits.iter().enumerate() {
         if exit.node.is_empty()
+            || exit.transaction == 0
+            || exit.transaction > journal.transaction
             || exit.generation == 0
-            || !valid_lifecycle_transition(&exit.transition)
+            || !valid_completed_exit_transition(&exit.transition)
             || !valid_lifecycle_hash(&exit.action_sha256)
             || !valid_lifecycle_hash(&exit.evidence_sha256)
+            || expected_lifecycle_exit_code(&exit.transition) != Some(exit.expected_exit_code)
             || exit.expected_exit_code != exit.observed_exit_code
             || !valid_process_identity(&exit.process)
+            || journal.completed_exits[..index]
+                .iter()
+                .any(|prior| prior.transaction == exit.transaction && prior.node == exit.node)
         {
             return Err(format!(
                 "completed lifecycle exit for {} has invalid canonical fields",
@@ -362,6 +381,19 @@ pub(in crate::vm_lifecycle) fn validate_recovered_lifecycle_journal(
         }
     }
     Ok(())
+}
+
+fn valid_completed_exit_transition(value: &str) -> bool {
+    matches!(value, "Crash" | "PowerOff" | "PermanentFailure")
+}
+
+fn expected_lifecycle_exit_code(value: &str) -> Option<i32> {
+    match value {
+        "Crash" => Some(70),
+        "PowerOff" => Some(71),
+        "PermanentFailure" => Some(72),
+        _ => None,
+    }
 }
 
 fn journal_process_ownership_is_exact(

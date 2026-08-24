@@ -37,6 +37,8 @@ pub(in crate::vm_lifecycle::quantum_loop) struct PreparedLifecyclePrecommit {
     pub(in crate::vm_lifecycle::quantum_loop) process_owners:
         Vec<Option<PreparedLifecycleProcessOwner>>,
     pub(in crate::vm_lifecycle::quantum_loop) terminal_decisions: Vec<PreparedLifecycleTerminal>,
+    pub(in crate::vm_lifecycle::quantum_loop) reserved_event_records: u64,
+    pub(in crate::vm_lifecycle::quantum_loop) reserved_event_log_bytes: u64,
 }
 
 pub(in crate::vm_lifecycle::quantum_loop) fn lifecycle_resource_error(
