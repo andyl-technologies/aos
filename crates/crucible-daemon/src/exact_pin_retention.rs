@@ -16,6 +16,7 @@
 //! a second cooperating daemon, while [`ExactPinRetentionFence`] excludes
 //! mutation in the owning process during GC plan/apply inventory.
 
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -24,7 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crucible::{Configuration, World};
 use crucible_campaign::{
     CampaignCodecError, CampaignFactId, CampaignHash, CampaignName, CampaignRepository,
-    CampaignRepositoryError, ConfigurationId, ExactCheckpointId, PinRetention,
+    CampaignRepositoryError, ConfigurationId, ExactCheckpointId, FindingExactPins, PinRetention,
 };
 use crucible_qemu::{
     QemuExactSnapshotPolicy, QemuFailedLaunchChildSource, QemuGuardedNodeRealizationLauncher,
@@ -47,6 +48,8 @@ pub const EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA: &str =
 pub const EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA_VERSION: u32 = 1;
 /// Maximum durable selection records in one single-host owner journal.
 pub const MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS: u64 = 64_000_000;
+/// Maximum authenticated exact checkpoints considered for one finding.
+pub const MAX_FINDING_EXACT_PIN_CANDIDATES: usize = 4_096;
 
 const SELECTION_MAGIC: &[u8] = b"crucible.executor.exact-pin-materialization-selection.v1\0";
 const SELECTION_KEY_DOMAIN: &str = "crucible.executor.exact-pin-materialization-selection-key.v1";
@@ -163,6 +166,135 @@ impl ExactPinMaterializationSelection {
     #[must_use]
     pub const fn checkpoint(&self) -> ExactCheckpointId {
         self.checkpoint
+    }
+}
+
+/// Canonical event boundaries used to retain the nearest finding checkpoints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FindingExactPinBoundaries {
+    failure_events: u64,
+    measurement_boundary_events: Option<u64>,
+}
+
+impl FindingExactPinBoundaries {
+    /// Builds ordered failure and successful-measurement boundaries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExactPinRetentionError::InvalidFindingBoundaries`] when the
+    /// successful measurement boundary follows the causal failure boundary.
+    pub fn new(
+        failure_events: u64,
+        measurement_boundary_events: Option<u64>,
+    ) -> Result<Self, ExactPinRetentionError> {
+        if measurement_boundary_events.is_some_and(|events| events > failure_events) {
+            return Err(ExactPinRetentionError::InvalidFindingBoundaries);
+        }
+        Ok(Self {
+            failure_events,
+            measurement_boundary_events,
+        })
+    }
+
+    /// Returns the first causal failure event index.
+    #[must_use]
+    pub const fn failure_events(self) -> u64 {
+        self.failure_events
+    }
+
+    /// Returns the last successful measurement boundary, when recorded.
+    #[must_use]
+    pub const fn measurement_boundary_events(self) -> Option<u64> {
+        self.measurement_boundary_events
+    }
+}
+
+/// Selects the nearest authenticated exact checkpoints for one finding.
+///
+/// Every candidate must be a complete scheduler-bearing checkpoint for the
+/// exact finding configuration. Selection is deterministic: the pre-failure
+/// and measurement roles choose the greatest eligible event count, the
+/// post-failure role chooses the least, and exact-count ties choose the
+/// content-address-least checkpoint.
+///
+/// # Errors
+///
+/// Returns [`ExactPinRetentionError`] when candidate count exceeds 4,096, a
+/// candidate is missing, corrupt, belongs to another configuration, lacks the
+/// scheduler continuation needed for event ordering, or the result cannot fit
+/// the campaign finding bound.
+pub fn select_finding_exact_pins(
+    checkpoints: &ExactCheckpointStore,
+    configuration: ConfigurationId,
+    boundaries: FindingExactPinBoundaries,
+    candidates: &BTreeSet<ExactCheckpointId>,
+) -> Result<FindingExactPins, ExactPinRetentionError> {
+    if candidates.len() > MAX_FINDING_EXACT_PIN_CANDIDATES {
+        return Err(ExactPinRetentionError::FindingCandidateLimit);
+    }
+
+    let mut pre_failure = None;
+    let mut measurement_boundary = None;
+    let mut post_failure = None;
+    for candidate in candidates {
+        let loaded = load_checkpoint_for_configuration(checkpoints, *candidate, configuration)?;
+        let scheduler =
+            loaded
+                .scheduler()
+                .ok_or(ExactPinRetentionError::CheckpointHasNoScheduler {
+                    checkpoint: *candidate,
+                })?;
+        let events = scheduler.event_log_offset().events;
+
+        if events < boundaries.failure_events {
+            select_greatest(&mut pre_failure, events, *candidate);
+        }
+        if let Some(boundary) = boundaries.measurement_boundary_events
+            && events <= boundary
+        {
+            select_greatest(&mut measurement_boundary, events, *candidate);
+        }
+        if events >= boundaries.failure_events {
+            select_least(&mut post_failure, events, *candidate);
+        }
+    }
+
+    FindingExactPins::new(
+        pre_failure
+            .map(|(_, checkpoint)| BTreeSet::from([checkpoint]))
+            .unwrap_or_default(),
+        measurement_boundary
+            .map(|(_, checkpoint)| BTreeSet::from([checkpoint]))
+            .unwrap_or_default(),
+        post_failure
+            .map(|(_, checkpoint)| BTreeSet::from([checkpoint]))
+            .unwrap_or_default(),
+        BTreeSet::new(),
+    )
+    .map_err(Into::into)
+}
+
+fn select_greatest(
+    selected: &mut Option<(u64, ExactCheckpointId)>,
+    events: u64,
+    checkpoint: ExactCheckpointId,
+) {
+    if selected.is_none_or(|(current_events, current_checkpoint)| {
+        events > current_events || (events == current_events && checkpoint < current_checkpoint)
+    }) {
+        *selected = Some((events, checkpoint));
+    }
+}
+
+fn select_least(
+    selected: &mut Option<(u64, ExactCheckpointId)>,
+    events: u64,
+    checkpoint: ExactCheckpointId,
+) {
+    if selected.is_none_or(|(current_events, current_checkpoint)| {
+        events < current_events || (events == current_events && checkpoint < current_checkpoint)
+    }) {
+        *selected = Some((events, checkpoint));
     }
 }
 
@@ -654,6 +786,12 @@ impl ExactPinRetentionFence for DirectoryExactPinRetentionFence<'_> {
 /// Failure to authenticate, persist, or inventory exact-pin materialization.
 #[derive(Debug, Error)]
 pub enum ExactPinRetentionError {
+    /// Finding measurement and failure event boundaries are inconsistent.
+    #[error("finding measurement boundary follows its failure boundary")]
+    InvalidFindingBoundaries,
+    /// Too many exact checkpoints were offered to one finding selection pass.
+    #[error("finding exact-checkpoint candidate limit exceeded")]
+    FindingCandidateLimit,
     /// The current semantic projection does not contain the requested exact pin.
     #[error("campaign {campaign:?} configuration {configuration} is not currently exact-pinned")]
     PinNotExact {
@@ -677,6 +815,12 @@ pub enum ExactPinRetentionError {
         expected: ConfigurationId,
         /// Configuration authenticated from checkpoint metadata.
         actual: ConfigurationId,
+    },
+    /// A legacy exact root lacks the scheduler position required for selection.
+    #[error("exact checkpoint {checkpoint} has no scheduler continuation")]
+    CheckpointHasNoScheduler {
+        /// Exact root that cannot be ordered at an event boundary.
+        checkpoint: ExactCheckpointId,
     },
     /// A durable materialization selection names an earlier exact-pin fact.
     #[error("exact-pin materialization selection is stale: recorded {recorded}, current {current}")]

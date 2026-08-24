@@ -979,8 +979,9 @@ impl CampaignRepository {
         &self,
         value: &ReproductionArtifact,
     ) -> Result<ContentId, CampaignRepositoryError> {
-        self.put_envelope(ObjectEnvelope::for_record(
+        self.put_envelope(ObjectEnvelope::for_record_versioned(
             crate::CampaignRecordKind::ReproductionArtifact,
+            value.schema_version(),
             crate::object::content_children(value.content_children())?,
             value.canonical_bytes(),
         )?)
@@ -990,8 +991,9 @@ impl CampaignRepository {
         &self,
         value: &Finding,
     ) -> Result<ContentId, CampaignRepositoryError> {
-        self.put_envelope(ObjectEnvelope::for_record(
+        self.put_envelope(ObjectEnvelope::for_record_versioned(
             crate::CampaignRecordKind::Finding,
+            value.schema_version(),
             crate::object::content_children(value.content_children())?,
             value.canonical_bytes(),
         )?)
@@ -1224,6 +1226,14 @@ impl CampaignRepository {
                 || minimized.scenario() != observation_child.scenario()
             {
                 return Err(integrity("finding-minimized-reproduction-basis-mismatch"));
+            }
+            if finding.schema_version() >= 2 {
+                let minimization = minimized
+                    .minimization()
+                    .ok_or_else(|| integrity("finding-minimized-reproduction-has-no-trace"))?;
+                if minimization.original() != finding.reproduction() {
+                    return Err(integrity("finding-minimization-original-mismatch"));
+                }
             }
         }
         for pin in finding.exact_pins() {

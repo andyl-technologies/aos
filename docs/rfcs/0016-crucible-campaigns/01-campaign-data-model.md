@@ -87,12 +87,22 @@ validation is not limited to the campaign-creation path.
 Finding reproduction uses the same exact-artifact rule. A schema-v1
 `ReproductionArtifact` binds semantic and exact scenario/configuration
 identities, a stable failure fingerprint, and verifier-checked self-contained
-execution-model bytes. A schema-v1 `Finding` binds its normalized signature,
-representative and occurrence observations, original and optional minimized
-reproductions, the authenticated first-seen parent snapshot, and optional exact
-checkpoint accelerators. Both are `ObjectKind::Finding` records with distinct
-registered schemas; a broad finding content ID is not authoritative until its
-envelope schema and complete child table are authenticated.
+execution-model bytes. Schema v2 is used only for a minimized reproduction and
+additionally retains its original schema-v1 reproduction, versioned exact
+minimization policy, dense bounded candidate history, and final replayed state.
+A schema-v1 `Finding` binds its normalized signature, representative and
+occurrence observations, original and optional legacy minimized reproductions,
+the authenticated first-seen parent snapshot, and optional untyped exact
+checkpoint accelerators. Schema v2 replaces that untyped accelerator set with
+bounded pre-failure, last-successful-measurement, post-failure, and additional
+role sets and requires every minimized reproduction to carry schema-v2
+minimization evidence. A schema-v1 Finding references only schema-v1
+reproductions; a schema-v2 Finding retains a schema-v1 original and, when
+present, a schema-v2 minimized reproduction whose trace also names that v1
+original. Both record families preserve schema-v1 body/envelope
+identity on legacy reads. They remain `ObjectKind::Finding` records with
+distinct registered schemas; a broad finding content ID is not authoritative
+until its envelope schema and complete child table are authenticated.
 
 Campaign creation inserts the exact genesis configuration artifact into the
 canonical graph and corpus keys, publishes any candidate-generator closure,

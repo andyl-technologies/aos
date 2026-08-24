@@ -224,7 +224,9 @@ pub use exact_pin_retention::{
     EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA_VERSION, ExactPinMaterializationSelection,
     ExactPinReplayPromotion, ExactPinReplayTarget, ExactPinReplayValidator, ExactPinRetentionAdmin,
     ExactPinRetentionError, ExactPinRetentionFence, ExactPinSelectionClearDisposition,
-    ExactPinSelectionDisposition, MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS,
+    ExactPinSelectionDisposition, FindingExactPinBoundaries,
+    MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS, MAX_FINDING_EXACT_PIN_CANDIDATES,
+    select_finding_exact_pins,
 };
 pub use executor_capability::LocalExecutorCapabilityService;
 pub use executor_loopback::{

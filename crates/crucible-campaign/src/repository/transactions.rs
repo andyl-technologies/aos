@@ -2707,6 +2707,83 @@ impl CampaignRepository {
         ReproductionArtifactId::from_content_id(content).map_err(Into::into)
     }
 
+    /// Publishes a minimized reproduction with verifier-retained history.
+    ///
+    /// The execution-model adapter must have replayed the original, every
+    /// candidate, and the final minimized payload before calling this method.
+    /// This boundary authenticates the original reproduction and exact artifact
+    /// basis before its first write.
+    ///
+    /// # Errors
+    ///
+    /// Returns a canonical, integrity, or store error when the trace is
+    /// inconsistent, its original or artifact basis is unavailable, or the
+    /// resulting record cannot be placed and authenticated.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_minimized_reproduction_artifact(
+        &self,
+        scenario: ScenarioDefId,
+        scenario_artifact: ScenarioArtifactId,
+        configuration: ConfigurationId,
+        configuration_artifact: ConfigurationArtifactId,
+        finding_fingerprint: CampaignHash,
+        payload_schema: u32,
+        bytes: Vec<u8>,
+        minimization: FindingMinimizationEvidence,
+    ) -> Result<ReproductionArtifactId, CampaignRepositoryError> {
+        let artifact = ReproductionArtifact::new_minimized(
+            scenario,
+            scenario_artifact,
+            configuration,
+            configuration_artifact,
+            finding_fingerprint,
+            payload_schema,
+            bytes,
+            minimization,
+        )?;
+        let original = self.read_reproduction_artifact(
+            artifact
+                .minimization()
+                .ok_or_else(|| integrity("finding-minimization-trace-missing"))?
+                .original()
+                .content_id(),
+        )?;
+        let stored_scenario = self.read_scenario_artifact(scenario_artifact.content_id())?;
+        let stored_configuration =
+            self.read_configuration_artifact(configuration_artifact.content_id())?;
+        let minimization = artifact
+            .minimization()
+            .ok_or_else(|| integrity("finding-minimization-trace-missing"))?;
+        let accepted_candidate = minimization
+            .attempts()
+            .iter()
+            .any(|attempt| attempt.accepted());
+        if original.minimization().is_some()
+            || original.finding_fingerprint() != finding_fingerprint
+            || original.scenario() != scenario
+            || stored_scenario.scenario() != scenario
+            || stored_configuration.scenario() != scenario
+            || stored_configuration.scenario_artifact() != scenario_artifact
+            || stored_configuration.configuration() != configuration
+            || !accepted_candidate
+                && (artifact.configuration() != original.configuration()
+                    || artifact.configuration_artifact() != original.configuration_artifact()
+                    || artifact.payload_schema() != original.payload_schema()
+                    || artifact.payload() != original.payload())
+        {
+            return Err(integrity("finding-minimization-artifact-basis-mismatch"));
+        }
+
+        self.verify_campaign_closures_anchored_cached(
+            artifact.content_children().into_iter().map(|(_, id)| id),
+            &BTreeSet::new(),
+            &mut ChoiceValidationCache::default(),
+        )?;
+        let content = self.put_reproduction_artifact(&artifact)?;
+        self.verify_campaign_closure(content)?;
+        ReproductionArtifactId::from_content_id(content).map_err(Into::into)
+    }
+
     /// Publishes an exact choice domain.
     ///
     /// # Errors

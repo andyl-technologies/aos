@@ -585,12 +585,14 @@ content_object_id!(
 content_object_id!(
     FindingId,
     ObjectKind::Finding,
+    [1, 2],
     "crucible.campaign.finding",
     "Identifies one canonical campaign finding."
 );
 content_object_id!(
     ReproductionArtifactId,
     ObjectKind::Finding,
+    [1, 2],
     "crucible.campaign.reproduction-artifact",
     "Identifies one verifier-backed self-contained finding reproduction."
 );

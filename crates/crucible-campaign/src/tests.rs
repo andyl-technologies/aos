@@ -2734,8 +2734,9 @@ fn finding_and_reproduction_records_round_trip_with_exact_children() {
     );
     assert_eq!(signature.cluster_key(), finding.signature().cluster_key());
 
-    let envelope = ObjectEnvelope::for_record(
+    let envelope = ObjectEnvelope::for_record_versioned(
         CampaignRecordKind::Finding,
+        finding.schema_version(),
         crate::object::content_children(finding.content_children()).expect("finding children"),
         finding.canonical_bytes(),
     )
@@ -2755,6 +2756,218 @@ fn finding_and_reproduction_records_round_trip_with_exact_children() {
             .children()
             .iter()
             .any(|child| child.id() == reproduction_id.content_id())
+    );
+}
+
+#[test]
+fn finding_v2_retains_minimization_trace_and_role_tagged_exact_pins() {
+    let scenario = ScenarioDefId::from_hash(hash("finding-v2-scenario"));
+    let scenario_artifact =
+        ScenarioArtifact::new(scenario, 1, b"scenario-v2".to_vec()).expect("scenario artifact");
+    let scenario_artifact_id = scenario_artifact.id().expect("scenario artifact id");
+    let original_configuration = ConfigurationId::from_hash(hash("finding-v2-original"));
+    let original_configuration_artifact = ConfigurationArtifact::new(
+        scenario,
+        scenario_artifact_id,
+        original_configuration,
+        1,
+        b"original configuration".to_vec(),
+    )
+    .expect("original configuration artifact");
+    let original_configuration_artifact_id = original_configuration_artifact
+        .id()
+        .expect("original configuration artifact id");
+    let fingerprint = hash("finding-v2-fingerprint");
+    let original = ReproductionArtifact::new(
+        scenario,
+        scenario_artifact_id,
+        original_configuration,
+        original_configuration_artifact_id,
+        fingerprint,
+        1,
+        b"original reproduction".to_vec(),
+    )
+    .expect("original reproduction");
+    let original_id = original.id().expect("original reproduction id");
+
+    let minimized_configuration = ConfigurationId::from_hash(hash("finding-v2-minimized"));
+    let minimized_configuration_artifact = ConfigurationArtifact::new(
+        scenario,
+        scenario_artifact_id,
+        minimized_configuration,
+        1,
+        b"minimized configuration".to_vec(),
+    )
+    .expect("minimized configuration artifact");
+    let minimized_configuration_artifact_id = minimized_configuration_artifact
+        .id()
+        .expect("minimized configuration artifact id");
+    let attempt = FindingMinimizationAttempt::new(
+        0,
+        hash("candidate artifact"),
+        hash("candidate schedule"),
+        hash("candidate state"),
+        Some(fingerprint),
+        true,
+    );
+    assert!(matches!(
+        FindingMinimizationEvidence::new(
+            original_id,
+            1,
+            b"seeded-shortest-first".to_vec(),
+            vec![attempt],
+            hash("different final state"),
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "finding minimization accepted candidate is inconsistent"
+        })
+    ));
+    let minimization = FindingMinimizationEvidence::new(
+        original_id,
+        1,
+        b"seeded-shortest-first".to_vec(),
+        vec![attempt],
+        hash("candidate state"),
+    )
+    .expect("minimization evidence");
+    let minimized = ReproductionArtifact::new_minimized(
+        scenario,
+        scenario_artifact_id,
+        minimized_configuration,
+        minimized_configuration_artifact_id,
+        fingerprint,
+        1,
+        b"minimized reproduction".to_vec(),
+        minimization,
+    )
+    .expect("minimized reproduction");
+    let minimized_id = minimized.id().expect("minimized reproduction id");
+    assert_eq!(minimized.schema_version(), 2);
+    assert_eq!(minimized_id.content_id().schema_version(), 2);
+    assert!(matches!(
+        FindingMinimizationEvidence::new(
+            minimized_id,
+            1,
+            b"invalid chained minimization".to_vec(),
+            Vec::new(),
+            hash("candidate state"),
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "finding minimization original is not schema v1"
+        })
+    ));
+    assert_eq!(
+        ReproductionArtifact::from_canonical_bytes(&minimized.canonical_bytes())
+            .expect("decode minimized reproduction"),
+        minimized
+    );
+
+    let checkpoint = |name: &[u8]| {
+        ExactCheckpointId::from_content_id(ContentId::for_bytes(ObjectKind::ExactManifest, 3, name))
+            .expect("exact checkpoint id")
+    };
+    let pre = checkpoint(b"pre-failure");
+    let measurement = checkpoint(b"measurement-boundary");
+    let post = checkpoint(b"post-failure");
+    let pins = FindingExactPins::new(
+        BTreeSet::from([pre]),
+        BTreeSet::from([measurement]),
+        BTreeSet::from([post]),
+        BTreeSet::new(),
+    )
+    .expect("role-tagged pins");
+    let observation = ObservationId::from_content_id(ContentId::for_bytes(
+        ObjectKind::Observation,
+        1,
+        b"finding-v2-observation",
+    ))
+    .expect("observation id");
+    let signature = FindingSignature::new(
+        FindingKind::Divergence,
+        fingerprint,
+        None,
+        "qemu.replay-divergence".to_owned(),
+        Some(FindingTarget::Configuration(
+            original_configuration_artifact_id,
+        )),
+        BTreeSet::new(),
+    )
+    .expect("finding signature");
+    let finding = Finding::new_with_retention(
+        signature,
+        observation,
+        original_id,
+        CampaignSnapshotId::from_content_id(ContentId::for_bytes(
+            ObjectKind::CampaignSnapshot,
+            2,
+            b"finding-v2-parent",
+        ))
+        .expect("snapshot id"),
+        FindingOccurrenceSet::new(
+            ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"finding-v2-occurrences"),
+            1,
+            observation,
+        )
+        .expect("occurrences"),
+        Some(minimized_id),
+        pins,
+    )
+    .expect("finding v2");
+    assert_eq!(finding.schema_version(), 2);
+    assert!(matches!(
+        Finding::new(
+            finding.signature().clone(),
+            observation,
+            minimized_id,
+            finding.first_seen_snapshot(),
+            FindingOccurrenceSet::new(
+                finding.occurrences(),
+                finding.occurrence_count(),
+                finding.latest_occurrence(),
+            )
+            .expect("legacy occurrence set"),
+            None,
+            BTreeSet::new(),
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "finding schema disagrees with reproduction versions"
+        })
+    ));
+    assert_eq!(
+        finding
+            .id()
+            .expect("finding id")
+            .content_id()
+            .schema_version(),
+        2
+    );
+    assert_eq!(
+        finding.exact_pin_retention().pre_failure(),
+        &BTreeSet::from([pre])
+    );
+    assert_eq!(
+        finding.exact_pin_retention().measurement_boundary(),
+        &BTreeSet::from([measurement])
+    );
+    assert_eq!(
+        finding.exact_pin_retention().post_failure(),
+        &BTreeSet::from([post])
+    );
+    assert_eq!(
+        Finding::from_canonical_bytes(&finding.canonical_bytes()).expect("decode finding v2"),
+        finding
+    );
+    let envelope = ObjectEnvelope::for_record_versioned(
+        CampaignRecordKind::Finding,
+        finding.schema_version(),
+        crate::object::content_children(finding.content_children()).expect("finding children"),
+        finding.canonical_bytes(),
+    )
+    .expect("finding v2 envelope");
+    assert_eq!(
+        ObjectEnvelope::from_canonical_bytes(&envelope.canonical_bytes())
+            .expect("decode finding v2 envelope"),
+        envelope
     );
 }
 

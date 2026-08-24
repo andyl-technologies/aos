@@ -519,7 +519,7 @@ pub struct Finding {
     pub first_seen_snapshot: CampaignSnapshotId,
     pub occurrences: MerkleSet<ObservationId>,
     pub minimized: Option<ReproductionArtifactId>,
-    pub exact_pins: Vec<ExactClosureId>,
+    pub exact_pins: FindingExactPins,
 }
 ```
 
@@ -533,12 +533,38 @@ child. `first_seen_snapshot` is the authenticated parent snapshot at which the
 first observation was already visible; using the successor that publishes the
 finding would create a content-address cycle.
 
+Schema v2 replaces the untyped `exact_pins` set with four sorted sets:
+`pre_failure`, `measurement_boundary`, `post_failure`, and `additional`. The
+256 bound charges role associations, so one checkpoint serving two roles costs
+two entries even though its immutable body is stored once. Rediscovery unions
+each role independently. The daemon selector authenticates no more than 4,096
+scheduler-bearing candidates for the exact finding configuration. It chooses
+the greatest event count strictly before the causal failure, the greatest count
+at or before the last successful measurement boundary, and the least count at
+or after failure; equal-count candidates choose the content-address-least root.
+Missing eligible roles remain empty and never prevent thin reproduction.
+
 `ReproductionArtifact` schema v1 binds the semantic scenario and configuration,
 their exact `ScenarioArtifactId` and `ConfigurationArtifactId`, the stable
 failure fingerprint, and at most 32 MiB of self-contained execution-model
 bytes. The campaign layer does not trust those opaque bytes by inspection. A
 typed execution-model adapter replays them, re-derives all identities and the
 failure fingerprint, and only then publishes the immutable record.
+
+Schema v2 represents only a minimized reproduction. In addition to the v1
+basis it names the exact original v1 reproduction and retains a nonzero
+execution-model policy schema with at most 64 KiB of policy bytes, at most 4,096
+dense candidate outcomes, and the final replayed state. Each candidate retains
+its sequence, self-contained artifact identity, schedule identity, replayed
+state, optional observed failure fingerprint, and accepted bit. At most one
+candidate is accepted; it is last and its observed fingerprint equals the
+finding fingerprint, and its replayed state equals the retained final replayed
+state. Crucible policy v1 contains the deterministic seed, the
+4,096-candidate hard bound, and the 128 MiB conservative candidate-copy work
+bound. The adapter reruns the bounded minimization before publication and the
+repository requires the trace's original to be the finding's original
+reproduction. Schema-v1 bodies remain readable and reproduce their original
+schema-v1 content IDs; they are not silently rewritten as v2.
 
 The signature includes property/assertion identity, stable guest or QEMU failure
 class, relevant target/opportunity, and canonical causal evidence. It excludes
@@ -590,6 +616,14 @@ On a critical failure, policy may retain:
 Retention is asynchronous only after a canonical safe stop. If exact capture
 fails, the finding and thin replay artifact still publish, with a localized
 retention diagnostic.
+
+Exact-checkpoint selection is operational acceleration, but its selected roots
+are canonical finding children once committed. Candidate authentication and
+selection occur before finding publication; publication unions the selected
+roles with the existing cluster in the same snapshot transition as the new
+occurrence. Original/minimized reproduction and direct observation-owned
+measurement, property, or coverage evidence roots pull their complete
+authenticated child closures into the finding closure.
 
 ## 08.9 Debugging and stepping
 

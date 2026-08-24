@@ -91,9 +91,10 @@ pub use exploration::{
     ProgressiveWideningDecision, Proposal, PuctEdgeStatistics, PuctScore, StopCondition,
 };
 pub use finding::{
-    Finding, FindingKind, FindingOccurrenceSet, FindingSignature, FindingTarget,
-    MAX_FINDING_CAUSAL_EVIDENCE, MAX_FINDING_EXACT_PINS, MAX_FINDING_OCCURRENCES,
-    ReproductionArtifact,
+    Finding, FindingExactPins, FindingKind, FindingMinimizationAttempt,
+    FindingMinimizationEvidence, FindingOccurrenceSet, FindingSignature, FindingTarget,
+    MAX_FINDING_CAUSAL_EVIDENCE, MAX_FINDING_EXACT_PINS, MAX_FINDING_MINIMIZATION_ATTEMPTS,
+    MAX_FINDING_MINIMIZATION_POLICY_BYTES, MAX_FINDING_OCCURRENCES, ReproductionArtifact,
 };
 pub use identity::{
     AlternativeId, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,

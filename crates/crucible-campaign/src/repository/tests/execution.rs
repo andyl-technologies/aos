@@ -6,10 +6,10 @@ use crate::{
     CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
     CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ExactCheckpointId,
     ExecutorClient, ExecutorControlService, ExecutorResumeService, ExecutorService,
-    ExecutorStatusService, FindingKind, FindingSignature, FindingTarget,
-    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
-    ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
-    ResumeAttemptExecutionResponse,
+    ExecutorStatusService, FindingExactPins, FindingKind, FindingMinimizationAttempt,
+    FindingMinimizationEvidence, FindingSignature, FindingTarget, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ResumeAttemptExecutionDisposition,
+    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse,
 };
 
 struct CompletingExecutor {
@@ -1073,6 +1073,132 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
             .expect("unchanged head")
             .snapshot_id(),
         published.new_snapshot
+    );
+}
+
+#[test]
+fn minimized_finding_retains_trace_and_complete_observation_evidence() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let (_, admitted, observation) =
+        admitted_observation_fixture(&repository, &lineage, &policy, "minimized-finding");
+    let observed = repository
+        .publish_observation("minimized-finding", admitted.new_snapshot, &observation)
+        .expect("publish observation");
+    let fingerprint = CampaignHash::derive("test-finding", b"minimized divergence");
+    let original = repository
+        .publish_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"verified original reproduction".to_vec(),
+        )
+        .expect("publish original reproduction");
+    let final_state = CampaignHash::derive("test-finding", b"minimized final state");
+    let minimization = FindingMinimizationEvidence::new(
+        original,
+        1,
+        b"seeded shortest-first; candidates=4096; bytes=134217728".to_vec(),
+        vec![FindingMinimizationAttempt::new(
+            0,
+            CampaignHash::derive("test-finding", b"candidate artifact"),
+            CampaignHash::derive("test-finding", b"candidate schedule"),
+            final_state,
+            Some(fingerprint),
+            true,
+        )],
+        final_state,
+    )
+    .expect("minimization evidence");
+    let minimized = repository
+        .publish_minimized_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"verified minimized reproduction".to_vec(),
+            minimization,
+        )
+        .expect("publish minimized reproduction");
+    let signature = FindingSignature::new(
+        FindingKind::Divergence,
+        fingerprint,
+        None,
+        "qemu.replay-divergence".to_owned(),
+        Some(FindingTarget::Configuration(observation.child_content())),
+        BTreeSet::from([observation.properties().content_id()]),
+    )
+    .expect("finding signature with property evidence closure");
+
+    let published = repository
+        .publish_finding_with_retention(
+            "minimized-finding",
+            observed.new_snapshot,
+            signature,
+            observed.observation,
+            original,
+            Some(minimized),
+            FindingExactPins::default(),
+        )
+        .expect("publish minimized finding");
+    let stored = repository
+        .read_finding(published.finding.content_id())
+        .expect("load minimized finding");
+    assert_eq!(stored.schema_version(), 2);
+    assert_eq!(stored.minimized(), Some(minimized));
+    assert_eq!(
+        repository
+            .load_reproduction_artifact(minimized)
+            .expect("load minimized reproduction")
+            .minimization()
+            .expect("retained minimization trace")
+            .original(),
+        original
+    );
+    repository.evict_local_checkpoint(published.new_snapshot.content_id());
+    assert_eq!(
+        repository
+            .head("minimized-finding")
+            .expect("restart-style minimized finding validation")
+            .snapshot_id(),
+        published.new_snapshot
+    );
+
+    let missing_original = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
+        ObjectKind::Finding,
+        1,
+        b"missing original reproduction",
+    ))
+    .expect("missing reproduction id");
+    let invalid_trace = FindingMinimizationEvidence::new(
+        missing_original,
+        1,
+        b"same minimization policy".to_vec(),
+        Vec::new(),
+        final_state,
+    )
+    .expect("structurally valid missing-original trace");
+    let count_before = blobs.object_count().expect("object count before rejection");
+    assert!(matches!(
+        repository.publish_minimized_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"unpublishable minimized reproduction".to_vec(),
+            invalid_trace,
+        ),
+        Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
+    ));
+    assert_eq!(
+        blobs.object_count().expect("object count after rejection"),
+        count_before
     );
 }
 

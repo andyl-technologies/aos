@@ -181,15 +181,22 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   failure-atomicity, load, and idempotent-replay regressions cover the contract.
   The integrated Phase 3 measurement/finding flight remains open under
   T-CAM-3.6.
-- [ ] **T-CAM-3.5** Extend finding artifacts and retention policy with exact
+- [x] **T-CAM-3.5** Extend finding artifacts and retention policy with exact
   pre/post-failure pins and measurement/evidence closure.
-  Canonical bounded finding signatures, clusters, exact child closures, and
-  self-contained reproduction records are implemented. A narrow Crucible
-  adapter replays and re-derives the reproduction before immutable import, and
-  the repository atomically clusters canonical observations with read-only
-  import/restart successor validation. Automated exact-pin selection,
-  minimization policy, paged service queries, and the Phase 3 flight remain
-  open.
+  Canonical bounded finding signatures, clusters, exact observation-owned
+  measurement/evidence child closures, and self-contained reproduction records
+  are implemented. Schema-v2 findings retain independently bounded
+  pre-failure, last-successful-measurement, post-failure, and additional exact
+  checkpoint roles. The daemon authenticates at most 4,096 exact candidates
+  and deterministically selects nearest event boundaries with content-address
+  tie-breaking. Crucible minimization is bounded by 4,096 candidates and
+  128 MiB of conservative candidate-copy work; its seed/bounds, dense candidate
+  history, observed fingerprints, accepted result, and final replay state are
+  retained in verifier-backed reproduction schema v2. The repository preflights
+  original/artifact bases before writes, atomically clusters occurrences and
+  role sets, and revalidates the complete contract on import/restart. Paged
+  proof-authenticated finding and finding-object queries are implemented. The
+  integrated Phase 3 flight remains open under T-CAM-3.6.
 - [ ] **T-CAM-3.6** Have an independent reviewer cross-check guest convergence
   markers, model-derived traffic evidence, measurement windows, objective
   ranking, and one known finding in the §14 Phase 3 flight.

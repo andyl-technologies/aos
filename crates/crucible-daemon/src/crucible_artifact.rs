@@ -16,12 +16,17 @@
 
 use std::sync::Arc;
 
-use crucible::{Configuration, Decision, FindingReproductionArtifact, ScenarioDefForm, Schedule};
+use crucible::{
+    Configuration, ContentHash, Decision, EngineError, FindingReproductionArtifact,
+    MAX_MINIMIZATION_CANDIDATE_WORK_BYTES, MAX_MINIMIZATION_CANDIDATES, MinimizationConfig,
+    MinimizationRun, ScenarioDefForm, Schedule,
+};
 use crucible_campaign::{
     CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignRepository,
     CampaignRepositoryError, CandidateGeneratorSpec, CandidateGeneratorSpecId,
-    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ReproductionArtifact,
-    ReproductionArtifactId, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId, SelectionOrigin,
+    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, FindingMinimizationAttempt,
+    FindingMinimizationEvidence, ReproductionArtifact, ReproductionArtifactId, ScenarioArtifact,
+    ScenarioArtifactId, ScenarioDefId, SelectionOrigin,
 };
 
 /// Payload schema for a compact canonical Crucible scenario definition.
@@ -42,6 +47,14 @@ pub const MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES: usize = 32 * 1024 * 1024;
 const CRUCIBLE_SCHEDULE_V2_MAGIC: &[u8] = b"crucible.schedule.v2\0";
 const MAX_CONFIGURATION_SELECTION_DECISIONS: usize = 4_096;
 const MAX_CONFIGURATION_BRANCH_PREFIX_BYTES: usize = 256 * 1024 * 1024;
+const CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V1: u32 = 1;
+const CRUCIBLE_MINIMIZATION_POLICY_MAGIC: &[u8] = b"crucible.finding-minimization-policy.v1\0";
+const CRUCIBLE_MINIMIZATION_CANDIDATES: u32 = 4_096;
+const CRUCIBLE_MINIMIZATION_CANDIDATE_WORK_BYTES: u64 = 128 * 1024 * 1024;
+const _: () = assert!(MAX_MINIMIZATION_CANDIDATES == CRUCIBLE_MINIMIZATION_CANDIDATES as usize);
+const _: () = assert!(
+    MAX_MINIMIZATION_CANDIDATE_WORK_BYTES == CRUCIBLE_MINIMIZATION_CANDIDATE_WORK_BYTES as usize
+);
 
 /// Narrow verifier-backed capability for importing Crucible creation objects.
 ///
@@ -211,6 +224,138 @@ impl CrucibleCampaignArtifactStore {
         Ok(stored)
     }
 
+    /// Revalidates and publishes one deterministic minimized reproduction.
+    ///
+    /// The original campaign reproduction must match `run.original`. The
+    /// adapter reruns the complete bounded minimization with `failure_oracle`,
+    /// compares the exact result, then retains the compiled policy, every
+    /// candidate outcome, and the final replay state in the schema-v2 campaign
+    /// reproduction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrucibleArtifactError`] when the original record is missing or
+    /// mismatched, deterministic minimization or replay fails, exact artifact
+    /// import fails, or campaign publication does not preserve the expected ID.
+    pub fn import_minimized_reproduction<F>(
+        &self,
+        original: ReproductionArtifactId,
+        run: &MinimizationRun,
+        failure_oracle: F,
+    ) -> Result<ReproductionArtifactId, CrucibleArtifactError>
+    where
+        F: FnMut(&FindingReproductionArtifact) -> Result<Option<ContentHash>, EngineError>,
+    {
+        let stored_original = self.repository.load_reproduction_artifact(original)?;
+        let decoded_original =
+            crucible::ReproductionArtifact::from_compact_binary(stored_original.payload())
+                .map_err(|source| CrucibleArtifactError::InvalidPayload {
+                    artifact: "original finding reproduction",
+                    source: Box::new(source),
+                })?;
+        let original_scenario = run.original.artifact.scenario_form();
+        let original_scenario_record = encode_crucible_scenario_artifact(original_scenario)?;
+        let original_configuration_record = encode_crucible_configuration_artifact(
+            &original_scenario_record,
+            run.original.artifact.schedule(),
+        )?;
+        if decoded_original != run.original.artifact
+            || stored_original.payload_schema() != CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2
+            || stored_original.finding_fingerprint()
+                != CampaignHash::from_bytes(run.target_fingerprint.bytes)
+            || stored_original.scenario() != original_scenario_record.scenario()
+            || stored_original.scenario_artifact() != original_scenario_record.id()?
+            || stored_original.configuration() != original_configuration_record.configuration()
+            || stored_original.configuration_artifact() != original_configuration_record.id()?
+        {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "minimization original",
+            });
+        }
+
+        let verified = run
+            .original
+            .minimize(MinimizationConfig::new(run.seed), failure_oracle)
+            .map_err(|source| CrucibleArtifactError::InvalidPayload {
+                artifact: "finding minimization",
+                source: Box::new(source),
+            })?;
+        if verified != *run {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "minimization run",
+            });
+        }
+
+        let minimized = &verified.minimized;
+        let scenario = minimized.artifact.scenario_form();
+        let schedule = minimized.artifact.schedule();
+        let scenario_record = encode_crucible_scenario_artifact(scenario)?;
+        let configuration_record =
+            encode_crucible_configuration_artifact(&scenario_record, schedule)?;
+        let stored_configuration = self.import_configuration(scenario, schedule)?;
+        if stored_configuration != configuration_record.id()? {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored minimized configuration",
+            });
+        }
+
+        let policy = encode_crucible_minimization_policy(verified.seed);
+        let attempts = verified
+            .attempts
+            .iter()
+            .map(|attempt| {
+                FindingMinimizationAttempt::new(
+                    attempt.sequence,
+                    CampaignHash::from_bytes(attempt.candidate_artifact.bytes),
+                    CampaignHash::from_bytes(attempt.candidate_schedule.bytes),
+                    CampaignHash::from_bytes(attempt.replayed_state.bytes),
+                    attempt
+                        .observed_fingerprint
+                        .map(|fingerprint| CampaignHash::from_bytes(fingerprint.bytes)),
+                    attempt.accepted,
+                )
+            })
+            .collect();
+        let minimization = FindingMinimizationEvidence::new(
+            original,
+            CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V1,
+            policy,
+            attempts,
+            CampaignHash::from_bytes(minimized.replay.state.bytes),
+        )?;
+        let fingerprint = CampaignHash::from_bytes(minimized.finding_fingerprint.bytes);
+        let artifact = ReproductionArtifact::new_minimized(
+            scenario_record.scenario(),
+            scenario_record.id()?,
+            configuration_record.configuration(),
+            stored_configuration,
+            fingerprint,
+            CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2,
+            minimized.artifact.to_compact_binary(),
+            minimization.clone(),
+        )?;
+        let expected = artifact.id()?;
+        let stored = self
+            .repository
+            .publish_minimized_reproduction_artifact(
+                artifact.scenario(),
+                artifact.scenario_artifact(),
+                artifact.configuration(),
+                artifact.configuration_artifact(),
+                artifact.finding_fingerprint(),
+                artifact.payload_schema(),
+                artifact.payload().to_vec(),
+                minimization,
+            )
+            .map_err(CrucibleArtifactError::RepositoryPublication)?;
+        if stored != expected {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored minimized finding reproduction",
+            });
+        }
+        Ok(stored)
+    }
+
     /// Validates and publishes one closed candidate-generator specification.
     ///
     /// # Errors
@@ -233,6 +378,15 @@ impl CrucibleCampaignArtifactStore {
         }
         Ok(stored)
     }
+}
+
+fn encode_crucible_minimization_policy(seed: crucible::Seed) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(CRUCIBLE_MINIMIZATION_POLICY_MAGIC.len() + 44);
+    bytes.extend_from_slice(CRUCIBLE_MINIMIZATION_POLICY_MAGIC);
+    bytes.extend_from_slice(&seed.bytes());
+    bytes.extend_from_slice(&CRUCIBLE_MINIMIZATION_CANDIDATES.to_be_bytes());
+    bytes.extend_from_slice(&CRUCIBLE_MINIMIZATION_CANDIDATE_WORK_BYTES.to_be_bytes());
+    bytes
 }
 
 /// Failure to translate a campaign artifact into the Crucible execution model.
@@ -798,6 +952,46 @@ mod tests {
                 .replay()
                 .expect("replay stored reproduction"),
             finding.replay
+        );
+
+        let run = finding
+            .minimize(
+                MinimizationConfig::new(crucible::Seed::from_u64(0x5151)),
+                |_| Ok(Some(finding.finding_fingerprint)),
+            )
+            .expect("verify deterministic minimization");
+        let mislabeled = repository
+            .publish_reproduction_artifact(
+                stored.scenario(),
+                stored.scenario_artifact(),
+                stored.configuration(),
+                stored.configuration_artifact(),
+                stored.finding_fingerprint(),
+                CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2 + 1,
+                stored.payload().to_vec(),
+            )
+            .expect("publish structurally valid mislabeled reproduction");
+        assert!(matches!(
+            store.import_minimized_reproduction(mislabeled, &run, |_| {
+                Ok(Some(finding.finding_fingerprint))
+            }),
+            Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "minimization original"
+            })
+        ));
+        let minimized = store
+            .import_minimized_reproduction(id, &run, |_| Ok(Some(finding.finding_fingerprint)))
+            .expect("import minimized reproduction");
+        let minimized = repository
+            .load_reproduction_artifact(minimized)
+            .expect("load minimized reproduction");
+        assert_eq!(minimized.schema_version(), 2);
+        assert_eq!(
+            minimized
+                .minimization()
+                .expect("retained minimization evidence")
+                .original(),
+            id
         );
     }
 
