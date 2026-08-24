@@ -4,12 +4,14 @@ use super::object::campaign_choice_value_label;
 use super::*;
 
 use crucible_campaign::{
-    CampaignPolicyId, CampaignViewId, GetCampaignPlannerRankingsRequest, PlannerCandidateRanking,
-    PlannerEngineId, PlannerStepId, PolicyArtifactId,
+    BranchPointId, BranchRequestId, CampaignPolicyId, CampaignViewId,
+    GetCampaignPlannerRankingsRequest, PlannerCandidateRanking, PlannerEngineId, PlannerStepId,
+    PolicyArtifactId,
 };
 
-const CAMPAIGN_RANKING_REPORT_SCHEMA: &str = "crucible.cli.campaign-rankings.v1";
+const CAMPAIGN_RANKING_REPORT_SCHEMA: &str = "crucible.cli.campaign-rankings.v2";
 const MAX_CAMPAIGN_RANKING_PAGES: u32 = 64;
+const MAX_CAMPAIGN_RANKING_RESULTS: u32 = 65_536;
 const MAX_CAMPAIGN_RANKING_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Serialize)]
@@ -19,9 +21,21 @@ pub(super) struct CampaignRankingReport {
     snapshot: String,
     start_step: String,
     pages: u32,
+    filters: CampaignRankingFilters,
+    matched_candidates: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_step: Option<String>,
     rankings: Vec<CampaignRankingEntry>,
+}
+
+#[derive(Clone, Serialize)]
+struct CampaignRankingFilters {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch_point: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -62,9 +76,26 @@ pub(super) fn validate_campaign_rankings_command(
         .map_err(|error| usage_error(format!("invalid campaign ranking snapshot: {error}")))?;
     PlannerStepId::parse(&args.step)
         .map_err(|error| usage_error(format!("invalid campaign ranking step: {error}")))?;
+    if let Some(branch_point) = &args.branch_point {
+        BranchPointId::parse(branch_point).map_err(|error| {
+            usage_error(format!("invalid campaign ranking branch point: {error}"))
+        })?;
+    }
+    if let Some(source) = &args.source {
+        BranchRequestId::parse(source)
+            .map_err(|error| usage_error(format!("invalid campaign ranking source: {error}")))?;
+    }
     if args.pages == 0 || args.pages > MAX_CAMPAIGN_RANKING_PAGES {
         return Err(usage_error(format!(
             "campaign ranking pages must be between 1 and {MAX_CAMPAIGN_RANKING_PAGES}"
+        )));
+    }
+    if args
+        .top
+        .is_some_and(|top| top == 0 || top > MAX_CAMPAIGN_RANKING_RESULTS)
+    {
+        return Err(usage_error(format!(
+            "campaign ranking top count must be between 1 and {MAX_CAMPAIGN_RANKING_RESULTS}"
         )));
     }
     Ok(())
@@ -89,6 +120,18 @@ where
         .map_err(|error| usage_error(format!("invalid campaign ranking snapshot: {error}")))?;
     let start_step = PlannerStepId::parse(&args.step)
         .map_err(|error| usage_error(format!("invalid campaign ranking step: {error}")))?;
+    let branch_point = args
+        .branch_point
+        .as_deref()
+        .map(BranchPointId::parse)
+        .transpose()
+        .map_err(|error| usage_error(format!("invalid campaign ranking branch point: {error}")))?;
+    let source = args
+        .source
+        .as_deref()
+        .map(BranchRequestId::parse)
+        .transpose()
+        .map_err(|error| usage_error(format!("invalid campaign ranking source: {error}")))?;
 
     let mut step = Some(start_step);
     let mut seen = BTreeSet::new();
@@ -145,6 +188,11 @@ where
                 .ranked_candidates()
                 .map_err(|error| backend_error(format!("campaign ranking is invalid: {error}")))?
                 .into_iter()
+                .filter(|ranking| {
+                    branch_point
+                        .is_none_or(|expected| ranking.proposal().branch_point() == expected)
+                        && source.is_none_or(|expected| ranking.proposal().request() == expected)
+                })
                 .map(|ranking| RankedPageCandidate {
                     step: current,
                     ranking,
@@ -159,6 +207,13 @@ where
             .best_first_cmp(&right.ranking)
             .then_with(|| left.step.cmp(&right.step))
     });
+    let matched_candidates = u64::try_from(candidates.len())
+        .map_err(|_| backend_error("campaign ranking match count does not fit u64"))?;
+    if let Some(top) = args.top {
+        let top = usize::try_from(top)
+            .map_err(|_| backend_error("campaign ranking top count does not fit usize"))?;
+        candidates.truncate(top);
+    }
     let rankings = candidates
         .into_iter()
         .enumerate()
@@ -170,6 +225,12 @@ where
         snapshot: snapshot.to_string(),
         start_step: start_step.to_string(),
         pages,
+        filters: CampaignRankingFilters {
+            branch_point: branch_point.map(|value| value.to_string()),
+            source: source.map(|value| value.to_string()),
+            top: args.top,
+        },
+        matched_candidates,
         next_step: step.map(|value| value.to_string()),
         rankings,
     })
@@ -289,8 +350,18 @@ mod tests {
             .to_string(),
             step: planner_step(b"ranking step").to_string(),
             pages: MAX_CAMPAIGN_RANKING_PAGES + 1,
+            branch_point: None,
+            source: None,
+            top: None,
         });
         assert!(validate_campaign_rankings_command(&command).is_err());
+
+        let CampaignCommand::Rankings(mut args) = command else {
+            panic!("ranking command")
+        };
+        args.pages = 1;
+        args.top = Some(0);
+        assert!(validate_campaign_rankings_command(&CampaignCommand::Rankings(args)).is_err());
     }
 
     #[test]
@@ -301,6 +372,12 @@ mod tests {
             snapshot: "snapshot".to_owned(),
             start_step: "step".to_owned(),
             pages: 1,
+            filters: CampaignRankingFilters {
+                branch_point: Some("point".to_owned()),
+                source: None,
+                top: Some(1),
+            },
+            matched_candidates: 2,
             next_step: Some("parent".to_owned()),
             rankings: vec![CampaignRankingEntry {
                 rank: 1,
@@ -323,6 +400,8 @@ mod tests {
         };
         let json = render_campaign_rankings(&report, OutputFormat::Json).expect("ranking JSON");
         assert!(json.contains(CAMPAIGN_RANKING_REPORT_SCHEMA));
+        assert!(json.contains("\"branch_point\": \"point\""));
+        assert!(json.contains("\"matched_candidates\": 2"));
         assert!(json.contains("\"next_step\": \"parent\""));
         let table = render_campaign_rankings(&report, OutputFormat::Table).expect("ranking table");
         assert!(table.contains("1 26 proposal true step"));

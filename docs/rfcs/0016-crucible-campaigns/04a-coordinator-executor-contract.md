@@ -821,6 +821,10 @@ most 128 MiB of aggregate canonical response bytes, and applies the packaged
 planner's score/edge/position order across all returned candidates. Traversal
 stops before a parent whose policy, engine, policy artifact, or planning view
 differs, because scores from another interpretation basis are not comparable.
+Exact branch-point and branch-request filters run only after proof and retained-
+request validation. An optional top-result cap is in `1..=65_536` and truncates
+only after global best-first ordering; the version-2 CLI report retains the
+exact filter basis and pre-truncation matching count.
 The proof
 key uses the membership-key derivation above with namespace
 `coordination.planner-step` and the planner step's canonical underlying
