@@ -454,9 +454,19 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     assert_contains(&qemu_det_ipi, "accelerator = \"sim,thread=single\";");
     assert_contains(&qemu_det_ipi, "stopAt = 4194304;");
     assert_contains(&qemu_det_ipi, "select(.kind == \"det_ipi\")");
-    assert_contains(&qemu_det_ipi, "any($events[]; .delivery_mode == 0)");
-    assert_contains(&qemu_det_ipi, "any($events[]; .delivery_mode == 5)");
-    assert_contains(&qemu_det_ipi, "any($events[]; .delivery_mode == 6)");
+    assert_contains(&qemu_det_ipi, "([ $events[].det_ipi_event ] == [1, 2, 3])");
+    assert_contains(&qemu_det_ipi, "($events[0].delivery_mode == 5)");
+    assert_contains(&qemu_det_ipi, "($events[1].delivery_mode == 6)");
+    assert_contains(&qemu_det_ipi, "($events[2].delivery_mode == 0)");
+    assert_contains(&qemu_det_ipi, "($events[2].vector == 81)");
+    assert_contains(
+        &qemu_det_ipi,
+        "($events[2].src_vcpu == $events[1].dst_vcpu)",
+    );
+    assert_contains(
+        &qemu_det_ipi,
+        "($events[2].dst_vcpu == $events[1].src_vcpu)",
+    );
     assert_contains(&qemu_det_ipi, "deterministic_ipi_fixed_mode_trace=true");
     assert_contains(&qemu_det_ipi, "deterministic_ipi_init_mode_trace=true");
     assert_contains(&qemu_det_ipi, "deterministic_ipi_sipi_mode_trace=true");
@@ -466,8 +476,10 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     );
     assert_contains(
         &qemu_det_ipi,
-        "stock_negative_control_scope=non-sim-and-self-IPI-use-upstream-path",
+        "stock_negative_control_scope=executed-non-sim-fallback",
     );
+    assert_contains(&qemu_det_ipi, "stock_negative_control_det_ipi_events=0");
+    assert_contains(&qemu_det_ipi, "stock_negative_control_guest_execution=true");
 
     let qemu_vcpu_introspect =
         fs::read_to_string(root.join("tests/crucible/phase2-qemu-vcpu-introspect.nix"))?;

@@ -86,6 +86,10 @@
         label = "commanded probe targets the authenticated SIPI sender";
         needle = "const unsigned int target_vcpu = src_vcpu;";
       }
+      {
+        label = "opt-in probe delivery remains observable without extended fingerprinting";
+        needle = "if (trace_file == NULL || (!extended_fingerprint && !det_ipi_probe))";
+      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
