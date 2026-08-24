@@ -105,7 +105,7 @@ fn initially_violated_scenario() -> ScenarioDefForm {
 }
 
 #[test]
-fn durable_run_state_recovers_every_incomplete_transaction_phase() {
+fn durable_run_state_rejects_empty_active_transaction_phases() {
     for phase in [
         ProductionLifecycleJournalPhase::Intent,
         ProductionLifecycleJournalPhase::Prepared,
@@ -138,20 +138,18 @@ fn durable_run_state_recovers_every_incomplete_transaction_phase() {
         .unwrap_or_else(|error| panic!("crash-point state should persist: {error}"));
         drop(first);
 
-        let (_second, _, _) = production_run_directory(
+        let error = production_run_directory(
             &scenario,
             &config,
             source.plan().fault_signals().resource_limits(),
         )
-        .unwrap_or_else(|error| panic!("incomplete transaction should recover: {error}"));
-        let recovered: ProductionRunState =
-            decode_run_json(&first_path.join(PRODUCTION_RUN_STATE_FILE))
-                .unwrap_or_else(|error| panic!("recovered state should decode: {error}"));
-        assert_eq!(recovered.journal.transaction, 17);
-        assert!(matches!(
-            recovered.journal.phase,
-            ProductionLifecycleJournalPhase::Quarantined
-        ));
+        .err()
+        .unwrap_or_else(|| panic!("empty active transaction should fail closed"));
+        assert!(
+            error
+                .to_string()
+                .contains("requires at least one live node owner")
+        );
     }
 }
 

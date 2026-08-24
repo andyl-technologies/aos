@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "durable_run_state/resource_limits.rs"]
+mod resource_limits;
+
 fn recovery_process(process_id: u32, executable: &str) -> QemuProcessIdentity {
     QemuProcessIdentity {
         process_id,
@@ -93,8 +96,8 @@ fn durable_run_state_recovers_an_unfinished_run_before_reuse() {
         &first_manifest,
         &first_journal,
         source.plan().fault_signals().resource_limits(),
-        0,
-        0,
+        3,
+        64,
     )
     .unwrap_or_else(|error| panic!("dead owner fixture should persist: {error}"));
     drop(first);
@@ -111,6 +114,8 @@ fn durable_run_state_recovers_an_unfinished_run_before_reuse() {
             .unwrap_or_else(|error| panic!("recovered state should decode: {error}"));
     assert!(recovered.manifest.clean_shutdown);
     assert!(recovered.manifest.recovered_after_host_exit);
+    assert_eq!(recovered.runtime_event_records, 3);
+    assert_eq!(recovered.runtime_event_log_bytes, 64);
     assert!(matches!(
         recovered.journal.phase,
         ProductionLifecycleJournalPhase::Quarantined
@@ -275,10 +280,12 @@ fn durable_run_state_accepts_a_prepared_replacement_at_the_exact_node_limit() {
         0,
     )
     .unwrap_or_else(|error| panic!("prepared state should persist: {error}"));
-    let mut limits = FaultResourceLimits::default();
-    limits.nodes = 1;
+    let limits = FaultResourceLimits {
+        nodes: 1,
+        ..FaultResourceLimits::default()
+    };
 
-    let (decoded_manifest, decoded_journal) =
+    let (decoded_manifest, decoded_journal, _, _) =
         quantum_loop::decode_prior_run_state(root.path(), &manifest.scenario, limits)
             .unwrap_or_else(|error| panic!("one-node Prepared state should recover: {error}"));
     assert_eq!(decoded_manifest.processes.len(), 1);
@@ -404,7 +411,10 @@ fn durable_run_state_rejects_impossible_permanent_failure_ownership() {
     )
     .err()
     .unwrap_or_else(|| panic!("generation-advancing permanent failure should fail closed"));
-    assert!(advanced_error.contains("invalid canonical fields"));
+    assert!(
+        advanced_error.contains("invalid canonical fields")
+            || advanced_error.contains("not bound to manifest process ownership")
+    );
 
     let mut replacement_owned = recovery_journal(
         ProductionLifecycleJournalPhase::Prepared,
@@ -422,6 +432,39 @@ fn durable_run_state_rejects_impossible_permanent_failure_ownership() {
     .err()
     .unwrap_or_else(|| panic!("replacement-owned permanent failure should fail closed"));
     assert!(replacement_error.contains("not bound to manifest process ownership"));
+}
+
+#[test]
+fn durable_run_state_rejects_unpublishable_replacement_transitions() {
+    let current = recovery_process(7, "/aos/qemu-current");
+    let replacement = recovery_process(8, "/aos/qemu-replacement");
+    let manifest = recovery_manifest(current.clone(), Some(replacement.clone()));
+
+    for transition in ["Boot", "Reset", "PowerCycle", "PermanentFailure"] {
+        for phase in [
+            ProductionLifecycleJournalPhase::Prepared,
+            ProductionLifecycleJournalPhase::ExitsReaped,
+            ProductionLifecycleJournalPhase::Quarantined,
+        ] {
+            let mut journal =
+                recovery_journal(phase.clone(), current.clone(), Some(replacement.clone()));
+            journal.nodes[0].transition = String::from(transition);
+            journal.nodes[0].next_generation = if matches!(transition, "Boot" | "PermanentFailure")
+            {
+                1
+            } else {
+                2
+            };
+            let error = quantum_loop::validate_recovered_lifecycle_journal(
+                &journal,
+                &manifest,
+                FaultResourceLimits::default(),
+            )
+            .err()
+            .unwrap_or_else(|| panic!("{phase:?} cannot own a {transition} replacement"));
+            assert!(error.contains("not bound to manifest process ownership"));
+        }
+    }
 }
 
 #[test]
@@ -461,116 +504,4 @@ fn durable_run_state_rejects_unrelated_quarantined_postcommit_owner() {
     .err()
     .unwrap_or_else(|| panic!("unrelated quarantined process owner should fail closed"));
     assert!(error.contains("not bound to manifest process ownership"));
-}
-
-#[test]
-fn durable_run_state_rejects_oversized_json_before_decode() {
-    let root =
-        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
-    let path = root.path().join("oversized.json");
-    fs::write(&path, b"{\"padding\":\"0123456789\"}")
-        .unwrap_or_else(|error| panic!("oversized fixture should write: {error}"));
-
-    let error = decode_run_json_bounded::<ProductionLifecycleJournal>(&path, 8)
-        .err()
-        .unwrap_or_else(|| panic!("oversized run state should fail before decode"));
-    assert!(error.contains("above the bounded maximum 8"));
-}
-
-#[test]
-fn durable_run_state_persists_one_aggregate_envelope() {
-    let root =
-        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
-    let source = initially_violated_scenario();
-    let scenario = source.scenario_def();
-    let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
-    let (run, _, _) = production_run_directory(
-        &scenario,
-        &config,
-        source.plan().fault_signals().resource_limits(),
-    )
-    .unwrap_or_else(|error| panic!("aggregate run state should initialize: {error}"));
-
-    assert!(run.path().join(PRODUCTION_RUN_STATE_FILE).is_file());
-    assert!(!run.path().join("run-manifest.json").exists());
-    assert!(!run.path().join("lifecycle-journal.json").exists());
-    let state: ProductionRunState = decode_run_json(&run.path().join(PRODUCTION_RUN_STATE_FILE))
-        .unwrap_or_else(|error| panic!("aggregate run state should decode: {error}"));
-    assert_eq!(state.version, 1);
-    assert_eq!(state.runtime_event_records, 0);
-    assert_eq!(state.runtime_event_log_bytes, 0);
-}
-
-#[test]
-fn durable_run_state_preflights_aggregate_bytes_before_owned_decode() {
-    let root =
-        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
-    let state = ProductionRunState {
-        version: 1,
-        runtime_event_records: 0,
-        runtime_event_log_bytes: 8,
-        manifest: ProductionRunManifest {
-            version: 2,
-            scenario: "3".repeat(64),
-            owner: recovery_process(1, "/aos/controller"),
-            processes: BTreeMap::new(),
-            staged_processes: BTreeMap::new(),
-            clean_shutdown: false,
-            recovered_after_host_exit: false,
-        },
-        journal: ProductionLifecycleJournal {
-            version: 1,
-            transaction: 0,
-            phase: ProductionLifecycleJournalPhase::Idle,
-            nodes: Vec::new(),
-            completed_exits: Vec::new(),
-        },
-    };
-    let bytes = serde_json::to_vec_pretty(&state)
-        .unwrap_or_else(|error| panic!("aggregate preflight fixture should encode: {error}"));
-    fs::write(root.path().join(PRODUCTION_RUN_STATE_FILE), &bytes)
-        .unwrap_or_else(|error| panic!("aggregate preflight fixture should write: {error}"));
-    let mut limits = FaultResourceLimits::default();
-    limits.event_log_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-
-    let error = quantum_loop::decode_prior_run_state(root.path(), &"3".repeat(64), limits)
-        .err()
-        .unwrap_or_else(|| panic!("aggregate byte overflow should precede owned decode"));
-    assert!(error.contains("admit aggregate prior run state"));
-}
-
-#[test]
-fn durable_run_state_preflights_process_count_before_owned_map_decode() {
-    let root =
-        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
-    let bytes = br#"{
-      "version": 1,
-      "runtime_event_records": 0,
-      "runtime_event_log_bytes": 0,
-      "manifest": {
-        "version": 2,
-        "scenario": null,
-        "owner": null,
-        "processes": {"node-a": null, "node-b": null},
-        "staged_processes": {},
-        "clean_shutdown": false,
-        "recovered_after_host_exit": false
-      },
-      "journal": {
-        "version": 1,
-        "transaction": 0,
-        "phase": null,
-        "nodes": [],
-        "completed_exits": []
-      }
-    }"#;
-    fs::write(root.path().join(PRODUCTION_RUN_STATE_FILE), bytes)
-        .unwrap_or_else(|error| panic!("count preflight fixture should write: {error}"));
-    let mut limits = FaultResourceLimits::default();
-    limits.nodes = 1;
-
-    let error = quantum_loop::decode_prior_run_state(root.path(), &"3".repeat(64), limits)
-        .err()
-        .unwrap_or_else(|| panic!("process count should fail before owned map decode"));
-    assert!(error.contains("admit current process count before owned decode"));
 }

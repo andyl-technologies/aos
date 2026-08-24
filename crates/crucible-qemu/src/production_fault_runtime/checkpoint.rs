@@ -318,7 +318,7 @@ impl ProductionFaultRuntime {
     ///
     /// Returns [`ProductionFaultRuntimeError::PendingNodeLifecycleWork`] when a
     /// prior transferred batch has not been acknowledged.
-    #[must_use]
+    #[must_use = "the lifecycle owner must be acknowledged after host application"]
     pub fn take_node_lifecycle_work(
         &mut self,
     ) -> Result<QemuNodeLifecycleWork, ProductionFaultRuntimeError> {

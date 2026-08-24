@@ -100,9 +100,11 @@ fn event_snapshot_authenticates_without_consuming_transport_ownership() {
         &arena,
         65_536,
         &mut preview,
-        &mut preview_payload_bytes,
-        expected_event_log_bytes,
-        second_payload.len(),
+        FaultEventPreviewBudget {
+            canonical_payload_bytes: &mut preview_payload_bytes,
+            configured_payload_bytes: expected_event_log_bytes,
+            configured_inline_payload_bytes: second_payload.len(),
+        },
     )
     .expect("published events snapshot");
 
@@ -149,9 +151,11 @@ fn event_snapshot_rejects_payload_bytes_without_consuming_transport_ownership() 
             &arena,
             65_536,
             &mut preview,
-            &mut preview_payload_bytes,
-            7 + record_bytes - 1,
-            payload.len(),
+            FaultEventPreviewBudget {
+                canonical_payload_bytes: &mut preview_payload_bytes,
+                configured_payload_bytes: 7 + record_bytes - 1,
+                configured_inline_payload_bytes: payload.len(),
+            },
         ),
         Err(FaultEventError::PreviewPayloadCapacity {
             current: 7,
@@ -192,9 +196,11 @@ fn event_snapshot_rejects_inline_payload_before_copying_or_consuming() {
             &arena,
             65_536,
             &mut preview,
-            &mut event_log_bytes,
-            usize::MAX,
-            payload.len() - 1,
+            FaultEventPreviewBudget {
+                canonical_payload_bytes: &mut event_log_bytes,
+                configured_payload_bytes: usize::MAX,
+                configured_inline_payload_bytes: payload.len() - 1,
+            },
         ),
         Err(FaultEventError::PreviewInlinePayloadCapacity {
             requested: payload.len() as u64,
