@@ -214,12 +214,21 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 - [x] **T-CAM-4.1** Implement bounded finite and versioned generated
   `CandidateSource` forms plus generator specs for all/discrete, boundary,
   stratified, logarithmic, permuted, progressive integer, and corpus mutation.
-- [ ] **T-CAM-4.2** Implement branch request/cause, branch-edge deduplication,
+- [x] **T-CAM-4.2** Implement branch request/cause, branch-edge deduplication,
   discovery-versus-branch attempt starts, immutable attempt execution basis,
   global admission ordinal, authenticated branch path, additional-cause
   association, proposal, attempt, observation, credit, input-only planner
   invocation, coordinator-accepted planner step/accounting, branch-point
   `ExpansionState`, and per-source portable continuation state.
+  Canonical records and repository owner transitions now cover every listed
+  basis. Proposal admission assigns one global ordinal, deduplicates an exact
+  execution basis while retaining later causes, and authenticates scoped path
+  prefixes; strict observations commit in that global order. Planner Issue
+  accepts only an exact served input page, atomically publishes its step,
+  proposals, admissions, and accounting, and preserves replay identity.
+  Branch-request, proposal, admission, observation, credit, expansion, and
+  continuation transitions are recomputed during import and restart, with
+  local/replay/convergence regressions covering each owner boundary.
 - [ ] **T-CAM-4.3** Implement progressive-widening exact rational rules,
   interval refinement, deterministic PUCT, coverage/rarity/assertion/objective
   guidance, and path backpropagation. New branch paths now retain exact
@@ -238,7 +247,7 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   with exact irrational comparison, initial allocation, visit-floor, ceiling,
   and overflow semantics. Reward, novelty, finding, interval-feedback, and the
   planner/generator integrations that consume these pure owners remain open.
-- [ ] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
+- [x] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.
   The repository checkpoint now provides snapshot-bound, bounded accounting
@@ -246,11 +255,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   observations, remain page-size independent to EOF, and rebuild identically
   through a fresh repository. Its bounded process-local reservation table is
   idempotent per worker slot, rejects stale epoch/generation releases, and
-  restarts empty under a fresh daemon epoch. Supervisor integration and later
-  reward/novelty-sensitive generator versions remain open. The repository now
-  also maintains a compact snapshot-authenticated continuation projection for
-  each request and serves bounded proof-bearing frontier pages. Finite request,
-  proposal, and admission transitions are owner-recomputed during import.
+  restarts empty under a fresh daemon epoch. These owner primitives are
+  integrated by the T-CAM-4.5 supervisor; later reward/novelty-sensitive
+  generator versions remain under T-CAM-4.3. The repository also maintains a
+  compact snapshot-authenticated continuation projection for each request and
+  serves bounded proof-bearing frontier pages. Finite request, proposal, and
+  admission transitions are owner-recomputed during import.
   Implementation-version 2 `all`
   generators over Boolean and discrete domains use the same exact ordinal and
   continuation fold as finite sources. Implementation-version 3
@@ -1276,7 +1286,7 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `CAM-1..14` | 1–9 | campaign model, replay, continuity, ABI, license boundary, manual acceptance |
 | `CMOD-1..30` | 1, 2, 4 | campaign model, content address, attempt idempotence, continuity |
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
-| `GUIDE-1..25` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
+| `GUIDE-1..26` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
 | `LAZY-1..47` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
