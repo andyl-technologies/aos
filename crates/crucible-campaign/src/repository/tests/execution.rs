@@ -3116,6 +3116,26 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         nested_edge_visits.edge_visits(),
         &BTreeMap::from([(nested_edge, 1)])
     );
+    let root_puct = repository
+        .project_branch_puct(nested_observed.new_snapshot, first_request.branch_point())
+        .expect("project root PUCT statistics");
+    assert_eq!(root_puct.branch_point(), first_request.branch_point());
+    assert_eq!(root_puct.policy(), policy.id().expect("policy id"));
+    assert_eq!(root_puct.parent_visits(), 2);
+    assert_eq!(root_puct.edge_statistics().len(), 1);
+    let root_edge_statistics = root_puct
+        .edge_statistics()
+        .get(&first_edge)
+        .expect("root edge PUCT statistics");
+    assert_eq!(root_edge_statistics.edge_visits(), 2);
+    assert_eq!(
+        root_edge_statistics.prior_micros(),
+        crate::GUIDANCE_MICROS_PER_UNIT
+    );
+    assert_eq!(root_edge_statistics.reward_sum_micros(), 0);
+    assert!(!root_edge_statistics.is_novel());
+    assert!(root_edge_statistics.is_fairness_reserved());
+    assert!(root_puct.edge_scores().contains_key(&first_edge));
     let nested_restarted =
         CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
     assert_eq!(
@@ -3135,6 +3155,12 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
             .project_branch_edge_visits(nested_observed.new_snapshot, first_request.branch_point(),)
             .expect("restart-project root edge visits"),
         root_edge_visits
+    );
+    assert_eq!(
+        nested_restarted
+            .project_branch_puct(nested_observed.new_snapshot, first_request.branch_point())
+            .expect("restart-project root PUCT statistics"),
+        root_puct
     );
 
     let admitted_head = repository.head("finite-expansion").expect("admitted head");

@@ -1612,6 +1612,48 @@ impl CampaignRepository {
     ) -> Result<crate::BranchEdgeVisitStatistics, CampaignRepositoryError> {
         self.validate_complete_head(snapshot.content_id())?;
         let loaded = self.read_snapshot(snapshot.content_id())?;
+        self.project_branch_edge_visits_at(&loaded, branch_point)
+    }
+
+    /// Rebuilds the active policy's neutral-input PUCT scores for one branch point.
+    ///
+    /// The projection authenticates the exact snapshot once, derives its
+    /// completed edge-visit partition, assigns a canonical uniform prior, and
+    /// reserves fairness for the least-visited edge. Reward and novelty remain
+    /// neutral until their evidence owners are implemented. The active policy
+    /// must select tree search; this method never changes planner ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot or edge evidence is invalid, the
+    /// active policy is not tree search, a projection bound is exceeded, or
+    /// storage access fails.
+    pub fn project_branch_puct(
+        &self,
+        snapshot: crate::CampaignSnapshotId,
+        branch_point: crate::BranchPointId,
+    ) -> Result<crate::BranchPuctProjection, CampaignRepositoryError> {
+        self.validate_complete_head(snapshot.content_id())?;
+        let loaded = self.read_snapshot(snapshot.content_id())?;
+        let policy = self.read_policy(loaded.snapshot.active_policy().content_id())?;
+        let crate::ExplorerPolicy::TreeSearch { puct, .. } = policy.explorer() else {
+            return Err(integrity(
+                "branch-puct-projection-requires-tree-search-policy",
+            ));
+        };
+        crate::BranchPuctProjection::new_uniform(
+            loaded.snapshot.active_policy(),
+            *puct,
+            self.project_branch_edge_visits_at(&loaded, branch_point)?,
+        )
+        .map_err(Into::into)
+    }
+
+    fn project_branch_edge_visits_at(
+        &self,
+        loaded: &LoadedSnapshot,
+        branch_point: crate::BranchPointId,
+    ) -> Result<crate::BranchEdgeVisitStatistics, CampaignRepositoryError> {
         let Some(index) = self.merkle.get(
             loaded.snapshot.roots().observations,
             branch_credit_index_key(branch_point),
