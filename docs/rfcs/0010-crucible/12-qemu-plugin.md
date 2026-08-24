@@ -1258,9 +1258,13 @@ component that makes that purity true *inside* the QEMU process.
   first sample is absent or stale; it does not poll for a callback that an
   all-halted executor will never publish. Because fault-result polling uses the
   same control wake, the callback pumps every same-coordinate fault command
-  before clearing and synchronously recapturing the requested fingerprint; the
-  acknowledgement therefore orders a post-mutation hash, never a stale
-  pre-mutation sample with the same icount. The live hardware gate proves this
+  before clearing and synchronously recapturing the requested fingerprint. It
+  withholds the release acknowledgement while the lossless occurrence-event
+  ring is backpressured; the host drains that ring into scheduler-owned staging
+  under the same finite supervision deadline and wakes the callback again.
+  Consequently the acknowledgement orders both the result and every queued
+  occurrence event as well as a post-mutation hash, never a stale pre-mutation
+  sample with the same icount. The live hardware gate proves this
   with a one-byte conventional-RAM mutation whose writable-RAM component makes
   the pre/post hashes differ without guest progress; its separate clock fault
   remains authenticated by the typed clock evidence.

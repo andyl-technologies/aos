@@ -562,20 +562,23 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
-    pub(crate) fn apply_fault_command_at_current_boundary_with_result_buffer(
+    pub(crate) fn apply_fault_command_at_current_boundary_with_limits(
         &mut self,
         node: &NodeId,
         header: FaultCommandHeaderV1,
         payload: &[u8],
         result_buffer: Vec<u8>,
-    ) -> Result<DequeuedFaultResult, BackendError> {
-        self.node_mut(node)?
-            .apply_fault_command_at_current_boundary_with_result_buffer(
+        maximum_event_records: usize,
+    ) -> Result<DequeuedFaultResult, QemuNodeError> {
+        self.nodes
+            .get_mut(node)
+            .ok_or_else(|| QemuNodeError::fault_command(format!("node {node:?} is absent")))?
+            .apply_fault_command_at_current_boundary_with_limits(
                 header,
                 payload,
                 result_buffer,
+                maximum_event_records,
             )
-            .map_err(BackendError::from)
     }
 
     pub(crate) fn apply_fault_preparation_at_current_boundary(
@@ -584,11 +587,17 @@ impl QemuNodeSet {
         header: FaultCommandHeaderV1,
         payload: &[u8],
         maximum_payload_bytes: usize,
+        maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuNodeError> {
         self.nodes
             .get_mut(node)
             .ok_or_else(|| QemuNodeError::fault_command(format!("node {node:?} is absent")))?
-            .apply_fault_preparation_at_current_boundary(header, payload, maximum_payload_bytes)
+            .apply_fault_preparation_at_current_boundary(
+                header,
+                payload,
+                maximum_payload_bytes,
+                maximum_event_records,
+            )
     }
 
     /// Reads one live node's authoritative fault-command coordinate.

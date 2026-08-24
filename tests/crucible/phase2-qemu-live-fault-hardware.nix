@@ -67,7 +67,9 @@ in
             crates/crucible-qemu/examples/crucible-qemu-live-fault-hardware.rs
           grep -Fq 'pre_fault_sample.ram_digest == post_fault_sample.ram_digest' \
             crates/crucible-qemu/examples/crucible-qemu-live-fault-hardware.rs
-          grep -Fq 'self.pump_fault_commands(raw_icount)?;' \
+          grep -Fq 'let fault_pump_drained = self.pump_fault_commands(raw_icount)?;' \
+            crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs
+          grep -Fq 'if fault_pump_drained {' \
             crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs
           control_pump_line=$(grep -n 'Fault-result polling uses this same control wake' \
             crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs | cut -d: -f1)

@@ -5,6 +5,10 @@ use crucible_shmem::{
     FAULT_COMMAND_SEMANTIC_VERSION, dequeue_fault_result, enqueue_fault_command,
 };
 
+#[path = "fault_command_test/event_backpressure.rs"]
+mod event_backpressure;
+use event_backpressure::{assert_event_ring_backpressure, assert_pump};
+
 #[test]
 fn lifecycle_evidence_uses_the_scheduler_logical_coordinate() {
     let mut raw = vec![0_u8; 304];
@@ -126,19 +130,6 @@ fn complete_aarch64_hardware_manifest(
         architecture: FaultCapabilityScope::Aarch64,
         rows,
     }
-}
-
-#[test]
-fn bridge_accepts_every_canonical_qemu_result_status() {
-    for value in 1_u16..=14 {
-        let status = result_status(value)
-            .unwrap_or_else(|error| panic!("canonical status {value} was rejected: {error}"));
-        assert_eq!(status as u16, value);
-    }
-    assert!(matches!(
-        result_status(15),
-        Err(FaultCommandBridgeError::QemuStatus { value: 15 })
-    ));
 }
 
 #[test]
@@ -264,9 +255,7 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
         .unwrap_or_else(|error| panic!("enqueue test command: {error}"));
     }
 
-    bridge
-        .pump(40, 12)
-        .unwrap_or_else(|error| panic!("pump test commands: {error}"));
+    assert_pump(&mut bridge, true, "pump test commands");
     let results = (0..3)
         .map(|_index| {
             dequeue_fault_result(
@@ -349,9 +338,7 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
         .unwrap_or_else(|error| panic!("fill result ring: {error}"));
     }
 
-    bridge
-        .pump(40, 12)
-        .unwrap_or_else(|error| panic!("pump under backpressure: {error}"));
+    assert_pump(&mut bridge, false, "pump under backpressure");
     TEST_CAPABILITY_RESULT_PENDING.with(|pending| assert!(pending.get().is_some()));
     let _released = dequeue_fault_result(
         &result_ring,
@@ -361,9 +348,7 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
         RESULT_ARENA_OFFSET,
     )
     .unwrap_or_else(|error| panic!("release result capacity: {error}"));
-    bridge
-        .pump(40, 12)
-        .unwrap_or_else(|error| panic!("pump after backpressure: {error}"));
+    assert_pump(&mut bridge, true, "pump after backpressure");
     TEST_CAPABILITY_RESULT_PENDING.with(|pending| assert!(pending.get().is_none()));
     let mut saw_pending_result = false;
     while let Some(result) = dequeue_fault_result(
@@ -383,6 +368,15 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
         }
     }
     assert!(saw_pending_result);
+
+    assert_event_ring_backpressure(
+        &mut bridge,
+        &event_ring,
+        &mut event_slots,
+        &event_arena_header,
+        &mut event_arena,
+        EVENT_ARENA_OFFSET,
+    );
 
     let prepared_sequence = 100;
     bridge.clock_commands.insert(

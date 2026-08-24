@@ -1259,14 +1259,6 @@ extern "C" fn test_poll(
 }
 
 #[cfg(test)]
-extern "C" fn test_event_peek(event: *mut QemuFaultEvent, payload_length: *mut usize) -> c_int {
-    if event.is_null() || payload_length.is_null() {
-        return -libc::EINVAL;
-    }
-    0
-}
-
-#[cfg(test)]
 extern "C" fn test_event_envelope_version() -> c_int {
     1
 }
@@ -2015,7 +2007,7 @@ use event_envelope::*;
 use instruction_evidence::*;
 use lifecycle_evidence::*;
 #[cfg(test)]
-use test_support::test_result_for_command;
+use test_support::{TEST_EVENT_PENDING, test_event_peek, test_result_for_command};
 /// Failure of the lossless fault command bridge.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum FaultCommandBridgeError {

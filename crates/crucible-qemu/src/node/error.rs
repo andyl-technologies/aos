@@ -174,6 +174,18 @@ pub enum QemuNodeError {
         /// Authored or hard byte ceiling governing the request.
         configured: u64,
     },
+    /// Lossless occurrence-event staging exceeded its authored record ceiling.
+    #[error(
+        "cannot stage {requested} QEMU fault event records at current {current} against limit {configured}"
+    )]
+    FaultEventStorage {
+        /// Events already retained by the in-flight command fence.
+        current: u64,
+        /// Additional records required before the plugin can acknowledge.
+        requested: u64,
+        /// Authored record ceiling governing the operation.
+        configured: u64,
+    },
 }
 
 impl QemuNodeError {
