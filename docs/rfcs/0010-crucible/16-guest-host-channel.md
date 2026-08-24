@@ -462,6 +462,14 @@ evaluation.
     `stream_tag:lp_str`), on the guest→host path only. This is the **one** marker
     kind whose servicing produces a `Decision` (in-band, part of `reduce`) and
     elicits a host→guest reply; all other kinds are purely observational (§16.5.3).
+  - **Measurement messages**, the `measurement_begin`, `metric_sample`, and
+    `measurement_end` messages of RFC-0016 §08.4. Each carries a canonical
+    measurement ID and instance key; a sample additionally carries a metric ID
+    and one bounded typed value.
+  - **Semantic markers**, carrying a canonical marker ID, exact instance key,
+    and up to 64 strictly key-ordered typed details. They provide the
+    instance-bearing boundary events required by RFC-0016 §08.3-08.4 without
+    conflating application facts with host-derived model facts.
   *Gate:* `gate:abi-conformance`. *Spec:* §16.5.1, forward-ref
   [`18-assertions-properties.md`](18-assertions-properties.md),
   [`19-observability-event-log.md`](19-observability-event-log.md).
@@ -491,7 +499,7 @@ evaluation.
   *Spec:* §16.5.1.
 
 ```text
-Illustrative kind table (closed, versioned set; numbers are sketches):
+Doorbell protocol version 3 kind table (closed, versioned set):
 
   kind  name              body
   ----  ----------------  -----------------------------------------------
@@ -501,14 +509,36 @@ Illustrative kind table (closed, versioned set; numbers are sketches):
    3    event             lp_str name, lp_kv[] details
    4    coverage          lp_str point
    5    random_request    request_id:u32, width:u8 (<=8), lp_str stream_tag
+   6    measurement_begin lp_id measurement, lp_id instance
+   7    metric_sample     lp_id measurement, lp_id instance, lp_id metric,
+                          typed_value
+   8    measurement_end   lp_id measurement, lp_id instance
+   9    semantic_marker   lp_id marker, lp_id instance, typed_detail[]
 
   flavor (kind=assert): 0=always  1=sometimes  2=reachable  3=unreachable
   must_hit (kind=assert): 0=not catalog-declared  1=declared (finalize never-reached)
   lp_str: u16 LE length-prefix + that many UTF-8 bytes
   lp_kv: u16 LE count, then that many (lp_str key, lp_str value) pairs
+  lp_id: lp_str restricted to 1..=128 bytes and ASCII alphanumeric plus
+         `.`, `_`, `-`, `/`, and `:`
+  typed_value tag:
+    0 signed i64 LE
+    1 unsigned u64 LE
+    2 reduced rational: negative:u8, numerator:u128 LE, denominator:u128 LE
+    3 boolean:u8
+    4 enumerated lp_id
+    5 signed vector: count:u16 LE, count * i64 LE
+    6 unsigned vector: count:u16 LE, count * u64 LE
+  typed vectors contain at most 512 elements. A rational has a positive
+  denominator, is reduced, and encodes zero only as (false, 0, 1).
+  typed_detail: u16 LE count (<=64), then strictly increasing
+                (lp_id key, typed_value value) pairs
+  every complete marker body is at most 4,608 bytes, matching the dedicated
+  shared-memory marker entry; count bounds do not waive this aggregate limit
 
-  Adding random_request (kind=5) BUMPS the doorbell protocol version ([GHC-21])
-  and is golden-vectored ([GHC-37]). Unlike kinds 1-4 it is guest->host only,
+  Adding the RFC-0016 measurement vocabulary (kinds 6-9) bumps the doorbell
+  protocol version from 2 to 3 ([GHC-21]); all nine bodies are golden-vectored.
+  Unlike every observational kind, kind 5 is guest->host only,
   produces a Decision::AppRandom (05), and elicits a host->guest reply (§16.5.3).
 ```
 
@@ -516,9 +546,10 @@ Implementation note: `crucible-protocol::doorbell_marker` owns the closed marker
 vocabulary, body codec, typed decode diagnostics, and byte-exact marker golden
 vectors. The QEMU plugin decodes every generic marker trap through that shared
 codec before recording it, rejects `random_request` on the observational marker
-path, and maps decoded assertion payloads into `GuestAssertionMarker` events so
-the existing guest assertion event-log/finalize machinery in `crucible` consumes
-the shared wire fields.
+path, maps decoded assertion payloads into `GuestAssertionMarker` events, and
+maps kinds 6-9 into typed scheduler events before any campaign measurement
+evaluation consumes them. The existing guest assertion event-log/finalize
+machinery in `crucible` consumes the assertion wire fields.
 
 ### 16.5.2 Markers are observational, not part of the determinism comparison
 
@@ -618,9 +649,11 @@ its complete absence changes nothing about [GHC-1].
 - **[GHC-27]** `crucible-guest` MUST expose a CLI marker vocabulary mirroring
   §16.5.1 — at least `always`, `sometimes`, `reachable` (and its never-reached
   dual), `setup-complete`, `test-done`, an `event` form, a `coverage` form, and a
-  `get-random <width> [tag]` verb (the `random_request` kind of [GHC-37],
-  generated from the single-source channel ABI like every other verb, [GHC-18],
-  [GHC-29]) — each producing the corresponding §16.5 binary frame and ringing the
+  `get-random <width> [tag]` verb (the `random_request` kind of [GHC-37]), and
+  `measurement-begin`, `metric-sample`, `measurement-end`, and
+  `semantic-marker` forms matching doorbell v3 kinds 6 through 9. All are
+  generated from the single-source channel ABI ([GHC-18], [GHC-29]) and each
+  produces the corresponding §16.5 binary frame before ringing the
   doorbell. Unlike the observational verbs, `get-random` rings the doorbell and then
   **reads the host→guest reply** at the injected delivery icount and returns the
   drawn value to its caller. The CLI surface mirrors the wire kinds so a guest author
@@ -652,6 +685,10 @@ crucible-guest CLI sketch (mirrors §16.5.1; emits §16.5 binary frames):
   crucible-guest test-done
   crucible-guest event      <name> [k=v ...]
   crucible-guest coverage   <point>
+  crucible-guest measurement-begin <measurement> <instance>
+  crucible-guest metric-sample <measurement> <instance> <metric> <type> <value>
+  crucible-guest measurement-end <measurement> <instance>
+  crucible-guest semantic-marker <marker> <instance> [key:type=value ...]
   crucible-guest get-random <width> [tag]   # rings doorbell, reads host reply
 
   Each invocation encodes one binary frame and executes the per-arch

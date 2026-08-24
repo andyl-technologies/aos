@@ -10,7 +10,7 @@ use crucible::model::{
 use crucible::{
     Configuration, EventLog, EventLogOffset, Icount, MarkerId, NodeId, ObservableEvent, Plan,
     Properties, QuantumOutcome, QuantumTerminalVerdict, ScenarioDefForm, SchedulerError,
-    SchedulerEventLogEntry, SchedulerQuiescence, Seed, VirtualTime, World,
+    SchedulerEventLogEntry, SchedulerQuiescence, Seed, VirtualTime, WhiteBoxPolicy, World,
 };
 use crucible_campaign::{
     Attempt, AttemptResourceLimits, AttemptStart, BooleanDomain, BranchPath, CampaignHash,
@@ -184,6 +184,236 @@ fn measured_scenario_fails_closed_until_sample_producers_exist() {
         AttemptWorkerFailure::Terminal(
             QemuFreshModeledDriverError::MeasurementProducersUnavailable
         )
+    ));
+}
+
+#[test]
+fn guest_measurement_messages_normalize_against_the_exact_scenario_contract() {
+    let fixture = crucible::happy_path_scenario().expect("happy-path fixture");
+    let definitions = guest_measurement_definitions(&fixture.scenario);
+    let node = fixture
+        .scenario
+        .world()
+        .vm_nodes()
+        .first()
+        .expect("happy-path VM")
+        .id
+        .clone();
+    let entries = vec![
+        SchedulerEventLogEntry::guest_measurement_observation(
+            0,
+            Icount { retired: 1 },
+            node.clone(),
+            GuestMeasurementEvent::Begin {
+                measurement: String::from("driver-window"),
+                instance: String::from("epoch-7"),
+            },
+        ),
+        SchedulerEventLogEntry::guest_measurement_observation(
+            1,
+            Icount { retired: 2 },
+            node.clone(),
+            GuestMeasurementEvent::Sample {
+                measurement: String::from("driver-window"),
+                instance: String::from("epoch-7"),
+                metric: String::from("healthy-peers"),
+                value: GuestMeasurementValue::Unsigned(3),
+            },
+        ),
+        SchedulerEventLogEntry::guest_semantic_marker_observation(
+            2,
+            Icount { retired: 3 },
+            node.clone(),
+            String::from("routing-converged"),
+            String::from("epoch-7"),
+            Vec::new(),
+        ),
+        SchedulerEventLogEntry::guest_measurement_observation(
+            3,
+            Icount { retired: 4 },
+            node,
+            GuestMeasurementEvent::End {
+                measurement: String::from("driver-window"),
+                instance: String::from("epoch-7"),
+            },
+        ),
+    ];
+
+    let samples = normalize_guest_measurements(&definitions, &entries)
+        .expect("declared guest measurement sequence");
+
+    assert_eq!(samples.len(), 1);
+    assert_eq!(samples[0].sequence(), 1);
+    assert_eq!(samples[0].measurement().as_str(), "driver-window");
+    assert_eq!(samples[0].metric().as_str(), "healthy-peers");
+    assert_eq!(samples[0].value(), &MeasurementSampleValue::Unsigned(3));
+}
+
+#[test]
+fn fresh_driver_retains_verified_guest_measurement_evaluation() {
+    let fixture = crucible::happy_path_scenario().expect("happy-path fixture");
+    let scenario = guest_measured_scenario(&fixture.scenario);
+    let input = input_for_scenario(scenario, StopCondition::Terminal);
+    let configuration = starting_configuration(&input);
+    let node = input
+        .scenario()
+        .world()
+        .vm_nodes()
+        .first()
+        .expect("happy-path VM")
+        .id
+        .clone();
+    let mut observations = fixture.observations().to_vec();
+    observations.extend([
+        ObservableEvent::guest_measurement(
+            Icount { retired: 40 },
+            node.clone(),
+            GuestMeasurementEvent::Begin {
+                measurement: String::from("driver-window"),
+                instance: String::from("epoch-7"),
+            },
+        ),
+        ObservableEvent::guest_measurement(
+            Icount { retired: 41 },
+            node.clone(),
+            GuestMeasurementEvent::Sample {
+                measurement: String::from("driver-window"),
+                instance: String::from("epoch-7"),
+                metric: String::from("healthy-peers"),
+                value: GuestMeasurementValue::Unsigned(3),
+            },
+        ),
+        ObservableEvent::guest_semantic_marker(
+            Icount { retired: 42 },
+            node.clone(),
+            String::from("routing-converged"),
+            String::from("epoch-7"),
+            Vec::new(),
+        ),
+        ObservableEvent::guest_measurement(
+            Icount { retired: 43 },
+            node,
+            GuestMeasurementEvent::End {
+                measurement: String::from("driver-window"),
+                instance: String::from("epoch-7"),
+            },
+        ),
+    ]);
+    let mut log = EventLog::new();
+    let append = log
+        .append_observable_events(observations)
+        .expect("guest measurement event log");
+    let mut quantum = outcome(configuration, append.entries, append.offset, 43);
+    quantum.scheduler_quiescence = Some(SchedulerQuiescence::default());
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([Ok(quantum)]),
+        terminal: Some(QuantumTerminalVerdict::Passed),
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+    let mut driver = QemuFreshModeledDriver::new();
+
+    let pending = driver
+        .drive(
+            &mut lifecycle,
+            &input,
+            &context(),
+            QemuFreshStartMaterialization::genesis(),
+        )
+        .expect("terminal guest-measured stop");
+    let product = driver
+        .seal(pending, Vec::new())
+        .expect("verified guest measurement projection");
+    let AttemptExecutionProduct::Observation(candidate) = product else {
+        panic!("fresh modeled driver must return an observation")
+    };
+    let evaluation = candidate
+        .measurements()
+        .evaluation()
+        .expect("verified evaluation payload");
+    let payload = std::str::from_utf8(evaluation.payload()).expect("canonical evaluation JSON");
+
+    assert!(payload.contains("\"driver-window\""));
+    assert!(payload.contains("\"healthy-peers\""));
+    assert!(payload.contains("\"value\":3"));
+}
+
+#[test]
+fn guest_measurement_messages_fail_closed_on_type_and_lifecycle_mismatch() {
+    let fixture = crucible::happy_path_scenario().expect("happy-path fixture");
+    let definitions = guest_measurement_definitions(&fixture.scenario);
+    let node = fixture
+        .scenario
+        .world()
+        .vm_nodes()
+        .first()
+        .expect("happy-path VM")
+        .id
+        .clone();
+    let begin = SchedulerEventLogEntry::guest_measurement_observation(
+        0,
+        Icount { retired: 1 },
+        node.clone(),
+        GuestMeasurementEvent::Begin {
+            measurement: String::from("driver-window"),
+            instance: String::from("epoch-7"),
+        },
+    );
+    let wrong_instance = SchedulerEventLogEntry::guest_measurement_observation(
+        0,
+        Icount { retired: 1 },
+        node.clone(),
+        GuestMeasurementEvent::Begin {
+            measurement: String::from("driver-window"),
+            instance: String::from("other-epoch"),
+        },
+    );
+    let wrong_type = SchedulerEventLogEntry::guest_measurement_observation(
+        1,
+        Icount { retired: 2 },
+        node,
+        GuestMeasurementEvent::Sample {
+            measurement: String::from("driver-window"),
+            instance: String::from("epoch-7"),
+            metric: String::from("healthy-peers"),
+            value: GuestMeasurementValue::Boolean(true),
+        },
+    );
+    let wrong_cohort_marker = SchedulerEventLogEntry::guest_semantic_marker_observation(
+        0,
+        Icount { retired: 1 },
+        fixture.scenario.world().vm_nodes()[1].id.clone(),
+        String::from("routing-converged"),
+        String::from("epoch-7"),
+        Vec::new(),
+    );
+
+    let error = normalize_guest_measurements(&definitions, &[begin.clone(), wrong_type])
+        .expect_err("declared unsigned metric must reject a boolean");
+    assert!(matches!(
+        error,
+        QemuFreshModeledDriverError::GuestMeasurementProtocol { sequence: 1, .. }
+    ));
+
+    let error = normalize_guest_measurements(&definitions, &[wrong_instance])
+        .expect_err("a guest message must bind the declared exact instance");
+    assert!(matches!(
+        error,
+        QemuFreshModeledDriverError::GuestMeasurementProtocol { sequence: 0, .. }
+    ));
+
+    let error = normalize_guest_measurements(&definitions, &[wrong_cohort_marker])
+        .expect_err("a semantic marker must come from the declared cohort");
+    assert!(matches!(
+        error,
+        QemuFreshModeledDriverError::GuestMeasurementProtocol { sequence: 0, .. }
+    ));
+
+    let error = normalize_guest_measurements(&definitions, &[begin])
+        .expect_err("an open measurement instance must be closed");
+    assert!(matches!(
+        error,
+        QemuFreshModeledDriverError::GuestMeasurementProtocol { sequence: 1, .. }
     ));
 }
 
@@ -548,6 +778,65 @@ fn measured_scenario(base: &ScenarioDefForm) -> ScenarioDefForm {
         base.app_random_draw_cap(),
     )
     .expect("measured scenario")
+}
+
+fn guest_measurement_definitions(base: &ScenarioDefForm) -> MeasurementDefinitions {
+    let world = white_box_world(base);
+    let node = world.vm_nodes().first().expect("happy-path VM").id.clone();
+    MeasurementDefinitions::new(
+        &world,
+        base.plan(),
+        base.properties(),
+        vec![MeasurementDefinition {
+            id: MeasurementId::parse("driver-window").expect("measurement id"),
+            begin: BoundarySelector::ScenarioGenesis,
+            end: BoundarySelector::GuestMarker {
+                marker: MarkerId::from_name("routing-converged"),
+                instance: Some(
+                    crucible::model::MeasurementInstanceKey::parse("epoch-7")
+                        .expect("measurement instance"),
+                ),
+            },
+            timeout: None,
+            cohort: CohortPolicy::All(vec![node]),
+            metrics: vec![MetricDefinition {
+                id: MetricId::parse("healthy-peers").expect("metric id"),
+                value_type: MetricValueType::UnsignedInteger,
+                unit: UnitId::parse("samples").expect("unit id"),
+                source: MetricSource::Guest,
+                aggregation: Aggregation::Sum,
+            }],
+        }],
+    )
+    .expect("guest measurement definitions")
+}
+
+fn guest_measured_scenario(base: &ScenarioDefForm) -> ScenarioDefForm {
+    let world = white_box_world(base);
+    let measurements = guest_measurement_definitions(base);
+    ScenarioDefForm::from_components_with_measurements_and_app_random_draw_cap(
+        &world,
+        base.plan(),
+        base.properties(),
+        &measurements,
+        base.seed(),
+        base.app_random_draw_cap(),
+    )
+    .expect("guest-measured scenario")
+}
+
+fn white_box_world(base: &ScenarioDefForm) -> World {
+    let nodes = base
+        .world()
+        .vm_nodes()
+        .iter()
+        .cloned()
+        .map(|mut node| {
+            node.white_box = WhiteBoxPolicy::Enabled;
+            node
+        })
+        .collect();
+    World::from_nodes_and_links(nodes, base.world().links().to_vec()).expect("white-box test world")
 }
 
 fn choice_discovery(scenario: ScenarioDefId) -> ChoiceDiscovery {

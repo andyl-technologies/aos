@@ -540,17 +540,22 @@ fn guest_marker_node(
     marker: &MarkerId,
     instance: Option<&MeasurementInstanceKey>,
 ) -> Option<NodeId> {
-    if instance.is_some() {
-        // Instance-carrying marker events arrive with T-CAM-3.2. Existing
-        // marker payloads cannot be silently treated as a matching instance.
-        return None;
-    }
     match entry.payload() {
         SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMarker {
             node,
             marker: observed,
             ..
-        }) if observed == marker => Some(node.clone()),
+        }) if instance.is_none() && observed == marker => Some(node.clone()),
+        SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestSemanticMarker {
+            node,
+            marker: observed,
+            instance: observed_instance,
+            ..
+        }) if observed == &marker.name
+            && instance.is_some_and(|expected| expected.as_str() == observed_instance) =>
+        {
+            Some(node.clone())
+        }
         _ => None,
     }
 }

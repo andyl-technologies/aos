@@ -411,7 +411,7 @@ sample        = unsigned64(raw_seeded_draw & (2^width_bits - 1))
 
 For width 64 the mask is `u64::MAX`. Width is restricted to `1..=64`. The
 declaration source is the requesting guest node under white-box doorbell
-protocol version 2. Its class context is exactly `app-random` plus the
+protocol version 3. Its class context is exactly `app-random` plus the
 hex-encoded `choice_stream`; its semantic tags are exactly `app-random`,
 `uniform-unsigned`, and `width-N`. The scheduler coordinate is
 `H("crucible.app-random.scheduler-coordinate.v1", scenario_id || LP(node))`.

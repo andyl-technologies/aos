@@ -29,18 +29,25 @@ pub use crucible_protocol::{
     WHITEBOX_DOORBELL_FRAME_MAGIC, WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE,
     WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION, WHITEBOX_DOORBELL_KIND_ASSERTION,
     WHITEBOX_DOORBELL_KIND_COVERAGE, WHITEBOX_DOORBELL_KIND_EVENT,
-    WHITEBOX_DOORBELL_KIND_LIFECYCLE, WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
+    WHITEBOX_DOORBELL_KIND_LIFECYCLE, WHITEBOX_DOORBELL_KIND_MEASUREMENT_BEGIN,
+    WHITEBOX_DOORBELL_KIND_MEASUREMENT_END, WHITEBOX_DOORBELL_KIND_METRIC_SAMPLE,
+    WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST, WHITEBOX_DOORBELL_KIND_SEMANTIC_MARKER,
     WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT, WHITEBOX_DOORBELL_LIFECYCLE_SETUP_COMPLETE,
     WHITEBOX_DOORBELL_LIFECYCLE_TEST_DONE, WHITEBOX_DOORBELL_MARKER_KIND_COUNT,
     WHITEBOX_DOORBELL_PROTOCOL_VERSION, WHITEBOX_DOORBELL_RANDOM_REQUEST_MAX_WIDTH_BYTES,
     WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
-    WHITEBOX_DOORBELL_X86_64_RESERVED_PORT, WhiteboxAssertionMarkerBody,
-    WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody, WhiteboxDoorbellAbi,
-    WhiteboxDoorbellArchitecture, WhiteboxDoorbellFrame, WhiteboxDoorbellFrameDecodeError,
-    WhiteboxDoorbellFrameEncodeError, WhiteboxDoorbellInstruction, WhiteboxDoorbellMarkerKind,
-    WhiteboxDoorbellTrapAbi, WhiteboxEventMarkerBody, WhiteboxLifecycleMarkerEvent,
-    WhiteboxMarkerDetail, WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError,
-    WhiteboxMarkerPayloadEncodeError, WhiteboxRandomRequestBody, decode_whitebox_marker_payload,
+    WHITEBOX_DOORBELL_X86_64_RESERVED_PORT, WHITEBOX_MARKER_BODY_MAX_BYTES,
+    WHITEBOX_MEASUREMENT_IDENTIFIER_MAX_BYTES, WHITEBOX_MEASUREMENT_VALUE_KIND_COUNT,
+    WHITEBOX_MEASUREMENT_VECTOR_MAX_ELEMENTS, WHITEBOX_SEMANTIC_MARKER_MAX_DETAILS,
+    WhiteboxAssertionMarkerBody, WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody,
+    WhiteboxDoorbellAbi, WhiteboxDoorbellArchitecture, WhiteboxDoorbellFrame,
+    WhiteboxDoorbellFrameDecodeError, WhiteboxDoorbellFrameEncodeError,
+    WhiteboxDoorbellInstruction, WhiteboxDoorbellMarkerKind, WhiteboxDoorbellTrapAbi,
+    WhiteboxEventMarkerBody, WhiteboxLifecycleMarkerEvent, WhiteboxMarkerDetail,
+    WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError, WhiteboxMarkerPayloadEncodeError,
+    WhiteboxMeasurementBoundaryBody, WhiteboxMeasurementValue, WhiteboxMeasurementValueKind,
+    WhiteboxMetricSampleBody, WhiteboxRandomRequestBody, WhiteboxReducedRational,
+    WhiteboxSemanticMarkerBody, WhiteboxSemanticMarkerDetail, decode_whitebox_marker_payload,
     encode_aarch64_hint_instruction, encode_whitebox_doorbell_frame, encode_whitebox_marker_frame,
     encode_whitebox_marker_payload_body, encode_x86_64_out_imm8_al_instruction,
     whitebox_doorbell_abi_for_architecture,
@@ -66,7 +73,7 @@ pub const CRUCIBLE_GUEST_DEFAULT_RANDOM_REQUEST_ID: u32 = 0;
 /// Usage text for the `crucible-guest` command-line emitter.
 #[must_use]
 pub const fn usage() -> &'static str {
-    "usage: crucible-guest <verb> [args]\n\nverbs:\n  always <id> <message> <0|1>\n  sometimes <id> <message> <0|1>\n  reachable <id> <message>\n  unreachable <id> <message>\n  setup-complete\n  test-done\n  event <name> [k=v ...]\n  coverage <point>\n  get-random <width> [tag]\n  agent [--max-channels N] [--ssh-program PATH] [--ssh-arg ARG ...]"
+    "usage: crucible-guest <verb> [args]\n\nverbs:\n  always <id> <message> <0|1>\n  sometimes <id> <message> <0|1>\n  reachable <id> <message>\n  unreachable <id> <message>\n  setup-complete\n  test-done\n  event <name> [k=v ...]\n  coverage <point>\n  measurement-begin <measurement> <instance>\n  metric-sample <measurement> <instance> <metric> <type> <value>\n  measurement-end <measurement> <instance>\n  semantic-marker <marker> <instance> [key:type=value ...]\n  get-random <width> [tag]\n  agent [--max-channels N] [--ssh-program PATH] [--ssh-arg ARG ...]"
 }
 
 /// Error returned while parsing, encoding, or emitting a guest marker command.
@@ -211,6 +218,66 @@ impl GuestCommand {
         Self {
             payload: WhiteboxMarkerPayload::Coverage(WhiteboxCoverageMarkerBody {
                 point: point.into(),
+            }),
+            reply_width: None,
+        }
+    }
+
+    /// Builds a guest measurement-window begin message.
+    #[must_use]
+    pub fn measurement_begin(measurement: impl Into<String>, instance: impl Into<String>) -> Self {
+        Self {
+            payload: WhiteboxMarkerPayload::MeasurementBegin(WhiteboxMeasurementBoundaryBody {
+                measurement: measurement.into(),
+                instance: instance.into(),
+            }),
+            reply_width: None,
+        }
+    }
+
+    /// Builds one typed guest metric sample.
+    #[must_use]
+    pub fn metric_sample(
+        measurement: impl Into<String>,
+        instance: impl Into<String>,
+        metric: impl Into<String>,
+        value: WhiteboxMeasurementValue,
+    ) -> Self {
+        Self {
+            payload: WhiteboxMarkerPayload::MetricSample(WhiteboxMetricSampleBody {
+                measurement: measurement.into(),
+                instance: instance.into(),
+                metric: metric.into(),
+                value,
+            }),
+            reply_width: None,
+        }
+    }
+
+    /// Builds a guest measurement-window end message.
+    #[must_use]
+    pub fn measurement_end(measurement: impl Into<String>, instance: impl Into<String>) -> Self {
+        Self {
+            payload: WhiteboxMarkerPayload::MeasurementEnd(WhiteboxMeasurementBoundaryBody {
+                measurement: measurement.into(),
+                instance: instance.into(),
+            }),
+            reply_width: None,
+        }
+    }
+
+    /// Builds a guest semantic marker with canonical typed details.
+    #[must_use]
+    pub fn semantic_marker(
+        marker: impl Into<String>,
+        instance: impl Into<String>,
+        details: Vec<WhiteboxSemanticMarkerDetail>,
+    ) -> Self {
+        Self {
+            payload: WhiteboxMarkerPayload::SemanticMarker(WhiteboxSemanticMarkerBody {
+                marker: marker.into(),
+                instance: instance.into(),
+                details,
             }),
             reply_width: None,
         }
@@ -378,6 +445,10 @@ where
         "test-done" => parse_zero_arity(rest, GuestCommand::test_done, "test-done"),
         "event" => parse_event(rest),
         "coverage" => parse_coverage(rest),
+        "measurement-begin" => parse_measurement_boundary(rest, true),
+        "metric-sample" => parse_metric_sample(rest),
+        "measurement-end" => parse_measurement_boundary(rest, false),
+        "semantic-marker" => parse_semantic_marker(rest),
         "get-random" => parse_get_random(rest),
         _ => Err(usage_error(format!("unknown verb `{verb}`"))),
     }
@@ -467,6 +538,153 @@ fn parse_coverage(rest: &[String]) -> Result<GuestCommand, GuestEmitterError> {
         return Err(usage_error("coverage requires <point>"));
     }
     Ok(GuestCommand::coverage(rest[0].clone()))
+}
+
+fn parse_measurement_boundary(
+    rest: &[String],
+    begin: bool,
+) -> Result<GuestCommand, GuestEmitterError> {
+    if rest.len() != 2 {
+        let verb = if begin {
+            "measurement-begin"
+        } else {
+            "measurement-end"
+        };
+        return Err(usage_error(format!(
+            "{verb} requires <measurement> <instance>"
+        )));
+    }
+    Ok(if begin {
+        GuestCommand::measurement_begin(rest[0].clone(), rest[1].clone())
+    } else {
+        GuestCommand::measurement_end(rest[0].clone(), rest[1].clone())
+    })
+}
+
+fn parse_metric_sample(rest: &[String]) -> Result<GuestCommand, GuestEmitterError> {
+    if rest.len() != 5 {
+        return Err(usage_error(
+            "metric-sample requires <measurement> <instance> <metric> <type> <value>",
+        ));
+    }
+    Ok(GuestCommand::metric_sample(
+        rest[0].clone(),
+        rest[1].clone(),
+        rest[2].clone(),
+        parse_measurement_value(&rest[3], &rest[4])?,
+    ))
+}
+
+fn parse_semantic_marker(rest: &[String]) -> Result<GuestCommand, GuestEmitterError> {
+    if rest.len() < 2 {
+        return Err(usage_error(
+            "semantic-marker requires <marker> <instance> [key:type=value ...]",
+        ));
+    }
+    let mut details = Vec::with_capacity(rest.len().saturating_sub(2));
+    for word in &rest[2..] {
+        let Some((key_and_type, value)) = word.split_once('=') else {
+            return Err(usage_error(format!(
+                "semantic detail `{word}` must use key:type=value syntax"
+            )));
+        };
+        let Some((key, value_type)) = key_and_type.split_once(':') else {
+            return Err(usage_error(format!(
+                "semantic detail `{word}` must include a value type"
+            )));
+        };
+        details.push(WhiteboxSemanticMarkerDetail {
+            key: key.to_owned(),
+            value: parse_measurement_value(value_type, value)?,
+        });
+    }
+    details.sort_by(|left, right| left.key.cmp(&right.key));
+    if details.windows(2).any(|pair| pair[0].key == pair[1].key) {
+        return Err(usage_error("semantic detail keys must be unique"));
+    }
+    Ok(GuestCommand::semantic_marker(
+        rest[0].clone(),
+        rest[1].clone(),
+        details,
+    ))
+}
+
+fn parse_measurement_value(
+    value_type: &str,
+    value: &str,
+) -> Result<WhiteboxMeasurementValue, GuestEmitterError> {
+    match value_type {
+        "i64" => value
+            .parse::<i64>()
+            .map(WhiteboxMeasurementValue::Signed)
+            .map_err(|_error| usage_error(format!("`{value}` is not a signed 64-bit integer"))),
+        "u64" => value
+            .parse::<u64>()
+            .map(WhiteboxMeasurementValue::Unsigned)
+            .map_err(|_error| usage_error(format!("`{value}` is not an unsigned 64-bit integer"))),
+        "rational" => parse_rational(value),
+        "bool" => parse_condition(value).map(WhiteboxMeasurementValue::Boolean),
+        "enum" => Ok(WhiteboxMeasurementValue::Enumerated(value.to_owned())),
+        "i64vec" => parse_signed_vector(value).map(WhiteboxMeasurementValue::SignedVector),
+        "u64vec" => parse_unsigned_vector(value).map(WhiteboxMeasurementValue::UnsignedVector),
+        _ => Err(usage_error(format!(
+            "unknown measurement value type `{value_type}`; expected i64, u64, rational, bool, enum, i64vec, or u64vec"
+        ))),
+    }
+}
+
+fn parse_rational(value: &str) -> Result<WhiteboxMeasurementValue, GuestEmitterError> {
+    let (negative, magnitude) = value
+        .strip_prefix('-')
+        .map_or((false, value), |magnitude| (true, magnitude));
+    let Some((numerator, denominator)) = magnitude.split_once('/') else {
+        return Err(usage_error(format!(
+            "rational `{value}` must use [-]numerator/denominator syntax"
+        )));
+    };
+    let numerator = numerator
+        .parse::<u128>()
+        .map_err(|_error| usage_error(format!("rational numerator `{numerator}` is not a u128")))?;
+    let denominator = denominator.parse::<u128>().map_err(|_error| {
+        usage_error(format!(
+            "rational denominator `{denominator}` is not a u128"
+        ))
+    })?;
+    Ok(WhiteboxMeasurementValue::Rational(
+        WhiteboxReducedRational {
+            negative,
+            numerator,
+            denominator,
+        },
+    ))
+}
+
+fn parse_signed_vector(value: &str) -> Result<Vec<i64>, GuestEmitterError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    value
+        .split(',')
+        .map(|element| {
+            element
+                .parse::<i64>()
+                .map_err(|_error| usage_error(format!("vector element `{element}` is not an i64")))
+        })
+        .collect()
+}
+
+fn parse_unsigned_vector(value: &str) -> Result<Vec<u64>, GuestEmitterError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    value
+        .split(',')
+        .map(|element| {
+            element
+                .parse::<u64>()
+                .map_err(|_error| usage_error(format!("vector element `{element}` is not a u64")))
+        })
+        .collect()
 }
 
 fn parse_get_random(rest: &[String]) -> Result<GuestCommand, GuestEmitterError> {

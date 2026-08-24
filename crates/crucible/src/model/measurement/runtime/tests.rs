@@ -243,6 +243,79 @@ fn cohort_boundaries_retain_exact_events_and_bound_samples() -> Result<(), Box<d
 }
 
 #[test]
+fn semantic_marker_boundaries_require_the_exact_instance() -> Result<(), Box<dyn Error>> {
+    let world = world()?;
+    let expected_instance = MeasurementInstanceKey::parse("epoch-7")?;
+    let measurement = MeasurementDefinition {
+        id: MeasurementId::parse("recovery")?,
+        begin: BoundarySelector::GuestMarker {
+            marker: MarkerId::from_name("begin"),
+            instance: Some(expected_instance.clone()),
+        },
+        end: BoundarySelector::GuestMarker {
+            marker: MarkerId::from_name("end"),
+            instance: Some(expected_instance),
+        },
+        timeout: None,
+        cohort: CohortPolicy::All(vec![node("router-a")]),
+        metrics: vec![metric(
+            "samples",
+            MetricValueType::UnsignedInteger,
+            Aggregation::Count,
+        )?],
+    };
+    let definitions = MeasurementDefinitions::new(
+        &world,
+        &Plan::empty(),
+        &Properties::empty(),
+        vec![measurement],
+    )?;
+    let entries = vec![
+        SchedulerEventLogEntry::guest_semantic_marker_observation(
+            0,
+            Icount { retired: 10 },
+            node("router-a"),
+            String::from("begin"),
+            String::from("other-epoch"),
+            Vec::new(),
+        ),
+        SchedulerEventLogEntry::guest_semantic_marker_observation(
+            1,
+            Icount { retired: 20 },
+            node("router-a"),
+            String::from("begin"),
+            String::from("epoch-7"),
+            Vec::new(),
+        ),
+        SchedulerEventLogEntry::guest_semantic_marker_observation(
+            2,
+            Icount { retired: 30 },
+            node("router-a"),
+            String::from("end"),
+            String::from("other-epoch"),
+            Vec::new(),
+        ),
+        SchedulerEventLogEntry::guest_semantic_marker_observation(
+            3,
+            Icount { retired: 40 },
+            node("router-a"),
+            String::from("end"),
+            String::from("epoch-7"),
+            Vec::new(),
+        ),
+    ];
+
+    let evaluation = evaluate_measurements(&definitions, &entries, Vec::new(), &terminal(40))?;
+    let outcome = &evaluation.outcomes()[&MeasurementId::parse("recovery")?];
+    let MeasurementWindowOutcome::Completed { begin, end } = outcome.window() else {
+        panic!("exact semantic-marker instance must complete the window");
+    };
+    assert_eq!(begin.sequence(), Some(1));
+    assert_eq!(end.sequence(), Some(3));
+    Ok(())
+}
+
+#[test]
 fn end_boundary_wins_a_same_event_timeout() -> Result<(), Box<dyn Error>> {
     let world = world()?;
     let definitions = MeasurementDefinitions::new(

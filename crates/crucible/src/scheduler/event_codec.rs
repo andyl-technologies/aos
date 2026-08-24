@@ -666,6 +666,90 @@ pub(super) fn observable_event_payload(observable: &ObservableEventPayload) -> E
             );
             EventPayload::new("guest_marker", attributes)
         }
+        ObservableEventPayload::GuestMeasurement {
+            retired_icount,
+            node,
+            event,
+        } => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(node.clone()),
+            );
+            attributes.insert(
+                String::from("retired_icount"),
+                EventAttributeValue::Icount(*retired_icount),
+            );
+            match event {
+                GuestMeasurementEvent::Begin {
+                    measurement,
+                    instance,
+                } => {
+                    insert_guest_measurement_basis(&mut attributes, measurement, instance);
+                    EventPayload::new("guest_measurement_begin", attributes)
+                }
+                GuestMeasurementEvent::Sample {
+                    measurement,
+                    instance,
+                    metric,
+                    value,
+                } => {
+                    insert_guest_measurement_basis(&mut attributes, measurement, instance);
+                    attributes.insert(
+                        String::from("metric"),
+                        EventAttributeValue::String(metric.clone()),
+                    );
+                    insert_guest_measurement_value(&mut attributes, "value", value);
+                    EventPayload::new("guest_metric_sample", attributes)
+                }
+                GuestMeasurementEvent::End {
+                    measurement,
+                    instance,
+                } => {
+                    insert_guest_measurement_basis(&mut attributes, measurement, instance);
+                    EventPayload::new("guest_measurement_end", attributes)
+                }
+            }
+        }
+        ObservableEventPayload::GuestSemanticMarker {
+            retired_icount,
+            node,
+            marker,
+            instance,
+            details,
+        } => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(node.clone()),
+            );
+            attributes.insert(
+                String::from("retired_icount"),
+                EventAttributeValue::Icount(*retired_icount),
+            );
+            attributes.insert(
+                String::from("marker"),
+                EventAttributeValue::String(marker.clone()),
+            );
+            attributes.insert(
+                String::from("instance"),
+                EventAttributeValue::String(instance.clone()),
+            );
+            attributes.insert(
+                String::from("details_len"),
+                EventAttributeValue::U64(u64::try_from(details.len()).unwrap_or(u64::MAX)),
+            );
+            for (index, detail) in details.iter().enumerate() {
+                attributes.insert(
+                    format!("detail.{index}.key"),
+                    EventAttributeValue::String(detail.key.clone()),
+                );
+                insert_guest_measurement_value(
+                    &mut attributes,
+                    &format!("detail.{index}.value"),
+                    &detail.value,
+                );
+            }
+            EventPayload::new("guest_semantic_marker", attributes)
+        }
         ObservableEventPayload::GuestAssertionMarker {
             retired_icount,
             node,
@@ -710,6 +794,101 @@ pub(super) fn observable_event_payload(observable: &ObservableEventPayload) -> E
             insert_guest_assertion_details(&mut attributes, &marker.details);
             EventPayload::new("guest_marker", attributes)
         }
+    }
+}
+
+fn insert_guest_measurement_basis(
+    attributes: &mut BTreeMap<String, EventAttributeValue>,
+    measurement: &str,
+    instance: &str,
+) {
+    attributes.insert(
+        String::from("measurement"),
+        EventAttributeValue::String(measurement.to_owned()),
+    );
+    attributes.insert(
+        String::from("instance"),
+        EventAttributeValue::String(instance.to_owned()),
+    );
+}
+
+fn insert_guest_measurement_value(
+    attributes: &mut BTreeMap<String, EventAttributeValue>,
+    prefix: &str,
+    value: &GuestMeasurementValue,
+) {
+    let (kind, elements) = match value {
+        GuestMeasurementValue::Signed(value) => {
+            attributes.insert(
+                format!("{prefix}.signed"),
+                EventAttributeValue::String(value.to_string()),
+            );
+            ("signed", None)
+        }
+        GuestMeasurementValue::Unsigned(value) => {
+            attributes.insert(
+                format!("{prefix}.unsigned"),
+                EventAttributeValue::U64(*value),
+            );
+            ("unsigned", None)
+        }
+        GuestMeasurementValue::Rational(value) => {
+            attributes.insert(
+                format!("{prefix}.negative"),
+                EventAttributeValue::Bool(value.negative),
+            );
+            attributes.insert(
+                format!("{prefix}.numerator"),
+                EventAttributeValue::U128(value.numerator),
+            );
+            attributes.insert(
+                format!("{prefix}.denominator"),
+                EventAttributeValue::U128(value.denominator),
+            );
+            ("rational", None)
+        }
+        GuestMeasurementValue::Boolean(value) => {
+            attributes.insert(
+                format!("{prefix}.boolean"),
+                EventAttributeValue::Bool(*value),
+            );
+            ("boolean", None)
+        }
+        GuestMeasurementValue::Enumerated(value) => {
+            attributes.insert(
+                format!("{prefix}.enumerated"),
+                EventAttributeValue::String(value.clone()),
+            );
+            ("enumerated", None)
+        }
+        GuestMeasurementValue::SignedVector(values) => {
+            for (index, value) in values.iter().enumerate() {
+                attributes.insert(
+                    format!("{prefix}.element.{index}"),
+                    EventAttributeValue::String(value.to_string()),
+                );
+            }
+            ("signed_vector", Some(values.len()))
+        }
+        GuestMeasurementValue::UnsignedVector(values) => {
+            for (index, value) in values.iter().enumerate() {
+                attributes.insert(
+                    format!("{prefix}.element.{index}"),
+                    EventAttributeValue::U64(*value),
+                );
+            }
+            ("unsigned_vector", Some(values.len()))
+        }
+    };
+    attributes.insert(
+        format!("{prefix}.kind"),
+        EventAttributeValue::String(kind.to_owned()),
+    );
+    if let Some(elements) = elements {
+        attributes.insert(
+            format!("{prefix}.elements"),
+            EventAttributeValue::U64(u64::try_from(elements).unwrap_or(u64::MAX)),
+        );
     }
 }
 
@@ -866,6 +1045,16 @@ pub(super) fn observable_payload_icount(
             node,
             ..
         }
+        | ObservableEventPayload::GuestMeasurement {
+            retired_icount,
+            node,
+            ..
+        }
+        | ObservableEventPayload::GuestSemanticMarker {
+            retired_icount,
+            node,
+            ..
+        }
         | ObservableEventPayload::GuestAssertionMarker {
             retired_icount,
             node,
@@ -962,6 +1151,8 @@ pub(super) fn observable_payload_source(observable: &ObservableEventPayload) -> 
         }
         ObservableEventPayload::GuestMarker { node, .. }
         | ObservableEventPayload::CoverageMarker { node, .. }
+        | ObservableEventPayload::GuestMeasurement { node, .. }
+        | ObservableEventPayload::GuestSemanticMarker { node, .. }
         | ObservableEventPayload::GuestAssertionMarker { node, .. } => {
             EventSource::Guest { node: node.clone() }
         }
@@ -1004,6 +1195,8 @@ pub(super) fn observable_payload_level(observable: &ObservableEventPayload) -> E
         | ObservableEventPayload::AssertionEvaluated { .. }
         | ObservableEventPayload::CoverageMarker { .. }
         | ObservableEventPayload::GuestMarker { .. }
+        | ObservableEventPayload::GuestMeasurement { .. }
+        | ObservableEventPayload::GuestSemanticMarker { .. }
         | ObservableEventPayload::GuestAssertionMarker { .. } => EventLevel::Info,
     }
 }

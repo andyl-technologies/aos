@@ -211,6 +211,45 @@ pub(super) static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         ],
     },
     EventKindCatalogEntry {
+        kind: "guest_measurement_begin",
+        class: SchedulerEventLogClass::Observational,
+        sources: &["guest"],
+        attributes: &["instance", "measurement", "node", "retired_icount"],
+    },
+    EventKindCatalogEntry {
+        kind: "guest_measurement_end",
+        class: SchedulerEventLogClass::Observational,
+        sources: &["guest"],
+        attributes: &["instance", "measurement", "node", "retired_icount"],
+    },
+    EventKindCatalogEntry {
+        kind: "guest_metric_sample",
+        class: SchedulerEventLogClass::Observational,
+        sources: &["guest"],
+        attributes: &[
+            "instance",
+            "measurement",
+            "metric",
+            "node",
+            "retired_icount",
+            "value.*",
+        ],
+    },
+    EventKindCatalogEntry {
+        kind: "guest_semantic_marker",
+        class: SchedulerEventLogClass::Observational,
+        sources: &["guest"],
+        attributes: &[
+            "detail.*.key",
+            "detail.*.value.*",
+            "details_len",
+            "instance",
+            "marker",
+            "node",
+            "retired_icount",
+        ],
+    },
+    EventKindCatalogEntry {
         kind: "io_completion",
         class: SchedulerEventLogClass::Causal,
         sources: &["engine", "node"],
@@ -409,6 +448,15 @@ pub(super) static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency]
             "signal_state_transition",
             "signal_transition",
             "trace_alignment",
+        ],
+    },
+    EventKindCatalogDependency {
+        consumer: "0016-08-observability-measurement-debugging",
+        kinds: &[
+            "guest_measurement_begin",
+            "guest_measurement_end",
+            "guest_metric_sample",
+            "guest_semantic_marker",
         ],
     },
     EventKindCatalogDependency {

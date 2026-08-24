@@ -143,11 +143,19 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   satisfying evidence, and recomputes exact integer, rational, histogram, and
   delta aggregates. Campaign measurement-set v2 retains the exact verified
   evaluation/definition identities and payload behind a model-specific verifier
-  while preserving identity-exact v1 reads. Guest and model-owned sample
-  producers plus complete raw evidence attachment remain open, so this task is
-  not yet complete.
-- [ ] **T-CAM-3.2** Add guest measurement begin/sample/end and semantic-marker
+  while preserving identity-exact v1 reads. Model-owned sample producers plus
+  complete raw evidence attachment remain open, so this task is not yet
+  complete.
+- [x] **T-CAM-3.2** Add guest measurement begin/sample/end and semantic-marker
   protocol messages with scenario validation and limits.
+  Doorbell protocol v3 now provides four byte-exact bounded kinds, seven closed
+  typed value forms, canonical rational/vector/detail validation, guest CLI
+  producers, and typed observational event-catalog projection. The fresh QEMU
+  campaign driver enforces declared measurement/metric/source/type/cohort and
+  exact marker-instance contracts, bounds simultaneous instances, requires a
+  balanced begin/sample/end lifecycle, and feeds normalized guest samples into
+  the verified measurement evaluator. ABI, malformed-message, typed event,
+  exact-instance, and driver lifecycle regressions cover the boundary.
 - [ ] **T-CAM-3.3** Derive model-owned network, storage, scheduler, icount, and
   virtual-time metrics from canonical events.
 - [ ] **T-CAM-3.4** Implement observation, objective-evaluation, Pareto,

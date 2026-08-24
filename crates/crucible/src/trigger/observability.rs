@@ -953,6 +953,8 @@ pub(super) fn resolve_network_idle_ready_point(
             | ObservableEventPayload::AssertionStateChanged { .. }
             | ObservableEventPayload::AssertionEvaluated { .. }
             | ObservableEventPayload::GuestMarker { .. }
+            | ObservableEventPayload::GuestMeasurement { .. }
+            | ObservableEventPayload::GuestSemanticMarker { .. }
             | ObservableEventPayload::GuestAssertionMarker { .. } => None,
         })
         .collect::<BTreeSet<_>>()
@@ -1019,6 +1021,8 @@ pub(super) fn resolve_console_marker_ready_point(
                 | ObservableEventPayload::AssertionStateChanged { .. }
                 | ObservableEventPayload::AssertionEvaluated { .. }
                 | ObservableEventPayload::GuestMarker { .. }
+                | ObservableEventPayload::GuestMeasurement { .. }
+                | ObservableEventPayload::GuestSemanticMarker { .. }
                 | ObservableEventPayload::GuestAssertionMarker { .. } => None,
             }
         })

@@ -244,9 +244,53 @@ MeasurementEnd(measurement ID, instance key)
 SemanticMarker(marker ID, instance key, bounded typed details)
 ```
 
-The scenario predeclares accepted IDs, value types, units, occurrence limits,
-and node/cohort policies. Unexpected IDs or type mismatches fail according to
-the declared guest-protocol violation policy.
+These are doorbell protocol version 3 kinds 6 through 9. Every ID and instance
+is a `u16`-length-prefixed 1..=128-byte ASCII identifier whose accepted bytes
+are alphanumeric plus `.`, `_`, `-`, `/`, and `:`. A typed value begins with one
+closed tag:
+
+```text
+0 signed i64
+1 unsigned u64
+2 reduced rational { negative:u8, numerator:u128, denominator:u128 }
+3 boolean
+4 enumerated identifier
+5 signed vector { count:u16, values:[i64] }
+6 unsigned vector { count:u16, values:[u64] }
+```
+
+Vectors contain at most 512 elements. A rational has a positive denominator,
+is reduced, and encodes zero only as `(false,0,1)`. A semantic marker carries at
+most 64 details in strictly increasing identifier order. Every complete marker
+body is at most 4,608 bytes, matching the dedicated shared-memory marker entry;
+the detail-count bound does not waive this aggregate byte limit. The shared
+protocol decoder rejects unknown tags, noncanonical rationals, invalid
+identifiers, duplicate or unsorted details, and every exceeded bound before
+constructing a scheduler event. RFC-0010 §16.5 owns the byte-exact layout and
+golden vectors.
+
+The scenario predeclares accepted measurement and metric IDs, metric types and
+units, exact marker/instance boundary pairs, and node/cohort policies. One run
+retains at most 1,000,000 scheduler entries and at most 65,536 simultaneously
+open `(node,measurement,instance)` tuples. `MeasurementBegin` opens exactly one
+tuple; duplicate begin, sample/end without an open tuple, and an unclosed tuple
+at sealing are terminal guest-protocol violations. A sample must name a guest-
+sourced declared metric and match its declared type, enumerated vocabulary, and
+vector limit. Because evaluation v1 retains one window per measurement, every
+guest-sourced measurement must declare exactly one unique instance across its
+instance-bearing begin/end selectors, and every lifecycle message must name
+that instance; an absent or conflicting instance contract fails the attempt
+closed. Semantic-marker details are bounded typed diagnostic material;
+they do not become metric samples merely by sharing the value codec.
+
+The QEMU host maps the four messages to the observational event-catalog kinds
+`guest_measurement_begin`, `guest_metric_sample`, `guest_measurement_end`, and
+`guest_semantic_marker`. Their retired-icount and scheduler sequence are
+canonical modeled coordinates. The fresh campaign driver validates the exact
+scenario contract and lifecycle before an observation candidate or verified
+measurement evaluation can be retained. Current campaign production accepts
+guest-sourced metrics through this path; T-CAM-3.3 remains responsible for the
+model-owned sources.
 
 Guest reports only facts requiring application knowledge, such as a new routing
 epoch becoming converged. The host derives network delivery/loss, fault
@@ -260,8 +304,12 @@ measurements, markers, and typed choice requests cross the guest protocol so
 applications in any language participate in the same replay and guidance
 model.
 
-- **[CMEAS-6]** Guest metric values are untrusted protocol input and MUST be
-  bounds/type checked before event-log admission.
+- **[CMEAS-6]** Guest metric values are untrusted protocol input. The closed
+  value tag, canonical representation, and aggregate wire bounds MUST be
+  checked before scheduler-event construction. Exact scenario ID, source,
+  value-type, cohort, and begin/sample/end lifecycle checks MUST complete before
+  campaign observation or measurement-evidence admission; any mismatch fails
+  the attempt closed.
 - **[CMEAS-7]** A guest measurement message MUST NOT itself advance virtual time
   except through the ordinary instruction and doorbell protocol path.
 
@@ -310,8 +358,8 @@ content identity. It contains named `MeasurementSeries` values with a nonempty
 sample vector and claimed same-type aggregate, and is explicitly not a verified
 evaluation or valid new policy input. `PropertyVerdictSet` and
 `CoverageProjection` remain bounded name/identity maps or sets with generic
-child-bearing envelopes. Guest/model sample production, complete raw event-log
-retention, and objective evaluation remain owned by T-CAM-3.2 through
+child-bearing envelopes. Model-owned sample production, complete raw event-log
+retention, and objective evaluation remain owned by T-CAM-3.3 through
 T-CAM-3.5.
 
 The observation stores both `ConfigurationId` and
