@@ -323,15 +323,29 @@ in
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_accepts_both_quarantined_manifest_commit_windows
           run_exact_api_test \
-            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_accepts_manifest_first_intent_and_exits_reaped_windows
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_split_file_intermediate_ownership
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_impossible_permanent_failure_ownership
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_unjournaled_staged_process_owner
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_unrelated_quarantined_postcommit_owner
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_oversized_json_before_decode
           run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_persists_one_aggregate_envelope
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_preflights_aggregate_bytes_before_owned_decode
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_preflights_process_count_before_owned_map_decode
+          run_exact_api_test \
+            vm_lifecycle::quantum_loop::lifecycle::process_ownership::tests::terminal_process_ownership_binds_service_state_to_exact_transition
+          run_exact_api_test \
             vm_lifecycle::quantum_loop::lifecycle::persistence::tests::fixed_journal_writer_uses_only_reserved_storage
           run_exact_api_test \
             vm_lifecycle::quantum_loop::lifecycle::persistence::tests::fixed_journal_writer_rejects_growth_without_mutation
+          run_exact_api_test \
+            vm_lifecycle::quantum_loop::lifecycle::persistence::tests::lifecycle_encoding_reserve_uses_the_measured_total_capacity
           run_exact_qemu_test \
             production_fault_runtime::checkpoint_codec::preflight::tests::preflight_applies_event_records_as_one_aggregate_ceiling
           run_exact_qemu_test \

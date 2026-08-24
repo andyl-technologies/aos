@@ -6,8 +6,8 @@ mod lifecycle;
 #[cfg(test)]
 pub(super) use lifecycle::validate_recovered_lifecycle_journal;
 pub(super) use lifecycle::{
-    LifecycleJournalPersistence, decode_prior_run_state, decode_run_json_bounded,
-    persist_recovered_lifecycle_journal,
+    LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE, decode_prior_run_state,
+    decode_run_json_bounded, persist_run_state_atomic,
 };
 use lifecycle::{
     PreparedLifecyclePrecommit, PreparedTerminalReplacement, lifecycle_resource_error,
@@ -743,20 +743,12 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             message: String::from("production lifecycle shutdown lost its event-log result"),
         })?;
         self.run_manifest.clean_shutdown = true;
-        self.persist_run_manifest()?;
+        self.persist_lifecycle_state()?;
         Ok(events)
     }
 }
 
 impl ProductionVmLifecycleLoop {
-    fn persist_run_manifest(&self) -> Result<(), SchedulerError> {
-        persist_atomic_json(
-            &self._run_directory.path().join("run-manifest.json"),
-            &self.run_manifest,
-        )
-        .map_err(|message| SchedulerError::BoundaryViolation { message })
-    }
-
     fn terminal_lifecycle_checkpoint(&mut self) -> Result<Checkpoint, SchedulerError> {
         let configuration = self.inner.loop_impl().configuration().clone();
         let parent = if configuration.schedule.is_empty() {
@@ -1434,7 +1426,7 @@ impl ProductionVmLifecycleLoop {
             }
         }
         self.node_lease_cleanup_failed = false;
-        self.persist_run_manifest()
+        Ok(())
     }
 
     fn supervise_terminal_lifecycle_exits(
@@ -2055,7 +2047,7 @@ impl ProductionVmLifecycleLoop {
         if !has_lifecycle && !self.lifecycle_journal.nodes.is_empty() {
             self.lifecycle_journal.nodes.clear();
             self.lifecycle_journal.phase = ProductionLifecycleJournalPhase::Committed;
-            self.persist_lifecycle_journal()?;
+            self.persist_lifecycle_state()?;
         }
         Ok(())
     }

@@ -205,6 +205,20 @@ moves staged owners. QEMU occurrence evidence, which cannot exist before APPLY,
 uses the separately bounded, fallible raw-event drain described above and
 poisons the continuation if authentication or typed allocation fails.
 
+The controller's terminal-lifecycle process ownership uses one versioned
+`run-state.json` envelope. The envelope atomically couples the current and
+staged QEMU process identities to the lifecycle phase, authenticated action and
+evidence hashes, completed exits, and the runtime event-record and byte bases.
+There is no separately published manifest or journal and no legacy fallback,
+so a rename cannot expose half of a process-generation transition. Encoding is
+measured before one fallible exact reservation and then writes only within that
+reserved storage. Recovery bounds the file before reading, performs a
+count-only preflight before constructing owned maps or record vectors, charges
+the complete envelope against the remaining `event_log_bytes`, charges journal
+records against the remaining aggregate `event_records`, and rejects any phase,
+generation, transition, or process-identity ownership matrix that the live
+publisher cannot produce.
+
 Canonical QEMU node, host-I/O, production fault-runtime, and complete VMState
 envelopes admit their representation against `fat_checkpoint_bytes` and its
 64 GiB hard ceiling before final allocation. Nested owners retain independent

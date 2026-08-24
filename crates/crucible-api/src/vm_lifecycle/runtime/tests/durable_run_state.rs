@@ -80,7 +80,7 @@ fn durable_run_state_recovers_an_unfinished_run_before_reuse() {
     let source = initially_violated_scenario();
     let scenario = source.scenario_def();
     let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
-    let (first, mut first_manifest, _) = production_run_directory(
+    let (first, mut first_manifest, first_journal) = production_run_directory(
         &scenario,
         &config,
         source.plan().fault_signals().resource_limits(),
@@ -88,8 +88,15 @@ fn durable_run_state_recovers_an_unfinished_run_before_reuse() {
     .unwrap_or_else(|error| panic!("first run should build: {error}"));
     let first_path = first.path().to_path_buf();
     first_manifest.owner.process_id = u32::MAX;
-    persist_atomic_json(&first_path.join("run-manifest.json"), &first_manifest)
-        .unwrap_or_else(|error| panic!("dead owner fixture should persist: {error}"));
+    persist_run_state_atomic(
+        &first_path.join(PRODUCTION_RUN_STATE_FILE),
+        &first_manifest,
+        &first_journal,
+        source.plan().fault_signals().resource_limits(),
+        0,
+        0,
+    )
+    .unwrap_or_else(|error| panic!("dead owner fixture should persist: {error}"));
     drop(first);
 
     let (second, _, _) = production_run_directory(
@@ -99,15 +106,13 @@ fn durable_run_state_recovers_an_unfinished_run_before_reuse() {
     )
     .unwrap_or_else(|error| panic!("recovered run should build: {error}"));
     assert_ne!(first_path, second.path());
-    let recovered: ProductionRunManifest = decode_run_json(&first_path.join("run-manifest.json"))
-        .unwrap_or_else(|error| panic!("recovered manifest should decode: {error}"));
-    assert!(recovered.clean_shutdown);
-    assert!(recovered.recovered_after_host_exit);
-    let journal: ProductionLifecycleJournal =
-        decode_run_json(&first_path.join("lifecycle-journal.json"))
-            .unwrap_or_else(|error| panic!("recovered journal should decode: {error}"));
+    let recovered: ProductionRunState =
+        decode_run_json(&first_path.join(PRODUCTION_RUN_STATE_FILE))
+            .unwrap_or_else(|error| panic!("recovered state should decode: {error}"));
+    assert!(recovered.manifest.clean_shutdown);
+    assert!(recovered.manifest.recovered_after_host_exit);
     assert!(matches!(
-        journal.phase,
+        recovered.journal.phase,
         ProductionLifecycleJournalPhase::Quarantined
     ));
 }
@@ -261,10 +266,15 @@ fn durable_run_state_accepts_a_prepared_replacement_at_the_exact_node_limit() {
         }],
         completed_exits: Vec::new(),
     };
-    persist_atomic_json(&root.path().join("run-manifest.json"), &manifest)
-        .unwrap_or_else(|error| panic!("prepared manifest should persist: {error}"));
-    persist_atomic_json(&root.path().join("lifecycle-journal.json"), &journal)
-        .unwrap_or_else(|error| panic!("prepared journal should persist: {error}"));
+    persist_run_state_atomic(
+        &root.path().join(PRODUCTION_RUN_STATE_FILE),
+        &manifest,
+        &journal,
+        FaultResourceLimits::default(),
+        0,
+        0,
+    )
+    .unwrap_or_else(|error| panic!("prepared state should persist: {error}"));
     let limits = FaultResourceLimits {
         nodes: 1,
         ..FaultResourceLimits::default()
@@ -335,7 +345,7 @@ fn durable_run_state_accepts_both_quarantined_manifest_commit_windows() {
 }
 
 #[test]
-fn durable_run_state_accepts_manifest_first_intent_and_exits_reaped_windows() {
+fn durable_run_state_rejects_split_file_intermediate_ownership() {
     let current = recovery_process(7, "/aos/qemu-current");
     let replacement = recovery_process(8, "/aos/qemu-replacement");
 
@@ -345,12 +355,14 @@ fn durable_run_state_accepts_manifest_first_intent_and_exits_reaped_windows() {
         None,
     );
     let staged_manifest = recovery_manifest(current.clone(), Some(replacement.clone()));
-    quantum_loop::validate_recovered_lifecycle_journal(
+    let intent_error = quantum_loop::validate_recovered_lifecycle_journal(
         &intent,
         &staged_manifest,
         FaultResourceLimits::default(),
     )
-    .unwrap_or_else(|error| panic!("manifest-first Intent state should recover: {error}"));
+    .err()
+    .unwrap_or_else(|| panic!("split-file Intent ownership should fail closed"));
+    assert!(intent_error.contains("no exact lifecycle journal owner"));
 
     let exits_reaped = recovery_journal(
         ProductionLifecycleJournalPhase::ExitsReaped,
@@ -358,12 +370,82 @@ fn durable_run_state_accepts_manifest_first_intent_and_exits_reaped_windows() {
         Some(replacement.clone()),
     );
     let committed_manifest = recovery_manifest(replacement, None);
-    quantum_loop::validate_recovered_lifecycle_journal(
+    let exits_error = quantum_loop::validate_recovered_lifecycle_journal(
         &exits_reaped,
         &committed_manifest,
         FaultResourceLimits::default(),
     )
-    .unwrap_or_else(|error| panic!("manifest-first ExitsReaped state should recover: {error}"));
+    .err()
+    .unwrap_or_else(|| panic!("split-file ExitsReaped ownership should fail closed"));
+    assert!(exits_error.contains("not bound to manifest process ownership"));
+}
+
+#[test]
+fn durable_run_state_rejects_impossible_permanent_failure_ownership() {
+    let current = recovery_process(7, "/aos/qemu-current");
+    let replacement = recovery_process(8, "/aos/qemu-replacement");
+    let empty_manifest = ProductionRunManifest {
+        version: 2,
+        scenario: "3".repeat(64),
+        owner: recovery_process(1, "/aos/controller"),
+        processes: BTreeMap::new(),
+        staged_processes: BTreeMap::new(),
+        clean_shutdown: false,
+        recovered_after_host_exit: false,
+    };
+    let mut advanced = recovery_journal(
+        ProductionLifecycleJournalPhase::Quarantined,
+        current.clone(),
+        None,
+    );
+    advanced.nodes[0].transition = String::from("PermanentFailure");
+    let advanced_error = quantum_loop::validate_recovered_lifecycle_journal(
+        &advanced,
+        &empty_manifest,
+        FaultResourceLimits::default(),
+    )
+    .err()
+    .unwrap_or_else(|| panic!("generation-advancing permanent failure should fail closed"));
+    assert!(advanced_error.contains("invalid canonical fields"));
+
+    let mut replacement_owned = recovery_journal(
+        ProductionLifecycleJournalPhase::Prepared,
+        current.clone(),
+        Some(replacement.clone()),
+    );
+    replacement_owned.nodes[0].transition = String::from("PermanentFailure");
+    replacement_owned.nodes[0].next_generation = 1;
+    let manifest = recovery_manifest(current, Some(replacement));
+    let replacement_error = quantum_loop::validate_recovered_lifecycle_journal(
+        &replacement_owned,
+        &manifest,
+        FaultResourceLimits::default(),
+    )
+    .err()
+    .unwrap_or_else(|| panic!("replacement-owned permanent failure should fail closed"));
+    assert!(replacement_error.contains("not bound to manifest process ownership"));
+}
+
+#[test]
+fn durable_run_state_rejects_unjournaled_staged_process_owner() {
+    let current = recovery_process(7, "/aos/qemu-current");
+    let staged = recovery_process(8, "/aos/qemu-staged");
+    let manifest = recovery_manifest(current, Some(staged));
+    let journal = ProductionLifecycleJournal {
+        version: 1,
+        transaction: 0,
+        phase: ProductionLifecycleJournalPhase::Idle,
+        nodes: Vec::new(),
+        completed_exits: Vec::new(),
+    };
+    let error = quantum_loop::validate_recovered_lifecycle_journal(
+        &journal,
+        &manifest,
+        FaultResourceLimits::default(),
+    )
+    .err()
+    .unwrap_or_else(|| panic!("unjournaled staged owner should fail closed"));
+    assert!(error.contains("no exact lifecycle journal owner"));
 }
 
 #[test]
@@ -395,4 +477,106 @@ fn durable_run_state_rejects_oversized_json_before_decode() {
         .err()
         .unwrap_or_else(|| panic!("oversized run state should fail before decode"));
     assert!(error.contains("above the bounded maximum 8"));
+}
+
+#[test]
+fn durable_run_state_persists_one_aggregate_envelope() {
+    let root =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
+    let source = initially_violated_scenario();
+    let scenario = source.scenario_def();
+    let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
+    let (run, _, _) = production_run_directory(
+        &scenario,
+        &config,
+        source.plan().fault_signals().resource_limits(),
+    )
+    .unwrap_or_else(|error| panic!("aggregate run state should initialize: {error}"));
+
+    assert!(run.path().join(PRODUCTION_RUN_STATE_FILE).is_file());
+    assert!(!run.path().join("run-manifest.json").exists());
+    assert!(!run.path().join("lifecycle-journal.json").exists());
+    let state: ProductionRunState = decode_run_json(&run.path().join(PRODUCTION_RUN_STATE_FILE))
+        .unwrap_or_else(|error| panic!("aggregate run state should decode: {error}"));
+    assert_eq!(state.version, 1);
+    assert_eq!(state.runtime_event_records, 0);
+    assert_eq!(state.runtime_event_log_bytes, 0);
+}
+
+#[test]
+fn durable_run_state_preflights_aggregate_bytes_before_owned_decode() {
+    let root =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
+    let state = ProductionRunState {
+        version: 1,
+        runtime_event_records: 0,
+        runtime_event_log_bytes: 8,
+        manifest: ProductionRunManifest {
+            version: 2,
+            scenario: "3".repeat(64),
+            owner: recovery_process(1, "/aos/controller"),
+            processes: BTreeMap::new(),
+            staged_processes: BTreeMap::new(),
+            clean_shutdown: false,
+            recovered_after_host_exit: false,
+        },
+        journal: ProductionLifecycleJournal {
+            version: 1,
+            transaction: 0,
+            phase: ProductionLifecycleJournalPhase::Idle,
+            nodes: Vec::new(),
+            completed_exits: Vec::new(),
+        },
+    };
+    let bytes = serde_json::to_vec_pretty(&state)
+        .unwrap_or_else(|error| panic!("aggregate preflight fixture should encode: {error}"));
+    fs::write(root.path().join(PRODUCTION_RUN_STATE_FILE), &bytes)
+        .unwrap_or_else(|error| panic!("aggregate preflight fixture should write: {error}"));
+    let limits = FaultResourceLimits {
+        event_log_bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        ..FaultResourceLimits::default()
+    };
+
+    let error = quantum_loop::decode_prior_run_state(root.path(), &"3".repeat(64), limits)
+        .err()
+        .unwrap_or_else(|| panic!("aggregate byte overflow should precede owned decode"));
+    assert!(error.contains("admit aggregate prior run state"));
+}
+
+#[test]
+fn durable_run_state_preflights_process_count_before_owned_map_decode() {
+    let root =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
+    let bytes = br#"{
+      "version": 1,
+      "runtime_event_records": 0,
+      "runtime_event_log_bytes": 0,
+      "manifest": {
+        "version": 2,
+        "scenario": null,
+        "owner": null,
+        "processes": {"node-a": null, "node-b": null},
+        "staged_processes": {},
+        "clean_shutdown": false,
+        "recovered_after_host_exit": false
+      },
+      "journal": {
+        "version": 1,
+        "transaction": 0,
+        "phase": null,
+        "nodes": [],
+        "completed_exits": []
+      }
+    }"#;
+    fs::write(root.path().join(PRODUCTION_RUN_STATE_FILE), bytes)
+        .unwrap_or_else(|error| panic!("count preflight fixture should write: {error}"));
+    let limits = FaultResourceLimits {
+        nodes: 1,
+        ..FaultResourceLimits::default()
+    };
+
+    let error = quantum_loop::decode_prior_run_state(root.path(), &"3".repeat(64), limits)
+        .err()
+        .unwrap_or_else(|| panic!("process count should fail before owned map decode"));
+    assert!(error.contains("admit current process count before owned decode"));
 }
