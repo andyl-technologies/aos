@@ -2,6 +2,68 @@
 
 use super::*;
 
+/// Builds the real mapped host runtime after exercising lossless event retry.
+pub(crate) fn staged_fault_event_runtime(
+    event: DequeuedFaultEvent,
+) -> Result<QemuLiveHostIoRuntime, Box<dyn std::error::Error>> {
+    use std::io::Write;
+    use std::os::fd::AsFd;
+
+    let allocation =
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4, 0))?;
+    let layout = allocation.layout();
+    let bytes = allocation.setup_region_bytes()?;
+    let mut shmem = tempfile::tempfile()?;
+    shmem.set_len(layout.region_size)?;
+    shmem.write_all(&bytes)?;
+    {
+        let mut producer = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+        let transport = producer.fault_event_transport_mut(0)?;
+        crucible_shmem::enqueue_fault_event(
+            transport.ring,
+            transport.slots,
+            transport.arena_header,
+            transport.arena,
+            transport.arena_region_offset,
+            event.header,
+            &event.payload,
+        )?;
+    }
+    let wake = tempfile::tempfile()?;
+    let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+        shmem.as_fd(),
+        wake.as_fd(),
+        layout.region_size,
+        0,
+        Duration::from_millis(1),
+    )?;
+    let timeout = Duration::from_secs(1);
+
+    let rejected = runtime.drain_fault_events_for_pump(
+        0,
+        &HostSupervisionDeadline::start(timeout),
+        timeout,
+        "test rejected host fault-event drain",
+    );
+    let Err(error) = rejected else {
+        panic!("zero-capacity drain should reject");
+    };
+    assert_eq!(
+        error.fault_event_storage,
+        Some((0, 1, HARD_FAULT_EVENT_CAPACITY as u64))
+    );
+    assert!(runtime.staged_fault_events.is_empty());
+
+    runtime.drain_fault_events_for_pump(
+        1,
+        &HostSupervisionDeadline::start(timeout),
+        timeout,
+        "test admitted host fault-event drain",
+    )?;
+    assert_eq!(runtime.staged_fault_events.len(), 1);
+    Ok(runtime)
+}
+
 #[test]
 fn bounded_poll_attempts_is_at_least_one() {
     assert_eq!(

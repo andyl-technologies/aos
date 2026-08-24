@@ -26,6 +26,8 @@ use super::*;
 
 #[path = "node/tests/fault_command.rs"]
 mod fault_command;
+#[path = "node/tests/host_io_runtime.rs"]
+pub(crate) mod host_io_runtime;
 #[path = "node/tests/sequence_restore.rs"]
 mod sequence_restore;
 #[path = "node/tests/shutdown_and_preemption.rs"]

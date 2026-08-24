@@ -332,3 +332,47 @@ fn checkpoint_rejects_unacknowledged_node_boot_edge() {
         .checkpoint(&mut nodes)
         .unwrap_or_else(|error| panic!("acknowledged boot edge should checkpoint: {error}"));
 }
+
+#[test]
+fn lifecycle_work_transfer_preserves_owned_buffers_and_clears_checkpoint_edge() {
+    let action = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
+    let event = lifecycle_event(&action);
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    let decision = node_lifecycle_decision(
+        &node,
+        action.id(),
+        &event,
+        0,
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("lifecycle evidence should authenticate: {error}"))
+    .unwrap_or_else(|| panic!("lifecycle evidence should produce a decision"));
+    let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), FaultResourceLimits::default())
+        .unwrap_or_else(|error| panic!("empty test plan should be valid: {error}"));
+    let mut nodes = QemuNodeSet::new();
+    let mut runtime = ProductionFaultRuntime::new(
+        plan,
+        None,
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"lifecycle-work-transfer"),
+        test_host_manifests(),
+        &nodes,
+    )
+    .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));
+    runtime.pending_node_lifecycle.push(decision);
+    runtime.pending_node_boot.push(node);
+    let decision_storage = runtime.pending_node_lifecycle.as_ptr();
+    let boot_storage = runtime.pending_node_boot.as_ptr();
+
+    let (decisions, boot_requests) = runtime.take_node_lifecycle_work();
+
+    assert_eq!(decisions.as_ptr(), decision_storage);
+    assert_eq!(boot_requests.as_ptr(), boot_storage);
+    assert!(runtime.node_lifecycle_decisions().is_empty());
+    assert!(runtime.node_boot_requests().is_empty());
+    runtime.checkpoint(&mut nodes).unwrap_or_else(|error| {
+        panic!("transferred lifecycle ownership should checkpoint: {error}")
+    });
+}
