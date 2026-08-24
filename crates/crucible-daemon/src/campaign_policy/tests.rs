@@ -347,6 +347,10 @@ fn policy_operation_labels_cover_the_closed_service_vocabulary() {
             CampaignServiceOperation::ExplainCampaignAttempt,
         ),
         (
+            "get-campaign-planner-rankings",
+            CampaignServiceOperation::GetCampaignPlannerRankings,
+        ),
+        (
             "get-campaign-graph-object",
             CampaignServiceOperation::GetCampaignGraphObject,
         ),

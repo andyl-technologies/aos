@@ -328,6 +328,8 @@ enum CampaignCommand {
     ExplainFinding(CampaignFindingExplainArgs),
     /// Explain one exact attempt, proposal, and completion basis.
     ExplainAttempt(CampaignAttemptExplainArgs),
+    /// Rank candidates across an authenticated planner-step chain.
+    Rankings(CampaignRankingsArgs),
     /// Read one authenticated page from the temporal graph.
     Graph(CampaignPageArgs),
     /// Inspect one exact object named by the authenticated graph.
@@ -579,6 +581,22 @@ struct CampaignAttemptExplainArgs {
     /// Exact semantic attempt whose execution basis is explained.
     #[arg(long, value_name = "ATTEMPT", required = true)]
     attempt: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignRankingsArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact current snapshot that authenticates every planner step.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Newest accepted planner step included in the ranking chain.
+    #[arg(long, value_name = "STEP", required = true)]
+    step: String,
+    /// Maximum planner-step pages followed through parent links.
+    #[arg(long, value_name = "COUNT", default_value_t = 16)]
+    pages: u32,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

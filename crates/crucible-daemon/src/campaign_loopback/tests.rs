@@ -24,7 +24,8 @@ use crucible_campaign::{
     GetCampaignChoiceObjectRequest, GetCampaignChoiceObjectResponse,
     GetCampaignFindingObjectRequest, GetCampaignFindingObjectResponse,
     GetCampaignFrontierObjectRequest, GetCampaignFrontierObjectResponse,
-    GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse, GetCampaignRequest,
+    GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse,
+    GetCampaignPlannerRankingsRequest, GetCampaignPlannerRankingsResponse, GetCampaignRequest,
     GetCampaignResponse, GetCampaignSnapshotRequest, GetCampaignSnapshotResponse,
     MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MerkleMap, ObjectEnvelope, PinCampaignRequest,
     PinCampaignResponse, PinChange, PinRequest, PinRetention, ProgressiveWideningPolicy,
@@ -156,6 +157,13 @@ impl CampaignService for FixedCampaignService {
             proof,
         )
         .expect("finding response"))
+    }
+
+    fn get_campaign_planner_rankings(
+        &self,
+        _request: &GetCampaignPlannerRankingsRequest,
+    ) -> Result<GetCampaignPlannerRankingsResponse, Self::Error> {
+        unreachable!("fixed service has no planner-step fixture")
     }
 
     fn get_campaign_finding_object(
@@ -621,7 +629,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
     .expect("write frame");
     let mut bytes = [0_u8; 19];
     reader.read_exact(&mut bytes).expect("read frame");
-    assert_eq!(&bytes, b"CRUCCS17\x01\0\0\0\0\0\0\x03abc");
+    assert_eq!(&bytes, b"CRUCCS18\x01\0\0\0\0\0\0\x03abc");
 
     for (kind, reserved, length, reason) in [
         (
@@ -768,6 +776,13 @@ impl CampaignService for WrongGetService {
         &self,
         _request: &CreateCampaignRequest,
     ) -> Result<CreateCampaignResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
+
+    fn get_campaign_planner_rankings(
+        &self,
+        _request: &GetCampaignPlannerRankingsRequest,
+    ) -> Result<GetCampaignPlannerRankingsResponse, Self::Error> {
         unreachable!("test service only handles GetCampaign")
     }
 
@@ -1203,6 +1218,21 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
         snapshot("absent"),
         CampaignChoiceObjectKind::Domain,
     );
+    let rankings = GetCampaignPlannerRankingsRequest::new(
+        principal(),
+        CampaignName::new("absent").expect("campaign name"),
+        snapshot("absent"),
+        crucible_campaign::PlannerStepId::parse(&format!(
+            "crucible.campaign.planner-step@{}",
+            ContentId::for_bytes(
+                crucible_campaign::CampaignRecordKind::PlannerStep.object_kind(),
+                crucible_campaign::CampaignRecordKind::PlannerStep.schema_version(),
+                b"absent planner step",
+            )
+        ))
+        .expect("planner step ID"),
+    )
+    .expect("planner rankings request");
     let direct_repository = CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new(
             "campaign-loopback-direct-auth",
@@ -1271,6 +1301,12 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
             crucible_campaign::CampaignServiceFailure::Unauthorized
         ))
     ));
+    assert!(matches!(
+        direct.get_campaign_planner_rankings(&rankings),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::Unauthorized
+        ))
+    ));
 
     let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
     let server = thread::spawn(move || {
@@ -1279,7 +1315,7 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
             Arc::new(MemoryRefBackend::new()),
         );
         let service = RepositoryCampaignService::new(&repository, DenyAll);
-        for _ in 0..10 {
+        for _ in 0..11 {
             serve_loopback_campaign_once(&mut server_stream, &service)
                 .expect("serve denied request");
         }
@@ -1343,6 +1379,12 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
     ));
     assert!(matches!(
         client.get_campaign_choice_object(&choice_object),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::Unauthorized
+        ))
+    ));
+    assert!(matches!(
+        client.get_campaign_planner_rankings(&rankings),
         Err(crucible_campaign::CampaignClientError::Service(
             crucible_campaign::CampaignServiceFailure::Unauthorized
         ))

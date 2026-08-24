@@ -2079,6 +2079,37 @@ fn canonical_puct_planner_ranks_every_ready_offer_and_replays_owner_guidance() {
         .load_planner_step_at(accepted.new_snapshot, accepted.step)
         .expect("replay PUCT step after cache clear");
     assert_eq!(replayed.disposition().selected(), Some(guided_position));
+
+    let ranking_request = crate::GetCampaignPlannerRankingsRequest::new(
+        crate::CampaignPrincipal::new("operator:alice").expect("principal"),
+        crate::CampaignName::new("canonical-puct").expect("campaign"),
+        accepted.new_snapshot,
+        accepted.step,
+    )
+    .expect("ranking request");
+    let ranking_response = crate::CampaignClient::new(crate::RepositoryCampaignService::new(
+        &repository,
+        PermitAlice,
+    ))
+    .get_campaign_planner_rankings(&ranking_request)
+    .expect("proof-bearing planner rankings");
+    assert_eq!(
+        ranking_response.step().id().expect("response step ID"),
+        accepted.step
+    );
+    assert_eq!(ranking_response.parent(), replayed.parent());
+    let served_rankings = ranking_response
+        .ranked_candidates()
+        .expect("served authenticated rankings");
+    assert_eq!(served_rankings.len(), 2);
+    assert_eq!(served_rankings[0].guidance().position(), guided_position);
+    let decoded = crate::GetCampaignPlannerRankingsResponse::from_canonical_bytes(
+        &ranking_response.canonical_bytes(),
+    )
+    .expect("decode ranking response");
+    decoded
+        .validate_for(&ranking_request)
+        .expect("validate decoded ranking response");
 }
 
 #[derive(Clone)]

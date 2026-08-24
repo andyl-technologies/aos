@@ -1046,7 +1046,7 @@ fn proposal_value_key(request: BranchRequestId, value: &crate::ChoiceValue) -> C
     CampaignHash::derive("crucible.campaign-proposal-request-value.v1", &bytes)
 }
 
-fn planner_step_key(step: PlannerStepId) -> CampaignHash {
+pub(crate) fn planner_step_key(step: PlannerStepId) -> CampaignHash {
     map_key_content("coordination.planner-step", step.content_id())
 }
 

@@ -1223,9 +1223,14 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   ranking now has a public owner-independent per-request projection: it
   revalidates each retained offer/guidance pair against the by-value policy,
   recomputes the decomposed fixed-point score, and returns best-first order with
-  the exact packaged-planner edge/position tie-break. A proof-bearing query that
-  follows and aggregates the authenticated multi-page planner-step/request
-  chain, plus richer filtered or aggregated views, remains open.
+  the exact packaged-planner edge/position tie-break. The proof-bearing
+  `GetCampaignPlannerRankings` query authenticates one accepted step under the
+  current snapshot's coordination root, returns its complete retained request,
+  and exposes the parent step as the next page. CLI `campaign rankings` follows
+  at most 64 such pages under a 128 MiB aggregate response-byte budget and
+  applies the same deterministic comparator across all candidates, stopping at
+  a policy/engine/artifact/view boundary. Richer filtered or policy-aggregated
+  views remain open.
 - [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
   projection in generation-bound GC retention plans. Snapshot-bound semantic
   and operational root inventory plus the exclusive generation-bound memory,
