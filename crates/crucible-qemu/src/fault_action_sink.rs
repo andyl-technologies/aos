@@ -30,6 +30,8 @@ use crucible_shmem::{
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 
+#[path = "fault_action_sink/event_staging.rs"]
+mod event_staging;
 #[path = "fault_action_sink/evidence.rs"]
 mod evidence;
 #[path = "fault_action_sink/memory_payload.rs"]
@@ -119,17 +121,31 @@ pub struct QemuFaultActionSink<'a> {
     prepared: Option<PreparedQemuBatch>,
     committed: Vec<(ContentHash, CommittedQemuActionEvidence)>,
     resource_limits: FaultResourceLimits,
+    maximum_event_records: usize,
 }
 
 impl<'a> QemuFaultActionSink<'a> {
     /// Binds a transaction sink to the live node set for one scheduler boundary.
     #[must_use]
     pub const fn new(nodes: &'a mut QemuNodeSet, resource_limits: FaultResourceLimits) -> Self {
+        Self::new_with_event_limit(
+            nodes,
+            resource_limits,
+            resource_limits.event_records as usize,
+        )
+    }
+
+    pub(crate) const fn new_with_event_limit(
+        nodes: &'a mut QemuNodeSet,
+        resource_limits: FaultResourceLimits,
+        maximum_event_records: usize,
+    ) -> Self {
         Self {
             nodes,
             prepared: None,
             committed: Vec::new(),
             resource_limits,
+            maximum_event_records,
         }
     }
 
@@ -434,15 +450,6 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             .map_err(|error| {
                 FaultActionCommitError::Fatal(FaultRuntimeError::ResourceLimit(error))
             })?;
-        let maximum_event_records =
-            usize::try_from(self.resource_limits.event_records).map_err(|_source| {
-                FaultActionCommitError::Fatal(FaultRuntimeError::ResourceLimit(
-                    FaultResourceLimitError::Representation {
-                        field: "event_records",
-                        value: self.resource_limits.event_records,
-                    },
-                ))
-            })?;
         self.committed
             .try_reserve_exact(total_actions)
             .map_err(|_| {
@@ -510,6 +517,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                         },
                     ))
                 })?;
+            let event_staging_allowance = self.event_staging_allowance(&prepared.node)?;
             let preparation_result = self
                 .nodes
                 .apply_fault_preparation_at_current_boundary(
@@ -517,7 +525,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                     preparation_header,
                     &preparation_payload,
                     maximum_evidence,
-                    maximum_event_records,
+                    event_staging_allowance,
                 )
                 .map_err(map_preparation_result_error)?;
             let DequeuedFaultResult::Valid {
@@ -628,6 +636,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 FAULT_COMMAND_FLAG_PREPARE_ONLY,
                 [0; 32],
             )?;
+            let event_staging_allowance = self.event_staging_allowance(&prepared.node)?;
             let result = self
                 .nodes
                 .apply_fault_command_at_current_boundary_with_limits(
@@ -635,7 +644,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                     header,
                     &prepared.payload,
                     result_buffer,
-                    maximum_event_records,
+                    event_staging_allowance,
                 )
                 .map_err(map_preparation_result_error)?;
             let (evidence, result_buffer) = validate_typed_node_result_decoded(
@@ -695,6 +704,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             let mutation_header = mutation_header.ok_or(FaultActionCommitError::Fatal(
                 FaultRuntimeError::IncompleteAdapterState,
             ))?;
+            let event_staging_allowance = self.event_staging_allowance(&prepared.node)?;
             let result = self
                 .nodes
                 .apply_fault_command_at_current_boundary_with_limits(
@@ -702,7 +712,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                     mutation_header,
                     &mutation_payload,
                     result_buffer,
-                    maximum_event_records,
+                    event_staging_allowance,
                 )
                 .map_err(map_preparation_result_error)?;
             let DequeuedFaultResult::Valid {
@@ -781,6 +791,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             let header = apply_header.ok_or(FaultActionCommitError::Fatal(
                 FaultRuntimeError::IncompleteAdapterState,
             ))?;
+            let event_staging_allowance = self.event_staging_allowance(&prepared.node)?;
             let result = self
                 .nodes
                 .apply_fault_command_at_current_boundary_with_limits(
@@ -788,7 +799,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                     header,
                     &prepared.payload,
                     result_buffer,
-                    maximum_event_records,
+                    event_staging_allowance,
                 )
                 .map_err(map_preparation_result_error)?;
             let (evidence, _result_buffer) = validate_typed_node_result_decoded(

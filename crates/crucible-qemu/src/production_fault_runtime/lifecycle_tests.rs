@@ -41,7 +41,10 @@ fn terminal_lifecycle_evidence_reconstructs_the_pre_exit_digest() {
         },
         crash.id(),
         &event,
+        0,
+        FaultResourceLimits::default(),
     )
+    .unwrap_or_else(|error| panic!("terminal decision should allocate: {error}"))
     .unwrap_or_else(|| panic!("terminal event should produce a supervision decision"));
     assert_eq!(decision.expected_exit_code, Some(70));
     assert_eq!(
@@ -113,7 +116,10 @@ fn ready_exhaustion_names_the_effective_terminal_transition() {
         },
         reset.id(),
         &event,
+        0,
+        FaultResourceLimits::default(),
     )
+    .unwrap_or_else(|error| panic!("terminal decision should allocate: {error}"))
     .unwrap_or_else(|| panic!("exhaustion should produce a supervision decision"));
     assert_eq!(
         decision.requested_transition,

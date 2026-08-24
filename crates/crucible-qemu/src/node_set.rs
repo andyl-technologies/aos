@@ -14,8 +14,7 @@ use crucible::{
 };
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_shmem::{
-    DequeuedFaultEvent, DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1,
-    MAX_FRAME_DELIVERY_ATTEMPTS,
+    DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1, MAX_FRAME_DELIVERY_ATTEMPTS,
 };
 
 #[cfg(target_os = "linux")]
@@ -23,6 +22,8 @@ use crate::QemuProcessIdentity;
 use crate::QemuVmSnapshot;
 use crate::{QemuNode, QemuNodeError, QemuNodeIdleState};
 
+#[path = "node_set/fault_events.rs"]
+mod fault_events;
 #[path = "node_set/lifecycle.rs"]
 mod lifecycle;
 
@@ -429,14 +430,12 @@ impl QemuNodeSet {
     /// # Errors
     ///
     /// Returns [`BackendError`] when any node transport or sequence is invalid.
-    pub fn drain_fault_events(
+    pub(crate) fn visit_fault_event_nodes<E>(
         &mut self,
-        drained: &mut BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
-    ) -> Result<(), BackendError> {
+        mut visit: impl FnMut(&NodeId, &mut QemuNode) -> Result<(), E>,
+    ) -> Result<(), E> {
         for (node, backend) in &mut self.nodes {
-            backend
-                .drain_fault_events(drained.entry(node.clone()).or_default())
-                .map_err(BackendError::from)?;
+            visit(node, backend)?;
         }
         Ok(())
     }
@@ -531,20 +530,6 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
-    /// Reports whether any node has an event awaiting runtime admission.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when any event transport is invalid.
-    pub fn has_pending_fault_events(&mut self) -> Result<bool, BackendError> {
-        for node in self.nodes.values_mut() {
-            if node.fault_event_pending().map_err(BackendError::from)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     /// Applies one admitted QEMU fault command at `node`'s current boundary.
     ///
     /// # Errors
@@ -570,9 +555,7 @@ impl QemuNodeSet {
         result_buffer: Vec<u8>,
         maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuNodeError> {
-        self.nodes
-            .get_mut(node)
-            .ok_or_else(|| QemuNodeError::fault_command(format!("node {node:?} is absent")))?
+        self.node_mut_for_fault_command(node)?
             .apply_fault_command_at_current_boundary_with_limits(
                 header,
                 payload,
@@ -589,9 +572,7 @@ impl QemuNodeSet {
         maximum_payload_bytes: usize,
         maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuNodeError> {
-        self.nodes
-            .get_mut(node)
-            .ok_or_else(|| QemuNodeError::fault_command(format!("node {node:?} is absent")))?
+        self.node_mut_for_fault_command(node)?
             .apply_fault_preparation_at_current_boundary(
                 header,
                 payload,
@@ -625,18 +606,6 @@ impl QemuNodeSet {
         self.node_mut(node)?
             .reserve_fault_command_sequence()
             .map_err(BackendError::from)
-    }
-
-    /// Iterates live execution fingerprints without building an intermediate map.
-    pub(crate) fn execution_fingerprint_entries(
-        &mut self,
-    ) -> impl ExactSizeIterator<Item = Result<(&NodeId, crucible::ContentHash), BackendError>> {
-        self.nodes.iter_mut().map(|(node, backend)| {
-            backend
-                .execution_fingerprint()
-                .map(|fingerprint| (node, fingerprint.hash))
-                .map_err(BackendError::from)
-        })
     }
 
     /// Iterates next fault-command sequences without building an intermediate map.
@@ -736,6 +705,21 @@ impl QemuNodeSet {
             .ok_or_else(|| BackendError::Rejected {
                 message: format!("QEMU backend set has no node `{}`", node.name),
             })
+    }
+
+    fn node_mut_for_fault_command(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<&mut QemuNode, QemuNodeError> {
+        if self.permanently_closed.contains(node) {
+            return Err(QemuNodeError::fault_command(format!(
+                "QEMU node `{}` is permanently failed",
+                node.name
+            )));
+        }
+        self.nodes
+            .get_mut(node)
+            .ok_or_else(|| QemuNodeError::fault_command(format!("node {node:?} is absent")))
     }
 }
 

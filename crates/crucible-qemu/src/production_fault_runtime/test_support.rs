@@ -15,7 +15,7 @@ pub(super) use crucible::model::{
     TargetSelector,
 };
 
-pub(super) fn test_host_manifests() -> HostFaultAdapterManifests {
+pub(crate) fn test_host_manifests() -> HostFaultAdapterManifests {
     fn manifest(adapter: crucible::model::FaultAdapter, backend: &str) -> FaultCapabilityManifest {
         FaultCapabilityManifest {
             backend: FaultObjectId::parse(backend)

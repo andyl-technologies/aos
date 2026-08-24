@@ -7,7 +7,7 @@ use super::{
     MAX_QEMU_CHECKPOINT_NODES, PendingQemuEventMap, ProductionFaultRuntimeCheckpoint,
     ProductionNetworkStateCheckpoint, QemuActionMap, QemuActionSet, QemuNodeMap,
     production_checkpoint_identity, validate_pending_qemu_event_sequences,
-    validate_production_event_state, validate_qemu_action_ledger,
+    validate_production_record_state, validate_qemu_action_ledger,
 };
 use crate::fault_action_sink::CommittedQemuActionEvidence;
 use crucible::model::{
@@ -506,12 +506,13 @@ fn validate_checkpoint(
         &checkpoint.qemu_fault_event_sequences,
     )
     .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Invalid)?;
-    validate_production_event_state(
+    validate_production_record_state(
         &checkpoint.emitted_events,
-        &[],
         &checkpoint.pending_qemu_observations,
-        &[],
         &checkpoint.pending_qemu_events,
+        &checkpoint.qemu_issued_actions,
+        &checkpoint.qemu_action_commits,
+        &checkpoint.qemu_active_rule_ids,
         plan.resource_limits(),
     )
     .map_err(map_identity_error)?;

@@ -9,10 +9,17 @@ use super::{
 use std::collections::BTreeMap;
 
 pub(super) fn content_hash_from_canonical_material(domain: &str, material: &str) -> ContentHash {
+    content_hash_from_canonical_material_bytes(domain, material.as_bytes())
+}
+
+pub(super) fn content_hash_from_canonical_material_bytes(
+    domain: &str,
+    material: &[u8],
+) -> ContentHash {
     let mut hasher = MaterialHasher::new();
     hasher.write_bytes(b"crucible.content-hash.v1");
     hasher.write_bytes(domain.as_bytes());
-    hasher.write_bytes(material.as_bytes());
+    hasher.write_bytes(material);
     ContentHash {
         bytes: hasher.finish(),
     }

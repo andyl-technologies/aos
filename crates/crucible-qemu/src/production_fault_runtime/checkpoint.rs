@@ -30,12 +30,30 @@ impl ProductionFaultRuntime {
             &self.pending_qemu_events,
             self.resource_limits,
         )?;
+        let remaining_event_records = self.event_staging_capacity(&[], None)?;
+        nodes.set_fault_event_staging_limit(
+            remaining_event_records,
+            usize::try_from(self.resource_limits.event_records).map_err(|_| {
+                FaultResourceLimitError::Representation {
+                    field: "event_records",
+                    value: self.resource_limits.event_records,
+                }
+            })?,
+        )?;
         let runtime = self
             .runtime
             .as_ref()
             .map(|runtime| runtime.checkpoint().clone());
         let host = self.host.state().clone();
-        let qemu_fingerprints = qemu_fingerprint_map(nodes, self.resource_limits)?;
+        let qemu_fingerprints =
+            qemu_fingerprint_map(nodes, self.resource_limits, remaining_event_records)?;
+        // Fingerprint publication is itself a tokenized plugin control pump.
+        // It may make an asynchronous occurrence visible after the entry check;
+        // canonical capture must reject that continuation rather than omit the
+        // host-runtime staging buffer from the durable envelope.
+        if nodes.has_pending_fault_events()? {
+            return Err(ProductionFaultRuntimeError::PendingQemuFaultEvents);
+        }
         let qemu_fault_sequences = qemu_sequence_map(
             nodes.fault_command_sequence_entries(),
             nodes.len(),
@@ -283,11 +301,20 @@ impl ProductionFaultRuntime {
 pub(super) fn qemu_fingerprint_map(
     nodes: &mut QemuNodeSet,
     limits: FaultResourceLimits,
+    maximum_event_records: usize,
 ) -> Result<QemuNodeMap<ContentHash>, ProductionFaultRuntimeError> {
     let count = nodes.len();
     admit_qemu_node_count(count, limits)?;
     let mut mapped = QemuNodeMap::new();
-    for observed in nodes.execution_fingerprint_entries() {
+    let configured_event_records = usize::try_from(limits.event_records).map_err(|_| {
+        FaultResourceLimitError::Representation {
+            field: "event_records",
+            value: limits.event_records,
+        }
+    })?;
+    for observed in
+        nodes.execution_fingerprint_entries(maximum_event_records, configured_event_records)?
+    {
         let (node, fingerprint) = observed?;
         mapped
             .try_insert(try_clone_node_id(node, limits)?, fingerprint)

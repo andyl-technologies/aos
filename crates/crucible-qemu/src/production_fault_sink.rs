@@ -41,9 +41,24 @@ impl<'a> ProductionFaultActionSink<'a> {
         nodes: &'a mut QemuNodeSet,
         resource_limits: crucible::model::FaultResourceLimits,
     ) -> Self {
+        let maximum_event_records =
+            usize::try_from(resource_limits.event_records).unwrap_or(usize::MAX);
+        Self::new_with_event_limit(host, nodes, resource_limits, maximum_event_records)
+    }
+
+    pub(crate) fn new_with_event_limit(
+        host: &'a mut HostFaultActionSink,
+        nodes: &'a mut QemuNodeSet,
+        resource_limits: crucible::model::FaultResourceLimits,
+        maximum_event_records: usize,
+    ) -> Self {
         Self {
             host,
-            qemu: QemuFaultActionSink::new(nodes, resource_limits),
+            qemu: QemuFaultActionSink::new_with_event_limit(
+                nodes,
+                resource_limits,
+                maximum_event_records,
+            ),
             prepared: None,
         }
     }

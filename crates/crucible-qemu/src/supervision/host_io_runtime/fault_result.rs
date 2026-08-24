@@ -25,8 +25,17 @@ impl QemuLiveHostIoRuntime {
     pub(super) fn drain_fault_events_for_pump(
         &mut self,
         maximum_event_records: usize,
+        deadline: &HostSupervisionDeadline,
+        timeout: Duration,
+        operation: &'static str,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         loop {
+            if !deadline.has_time_remaining() {
+                return Err(QemuAsyncDriverRuntimeError::new(
+                    operation,
+                    format!("fault-event drain did not quiesce within {timeout:?}"),
+                ));
+            }
             let pending = {
                 let transport = self
                     .region
@@ -50,13 +59,19 @@ impl QemuLiveHostIoRuntime {
             let current = self.staged_fault_events.len();
             if current >= maximum_event_records {
                 return Err(QemuAsyncDriverRuntimeError::fault_event_storage(
-                    current,
+                    self.fault_event_canonical_current_offset
+                        .saturating_add(current),
                     1,
-                    maximum_event_records,
+                    self.fault_event_configured_limit,
                 ));
             }
             self.staged_fault_events.try_reserve(1).map_err(|_| {
-                QemuAsyncDriverRuntimeError::fault_event_storage(current, 1, maximum_event_records)
+                QemuAsyncDriverRuntimeError::fault_event_storage(
+                    self.fault_event_canonical_current_offset
+                        .saturating_add(current),
+                    1,
+                    self.fault_event_configured_limit,
+                )
             })?;
             let transport = self
                 .region
@@ -100,7 +115,12 @@ impl QemuLiveHostIoRuntime {
         maximum_event_records: usize,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let last_ack = loop {
-            self.drain_fault_events_for_pump(maximum_event_records)?;
+            self.drain_fault_events_for_pump(
+                maximum_event_records,
+                deadline,
+                timeout,
+                "await fault result publication fence",
+            )?;
             self.service_console_output()?;
             let snapshot = self
                 .region
@@ -141,7 +161,12 @@ impl QemuLiveHostIoRuntime {
         let deadline = HostSupervisionDeadline::start(timeout);
         loop {
             let request = self.signal_wake()?;
-            self.drain_fault_events_for_pump(maximum_event_records)?;
+            self.drain_fault_events_for_pump(
+                maximum_event_records,
+                &deadline,
+                timeout,
+                "await fault result",
+            )?;
             let transport = self
                 .region
                 .fault_result_transport_mut(self.vm_slot)
@@ -202,7 +227,12 @@ impl QemuLiveHostIoRuntime {
         let mut payload_buffer = Vec::new();
         loop {
             let request = self.signal_wake()?;
-            self.drain_fault_events_for_pump(maximum_event_records)?;
+            self.drain_fault_events_for_pump(
+                maximum_event_records,
+                &deadline,
+                timeout,
+                "await fault preparation result",
+            )?;
             let transport = self
                 .region
                 .fault_result_transport_mut(self.vm_slot)
