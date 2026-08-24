@@ -470,7 +470,7 @@ fn take_qemu_commit(
     Some(commits.swap_remove(index).1)
 }
 
-fn map_fault_event_drain_error(error: QemuNodeError) -> ProductionFaultRuntimeError {
+pub(crate) fn map_fault_event_drain_error(error: QemuNodeError) -> ProductionFaultRuntimeError {
     match error {
         QemuNodeError::FaultEventStorage {
             current,
