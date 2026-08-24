@@ -28,6 +28,60 @@ struct ProductionRunStateRef<'a> {
     journal: &'a ProductionLifecycleJournal,
 }
 
+fn borrowed_json_string_is_canonical(value: &str) -> bool {
+    !value
+        .as_bytes()
+        .iter()
+        .any(|byte| matches!(byte, b'"' | b'\\' | 0..=0x1f))
+}
+
+fn borrowed_process_identity_is_canonical(identity: &QemuProcessIdentity) -> bool {
+    identity
+        .executable
+        .to_str()
+        .is_some_and(borrowed_json_string_is_canonical)
+}
+
+fn validate_borrowed_run_state_strings(
+    manifest: &ProductionRunManifest,
+    journal: &ProductionLifecycleJournal,
+) -> Result<(), String> {
+    let manifest_strings_are_canonical = borrowed_json_string_is_canonical(&manifest.scenario)
+        && borrowed_process_identity_is_canonical(&manifest.owner)
+        && manifest
+            .processes
+            .iter()
+            .chain(manifest.staged_processes.iter())
+            .all(|(node, identity)| {
+                borrowed_json_string_is_canonical(node)
+                    && borrowed_process_identity_is_canonical(identity)
+            });
+    let journal_strings_are_canonical = journal.nodes.iter().all(|node| {
+        borrowed_json_string_is_canonical(&node.node)
+            && borrowed_process_identity_is_canonical(&node.current_process)
+            && node
+                .replacement_process
+                .as_ref()
+                .is_none_or(borrowed_process_identity_is_canonical)
+            && borrowed_json_string_is_canonical(&node.transition)
+            && borrowed_json_string_is_canonical(&node.action_sha256)
+            && borrowed_json_string_is_canonical(&node.evidence_sha256)
+    }) && journal.completed_exits.iter().all(|exit| {
+        borrowed_json_string_is_canonical(&exit.node)
+            && borrowed_process_identity_is_canonical(&exit.process)
+            && borrowed_json_string_is_canonical(&exit.transition)
+            && borrowed_json_string_is_canonical(&exit.action_sha256)
+            && borrowed_json_string_is_canonical(&exit.evidence_sha256)
+    });
+    if manifest_strings_are_canonical && journal_strings_are_canonical {
+        Ok(())
+    } else {
+        Err(String::from(
+            "durable lifecycle strings must be UTF-8 JSON strings without escape sequences",
+        ))
+    }
+}
+
 pub(in crate::vm_lifecycle) fn persist_run_state_atomic(
     path: &Path,
     manifest: &ProductionRunManifest,
@@ -36,6 +90,7 @@ pub(in crate::vm_lifecycle) fn persist_run_state_atomic(
     runtime_event_records: u64,
     runtime_event_log_bytes: u64,
 ) -> Result<usize, String> {
+    validate_borrowed_run_state_strings(manifest, journal)?;
     for (role, count) in [
         ("current process", manifest.processes.len()),
         ("staged process", manifest.staged_processes.len()),
@@ -290,6 +345,8 @@ impl ProductionVmLifecycleLoop {
         runtime_event_records: u64,
         runtime_event_log_bytes: u64,
     ) -> Result<(), SchedulerError> {
+        validate_borrowed_run_state_strings(&self.run_manifest, &self.lifecycle_journal)
+            .map_err(|message| SchedulerError::BoundaryViolation { message })?;
         let mut counter = CountingJournalWriter::default();
         let state = ProductionRunStateRef {
             version: PRODUCTION_RUN_STATE_VERSION,

@@ -287,6 +287,8 @@ in
           run_exact_qemu_test \
             node::tests::exact_lifecycle::permanent_failure_retires_and_removes_the_authoritative_generation
           run_exact_qemu_test \
+            node::tests::shutdown_and_preemption::process_identity_components_reuse_preowned_executable_storage
+          run_exact_qemu_test \
             node::tests::fault_event_budget::node_set_arms_one_node_from_one_aggregate_fault_event_budget
           run_exact_qemu_test \
             node::tests::fault_event_budget::fault_event_limit_rejects_before_consuming_staged_ownership
@@ -340,6 +342,8 @@ in
             vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_preflights_aggregate_bytes_before_owned_decode
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_preflights_process_count_before_owned_map_decode
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_owned_decode_is_canonical_and_escape_free
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state_recovers_an_unfinished_run_before_reuse
           run_exact_api_test \

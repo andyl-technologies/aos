@@ -52,8 +52,8 @@ fn durable_run_state_preflights_aggregate_bytes_before_owned_decode() {
             version: 2,
             scenario: "3".repeat(64),
             owner: recovery_process(1, "/aos/controller"),
-            processes: BTreeMap::new(),
-            staged_processes: BTreeMap::new(),
+            processes: process_owners::ProductionProcessOwners::new(),
+            staged_processes: process_owners::ProductionProcessOwners::new(),
             clean_shutdown: false,
             recovered_after_host_exit: false,
         },
@@ -61,8 +61,8 @@ fn durable_run_state_preflights_aggregate_bytes_before_owned_decode() {
             version: 1,
             transaction: 0,
             phase: ProductionLifecycleJournalPhase::Idle,
-            nodes: Vec::new(),
-            completed_exits: Vec::new(),
+            nodes: Vec::new().into(),
+            completed_exits: Vec::new().into(),
         },
     };
     let bytes = serde_json::to_vec_pretty(&state)
@@ -116,4 +116,68 @@ fn durable_run_state_preflights_process_count_before_owned_map_decode() {
         .err()
         .unwrap_or_else(|| panic!("process count should fail before owned map decode"));
     assert!(error.contains("admit current process count before owned decode"));
+}
+
+#[test]
+fn durable_run_state_owned_decode_is_canonical_and_escape_free() {
+    let root =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
+    let current = recovery_process(7, "/aos/qemu-a");
+    let mut manifest = recovery_manifest(current, None);
+    manifest
+        .processes
+        .try_reserve_exact(1)
+        .unwrap_or_else(|()| panic!("second process owner should reserve"));
+    manifest
+        .processes
+        .insert_reserved(String::from("node-b"), recovery_process(8, "/aos/qemu-b"))
+        .unwrap_or_else(|()| panic!("reserved second process owner should insert"));
+    let journal = ProductionLifecycleJournal {
+        version: 1,
+        transaction: 0,
+        phase: ProductionLifecycleJournalPhase::Idle,
+        nodes: Vec::new().into(),
+        completed_exits: Vec::new().into(),
+    };
+    let path = root.path().join(PRODUCTION_RUN_STATE_FILE);
+    persist_run_state_atomic(
+        &path,
+        &manifest,
+        &journal,
+        FaultResourceLimits::default(),
+        0,
+        0,
+    )
+    .unwrap_or_else(|error| panic!("canonical process owners should persist: {error}"));
+    let bytes = fs::read(&path).unwrap_or_else(|error| panic!("run state should read: {error}"));
+    let node_a = bytes
+        .windows(b"node-a".len())
+        .position(|window| window == b"node-a")
+        .unwrap_or_else(|| panic!("node-a should be encoded"));
+    let node_b = bytes
+        .windows(b"node-b".len())
+        .position(|window| window == b"node-b")
+        .unwrap_or_else(|| panic!("node-b should be encoded"));
+    assert!(node_a < node_b);
+
+    let (decoded, _, _, _) = quantum_loop::decode_prior_run_state(
+        root.path(),
+        &"3".repeat(64),
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("fallible owned decode should succeed: {error}"));
+    assert_eq!(decoded.processes, manifest.processes);
+
+    manifest.owner.executable = PathBuf::from("/aos/control\"ler");
+    let error = persist_run_state_atomic(
+        &root.path().join("escaped.json"),
+        &manifest,
+        &journal,
+        FaultResourceLimits::default(),
+        0,
+        0,
+    )
+    .err()
+    .unwrap_or_else(|| panic!("escaped durable ownership should fail before publication"));
+    assert!(error.contains("without escape sequences"));
 }
