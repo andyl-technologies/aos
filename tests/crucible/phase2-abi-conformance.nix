@@ -21,6 +21,7 @@
   engineGateTest = builtins.readFile ../../crates/crucible/tests/gate_abi_conformance.rs;
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
+  apiRpcGolden = builtins.readFile ../../crates/crucible-api/src/rpc_abi/golden.rs;
   apiGateTest = builtins.readFile ../../crates/crucible-api/tests/gate_abi_conformance.rs;
   harnessSpec = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   apiSpec = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
@@ -226,14 +227,14 @@
         needle = "GOLDEN_RPC_VECTORS";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/rpc_abi.rs" apiRpcAbi [
+    ++ failuresFor "crates/crucible-api/src/rpc_abi module tree" (apiRpcAbi + apiRpcGolden) [
       {
         label = "explicit major version";
         needle = "pub const RPC_PROTOCOL_MAJOR: u16 = 5;";
       }
       {
         label = "explicit minor version";
-        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 0;";
+        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 1;";
       }
       {
         label = "explicit patch version";

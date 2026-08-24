@@ -78,3 +78,35 @@ pub(super) fn decode_allocation_error(
             .unwrap_or(0),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_allocation_error_adds_the_complete_runtime_base() {
+        let limits = FaultResourceLimits {
+            event_records: 32,
+            ..FaultResourceLimits::default()
+        };
+        assert!(matches!(
+            decode_allocation_error(
+                process_owners::DurableDecodeAllocation {
+                    field: "event_records",
+                    current: 3,
+                    requested: 5,
+                },
+                limits,
+                7,
+                0,
+            ),
+            DurableRunStateError::ResourceLimit {
+                field: "event_records",
+                current: 10,
+                requested: 5,
+                configured: 32,
+                hard,
+            } if hard == FaultResourceLimits::compiled_maximum().event_records
+        ));
+    }
+}

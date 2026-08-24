@@ -10,6 +10,8 @@ mod error;
 pub(in crate::vm_lifecycle) use error::DurableRunStateError;
 use error::{decode_allocation_error, map_limit};
 
+const RUN_STATE_BYTES_FIELD: &str = "lifecycle_run_state_bytes";
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProductionRunStatePreflight {
@@ -136,11 +138,13 @@ fn read_run_json_bounded(
         .map_err(|error| format!("inspect {}: {error}", path.display()))?
         .len();
     if length > maximum {
-        return Err(format!(
-            "{} contains {length} bytes, above the bounded maximum {maximum}",
-            path.display()
-        )
-        .into());
+        return Err(DurableRunStateError::ResourceLimit {
+            field: RUN_STATE_BYTES_FIELD,
+            current: 0,
+            requested: length,
+            configured: maximum,
+            hard: HARD_RUN_STATE_JSON_BYTES,
+        });
     }
     let capacity = usize::try_from(length)
         .map_err(|_| format!("{} length is not representable", path.display()))?;
@@ -148,7 +152,7 @@ fn read_run_json_bounded(
     bytes
         .try_reserve_exact(capacity)
         .map_err(|_| DurableRunStateError::ResourceLimit {
-            field: "event_log_bytes",
+            field: RUN_STATE_BYTES_FIELD,
             current: 0,
             requested: length,
             configured: maximum,
