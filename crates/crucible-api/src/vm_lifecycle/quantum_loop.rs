@@ -1884,6 +1884,14 @@ impl ProductionVmLifecycleLoop {
                 return Err(self.quarantine_precommit_lifecycle_intent(&lifecycle_intents, error));
             }
         };
+        if !lifecycle_intents.is_empty()
+            && let Err(error) = self.persist_lifecycle_state()
+        {
+            if let Ok(mut runtime) = self.fault_runtime.lock() {
+                runtime.poison();
+            }
+            return Err(self.quarantine_precommit_lifecycle_intent(&lifecycle_intents, error));
+        }
         let lifecycle_work = self
             .fault_runtime
             .lock()

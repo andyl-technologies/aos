@@ -146,9 +146,11 @@ impl QemuMappedQuantumShmemHotPath {
             transport.arena,
             transport.arena_region_offset,
             destination,
-            canonical_payload_bytes,
-            configured_payload_bytes,
-            configured_inline_payload_bytes,
+            crucible_shmem::FaultEventPreviewBudget {
+                canonical_payload_bytes,
+                configured_payload_bytes,
+                configured_inline_payload_bytes,
+            },
         )
         .map_err(|source| QemuMappedQuantumShmemHotPathError::FaultEvent { source })
     }

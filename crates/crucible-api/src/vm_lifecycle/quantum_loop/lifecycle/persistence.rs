@@ -255,6 +255,35 @@ fn ensure_lifecycle_encoding_capacity(
 }
 
 impl ProductionVmLifecycleLoop {
+    pub(super) fn refresh_lifecycle_state_resource_usage(
+        &mut self,
+        limits: FaultResourceLimits,
+    ) -> Result<(), SchedulerError> {
+        let (runtime_event_records, runtime_event_log_bytes) = {
+            let runtime =
+                self.fault_runtime
+                    .lock()
+                    .map_err(|_| SchedulerError::BoundaryViolation {
+                        message: String::from("production fault runtime lock is poisoned"),
+                    })?;
+            runtime
+                .lifecycle_journal_resource_usage()
+                .map_err(|error| match error {
+                    crucible_qemu::ProductionFaultRuntimeError::ResourceLimit(error) => {
+                        map_journal_limit(error, runtime.resource_limits())
+                    }
+                    error => SchedulerError::BoundaryViolation {
+                        message: format!("measure lifecycle journal resource base: {error}"),
+                    },
+                })?
+        };
+        self.reserve_lifecycle_state_encoding(
+            limits,
+            runtime_event_records,
+            runtime_event_log_bytes,
+        )
+    }
+
     pub(in crate::vm_lifecycle) fn reserve_lifecycle_state_encoding(
         &mut self,
         limits: FaultResourceLimits,
@@ -320,6 +349,7 @@ impl ProductionVmLifecycleLoop {
         &mut self,
     ) -> Result<(), SchedulerError> {
         let limits = self.source.plan().fault_signals().resource_limits();
+        self.refresh_lifecycle_state_resource_usage(limits)?;
         self.lifecycle_persistence.encoding.clear();
         let state = ProductionRunStateRef {
             version: PRODUCTION_RUN_STATE_VERSION,

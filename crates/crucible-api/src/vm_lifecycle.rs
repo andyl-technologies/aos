@@ -1324,7 +1324,7 @@ fn production_run_directory(
     }
     run_indexes.sort_by_key(|(index, _)| *index);
     for (_, directory) in &run_indexes {
-        let (mut manifest, mut journal) =
+        let (mut manifest, mut journal, runtime_event_records, runtime_event_log_bytes) =
             decode_prior_run_state(directory, &scenario_identity, resource_limits)
                 .map_err(loop_factory_error)?;
         let state_path = directory.join(PRODUCTION_RUN_STATE_FILE);
@@ -1353,8 +1353,15 @@ fn production_run_directory(
             journal.phase = ProductionLifecycleJournalPhase::Quarantined;
             manifest.clean_shutdown = true;
             manifest.recovered_after_host_exit = true;
-            persist_run_state_atomic(&state_path, &manifest, &journal, resource_limits, 0, 0)
-                .map_err(|message| loop_factory_error(format!("recover run state: {message}")))?;
+            persist_run_state_atomic(
+                &state_path,
+                &manifest,
+                &journal,
+                resource_limits,
+                runtime_event_records,
+                runtime_event_log_bytes,
+            )
+            .map_err(|message| loop_factory_error(format!("recover run state: {message}")))?;
         }
     }
     let next_index = run_indexes.last().map_or(Ok(0), |(index, _)| {
