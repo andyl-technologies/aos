@@ -3,6 +3,27 @@
 use super::*;
 
 impl QemuNodeSet {
+    /// Reports whether one named node owns an undrained fault occurrence.
+    ///
+    /// This is a non-consuming preflight used to reserve lifecycle publication
+    /// ownership before the corresponding event is authenticated and removed
+    /// from the public transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or its event transport
+    /// cannot be inspected.
+    pub fn fault_event_pending_by_name(&mut self, name: &str) -> Result<bool, BackendError> {
+        let backend = self
+            .nodes
+            .iter_mut()
+            .find_map(|(node, backend)| (node.name == name).then_some(backend))
+            .ok_or_else(|| BackendError::Rejected {
+                message: format!("unknown QEMU node `{name}`"),
+            })?;
+        backend.fault_event_pending().map_err(BackendError::from)
+    }
+
     /// Reports whether any node has an event awaiting runtime admission.
     ///
     /// # Errors

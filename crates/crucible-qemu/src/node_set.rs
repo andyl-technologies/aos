@@ -5,7 +5,7 @@
 //! steps, inputs, preemptions, fingerprints, debugger requests, and shutdown to
 //! the corresponding live [`QemuNode`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crucible::{
     BackendEffect, BackendError, BackendNetworkOutput, BackendSnapshot, Decision,
@@ -29,7 +29,8 @@ mod lifecycle;
 
 /// A fully validated, no-fail terminal node-generation map update.
 pub struct QemuNodeTerminalReplacementPlan {
-    nodes: BTreeSet<NodeId>,
+    nodes: Vec<NodeId>,
+    retired: Vec<(NodeId, QemuNode)>,
 }
 
 /// Maximum early-pause reissues for one scheduler-selected node step.
@@ -68,7 +69,7 @@ fn stagnant_pause_boundary(
 /// A deterministic node-addressed collection of live QEMU backends.
 pub struct QemuNodeSet {
     nodes: BTreeMap<NodeId, QemuNode>,
-    permanently_closed: BTreeSet<NodeId>,
+    permanently_closed: Vec<NodeId>,
 }
 
 /// Exact per-node block state captured around one scheduler boundary.
@@ -164,7 +165,7 @@ impl QemuNodeSet {
     pub const fn new() -> Self {
         Self {
             nodes: BTreeMap::new(),
-            permanently_closed: BTreeSet::new(),
+            permanently_closed: Vec::new(),
         }
     }
 
@@ -172,7 +173,7 @@ impl QemuNodeSet {
     ///
     /// Returns the prior node when `node` was already present.
     pub fn insert(&mut self, node: NodeId, backend: QemuNode) -> Option<QemuNode> {
-        self.permanently_closed.remove(&node);
+        self.permanently_closed.retain(|closed| closed != &node);
         self.nodes.insert(node, backend)
     }
 
