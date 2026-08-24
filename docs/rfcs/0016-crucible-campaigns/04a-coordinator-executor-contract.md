@@ -266,15 +266,28 @@ FindingObjectV1 = 0 ObservationV1 |
 
 ExplainCampaignAttemptRequestV1 = version | principal | campaign | snapshot |
                                   AttemptId
-ExplainCampaignAttemptResponseV1 = version | request_digest |
+ExplainCampaignAttemptResponseV2 = version | request_digest |
                                    CampaignSnapshotV2 | AttemptV1 |
                                    AttemptAdmissionV1 | BranchPathV2 |
                                    optional SelectionV2 | optional ProposalV1 |
+                                   optional PlannerStepV4 |
                                    optional ObservationV1 |
                                    MerkleLookupProofV1 attempt_proof |
                                    MerkleLookupProofV1 admission_proof |
                                    optional MerkleLookupProofV1 proposal_proof |
+                                   optional MerkleLookupProofV1 planner_step_proof |
                                    MerkleLookupProofV1 observation_proof
+
+Response version 2 requires a planner step and proof exactly when the selected
+proposal names a planner invocation. The proof resolves
+`coordination.planner-invocation-result(invocation)` under the anchoring
+snapshot. The step MUST name that invocation, proposal policy, and guidance
+view; its selected branch point and source MUST equal the proposal, and its
+issued-proposal set MUST contain the exact proposal ID. Operator, exhaustive,
+and debugger proposals carry neither field. Response version 1 remains
+structurally readable for offline compatibility but does not carry
+planner-decision evidence; the version-17 loopback endpoint writes only version
+2.
 
 MerkleLookupProofV1 = node_count:u64 |
                       nodes[node_id | canonical MerkleNodeV1 envelope bytes]
@@ -783,13 +796,16 @@ similarly composes the finding object's representative-observation and
 original-reproduction reads and requires their exact configuration-artifact
 basis to agree. `campaign explain-attempt` uses the single proof-bearing
 attempt capability to render the immutable start, path, execution cause,
-admission ordinal, branch selection and proposal, and optional completion.
-Arbitrary non-graph object reads and aggregate proposal-ranking views remain
-open. The strict local transport frames exactly one
+admission ordinal, branch selection and proposal, optional completion, and the
+coordinator-accepted planner step with its exact fixed-point guidance terms and
+resource accounting. The planner-step proof is bound to the proposal's exact
+invocation in the anchoring coordination root. Arbitrary non-graph object reads
+and aggregate ranking across unselected proposals remain open. The strict local
+transport frames exactly one
 canonical request or response as:
 
 ```text
-CampaignLoopbackFrameV16 = "CRUCCS16" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV17 = "CRUCCS17" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -825,10 +841,10 @@ kind = 1 (GetCampaignRequestV1) |
       32 (GetCampaignFindingObjectRequestV1) |
       33 (GetCampaignFindingObjectResponseV1) |
       34 (ExplainCampaignAttemptRequestV1) |
-      35 (ExplainCampaignAttemptResponseV1)
+      35 (ExplainCampaignAttemptResponseV2)
 ```
 
-Loopback frame versions 1 through 15 are rejected rather than reinterpreted
+Loopback frame versions 1 through 16 are rejected rather than reinterpreted
 under the expanded kind table.
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB

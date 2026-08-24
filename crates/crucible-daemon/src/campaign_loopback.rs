@@ -3,7 +3,7 @@
 //! The protocol contains only bounded canonical component messages:
 //!
 //! ```text
-//! CampaignLoopbackFrameV16 = magic[8] | kind:u8 | reserved[3] |
+//! CampaignLoopbackFrameV17 = magic[8] | kind:u8 | reserved[3] |
 //!                           body_length:u32be | canonical_body[body_length]
 //! kind = 1 (GetCampaignRequestV1) |
 //!        2 (GetCampaignResponseV1) |
@@ -39,8 +39,8 @@
 //!       32 (GetCampaignFindingObjectRequestV1) |
 //!       33 (GetCampaignFindingObjectResponseV1) |
 //!       34 (ExplainCampaignAttemptRequestV1) |
-//!       35 (ExplainCampaignAttemptResponseV1)
-//! magic = "CRUCCS16"
+//!       35 (ExplainCampaignAttemptResponseV2)
+//! magic = "CRUCCS17"
 //! ```
 //!
 //! One mutex serializes complete request/response exchanges so concurrent
@@ -81,7 +81,7 @@ use crucible_campaign::{
     SubmitCampaignBranchResponse, WatchCampaignRequest, WatchCampaignResponse,
 };
 
-const FRAME_MAGIC: &[u8; 8] = b"CRUCCS16";
+const FRAME_MAGIC: &[u8; 8] = b"CRUCCS17";
 const FRAME_HEADER_BYTES: usize = 16;
 const GET_CAMPAIGN_REQUEST_KIND: u8 = 1;
 const GET_CAMPAIGN_RESPONSE_KIND: u8 = 2;

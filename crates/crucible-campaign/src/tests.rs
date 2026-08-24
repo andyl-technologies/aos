@@ -315,7 +315,12 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         let message = rows
             .get(schema)
             .unwrap_or_else(|| panic!("missing campaign service schema {schema}"));
-        assert_eq!(message[1], "1");
+        let expected_version = if schema == "crucible.campaign.explain-campaign-attempt-response" {
+            "2"
+        } else {
+            "1"
+        };
+        assert_eq!(message[1], expected_version);
         assert_eq!(message[2], "crucible-campaign::campaign_service");
         assert_eq!(message[3], "component-message");
         owned_campaign_schemas.insert(schema);

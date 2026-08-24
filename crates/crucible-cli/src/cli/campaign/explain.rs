@@ -19,7 +19,7 @@ const CAMPAIGN_EXPLANATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-explanat
 const CAMPAIGN_FINDING_EXPLANATION_REPORT_SCHEMA: &str =
     "crucible.cli.campaign-finding-explanation.v1";
 const CAMPAIGN_ATTEMPT_EXPLANATION_REPORT_SCHEMA: &str =
-    "crucible.cli.campaign-attempt-explanation.v1";
+    "crucible.cli.campaign-attempt-explanation.v2";
 
 #[derive(Debug, Serialize)]
 pub(super) struct CampaignExplanationReport {
@@ -150,6 +150,8 @@ pub(super) struct CampaignAttemptExplanationReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     proposal: Option<CampaignExplainedProposal>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    planner: Option<CampaignExplainedPlannerDecision>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     observation: Option<CampaignExplainedObservation>,
 }
 
@@ -206,6 +208,32 @@ struct CampaignExplainedProposal {
     planner_invocation: Option<String>,
     ordinal: u64,
     guidance_basis: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct CampaignExplainedPlannerDecision {
+    step: String,
+    invocation: String,
+    policy: String,
+    engine: String,
+    policy_artifact: String,
+    input_view: String,
+    selected_branch_point: String,
+    selected_source: String,
+    next_state: String,
+    guidance_terms_micros: BTreeMap<String, i64>,
+    accounting: CampaignExplainedPlannerAccounting,
+}
+
+#[derive(Debug, Serialize)]
+struct CampaignExplainedPlannerAccounting {
+    branch_requests: u64,
+    proposals: u64,
+    attempts: u64,
+    deduplicated: u64,
+    input_objects: u64,
+    input_bytes: u64,
+    fuel: u64,
 }
 
 pub(super) fn validate_campaign_explain_command(command: &CampaignCommand) -> Result<(), CliError> {
@@ -565,6 +593,10 @@ where
     let path = response.path();
     let selection = response.selection().map(explained_selection).transpose()?;
     let proposal_body = response.proposal().map(explained_proposal).transpose()?;
+    let planner = response
+        .planner_step()
+        .map(explained_planner_decision)
+        .transpose()?;
     let observation = response
         .observation()
         .map(explained_observation)
@@ -602,6 +634,7 @@ where
         },
         selection,
         proposal: proposal_body,
+        planner,
         observation,
     })
 }
@@ -654,6 +687,44 @@ fn explained_proposal(
         planner_invocation: proposal.planner_invocation().map(|value| value.to_string()),
         ordinal: proposal.ordinal(),
         guidance_basis: proposal.guidance_basis().to_string(),
+    })
+}
+
+pub(super) fn explained_planner_decision(
+    step: &crucible_campaign::PlannerStep,
+) -> Result<CampaignExplainedPlannerDecision, CliError> {
+    let id = step.id().map_err(|error| {
+        backend_error(format!(
+            "authenticated planner-step identity is invalid: {error}"
+        ))
+    })?;
+    let branch_point = step.selected_branch_point().ok_or_else(|| {
+        backend_error("authenticated attempt planner step has no selected branch point")
+    })?;
+    let source = step.selected_source().ok_or_else(|| {
+        backend_error("authenticated attempt planner step has no selected source")
+    })?;
+    let accounting = step.accounting();
+    Ok(CampaignExplainedPlannerDecision {
+        step: id.to_string(),
+        invocation: step.invocation().to_string(),
+        policy: step.policy().to_string(),
+        engine: step.engine().to_string(),
+        policy_artifact: step.policy_artifact().to_string(),
+        input_view: step.input_view().to_string(),
+        selected_branch_point: branch_point.to_string(),
+        selected_source: source.to_string(),
+        next_state: step.next_state().to_string(),
+        guidance_terms_micros: step.evidence().terms_micros().clone(),
+        accounting: CampaignExplainedPlannerAccounting {
+            branch_requests: accounting.branch_requests,
+            proposals: accounting.proposals,
+            attempts: accounting.attempts,
+            deduplicated: accounting.deduplicated,
+            input_objects: accounting.input_objects,
+            input_bytes: accounting.input_bytes,
+            fuel: accounting.fuel,
+        },
     })
 }
 

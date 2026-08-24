@@ -574,6 +574,28 @@ impl CampaignRepository {
         Ok((self.load_proposal(proposal)?, proof))
     }
 
+    pub(crate) fn planner_step_for_invocation_with_proof(
+        &self,
+        root: ContentId,
+        invocation: PlannerInvocationId,
+    ) -> Result<(PlannerStep, MerkleMapLookupProof), CampaignRepositoryError> {
+        let (indexed, proof) = self
+            .merkle
+            .get_with_proof(root, planner_invocation_result_key(invocation))?;
+        let step = PlannerStepId::from_content_id(indexed.ok_or(
+            CampaignRepositoryError::InvalidRequest {
+                reason: "campaign-planner-invocation-is-not-in-snapshot",
+            },
+        )?)?;
+        let step = self.read_planner_step(step.content_id())?;
+        if step.invocation() != invocation {
+            return Err(integrity(
+                "campaign-planner-invocation-result-step-mismatch",
+            ));
+        }
+        Ok((step, proof))
+    }
+
     pub(crate) fn attempt_observation_with_proof(
         &self,
         root: ContentId,
