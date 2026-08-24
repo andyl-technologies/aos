@@ -46,8 +46,8 @@ use std::time::Duration;
 
 use crate::{LifecycleApiError, debug_gateway::DebugGatewayProcess};
 use quantum_loop::{
-    LifecycleJournalPersistence, decode_prior_run_state, decode_run_json_bounded,
-    persist_recovered_lifecycle_journal,
+    LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE, decode_prior_run_state,
+    decode_run_json_bounded, persist_run_state_atomic,
 };
 
 mod assets;
@@ -445,6 +445,15 @@ struct ProductionRunManifest {
     recovered_after_host_exit: bool,
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct ProductionRunState {
+    version: u32,
+    runtime_event_records: u64,
+    runtime_event_log_bytes: u64,
+    manifest: ProductionRunManifest,
+    journal: ProductionLifecycleJournal,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct ProductionRunLockRecord {
     owner: QemuProcessIdentity,
@@ -510,7 +519,7 @@ pub struct ProductionVmLifecycleLoop {
     node_lease_cleanup_failed: bool,
     node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
     lifecycle_journal: ProductionLifecycleJournal,
-    lifecycle_persistence: LifecycleJournalPersistence,
+    lifecycle_persistence: LifecycleStatePersistence,
     run_manifest: ProductionRunManifest,
     scenario: ScenarioDef,
     source: ScenarioDefForm,
@@ -1195,24 +1204,6 @@ mod quantum_loop;
 mod runtime;
 mod search;
 mod storage_faults;
-// crucible-lint: allow stringly-error -- private run-directory persistence diagnostics are immediately wrapped in LifecycleApiError.
-fn persist_atomic_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    let next = path.with_extension("json.next");
-    let bytes = serde_json::to_vec_pretty(value)
-        .map_err(|error| format!("encode {}: {error}", path.display()))?;
-    let mut file =
-        File::create(&next).map_err(|error| format!("create {}: {error}", next.display()))?;
-    file.write_all(&bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|error| format!("flush {}: {error}", next.display()))?;
-    fs::rename(&next, path).map_err(|error| format!("commit {}: {error}", path.display()))?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| format!("flush directory {}: {error}", parent.display()))
-}
 // crucible-lint: allow stringly-error -- private run-directory decoding diagnostics are immediately wrapped in LifecycleApiError.
 fn decode_run_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
     decode_run_json_bounded(path, 1_048_576)
@@ -1336,8 +1327,7 @@ fn production_run_directory(
         let (mut manifest, mut journal) =
             decode_prior_run_state(directory, &scenario_identity, resource_limits)
                 .map_err(loop_factory_error)?;
-        let manifest_path = directory.join("run-manifest.json");
-        let journal_path = directory.join("lifecycle-journal.json");
+        let state_path = directory.join(PRODUCTION_RUN_STATE_FILE);
         if !manifest.clean_shutdown {
             let live_owner =
                 linux_process_identity(manifest.owner.process_id).map_err(|error| {
@@ -1361,12 +1351,10 @@ fn production_run_directory(
                 )?;
             }
             journal.phase = ProductionLifecycleJournalPhase::Quarantined;
-            persist_recovered_lifecycle_journal(&journal_path, &journal, resource_limits)
-                .map_err(|message| loop_factory_error(format!("recover journal: {message}")))?;
             manifest.clean_shutdown = true;
             manifest.recovered_after_host_exit = true;
-            persist_atomic_json(&manifest_path, &manifest)
-                .map_err(|message| loop_factory_error(format!("recover manifest: {message}")))?;
+            persist_run_state_atomic(&state_path, &manifest, &journal, resource_limits, 0, 0)
+                .map_err(|message| loop_factory_error(format!("recover run state: {message}")))?;
         }
     }
     let next_index = run_indexes.last().map_or(Ok(0), |(index, _)| {
@@ -1396,11 +1384,15 @@ fn production_run_directory(
         nodes: Vec::new(),
         completed_exits: Vec::new(),
     };
-    persist_atomic_json(&path.join("run-manifest.json"), &manifest)
-        .map_err(|message| loop_factory_error(format!("initialize run manifest: {message}")))?;
-    persist_atomic_json(&path.join("lifecycle-journal.json"), &journal).map_err(|message| {
-        loop_factory_error(format!("initialize lifecycle journal: {message}"))
-    })?;
+    persist_run_state_atomic(
+        &path.join(PRODUCTION_RUN_STATE_FILE),
+        &manifest,
+        &journal,
+        resource_limits,
+        0,
+        0,
+    )
+    .map_err(|message| loop_factory_error(format!("initialize run state: {message}")))?;
     drop(lock);
     Ok((
         ProductionRunDirectory {
@@ -1995,9 +1987,13 @@ fn build_production_vm_lifecycle_loop_with_restore(
         run_manifest
             .processes
             .insert(vm.id.name.clone(), process_identity);
-        if let Err(message) = persist_atomic_json(
-            &run_directory.path().join("run-manifest.json"),
+        if let Err(message) = persist_run_state_atomic(
+            &run_directory.path().join(PRODUCTION_RUN_STATE_FILE),
             &run_manifest,
+            &lifecycle_journal,
+            source.plan().fault_signals().resource_limits(),
+            0,
+            0,
         ) {
             let backend_cleanup = backends.shutdown();
             let lease_cleanup = if backend_cleanup.is_ok() {
@@ -2346,7 +2342,8 @@ fn build_production_vm_lifecycle_loop_with_restore(
         node_lease_cleanup_failed: false,
         node_service_states,
         lifecycle_journal,
-        lifecycle_persistence: LifecycleJournalPersistence::new(run_directory.path()),
+        lifecycle_persistence: LifecycleStatePersistence::new(run_directory.path())
+            .map_err(loop_factory_error)?,
         run_manifest,
         scenario: scenario.clone(),
         source: source.clone(),

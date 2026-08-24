@@ -1,303 +1,105 @@
-//! Bounded lifecycle-journal encoding and atomic publication.
+//! Bounded lifecycle ownership-state encoding and atomic publication.
+//!
+//! One file owns the process manifest and lifecycle journal together so a
+//! rename cannot publish half of an ownership transition:
+//!
+//! ```text
+//! {"version":1,"runtime_event_records":0,"runtime_event_log_bytes":0,"manifest":{...},"journal":{...}}
+//! ```
 
 use super::*;
 use crucible::model::FaultResourceLimitError;
-use serde::de::DeserializeOwned;
-use std::io::Read as _;
+
+mod recovery;
+#[cfg(test)]
+pub(in crate::vm_lifecycle) use recovery::validate_recovered_lifecycle_journal;
+pub(in crate::vm_lifecycle) use recovery::{decode_prior_run_state, decode_run_json_bounded};
 
 const HARD_RUN_STATE_JSON_BYTES: u64 = 67_108_864;
+const PRODUCTION_RUN_STATE_VERSION: u32 = 1;
+pub(in crate::vm_lifecycle) const PRODUCTION_RUN_STATE_FILE: &str = "run-state.json";
 
-pub(in crate::vm_lifecycle) fn decode_run_json_bounded<T: DeserializeOwned>(
+#[derive(serde::Serialize)]
+struct ProductionRunStateRef<'a> {
+    version: u32,
+    runtime_event_records: u64,
+    runtime_event_log_bytes: u64,
+    manifest: &'a ProductionRunManifest,
+    journal: &'a ProductionLifecycleJournal,
+}
+
+pub(in crate::vm_lifecycle) fn persist_run_state_atomic(
     path: &Path,
-    configured_maximum: u64,
-) -> Result<T, String> {
-    let maximum = configured_maximum.min(HARD_RUN_STATE_JSON_BYTES);
-    let file = File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
-    let length = file
-        .metadata()
-        .map_err(|error| format!("inspect {}: {error}", path.display()))?
-        .len();
-    if length > maximum {
-        return Err(format!(
-            "{} contains {length} bytes, above the bounded maximum {maximum}",
-            path.display()
-        ));
-    }
-    let capacity = usize::try_from(length)
-        .map_err(|_| format!("{} length is not representable", path.display()))?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(capacity)
-        .map_err(|_| format!("reserve {capacity} bytes for {}", path.display()))?;
-    file.take(maximum.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("read {}: {error}", path.display()))?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum {
-        return Err(format!("{} grew beyond {maximum} bytes", path.display()));
-    }
-    serde_json::from_slice(&bytes).map_err(|error| format!("decode {}: {error}", path.display()))
-}
-
-pub(in crate::vm_lifecycle) fn decode_prior_run_state(
-    directory: &Path,
-    scenario_identity: &str,
-    limits: FaultResourceLimits,
-) -> Result<(ProductionRunManifest, ProductionLifecycleJournal), String> {
-    let manifest_path = directory.join("run-manifest.json");
-    let manifest: ProductionRunManifest =
-        decode_run_json_bounded(&manifest_path, limits.event_log_bytes)
-            .map_err(|message| format!("invalid prior run manifest: {message}"))?;
-    if manifest.version != 2 || manifest.scenario != scenario_identity {
-        return Err(format!(
-            "prior run manifest {} has incompatible identity or version",
-            manifest_path.display()
-        ));
-    }
-    if let Some(node) = manifest
-        .staged_processes
-        .keys()
-        .find(|node| !manifest.processes.contains_key(*node))
-    {
-        return Err(format!(
-            "prior run manifest stages replacement for unknown current node `{node}`"
-        ));
-    }
-    // A Prepared transaction owns two process generations for one logical
-    // node. `nodes` bounds logical topology, not the temporary generation
-    // multiplicity required for atomic replacement and crash recovery.
-    let process_records = manifest.processes.len();
-    if u64::try_from(process_records).unwrap_or(u64::MAX) > limits.nodes {
-        return Err(format!(
-            "prior run manifest has {process_records} process records above node limit {}",
-            limits.nodes
-        ));
-    }
-    let journal_path = directory.join("lifecycle-journal.json");
-    let journal = decode_run_json_bounded(&journal_path, limits.event_log_bytes)
-        .map_err(|message| format!("invalid prior lifecycle journal: {message}"))?;
-    validate_recovered_lifecycle_journal(&journal, &manifest, limits).map_err(|message| {
-        format!(
-            "invalid prior lifecycle journal {}: {message}",
-            journal_path.display()
-        )
-    })?;
-    Ok((manifest, journal))
-}
-
-pub(in crate::vm_lifecycle) fn validate_recovered_lifecycle_journal(
-    journal: &ProductionLifecycleJournal,
     manifest: &ProductionRunManifest,
+    journal: &ProductionLifecycleJournal,
     limits: FaultResourceLimits,
-) -> Result<(), String> {
-    if journal.version != 1 {
-        return Err(format!(
-            "unsupported lifecycle journal version {}",
-            journal.version
-        ));
+    runtime_event_records: u64,
+    runtime_event_log_bytes: u64,
+) -> Result<usize, String> {
+    for (role, count) in [
+        ("current process", manifest.processes.len()),
+        ("staged process", manifest.staged_processes.len()),
+        ("lifecycle node", journal.nodes.len()),
+    ] {
+        limits
+            .reserve("nodes", 0, u64::try_from(count).unwrap_or(u64::MAX))
+            .map_err(|error| format!("admit durable {role} count: {error}"))?;
     }
-    let records = journal
+    let lifecycle_records = journal
         .nodes
         .len()
         .checked_add(journal.completed_exits.len())
-        .ok_or_else(|| String::from("lifecycle journal record count overflow"))?;
-    if u64::try_from(records).unwrap_or(u64::MAX) > limits.event_records {
-        return Err(format!(
-            "lifecycle journal has {records} records above limit {}",
-            limits.event_records
-        ));
-    }
-    if u64::try_from(journal.nodes.len()).unwrap_or(u64::MAX) > limits.nodes {
-        return Err(format!(
-            "lifecycle journal has {} nodes above limit {}",
-            journal.nodes.len(),
-            limits.nodes
-        ));
-    }
-    if matches!(
-        journal.phase,
-        ProductionLifecycleJournalPhase::Idle | ProductionLifecycleJournalPhase::Committed
-    ) && !journal.nodes.is_empty()
-    {
-        return Err(format!(
-            "lifecycle journal phase {:?} cannot retain live node ownership",
-            journal.phase
-        ));
-    }
-    for (index, node) in journal.nodes.iter().enumerate() {
-        if node.node.is_empty()
-            || journal.nodes[..index]
-                .iter()
-                .any(|prior| prior.node == node.node)
-        {
-            return Err(format!(
-                "lifecycle journal node {} is empty or duplicated",
-                node.node
-            ));
-        }
-        let current = manifest.processes.get(&node.node);
-        let staged = manifest.staged_processes.get(&node.node);
-        if !journal_process_ownership_is_exact(&journal.phase, node, current, staged) {
-            return Err(format!(
-                "lifecycle journal node {} is not bound to manifest process ownership",
-                node.node
-            ));
-        }
-        if node.current_generation == 0
-            || node.next_generation < node.current_generation
-            || node.next_generation > node.current_generation.saturating_add(1)
-            || !valid_lifecycle_transition(&node.transition)
-            || !valid_lifecycle_hash(&node.action_sha256)
-            || !valid_lifecycle_hash(&node.evidence_sha256)
-            || node.current_process.process_id == 0
-            || node.current_process.start_time_ticks == 0
-            || !node.current_process.executable.is_absolute()
-        {
-            return Err(format!(
-                "lifecycle journal node {} has invalid canonical fields",
-                node.node
-            ));
-        }
-    }
-    for exit in &journal.completed_exits {
-        if exit.node.is_empty()
-            || exit.generation == 0
-            || !valid_lifecycle_transition(&exit.transition)
-            || !valid_lifecycle_hash(&exit.action_sha256)
-            || !valid_lifecycle_hash(&exit.evidence_sha256)
-            || exit.expected_exit_code != exit.observed_exit_code
-            || exit.process.process_id == 0
-            || exit.process.start_time_ticks == 0
-            || !exit.process.executable.is_absolute()
-        {
-            return Err(format!(
-                "completed lifecycle exit for {} has invalid canonical fields",
-                exit.node
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn journal_process_ownership_is_exact(
-    phase: &ProductionLifecycleJournalPhase,
-    node: &ProductionLifecycleJournalNode,
-    current: Option<&QemuProcessIdentity>,
-    staged: Option<&QemuProcessIdentity>,
-) -> bool {
-    match phase {
-        ProductionLifecycleJournalPhase::Idle | ProductionLifecycleJournalPhase::Committed => false,
-        ProductionLifecycleJournalPhase::Intent => {
-            current == Some(&node.current_process) && node.replacement_process.is_none()
-        }
-        ProductionLifecycleJournalPhase::Prepared => {
-            current == Some(&node.current_process) && staged == node.replacement_process.as_ref()
-        }
-        ProductionLifecycleJournalPhase::ExitsReaped => {
-            (current == Some(&node.current_process) && staged == node.replacement_process.as_ref())
-                || committed_process_ownership_is_exact(node, current, staged)
-        }
-        ProductionLifecycleJournalPhase::Quarantined => {
-            quarantined_process_ownership_is_recoverable(node, current, staged)
-        }
-    }
-}
-
-fn committed_process_ownership_is_exact(
-    node: &ProductionLifecycleJournalNode,
-    current: Option<&QemuProcessIdentity>,
-    staged: Option<&QemuProcessIdentity>,
-) -> bool {
-    if staged.is_some() {
-        return false;
-    }
-    node.replacement_process.as_ref().map_or_else(
-        || current.is_none() && node.transition == "PermanentFailure",
-        |replacement| current == Some(replacement),
-    )
-}
-
-fn quarantined_process_ownership_is_recoverable(
-    node: &ProductionLifecycleJournalNode,
-    current: Option<&QemuProcessIdentity>,
-    staged: Option<&QemuProcessIdentity>,
-) -> bool {
-    if current == Some(&node.current_process) {
-        // Quarantine can follow Intent, any replacement-launch failure, or a
-        // manifest publication failure. The staged entry is either the exact
-        // journal replacement, absent because publication never committed, or
-        // still manifest-owned after commit consumed the journal copy.
-        return node
-            .replacement_process
-            .as_ref()
-            .is_none_or(|replacement| staged.is_none() || staged == Some(replacement));
-    }
-    if staged.is_some() {
-        return false;
-    }
-    if let Some(replacement) = node.replacement_process.as_ref() {
-        return current == Some(replacement);
-    }
-
-    current.is_none()
-        && node.next_generation == node.current_generation
-        && node.transition == "PermanentFailure"
-}
-
-fn valid_lifecycle_transition(value: &str) -> bool {
-    matches!(
-        value,
-        "Boot" | "Crash" | "Reset" | "PowerOff" | "PowerCycle" | "PermanentFailure"
-    )
-}
-
-fn valid_lifecycle_hash(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .as_bytes()
-            .iter()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
-}
-
-pub(in crate::vm_lifecycle) fn persist_recovered_lifecycle_journal(
-    path: &Path,
-    journal: &ProductionLifecycleJournal,
-    limits: FaultResourceLimits,
-) -> Result<(), String> {
+        .ok_or_else(|| String::from("durable lifecycle record count overflow"))?;
+    limits
+        .reserve(
+            "event_records",
+            runtime_event_records,
+            u64::try_from(lifecycle_records).unwrap_or(u64::MAX),
+        )
+        .map_err(|error| format!("admit durable lifecycle record count: {error}"))?;
+    let state = ProductionRunStateRef {
+        version: PRODUCTION_RUN_STATE_VERSION,
+        runtime_event_records,
+        runtime_event_log_bytes,
+        manifest,
+        journal,
+    };
     let mut counter = CountingJournalWriter::default();
-    serde_json::to_writer_pretty(&mut counter, journal)
-        .map_err(|error| format!("measure recovered lifecycle journal: {error}"))?;
+    serde_json::to_writer_pretty(&mut counter, &state)
+        .map_err(|error| format!("measure durable lifecycle state: {error}"))?;
     limits
         .reserve(
             "event_log_bytes",
-            0,
+            runtime_event_log_bytes,
             u64::try_from(counter.length).unwrap_or(u64::MAX),
         )
-        .map_err(|error| format!("admit recovered lifecycle journal: {error}"))?;
+        .map_err(|error| format!("admit durable lifecycle state: {error}"))?;
     let mut encoding = Vec::new();
     encoding
         .try_reserve_exact(counter.length)
-        .map_err(|_| format!("reserve {} recovered journal bytes", counter.length))?;
+        .map_err(|_| format!("reserve {} durable state bytes", counter.length))?;
     serde_json::to_writer_pretty(
         FixedJournalWriter {
             destination: &mut encoding,
         },
-        journal,
+        &state,
     )
-    .map_err(|error| format!("encode recovered lifecycle journal: {error}"))?;
-    let next = path.with_extension("recovery-next");
+    .map_err(|error| format!("encode durable lifecycle state: {error}"))?;
+    let next = path.with_extension("next");
     let mut file = File::create(&next)
-        .map_err(|error| format!("create recovered journal {}: {error}", next.display()))?;
+        .map_err(|error| format!("create durable state {}: {error}", next.display()))?;
     file.write_all(&encoding)
         .and_then(|()| file.sync_all())
-        .map_err(|error| format!("flush recovered journal {}: {error}", next.display()))?;
+        .map_err(|error| format!("flush durable state {}: {error}", next.display()))?;
     fs::rename(&next, path)
-        .map_err(|error| format!("commit recovered journal {}: {error}", path.display()))?;
+        .map_err(|error| format!("commit durable state {}: {error}", path.display()))?;
     let parent = path
         .parent()
-        .ok_or_else(|| format!("journal path {} has no parent", path.display()))?;
+        .ok_or_else(|| format!("durable state path {} has no parent", path.display()))?;
     File::open(parent)
         .and_then(|directory| directory.sync_all())
-        .map_err(|error| format!("flush recovered journal directory: {error}"))
+        .map_err(|error| format!("flush durable state directory: {error}"))?;
+    Ok(encoding.capacity())
 }
 
 pub(in crate::vm_lifecycle) fn map_journal_limit(
@@ -360,19 +162,35 @@ pub(in crate::vm_lifecycle) fn map_journal_limit(
     }
 }
 
-pub(in crate::vm_lifecycle) struct LifecycleJournalPersistence {
+pub(in crate::vm_lifecycle) struct LifecycleStatePersistence {
     path: PathBuf,
     next: PathBuf,
     encoding: Vec<u8>,
+    runtime_event_records: u64,
+    runtime_event_log_bytes: u64,
 }
 
-impl LifecycleJournalPersistence {
-    pub(in crate::vm_lifecycle) fn new(run_directory: &Path) -> Self {
-        Self {
-            path: run_directory.join("lifecycle-journal.json"),
-            next: run_directory.join("lifecycle-journal.next"),
-            encoding: Vec::new(),
-        }
+impl LifecycleStatePersistence {
+    pub(in crate::vm_lifecycle) fn new(run_directory: &Path) -> Result<Self, String> {
+        let path = run_directory.join(PRODUCTION_RUN_STATE_FILE);
+        let length = match path.metadata() {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => return Err(format!("inspect {}: {error}", path.display())),
+        };
+        let capacity = usize::try_from(length)
+            .map_err(|_| format!("{} length is not representable", path.display()))?;
+        let mut encoding = Vec::new();
+        encoding
+            .try_reserve_exact(capacity)
+            .map_err(|_| format!("reserve {capacity} live durable-state bytes"))?;
+        Ok(Self {
+            path,
+            next: run_directory.join("run-state.next"),
+            encoding,
+            runtime_event_records: 0,
+            runtime_event_log_bytes: 0,
+        })
     }
 }
 
@@ -422,14 +240,36 @@ impl std::io::Write for CountingJournalWriter {
     }
 }
 
+fn ensure_lifecycle_encoding_capacity(
+    destination: &mut Vec<u8>,
+    required: usize,
+) -> Result<(), usize> {
+    destination.clear();
+    let current = destination.capacity();
+    if current >= required {
+        return Ok(());
+    }
+    destination
+        .try_reserve_exact(required)
+        .map_err(|_| required.saturating_sub(current))
+}
+
 impl ProductionVmLifecycleLoop {
-    pub(super) fn reserve_lifecycle_journal_encoding(
+    pub(in crate::vm_lifecycle) fn reserve_lifecycle_state_encoding(
         &mut self,
         limits: FaultResourceLimits,
+        runtime_event_records: u64,
         runtime_event_log_bytes: u64,
     ) -> Result<(), SchedulerError> {
         let mut counter = CountingJournalWriter::default();
-        serde_json::to_writer_pretty(&mut counter, &self.lifecycle_journal).map_err(|error| {
+        let state = ProductionRunStateRef {
+            version: PRODUCTION_RUN_STATE_VERSION,
+            runtime_event_records,
+            runtime_event_log_bytes,
+            manifest: &self.run_manifest,
+            journal: &self.lifecycle_journal,
+        };
+        serde_json::to_writer_pretty(&mut counter, &state).map_err(|error| {
             SchedulerError::BoundaryViolation {
                 message: format!("measure lifecycle transaction journal: {error}"),
             }
@@ -439,6 +279,7 @@ impl ProductionVmLifecycleLoop {
                 .nodes
                 .iter()
                 .try_fold(0_usize, |total, node| {
+                    let escaped_node = node.node.len().checked_mul(6)?;
                     let path_bytes = node
                         .current_process
                         .executable
@@ -446,7 +287,14 @@ impl ProductionVmLifecycleLoop {
                         .as_encoded_bytes()
                         .len();
                     let escaped_path = path_bytes.checked_mul(6)?;
-                    total.checked_add(escaped_path.checked_add(256)?)
+                    // A staged owner adds another map key and process identity,
+                    // while the journal adds the same replacement identity.
+                    // Six bytes per input byte is JSON's maximum escaping growth;
+                    // 256 covers the fixed field names, numeric values, and the
+                    // later completed-exit fields.
+                    let identity_growth =
+                        escaped_node.checked_add(escaped_path)?.checked_add(256)?;
+                    total.checked_add(identity_growth.checked_mul(2)?)
                 });
         let required = replacement_growth
             .and_then(|growth| counter.length.checked_add(growth))
@@ -459,24 +307,32 @@ impl ProductionVmLifecycleLoop {
             )
             .map_err(|error| map_journal_limit(error, limits))?;
         let current = self.lifecycle_persistence.encoding.capacity();
-        let additional = required.saturating_sub(current);
-        self.lifecycle_persistence.encoding.clear();
-        self.lifecycle_persistence
-            .encoding
-            .try_reserve_exact(required)
-            .map_err(|_| lifecycle_resource_error("event_log_bytes", current, additional, limits))
+        ensure_lifecycle_encoding_capacity(&mut self.lifecycle_persistence.encoding, required)
+            .map_err(|additional| {
+                lifecycle_resource_error("event_log_bytes", current, additional, limits)
+            })?;
+        self.lifecycle_persistence.runtime_event_records = runtime_event_records;
+        self.lifecycle_persistence.runtime_event_log_bytes = runtime_event_log_bytes;
+        Ok(())
     }
 
-    pub(in crate::vm_lifecycle) fn persist_lifecycle_journal(
+    pub(in crate::vm_lifecycle) fn persist_lifecycle_state(
         &mut self,
     ) -> Result<(), SchedulerError> {
         let limits = self.source.plan().fault_signals().resource_limits();
         self.lifecycle_persistence.encoding.clear();
+        let state = ProductionRunStateRef {
+            version: PRODUCTION_RUN_STATE_VERSION,
+            runtime_event_records: self.lifecycle_persistence.runtime_event_records,
+            runtime_event_log_bytes: self.lifecycle_persistence.runtime_event_log_bytes,
+            manifest: &self.run_manifest,
+            journal: &self.lifecycle_journal,
+        };
         serde_json::to_writer_pretty(
             FixedJournalWriter {
                 destination: &mut self.lifecycle_persistence.encoding,
             },
-            &self.lifecycle_journal,
+            &state,
         )
         .map_err(|_| {
             lifecycle_resource_error(
@@ -561,5 +417,20 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::WriteZero);
         assert!(writer.destination.is_empty());
         assert_eq!(writer.destination.capacity(), capacity);
+    }
+
+    #[test]
+    fn lifecycle_encoding_reserve_uses_the_measured_total_capacity() {
+        let mut destination = Vec::new();
+        destination
+            .try_reserve_exact(4)
+            .unwrap_or_else(|error| panic!("initial test storage should reserve: {error}"));
+        destination.extend_from_slice(b"four");
+
+        ensure_lifecycle_encoding_capacity(&mut destination, 8)
+            .unwrap_or_else(|additional| panic!("test storage should grow by {additional}"));
+
+        assert!(destination.is_empty());
+        assert!(destination.capacity() >= 8);
     }
 }

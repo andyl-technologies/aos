@@ -4,12 +4,13 @@ use super::*;
 
 mod persistence;
 mod process_ownership;
-pub(in crate::vm_lifecycle) use persistence::LifecycleJournalPersistence;
+pub(in crate::vm_lifecycle) use persistence::LifecycleStatePersistence;
 pub(super) use persistence::map_journal_limit;
 #[cfg(test)]
 pub(in crate::vm_lifecycle) use persistence::validate_recovered_lifecycle_journal;
 pub(in crate::vm_lifecycle) use persistence::{
-    decode_prior_run_state, decode_run_json_bounded, persist_recovered_lifecycle_journal,
+    PRODUCTION_RUN_STATE_FILE, decode_prior_run_state, decode_run_json_bounded,
+    persist_run_state_atomic,
 };
 
 pub(super) struct PreparedTerminalReplacement {
@@ -270,8 +271,12 @@ impl ProductionVmLifecycleLoop {
             })?;
         self.lifecycle_journal.phase = ProductionLifecycleJournalPhase::Intent;
         self.lifecycle_journal.nodes = nodes;
-        self.reserve_lifecycle_journal_encoding(limits, runtime_event_log_bytes)?;
-        self.persist_lifecycle_journal()?;
+        self.reserve_lifecycle_state_encoding(
+            limits,
+            runtime_event_records,
+            runtime_event_log_bytes,
+        )?;
+        self.persist_lifecycle_state()?;
         Ok(PreparedLifecyclePrecommit {
             checkpoint,
             actions,
@@ -347,7 +352,7 @@ impl ProductionVmLifecycleLoop {
         phase: ProductionLifecycleJournalPhase,
     ) -> Result<(), SchedulerError> {
         self.lifecycle_journal.phase = phase;
-        self.persist_lifecycle_journal()
+        self.persist_lifecycle_state()
     }
 
     pub(super) fn record_prepared_lifecycle_processes(
@@ -399,8 +404,8 @@ impl ProductionVmLifecycleLoop {
                 journal_node.replacement_process = None;
             }
         }
-        self.persist_run_manifest()?;
-        self.advance_lifecycle_journal(ProductionLifecycleJournalPhase::Prepared)
+        self.lifecycle_journal.phase = ProductionLifecycleJournalPhase::Prepared;
+        self.persist_lifecycle_state()
     }
 
     pub(super) fn retain_completed_lifecycle_exits(
@@ -449,7 +454,7 @@ impl ProductionVmLifecycleLoop {
         }
         self.lifecycle_journal.nodes.clear();
         self.lifecycle_journal.phase = ProductionLifecycleJournalPhase::Committed;
-        self.persist_lifecycle_journal()
+        self.persist_lifecycle_state()
     }
 
     pub(super) fn quarantine_terminal_lifecycle_transaction(
