@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "durable_run_state/resource_limits.rs"]
+mod resource_limits;
+
 fn recovery_process(process_id: u32, executable: &str) -> QemuProcessIdentity {
     QemuProcessIdentity {
         process_id,
@@ -93,8 +96,8 @@ fn durable_run_state_recovers_an_unfinished_run_before_reuse() {
         &first_manifest,
         &first_journal,
         source.plan().fault_signals().resource_limits(),
-        0,
-        0,
+        3,
+        64,
     )
     .unwrap_or_else(|error| panic!("dead owner fixture should persist: {error}"));
     drop(first);
@@ -111,6 +114,8 @@ fn durable_run_state_recovers_an_unfinished_run_before_reuse() {
             .unwrap_or_else(|error| panic!("recovered state should decode: {error}"));
     assert!(recovered.manifest.clean_shutdown);
     assert!(recovered.manifest.recovered_after_host_exit);
+    assert_eq!(recovered.runtime_event_records, 3);
+    assert_eq!(recovered.runtime_event_log_bytes, 64);
     assert!(matches!(
         recovered.journal.phase,
         ProductionLifecycleJournalPhase::Quarantined
@@ -280,7 +285,7 @@ fn durable_run_state_accepts_a_prepared_replacement_at_the_exact_node_limit() {
         ..FaultResourceLimits::default()
     };
 
-    let (decoded_manifest, decoded_journal) =
+    let (decoded_manifest, decoded_journal, _, _) =
         quantum_loop::decode_prior_run_state(root.path(), &manifest.scenario, limits)
             .unwrap_or_else(|error| panic!("one-node Prepared state should recover: {error}"));
     assert_eq!(decoded_manifest.processes.len(), 1);
@@ -406,7 +411,10 @@ fn durable_run_state_rejects_impossible_permanent_failure_ownership() {
     )
     .err()
     .unwrap_or_else(|| panic!("generation-advancing permanent failure should fail closed"));
-    assert!(advanced_error.contains("invalid canonical fields"));
+    assert!(
+        advanced_error.contains("invalid canonical fields")
+            || advanced_error.contains("not bound to manifest process ownership")
+    );
 
     let mut replacement_owned = recovery_journal(
         ProductionLifecycleJournalPhase::Prepared,
@@ -424,6 +432,39 @@ fn durable_run_state_rejects_impossible_permanent_failure_ownership() {
     .err()
     .unwrap_or_else(|| panic!("replacement-owned permanent failure should fail closed"));
     assert!(replacement_error.contains("not bound to manifest process ownership"));
+}
+
+#[test]
+fn durable_run_state_rejects_unpublishable_replacement_transitions() {
+    let current = recovery_process(7, "/aos/qemu-current");
+    let replacement = recovery_process(8, "/aos/qemu-replacement");
+    let manifest = recovery_manifest(current.clone(), Some(replacement.clone()));
+
+    for transition in ["Boot", "Reset", "PowerCycle", "PermanentFailure"] {
+        for phase in [
+            ProductionLifecycleJournalPhase::Prepared,
+            ProductionLifecycleJournalPhase::ExitsReaped,
+            ProductionLifecycleJournalPhase::Quarantined,
+        ] {
+            let mut journal =
+                recovery_journal(phase.clone(), current.clone(), Some(replacement.clone()));
+            journal.nodes[0].transition = String::from(transition);
+            journal.nodes[0].next_generation = if matches!(transition, "Boot" | "PermanentFailure")
+            {
+                1
+            } else {
+                2
+            };
+            let error = quantum_loop::validate_recovered_lifecycle_journal(
+                &journal,
+                &manifest,
+                FaultResourceLimits::default(),
+            )
+            .err()
+            .unwrap_or_else(|| panic!("{phase:?} cannot own a {transition} replacement"));
+            assert!(error.contains("not bound to manifest process ownership"));
+        }
+    }
 }
 
 #[test]

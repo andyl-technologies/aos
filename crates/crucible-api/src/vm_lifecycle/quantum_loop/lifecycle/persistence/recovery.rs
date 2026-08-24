@@ -150,7 +150,7 @@ pub(in crate::vm_lifecycle) fn decode_prior_run_state(
     directory: &Path,
     scenario_identity: &str,
     limits: FaultResourceLimits,
-) -> Result<(ProductionRunManifest, ProductionLifecycleJournal), String> {
+) -> Result<(ProductionRunManifest, ProductionLifecycleJournal, u64, u64), String> {
     let state_path = directory.join(PRODUCTION_RUN_STATE_FILE);
     let bytes = read_run_json_bounded(&state_path, limits.event_log_bytes)
         .map_err(|message| format!("invalid prior run state: {message}"))?;
@@ -233,7 +233,12 @@ pub(in crate::vm_lifecycle) fn decode_prior_run_state(
             state_path.display()
         )
     })?;
-    Ok((manifest, journal))
+    Ok((
+        manifest,
+        journal,
+        state.runtime_event_records,
+        state.runtime_event_log_bytes,
+    ))
 }
 
 pub(in crate::vm_lifecycle) fn validate_recovered_lifecycle_journal(
@@ -284,6 +289,18 @@ pub(in crate::vm_lifecycle) fn validate_recovered_lifecycle_journal(
     {
         return Err(format!(
             "lifecycle journal phase {:?} cannot retain live node ownership",
+            journal.phase
+        ));
+    }
+    if matches!(
+        journal.phase,
+        ProductionLifecycleJournalPhase::Intent
+            | ProductionLifecycleJournalPhase::Prepared
+            | ProductionLifecycleJournalPhase::ExitsReaped
+    ) && journal.nodes.is_empty()
+    {
+        return Err(format!(
+            "lifecycle journal phase {:?} requires at least one live node owner",
             journal.phase
         ));
     }
@@ -367,11 +384,11 @@ fn prepared_process_ownership_is_exact(
 ) -> bool {
     match node.transition.as_str() {
         "PermanentFailure" => node.replacement_process.is_none() && staged.is_none(),
-        "Crash" | "PowerOff" | "PowerCycle" | "Reset" => node
+        "Crash" | "PowerOff" => node
             .replacement_process
             .as_ref()
             .is_some_and(|replacement| staged == Some(replacement)),
-        "Boot" => false,
+        "Boot" | "PowerCycle" | "Reset" => false,
         _ => false,
     }
 }
@@ -382,15 +399,24 @@ fn quarantined_process_ownership_is_recoverable(
     staged: Option<&QemuProcessIdentity>,
 ) -> bool {
     if current == Some(&node.current_process) {
-        return staged == node.replacement_process.as_ref();
+        return match (staged, node.replacement_process.as_ref()) {
+            (None, None) => true,
+            (Some(staged), Some(replacement)) => {
+                matches!(node.transition.as_str(), "Crash" | "PowerOff") && staged == replacement
+            }
+            _ => false,
+        };
     }
     if staged.is_some() {
         return false;
     }
     if let Some(replacement) = node.replacement_process.as_ref() {
-        return current == Some(replacement);
+        return matches!(node.transition.as_str(), "Crash" | "PowerOff")
+            && current == Some(replacement);
     }
-    current.is_none() && node.transition == "PermanentFailure"
+    current.is_none()
+        && node.transition == "PermanentFailure"
+        && node.next_generation == node.current_generation
 }
 
 fn valid_lifecycle_generation(node: &ProductionLifecycleJournalNode) -> bool {
