@@ -137,9 +137,12 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   The pure scenario-owned v1 definition component now provides bounded static
   boundary selectors, validated node cohorts, typed metric sources and values,
   exact aggregation declarations, deterministic ordering, and scenario-v6
-  identity/serialization with measurement-free v5 read compatibility. Runtime
-  boundary evaluation, exact aggregate recomputation, and canonical satisfying
-  stop evidence remain open, so this task is not yet complete.
+  identity/serialization with measurement-free v5 read compatibility. The pure
+  bounded v1 replay evaluator now authenticates dense scheduler entries,
+  resolves compound/cohort boundaries and modeled timeouts, retains canonical
+  satisfying evidence, and recomputes exact integer, rational, histogram, and
+  delta aggregates. Guest and model-owned sample producers plus campaign
+  observation integration remain open, so this task is not yet complete.
 - [ ] **T-CAM-3.2** Add guest measurement begin/sample/end and semantic-marker
   protocol messages with scenario validation and limits.
 - [ ] **T-CAM-3.3** Derive model-owned network, storage, scheduler, icount, and

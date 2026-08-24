@@ -448,6 +448,11 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             "crucible::model",
         ),
         (
+            "crucible.execution.measurement-evaluation",
+            "1",
+            "crucible::model",
+        ),
+        (
             "crucible.execution.reproduction-artifact",
             "6",
             "crucible::model",
