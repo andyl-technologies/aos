@@ -1241,7 +1241,13 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   through common branch-request and campaign primitives and remove parallel
   explicit-fork/search-expansion state models.
 - [ ] **T-CAM-8.5** Publish user documentation and the worked network campaign
-  as an executable fixture.
+  as an executable fixture. The public Crucible guide now documents the
+  shipped single-host campaign surface: strict offline import, managed daemon
+  ownership, authenticated creation and inspection, lifecycle mutations,
+  proof-bearing explanations, restart rules, and the current externally owned
+  executor-attachment boundary. The worked network campaign remains an RFC
+  narrative rather than an executable import fixture, so this task remains
+  open.
 - [ ] **T-CAM-8.6** Have an operator who did not implement the feature complete
   the §14 standard lifecycle, finding-to-debug handoff, steering, retention, and
   cleanup flights using only public documentation and porcelain.
