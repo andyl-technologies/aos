@@ -398,6 +398,15 @@ remaining metric vector.
 - **[GUIDE-9]** Duplicate attempts and duplicate observations MUST receive
   credit exactly once.
 
+The repository now rebuilds the completed-visit portion of those statistics
+from the exact snapshot's idempotent branch-point credit index. Every credited
+observation must name one and only one matching scoped path segment; the result
+partitions parent visits by `BranchEdgeId`, so convergence and duplicate causes
+cannot add credit. One projection admits at most 65,536 credits and 128 MiB of
+canonical credit, observation, attempt, and path bodies. It is identical after
+restart and fails closed for legacy unscoped paths. Reward, novelty, finding,
+prior, and fairness inputs remain neutral and cannot yet change ordering.
+
 The first executable closed-planner checkpoint deliberately establishes the
 pure paged frontier loop before adaptive scoring. Engine
 `crucible-canonical-frontier` implementation version 1 receives the
@@ -406,11 +415,11 @@ for every served source, considers only `Ready` sources, and chooses the least
 canonical `PlanningScanPosition`. It carries that offer across pages and issues
 only at EOF. This ordering is deterministic fairness bootstrap behavior, not a
 claim that PUCT is complete. Introducing reward, novelty, finding, prior, or
-edge-visit terms requires the owner-built projections and exact arithmetic
-above and a new engine implementation version. The exact scorer above is now
-implemented and conformance-tested independently of ranking; the owner-built
-inputs and ranking engine remain the gate that prevents it from changing
-campaign behavior prematurely.
+edge-visit terms requires the complete owner-built projections and exact
+arithmetic above and a new engine implementation version. The exact scorer and
+edge-visit projection are now implemented and conformance-tested independently
+of ranking; the remaining owner-built inputs and ranking engine remain the gate
+that prevents them from changing campaign behavior prematurely.
 
 ## 03.5 Guidance signals and objectives
 

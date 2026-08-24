@@ -1,16 +1,91 @@
 //! Exact fixed-point guidance arithmetic.
 //!
 //! This module owns the language-neutral integer arithmetic used by future
-//! adaptive planner engines. It deliberately does not select a continuation:
-//! owner-built reward, novelty, and finding projections must land before a
-//! planner version may use these scores to change canonical ordering.
+//! adaptive planner engines. The repository supplies an owner-built completed-
+//! visit partition for each semantic edge, but this module deliberately does
+//! not select a continuation: reward, novelty, finding, and prior projections
+//! must land before a planner version may use these scores to change canonical
+//! ordering.
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::BTreeMap};
 
-use crate::{CampaignCodecError, ProgressiveWideningPolicy, PuctPolicy};
+use crate::{
+    BranchEdgeId, BranchPointId, CampaignCodecError, ProgressiveWideningPolicy, PuctPolicy,
+};
 
 /// One whole unit in the campaign fixed-point representation.
 pub const GUIDANCE_MICROS_PER_UNIT: u64 = 1_000_000;
+
+/// Maximum completed visits folded into one branch-edge visit projection.
+pub const MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS: u64 = 65_536;
+
+/// Maximum canonical evidence bytes folded into one edge-visit projection.
+pub const MAX_BRANCH_EDGE_VISIT_PROJECTION_BYTES: usize = 128 * 1024 * 1024;
+
+/// Owner-authenticated completed visits partitioned by one branch point's edges.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchEdgeVisitStatistics {
+    branch_point: BranchPointId,
+    parent_visits: u64,
+    edge_visits: BTreeMap<BranchEdgeId, u64>,
+}
+
+impl BranchEdgeVisitStatistics {
+    /// Builds one exact partition of completed parent visits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError::LimitExceeded`] when the visit or edge
+    /// count exceeds the projection ceiling, or
+    /// [`CampaignCodecError::InvalidValue`] when edge visits do not sum to the
+    /// parent count or a retained edge has zero visits.
+    pub fn new(
+        branch_point: BranchPointId,
+        parent_visits: u64,
+        edge_visits: BTreeMap<BranchEdgeId, u64>,
+    ) -> Result<Self, CampaignCodecError> {
+        if parent_visits > MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS
+            || edge_visits.len() > MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS as usize
+        {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "branch-edge-visit-projection-count",
+            });
+        }
+        if edge_visits.values().any(|visits| *visits == 0)
+            || edge_visits
+                .values()
+                .try_fold(0_u64, |total, visits| total.checked_add(*visits))
+                != Some(parent_visits)
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "branch-edge visits do not partition parent visits",
+            });
+        }
+        Ok(Self {
+            branch_point,
+            parent_visits,
+            edge_visits,
+        })
+    }
+
+    /// Returns the exact semantic branch point receiving the visits.
+    #[must_use]
+    pub const fn branch_point(&self) -> BranchPointId {
+        self.branch_point
+    }
+
+    /// Returns the number of distinct completed observations at the parent.
+    #[must_use]
+    pub const fn parent_visits(&self) -> u64 {
+        self.parent_visits
+    }
+
+    /// Returns completed visits by exact semantic edge identity.
+    #[must_use]
+    pub const fn edge_visits(&self) -> &BTreeMap<BranchEdgeId, u64> {
+        &self.edge_visits
+    }
+}
 
 /// Exact owner-derived progressive-widening admission decision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -409,6 +484,42 @@ fn compare_u256(left: [u64; 4], right: [u64; 4]) -> Ordering {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn branch_edge_visits_form_one_exact_positive_partition() {
+        let branch_point = BranchPointId::from_hash(crate::CampaignHash::derive(
+            "test.branch-edge-visits",
+            b"branch-point",
+        ));
+        let first = BranchEdgeId::from_hash(crate::CampaignHash::derive(
+            "test.branch-edge-visits",
+            b"first",
+        ));
+        let second = BranchEdgeId::from_hash(crate::CampaignHash::derive(
+            "test.branch-edge-visits",
+            b"second",
+        ));
+        let statistics = BranchEdgeVisitStatistics::new(
+            branch_point,
+            3,
+            BTreeMap::from([(first, 2), (second, 1)]),
+        )
+        .expect("exact visit partition");
+        assert_eq!(statistics.parent_visits(), 3);
+        assert_eq!(statistics.edge_visits().get(&first), Some(&2));
+        assert!(matches!(
+            BranchEdgeVisitStatistics::new(branch_point, 2, BTreeMap::from([(first, 1)])),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "branch-edge visits do not partition parent visits"
+            })
+        ));
+        assert!(matches!(
+            BranchEdgeVisitStatistics::new(branch_point, 0, BTreeMap::from([(first, 0)])),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "branch-edge visits do not partition parent visits"
+            })
+        ));
+    }
 
     #[test]
     fn fixed_point_puct_score_uses_exact_staged_rounding() {
