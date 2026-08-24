@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "2c386524a51ebe8d5161364cbddfee880688008b2f2e3618f29bba9af2db6b7c";
+  patchBranchBundleSha256 = "f26329a5c4ec960969a5fd640b11c577745934bc887fa4b7183e7ad172a4dd76";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "e0d79ebf02390b76ef67736cf05b3c197e974f48";
+  patchBranchHeadCommit = "22253f8e0643a1fece1b4a4443bf617555d28ba1";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1029,7 +1029,7 @@ let
     {
       file = "0110-crucible-release-halted-rr-turn.patch";
       branchSubject = "crucible: release halted partial RR turns";
-      branchCommit = "e0d79ebf02390b76ef67736cf05b3c197e974f48";
+      branchCommit = "22253f8e0643a1fece1b4a4443bf617555d28ba1";
       branchTree = "5dd5ac15805cc1d31a3e74e28eabf926fd75dbd5";
       catalogName = "crucible-release-halted-rr-turn";
       class = "D";
