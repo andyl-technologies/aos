@@ -263,6 +263,8 @@ in
           run_exact_qemu_test \
             node::tests::exact_lifecycle::exact_snapshot_rejects_staged_fault_event_ownership
           run_exact_qemu_test \
+            node::tests::fault_event_budget::node_set_arms_one_node_from_one_aggregate_fault_event_budget
+          run_exact_qemu_test \
             production_fault_runtime::checkpoint_codec::preflight::tests::preflight_applies_event_records_as_one_aggregate_ceiling
           run_exact_qemu_test \
             production_fault_runtime::runtime_tests::recovery_tests::qemu_event_staging_uses_remaining_aggregate_ledger_capacity
@@ -403,8 +405,10 @@ in
             crates/crucible-device/src/netlink \
             crates/crucible-device/src/ninep/fault \
             crates/crucible-qemu/src/fault_action_sink \
+            crates/crucible-qemu/src/node_set \
             crates/crucible-qemu/src/production_fault_runtime.rs \
             crates/crucible-qemu/src/production_fault_runtime \
+            crates/crucible-qemu/src/supervision/host_io_runtime \
             crates/crucible-qemu-plugin/src/fault_command \
             crates/crucible-qemu-plugin/src/runtime/live_callbacks
           then

@@ -206,6 +206,31 @@ impl ProductionFaultRuntime {
             &checkpoint.qemu_action_commits,
             &checkpoint.qemu_active_rule_ids,
         )?;
+        let current_event_records = production_record_state_usage(
+            &checkpoint.emitted_events,
+            &checkpoint.pending_qemu_observations,
+            &checkpoint.pending_qemu_events,
+            &checkpoint.qemu_issued_actions,
+            &checkpoint.qemu_action_commits,
+            &checkpoint.qemu_active_rule_ids,
+            resource_limits,
+        )?;
+        let remaining_event_records = resource_limits
+            .event_records
+            .checked_sub(current_event_records)
+            .and_then(|remaining| usize::try_from(remaining).ok())
+            .ok_or(FaultResourceLimitError::Representation {
+                field: "event_records",
+                value: current_event_records,
+            })?;
+        let configured_event_records =
+            usize::try_from(resource_limits.event_records).map_err(|_| {
+                FaultResourceLimitError::Representation {
+                    field: "event_records",
+                    value: resource_limits.event_records,
+                }
+            })?;
+        nodes.set_fault_event_staging_limit(remaining_event_records, configured_event_records)?;
         if checkpoint.identity
             != production_checkpoint_identity(
                 plan.id(),
@@ -226,8 +251,11 @@ impl ProductionFaultRuntime {
         {
             return Err(FaultExecutionError::CheckpointPresence.into());
         }
-        let observed_qemu_fingerprints =
-            super::checkpoint::qemu_fingerprint_map(nodes, resource_limits)?;
+        let observed_qemu_fingerprints = super::checkpoint::qemu_fingerprint_map(
+            nodes,
+            resource_limits,
+            remaining_event_records,
+        )?;
         validate_checkpoint_qemu_fingerprints(
             &checkpoint.qemu_fingerprints,
             &observed_qemu_fingerprints,
@@ -275,6 +303,7 @@ impl ProductionFaultRuntime {
             qemu_fault_sequences.as_slice(),
             qemu_fault_event_sequences.as_slice(),
         )?;
+        nodes.set_fault_event_staging_limit(remaining_event_records, configured_event_records)?;
         Ok(Self {
             plan_id,
             resource_limits,

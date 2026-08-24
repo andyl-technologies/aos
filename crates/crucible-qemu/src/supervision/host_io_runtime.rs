@@ -49,6 +49,7 @@ use deadline::AdvanceWaitDeadline;
 mod boundary;
 mod control;
 mod deadline;
+mod device_service;
 use boundary::*;
 
 /// Default host poll interval while awaiting a plugin-published quantum boundary.
@@ -87,6 +88,10 @@ pub struct QemuLiveHostIoRuntime {
     staged_fault_events: Vec<DequeuedFaultEvent>,
     /// Plan-authored remaining aggregate capacity for staged events.
     fault_event_staging_limit: usize,
+    /// Canonical records owned outside this runtime's local staging vector.
+    fault_event_canonical_current_offset: usize,
+    /// Plan-authored aggregate event-record ceiling reported by LIMIT-2.
+    fault_event_configured_limit: usize,
 }
 
 /// The participant half of the runtime: a block servicer plus its diagnostic sink.
@@ -226,6 +231,8 @@ impl QemuLiveHostIoRuntime {
             console: None,
             staged_fault_events: Vec::new(),
             fault_event_staging_limit: HARD_FAULT_EVENT_CAPACITY as usize,
+            fault_event_canonical_current_offset: 0,
+            fault_event_configured_limit: HARD_FAULT_EVENT_CAPACITY as usize,
         })
     }
 
@@ -569,111 +576,26 @@ impl QemuLiveHostIoRuntime {
             ),
         ))
     }
-
-    /// Services the block-I/O ring at the guest's observed icount, if attached.
-    ///
-    /// Drains newly arrived requests and delivers responses due at the guest's
-    /// current icount, then records the observation into the shared diagnostics.
-    /// Any request or response transition signals the plugin wake fd so QEMU's
-    /// parked block coroutine observes the updated rings and device deadline.
-    /// This is a no-op when no block servicer is attached.
-    fn service_block_io(
-        &mut self,
-        snapshot: &crucible_shmem::NodeSlotSnapshot,
-    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
-        let Some(block) = &mut self.block else {
-            return Ok(false);
-        };
-        let serviced = match &mut block.coordinator {
-            Some(coordinator) => {
-                coordinator.service_block_io(&mut block.servicer, snapshot.current_icount)?
-            }
-            None => block
-                .servicer
-                .service(snapshot.current_icount)
-                .map_err(|source| {
-                    QemuAsyncDriverRuntimeError::new("service block io", source.to_string())
-                })?,
-        };
-        block.diagnostics.record(
-            snapshot.current_icount,
-            snapshot.device_io_active != 0,
-            snapshot.idle_wake_icount,
-            &serviced,
-        );
-        let made_progress = serviced.processed > 0 || serviced.delivered > 0;
-        if made_progress {
-            self.write_wake_doorbell()?;
-        }
-        Ok(made_progress)
-    }
-
-    /// Services the 9p ring at the guest's observed coordinate, if attached.
-    fn service_ninep_io(
-        &mut self,
-        snapshot: &crucible_shmem::NodeSlotSnapshot,
-    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
-        let Some(ninep) = &mut self.ninep else {
-            return Ok(false);
-        };
-        let serviced = match &mut ninep.coordinator {
-            Some(coordinator) => {
-                coordinator.service_ninep_io(&mut ninep.servicer, snapshot.current_icount)?
-            }
-            None => ninep
-                .servicer
-                .service(snapshot.current_icount)
-                .map_err(|source| {
-                    QemuAsyncDriverRuntimeError::new("service 9p io", source.to_string())
-                })?,
-        };
-        ninep.diagnostics.record(
-            snapshot.current_icount,
-            snapshot.device_io_active != 0,
-            snapshot.idle_wake_icount,
-            &serviced,
-        );
-        let made_progress = serviced.processed > 0 || serviced.delivered > 0;
-        if made_progress {
-            self.write_wake_doorbell()?;
-        }
-        Ok(made_progress)
-    }
-
-    fn service_accelerator_io(
-        &mut self,
-        snapshot: &crucible_shmem::NodeSlotSnapshot,
-    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
-        let Some(accelerator) = &mut self.accelerator else {
-            return Ok(false);
-        };
-        let serviced = accelerator
-            .service(snapshot.current_icount)
-            .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new("service accelerator io", source.to_string())
-            })?;
-        let made_progress = serviced.processed > 0 || serviced.delivered > 0;
-        if made_progress {
-            self.write_wake_doorbell()?;
-        }
-        Ok(made_progress)
-    }
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
     fn set_fault_event_staging_limit(
         &mut self,
-        maximum_event_records: usize,
+        maximum_local_records: usize,
+        canonical_current_offset: usize,
+        configured_event_records: usize,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let current = self.staged_fault_events.len();
-        if current > maximum_event_records {
+        if current > maximum_local_records {
             return Err(QemuAsyncDriverRuntimeError::fault_event_storage(
-                current,
+                canonical_current_offset.saturating_add(current),
                 0,
-                maximum_event_records,
+                configured_event_records,
             ));
         }
-        self.fault_event_staging_limit = maximum_event_records;
+        self.fault_event_staging_limit = maximum_local_records;
+        self.fault_event_canonical_current_offset = canonical_current_offset;
+        self.fault_event_configured_limit = configured_event_records;
         Ok(())
     }
 

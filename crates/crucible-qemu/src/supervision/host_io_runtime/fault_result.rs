@@ -59,13 +59,19 @@ impl QemuLiveHostIoRuntime {
             let current = self.staged_fault_events.len();
             if current >= maximum_event_records {
                 return Err(QemuAsyncDriverRuntimeError::fault_event_storage(
-                    current,
+                    self.fault_event_canonical_current_offset
+                        .saturating_add(current),
                     1,
-                    maximum_event_records,
+                    self.fault_event_configured_limit,
                 ));
             }
             self.staged_fault_events.try_reserve(1).map_err(|_| {
-                QemuAsyncDriverRuntimeError::fault_event_storage(current, 1, maximum_event_records)
+                QemuAsyncDriverRuntimeError::fault_event_storage(
+                    self.fault_event_canonical_current_offset
+                        .saturating_add(current),
+                    1,
+                    self.fault_event_configured_limit,
+                )
             })?;
             let transport = self
                 .region

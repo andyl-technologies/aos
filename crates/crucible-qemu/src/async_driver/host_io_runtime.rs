@@ -16,7 +16,9 @@ pub trait QemuHostIoRuntime: Send {
     /// the new ceiling.
     fn set_fault_event_staging_limit(
         &mut self,
-        _maximum_event_records: usize,
+        _maximum_local_records: usize,
+        _canonical_current_offset: usize,
+        _configured_event_records: usize,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         Ok(())
     }
