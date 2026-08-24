@@ -130,6 +130,35 @@ fn live_app_random_consumes_an_exact_parent_campaign_selection() {
 }
 
 #[test]
+fn lifecycle_activity_requirement_rejects_release_before_scheduler_publication() {
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    let mut scheduler = test_scheduler(
+        vec![test_scenario_node(
+            "node-a",
+            0,
+            SchedulerNodeActivity::Halted,
+            NetworkLookahead::Infinite,
+            ExactLocalEvent::NoArmedTimer,
+        )],
+        Vec::new(),
+    );
+
+    assert!(
+        scheduler
+            .require_vm_node_activity(&node, SchedulerNodeActivity::Runnable)
+            .is_err()
+    );
+    scheduler
+        .set_vm_node_activity(&node, SchedulerNodeActivity::Runnable)
+        .unwrap_or_else(|error| panic!("scheduler publication should succeed: {error}"));
+    scheduler
+        .require_vm_node_activity(&node, SchedulerNodeActivity::Runnable)
+        .unwrap_or_else(|error| panic!("published scheduler ownership should validate: {error}"));
+}
+
+#[test]
 fn admitted_ready_counter_is_the_scheduler_epoch() {
     let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let ready = NodeCounter { ticks: 4_096 };

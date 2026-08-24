@@ -14,6 +14,30 @@ impl SingleScheduler {
         Ok(())
     }
 
+    /// Requires one VM to have the scheduler activity owned by a lifecycle stage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` is not a VM or
+    /// its authoritative scheduler activity differs from `expected`.
+    pub fn require_vm_node_activity(
+        &self,
+        node: &NodeId,
+        expected: SchedulerNodeActivity,
+    ) -> Result<(), SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        let actual = self.nodes[index].activity;
+        if actual != expected {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "VM node `{}` has scheduler activity {actual:?}, expected {expected:?}",
+                    node.name
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// Replaces one VM's scheduler activity at an authenticated lifecycle boundary.
     ///
     /// `Halted` models a powered-off VM that may later return to `Runnable`;
