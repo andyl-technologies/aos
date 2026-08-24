@@ -242,7 +242,8 @@ pub use node_set::{QemuNodeSet, QemuNodeTerminalReplacementPlan};
 pub use production_fault_runtime::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint,
     ProductionFaultRuntimeCheckpointCodecError, ProductionFaultRuntimeError,
-    ProductionNetworkStateCheckpoint, QemuNodeLifecycleDecision, QemuNodeLifecycleWork,
+    ProductionNetworkStateCheckpoint, QemuNodeLifecycleDecision, QemuNodeLifecycleIntent,
+    QemuNodeLifecycleWork,
 };
 pub use production_fault_sink::ProductionFaultActionSink;
 pub use qmp::{

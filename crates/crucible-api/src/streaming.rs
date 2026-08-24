@@ -6,8 +6,6 @@
 //! same session command set and dispatch accepted commands through the same
 //! `crucible-session` actor mailbox.
 
-use std::sync::Arc;
-
 use crucible::{
     BackendError, DebugAttachReport, DebugGotoReport, DebugNonCanonicalBranchReport,
     DebugReverseContinueReport, DebugReverseStepReport, EngineError, SchedulerError,
@@ -19,6 +17,7 @@ use crucible_session::{
     SessionStateTransitionBus, SessionStateTransitionFrame, SessionStateTransitionStream,
     lifecycle_transition,
 };
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
@@ -966,7 +965,6 @@ fn engine_error_rejection_kind(error: &EngineError) -> CommandRejectionKind {
         _ => CommandRejectionKind::Internal,
     }
 }
-
 fn schedule_error_rejection_kind(error: &crucible::ScheduleError) -> CommandRejectionKind {
     let _ = error;
     CommandRejectionKind::InvalidArgument
@@ -976,11 +974,12 @@ fn scheduler_error_rejection_kind(error: &SchedulerError) -> CommandRejectionKin
     match error {
         SchedulerError::NotImplemented { .. } => CommandRejectionKind::Unsupported,
         SchedulerError::Backend(error) => backend_error_rejection_kind(error),
-        SchedulerError::BoundaryViolation { .. } => CommandRejectionKind::Internal,
-        SchedulerError::OperationalBoundary { .. } => CommandRejectionKind::Internal,
         SchedulerError::TimeConversion(_) | SchedulerError::TopologyActivationInPast { .. } => {
             CommandRejectionKind::InvalidArgument
         }
+        SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::OperationalBoundary { .. }
+        | SchedulerError::ResourceLimit { .. } => CommandRejectionKind::Internal,
     }
 }
 

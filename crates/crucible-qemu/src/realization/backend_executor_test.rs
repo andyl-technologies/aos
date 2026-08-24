@@ -237,7 +237,7 @@ fn qemu_backend_realization_executor_replays_from_cached_ancestor()
         target.id(),
         QemuCachedAncestor {
             configuration: ancestor.clone(),
-            checkpoint: ancestor_snapshot.checkpoint.clone(),
+            checkpoint: ancestor_snapshot.checkpoint().clone(),
         },
     ));
     let backend = scripted_backend(

@@ -438,6 +438,19 @@ pub enum SchedulerError {
         /// Deterministic operational diagnostic text.
         message: String,
     },
+    /// A scheduler-owned representation could not reserve its admitted storage.
+    ResourceLimit {
+        /// Closed resource field whose reservation failed.
+        field: &'static str,
+        /// Existing admitted usage in field units.
+        current: u64,
+        /// Additional requested usage in field units.
+        requested: u64,
+        /// Scenario-authored ceiling in field units.
+        configured: u64,
+        /// Compiled ceiling in field units.
+        hard: u64,
+    },
     /// Virtual-time conversion failed while computing a scheduler horizon.
     TimeConversion(TimeConversionError),
     /// A topology change was armed at an activation virtual time the run has
@@ -464,6 +477,16 @@ impl fmt::Display for SchedulerError {
             Self::Backend(error) => write!(f, "backend failed under scheduler control: {error}"),
             Self::BoundaryViolation { message } => f.write_str(message),
             Self::OperationalBoundary { message, .. } => f.write_str(message),
+            Self::ResourceLimit {
+                field,
+                current,
+                requested,
+                configured,
+                hard,
+            } => write!(
+                f,
+                "scheduler resource `{field}` cannot reserve {requested} units at current {current}; configured {configured}, hard {hard}"
+            ),
             Self::TimeConversion(error) => {
                 write!(f, "scheduler virtual-time conversion failed: {error}")
             }

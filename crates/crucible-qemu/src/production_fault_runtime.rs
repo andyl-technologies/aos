@@ -235,6 +235,17 @@ pub struct QemuNodeLifecycleDecision {
     pub event_evidence: ContentHash,
 }
 
+/// Precommit identity of one node action that can publish lifecycle work.
+#[derive(Debug, PartialEq, Eq)]
+pub struct QemuNodeLifecycleIntent {
+    /// Scheduler node whose current QEMU generation owns the action.
+    pub node: NodeId,
+    /// Canonical resolved-action identity already used by QEMU evidence.
+    pub action: ContentHash,
+    /// Authored or watchdog-selected lifecycle transition.
+    pub requested_transition: NodeLifecycleTransition,
+}
+
 /// Opaque ownership of one authenticated lifecycle publication batch.
 ///
 /// The production runtime retains a matching checkpoint barrier until this

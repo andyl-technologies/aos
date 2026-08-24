@@ -5,6 +5,8 @@ use super::*;
 #[path = "evaluation/ledger.rs"]
 mod ledger;
 use ledger::StagedQemuActionLedger;
+#[path = "evaluation/lifecycle.rs"]
+mod lifecycle;
 #[path = "evaluation/opportunities.rs"]
 mod opportunities;
 #[path = "evaluation/publication.rs"]

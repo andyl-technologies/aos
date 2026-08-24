@@ -828,6 +828,7 @@ fn map_start_replay_scheduler_failure<F, D>(
         SchedulerError::NotImplemented { .. }
         | SchedulerError::Backend(_)
         | SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)
         | SchedulerError::TopologyActivationInPast { .. } => None,
     };

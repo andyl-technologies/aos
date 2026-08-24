@@ -7,8 +7,8 @@
 
 mod boundary;
 mod evidence;
+mod lifecycle;
 mod route;
-
 use evidence::*;
 
 /// Canonical sequence encoding for checkpoint maps whose keys are not JSON strings.
