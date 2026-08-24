@@ -228,7 +228,7 @@ pub(in crate::vm_lifecycle) fn persist_recovered_lifecycle_journal(
         .map_err(|error| format!("flush recovered journal directory: {error}"))
 }
 
-fn map_journal_limit(
+pub(in crate::vm_lifecycle) fn map_journal_limit(
     error: FaultResourceLimitError,
     limits: FaultResourceLimits,
 ) -> SchedulerError {
