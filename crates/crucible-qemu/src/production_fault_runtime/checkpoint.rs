@@ -3,6 +3,50 @@
 use super::*;
 
 impl ProductionFaultRuntime {
+    /// Returns event-record and event-log usage owned by the production runtime.
+    ///
+    /// Lifecycle journaling uses these coordinates before reserving its own
+    /// durable records, so independently valid ledgers cannot multiply one
+    /// authored aggregate ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError`] when retained event state or
+    /// ledger counts are invalid or exceed the authored resource plan.
+    pub fn lifecycle_journal_resource_usage(
+        &self,
+    ) -> Result<(u64, u64), ProductionFaultRuntimeError> {
+        let (event_records, event_log_bytes) = production_event_state_usage(
+            &self.emitted_events,
+            &[],
+            &self.pending_qemu_observations,
+            &[],
+            &self.pending_qemu_events,
+            self.resource_limits,
+        )?;
+        let ledger_records = self
+            .qemu_issued_actions
+            .len()
+            .checked_add(self.qemu_action_commits.len())
+            .and_then(|records| records.checked_add(self.qemu_active_rule_ids.len()))
+            .and_then(|records| u64::try_from(records).ok())
+            .ok_or(FaultResourceLimitError::Representation {
+                field: "event_records",
+                value: u64::MAX,
+            })?;
+        self.resource_limits
+            .reserve("event_records", event_records, ledger_records)?;
+        Ok((
+            event_records.checked_add(ledger_records).ok_or(
+                FaultResourceLimitError::Representation {
+                    field: "event_records",
+                    value: u64::MAX,
+                },
+            )?,
+            event_log_bytes,
+        ))
+    }
+
     /// Returns the admitted scenario resource ceilings.
     #[must_use]
     pub const fn resource_limits(&self) -> FaultResourceLimits {

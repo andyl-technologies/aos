@@ -45,7 +45,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{LifecycleApiError, debug_gateway::DebugGatewayProcess};
-use quantum_loop::LifecycleJournalPersistence;
+use quantum_loop::{
+    LifecycleJournalPersistence, decode_prior_run_state, decode_run_json_bounded,
+    persist_recovered_lifecycle_journal,
+};
 
 mod assets;
 use assets::*;
@@ -537,8 +540,7 @@ fn persist_atomic_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()
 }
 // crucible-lint: allow stringly-error -- private run-directory decoding diagnostics are immediately wrapped in LifecycleApiError.
 fn decode_run_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
-    let bytes = fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
-    serde_json::from_slice(&bytes).map_err(|error| format!("decode {}: {error}", path.display()))
+    decode_run_json_bounded(path, 1_048_576)
 }
 
 fn acquire_production_run_lock(
@@ -609,6 +611,7 @@ fn acquire_production_run_lock(
 fn production_run_directory(
     scenario: &ScenarioDef,
     config: &ProductionVmLifecycleConfig,
+    resource_limits: FaultResourceLimits,
 ) -> Result<
     (
         ProductionRunDirectory,
@@ -655,29 +658,11 @@ fn production_run_directory(
     }
     run_indexes.sort_by_key(|(index, _)| *index);
     for (_, directory) in &run_indexes {
+        let (mut manifest, mut journal) =
+            decode_prior_run_state(directory, &scenario_identity, resource_limits)
+                .map_err(loop_factory_error)?;
         let manifest_path = directory.join("run-manifest.json");
-        let mut manifest: ProductionRunManifest =
-            decode_run_json(&manifest_path).map_err(|message| {
-                loop_factory_error(format!("invalid prior run manifest: {message}"))
-            })?;
-        if manifest.version != 2 || manifest.scenario != scenario_identity {
-            return Err(loop_factory_error(format!(
-                "prior run manifest {} has incompatible identity or version",
-                manifest_path.display()
-            )));
-        }
         let journal_path = directory.join("lifecycle-journal.json");
-        let mut journal: ProductionLifecycleJournal =
-            decode_run_json(&journal_path).map_err(|message| {
-                loop_factory_error(format!("invalid prior lifecycle journal: {message}"))
-            })?;
-        if journal.version != 1 {
-            return Err(loop_factory_error(format!(
-                "prior lifecycle journal {} has unsupported version {}",
-                journal_path.display(),
-                journal.version
-            )));
-        }
         if !manifest.clean_shutdown {
             let live_owner =
                 linux_process_identity(manifest.owner.process_id).map_err(|error| {
@@ -690,12 +675,6 @@ fn production_run_directory(
                 .processes
                 .values()
                 .chain(manifest.staged_processes.values())
-                .chain(
-                    journal
-                        .nodes
-                        .iter()
-                        .filter_map(|node| node.replacement_process.as_ref()),
-                )
             {
                 quarantine_orphaned_qemu_process(identity, config.completion_timeout).map_err(
                     |error| {
@@ -707,7 +686,7 @@ fn production_run_directory(
                 )?;
             }
             journal.phase = ProductionLifecycleJournalPhase::Quarantined;
-            persist_atomic_json(&journal_path, &journal)
+            persist_recovered_lifecycle_journal(&journal_path, &journal, resource_limits)
                 .map_err(|message| loop_factory_error(format!("recover journal: {message}")))?;
             manifest.clean_shutdown = true;
             manifest.recovered_after_host_exit = true;
@@ -910,8 +889,11 @@ fn build_production_vm_lifecycle_loop_with_restore(
         ));
     }
 
-    let (run_directory, mut run_manifest, lifecycle_journal) =
-        production_run_directory(scenario, config)?;
+    let (run_directory, mut run_manifest, lifecycle_journal) = production_run_directory(
+        scenario,
+        config,
+        source.plan().fault_signals().resource_limits(),
+    )?;
     let mut backends = ProductionNodeSet::new();
     let mut launch_configs = BTreeMap::new();
     let mut block_bindings = BTreeMap::new();

@@ -47,6 +47,14 @@ pub enum FaultEventError {
     /// SHA-256 evidence authentication failed.
     #[error("fault-event evidence authentication failed")]
     EvidenceDigest,
+    /// Caller-owned preview storage cannot hold every published event.
+    #[error("fault-event preview storage has {available} slots for {required} events")]
+    PreviewCapacity {
+        /// Destination slots available without allocation.
+        available: usize,
+        /// Published events that must be inspected atomically.
+        required: usize,
+    },
     /// Generic SPSC transport invariant failed.
     #[error(transparent)]
     Transport(#[from] FaultTransportError),

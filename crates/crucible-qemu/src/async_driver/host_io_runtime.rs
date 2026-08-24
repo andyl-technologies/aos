@@ -394,6 +394,12 @@ pub trait QemuHostIoRuntime: Send {
         Ok(Vec::new())
     }
 
+    /// Borrows events already consumed only to complete a publication fence.
+    #[must_use]
+    fn staged_fault_events(&self) -> &[DequeuedFaultEvent] {
+        &[]
+    }
+
     /// Reports whether a fault-result fence has physically consumed events
     /// that the scheduler has not admitted yet.
     #[must_use]

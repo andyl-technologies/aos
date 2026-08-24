@@ -39,6 +39,31 @@ fn live_host_fault_event_drain_reaches_production_authentication() {
         .update_qemu_action_ledger(std::slice::from_ref(&action), vec![(action.id(), commit)])
         .unwrap_or_else(|error| panic!("authenticated action should enter the ledger: {error}"));
 
+    let intents = runtime
+        .preview_node_lifecycle_intents(action.coordinate, 0, &mut nodes)
+        .unwrap_or_else(|error| panic!("event preview should authenticate: {error}"));
+    assert_eq!(intents.len(), 1);
+    assert_eq!(intents[0].action, action.id());
+    assert_eq!(
+        intents[0].event_evidence,
+        Some(ContentHash {
+            bytes: Sha256::digest({
+                let mut normalized = event.payload.clone();
+                normalized[24..32].fill(0);
+                normalized
+            })
+            .into(),
+        })
+    );
+    assert_eq!(
+        nodes
+            .staged_fault_event_count()
+            .unwrap_or_else(|error| panic!(
+                "previewed event count should remain readable: {error}"
+            )),
+        1
+    );
+
     runtime
         .drain_qemu_observations(&mut nodes, action.coordinate, 0)
         .unwrap_or_else(|error| panic!("production host drain should authenticate: {error}"));

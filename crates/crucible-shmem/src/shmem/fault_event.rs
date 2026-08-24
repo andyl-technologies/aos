@@ -483,9 +483,12 @@ impl<'a> EventReader<'a> {
     }
 }
 
+#[path = "fault_event/preview.rs"]
+mod preview;
 #[path = "fault_event/support.rs"]
 mod support;
 
+pub use preview::{fault_event_count, snapshot_fault_events};
 pub use support::FaultEventError;
 pub(crate) use support::emit_fault_event_c_header;
 

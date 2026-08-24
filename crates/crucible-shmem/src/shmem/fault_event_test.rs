@@ -59,6 +59,54 @@ fn event_transport_round_trips_authenticated_payload() {
 }
 
 #[test]
+fn event_snapshot_authenticates_without_consuming_transport_ownership() {
+    let ring = RingHeader::new();
+    let mut slots = vec![FaultEventSlotV1::new(); 2];
+    let arena_header = FaultPayloadArenaHeader::new();
+    let mut arena = vec![0_u8; 4096];
+    let first_payload = b"first-lifecycle-evidence";
+    let second_payload = b"second-lifecycle-evidence";
+    enqueue_fault_event(
+        &ring,
+        &mut slots,
+        &arena_header,
+        &mut arena,
+        65_536,
+        header(),
+        first_payload,
+    )
+    .expect("first event enqueues");
+    let mut second = header();
+    second.event_sequence = 2;
+    enqueue_fault_event(
+        &ring,
+        &mut slots,
+        &arena_header,
+        &mut arena,
+        65_536,
+        second,
+        second_payload,
+    )
+    .expect("second event enqueues");
+
+    let mut preview = Vec::with_capacity(2);
+    snapshot_fault_events(&ring, &slots, &arena_header, &arena, 65_536, &mut preview)
+        .expect("published events snapshot");
+
+    assert_eq!(preview.len(), 2);
+    assert_eq!(preview[0].payload, first_payload);
+    assert_eq!(preview[1].payload, second_payload);
+    assert_eq!(fault_event_count(&ring, &slots), Ok(2));
+    assert_eq!(
+        dequeue_fault_event(&ring, &mut slots, &arena_header, &arena, 65_536)
+            .expect("first event remains transport-owned")
+            .expect("first event remains present"),
+        preview[0]
+    );
+    assert_eq!(fault_event_count(&ring, &slots), Ok(1));
+}
+
+#[test]
 fn passed_event_cannot_change_state_digest() {
     let mut value = header();
     value.outcome = FaultEventOutcomeV1::Passed;
