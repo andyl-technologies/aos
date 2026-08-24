@@ -174,8 +174,8 @@
         needle = "run-qemu-plugin-io-wire-fuzz";
       }
       {
-        label = "plugin owner executes I/O wire unit target";
-        needle = "run_plugin_io_wire_fuzz_unit_target(&root)?";
+        label = "plugin owner binds I/O wire unit target to executable gate";
+        needle = "assert_plugin_io_wire_fuzz_unit_target_is_gate_wired(&phase_check)";
       }
     ]
     ++ failuresFor "crates/crucible/tests/gate_abi_conformance.rs" engineGateTest [
