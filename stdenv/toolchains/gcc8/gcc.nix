@@ -62,7 +62,31 @@ in
       prev.texinfo
       prev.help2man
     ];
+    postUnpack = ''
+      # Enumerate every shipped language descriptor directly because the early
+      # bootstrap shell can leave the configure wildcard unexpanded. Both
+      # scans are required: the first resolves frontend dependencies and the
+      # second removes target libraries belonging to disabled languages.
+      ${prev.patch}/bin/patch -p1 < ${./patches/gcc-8.5.0-explicit-language-frontends.patch}
+
+      explicit_scans="$(${prev.grep}/bin/grep -c 'gcc/ada/config-lang.in.*gcc/objcp/config-lang.in' configure || true)"
+      test "$explicit_scans" -eq 2 || {
+        echo "GCC 8.5.0 configure must contain exactly two explicit language scans" >&2
+        exit 1
+      }
+      if ${prev.grep}/bin/grep -F 'gcc/*/config-lang.in' configure >/dev/null; then
+        echo "GCC 8.5.0 configure still contains a wildcard language scan" >&2
+        exit 1
+      fi
+    '';
     preConfigure = ''
+      for frontend in ada brig c cp fortran go jit lto objc objcp; do
+        test -f "$TMPDIR/gcc-8.5.0/gcc/$frontend/config-lang.in" || {
+          echo "GCC 8.5.0 $frontend frontend source is missing" >&2
+          exit 1
+        }
+      done
+
       # CC wrapper: add -std=gnu99 because GCC 4.8.5 defaults to C89.
       mkdir -p "$TMPDIR/ccwrap"
       cat > "$TMPDIR/ccwrap/gcc" <<AOS_GCC_CC
@@ -142,6 +166,25 @@ in
         "$SPEC_DIR/specs" 2>/dev/null || true
       ${prev.sed}/bin/sed -i '/^\*link_gcc_c_sequence:$/{n; s|.*|%{!shared:%{!nostdlib:--start-group}} %G %L %{!shared:%{!nostdlib:--end-group}}|}' \
         "$SPEC_DIR/specs" 2>/dev/null || true
+
+      test -x "$out/bin/gcc"
+      test -x "$out/bin/g++"
+      test -x "$out/libexec/gcc/${targetPlatform.config}/8.5.0/cc1plus"
+      test -x "$out/libexec/gcc/${targetPlatform.config}/8.5.0/lto1"
+
+      cat > "$TMPDIR/gcc8-c-smoke.c" <<'AOS_GCC8_C_SMOKE'
+      int main(void) { return 0; }
+      AOS_GCC8_C_SMOKE
+      "$out/bin/gcc" -O2 "$TMPDIR/gcc8-c-smoke.c" -o "$TMPDIR/gcc8-c-smoke"
+      "$TMPDIR/gcc8-c-smoke"
+
+      cat > "$TMPDIR/gcc8-cxx-lto-smoke.cc" <<'AOS_GCC8_CXX_LTO_SMOKE'
+      int square(int value) { return value * value; }
+      int main() { return square(3) == 9 ? 0 : 1; }
+      AOS_GCC8_CXX_LTO_SMOKE
+      "$out/bin/g++" -std=c++14 -O2 -flto "$TMPDIR/gcc8-cxx-lto-smoke.cc" \
+        -o "$TMPDIR/gcc8-cxx-lto-smoke"
+      "$TMPDIR/gcc8-cxx-lto-smoke"
     '';
     finalMessage = "GCC 8.5.0 installed to $out";
     meta = {
