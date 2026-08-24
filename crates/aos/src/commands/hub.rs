@@ -3324,6 +3324,7 @@ async fn registry_cache_stack(printer: &Printer, command: &HubRegistryCacheStack
                 ),
                 _ => anyhow::bail!("exactly one of --cache or --url is required"),
             };
+            let entry_id = topology_stable_id(None, "cache-stack-entry");
             registry_cache_stack_mutation(
                 printer,
                 access,
@@ -3332,7 +3333,7 @@ async fn registry_cache_stack(printer: &Printer, command: &HubRegistryCacheStack
                     operation: "add".into(),
                     entry_id: String::new(),
                     desired: Some(hub_types::ConsumerCacheStackEntry {
-                        entry_id: String::new(),
+                        entry_id,
                         source: Some(source),
                         priority: 0,
                         mirror_group_id: String::new(),
@@ -3517,19 +3518,22 @@ async fn preview_cache_integration(
     if population_trigger.is_some() && populate.is_none() {
         anyhow::bail!("--population-trigger requires --populate");
     }
-    let publication = use_for_clients.then(|| hub_types::ConsumerCacheChange {
-        operation: "add".into(),
-        entry_id: String::new(),
-        desired: Some(hub_types::ConsumerCacheStackEntry {
+    let publication = use_for_clients.then(|| {
+        let entry_id = topology_stable_id(None, "cache-stack-entry");
+        hub_types::ConsumerCacheChange {
+            operation: "add".into(),
             entry_id: String::new(),
-            source: Some(
-                hub_types::consumer_cache_stack_entry::Source::BinaryCacheId(cache.into()),
-            ),
-            priority: 0,
-            mirror_group_id: String::new(),
-        }),
-        before_entry_id: String::new(),
-        mirror_with_entry_id: String::new(),
+            desired: Some(hub_types::ConsumerCacheStackEntry {
+                entry_id,
+                source: Some(
+                    hub_types::consumer_cache_stack_entry::Source::BinaryCacheId(cache.into()),
+                ),
+                priority: 0,
+                mirror_group_id: String::new(),
+            }),
+            before_entry_id: String::new(),
+            mirror_with_entry_id: String::new(),
+        }
     });
     let retention = has_retention
         .then(|| {
