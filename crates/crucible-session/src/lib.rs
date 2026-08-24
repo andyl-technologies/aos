@@ -12,7 +12,11 @@
 
 /// Engine vocabulary exposed through the session boundary for control-plane clients.
 pub mod engine {
-    pub use crucible::model::ResolvedEffectTrace;
+    pub use crucible::model::{
+        Aggregation, BoundarySelector, CohortPolicy, MeasurementDefinition, MeasurementDefinitions,
+        MeasurementId, MetricDefinition, MetricId, MetricSource, MetricValueType,
+        ModeledMeasurementTimeout, ResolvedEffectTrace, UnitId,
+    };
     pub use crucible::{
         Action, AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind,
         BlackBoxHostOracle, CRASH_RESTART_SCENARIO_NAME, Checkpoint, CheckpointKind,
@@ -21,7 +25,7 @@ pub mod engine {
         CoverageGuidedFuzzConfig, CoverageGuidedFuzzRun, DagStore, DagStoreError,
         DebugCheckpointStride, DebugCliSurfaceContract, DebugCoordinate, DebugFailureFooterCommand,
         DebugGdbEndpoint, DebugReverseStepGrain, Decision, DeliveryOrderDecision, EngineError,
-        EventAttributeValue, EventDiagnosticPayload, EventId, EventLevel, EventLog,
+        EventAttributeValue, EventDiagnosticPayload, EventGraph, EventId, EventLevel, EventLog,
         EventLogCoverageFeedback, EventLogCoverageObservation, EventLogIcountStamp, EventLogOffset,
         EventLogTime, EventPayload, EventSource, ExampleCorpusError, ExampleScenarioVerifyReport,
         ExecutionFingerprint, FAULT_CAMPAIGN_FAMILY_NAME, FailureCluster, FailureClusterFinding,
@@ -35,18 +39,18 @@ pub mod engine {
         FailureTriageStoredArtifact, FamilySpace, FaultSignalPlan, FindingDiscoveryPath,
         FindingReproductionArtifact, FingerprintSample, GenesisCheckpoint,
         HAPPY_PATH_SCENARIO_NAME, HostAssertionEvaluator, HostAssertionOutcomeKind,
-        HostAssertionViolation, Icount, LocalDagStore, MarkerId, MaterializationPolicy,
-        MaterializationTrigger, MaterializedSearchMutation, MaterializedSearchPlan,
-        MaterializedState, MemPlace, MemoryCmp, MemoryDagStore, MemoryWidth, MinimizationConfig,
-        MinimizationRun, NodeId, NodeTemplate, ObservableEvent, OverrideDecision,
-        PARTITION_RECOVERY_SCENARIO_NAME, Plan, Predicate, Properties, Property, QuantumLoop,
-        QuantumOutcome, QuantumRequest, ReadyPoint, RecordedAssertionLog, ReplayOracleCheck,
-        ReproductionArtifact, ResolvedCodePoint, ResolvedMemPlace, RngDecision, RngStreamId,
-        SHMEM_ABI_VERSION, ScenarioDef, ScenarioDefForm, ScenarioFamily, Schedule, SchedulerError,
-        SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
-        SchedulerEventLogPayload, SchedulerQuiescence, SchedulingPoint, SearchBudget,
-        SearchDiscoveredFailure, SearchExpansion, SearchFailureOracle, SearchFrontierChoices,
-        SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport,
+        HostAssertionViolation, Icount, LinkDef, LinkLossProbability, LocalDagStore, LogLevel,
+        MarkerId, MaterializationPolicy, MaterializationTrigger, MaterializedSearchMutation,
+        MaterializedSearchPlan, MaterializedState, MemPlace, MemoryCmp, MemoryDagStore,
+        MemoryWidth, MinimizationConfig, MinimizationRun, NodeId, NodeTemplate, ObservableEvent,
+        OverrideDecision, PARTITION_RECOVERY_SCENARIO_NAME, Plan, Predicate, Properties, Property,
+        QuantumLoop, QuantumOutcome, QuantumRequest, ReadyPoint, RecordedAssertionLog,
+        ReplayOracleCheck, ReproductionArtifact, ResolvedCodePoint, ResolvedMemPlace, RngDecision,
+        RngStreamId, SHMEM_ABI_VERSION, ScenarioDef, ScenarioDefForm, ScenarioFamily, Schedule,
+        SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
+        SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence, SchedulingPoint,
+        SearchBudget, SearchDiscoveredFailure, SearchExpansion, SearchFailureOracle,
+        SearchFrontierChoices, SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport,
         SearchRetainedLogAssertionEvidence, SearchRuntimeFrontier, SearchScheduleNamedPredicateKey,
         SearchScheduleNamedPredicateTruths, SearchStrategy, Seed, SeedSpace, SignaturePolicy,
         SignaturePolicyLevel, SimBackend, SimDuration, SimulationBackend, TemporalGraph,

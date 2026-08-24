@@ -4,8 +4,28 @@ This example follows a networking product through two disruptions. It shows
 how a guest-defined response, environment faults, measurements, progressive
 widening, cheap local forks, and durable replay compose into one campaign.
 
-The syntax is illustrative. The normative contracts are the data model and
-protocols in the preceding documents.
+The execution narrative and policy sketch remain illustrative; the normative
+contracts are the data model and protocols in the preceding documents. The
+repository also ships a canonical executable control-plane fixture for this
+example:
+
+```sh
+crucible campaign fixture worked-network --output ./worked-network-fixture
+crucible campaign validate-import ./worked-network-fixture/import.toml
+```
+
+The command constructs the topology, boundaries, measurements, properties,
+generator closure, lineage, and policy through the same typed constructors and
+artifact verifier used by campaign import. It writes a strict owner-only import
+set and revalidates that set before reporting success. An automated regression
+imports the result into a blank repository and creates its named campaign
+through the checked service API.
+
+The generated scenario intentionally omits product kernel and root-image
+references. It is the deterministic import/create/control-plane fixture, not a
+claim that a synthetic guest satisfies final product acceptance. The §14
+release flight separately authors the same declared topology against the actual
+supported product build and guest integration.
 
 The implementation promotes this example into the realistic reference fixture
 for the independent operator, destructive recovery, finding handoff, and
