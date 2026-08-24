@@ -119,8 +119,8 @@ pub use model::{
 };
 pub use object::{CampaignRecordKind, ChildReference, ObjectEnvelope};
 pub use observation::{
-    CoverageProjection, MeasurementSeries, MeasurementSet, MetricValue, Observation,
-    PropertyEvidence, PropertyVerdict, PropertyVerdictSet, StopOutcome,
+    CoverageProjection, MeasurementEvaluationPayload, MeasurementSeries, MeasurementSet,
+    MetricValue, Observation, PropertyEvidence, PropertyVerdict, PropertyVerdictSet, StopOutcome,
 };
 pub use planner_service::{
     AuthorizedPlannerService, AuthorizedPlannerServiceError, CANONICAL_FRONTIER_OFFERS_CAPABILITY,

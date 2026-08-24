@@ -119,7 +119,7 @@ dense scheduler-log range, then admits at most 1,000,000 normalized samples and
 64-MiB canonical-body limit, and terminal input contains at most 65,536 node
 counters. The checked product of all begin/end selector-tree nodes and scheduler
 entries plus the terminal visit is at most 4,000,000 visits. A fixed-memory
-preflight also caps the final canonical evaluation body at 64 MiB. These are
+preflight also caps the final canonical evaluation body at 32 MiB. These are
 deliberate aggregate work bounds: individual schema maxima are not promised to
 compose without limit.
 
@@ -280,19 +280,39 @@ discovered choice opportunities and branch points
 event-log range and evidence digests
 ```
 
-The canonical record layer represents exact samples as bounded Boolean,
-signed-integer, unsigned-integer, identifier-text, or opaque scenario-typed byte
-values. The immutable scenario definition now validates and content-addresses
-measurement windows, static boundary references, cohort rules, metric types,
-sources, and exact aggregation policy before execution. One
-`MeasurementSeries` retains a nonempty ordered sample vector, a
-same-type declared aggregate, and its evidence children. `MeasurementSet`,
-`PropertyVerdictSet`, and `CoverageProjection` are bounded name/identity maps or
-sets with generic child-bearing envelopes. Runtime boundary evaluation,
-aggregate recomputation, rational/histogram observation values, canonical stop
-evidence, and objective evaluation remain owned by T-CAM-3.1 through T-CAM-3.4;
-this record layer does not treat a claimed aggregate as independently verified
-policy input.
+The immutable scenario definition validates and content-addresses measurement
+windows, static boundary references, cohort rules, metric types, sources, and
+exact aggregation policy before execution. Current `MeasurementSet` schema v2
+retains one execution-model-verified evaluation. Its canonical binary fields
+occur in the order shown:
+
+```text
+schema-version = 2
+definitions: CampaignHash
+payload-schema: u32
+evaluation: CampaignHash
+payload: bytes (nonempty, at most 32 MiB)
+evidence: sorted set<ContentId> (at most 4,096)
+```
+
+The complete measurement-set body is at most 33 MiB so the 32-MiB evaluation
+plus canonical framing fits one generic envelope. `definitions` and
+`evaluation` are the exact raw execution-model identities; the payload schema
+selects the model-specific verifier. The campaign layer retains those bytes and
+generic evidence children but never treats a caller-asserted hash as semantic
+proof. For Crucible payload schema 1, the daemon recomputes
+`crucible.model.measurement-evaluation.v1`, exact-compares the payload, and
+checks both hashes before the value can be consumed as verified measurement
+input. Immutable storage alone does not confer that semantic status.
+
+Legacy measurement-set schema v1 remains readable and preserves its original
+content identity. It contains named `MeasurementSeries` values with a nonempty
+sample vector and claimed same-type aggregate, and is explicitly not a verified
+evaluation or valid new policy input. `PropertyVerdictSet` and
+`CoverageProjection` remain bounded name/identity maps or sets with generic
+child-bearing envelopes. Guest/model sample production, complete raw event-log
+retention, and objective evaluation remain owned by T-CAM-3.2 through
+T-CAM-3.5.
 
 The observation stores both `ConfigurationId` and
 `ConfigurationArtifactId`. The former is semantic graph identity; the latter is

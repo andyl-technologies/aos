@@ -77,6 +77,7 @@ pub mod campaign_server;
 pub mod control_responsiveness;
 pub mod crucible_artifact;
 pub mod crucible_execution;
+pub mod crucible_measurement;
 pub mod crucible_qemu_runner;
 pub mod crucible_qemu_session;
 #[cfg(target_os = "linux")]
@@ -186,6 +187,11 @@ pub use crucible_execution::{
     CrucibleAttemptExecution, CrucibleExecutionModel, CrucibleExecutionModelError,
     CrucibleExecutionOutcome, CrucibleExecutionRunner, CrucibleMaterializationTier,
     CrucibleResolvedAttemptStart,
+};
+pub use crucible_measurement::{
+    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1, CrucibleMeasurementError,
+    encode_crucible_measurement_set, evaluate_crucible_measurement_set,
+    verify_crucible_measurement_set,
 };
 pub use crucible_qemu_runner::{
     QemuAttemptExecutionRouter, QemuAttemptExecutionRouterError, QemuCrucibleAttemptSession,

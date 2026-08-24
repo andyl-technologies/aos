@@ -190,6 +190,7 @@ impl CampaignRecordKind {
             Self::PlannerStep => 4,
             Self::ExpansionState => 2,
             Self::BranchPath => 2,
+            Self::MeasurementSet => 2,
             _ => RECORD_SCHEMA_VERSION,
         }
     }
@@ -417,6 +418,21 @@ impl ObjectEnvelope {
         )
     }
 
+    /// Builds a measurement-set envelope preserving its body schema version.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if the generated child table or envelope
+    /// exceeds a canonical bound.
+    pub(crate) fn for_measurement_set(value: &MeasurementSet) -> Result<Self, CampaignCodecError> {
+        Self::new_versioned(
+            CampaignRecordKind::MeasurementSet,
+            value.schema_version(),
+            content_children(value.content_children())?,
+            value.canonical_bytes(),
+        )
+    }
+
     /// Builds an exact choice-opportunity envelope.
     ///
     /// # Errors
@@ -528,7 +544,8 @@ impl ObjectEnvelope {
         let version_supported = envelope.schema_version() == record_kind.schema_version()
             || record_kind == CampaignRecordKind::Fact
                 && matches!(envelope.schema_version(), 2..=4)
-            || record_kind == CampaignRecordKind::BranchPath && envelope.schema_version() == 1;
+            || record_kind == CampaignRecordKind::BranchPath && envelope.schema_version() == 1
+            || record_kind == CampaignRecordKind::MeasurementSet && envelope.schema_version() == 1;
         if !version_supported {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported campaign record schema version",
@@ -543,7 +560,9 @@ impl ObjectEnvelope {
     fn validate_record_body(&self) -> Result<(), CampaignCodecError> {
         if matches!(
             self.record_kind,
-            CampaignRecordKind::Fact | CampaignRecordKind::BranchPath
+            CampaignRecordKind::Fact
+                | CampaignRecordKind::BranchPath
+                | CampaignRecordKind::MeasurementSet
         ) {
             let version = self
                 .envelope
@@ -554,7 +573,7 @@ impl ObjectEnvelope {
                 .ok_or(CampaignCodecError::Truncated)?;
             if version != self.envelope.schema_version() {
                 return Err(CampaignCodecError::InvalidValue {
-                    reason: "campaign fact body and envelope versions differ",
+                    reason: "versioned campaign body and envelope versions differ",
                 });
             }
         }
