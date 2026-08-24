@@ -18,7 +18,7 @@ shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/route/custody_and
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/route/frame_policy.rs|2187
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/route_tests.rs|2940
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/tests.rs|1261
-shape-line|crates/crucible-api/src/vm_lifecycle/quantum_loop.rs|2049
+shape-line|crates/crucible-api/src/vm_lifecycle/quantum_loop.rs|2038
 shape-line|crates/crucible-api/src/vm_lifecycle/runtime.rs|816
 shape-line|crates/crucible-api/src/vm_lifecycle/runtime/tests.rs|686
 shape-line|crates/crucible-api/src/vm_lifecycle/storage_faults.rs|2681
@@ -132,7 +132,7 @@ shape-line|crates/crucible-qemu/src/node.rs|2645
 shape-line|crates/crucible-qemu/src/node_factory.rs|984
 shape-line|crates/crucible-qemu/src/node_factory/tests.rs|1108
 shape-line|crates/crucible-qemu/src/node_set.rs|1042
-shape-line|crates/crucible-qemu/src/node_tests.rs|960
+shape-line|crates/crucible-qemu/src/node_tests.rs|962
 shape-line|crates/crucible-qemu/src/qmp.rs|1091
 shape-line|crates/crucible-qemu/src/quantum.rs|2192
 shape-line|crates/crucible-qemu/src/realization.rs|2613
@@ -221,7 +221,7 @@ shape-line|crates/crucible/src/scheduler/event_codec.rs|2139
 shape-line|crates/crucible/src/scheduler/event_log.rs|2096
 shape-line|crates/crucible/src/scheduler/event_log/backend_loop.rs|751
 shape-line|crates/crucible/src/scheduler/scenario.rs|719
-shape-line|crates/crucible/src/scheduler/single_scheduler_drive.rs|1939
+shape-line|crates/crucible/src/scheduler/single_scheduler_drive.rs|1883
 shape-line|crates/crucible/src/scheduler/single_scheduler_state.rs|1700
 shape-line|crates/crucible/src/scheduler/tests.rs|1840
 shape-line|crates/crucible/src/scheduler/topology.rs|1517

@@ -1400,4 +1400,4 @@ mod fault_result;
 
 #[cfg(test)]
 #[path = "host_io_runtime_tests.rs"]
-mod tests;
+pub(crate) mod tests;

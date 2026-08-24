@@ -3,6 +3,99 @@
 use super::*;
 
 impl SingleScheduler {
+    /// Validates one VM identity without changing scheduler state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name
+    /// exactly one VM scheduler node.
+    pub fn validate_vm_node_activity_target(&self, node: &NodeId) -> Result<(), SchedulerError> {
+        let _index = self.vm_node_index(node)?;
+        Ok(())
+    }
+
+    /// Replaces one VM's scheduler activity at an authenticated lifecycle boundary.
+    ///
+    /// `Halted` models a powered-off VM that may later return to `Runnable`;
+    /// `Done` models permanent failure. The node counter is preserved so a
+    /// replacement QEMU process generation can resume the same logical timeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name
+    /// exactly one VM scheduler node.
+    pub fn set_vm_node_activity(
+        &mut self,
+        node: &NodeId,
+        activity: SchedulerNodeActivity,
+    ) -> Result<(), SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        self.nodes[index].activity = activity;
+        if matches!(
+            activity,
+            SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
+        ) {
+            self.device_horizons.remove(node);
+        }
+        Ok(())
+    }
+
+    /// Atomically changes activity for a set of VM scheduler nodes.
+    ///
+    /// Every identity is validated before any scheduler state changes. This is
+    /// used when one fault boundary closes or replaces multiple VM process
+    /// generations as a single transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when any identity is absent or is not a VM.
+    /// The scheduler is unchanged on error.
+    pub fn set_vm_node_activities(
+        &mut self,
+        activities: &[(NodeId, SchedulerNodeActivity)],
+    ) -> Result<(), SchedulerError> {
+        for (node, _) in activities {
+            let _index = self.vm_node_index(node)?;
+        }
+        for (node, activity) in activities {
+            let index = self.vm_node_index(node)?;
+            self.nodes[index].activity = *activity;
+            if matches!(
+                activity,
+                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
+            ) {
+                self.device_horizons.remove(node);
+            }
+        }
+        Ok(())
+    }
+
+    /// Atomically gives one activity to a validated VM-node set without allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when any identity is absent or is not a VM.
+    pub fn set_vm_nodes_activity(
+        &mut self,
+        nodes: &[NodeId],
+        activity: SchedulerNodeActivity,
+    ) -> Result<(), SchedulerError> {
+        for node in nodes {
+            let _index = self.vm_node_index(node)?;
+        }
+        for node in nodes {
+            let index = self.vm_node_index(node)?;
+            self.nodes[index].activity = activity;
+            if matches!(
+                activity,
+                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
+            ) {
+                self.device_horizons.remove(node);
+            }
+        }
+        Ok(())
+    }
+
     /// Captures every scheduler-owned network continuation component.
     #[must_use]
     pub fn network_checkpoint(&self) -> SchedulerNetworkCheckpoint {

@@ -71,7 +71,7 @@ pub(super) fn signal_id(value: &str) -> SignalId {
     SignalId::parse(value).unwrap_or_else(|error| panic!("test signal ID should be valid: {error}"))
 }
 
-pub(super) fn lifecycle_action(
+pub(crate) fn lifecycle_action(
     transition: NodeLifecycleTransition,
     boot_policy: NodeBootPolicy,
 ) -> ResolvedBindingAction {
@@ -108,7 +108,7 @@ pub(super) fn lifecycle_action(
     }
 }
 
-pub(super) fn lifecycle_event(action: &ResolvedBindingAction) -> DequeuedFaultEvent {
+pub(crate) fn lifecycle_event(action: &ResolvedBindingAction) -> DequeuedFaultEvent {
     let mut payload = vec![0_u8; LIFECYCLE_EVIDENCE_BYTES];
     let before_hash = [5_u8; 32];
     let transition = match action.effect.specification() {

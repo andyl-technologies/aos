@@ -256,6 +256,15 @@ impl ProductionFaultRuntime {
         self.pending_node_boot.clear();
     }
 
+    /// Transfers the complete authenticated lifecycle batch to its sole host consumer.
+    #[must_use]
+    pub fn take_node_lifecycle_work(&mut self) -> (Vec<QemuNodeLifecycleDecision>, Vec<NodeId>) {
+        (
+            std::mem::take(&mut self.pending_node_lifecycle),
+            std::mem::take(&mut self.pending_node_boot),
+        )
+    }
+
     /// Removes finite explorer choices after the scheduler has recorded them.
     #[must_use]
     pub fn drain_search_choices(&mut self) -> Vec<(FaultCoordinate, Vec<BindingSearchChoice>)> {
