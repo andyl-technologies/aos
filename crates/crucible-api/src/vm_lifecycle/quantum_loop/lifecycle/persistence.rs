@@ -53,11 +53,19 @@ pub(in crate::vm_lifecycle) fn decode_prior_run_state(
             manifest_path.display()
         ));
     }
-    let process_records = manifest
-        .processes
-        .len()
-        .checked_add(manifest.staged_processes.len())
-        .ok_or_else(|| String::from("prior run process count overflow"))?;
+    if let Some(node) = manifest
+        .staged_processes
+        .keys()
+        .find(|node| !manifest.processes.contains_key(*node))
+    {
+        return Err(format!(
+            "prior run manifest stages replacement for unknown current node `{node}`"
+        ));
+    }
+    // A Prepared transaction owns two process generations for one logical
+    // node. `nodes` bounds logical topology, not the temporary generation
+    // multiplicity required for atomic replacement and crash recovery.
+    let process_records = manifest.processes.len();
     if u64::try_from(process_records).unwrap_or(u64::MAX) > limits.nodes {
         return Err(format!(
             "prior run manifest has {process_records} process records above node limit {}",
@@ -118,18 +126,7 @@ pub(in crate::vm_lifecycle) fn validate_recovered_lifecycle_journal(
         }
         let current = manifest.processes.get(&node.node);
         let staged = manifest.staged_processes.get(&node.node);
-        let replacement_is_owned = node
-            .replacement_process
-            .as_ref()
-            .is_none_or(|identity| current == Some(identity) || staged == Some(identity));
-        let current_is_owned = current == Some(&node.current_process)
-            || node
-                .replacement_process
-                .as_ref()
-                .is_some_and(|replacement| {
-                    current == Some(replacement) || staged == Some(replacement)
-                });
-        if !current_is_owned || !replacement_is_owned {
+        if !journal_process_ownership_is_exact(&journal.phase, node, current, staged) {
             return Err(format!(
                 "lifecycle journal node {} is not bound to manifest process ownership",
                 node.node
@@ -169,6 +166,39 @@ pub(in crate::vm_lifecycle) fn validate_recovered_lifecycle_journal(
         }
     }
     Ok(())
+}
+
+fn journal_process_ownership_is_exact(
+    phase: &ProductionLifecycleJournalPhase,
+    node: &ProductionLifecycleJournalNode,
+    current: Option<&QemuProcessIdentity>,
+    staged: Option<&QemuProcessIdentity>,
+) -> bool {
+    let precommit =
+        current == Some(&node.current_process) && staged == node.replacement_process.as_ref();
+    if precommit {
+        return true;
+    }
+
+    // The manifest is published before the journal advances from ExitsReaped
+    // to Committed. Recovery must therefore admit that one exact ordering
+    // window, while still authenticating both journal generations. A terminal
+    // permanent-failure transaction has no replacement owner and removes its
+    // current process from the manifest in the same window.
+    if !matches!(
+        phase,
+        ProductionLifecycleJournalPhase::ExitsReaped
+            | ProductionLifecycleJournalPhase::Committed
+            | ProductionLifecycleJournalPhase::Quarantined
+    ) || staged.is_some()
+    {
+        return false;
+    }
+    node.replacement_process
+        .as_ref()
+        .map_or(current.is_none(), |replacement| {
+            current == Some(replacement)
+        })
 }
 
 fn valid_lifecycle_transition(value: &str) -> bool {

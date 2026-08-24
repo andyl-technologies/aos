@@ -112,6 +112,126 @@ fn durable_run_state_rejects_an_unowned_journal_process_identity() {
 }
 
 #[test]
+fn durable_run_state_rejects_an_arbitrary_current_with_an_owned_replacement() {
+    let current = QemuProcessIdentity {
+        process_id: 7,
+        start_time_ticks: 11,
+        executable: PathBuf::from("/aos/qemu-current"),
+    };
+    let replacement = QemuProcessIdentity {
+        process_id: 8,
+        start_time_ticks: 12,
+        executable: PathBuf::from("/aos/qemu-replacement"),
+    };
+    let journal = ProductionLifecycleJournal {
+        version: 1,
+        transaction: 1,
+        phase: ProductionLifecycleJournalPhase::Prepared,
+        nodes: vec![ProductionLifecycleJournalNode {
+            node: String::from("node-a"),
+            current_process: QemuProcessIdentity {
+                process_id: 99,
+                start_time_ticks: 100,
+                executable: PathBuf::from("/aos/unowned-qemu"),
+            },
+            replacement_process: Some(replacement.clone()),
+            current_generation: 1,
+            next_generation: 2,
+            transition: String::from("Crash"),
+            action_sha256: "1".repeat(64),
+            evidence_sha256: "2".repeat(64),
+            expected_exit_code: Some(70),
+        }],
+        completed_exits: Vec::new(),
+    };
+    let manifest = ProductionRunManifest {
+        version: 2,
+        scenario: "3".repeat(64),
+        owner: QemuProcessIdentity {
+            process_id: 1,
+            start_time_ticks: 1,
+            executable: PathBuf::from("/aos/controller"),
+        },
+        processes: BTreeMap::from([(String::from("node-a"), current)]),
+        staged_processes: BTreeMap::from([(String::from("node-a"), replacement)]),
+        clean_shutdown: false,
+        recovered_after_host_exit: false,
+    };
+
+    let error = quantum_loop::validate_recovered_lifecycle_journal(
+        &journal,
+        &manifest,
+        FaultResourceLimits::default(),
+    )
+    .err()
+    .unwrap_or_else(|| panic!("arbitrary current identity should fail closed"));
+    assert!(error.contains("not bound to manifest process ownership"));
+}
+
+#[test]
+fn durable_run_state_accepts_a_prepared_replacement_at_the_exact_node_limit() {
+    let root =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
+    let current = QemuProcessIdentity {
+        process_id: 7,
+        start_time_ticks: 11,
+        executable: PathBuf::from("/aos/qemu-current"),
+    };
+    let replacement = QemuProcessIdentity {
+        process_id: 8,
+        start_time_ticks: 12,
+        executable: PathBuf::from("/aos/qemu-replacement"),
+    };
+    let manifest = ProductionRunManifest {
+        version: 2,
+        scenario: "3".repeat(64),
+        owner: QemuProcessIdentity {
+            process_id: 1,
+            start_time_ticks: 1,
+            executable: PathBuf::from("/aos/controller"),
+        },
+        processes: BTreeMap::from([(String::from("node-a"), current.clone())]),
+        staged_processes: BTreeMap::from([(String::from("node-a"), replacement.clone())]),
+        clean_shutdown: false,
+        recovered_after_host_exit: false,
+    };
+    let journal = ProductionLifecycleJournal {
+        version: 1,
+        transaction: 1,
+        phase: ProductionLifecycleJournalPhase::Prepared,
+        nodes: vec![ProductionLifecycleJournalNode {
+            node: String::from("node-a"),
+            current_process: current,
+            replacement_process: Some(replacement),
+            current_generation: 1,
+            next_generation: 2,
+            transition: String::from("Crash"),
+            action_sha256: "1".repeat(64),
+            evidence_sha256: "2".repeat(64),
+            expected_exit_code: Some(70),
+        }],
+        completed_exits: Vec::new(),
+    };
+    persist_atomic_json(&root.path().join("run-manifest.json"), &manifest)
+        .unwrap_or_else(|error| panic!("prepared manifest should persist: {error}"));
+    persist_atomic_json(&root.path().join("lifecycle-journal.json"), &journal)
+        .unwrap_or_else(|error| panic!("prepared journal should persist: {error}"));
+    let mut limits = FaultResourceLimits::default();
+    limits.nodes = 1;
+
+    let (decoded_manifest, decoded_journal) =
+        quantum_loop::decode_prior_run_state(root.path(), &manifest.scenario, limits)
+            .unwrap_or_else(|error| panic!("one-node Prepared state should recover: {error}"));
+    assert_eq!(decoded_manifest.processes.len(), 1);
+    assert_eq!(decoded_manifest.staged_processes.len(), 1);
+    assert_eq!(decoded_journal.nodes.len(), 1);
+    assert!(matches!(
+        decoded_journal.phase,
+        ProductionLifecycleJournalPhase::Prepared
+    ));
+}
+
+#[test]
 fn durable_run_state_rejects_oversized_json_before_decode() {
     let root =
         tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));

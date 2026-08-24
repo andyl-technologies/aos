@@ -131,6 +131,9 @@ impl QemuMappedQuantumShmemHotPath {
     pub fn snapshot_fault_events(
         &mut self,
         destination: &mut Vec<DequeuedFaultEvent>,
+        canonical_payload_bytes: &mut usize,
+        configured_payload_bytes: usize,
+        configured_inline_payload_bytes: usize,
     ) -> Result<(), QemuMappedQuantumShmemHotPathError> {
         let transport = self
             .region
@@ -143,6 +146,9 @@ impl QemuMappedQuantumShmemHotPath {
             transport.arena,
             transport.arena_region_offset,
             destination,
+            canonical_payload_bytes,
+            configured_payload_bytes,
+            configured_inline_payload_bytes,
         )
         .map_err(|source| QemuMappedQuantumShmemHotPathError::FaultEvent { source })
     }

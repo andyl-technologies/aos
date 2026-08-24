@@ -291,6 +291,10 @@ in
           run_exact_qemu_test \
             node::tests::fault_event_budget::fault_event_limit_rejects_before_consuming_staged_ownership
           run_exact_qemu_test \
+            node::tests::fault_event_budget::fault_event_payload_limit_rejects_before_copying_or_consuming_ownership
+          run_exact_qemu_test \
+            node::tests::fault_event_budget::fault_event_inline_payload_limit_rejects_before_copying_or_consuming_ownership
+          run_exact_qemu_test \
             node::tests::fault_event_budget::fingerprint_nodes_spend_one_sequential_fault_event_budget
           run_exact_qemu_test \
             node::tests::fault_event_budget::production_restore_requires_clean_fault_event_ownership
@@ -300,8 +304,16 @@ in
             production_fault_runtime::runtime_tests::recovery_tests::live_host_fault_event_drain_reaches_production_authentication
           run_exact_shmem_test \
             fault_event::tests::event_snapshot_authenticates_without_consuming_transport_ownership
+          run_exact_shmem_test \
+            fault_event::tests::event_snapshot_rejects_payload_bytes_without_consuming_transport_ownership
+          run_exact_shmem_test \
+            fault_event::tests::event_snapshot_rejects_inline_payload_before_copying_or_consuming
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_an_unowned_journal_process_identity
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_an_arbitrary_current_with_an_owned_replacement
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_accepts_a_prepared_replacement_at_the_exact_node_limit
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_oversized_json_before_decode
           run_exact_api_test \

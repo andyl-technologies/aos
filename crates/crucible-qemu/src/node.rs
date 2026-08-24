@@ -560,8 +560,10 @@ pub trait QemuShmemHotPathChannel: Send {
     fn snapshot_fault_events(
         &mut self,
         destination: &mut Vec<DequeuedFaultEvent>,
-    ) -> Result<(), QemuNodeChannelError>;
-
+        canonical_payload_bytes: &mut usize,
+        configured_payload_bytes: usize,
+        configured_inline_payload_bytes: usize,
+    ) -> Result<(), QemuNodeError>;
     /// Advances the node to `horizon` or until it pauses earlier.
     ///
     /// This helper is retained for direct channel tests and already-completed
