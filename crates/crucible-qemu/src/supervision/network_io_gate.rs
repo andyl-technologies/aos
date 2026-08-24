@@ -146,6 +146,10 @@ pub struct QemuLiveNetworkIoReport {
     pub retained_frame_durable_envelope_restored: bool,
     /// Exact first retry coordinate observed after fresh-process restore.
     pub retained_frame_first_retry_icount: u64,
+    /// Exact guest TX coordinate of the unique restored-frame acknowledgement.
+    pub retained_frame_guest_ack_emit_icount: u64,
+    /// Guest TX sequence of the unique restored-frame acknowledgement.
+    pub retained_frame_guest_ack_sequence: u64,
     /// Whether the scheduler-preempted run reproduced the reference observations.
     pub deterministic_under_scheduler_preemption: bool,
     /// Absolute probe stamp from the hostile-host run.
@@ -192,7 +196,7 @@ struct NetworkIoRunOutcome {
     delayed_reply_applied: bool,
     orderly_child_exit: bool,
     scheduler_preemption:
-        Option<crate::bounded_scheduler_preemption::BoundedSchedulerPreemptionReport>,
+        Option<crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemptionReport>,
     scheduler_preemption_pending_quantum: bool,
     completion_owned_frames: usize,
 }
@@ -208,12 +212,24 @@ pub fn run_qemu_live_network_io_gate(
 ) -> Result<QemuLiveNetworkIoReport, QemuLiveNetworkIoGateError> {
     // These diagnostics are deliberately wall-clock-only gate progress. They
     // never enter canonical observations or deterministic comparison state.
-    eprintln!("crucible-live-network-io phase=reference status=starting");
+    tracing::debug!(
+        phase = "reference",
+        status = "starting",
+        "crucible live network I/O"
+    );
     let reference = run_once(config, RunRole::Reference)?;
     certify_run("reference", &reference, false)?;
-    eprintln!("crucible-live-network-io phase=reference status=certified");
+    tracing::debug!(
+        phase = "reference",
+        status = "certified",
+        "crucible live network I/O"
+    );
 
-    eprintln!("crucible-live-network-io phase=hostile status=starting");
+    tracing::debug!(
+        phase = "hostile",
+        status = "starting",
+        "crucible live network I/O"
+    );
     let hostile = run_once(config, RunRole::Hostile)?;
     certify_run("hostile-host", &hostile, false)?;
     if deterministic_projection(&reference) != deterministic_projection(&hostile) {
@@ -222,7 +238,11 @@ pub fn run_qemu_live_network_io_gate(
             hostile: format!("{:?}", deterministic_projection(&hostile)),
         });
     }
-    eprintln!("crucible-live-network-io phase=hostile status=certified");
+    tracing::debug!(
+        phase = "hostile",
+        status = "certified",
+        "crucible live network I/O"
+    );
 
     let reference_probe_emit_icount = probe_emit_icount(&reference);
     let hostile_probe_emit_icount = probe_emit_icount(&hostile);
@@ -244,7 +264,11 @@ pub fn run_qemu_live_network_io_gate(
     if let Some(cmdline) = &config.kernel_cmdline {
         retained_config = retained_config.with_kernel_cmdline(cmdline.clone());
     }
-    eprintln!("crucible-live-network-io phase=retained-restore status=starting");
+    tracing::debug!(
+        phase = "retained-restore",
+        status = "starting",
+        "crucible live network I/O"
+    );
     let retained_report = run_qemu_live_retained_network_snapshot_gate(
         &retained_config,
         &QemuLiveNetworkIoServicer::boot_backpressure_probe(),
@@ -252,7 +276,11 @@ pub fn run_qemu_live_network_io_gate(
         config.busy_ceiling_icount,
     )
     .map_err(|source| QemuLiveNetworkIoGateError::RetainedExactSnapshot { source })?;
-    eprintln!("crucible-live-network-io phase=retained-restore status=certified");
+    tracing::debug!(
+        phase = "retained-restore",
+        status = "certified",
+        "crucible live network I/O"
+    );
     Ok(QemuLiveNetworkIoReport {
         reference: reference.snapshot,
         acknowledgement_seen: reference.acknowledgement_icount.is_some(),
@@ -270,6 +298,8 @@ pub fn run_qemu_live_network_io_gate(
             && retained_report.retained_frame_consumed,
         retained_frame_durable_envelope_restored: retained_report.durable_envelope_round_trip,
         retained_frame_first_retry_icount: retained_report.first_retry_icount,
+        retained_frame_guest_ack_emit_icount: retained_report.guest_ack_emit_icount,
+        retained_frame_guest_ack_sequence: retained_report.guest_ack_sequence,
         deterministic_under_scheduler_preemption: true,
         hostile_probe_emit_icount,
         absolute_probe_origin_equal: reference_probe_emit_icount == hostile_probe_emit_icount,

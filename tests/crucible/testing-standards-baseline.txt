@@ -24,6 +24,7 @@ crucible-guest	src/guest_introspection_agent/tests	thread::sleep	1
 crucible-protocol	src/guest_introspection_doorbell	retry	1
 crucible-qemu	src/async_driver_test	retry	1
 crucible-qemu	src/block_realization_gate	thread::sleep	1
+crucible-qemu	src/supervision/bounded_scheduler_preemption	thread::sleep	1
 crucible-qemu	src/crash_detection	retry	1
 crucible-qemu	src/gdbstub_proxy	thread::sleep	1
 crucible-qemu	src/live_coverage_gate	thread::sleep	1
@@ -31,14 +32,19 @@ crucible-qemu	src/live_plugin_gate/support	thread::sleep	1
 crucible-qemu	src/live_plugin_quantum_gate/scheduler	thread::sleep	1
 crucible-qemu	src/node	std::thread::sleep	1
 crucible-qemu	src/node	thread::sleep	1
+crucible-qemu	src/node/tests/fault_command	retry	1
 crucible-qemu	src/node_factory	thread::sleep	1
 crucible-qemu	src/node_factory/tests	thread::sleep	1
+crucible-qemu	src/node_tests	retry	1
 crucible-qemu	src/production_fault_runtime/evidence	retry	1
 crucible-qemu	src/production_fault_runtime/lifecycle_tests	retry	1
 crucible-qemu	src/production_fault_runtime/test_support	retry	1
 crucible-qemu	src/qmp	thread::sleep	1
+crucible-qemu	src/quantum/inbound_delivery	retry	1
+crucible-qemu	src/quantum/support	retry	1
 crucible-qemu	src/quantum/tests	retry	1
 crucible-qemu	src/quantum/tests/channel_behavior	retry	1
+crucible-qemu	src/quantum/tests/retained_inbound	retry	1
 crucible-qemu	src/shutdown	thread::sleep	1
 crucible-qemu	src/single_vm_fingerprint/live_runner/process	thread::sleep	1
 crucible-qemu	src/single_vm_fingerprint/live_runner/qmp_poll	thread::sleep	1
@@ -50,6 +56,7 @@ crucible-qemu	src/supervision/block_io_gate/evidence	thread::sleep	1
 crucible-qemu	src/supervision/block_node_gate	thread::sleep	1
 crucible-qemu	src/supervision/device_host_work	thread::sleep	1
 crucible-qemu	src/supervision/host_io_runtime	thread::sleep	1
+crucible-qemu	src/supervision/host_io_runtime/fault_result	thread::sleep	1
 crucible-qemu	src/supervision/ninep_io_gate	thread::sleep	1
 crucible-qemu	src/supervision/node_step_gate/support	thread::sleep	1
 crucible-qemu	src/supervision/network_io_gate	retry	1
@@ -60,6 +67,7 @@ crucible-qemu	src/supervision/network_io_gate/support	retry	1
 crucible-qemu	src/supervision/network_io_gate/tests	retry	1
 crucible-qemu	src/supervision/node_step_gate/exact_snapshot/retained_network	retry	1
 crucible-qemu	tests/crash_detection	retry	1
+crucible-qemu	tests/host_worker_pool	retry	1
 crucible-qemu-plugin	src/inbound	retry	1
 crucible-qemu-plugin	src/inbound/tests	retry	1
 crucible-qemu-plugin	src/lib	retry	1

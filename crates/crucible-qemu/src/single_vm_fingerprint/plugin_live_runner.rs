@@ -34,7 +34,7 @@ use crate::single_vm_fingerprint::{
     SingleVmFingerprintStream, SingleVmFingerprintTrigger, build_plugin_fingerprint_stream,
 };
 
-use crate::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
+use crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 use crate::{
     CrucibleShmemNetworkDevice, LaunchProfileCandidate, QemuLaunchArtifact,
     QemuLaunchCommandBuilder, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,

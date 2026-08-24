@@ -6,6 +6,7 @@
 //! allocation path while preserving their established serde representation.
 
 use std::cell::Cell;
+use std::fmt;
 use std::marker::PhantomData;
 use std::mem;
 
@@ -15,6 +16,15 @@ use serde::{Deserialize, Deserializer};
 use super::FaultResourceLimits;
 
 const RESOURCE_PREFIX: &str = "crucible-resource-limit";
+
+#[derive(Debug)]
+pub(super) struct DecodeAdmissionError(String);
+
+impl fmt::Display for DecodeAdmissionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
 
 #[derive(Clone, Copy)]
 struct DecodeBudget {
@@ -85,7 +95,10 @@ pub(super) fn collection_current(field: &'static str) -> u64 {
     })
 }
 
-pub(super) fn commit_collection(field: &'static str, additional: u64) -> Result<(), String> {
+pub(super) fn commit_collection(
+    field: &'static str,
+    additional: u64,
+) -> Result<(), DecodeAdmissionError> {
     ACTIVE_BUDGET.with(|active| {
         let Some(mut budget) = active.get() else {
             return Ok(());
@@ -96,13 +109,13 @@ pub(super) fn commit_collection(field: &'static str, additional: u64) -> Result<
             _ => return Ok(()),
         };
         *slot = slot.checked_add(additional).ok_or_else(|| {
-            resource_message(
+            DecodeAdmissionError(resource_message(
                 field,
                 *slot,
                 additional,
                 configured(field, u64::MAX),
                 u64::MAX,
-            )
+            ))
         })?;
         active.set(Some(budget));
         Ok(())
@@ -119,28 +132,28 @@ pub(super) fn resource_message(
     format!("{RESOURCE_PREFIX}|{field}|{current}|{requested}|{configured}|{hard}")
 }
 
-fn admit_owned_bytes(requested: u64) -> Result<(), String> {
+fn admit_owned_bytes(requested: u64) -> Result<(), DecodeAdmissionError> {
     ACTIVE_BUDGET.with(|active| {
         let Some(mut budget) = active.get() else {
             return Ok(());
         };
         let total = budget.owned_bytes.checked_add(requested).ok_or_else(|| {
-            resource_message(
+            DecodeAdmissionError(resource_message(
                 "fat_checkpoint_bytes",
                 budget.owned_bytes,
                 requested,
                 budget.fat_configured,
                 budget.fat_hard,
-            )
+            ))
         })?;
         if total > budget.fat_configured || total > budget.fat_hard {
-            return Err(resource_message(
+            return Err(DecodeAdmissionError(resource_message(
                 "fat_checkpoint_bytes",
                 budget.owned_bytes,
                 requested,
                 budget.fat_configured,
                 budget.fat_hard,
-            ));
+            )));
         }
         budget.owned_bytes = total;
         active.set(Some(budget));

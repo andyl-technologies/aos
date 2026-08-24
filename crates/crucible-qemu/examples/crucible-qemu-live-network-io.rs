@@ -128,6 +128,14 @@ fn run() -> Result<(), String> {
         report.retained_frame_first_retry_icount
     );
     println!(
+        "retained_frame_guest_ack_emit_icount={}",
+        report.retained_frame_guest_ack_emit_icount
+    );
+    println!(
+        "retained_frame_guest_ack_sequence={}",
+        report.retained_frame_guest_ack_sequence
+    );
+    println!(
         "deterministic_under_scheduler_preemption={}",
         report.deterministic_under_scheduler_preemption
     );

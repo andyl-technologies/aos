@@ -1,7 +1,7 @@
 //! Live QEMU launch, priming, and bounded network exchange drive.
 
 use super::*;
-use crate::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
+use crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 
 #[derive(Clone, Copy)]
 struct BackpressureProbe {

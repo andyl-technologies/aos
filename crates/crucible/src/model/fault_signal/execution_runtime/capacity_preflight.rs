@@ -5,7 +5,10 @@ use serde::ser::{SerializeSeq, Serializer};
 
 use super::*;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the borrowed wire mirrors every canonical record coordinate"
+)]
 pub(super) fn preflight_checkpoint_with_actions(
     checkpoint: &FaultRuntimeCheckpoint,
     actions: &[ResolvedBindingAction],
@@ -29,7 +32,10 @@ pub(super) fn preflight_checkpoint_with_actions(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the borrowed wire mirrors every canonical record coordinate"
+)]
 fn checkpoint_bytes_with_actions(
     checkpoint: &FaultRuntimeCheckpoint,
     actions: &[ResolvedBindingAction],

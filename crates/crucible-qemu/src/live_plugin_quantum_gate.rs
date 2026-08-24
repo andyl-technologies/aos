@@ -37,8 +37,8 @@ use crucible_shmem::{
     ABI_VERSION, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region,
 };
 
-use crate::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 use crate::console_observation::{QemuConsoleObservationReader, QemuConsoleObservationSpool};
+use crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 use crate::{
     LaunchProfileCandidate, QEMU_CONSOLE_SOCKET_FILE_NAME, QemuLaunchArtifact,
     QemuLaunchCommandBuilder, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,

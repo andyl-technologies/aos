@@ -4,7 +4,7 @@
 }: let
   harnessSource = builtins.readFile ./_bounded-scheduler-preemption.sh;
   targetWrapperSource = builtins.readFile ./_bounded-scheduler-preemption-target.sh;
-  rustSchedulerSource = builtins.readFile ../../crates/crucible-qemu/src/bounded_scheduler_preemption.rs;
+  rustSchedulerSource = builtins.readFile ../../crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs;
   consumerSources = [
     {
       label = "tests/crucible/phase0-s1.nix";
@@ -157,7 +157,7 @@
     }
   ];
   rustSchedulerFailures =
-    failuresFor "crates/crucible-qemu/src/bounded_scheduler_preemption.rs" rustSchedulerSource [
+    failuresFor "crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs" rustSchedulerSource [
       {
         label = "single finite preemption controller";
         needle = ''name(String::from("crucible-qemu-scheduler-preemption"))'';
