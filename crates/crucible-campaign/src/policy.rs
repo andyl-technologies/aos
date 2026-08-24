@@ -127,6 +127,29 @@ pub const PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA: u32 = 4_096;
 /// observation, import, and restart validation.
 pub const PROGRESSIVE_INTEGER_GENERATOR_MAX_PROPOSALS: u64 = 4_096;
 
+/// Generator implementation version for retained-corpus integer mutation.
+///
+/// This version derives direct completed selections from the exact planning
+/// view, then emits bounded lower/upper legal-step mutations while suppressing
+/// every value already proposed by the same immutable branch request. Earlier
+/// and unknown versions remain suspended.
+pub const CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION: u32 = 10;
+
+/// Maximum completed branch-point credits inspected by corpus mutation.
+pub const CORPUS_MUTATION_GENERATOR_MAX_CREDITS: u64 = 4_096;
+
+/// Maximum legal-step distance admitted by corpus-mutation version 10.
+pub const CORPUS_MUTATION_GENERATOR_MAX_DISTANCE: u64 = 4_096;
+
+/// Maximum proposals admitted by one corpus-mutation branch request.
+pub const CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS: u64 = 4_096;
+
+/// Maximum canonical credit, observation, and attempt bytes inspected per poll.
+pub const CORPUS_MUTATION_GENERATOR_MAX_INPUT_BYTES: usize = 128 * 1024 * 1024;
+
+/// Maximum mutation-neighbor work units consumed by one owner recomputation.
+pub const CORPUS_MUTATION_GENERATOR_MAX_WORK_ITEMS: usize = 65_536;
+
 /// Fixed seed that makes campaign proposal streams reproducible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CampaignSeed([u8; 32]);

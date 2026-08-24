@@ -996,7 +996,10 @@ impl CampaignRepository {
             {
                 return Err(integrity("branch-request-frontier-slot-is-not-empty"));
             }
-            Some(self.initial_continuation_state(request)?)
+            Some(self.initial_continuation_state_at(
+                request,
+                super::projection::CandidateViewRoots::from_roots(current.snapshot.roots()),
+            )?)
         } else {
             None
         };
@@ -1227,9 +1230,7 @@ impl CampaignRepository {
         )? {
             let request = self.read_branch_request(proposal.request().content_id())?;
             let prior_state = self.continuation_state(
-                current.snapshot.roots().exploration,
-                current.snapshot.roots().accounting,
-                current.snapshot.roots().observations,
+                super::projection::CandidateViewRoots::from_roots(current.snapshot.roots()),
                 proposal.request(),
                 &request,
             )?;
@@ -1412,9 +1413,12 @@ impl CampaignRepository {
             let proposal_record = self.read_proposal(proposal.content_id())?;
             let request = self.read_branch_request(proposal_record.request().content_id())?;
             let prior_state = self.continuation_state(
-                exploration,
-                current.snapshot.roots().accounting,
-                current.snapshot.roots().observations,
+                super::projection::CandidateViewRoots::new(
+                    exploration,
+                    current.snapshot.roots().observations,
+                    current.snapshot.roots().corpus,
+                    current.snapshot.roots().accounting,
+                ),
                 proposal_record.request(),
                 &request,
             )?;
@@ -1425,9 +1429,12 @@ impl CampaignRepository {
                 prior_state,
             )?;
             let next_state = self.continuation_state(
-                exploration,
-                accounting,
-                current.snapshot.roots().observations,
+                super::projection::CandidateViewRoots::new(
+                    exploration,
+                    current.snapshot.roots().observations,
+                    current.snapshot.roots().corpus,
+                    accounting,
+                ),
                 proposal_record.request(),
                 &request,
             )?;

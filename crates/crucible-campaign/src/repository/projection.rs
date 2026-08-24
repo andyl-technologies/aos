@@ -28,9 +28,52 @@ struct ContinuationProgress {
     profile: CandidateSourceProfile,
     proposed: u64,
     pending: bool,
+    next_candidate: Option<ChoiceValue>,
 }
 
 #[derive(Clone, Copy)]
+pub(super) struct CandidateViewRoots {
+    exploration: ContentId,
+    observations: ContentId,
+    corpus: ContentId,
+    accounting: ContentId,
+}
+
+impl CandidateViewRoots {
+    pub(super) const fn from_planning_view(view: &CampaignPlanningView) -> Self {
+        Self {
+            exploration: view.exploration(),
+            observations: view.observations(),
+            corpus: view.corpus(),
+            accounting: view.accounting(),
+        }
+    }
+
+    pub(super) const fn from_roots(roots: crate::CampaignRoots) -> Self {
+        Self {
+            exploration: roots.exploration,
+            observations: roots.observations,
+            corpus: roots.corpus,
+            accounting: roots.accounting,
+        }
+    }
+
+    pub(super) const fn new(
+        exploration: ContentId,
+        observations: ContentId,
+        corpus: ContentId,
+        accounting: ContentId,
+    ) -> Self {
+        Self {
+            exploration,
+            observations,
+            corpus,
+            accounting,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CandidateSourceProfile {
     Static {
         count: u64,
@@ -41,12 +84,14 @@ pub(super) enum CandidateSourceProfile {
         feedback_interval: u64,
         exhausts_domain: bool,
     },
+    CorpusMutation,
 }
 
 impl CandidateSourceProfile {
-    const fn count(self) -> u64 {
+    const fn count(self) -> Option<u64> {
         match self {
-            Self::Static { count } | Self::ProgressiveInteger { count, .. } => count,
+            Self::Static { count } | Self::ProgressiveInteger { count, .. } => Some(count),
+            Self::CorpusMutation => None,
         }
     }
 
@@ -62,6 +107,9 @@ impl CandidateSourceProfile {
                 .checked_add(completed_visits / feedback_interval)
                 .map(|available| available.min(count))
                 .ok_or_else(|| integrity("progressive-generator-availability-overflow")),
+            Self::CorpusMutation => Err(integrity(
+                "corpus-mutation-availability-requires-candidate-view",
+            )),
         }
     }
 
@@ -91,11 +139,12 @@ impl CandidateSourceProfile {
             Self::ProgressiveInteger {
                 exhausts_domain, ..
             } => exhausts_domain,
+            Self::CorpusMutation => false,
         }
     }
 
     pub(super) const fn requires_feedback_index(self) -> bool {
-        matches!(self, Self::ProgressiveInteger { .. })
+        matches!(self, Self::ProgressiveInteger { .. } | Self::CorpusMutation)
     }
 }
 
@@ -126,17 +175,40 @@ impl PartialOrd for RefinementGap {
 }
 
 impl CampaignRepository {
+    #[cfg(test)]
     pub(super) fn initial_continuation_state(
         &self,
         request: &BranchRequest,
     ) -> Result<crate::ContinuationState, CampaignRepositoryError> {
         let domain = self.read_choice_domain(request.domain().content_id())?;
-        Ok(
-            if self.candidate_source_profile(request, &domain)?.is_some() {
-                crate::ContinuationState::Ready
-            } else {
-                crate::ContinuationState::Open
-            },
+        Ok(match self.candidate_source_profile(request, &domain)? {
+            Some(CandidateSourceProfile::CorpusMutation) | None => crate::ContinuationState::Open,
+            Some(_) => crate::ContinuationState::Ready,
+        })
+    }
+
+    pub(super) fn initial_continuation_state_at(
+        &self,
+        request: &BranchRequest,
+        view: CandidateViewRoots,
+    ) -> Result<crate::ContinuationState, CampaignRepositoryError> {
+        let domain = self.read_choice_domain(request.domain().content_id())?;
+        let Some(profile) = self.candidate_source_profile(request, &domain)? else {
+            return Ok(crate::ContinuationState::Open);
+        };
+        if profile != CandidateSourceProfile::CorpusMutation {
+            return Ok(crate::ContinuationState::Ready);
+        }
+        let completed_visits =
+            self.branch_completed_visits(view.observations, request.branch_point())?;
+        continuation_state_after_progress(
+            profile,
+            0,
+            false,
+            self.corpus_mutation_next_candidate(request, &domain, view, 1)?
+                .is_some(),
+            request.budget().maximum_proposals(),
+            completed_visits,
         )
     }
 
@@ -152,6 +224,32 @@ impl CampaignRepository {
             return Ok(None);
         };
         let spec = self.read_generator(generator.content_id())?;
+        if let (
+            CandidateGeneratorAlgorithm::MutateNearCorpus { maximum_distance },
+            crate::CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION,
+            ChoiceDomain::Integer(_),
+        ) = (spec.algorithm(), spec.implementation_version(), domain)
+        {
+            if *maximum_distance > crate::CORPUS_MUTATION_GENERATOR_MAX_DISTANCE {
+                return Err(integrity("corpus-mutation-generator-distance-limit"));
+            }
+            if request.budget().maximum_proposals() > crate::CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS
+            {
+                return Err(integrity("corpus-mutation-generator-proposal-limit"));
+            }
+            return Ok(Some(CandidateSourceProfile::CorpusMutation));
+        }
+        if matches!(
+            (spec.algorithm(), spec.implementation_version(), domain),
+            (
+                CandidateGeneratorAlgorithm::MutateNearCorpus { .. },
+                crate::CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
+            )
+        ) {
+            return Err(integrity("candidate-generator-domain-family-mismatch"));
+        }
+
         let (
             CandidateGeneratorAlgorithm::ProgressiveInteger {
                 initial_strata,
@@ -447,7 +545,10 @@ impl CampaignRepository {
         let Some(profile) = self.candidate_source_profile(request, domain)? else {
             return Ok(None);
         };
-        if ordinal == 0 || ordinal > profile.count() {
+        let Some(count) = profile.count() else {
+            return Ok(None);
+        };
+        if ordinal == 0 || ordinal > count {
             return Err(integrity("proposal-ordinal-exceeds-source-cardinality"));
         }
         if ordinal > profile.available_count(completed_visits)? {
@@ -473,6 +574,204 @@ impl CampaignRepository {
         progressive_integer_candidate(*initial_strata, integer, ordinal)
             .map(ChoiceValue::Integer)
             .map(Some)
+    }
+
+    fn corpus_mutation_next_candidate(
+        &self,
+        request: &BranchRequest,
+        domain: &ChoiceDomain,
+        view: CandidateViewRoots,
+        ordinal: u64,
+    ) -> Result<Option<ChoiceValue>, CampaignRepositoryError> {
+        if ordinal == 0 || ordinal > crate::CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS {
+            return Err(integrity("corpus-mutation-proposal-ordinal-limit"));
+        }
+        self.expected_candidate_at_view(request, domain, view, ordinal, 0, &[])
+    }
+
+    pub(super) fn expected_candidate_at_view(
+        &self,
+        request: &BranchRequest,
+        domain: &ChoiceDomain,
+        view: CandidateViewRoots,
+        ordinal: u64,
+        completed_visits: u64,
+        additional_previous: &[Proposal],
+    ) -> Result<Option<ChoiceValue>, CampaignRepositoryError> {
+        let Some(profile) = self.candidate_source_profile(request, domain)? else {
+            return Ok(None);
+        };
+        if profile != CandidateSourceProfile::CorpusMutation {
+            return self.candidate_at_with_feedback(request, domain, ordinal, completed_visits);
+        }
+        if ordinal == 0 || ordinal > crate::CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS {
+            return Err(integrity("corpus-mutation-proposal-ordinal-limit"));
+        }
+        let additional_count = u64::try_from(additional_previous.len())
+            .map_err(|_| integrity("corpus-mutation-proposal-ordinal-limit"))?;
+        let base_ordinal = ordinal
+            .checked_sub(additional_count)
+            .ok_or_else(|| integrity("corpus-mutation-proposal-history-mismatch"))?;
+        let mut proposed =
+            self.proposed_values_before(view.exploration, request.id()?, base_ordinal)?;
+        for (index, proposal) in additional_previous.iter().enumerate() {
+            let expected_ordinal = base_ordinal
+                .checked_add(
+                    u64::try_from(index)
+                        .map_err(|_| integrity("corpus-mutation-proposal-ordinal-limit"))?,
+                )
+                .ok_or_else(|| integrity("corpus-mutation-proposal-ordinal-limit"))?;
+            if proposal.request() != request.id()?
+                || proposal.ordinal() != expected_ordinal
+                || !proposed.insert(proposal.value().clone())
+            {
+                return Err(integrity("corpus-mutation-proposal-history-mismatch"));
+            }
+        }
+        Ok(self
+            .corpus_mutation_candidates(request, domain, view, None)?
+            .into_iter()
+            .find(|candidate| !proposed.contains(candidate)))
+    }
+
+    fn proposed_values_before(
+        &self,
+        exploration_root: ContentId,
+        request: BranchRequestId,
+        ordinal: u64,
+    ) -> Result<BTreeSet<ChoiceValue>, CampaignRepositoryError> {
+        let mut proposed = BTreeSet::new();
+        for prior_ordinal in 1..ordinal {
+            let content = self
+                .merkle
+                .get(
+                    exploration_root,
+                    proposal_ordinal_key(request, prior_ordinal),
+                )?
+                .ok_or_else(|| integrity("corpus-mutation-proposal-history-gap"))?;
+            let proposal = self.read_proposal(content)?;
+            if proposal.request() != request
+                || proposal.ordinal() != prior_ordinal
+                || self.merkle.get(
+                    exploration_root,
+                    map_key_content("exploration.proposal", content),
+                )? != Some(content)
+                || self.merkle.get(
+                    exploration_root,
+                    proposal_value_key(request, proposal.value()),
+                )? != Some(content)
+                || !proposed.insert(proposal.value().clone())
+            {
+                return Err(integrity("corpus-mutation-proposal-history-mismatch"));
+            }
+        }
+        Ok(proposed)
+    }
+
+    fn corpus_mutation_candidates(
+        &self,
+        request: &BranchRequest,
+        domain: &ChoiceDomain,
+        view: CandidateViewRoots,
+        additional_selection: Option<SelectionId>,
+    ) -> Result<Vec<ChoiceValue>, CampaignRepositoryError> {
+        let generator = request
+            .source()
+            .generator()
+            .ok_or_else(|| integrity("candidate-source-kind-is-invalid"))?;
+        let spec = self.read_generator(generator.content_id())?;
+        let (
+            CandidateGeneratorAlgorithm::MutateNearCorpus { maximum_distance },
+            crate::CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION,
+            ChoiceDomain::Integer(integer),
+        ) = (spec.algorithm(), spec.implementation_version(), domain)
+        else {
+            return Err(integrity("corpus-mutation-generator-basis-mismatch"));
+        };
+        if *maximum_distance > crate::CORPUS_MUTATION_GENERATOR_MAX_DISTANCE
+            || request.budget().maximum_proposals() > crate::CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS
+        {
+            return Err(integrity("corpus-mutation-generator-owner-limit"));
+        }
+
+        let index = self.merkle.get(
+            view.observations,
+            branch_credit_index_key(request.branch_point()),
+        )?;
+
+        let mut input_bytes = 0_usize;
+        let mut selections = Vec::new();
+        if let Some(index) = index {
+            let entry_count = self.merkle.inspect_shallow(index)?.entry_count();
+            if entry_count > crate::CORPUS_MUTATION_GENERATOR_MAX_CREDITS {
+                return Err(integrity("corpus-mutation-generator-credit-limit"));
+            }
+            let limit = usize::try_from(entry_count)
+                .map_err(|_| integrity("corpus-mutation-generator-credit-limit"))?;
+            let page = self.merkle.scan(index, None, limit)?;
+            if page.next_after().is_some() || page.entries().len() != limit {
+                return Err(integrity("corpus-mutation-credit-index-scan-mismatch"));
+            }
+            for (key, content) in page.entries() {
+                let credit = self.read_expansion_credit(*content)?;
+                input_bytes =
+                    charge_corpus_mutation_input(input_bytes, credit.canonical_bytes().len())?;
+                if credit.id().as_hash() != *key || credit.branch_point() != request.branch_point()
+                {
+                    return Err(integrity("corpus-mutation-credit-index-mismatch"));
+                }
+                let observation = self.decode_observation(credit.observation().content_id())?;
+                input_bytes =
+                    charge_corpus_mutation_input(input_bytes, observation.canonical_bytes().len())?;
+                if self.merkle.get(
+                    view.corpus,
+                    map_key_hash("corpus.configuration", observation.child().as_hash()),
+                )? != Some(observation.child_content().content_id())
+                {
+                    return Err(integrity("corpus-mutation-observation-is-not-retained"));
+                }
+                let attempt = self.read_attempt(observation.attempt().content_id())?;
+                input_bytes =
+                    charge_corpus_mutation_input(input_bytes, attempt.canonical_bytes().len())?;
+                let AttemptStart::Branch { selection, .. } = attempt.start() else {
+                    continue;
+                };
+                selections.push(selection);
+            }
+        }
+        if let Some(selection) = additional_selection {
+            if selections.len() >= crate::CORPUS_MUTATION_GENERATOR_MAX_CREDITS as usize {
+                return Err(integrity("corpus-mutation-generator-credit-limit"));
+            }
+            selections.push(selection);
+        }
+
+        let resolved = self.resolve_selections(&selections)?;
+        let mut anchors = BTreeSet::new();
+        for resolved in resolved {
+            let selection = resolved.selection();
+            let crate::SelectionOrigin::CampaignBranch { branch_point, .. } = selection.origin()
+            else {
+                return Err(integrity("corpus-mutation-selection-origin-mismatch"));
+            };
+            if branch_point != request.branch_point() {
+                continue;
+            }
+            if selection.opportunity() != request.opportunity()
+                || selection.domain() != request.domain()
+            {
+                return Err(integrity("corpus-mutation-selection-basis-mismatch"));
+            }
+            let ChoiceValue::Integer(value) = selection.value() else {
+                return Err(integrity("corpus-mutation-selection-is-not-integer"));
+            };
+            anchors.insert(*value);
+        }
+
+        let maximum_candidates = usize::try_from(request.budget().maximum_proposals())
+            .map_err(|_| integrity("corpus-mutation-generator-proposal-limit"))?;
+        corpus_mutation_integer_candidates(integer, &anchors, *maximum_distance, maximum_candidates)
+            .map(|values| values.into_iter().map(ChoiceValue::Integer).collect())
     }
 
     fn weighted_categorical_candidates(
@@ -1047,9 +1346,8 @@ impl CampaignRepository {
         invocation_id: crate::PlannerInvocationId,
         position: crate::PlanningScanPosition,
     ) -> Result<(ContinuationProjection, Option<Proposal>), CampaignRepositoryError> {
-        let exploration = snapshot.snapshot.roots().exploration;
-        let accounting = snapshot.snapshot.roots().accounting;
         let observations = snapshot.snapshot.roots().observations;
+        let candidate_view = CandidateViewRoots::from_roots(snapshot.snapshot.roots());
         let projection = self.planner_continuation_projection(snapshot, position)?;
         let request = self.read_branch_request(position.source().content_id())?;
 
@@ -1067,17 +1365,13 @@ impl CampaignRepository {
             }
             return Ok((projection, None));
         }
-        let progress = self.continuation_progress(
-            exploration,
-            accounting,
-            position.source(),
-            &request,
-            &domain,
-        )?;
+        let progress =
+            self.continuation_progress(candidate_view, position.source(), &request, &domain)?;
         let state = continuation_state_after_progress(
             progress.profile,
             progress.proposed,
             progress.pending,
+            progress.next_candidate.is_some(),
             request.budget().maximum_proposals(),
             completed_visits,
         )?;
@@ -1092,9 +1386,12 @@ impl CampaignRepository {
                 .proposed
                 .checked_add(1)
                 .ok_or_else(|| integrity("planner-candidate-ordinal-overflow"))?;
-            let value = self
-                .candidate_at_with_feedback(&request, &domain, ordinal, completed_visits)?
-                .ok_or_else(|| integrity("planner-candidate-enumerator-is-not-implemented"))?;
+            let value = match progress.next_candidate {
+                Some(value) => value,
+                None => self
+                    .candidate_at_with_feedback(&request, &domain, ordinal, completed_visits)?
+                    .ok_or_else(|| integrity("planner-candidate-enumerator-is-not-implemented"))?,
+            };
             Some(Proposal::new(
                 position.branch_point(),
                 position.source(),
@@ -1162,9 +1459,7 @@ impl CampaignRepository {
         }
         let inputs = self.derive_finite_expansion_inputs(&view, branch_point)?;
         let (continuations, next_after) = self.finite_continuation_page(
-            view.exploration(),
-            view.accounting(),
-            view.observations(),
+            CandidateViewRoots::from_planning_view(&view),
             inputs.requests,
             page_after,
             page_size,
@@ -1298,9 +1593,7 @@ impl CampaignRepository {
 
     fn finite_continuation_page(
         &self,
-        exploration_root: ContentId,
-        accounting_root: ContentId,
-        observation_root: ContentId,
+        view: CandidateViewRoots,
         request_root: ContentId,
         page_after: Option<BranchRequestId>,
         page_size: u32,
@@ -1331,13 +1624,7 @@ impl CampaignRepository {
             }
             let request_id = BranchRequestId::from_content_id(*value)?;
             let request = self.read_branch_request(*value)?;
-            let state = self.continuation_state(
-                exploration_root,
-                accounting_root,
-                observation_root,
-                request_id,
-                &request,
-            )?;
+            let state = self.continuation_state(view, request_id, &request)?;
             continuations.insert(request_id, state);
         }
         let next_after = if page.next_after().is_some() {
@@ -1350,43 +1637,87 @@ impl CampaignRepository {
 
     pub(super) fn continuation_state(
         &self,
-        exploration_root: ContentId,
-        accounting_root: ContentId,
-        observation_root: ContentId,
+        view: CandidateViewRoots,
         request_id: BranchRequestId,
         request: &BranchRequest,
     ) -> Result<crate::ContinuationState, CampaignRepositoryError> {
         let completed_visits =
-            self.branch_completed_visits(observation_root, request.branch_point())?;
-        self.continuation_state_with_completed_visits(
-            exploration_root,
-            accounting_root,
-            request_id,
-            request,
-            completed_visits,
-        )
+            self.branch_completed_visits(view.observations, request.branch_point())?;
+        self.continuation_state_with_completed_visits(view, request_id, request, completed_visits)
     }
 
     pub(super) fn continuation_state_with_completed_visits(
         &self,
-        exploration_root: ContentId,
-        accounting_root: ContentId,
+        view: CandidateViewRoots,
         request_id: BranchRequestId,
         request: &BranchRequest,
         completed_visits: u64,
     ) -> Result<crate::ContinuationState, CampaignRepositoryError> {
         let domain = self.read_choice_domain(request.domain().content_id())?;
-        let progress = self.continuation_progress(
-            exploration_root,
-            accounting_root,
-            request_id,
-            request,
-            &domain,
-        )?;
+        let progress = self.continuation_progress(view, request_id, request, &domain)?;
         continuation_state_after_progress(
             progress.profile,
             progress.proposed,
             progress.pending,
+            progress.next_candidate.is_some(),
+            request.budget().maximum_proposals(),
+            completed_visits,
+        )
+    }
+
+    pub(super) fn continuation_state_after_observation(
+        &self,
+        view: CandidateViewRoots,
+        request_id: BranchRequestId,
+        request: &BranchRequest,
+        observation: &Observation,
+        completed_visits: u64,
+    ) -> Result<crate::ContinuationState, CampaignRepositoryError> {
+        let domain = self.read_choice_domain(request.domain().content_id())?;
+        let progress = self.continuation_progress(view, request_id, request, &domain)?;
+        if progress.profile != CandidateSourceProfile::CorpusMutation {
+            return continuation_state_after_progress(
+                progress.profile,
+                progress.proposed,
+                progress.pending,
+                progress.next_candidate.is_some(),
+                request.budget().maximum_proposals(),
+                completed_visits,
+            );
+        }
+        if progress.proposed >= request.budget().maximum_proposals() {
+            return continuation_state_after_progress(
+                progress.profile,
+                progress.proposed,
+                progress.pending,
+                false,
+                request.budget().maximum_proposals(),
+                completed_visits,
+            );
+        }
+
+        let attempt = self.read_attempt(observation.attempt().content_id())?;
+        let additional_selection = match attempt.start() {
+            AttemptStart::Branch { selection, .. } => Some(selection),
+            AttemptStart::Discover { .. } => None,
+        };
+        let proposed = self.proposed_values_before(
+            view.exploration,
+            request_id,
+            progress
+                .proposed
+                .checked_add(1)
+                .ok_or_else(|| integrity("planner-candidate-ordinal-overflow"))?,
+        )?;
+        let has_next_candidate = self
+            .corpus_mutation_candidates(request, &domain, view, additional_selection)?
+            .into_iter()
+            .any(|candidate| !proposed.contains(&candidate));
+        continuation_state_after_progress(
+            progress.profile,
+            progress.proposed,
+            progress.pending,
+            has_next_candidate,
             request.budget().maximum_proposals(),
             completed_visits,
         )
@@ -1394,8 +1725,7 @@ impl CampaignRepository {
 
     fn continuation_progress(
         &self,
-        exploration_root: ContentId,
-        accounting_root: ContentId,
+        view: CandidateViewRoots,
         request_id: BranchRequestId,
         request: &BranchRequest,
         domain: &ChoiceDomain,
@@ -1403,16 +1733,18 @@ impl CampaignRepository {
         let profile = self
             .candidate_source_profile(request, domain)?
             .ok_or_else(|| integrity("generated-expansion-projector-is-not-implemented"))?;
-        let value_count = profile.count();
         let maximum_proposals = request.budget().maximum_proposals();
-        let check_count = value_count.min(maximum_proposals);
+        let check_count = profile
+            .count()
+            .unwrap_or(maximum_proposals)
+            .min(maximum_proposals);
         let mut proposed = 0_u64;
         let mut pending = false;
 
         for ordinal in 1..=check_count {
             let Some(proposal_content) = self
                 .merkle
-                .get(exploration_root, proposal_ordinal_key(request_id, ordinal))?
+                .get(view.exploration, proposal_ordinal_key(request_id, ordinal))?
             else {
                 break;
             };
@@ -1420,7 +1752,7 @@ impl CampaignRepository {
             if proposal.request() != request_id
                 || proposal.ordinal() != ordinal
                 || self.merkle.get(
-                    exploration_root,
+                    view.exploration,
                     map_key_content("exploration.proposal", proposal_content),
                 )? != Some(proposal_content)
             {
@@ -1429,7 +1761,7 @@ impl CampaignRepository {
             proposed = ordinal;
 
             let Some(admission_content) = self.merkle.get(
-                accounting_root,
+                view.accounting,
                 map_key_content("accounting.proposal-admission", proposal_content),
             )?
             else {
@@ -1437,7 +1769,7 @@ impl CampaignRepository {
                 continue;
             };
             if self.merkle.get(
-                accounting_root,
+                view.accounting,
                 map_key_content("accounting.attempt-admission", admission_content),
             )? != Some(admission_content)
             {
@@ -1463,6 +1795,20 @@ impl CampaignRepository {
             profile,
             proposed,
             pending,
+            next_candidate: if profile == CandidateSourceProfile::CorpusMutation
+                && proposed < maximum_proposals
+            {
+                self.corpus_mutation_next_candidate(
+                    request,
+                    domain,
+                    view,
+                    proposed
+                        .checked_add(1)
+                        .ok_or_else(|| integrity("planner-candidate-ordinal-overflow"))?,
+                )?
+            } else {
+                None
+            },
         })
     }
 
@@ -1490,13 +1836,28 @@ pub(super) fn continuation_state_after_progress(
     profile: CandidateSourceProfile,
     proposed: u64,
     pending: bool,
+    has_next_candidate: bool,
     maximum_proposals: u64,
     completed_visits: u64,
 ) -> Result<crate::ContinuationState, CampaignRepositoryError> {
     if pending {
         return Ok(crate::ContinuationState::Open);
     }
-    if proposed == profile.count() {
+    if profile == CandidateSourceProfile::CorpusMutation {
+        if proposed >= maximum_proposals {
+            return Ok(crate::ContinuationState::Closed);
+        }
+        if has_next_candidate {
+            return Ok(crate::ContinuationState::Ready);
+        }
+        let required = completed_visits
+            .checked_add(1)
+            .ok_or_else(|| integrity("corpus-mutation-feedback-threshold-overflow"))?;
+        return Ok(crate::ContinuationState::WaitingForFeedback(
+            crate::FeedbackWait::new(completed_visits, required)?,
+        ));
+    }
+    if Some(proposed) == profile.count() {
         return Ok(if profile.exhausts_at_count() {
             crate::ContinuationState::Exhausted
         } else {
@@ -1708,6 +2069,72 @@ fn integer_step_neighbor(value: IntegerValue, step: u64, add: bool) -> Option<In
             Some(IntegerValue::Unsigned(neighbor))
         }
     }
+}
+
+fn charge_corpus_mutation_input(
+    prior: usize,
+    bytes: usize,
+) -> Result<usize, CampaignRepositoryError> {
+    let total = prior
+        .checked_add(bytes)
+        .ok_or_else(|| integrity("corpus-mutation-generator-input-byte-limit"))?;
+    if total > crate::CORPUS_MUTATION_GENERATOR_MAX_INPUT_BYTES {
+        return Err(integrity("corpus-mutation-generator-input-byte-limit"));
+    }
+    Ok(total)
+}
+
+fn corpus_mutation_integer_candidates(
+    domain: &IntegerDomain,
+    anchors: &BTreeSet<IntegerValue>,
+    maximum_distance: u64,
+    maximum_candidates: usize,
+) -> Result<Vec<IntegerValue>, CampaignRepositoryError> {
+    if maximum_distance == 0
+        || maximum_distance > crate::CORPUS_MUTATION_GENERATOR_MAX_DISTANCE
+        || maximum_candidates > crate::CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS as usize
+    {
+        return Err(integrity("corpus-mutation-generator-owner-limit"));
+    }
+
+    let mut candidates = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut work = 0_usize;
+    for anchor in anchors.iter().copied() {
+        let mut lower = Some(anchor);
+        let mut upper = Some(anchor);
+        for _ in 0..maximum_distance {
+            work = work
+                .checked_add(1)
+                .ok_or_else(|| integrity("corpus-mutation-generator-work-limit"))?;
+            if work > crate::CORPUS_MUTATION_GENERATOR_MAX_WORK_ITEMS {
+                return Err(integrity("corpus-mutation-generator-work-limit"));
+            }
+
+            lower = lower.and_then(|value| integer_step_neighbor(value, domain.step(), false));
+            upper = upper.and_then(|value| integer_step_neighbor(value, domain.step(), true));
+            let mut admitted = false;
+            for candidate in [lower, upper].into_iter().flatten() {
+                if domain.contains_integer(candidate) && seen.insert(candidate) {
+                    candidates.push(candidate);
+                    admitted = true;
+                    if candidates.len() == maximum_candidates {
+                        return Ok(candidates);
+                    }
+                }
+            }
+            if lower.is_none() && upper.is_none() {
+                break;
+            }
+            if !admitted
+                && lower.is_none_or(|value| !domain.contains_integer(value))
+                && upper.is_none_or(|value| !domain.contains_integer(value))
+            {
+                break;
+            }
+        }
+    }
+    Ok(candidates)
 }
 
 fn stratified_integer_candidate_count(

@@ -211,7 +211,7 @@ extensions under `gate:abi-conformance`.
 Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 `crucible-daemon`.
 
-- [ ] **T-CAM-4.1** Implement bounded finite and versioned generated
+- [x] **T-CAM-4.1** Implement bounded finite and versioned generated
   `CandidateSource` forms plus generator specs for all/discrete, boundary,
   stratified, logarithmic, permuted, progressive integer, and corpus mutation.
 - [ ] **T-CAM-4.2** Implement branch request/cause, branch-edge deduplication,
@@ -246,10 +246,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   observations, remain page-size independent to EOF, and rebuild identically
   through a fresh repository. Its bounded process-local reservation table is
   idempotent per worker slot, rejects stale epoch/generation releases, and
-  restarts empty under a fresh daemon epoch. Adaptive generated-source
-  continuations and supervisor integration remain open. The repository now also
-  maintains a compact snapshot-authenticated continuation projection for each
-  request and serves bounded proof-bearing frontier pages. Finite request,
+  restarts empty under a fresh daemon epoch. Supervisor integration and later
+  reward/novelty-sensitive generator versions remain open. The repository now
+  also maintains a compact snapshot-authenticated continuation projection for
+  each request and serves bounded proof-bearing frontier pages. Finite request,
   proposal, and admission transitions are owner-recomputed during import.
   Implementation-version 2 `all`
   generators over Boolean and discrete domains use the same exact ordinal and
@@ -270,7 +270,16 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   `progressive_integer` adds the exact stratified prefix, largest-gap/lower-
   midpoint refinement order, checked visit thresholds, 4,096-strata/proposal
   bounds, and observation-driven frontier wakeups through a branch-point
-  request index. Static continuation projection remains valid after modeled
+  request index. Implementation-version 10 `mutate_near_corpus` derives exact
+  retained completed integer selections at the request's branch point, emits
+  canonical lower-then-upper legal-step neighbors, and uses the immutable
+  request's exact previously proposed value set as its portable continuation so
+  corpus growth cannot reinterpret prior proposals. It enforces 4,096-credit,
+  4,096-distance, 4,096-proposal, 65,536-work-unit, 128-MiB canonical credit-
+  body, and existing 4,096-ID/128-MiB selection-resolution bounds during local
+  acceptance, import, and restart. It waits for another completed credit when
+  the current retained corpus has no unproposed mutation and closes only at its
+  proposal budget. Static continuation projection remains valid after modeled
   observations exist: it binds the exact observation root and projects exact
   completed visits from canonical branch-point credit sets while leaving richer
   reward, novelty, and finding statistics zero. The independent exact PUCT

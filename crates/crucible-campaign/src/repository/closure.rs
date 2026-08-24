@@ -684,7 +684,10 @@ impl CampaignRepository {
                     &[(
                         request,
                         request_record.branch_point(),
-                        self.initial_continuation_state(&request_record)?,
+                        self.initial_continuation_state_at(
+                            &request_record,
+                            super::projection::CandidateViewRoots::from_roots(prior_roots),
+                        )?,
                     )],
                     false,
                 )?
@@ -887,9 +890,7 @@ impl CampaignRepository {
         {
             let request = self.read_branch_request(proposal_record.request().content_id())?;
             let prior_state = self.continuation_state(
-                prior_roots.exploration,
-                prior_roots.accounting,
-                prior_roots.observations,
+                super::projection::CandidateViewRoots::from_roots(prior_roots),
                 proposal_record.request(),
                 &request,
             )?;
@@ -997,9 +998,7 @@ impl CampaignRepository {
                 let proposal_record = self.read_proposal(proposal.content_id())?;
                 let request = self.read_branch_request(proposal_record.request().content_id())?;
                 let prior_state = self.continuation_state(
-                    prior_roots.exploration,
-                    prior_roots.accounting,
-                    prior_roots.observations,
+                    super::projection::CandidateViewRoots::from_roots(prior_roots),
                     proposal_record.request(),
                     &request,
                 )?;
@@ -1010,9 +1009,12 @@ impl CampaignRepository {
                     prior_state,
                 )?;
                 let next_state = self.continuation_state(
-                    prior_roots.exploration,
-                    next_roots.accounting,
-                    next_roots.observations,
+                    super::projection::CandidateViewRoots::new(
+                        prior_roots.exploration,
+                        next_roots.observations,
+                        next_roots.corpus,
+                        next_roots.accounting,
+                    ),
                     proposal_record.request(),
                     &request,
                 )?;

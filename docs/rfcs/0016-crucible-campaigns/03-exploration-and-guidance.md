@@ -94,7 +94,7 @@ The closed specification vocabulary provides:
 | `log_integer` | Positive integer | Samples integral base powers with exact upward step rounding. |
 | `permuted_integer` | Finite integer | Walks a keyed permutation without materializing the domain. |
 | `progressive_integer` | Integer | Starts with landmarks/strata and refines intervals from feedback. |
-| `mutate_near_corpus` | Any supported domain | Deterministically mutates retained successful, novel, or failing values. |
+| `mutate_near_corpus` | Integer | Deterministically mutates completed selections whose children remain in the retained corpus. |
 
 The current repository-owned executable checkpoint implements generator
 implementation-version 2 `all` for Boolean and discrete domains. It derives
@@ -204,10 +204,38 @@ only when `C <= request.maximum_proposals`; otherwise it is budget-limited
 `Closed`. The interval heap and every threshold are owner-recomputed during
 local acceptance, import, and restart.
 
+Generator implementation-version 10 defines view-dependent
+`mutate_near_corpus` over a stepped integer domain. For the request's exact
+branch point, the owner scans at most 4,096 authenticated completed-observation
+credits. A credit contributes an anchor only when its branch attempt names the
+request's exact opportunity and domain and its observation child remains in the
+exact snapshot corpus. Anchors deduplicate in canonical integer order. For each
+anchor in that order, the owner tries the legal one-step lower value and then
+the legal one-step upper value, followed by distance two in the same lower-then-
+upper order, through the declared `maximum_distance`. Out-of-domain values and
+every repeated value are omitted; the anchor itself is not emitted.
+
+Version 10 does not assign a permanent positional meaning to the mutable corpus.
+Its portable continuation is the exact set of values already proposed by the
+immutable request. At proposal ordinal `n`, the owner recomputes the candidates
+from the exact current snapshot and chooses the first candidate not among
+ordinals `1..n-1`. Corpus growth may therefore introduce a newly preferred
+candidate without reinterpreting an earlier proposal. When no unproposed
+candidate exists, the continuation waits for the next completed branch-point
+credit rather than claiming domain exhaustion. It closes only at the request's
+proposal budget.
+
+The owner admits at most 4,096 legal-step distance, 4,096 proposals, and 65,536
+anchor-distance work units per recomputation. It charges at most 128 MiB of
+canonical credit, observation, and attempt bodies, in addition to the shared
+selection resolver's existing 4,096-ID and 128-MiB unique-record budget. Every
+limit and the exact proposal-set continuation are recomputed during local
+acceptance, import, and restart.
+
 Other algorithms remain valid suspended specifications but fail closed at
 proposal issuance and expansion projection until their versioned cursor and
 feedback owners are implemented. Earlier and unknown implementation versions
-remain suspended rather than being reinterpreted as versions 2 through 9; this
+remain suspended rather than being reinterpreted as versions 2 through 10; this
 preserves owner validation of histories created before executable enumeration
 landed.
 
@@ -307,6 +335,14 @@ selection.
   completed-visit threshold, and enforce its 4,096-strata, 4,096-proposal, and
   checked-`u64` threshold bounds during local acceptance, import, and restart.
   Earlier and unknown progressive versions MUST remain suspended.
+- **[GUIDE-26]** Corpus-mutation implementation-version 10 MUST derive anchors
+  only from exact completed branch selections whose children remain in the
+  snapshot corpus, reproduce the canonical anchor and lower-then-upper distance
+  order in §03.2, and use the exact previously proposed value set as its
+  portable continuation. It MUST enforce the 4,096-credit, 4,096-distance,
+  4,096-proposal, 65,536-work-unit, and two 128-MiB input-resolution bounds
+  during local acceptance, import, and restart. Earlier and unknown corpus-
+  mutation versions MUST remain suspended.
 
 ## 03.4 Tree policy: deterministic MCTS/PUCT
 
