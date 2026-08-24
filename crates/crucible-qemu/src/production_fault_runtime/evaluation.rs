@@ -7,6 +7,9 @@ mod ledger;
 use ledger::StagedQemuActionLedger;
 #[path = "evaluation/opportunities.rs"]
 mod opportunities;
+#[path = "evaluation/publication.rs"]
+mod publication;
+use publication::StagedEvaluationPublication;
 
 impl ProductionFaultRuntime {
     pub(super) fn event_staging_capacity(
@@ -121,7 +124,7 @@ impl ProductionFaultRuntime {
     ) -> Result<BindingEvaluation, ProductionFaultRuntimeError> {
         self.apply_event_staging_capacity(nodes, &[], None)?;
         let Some(runtime) = self.runtime.as_ref() else {
-            self.drain_qemu_observations(nodes, coordinate)?;
+            self.drain_qemu_observations(nodes, coordinate, 0)?;
             if self.pending_qemu_observations.is_empty() {
                 return Ok(BindingEvaluation::default());
             }
@@ -130,8 +133,8 @@ impl ProductionFaultRuntime {
             }
             .into());
         };
-        let preview = runtime.preview_boundary(coordinate, same_coordinate_sequence)?;
-        self.drain_qemu_observations(nodes, coordinate)?;
+        let mut preview = runtime.preview_boundary(coordinate, same_coordinate_sequence)?;
+        self.drain_qemu_observations(nodes, coordinate, 0)?;
         validate_production_event_state(
             &self.emitted_events,
             &preview.emitted_events,
@@ -141,9 +144,10 @@ impl ProductionFaultRuntime {
             self.resource_limits,
         )?;
         let staged_qemu_ledger = self.stage_qemu_action_ledger(&preview.actions)?;
+        let publication = StagedEvaluationPublication::stage(self, coordinate, &mut preview)?;
         let maximum_event_records = self.apply_event_staging_capacity(
             nodes,
-            &preview.emitted_events,
+            publication.emitted_events(),
             Some(&staged_qemu_ledger),
         )?;
         let mut sink = ProductionFaultActionSink::new_with_event_limit(
@@ -163,8 +167,10 @@ impl ProductionFaultRuntime {
         )?;
         let qemu_commits = sink.take_qemu_commit_evidence();
         if evaluation.actions != preview.actions
-            || evaluation.emitted_events != preview.emitted_events
+            || evaluation.emitted_events != publication.emitted_events()
             || evaluation.state_machine_events != preview.state_machine_events
+            || evaluation.search_choices != publication.search_choices()
+            || evaluation.observations.len() != publication.expected_observations()
         {
             runtime.poison();
             return Err(FaultExecutionError::CheckpointPresence.into());
@@ -182,7 +188,9 @@ impl ProductionFaultRuntime {
         // authenticated at the boundary that caused them. Delaying this until
         // the next scheduler boundary would also lose terminal evidence when
         // the command intentionally exits the child.
-        if let Err(error) = self.drain_qemu_observations(nodes, coordinate) {
+        if let Err(error) =
+            self.drain_qemu_observations(nodes, coordinate, publication.expected_observations())
+        {
             if let Some(runtime) = &mut self.runtime {
                 runtime.poison();
             }
@@ -191,12 +199,7 @@ impl ProductionFaultRuntime {
         let mut qemu_observations = std::mem::take(&mut self.pending_qemu_observations);
         qemu_observations.append(&mut evaluation.observations);
         evaluation.observations = qemu_observations;
-        self.emitted_events
-            .extend(evaluation.emitted_events.iter().cloned());
-        self.pending_node_boot
-            .extend(node_boot_requests(&evaluation.actions)?);
-        self.retain_search_choices(coordinate, &evaluation.search_choices);
-        self.apply_event_staging_capacity(nodes, &[], None)?;
+        publication.publish(self);
         Ok(evaluation)
     }
 
@@ -204,6 +207,7 @@ impl ProductionFaultRuntime {
         &mut self,
         nodes: &mut QemuNodeSet,
         boundary: FaultCoordinate,
+        trailing_observations: usize,
     ) -> Result<(), ProductionFaultRuntimeError> {
         let configured_event_records = usize::try_from(self.resource_limits.event_records)
             .map_err(|_| FaultResourceLimitError::Representation {
@@ -294,13 +298,19 @@ impl ProductionFaultRuntime {
                 self.resource_limits,
             )
         })?;
+        let pending_reservation = event_count.checked_add(trailing_observations).ok_or(
+            FaultResourceLimitError::Representation {
+                field: "event_records",
+                value: u64::MAX,
+            },
+        )?;
         self.pending_qemu_observations
-            .try_reserve_exact(event_count)
+            .try_reserve_exact(pending_reservation)
             .map_err(|_| {
                 runtime_collection_reservation(
                     "event_records",
                     self.pending_qemu_observations.len(),
-                    event_count,
+                    pending_reservation,
                     self.resource_limits,
                 )
             })?;
@@ -511,7 +521,7 @@ fn qemu_event_observation_hash(event: &DequeuedFaultEvent) -> ContentHash {
     }
 }
 
-fn runtime_collection_reservation(
+pub(super) fn runtime_collection_reservation(
     field: &'static str,
     current: usize,
     requested: usize,

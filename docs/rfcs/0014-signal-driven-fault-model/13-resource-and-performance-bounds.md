@@ -197,6 +197,13 @@ first fingerprint control pump and requires ownership to remain empty after
 that pump. It never gives each collection or node an independent copy of the
 authored allowance; LIMIT-2 coordinates report the complete canonical current
 count and the plan-authored aggregate ceiling rather than a per-node remainder.
+Before any production adapter APPLY can become visible, the controller also
+owns the deterministic emitted-event, boot-request, and explorer-choice
+publication batch and reserves those persistent destinations plus the exact
+evaluation-observation tail. Publishing that model-owned batch after APPLY only
+moves staged owners. QEMU occurrence evidence, which cannot exist before APPLY,
+uses the separately bounded, fallible raw-event drain described above and
+poisons the continuation if authentication or typed allocation fails.
 
 Canonical QEMU node, host-I/O, production fault-runtime, and complete VMState
 envelopes admit their representation against `fat_checkpoint_bytes` and its
