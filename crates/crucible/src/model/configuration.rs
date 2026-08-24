@@ -8,6 +8,7 @@ pub struct ScenarioDefForm {
     pub(super) world: World,
     pub(super) plan: Plan,
     pub(super) properties: Properties,
+    pub(super) measurements: MeasurementDefinitions,
     pub(super) seed: Seed,
     pub(super) app_random_draw_cap: u64,
 }
@@ -57,14 +58,72 @@ impl ScenarioDefForm {
         seed: Seed,
         app_random_draw_cap: u64,
     ) -> Result<Self, EngineError> {
+        Self::from_components_with_measurements_and_app_random_draw_cap(
+            world,
+            plan,
+            properties,
+            &MeasurementDefinitions::empty(),
+            seed,
+            app_random_draw_cap,
+        )
+    }
+
+    /// Builds a serialized-form scenario with measurement definitions and the
+    /// default app-random draw cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same world, plan, property, and measurement validation
+    /// errors as [`Self::from_components_with_measurements_and_app_random_draw_cap`].
+    pub fn from_components_with_measurements(
+        world: &World,
+        plan: &Plan,
+        properties: &Properties,
+        measurements: &MeasurementDefinitions,
+        seed: Seed,
+    ) -> Result<Self, EngineError> {
+        Self::from_components_with_measurements_and_app_random_draw_cap(
+            world,
+            plan,
+            properties,
+            measurements,
+            seed,
+            DEFAULT_APP_RANDOM_DRAW_CAP,
+        )
+    }
+
+    /// Builds a serialized-form scenario with measurement definitions and an
+    /// app-random draw cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same world, plan, and property validation errors as
+    /// [`Self::from_components_with_app_random_draw_cap`]. Returns
+    /// [`EngineError::ScenarioSerialization`] when `measurements` are not the
+    /// canonical definitions for these exact scenario components.
+    pub fn from_components_with_measurements_and_app_random_draw_cap(
+        world: &World,
+        plan: &Plan,
+        properties: &Properties,
+        measurements: &MeasurementDefinitions,
+        seed: Seed,
+        app_random_draw_cap: u64,
+    ) -> Result<Self, EngineError> {
         validate_world_serialized_identity(world)?;
         let properties = resolve_properties_dsl_for_context(world, plan, properties)?;
         properties.validate_for_world(world)?;
         plan.validate_for_world_with_properties(world, &properties)?;
+        let measurements = MeasurementDefinitions::from_decoded_definitions(
+            world,
+            plan,
+            &properties,
+            measurements.definitions().to_vec(),
+        )?;
         Ok(Self {
             world: world.clone(),
             plan: plan.clone(),
             properties: properties.clone(),
+            measurements,
             seed,
             app_random_draw_cap,
         })
@@ -88,6 +147,12 @@ impl ScenarioDefForm {
         &self.properties
     }
 
+    /// Returns the serialized measurement-definition component.
+    #[must_use]
+    pub fn measurements(&self) -> &MeasurementDefinitions {
+        &self.measurements
+    }
+
     /// Returns the serialized scenario seed component.
     #[must_use]
     pub fn seed(&self) -> Seed {
@@ -104,9 +169,10 @@ impl ScenarioDefForm {
     #[must_use]
     pub fn scenario_def(&self) -> ScenarioDef {
         self.world
-            .scenario_def_from_components_with_app_random_draw_cap(
+            .scenario_def_from_components_with_measurements_and_app_random_draw_cap(
                 &self.plan,
                 &self.properties,
+                &self.measurements,
                 self.seed,
                 self.app_random_draw_cap,
             )
@@ -125,10 +191,32 @@ impl ScenarioDefForm {
     /// Returns [`EngineError`] when `plan` does not layer over the retained
     /// world and properties.
     pub fn with_plan(&self, plan: Plan) -> Result<Self, EngineError> {
-        Self::from_components_with_app_random_draw_cap(
+        Self::from_components_with_measurements_and_app_random_draw_cap(
             &self.world,
             &plan,
             &self.properties,
+            &self.measurements,
+            self.seed,
+            self.app_random_draw_cap,
+        )
+    }
+
+    /// Rebuilds this scenario around replacement measurement definitions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] when `measurements`
+    /// reference objects outside the retained world, plan, or properties, or
+    /// otherwise violate the bounded measurement contract.
+    pub fn with_measurements(
+        &self,
+        measurements: MeasurementDefinitions,
+    ) -> Result<Self, EngineError> {
+        Self::from_components_with_measurements_and_app_random_draw_cap(
+            &self.world,
+            &self.plan,
+            &self.properties,
+            &measurements,
             self.seed,
             self.app_random_draw_cap,
         )
@@ -166,7 +254,7 @@ impl ScenarioDefForm {
     /// Serializes this form as the compact canonical binary representation.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC_V5);
+        let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC_V6);
         write_scenario_form_binary(self, &mut writer);
         writer.finish()
     }
@@ -179,8 +267,18 @@ impl ScenarioDefForm {
     /// id mismatches, or the same validation errors as the component constructors
     /// when the parsed world, plan, or properties are invalid.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V5)?;
-        let form = read_scenario_form_binary(&mut reader)?;
+        let (mut reader, has_measurements) = if bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V6) {
+            (
+                ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V6)?,
+                true,
+            )
+        } else {
+            (
+                ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V5)?,
+                false,
+            )
+        };
+        let form = read_scenario_form_binary(&mut reader, has_measurements)?;
         reader.finish()?;
         Ok(form)
     }
@@ -188,10 +286,11 @@ impl ScenarioDefForm {
     /// Returns the canonical bytes used to compute this scenario definition's id.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        scenario_world_plan_properties_seed_app_random_cap_material(
+        scenario_world_plan_properties_measurements_seed_app_random_cap_material(
             &self.world,
             &self.plan,
             &self.properties,
+            &self.measurements,
             self.seed,
             self.app_random_draw_cap,
         )

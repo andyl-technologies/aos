@@ -205,23 +205,52 @@ pub(super) fn write_scenario_form_binary(
     write_world_binary(&form.world, writer);
     write_plan_binary(&form.plan, writer);
     write_properties_binary(&form.properties, writer);
+    writer.write_binary_blob(form.measurements.canonical_bytes());
     writer.write_seed(form.seed);
     writer.write_u64(form.app_random_draw_cap);
 }
 
 pub(super) fn read_scenario_form_binary(
     reader: &mut ScenarioBinaryReader<'_>,
+    has_measurements: bool,
 ) -> Result<ScenarioDefForm, EngineError> {
     let expected = reader.read_hash()?;
     let world = read_world_binary(reader)?;
     let plan = read_plan_binary_for_scenario(&world, reader)?;
     let properties = read_properties_binary(&world, reader)?;
+    let measurements = if has_measurements {
+        let bytes = reader.read_binary_blob_bounded(
+            "measurement definitions",
+            MAX_MEASUREMENT_DEFINITION_BYTES,
+        )?;
+        let definitions =
+            serde_json::from_slice::<Vec<MeasurementDefinition>>(bytes).map_err(|error| {
+                scenario_serialization_error(format!(
+                    "decode canonical measurement definitions: {error}"
+                ))
+            })?;
+        let measurements = MeasurementDefinitions::from_decoded_definitions(
+            &world,
+            &plan,
+            &properties,
+            definitions,
+        )?;
+        if measurements.canonical_bytes() != bytes {
+            return Err(scenario_serialization_error(
+                "measurement definitions are not canonically encoded",
+            ));
+        }
+        measurements
+    } else {
+        MeasurementDefinitions::empty()
+    };
     let seed = reader.read_seed()?;
     let app_random_draw_cap = reader.read_u64()?;
-    let form = ScenarioDefForm::from_components_with_app_random_draw_cap(
+    let form = ScenarioDefForm::from_components_with_measurements_and_app_random_draw_cap(
         &world,
         &plan,
         &properties,
+        &measurements,
         seed,
         app_random_draw_cap,
     )?;

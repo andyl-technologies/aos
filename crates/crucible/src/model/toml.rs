@@ -28,8 +28,11 @@ pub(super) fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError>
 }
 
 pub(super) const SCENARIO_FORM_BINARY_MAGIC_V5: &[u8] = b"crucible.scenario-def-form.v5\0";
+pub(super) const SCENARIO_FORM_BINARY_MAGIC_V6: &[u8] = b"crucible.scenario-def-form.v6\0";
 pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V5: &[u8] =
     b"crucible.reproduction-artifact.v5\0";
+pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V6: &[u8] =
+    b"crucible.reproduction-artifact.v6\0";
 pub(super) const SCHEDULE_BINARY_MAGIC_V1: &[u8] = b"crucible.schedule.v1\0";
 pub(super) const SCHEDULE_BINARY_MAGIC_V2: &[u8] = b"crucible.schedule.v2\0";
 pub(super) const WORLD_BINARY_MAGIC_V4: &[u8] = b"crucible.world.v4\0";
@@ -69,11 +72,14 @@ pub(super) struct ScenarioDefToml {
     pub(super) world: WorldToml,
     pub(super) plan: PlanToml,
     pub(super) properties: PropertiesToml,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) measurement: Vec<MeasurementDefinition>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum ScenarioSchemaToml {
     V5,
+    V6,
 }
 
 impl Serialize for ScenarioSchemaToml {
@@ -81,7 +87,10 @@ impl Serialize for ScenarioSchemaToml {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str("crucible.scenario.v5")
+        serializer.serialize_str(match self {
+            Self::V5 => "crucible.scenario.v5",
+            Self::V6 => "crucible.scenario.v6",
+        })
     }
 }
 
@@ -93,14 +102,15 @@ impl<'de> Deserialize<'de> for ScenarioSchemaToml {
         let schema = String::deserialize(deserializer)?;
         match schema.as_str() {
             "crucible.scenario.v5" => Ok(Self::V5),
+            "crucible.scenario.v6" => Ok(Self::V6),
             "crucible.scenario.v1"
             | "crucible.scenario.v2"
             | "crucible.scenario.v3"
             | "crucible.scenario.v4" => Err(de::Error::custom(
-                "legacy Crucible scenarios are not supported; rewrite the scenario using the exhaustive signal-driven fault schema `crucible.scenario.v5`",
+                "legacy Crucible scenarios are not supported; rewrite the scenario using `crucible.scenario.v6`",
             )),
             _ => Err(de::Error::custom(format!(
-                "unsupported Crucible scenario schema `{schema}`; expected `crucible.scenario.v5`"
+                "unsupported Crucible scenario schema `{schema}`; expected `crucible.scenario.v5` or `crucible.scenario.v6`"
             ))),
         }
     }
@@ -647,7 +657,7 @@ pub(super) fn scenario_form_to_toml(
     form: &ScenarioDefForm,
 ) -> Result<ScenarioDefToml, EngineError> {
     Ok(ScenarioDefToml {
-        schema: ScenarioSchemaToml::V5,
+        schema: ScenarioSchemaToml::V6,
         scenario: ScenarioHeaderToml {
             id: format_content_hash_ref(form.id()),
             seed: format_seed_ref(form.seed),
@@ -656,12 +666,18 @@ pub(super) fn scenario_form_to_toml(
         world: world_to_toml(&form.world),
         plan: plan_to_toml(&form.plan)?,
         properties: properties_to_toml(&form.properties),
+        measurement: form.measurements.definitions().to_vec(),
     })
 }
 
 pub(super) fn scenario_form_from_toml(
     toml: ScenarioDefToml,
 ) -> Result<ScenarioDefForm, EngineError> {
+    if matches!(toml.schema, ScenarioSchemaToml::V5) && !toml.measurement.is_empty() {
+        return Err(scenario_serialization_error(
+            "scenario v5 cannot carry measurement definitions",
+        ));
+    }
     let world = world_from_toml(toml.world)?;
     let (properties_id, assertions) = properties_assertions_from_toml(toml.properties)?;
     let plan = plan_from_toml_with_assertions(
@@ -673,10 +689,17 @@ pub(super) fn scenario_form_from_toml(
     let properties = resolve_properties_dsl_for_context(&world, &plan, &raw_properties)?;
     validate_serialized_id("properties", properties_id, properties.content_hash())?;
     let seed = parse_seed_ref(&toml.scenario.seed)?;
-    let form = ScenarioDefForm::from_components_with_app_random_draw_cap(
+    let measurements = MeasurementDefinitions::from_decoded_definitions(
         &world,
         &plan,
         &properties,
+        toml.measurement,
+    )?;
+    let form = ScenarioDefForm::from_components_with_measurements_and_app_random_draw_cap(
+        &world,
+        &plan,
+        &properties,
+        &measurements,
         seed,
         toml.scenario.app_random_draw_cap,
     )?;
