@@ -3,6 +3,9 @@
 use super::test_support::*;
 use super::*;
 
+#[path = "lifecycle_tests/ownership.rs"]
+mod ownership;
+
 #[test]
 fn lifecycle_intent_preview_is_action_exact_and_ignores_active_hang_rules() {
     let terminal = lifecycle_action(NodeLifecycleTransition::Crash, NodeBootPolicy::Immediate);
@@ -212,10 +215,7 @@ fn boot_ready_exhaustion_preserves_requested_intent_and_effective_terminal_decis
     )
     .unwrap_or_else(|error| panic!("terminal decision should allocate: {error}"))
     .unwrap_or_else(|| panic!("exhaustion should produce a supervision decision"));
-    assert_eq!(
-        decision.requested_transition,
-        NodeLifecycleTransition::Boot
-    );
+    assert_eq!(decision.requested_transition, NodeLifecycleTransition::Boot);
     assert_eq!(
         decision.effective_transition,
         NodeLifecycleTransition::PowerOff
@@ -246,7 +246,10 @@ fn boot_ready_exhaustion_preserves_requested_intent_and_effective_terminal_decis
         )
         .unwrap_or_else(|error| panic!("exhausted Boot intent should preview: {error}"));
     assert_eq!(intents.len(), 1);
-    assert_eq!(intents[0].requested_transition, NodeLifecycleTransition::Boot);
+    assert_eq!(
+        intents[0].requested_transition,
+        NodeLifecycleTransition::Boot
+    );
 
     let work = runtime
         .take_node_lifecycle_work()
@@ -265,9 +268,12 @@ fn boot_ready_exhaustion_preserves_requested_intent_and_effective_terminal_decis
         LIFECYCLE_TERMINAL_CAUSE_READY_EXHAUSTED
     );
     assert_eq!(work.decisions()[0].expected_exit_code, Some(71));
-    runtime
+    let release = runtime
         .acknowledge_node_lifecycle_work(work)
-        .unwrap_or_else(|error| panic!("exhausted Boot work should acknowledge: {error}"));
+        .unwrap_or_else(|_| panic!("exhausted Boot work should acknowledge"));
+    runtime
+        .complete_node_lifecycle_release(release)
+        .unwrap_or_else(|_| panic!("exhausted Boot release should complete"));
 }
 
 #[test]
@@ -441,95 +447,4 @@ fn armed_accelerator_event_matches_the_installing_apply_result() {
 
     event.header.rule_command_sequence += 1;
     assert!(!qemu_event_matches_commit(&event, &action, &commit));
-}
-
-#[test]
-fn checkpoint_rejects_unacknowledged_node_boot_edge() {
-    let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), FaultResourceLimits::default())
-        .unwrap_or_else(|error| panic!("empty test plan should be valid: {error}"));
-    let mut nodes = QemuNodeSet::new();
-    let mut runtime = ProductionFaultRuntime::new(
-        plan,
-        None,
-        SignalBoundarySnapshot::default(),
-        ContentHash::from_bytes(b"pending-node-boot"),
-        test_host_manifests(),
-        &nodes,
-    )
-    .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));
-    runtime.pending_node_boot.push(NodeId {
-        name: String::from("node-a"),
-    });
-
-    assert!(matches!(
-        runtime.checkpoint(&mut nodes),
-        Err(ProductionFaultRuntimeError::PendingQemuFaultEvents)
-    ));
-    runtime.acknowledge_node_boot_requests();
-    runtime
-        .checkpoint(&mut nodes)
-        .unwrap_or_else(|error| panic!("acknowledged boot edge should checkpoint: {error}"));
-}
-
-#[test]
-fn lifecycle_work_transfer_preserves_buffers_and_holds_checkpoint_barrier_until_ack() {
-    let action = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
-    let event = lifecycle_event(&action);
-    let node = NodeId {
-        name: String::from("node-a"),
-    };
-    let decision = node_lifecycle_decision(
-        &node,
-        action.id(),
-        &event,
-        0,
-        FaultResourceLimits::default(),
-    )
-    .unwrap_or_else(|error| panic!("lifecycle evidence should authenticate: {error}"))
-    .unwrap_or_else(|| panic!("lifecycle evidence should produce a decision"));
-    let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), FaultResourceLimits::default())
-        .unwrap_or_else(|error| panic!("empty test plan should be valid: {error}"));
-    let mut nodes = QemuNodeSet::new();
-    let mut runtime = ProductionFaultRuntime::new(
-        plan,
-        None,
-        SignalBoundarySnapshot::default(),
-        ContentHash::from_bytes(b"lifecycle-work-transfer"),
-        test_host_manifests(),
-        &nodes,
-    )
-    .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));
-    runtime.pending_node_lifecycle.push(decision);
-    runtime.pending_node_boot.push(node);
-    let decision_storage = runtime.pending_node_lifecycle.as_ptr();
-    let boot_storage = runtime.pending_node_boot.as_ptr();
-
-    let work = runtime
-        .take_node_lifecycle_work()
-        .unwrap_or_else(|error| panic!("lifecycle work should transfer: {error}"));
-
-    assert_eq!(work.decisions().as_ptr(), decision_storage);
-    assert_eq!(work.boot_requests().as_ptr(), boot_storage);
-    assert!(runtime.node_lifecycle_decisions().is_empty());
-    assert!(runtime.node_boot_requests().is_empty());
-    assert!(matches!(
-        runtime.checkpoint(&mut nodes),
-        Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork)
-    ));
-    assert!(matches!(
-        runtime.take_node_lifecycle_work(),
-        Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork)
-    ));
-    runtime
-        .acknowledge_node_lifecycle_work(work)
-        .unwrap_or_else(|error| panic!("owned lifecycle work should acknowledge: {error}"));
-    runtime.checkpoint(&mut nodes).unwrap_or_else(|error| {
-        panic!("acknowledged lifecycle ownership should checkpoint: {error}")
-    });
-    let empty = runtime
-        .take_node_lifecycle_work()
-        .unwrap_or_else(|error| panic!("empty lifecycle work should transfer: {error}"));
-    runtime
-        .acknowledge_node_lifecycle_work(empty)
-        .unwrap_or_else(|error| panic!("empty lifecycle work should acknowledge: {error}"));
 }

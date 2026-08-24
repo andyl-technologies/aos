@@ -3,9 +3,9 @@
 use super::*;
 
 mod persistence;
+mod process_ownership;
 mod publication;
 mod restart_ownership;
-mod process_ownership;
 mod staging;
 pub(in crate::vm_lifecycle) use persistence::LifecycleStatePersistence;
 pub(super) use persistence::map_journal_limit;
@@ -17,14 +17,15 @@ pub(in crate::vm_lifecycle) use persistence::{
 pub(in crate::vm_lifecycle) use persistence::{
     HARD_RUN_STATE_JSON_BYTES, validate_recovered_lifecycle_journal,
 };
-pub(in crate::vm_lifecycle::quantum_loop) use staging::*;
 pub(in crate::vm_lifecycle::quantum_loop) use publication::release_restored_generation_after_scheduler_publication;
 pub(in crate::vm_lifecycle::quantum_loop) use restart_ownership::*;
+pub(in crate::vm_lifecycle::quantum_loop) use staging::*;
 
 impl ProductionVmLifecycleLoop {
     pub(super) fn begin_terminal_lifecycle_intent(
         &mut self,
         intents: &[QemuNodeLifecycleIntent],
+        scheduler_checkpoint: &SingleSchedulerCheckpoint,
         limits: FaultResourceLimits,
         runtime_event_records: u64,
         runtime_event_log_bytes: u64,
@@ -109,24 +110,24 @@ impl ProductionVmLifecycleLoop {
                         intent.node.name
                     ),
                 })?;
-            let next_generation = if lifecycle_intent_may_require_successor_generation(
-                intent.requested_transition,
-            ) {
-                current_generation.checked_add(1).ok_or_else(|| {
-                    SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "terminal lifecycle generation exhausted for `{}`",
-                            intent.node.name
-                        ),
-                    }
-                })?
-            } else {
-                current_generation
-            };
+            let next_generation =
+                if lifecycle_intent_may_require_successor_generation(intent.requested_transition) {
+                    current_generation.checked_add(1).ok_or_else(|| {
+                        SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "terminal lifecycle generation exhausted for `{}`",
+                                intent.node.name
+                            ),
+                        }
+                    })?
+                } else {
+                    current_generation
+                };
             let terminal_ownership = self.prepare_terminal_lifecycle_ownership(
                 intent,
                 current_generation,
                 next_generation,
+                scheduler_checkpoint,
                 nodes.len(),
                 limits,
             )?;

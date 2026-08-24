@@ -135,7 +135,7 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible \
               --lib "$test_name" \
-              -- --exact --test-threads=1
+              -- --exact --include-ignored --test-threads=1
           }
 
           run_exact_qemu_test() {
@@ -148,7 +148,7 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu \
               --lib "$test_name" \
-              -- --exact --test-threads=1
+              -- --exact --include-ignored --test-threads=1
           }
 
           run_exact_shmem_test() {
@@ -161,7 +161,7 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible-shmem \
               --lib "$test_name" \
-              -- --exact --test-threads=1
+              -- --exact --include-ignored --test-threads=1
           }
 
           run_exact_api_test() {
@@ -174,7 +174,7 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible-api \
               --lib "$test_name" \
-              -- --exact --test-threads=1
+              -- --exact --include-ignored --test-threads=1
           }
 
           run_exact_plugin_test() {
@@ -187,7 +187,7 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu-plugin \
               --lib "$test_name" \
-              -- --exact --test-threads=1
+              -- --exact --include-ignored --test-threads=1
           }
 
           for test_target in \
@@ -348,12 +348,23 @@ in
             vm_lifecycle::quantum_loop::lifecycle::publication::tests::restored_generation_release_is_causally_gated_by_scheduler_publication
           run_exact_api_test \
             vm_lifecycle::quantum_loop::lifecycle::restart_ownership::tests::terminal_generation_selection_moves_preowned_storage
+          run_exact_api_test \
+            vm_lifecycle::quantum_loop::lifecycle::restart_ownership::tests::terminal_successor_launch_owns_exact_app_random_continuation
+          test "$(grep -Fc '    fn prepare_terminal_replacements(' \
+            crates/crucible-api/src/vm_lifecycle/quantum_loop.rs)" -eq 1
+          test "$(grep -Fc '    fn abort_staged_terminal_replacements(' \
+            crates/crucible-api/src/vm_lifecycle/quantum_loop.rs)" -eq 1
           sed -n \
             '/fn prepare_terminal_replacements(/,/fn abort_staged_terminal_replacements(/p' \
             crates/crucible-api/src/vm_lifecycle/quantum_loop.rs \
             > "$TMPDIR/post-apply-terminal-restart"
+          test -s "$TMPDIR/post-apply-terminal-restart"
+          grep -Fq 'fn prepare_terminal_replacements(' \
+            "$TMPDIR/post-apply-terminal-restart"
+          grep -Fq 'fn abort_staged_terminal_replacements(' \
+            "$TMPDIR/post-apply-terminal-restart"
           if grep -E \
-            'private_backend_gdbstub_path|qemu_unix_gdbstub_endpoint|try_lifecycle_crash_detector|Production(Block|Ninep)FaultCoordinator::new|launch_configs.*cloned' \
+            'private_backend_gdbstub_path|qemu_unix_gdbstub_endpoint|try_lifecycle_crash_detector|Production(Block|Ninep)FaultCoordinator::new|launch_configs' \
             "$TMPDIR/post-apply-terminal-restart"
           then
             echo 'FAIL: deterministic terminal restart ownership is constructed after APPLY' >&2
@@ -414,13 +425,19 @@ in
           run_exact_qemu_test \
             production_fault_runtime::evaluation::publication::tests::production_evaluation_publication_is_owned_before_commit
           run_exact_qemu_test \
-            production_fault_runtime::lifecycle_tests::lifecycle_work_transfer_preserves_buffers_and_holds_checkpoint_barrier_until_ack
+            production_fault_runtime::lifecycle_tests::ownership::lifecycle_work_transfer_preserves_buffers_and_holds_barrier_until_release_completion
+          run_exact_qemu_test \
+            production_fault_runtime::lifecycle_tests::ownership::lifecycle_owners_are_bound_to_the_creating_runtime_instance
           run_exact_qemu_test \
             production_fault_runtime::lifecycle_tests::lifecycle_intent_preview_is_action_exact_and_ignores_active_hang_rules
           run_exact_plugin_test \
             fault_command::tests::bridge_translates_capabilities_and_local_rejections_at_logical_time
           run_exact_plugin_test \
             runtime::live_callbacks::tests::fault_event_control::control_boundary_retries_occurrence_event_after_host_drain_before_ack
+          run_exact_plugin_test \
+            runtime::live_callbacks::tests::logical_restore::post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging
+          run_exact_plugin_test \
+            runtime::live_whitebox::app_random::tests::logical_restore_discards_priming_draws_exactly_once
           run_exact_qemu_test \
             fault_action_sink::node_payload::tests::memory_bit_flip_rejects_authored_length_before_expanding_mask
           run_exact_qemu_test \
@@ -631,6 +648,11 @@ in
           grep -Fxq 'node_effective_icount_authenticated=true' "$shared_result"
           grep -Fxq 'exact_checkpoint_evidence_match=true' "$shared_result"
           grep -Fxq 'locked_effect_replay_evidence_match=true' "$shared_result"
+          grep '^terminal_row=' "$shared_result" > "$TMPDIR/terminal-rows"
+          test "$(wc -l < "$TMPDIR/terminal-rows")" -eq 2
+          test "$(sort -u "$TMPDIR/terminal-rows" | wc -l)" -eq 2
+          grep -Fxq 'terminal_row=node-a|transition=power_off|generation_delta=1|service_state=powered_off|scheduler_activity=halted|process_ownership=exact' "$TMPDIR/terminal-rows"
+          grep -Fxq 'terminal_row=node-b|transition=permanent_failure|generation_delta=0|service_state=permanently_failed|scheduler_activity=done|process_ownership=absent' "$TMPDIR/terminal-rows"
 
           patch_result=${patchMicrotests}/result
           grep -Fxq PASS "$patch_result"

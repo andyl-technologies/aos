@@ -498,11 +498,7 @@ fn durable_run_state_accepts_boot_successor_reservation_before_authentication() 
 fn durable_run_state_rejects_boot_with_terminal_exit_ownership() {
     let current = recovery_process(7, "/aos/qemu-current");
     let manifest = recovery_manifest(current.clone(), None);
-    let mut journal = recovery_journal(
-        ProductionLifecycleJournalPhase::Intent,
-        current,
-        None,
-    );
+    let mut journal = recovery_journal(ProductionLifecycleJournalPhase::Intent, current, None);
     journal.nodes[0].transition = String::from("Boot");
     journal.nodes[0].expected_exit_code = Some(70);
 
@@ -520,11 +516,7 @@ fn durable_run_state_rejects_boot_with_terminal_exit_ownership() {
 fn durable_run_state_rejects_saturated_terminal_successor_generation() {
     let current = recovery_process(7, "/aos/qemu-current");
     let manifest = recovery_manifest(current.clone(), None);
-    let mut journal = recovery_journal(
-        ProductionLifecycleJournalPhase::Intent,
-        current,
-        None,
-    );
+    let mut journal = recovery_journal(ProductionLifecycleJournalPhase::Intent, current, None);
     journal.nodes[0].current_generation = u64::MAX;
     journal.nodes[0].next_generation = u64::MAX;
 

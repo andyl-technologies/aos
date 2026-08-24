@@ -3,8 +3,7 @@
 use super::*;
 
 pub(in crate::vm_lifecycle::quantum_loop) struct PreparedLifecycleFaultCoordinators {
-    pub(in crate::vm_lifecycle::quantum_loop) block:
-        Option<Box<ProductionBlockFaultCoordinator>>,
+    pub(in crate::vm_lifecycle::quantum_loop) block: Option<Box<ProductionBlockFaultCoordinator>>,
     pub(in crate::vm_lifecycle::quantum_loop) ninep:
         Option<Box<storage_faults::ProductionNinepFaultCoordinator>>,
 }
@@ -21,8 +20,7 @@ pub(in crate::vm_lifecycle::quantum_loop) struct PreparedLifecycleGenerationOwne
 }
 
 pub(in crate::vm_lifecycle::quantum_loop) struct PreparedLifecycleTerminalOwnership {
-    pub(in crate::vm_lifecycle::quantum_loop) current:
-        PreparedLifecycleGenerationOwnership,
+    pub(in crate::vm_lifecycle::quantum_loop) current: PreparedLifecycleGenerationOwnership,
     pub(in crate::vm_lifecycle::quantum_loop) successor:
         Option<PreparedLifecycleGenerationOwnership>,
 }
@@ -40,19 +38,30 @@ pub(in crate::vm_lifecycle::quantum_loop) fn select_preowned_terminal_generation
     }
 }
 
+fn bind_successor_app_random(
+    launch: ProductionLiveNodeStepGateConfig,
+    app_random: Option<ProductionAppRandomConfig>,
+) -> ProductionLiveNodeStepGateConfig {
+    app_random.map_or(launch.clone(), |config| launch.with_app_random(config))
+}
+
 impl ProductionVmLifecycleLoop {
     pub(in crate::vm_lifecycle::quantum_loop) fn prepare_terminal_lifecycle_ownership(
         &self,
         intent: &QemuNodeLifecycleIntent,
         current_generation: u64,
         next_generation: u64,
+        scheduler_checkpoint: &SingleSchedulerCheckpoint,
         resource_current: usize,
         limits: FaultResourceLimits,
     ) -> Result<PreparedLifecycleTerminalOwnership, SchedulerError> {
         let node = &intent.node;
         let index = self.node_indexes.get(node).copied().ok_or_else(|| {
             SchedulerError::BoundaryViolation {
-                message: format!("terminal lifecycle node `{}` has no launch index", node.name),
+                message: format!(
+                    "terminal lifecycle node `{}` has no launch index",
+                    node.name
+                ),
             }
         })?;
         let current_directory = self.node_run_directories.get(node).ok_or_else(|| {
@@ -63,14 +72,15 @@ impl ProductionVmLifecycleLoop {
                 ),
             }
         })?;
-        let launch = self.launch_configs.get(node).ok_or_else(|| {
-            SchedulerError::BoundaryViolation {
-                message: format!(
-                    "terminal lifecycle node `{}` has no launch configuration",
-                    node.name
-                ),
-            }
-        })?;
+        let launch =
+            self.launch_configs
+                .get(node)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal lifecycle node `{}` has no launch configuration",
+                        node.name
+                    ),
+                })?;
 
         let current_generation_ownership = self.prepare_lifecycle_generation_ownership(
             node,
@@ -82,27 +92,39 @@ impl ProductionVmLifecycleLoop {
             limits,
             false,
         )?;
-        let successor = lifecycle_intent_may_require_successor_generation(
-            intent.requested_transition,
-        )
-        .then(|| {
-            let run_directory = self
-                ._run_directory
-                .path()
-                .join("lifecycle-generations")
-                .join(format!("node-{index}-generation-{next_generation}"));
-            self.prepare_lifecycle_generation_ownership(
-                node,
-                index,
-                next_generation,
-                run_directory,
-                launch.clone(),
-                resource_current,
-                limits,
-                true,
-            )
-        })
-        .transpose()?;
+        let successor_app_random = launch
+            .app_random_configured()
+            .then(|| {
+                production_app_random_checkpoint_config(
+                    scheduler_checkpoint,
+                    &self.scenario,
+                    self.branch.as_ref(),
+                    node,
+                )
+            })
+            .transpose()?;
+        let successor =
+            lifecycle_intent_may_require_successor_generation(intent.requested_transition)
+                .then(|| {
+                    let run_directory = self
+                        ._run_directory
+                        .path()
+                        .join("lifecycle-generations")
+                        .join(format!("node-{index}-generation-{next_generation}"));
+                    let successor_launch =
+                        bind_successor_app_random(launch.clone(), successor_app_random);
+                    self.prepare_lifecycle_generation_ownership(
+                        node,
+                        index,
+                        next_generation,
+                        run_directory,
+                        successor_launch,
+                        resource_current,
+                        limits,
+                        true,
+                    )
+                })
+                .transpose()?;
         Ok(PreparedLifecycleTerminalOwnership {
             current: current_generation_ownership,
             successor,
@@ -169,8 +191,7 @@ impl ProductionVmLifecycleLoop {
             .debug_backend_paths
             .contains_key(node)
             .then(|| private_backend_gdbstub_path(&run_directory));
-        let crash_detector =
-            try_lifecycle_crash_detector(&node.name, generation, current, limits)?;
+        let crash_detector = try_lifecycle_crash_detector(&node.name, generation, current, limits)?;
         let fault_coordinators = if prepare_coordinators {
             self.prepare_lifecycle_fault_coordinators(node)
         } else {
@@ -235,12 +256,9 @@ mod tests {
             let successor = String::from("successor-generation");
             let current_storage = current.as_ptr();
             let successor_storage = successor.as_ptr();
-            let (selected, prior) = select_preowned_terminal_generation(
-                current,
-                Some(successor),
-                service_state,
-            )
-            .unwrap_or_else(|| panic!("live terminal state should select its successor"));
+            let (selected, prior) =
+                select_preowned_terminal_generation(current, Some(successor), service_state)
+                    .unwrap_or_else(|| panic!("live terminal state should select its successor"));
             assert_eq!(selected.as_ptr(), successor_storage);
             assert_eq!(
                 prior
@@ -261,5 +279,25 @@ mod tests {
         .unwrap_or_else(|| panic!("permanent failure should retain current ownership"));
         assert_eq!(selected.as_ptr(), current_storage);
         assert!(prior.is_none());
+    }
+
+    #[test]
+    fn terminal_successor_launch_owns_exact_app_random_continuation() {
+        let positions = BTreeMap::from([
+            (String::from("node-a/requests"), 3),
+            (String::from("node-a/workload"), 5),
+        ]);
+        let app_random = ProductionAppRandomConfig::new(11, 32, "node-a")
+            .with_continuation(8, positions.clone());
+        let launch =
+            ProductionLiveNodeStepGateConfig::new("qemu", "plugin", "kernel", "firmware", "run");
+
+        let rebound = bind_successor_app_random(launch, Some(app_random));
+        let rebound = rebound
+            .app_random_configuration()
+            .unwrap_or_else(|| panic!("terminal successor must retain app-random continuation"));
+
+        assert_eq!(rebound.draw_offset, 8);
+        assert_eq!(rebound.stream_positions, positions);
     }
 }

@@ -69,7 +69,7 @@ impl ProductionFaultRuntime {
         {
             return Err(ProductionFaultRuntimeError::PendingQemuFaultEvents);
         }
-        if self.lifecycle_work_in_flight.is_some() {
+        if self.lifecycle_work_in_flight.is_some() || self.lifecycle_release_in_flight.is_some() {
             return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
         }
         if !self.pending_search_choices.is_empty() {
@@ -272,47 +272,11 @@ impl ProductionFaultRuntime {
         &self.emitted_events
     }
 
-    /// Returns node lifecycle decisions after the enclosing boundary commits.
-    ///
-    /// The caller must supervise every returned decision before another fault
-    /// boundary, scheduler quantum, or checkpoint. Decisions are published only
-    /// after the complete drained event batch and its resource reservations have
-    /// validated, so taking them never exposes a partially authenticated batch.
-    #[must_use]
-    pub fn node_lifecycle_decisions(&self) -> &[QemuNodeLifecycleDecision] {
-        &self.pending_node_lifecycle
-    }
-
-    /// Acknowledges that every pending terminal lifecycle decision was
-    /// independently supervised to its exact process status.
-    ///
-    /// Callers must invoke this method only after all decisions returned by
-    /// [`Self::node_lifecycle_decisions`] have completed successfully. A
-    /// supervision error deliberately leaves the decisions pending so the
-    /// continuation cannot checkpoint or advance as though the outcome were
-    /// known.
-    pub fn acknowledge_node_lifecycle_decisions(&mut self) {
-        self.pending_node_lifecycle.clear();
-    }
-
-    /// Returns nodes whose committed lifecycle action requests a boot.
-    ///
-    /// The host uses this edge to resume a natively paused power-off
-    /// generation before the scheduler can select it again.
-    #[must_use]
-    pub fn node_boot_requests(&self) -> &[NodeId] {
-        &self.pending_node_boot
-    }
-
-    /// Acknowledges boot requests after every requested node is activated.
-    pub fn acknowledge_node_boot_requests(&mut self) {
-        self.pending_node_boot.clear();
-    }
-
     /// Transfers the complete authenticated lifecycle batch to its sole host consumer.
     ///
-    /// The runtime retains a checkpoint barrier until the returned owner is
-    /// passed to [`Self::acknowledge_node_lifecycle_work`].
+    /// The runtime retains a checkpoint barrier after acknowledgement and
+    /// until the resulting release owner is returned through
+    /// [`Self::complete_node_lifecycle_release`].
     ///
     /// # Errors
     ///
@@ -322,7 +286,7 @@ impl ProductionFaultRuntime {
     pub fn take_node_lifecycle_work(
         &mut self,
     ) -> Result<QemuNodeLifecycleWork, ProductionFaultRuntimeError> {
-        if self.lifecycle_work_in_flight.is_some() {
+        if self.lifecycle_work_in_flight.is_some() || self.lifecycle_release_in_flight.is_some() {
             return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
         }
         let has_work =
@@ -341,29 +305,65 @@ impl ProductionFaultRuntime {
             None
         };
         Ok(QemuNodeLifecycleWork {
+            owner_instance: self.lifecycle_owner_instance,
             token,
             decisions: std::mem::take(&mut self.pending_node_lifecycle),
             boot_requests: std::mem::take(&mut self.pending_node_boot),
         })
     }
 
-    /// Acknowledges complete host consumption of one transferred lifecycle batch.
+    /// Acknowledges durable host publication and begins successor release.
     ///
     /// # Errors
     ///
-    /// Returns [`ProductionFaultRuntimeError::PendingNodeLifecycleWork`] when
-    /// `work` is not the runtime's current sole transferred owner.
+    /// Returns the unchanged owner when `work` is not the runtime's current
+    /// sole transferred owner. This is the
+    /// [`ProductionFaultRuntimeError::PendingNodeLifecycleWork`] condition; the
+    /// owner is returned directly so the failure path does not allocate after
+    /// host publication. The returned release owner preserves the checkpoint
+    /// barrier until every acknowledged Crash or Boot successor has either
+    /// been released or synchronously contained.
     pub fn acknowledge_node_lifecycle_work(
         &mut self,
         work: QemuNodeLifecycleWork,
-    ) -> Result<(), ProductionFaultRuntimeError> {
-        if self.lifecycle_work_in_flight != work.token
+    ) -> Result<QemuNodeLifecycleRelease, QemuNodeLifecycleWork> {
+        if self.lifecycle_owner_instance != work.owner_instance
+            || self.lifecycle_work_in_flight != work.token
             || (work.token.is_none()
                 && (!work.decisions.is_empty() || !work.boot_requests.is_empty()))
         {
-            return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
+            return Err(work);
         }
         self.lifecycle_work_in_flight = None;
+        self.lifecycle_release_in_flight = work.token;
+        Ok(QemuNodeLifecycleRelease {
+            owner_instance: work.owner_instance,
+            token: work.token,
+            decisions: work.decisions,
+            boot_requests: work.boot_requests,
+        })
+    }
+
+    /// Completes successor release for one acknowledged lifecycle batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged owner when `release` is not the runtime's current
+    /// acknowledged batch. This is the
+    /// [`ProductionFaultRuntimeError::PendingNodeLifecycleWork`] condition; the
+    /// owner is returned directly so containment does not allocate.
+    pub fn complete_node_lifecycle_release(
+        &mut self,
+        release: QemuNodeLifecycleRelease,
+    ) -> Result<(), QemuNodeLifecycleRelease> {
+        if self.lifecycle_owner_instance != release.owner_instance
+            || self.lifecycle_release_in_flight != release.token
+            || (release.token.is_none()
+                && (!release.decisions.is_empty() || !release.boot_requests.is_empty()))
+        {
+            return Err(release);
+        }
+        self.lifecycle_release_in_flight = None;
         Ok(())
     }
 

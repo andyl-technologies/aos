@@ -8,8 +8,8 @@ use std::io::Read as _;
 mod error;
 
 pub(in crate::vm_lifecycle) use error::DurableRunStateError;
-pub(super) use error::map_limit;
 use error::decode_allocation_error;
+pub(super) use error::map_limit;
 
 const RUN_STATE_BYTES_FIELD: &str = "lifecycle_run_state_bytes";
 
@@ -451,15 +451,12 @@ fn valid_lifecycle_expected_exit(
 ) -> bool {
     let effective = expected_lifecycle_exit_code(&node.transition);
     match phase {
-        ProductionLifecycleJournalPhase::Intent
-        | ProductionLifecycleJournalPhase::Quarantined => {
+        ProductionLifecycleJournalPhase::Intent | ProductionLifecycleJournalPhase::Quarantined => {
             node.expected_exit_code.is_none() || node.expected_exit_code == effective
         }
         ProductionLifecycleJournalPhase::Prepared
         | ProductionLifecycleJournalPhase::ExitsReaped => node.expected_exit_code == effective,
-        ProductionLifecycleJournalPhase::Idle | ProductionLifecycleJournalPhase::Committed => {
-            false
-        }
+        ProductionLifecycleJournalPhase::Idle | ProductionLifecycleJournalPhase::Committed => false,
     }
 }
 

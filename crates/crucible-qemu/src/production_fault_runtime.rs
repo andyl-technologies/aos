@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible::model::{
     BindingActionKind, BindingEvaluation, BindingSearchChoice, ContentHash, EffectSpecification,
@@ -201,6 +202,9 @@ pub enum ProductionFaultRuntimeError {
         "cannot checkpoint or transfer lifecycle work while an owned lifecycle batch is in flight"
     )]
     PendingNodeLifecycleWork,
+    /// Process-local lifecycle owner identities exhausted their representation.
+    #[error("production lifecycle owner-instance sequence exhausted")]
+    LifecycleOwnerInstanceExhausted,
     /// A scenario-owned production resource reservation failed.
     #[error(transparent)]
     ResourceLimit(#[from] FaultResourceLimitError),
@@ -251,10 +255,13 @@ pub struct QemuNodeLifecycleIntent {
 /// Opaque ownership of one authenticated lifecycle publication batch.
 ///
 /// The production runtime retains a matching checkpoint barrier until this
-/// value is returned through its acknowledgement method. Dropping the value
-/// therefore fails closed: the runtime cannot checkpoint or transfer another
-/// batch after losing the sole host-side owner.
+/// value is presented to its acknowledgement method. Dropping an
+/// unacknowledged value therefore fails closed: the runtime cannot checkpoint
+/// or transfer another batch after losing the sole host-side owner. The API
+/// lifecycle retains an acknowledged value until every permitted successor
+/// release has completed or the batch has been poisoned and contained.
 pub struct QemuNodeLifecycleWork {
+    owner_instance: u64,
     token: Option<u64>,
     decisions: Vec<QemuNodeLifecycleDecision>,
     boot_requests: Vec<NodeId>,
@@ -268,6 +275,32 @@ impl QemuNodeLifecycleWork {
     }
 
     /// Returns the boot requests in committed action order.
+    #[must_use]
+    pub fn boot_requests(&self) -> &[NodeId] {
+        &self.boot_requests
+    }
+}
+
+/// Opaque acknowledged lifecycle batch whose successor release is still pending.
+///
+/// The production runtime retains a checkpoint barrier until this value is
+/// returned through its completion method. It preserves the exact batch so a
+/// failed Crash or Boot release can synchronously contain every affected node.
+pub struct QemuNodeLifecycleRelease {
+    owner_instance: u64,
+    token: Option<u64>,
+    decisions: Vec<QemuNodeLifecycleDecision>,
+    boot_requests: Vec<NodeId>,
+}
+
+impl QemuNodeLifecycleRelease {
+    /// Returns the acknowledged terminal decisions in authenticated order.
+    #[must_use]
+    pub fn decisions(&self) -> &[QemuNodeLifecycleDecision] {
+        &self.decisions
+    }
+
+    /// Returns acknowledged Boot releases in committed action order.
     #[must_use]
     pub fn boot_requests(&self) -> &[NodeId] {
         &self.boot_requests
@@ -289,9 +322,21 @@ pub struct ProductionFaultRuntime {
     pending_qemu_events: PendingQemuEventMap,
     pending_node_lifecycle: Vec<QemuNodeLifecycleDecision>,
     pending_node_boot: Vec<NodeId>,
+    lifecycle_owner_instance: u64,
     lifecycle_work_sequence: u64,
     lifecycle_work_in_flight: Option<u64>,
+    lifecycle_release_in_flight: Option<u64>,
     pending_search_choices: Vec<(FaultCoordinate, Vec<BindingSearchChoice>)>,
+}
+
+static NEXT_LIFECYCLE_OWNER_INSTANCE: AtomicU64 = AtomicU64::new(1);
+
+fn next_lifecycle_owner_instance() -> Result<u64, ProductionFaultRuntimeError> {
+    NEXT_LIFECYCLE_OWNER_INSTANCE
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_current| ProductionFaultRuntimeError::LifecycleOwnerInstanceExhausted)
 }
 
 #[path = "production_fault_runtime/checkpoint.rs"]
