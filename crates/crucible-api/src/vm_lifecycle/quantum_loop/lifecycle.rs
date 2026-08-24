@@ -164,17 +164,29 @@ impl ProductionVmLifecycleLoop {
             })?;
         self.lifecycle_journal.phase = ProductionLifecycleJournalPhase::Intent;
         self.lifecycle_journal.nodes = nodes.into();
-        self.reserve_lifecycle_state_encoding(
+        let reserved_event_log_bytes = self.reserve_lifecycle_state_encoding(
             limits,
             runtime_event_records,
             runtime_event_log_bytes,
         )?;
         self.persist_lifecycle_state()?;
+        let reserved_event_records = u64::try_from(
+            self.lifecycle_journal
+                .nodes
+                .len()
+                .checked_add(self.lifecycle_journal.completed_exits.len())
+                .ok_or_else(|| lifecycle_resource_error("event_records", usize::MAX, 1, limits))?,
+        )
+        .map_err(|_| lifecycle_resource_error("event_records", usize::MAX, 1, limits))?;
         Ok(PreparedLifecyclePrecommit {
             checkpoint,
             actions,
             process_owners,
             terminal_decisions,
+            reserved_event_records,
+            reserved_event_log_bytes: u64::try_from(reserved_event_log_bytes).map_err(|_| {
+                lifecycle_resource_error("event_log_bytes", 0, reserved_event_log_bytes, limits)
+            })?,
         })
     }
 

@@ -308,6 +308,8 @@ in
             node::tests::fault_event_budget::production_restore_rejects_fault_event_published_by_fingerprint
           run_exact_qemu_test \
             production_fault_runtime::runtime_tests::recovery_tests::live_host_fault_event_drain_reaches_production_authentication
+          run_exact_qemu_test \
+            production_fault_runtime::runtime_tests::external_event_reservation_is_charged_before_boundary_apply
           run_exact_shmem_test \
             fault_event::tests::event_snapshot_authenticates_without_consuming_transport_ownership
           run_exact_shmem_test \
@@ -334,6 +336,10 @@ in
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_unjournaled_staged_process_owner
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_unrelated_quarantined_postcommit_owner
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_rejects_old_outer_version_before_owned_decode
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_rejects_impossible_completed_exit_history
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_rejects_oversized_json_before_decode
           run_exact_api_test \
