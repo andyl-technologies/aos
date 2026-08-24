@@ -249,14 +249,14 @@ impl CampaignRepository {
         }
 
         let mut proposal_ids = Vec::with_capacity(proposals.len());
-        for proposal in proposals {
+        for (proposal_index, proposal) in proposals.iter().enumerate() {
             self.validate_planner_issue_proposal(
                 snapshot,
                 invocation_id,
-                selected,
                 &selected_request,
                 &selected_domain,
                 proposal,
+                &proposals[..proposal_index],
             )?;
             let proposal_id = proposal.id()?;
             let proposal_content = if mode.publishes() {
@@ -380,16 +380,24 @@ impl CampaignRepository {
                     *request_id,
                     (
                         request.branch_point(),
-                        self.initial_continuation_state(request)?,
+                        self.initial_continuation_state_at(
+                            request,
+                            super::projection::CandidateViewRoots::from_roots(
+                                snapshot.snapshot.roots(),
+                            ),
+                        )?,
                     ),
                 );
             }
             if let Some(last_proposal) = proposals.last() {
                 if !frontier_states.contains_key(&selected.source()) {
                     let prior_state = self.continuation_state(
-                        prior_exploration,
-                        prior_accounting,
-                        snapshot.snapshot.roots().observations,
+                        super::projection::CandidateViewRoots::new(
+                            prior_exploration,
+                            snapshot.snapshot.roots().observations,
+                            snapshot.snapshot.roots().corpus,
+                            prior_accounting,
+                        ),
                         selected.source(),
                         &selected_request,
                     )?;
@@ -408,10 +416,34 @@ impl CampaignRepository {
                     snapshot.snapshot.roots().observations,
                     selected_request.branch_point(),
                 )?;
+                let has_next_candidate = if profile
+                    == super::projection::CandidateSourceProfile::CorpusMutation
+                    && proposed < selected_request.budget().maximum_proposals()
+                {
+                    self.expected_candidate_at_view(
+                        &selected_request,
+                        &selected_domain,
+                        super::projection::CandidateViewRoots::new(
+                            prior_exploration,
+                            snapshot.snapshot.roots().observations,
+                            snapshot.snapshot.roots().corpus,
+                            prior_accounting,
+                        ),
+                        proposed
+                            .checked_add(1)
+                            .ok_or_else(|| integrity("planner-candidate-ordinal-overflow"))?,
+                        completed_visits,
+                        proposals,
+                    )?
+                    .is_some()
+                } else {
+                    false
+                };
                 let state = super::projection::continuation_state_after_progress(
                     profile,
                     proposed,
                     false,
+                    has_next_candidate,
                     selected_request.budget().maximum_proposals(),
                     completed_visits,
                 )?;
@@ -505,14 +537,14 @@ impl CampaignRepository {
         &self,
         snapshot: &LoadedSnapshot,
         invocation: PlannerInvocationId,
-        selected: PlanningScanPosition,
         request: &BranchRequest,
         domain: &ChoiceDomain,
         proposal: &Proposal,
+        additional_previous: &[Proposal],
     ) -> Result<(), CampaignRepositoryError> {
         if proposal.planner_invocation() != Some(invocation)
-            || proposal.request() != selected.source()
-            || proposal.branch_point() != selected.branch_point()
+            || proposal.request() != request.id()?
+            || proposal.branch_point() != request.branch_point()
         {
             return Err(integrity("planner-issue-proposal-selection-mismatch"));
         }
@@ -527,7 +559,14 @@ impl CampaignRepository {
             request.branch_point(),
         )?;
         let expected = self
-            .candidate_at_with_feedback(request, domain, proposal.ordinal(), completed_visits)?
+            .expected_candidate_at_view(
+                request,
+                domain,
+                super::projection::CandidateViewRoots::from_roots(snapshot.snapshot.roots()),
+                proposal.ordinal(),
+                completed_visits,
+                additional_previous,
+            )?
             .ok_or_else(|| integrity("generated-proposal-enumerator-is-not-implemented"))?;
         if &expected != proposal.value() {
             return Err(integrity("proposal-value-does-not-match-source-order"));

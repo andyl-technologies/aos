@@ -675,6 +675,8 @@ impl CampaignRepository {
             "observation-accounting-index-reused",
         )?;
 
+        let prior_candidate_view = super::projection::CandidateViewRoots::from_roots(roots);
+
         let mut remaining_updates = MAX_FEEDBACK_FRONTIER_UPDATES;
         let mut frontier_updates = Vec::new();
         for credit in &credits {
@@ -698,13 +700,8 @@ impl CampaignRepository {
                     .merkle
                     .get(roots.exploration, frontier_index_anchor_key())?
                     .ok_or_else(|| integrity("progressive-generator-frontier-index-is-missing"))?;
-                let prior_state = self.continuation_state(
-                    roots.exploration,
-                    roots.accounting,
-                    roots.observations,
-                    request_id,
-                    &request,
-                )?;
+                let prior_state =
+                    self.continuation_state(prior_candidate_view, request_id, &request)?;
                 self.validate_frontier_projection(
                     frontier_index,
                     request_id,
@@ -715,11 +712,11 @@ impl CampaignRepository {
                     .branch_completed_visits(roots.observations, request.branch_point())?
                     .checked_add(1)
                     .ok_or_else(|| integrity("expansion-completed-visit-count-overflow"))?;
-                let next_state = self.continuation_state_with_completed_visits(
-                    roots.exploration,
-                    roots.accounting,
+                let next_state = self.continuation_state_after_observation(
+                    prior_candidate_view,
                     request_id,
                     &request,
+                    observation,
                     completed_visits,
                 )?;
                 frontier_updates.push((request_id, request.branch_point(), next_state));

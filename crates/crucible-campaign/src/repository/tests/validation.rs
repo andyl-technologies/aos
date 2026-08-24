@@ -2169,6 +2169,573 @@ fn progressive_integer_generator_refines_only_after_exact_feedback() {
 }
 
 #[test]
+fn corpus_mutation_generator_tracks_retained_values_by_portable_proposal_set() {
+    let (repository, lineage, base_policy, blobs) = counted_fixture();
+    let policy = CampaignPolicy::new(
+        base_policy.scenario(),
+        base_policy.campaign_seed(),
+        CampaignMode::Streaming,
+        base_policy.explorer().clone(),
+        base_policy.choice_policies().clone(),
+        base_policy.objectives().clone(),
+        base_policy.guidance().clone(),
+        base_policy.stop_conditions().clone(),
+        base_policy.fairness(),
+        base_policy.retention(),
+        base_policy.admits_scenario_defaults(),
+    )
+    .expect("fast corpus-mutation policy");
+    repository
+        .publish_policy(&policy)
+        .expect("publish fast corpus-mutation policy");
+    let genesis = repository
+        .create(
+            "generated-corpus-mutation",
+            &lineage,
+            &policy,
+            &BTreeMap::new(),
+        )
+        .expect("create corpus-mutation campaign");
+    let domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(10),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("scale"),
+            Vec::new(),
+        )
+        .expect("corpus-mutation domain"),
+    );
+    let generator = CandidateGeneratorSpec::new(
+        crate::CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::MutateNearCorpus {
+            maximum_distance: 2,
+        },
+    )
+    .expect("corpus-mutation generator");
+    let generator_id = repository
+        .publish_generator(&generator)
+        .expect("publish corpus-mutation generator");
+    let (_, mutation_request) = generated_integer_request(
+        &repository,
+        &lineage,
+        domain.clone(),
+        IntegerValue::Unsigned(8),
+        generator_id,
+        "corpus-mutation",
+        8,
+    );
+    let seed_request = BranchRequest::new(
+        mutation_request.branch_point(),
+        mutation_request.parent(),
+        mutation_request.opportunity(),
+        mutation_request.domain(),
+        CandidateSource::finite(BTreeSet::from([ChoiceValue::Integer(
+            IntegerValue::Unsigned(8),
+        )]))
+        .expect("seed source"),
+        BranchRequestCause::Operator(CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"corpus-mutation-seed-request",
+        ))),
+        BranchBudget::new(1, 1).expect("seed budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("seed request");
+    let seeded = repository
+        .submit_known_branch_request(
+            "generated-corpus-mutation",
+            genesis.snapshot_id(),
+            &seed_request,
+        )
+        .expect("submit seed request");
+
+    let seed_eight = finite_proposal(
+        &seed_request,
+        &policy,
+        &repository
+            .head("generated-corpus-mutation")
+            .expect("seed request head"),
+        ChoiceValue::Integer(IntegerValue::Unsigned(8)),
+        1,
+    );
+    let proposed = repository
+        .issue_proposal(
+            "generated-corpus-mutation",
+            seeded.new_snapshot,
+            &seed_eight,
+        )
+        .expect("issue first seed");
+    let (selection, path, attempt) = branch_attempt(&repository, &seed_request, &seed_eight);
+    let admitted = repository
+        .admit_proposal(
+            "generated-corpus-mutation",
+            proposed.new_snapshot,
+            proposed.proposal,
+            &selection,
+            &path,
+            &attempt,
+        )
+        .expect("admit first seed");
+    let first_observation = generated_observation(
+        &repository,
+        &lineage,
+        &admitted,
+        &path,
+        seed_request.opportunity(),
+        "corpus-mutation-eight",
+    );
+    let observed = repository
+        .publish_observation(
+            "generated-corpus-mutation",
+            admitted.new_snapshot,
+            &first_observation,
+        )
+        .expect("retain first corpus value");
+    let requested = repository
+        .submit_branch_request(
+            "generated-corpus-mutation",
+            observed.new_snapshot,
+            &mutation_request,
+        )
+        .expect("submit corpus-mutation request");
+    let mutation_id = mutation_request.id().expect("mutation request id");
+    let ready = repository
+        .read_continuation_projection(
+            repository
+                .lookup_frontier_projection(
+                    repository
+                        .read_snapshot(requested.new_snapshot.content_id())
+                        .expect("mutation request snapshot")
+                        .snapshot
+                        .roots()
+                        .exploration,
+                    mutation_id,
+                )
+                .expect("mutation frontier lookup")
+                .0,
+        )
+        .expect("mutation frontier projection");
+    assert_eq!(ready.state(), ContinuationState::Ready);
+
+    let mut current = requested.new_snapshot;
+    for (ordinal, value) in [(1, 7), (2, 9)] {
+        let proposal = finite_proposal(
+            &mutation_request,
+            &policy,
+            &repository
+                .head("generated-corpus-mutation")
+                .expect("mutation proposal head"),
+            ChoiceValue::Integer(IntegerValue::Unsigned(value)),
+            ordinal,
+        );
+        let proposed = repository
+            .issue_proposal("generated-corpus-mutation", current, &proposal)
+            .expect("issue corpus mutation");
+        let (selection, path, attempt) = branch_attempt(&repository, &mutation_request, &proposal);
+        current = repository
+            .admit_proposal(
+                "generated-corpus-mutation",
+                proposed.new_snapshot,
+                proposed.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("admit corpus mutation")
+            .new_snapshot;
+    }
+
+    let second_seed_request = BranchRequest::new(
+        mutation_request.branch_point(),
+        mutation_request.parent(),
+        mutation_request.opportunity(),
+        mutation_request.domain(),
+        CandidateSource::finite(BTreeSet::from([ChoiceValue::Integer(
+            IntegerValue::Unsigned(2),
+        )]))
+        .expect("second seed source"),
+        BranchRequestCause::Operator(CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"corpus-mutation-second-seed-request",
+        ))),
+        BranchBudget::new(1, 1).expect("second seed budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("second seed request");
+    current = repository
+        .submit_branch_request("generated-corpus-mutation", current, &second_seed_request)
+        .expect("submit second seed request")
+        .new_snapshot;
+    let seed_two = finite_proposal(
+        &second_seed_request,
+        &policy,
+        &repository
+            .head("generated-corpus-mutation")
+            .expect("second seed head"),
+        ChoiceValue::Integer(IntegerValue::Unsigned(2)),
+        1,
+    );
+    let proposed = repository
+        .issue_proposal("generated-corpus-mutation", current, &seed_two)
+        .expect("issue second seed");
+    let (selection, path, attempt) = branch_attempt(&repository, &second_seed_request, &seed_two);
+    let admitted = repository
+        .admit_proposal(
+            "generated-corpus-mutation",
+            proposed.new_snapshot,
+            proposed.proposal,
+            &selection,
+            &path,
+            &attempt,
+        )
+        .expect("admit second seed");
+    let second_observation = generated_observation(
+        &repository,
+        &lineage,
+        &admitted,
+        &path,
+        second_seed_request.opportunity(),
+        "corpus-mutation-two",
+    );
+    current = repository
+        .publish_observation(
+            "generated-corpus-mutation",
+            admitted.new_snapshot,
+            &second_observation,
+        )
+        .expect("retain second corpus value")
+        .new_snapshot;
+
+    let wrong = finite_proposal(
+        &mutation_request,
+        &policy,
+        &repository
+            .head("generated-corpus-mutation")
+            .expect("wrong mutation head"),
+        ChoiceValue::Integer(IntegerValue::Unsigned(6)),
+        3,
+    );
+    let before = blobs.object_count().expect("objects before wrong mutation");
+    assert!(matches!(
+        repository.issue_proposal("generated-corpus-mutation", current, &wrong),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-value-does-not-match-source-order"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after wrong mutation"),
+        before
+    );
+
+    let next = finite_proposal(
+        &mutation_request,
+        &policy,
+        &repository
+            .head("generated-corpus-mutation")
+            .expect("next mutation head"),
+        ChoiceValue::Integer(IntegerValue::Unsigned(1)),
+        3,
+    );
+    current = repository
+        .issue_proposal("generated-corpus-mutation", current, &next)
+        .expect("issue mutation from newly retained anchor")
+        .new_snapshot;
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    restarted
+        .validate_complete_head(current.content_id())
+        .expect("restart validates corpus-mutation history");
+    let rebuilt = restarted
+        .project_finite_expansion(current, mutation_request.branch_point(), None, 10)
+        .expect("rebuild corpus-mutation expansion");
+    assert_eq!(
+        restarted
+            .load_expansion_state(rebuilt)
+            .expect("load rebuilt corpus-mutation expansion")
+            .continuations()
+            .get(&mutation_id),
+        Some(&ContinuationState::Open)
+    );
+}
+
+#[test]
+fn corpus_mutation_generator_enforces_exact_owner_bounds_before_writes() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let genesis = repository
+        .create(
+            "corpus-mutation-bounds",
+            &lineage,
+            &policy,
+            &BTreeMap::new(),
+        )
+        .expect("create corpus-mutation bounds campaign");
+    let domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(10_000),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("scale"),
+            Vec::new(),
+        )
+        .expect("bounded corpus-mutation domain"),
+    );
+
+    let oversized_distance = CandidateGeneratorSpec::new(
+        crate::CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::MutateNearCorpus {
+            maximum_distance: crate::CORPUS_MUTATION_GENERATOR_MAX_DISTANCE + 1,
+        },
+    )
+    .expect("oversized-distance generator");
+    let oversized_distance_id = repository
+        .publish_generator(&oversized_distance)
+        .expect("publish oversized-distance generator");
+    let (_, oversized_distance_request) = generated_integer_request(
+        &repository,
+        &lineage,
+        domain.clone(),
+        IntegerValue::Unsigned(5_000),
+        oversized_distance_id,
+        "corpus-mutation-oversized-distance",
+        1,
+    );
+    let oversized_distance_discovery = repository
+        .discover_choice_opportunity(
+            "corpus-mutation-bounds",
+            genesis.snapshot_id(),
+            oversized_distance_request.parent(),
+            oversized_distance_request.opportunity(),
+        )
+        .expect("discover oversized-distance opportunity");
+    let before_distance = blobs
+        .object_count()
+        .expect("objects before distance rejection");
+    assert!(matches!(
+        repository.submit_branch_request(
+            "corpus-mutation-bounds",
+            oversized_distance_discovery.new_snapshot,
+            &oversized_distance_request,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "corpus-mutation-generator-distance-limit"
+        })
+    ));
+    assert_eq!(
+        blobs
+            .object_count()
+            .expect("objects after distance rejection"),
+        before_distance
+    );
+
+    let bounded = CandidateGeneratorSpec::new(
+        crate::CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::MutateNearCorpus {
+            maximum_distance: 1,
+        },
+    )
+    .expect("bounded corpus-mutation generator");
+    let bounded_id = repository
+        .publish_generator(&bounded)
+        .expect("publish bounded corpus-mutation generator");
+    let (_, oversized_budget_request) = generated_integer_request(
+        &repository,
+        &lineage,
+        domain.clone(),
+        IntegerValue::Unsigned(5_000),
+        bounded_id,
+        "corpus-mutation-oversized-budget",
+        crate::CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS + 1,
+    );
+    let oversized_budget_discovery = repository
+        .discover_choice_opportunity(
+            "corpus-mutation-bounds",
+            oversized_distance_discovery.new_snapshot,
+            oversized_budget_request.parent(),
+            oversized_budget_request.opportunity(),
+        )
+        .expect("discover oversized-budget opportunity");
+    let before_budget = blobs
+        .object_count()
+        .expect("objects before budget rejection");
+    assert!(matches!(
+        repository.submit_branch_request(
+            "corpus-mutation-bounds",
+            oversized_budget_discovery.new_snapshot,
+            &oversized_budget_request,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "corpus-mutation-generator-proposal-limit"
+        })
+    ));
+    assert_eq!(
+        blobs
+            .object_count()
+            .expect("objects after budget rejection"),
+        before_budget
+    );
+
+    let alternative = AlternativeId::from_hash(CampaignHash::derive(
+        "test-alternative",
+        b"corpus-mutation-domain-mismatch",
+    ));
+    let discrete = ChoiceDomain::Discrete(
+        DiscreteDomain::new(
+            1,
+            BTreeMap::from([(
+                alternative,
+                DiscreteAlternative::new(alternative, "alternative", None).expect("alternative"),
+            )]),
+        )
+        .expect("discrete domain"),
+    );
+    let (_, incompatible_request) = generated_discrete_request(
+        &repository,
+        &lineage,
+        discrete,
+        alternative,
+        bounded_id,
+        "corpus-mutation-incompatible-domain",
+        1,
+    );
+    let incompatible_discovery = repository
+        .discover_choice_opportunity(
+            "corpus-mutation-bounds",
+            oversized_budget_discovery.new_snapshot,
+            incompatible_request.parent(),
+            incompatible_request.opportunity(),
+        )
+        .expect("discover incompatible-domain opportunity");
+    let before_incompatible = blobs
+        .object_count()
+        .expect("objects before incompatible-domain rejection");
+    assert!(matches!(
+        repository.submit_branch_request(
+            "corpus-mutation-bounds",
+            incompatible_discovery.new_snapshot,
+            &incompatible_request,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "candidate-generator-domain-family-mismatch"
+        })
+    ));
+    assert_eq!(
+        blobs
+            .object_count()
+            .expect("objects after incompatible-domain rejection"),
+        before_incompatible
+    );
+
+    let (_, empty_corpus_request) = generated_integer_request(
+        &repository,
+        &lineage,
+        domain.clone(),
+        IntegerValue::Unsigned(5_000),
+        bounded_id,
+        "corpus-mutation-empty-corpus",
+        1,
+    );
+    let empty_corpus_discovery = repository
+        .discover_choice_opportunity(
+            "corpus-mutation-bounds",
+            incompatible_discovery.new_snapshot,
+            empty_corpus_request.parent(),
+            empty_corpus_request.opportunity(),
+        )
+        .expect("discover empty-corpus opportunity");
+    let empty_corpus = repository
+        .submit_branch_request(
+            "corpus-mutation-bounds",
+            empty_corpus_discovery.new_snapshot,
+            &empty_corpus_request,
+        )
+        .expect("retain empty-corpus mutation request");
+    assert_eq!(
+        repository
+            .read_continuation_projection(
+                repository
+                    .lookup_frontier_projection(
+                        repository
+                            .read_snapshot(empty_corpus.new_snapshot.content_id())
+                            .expect("empty-corpus snapshot")
+                            .snapshot
+                            .roots()
+                            .exploration,
+                        empty_corpus_request.id().expect("empty-corpus request id"),
+                    )
+                    .expect("empty-corpus frontier lookup")
+                    .0,
+            )
+            .expect("empty-corpus frontier projection")
+            .state(),
+        ContinuationState::WaitingForFeedback(
+            FeedbackWait::new(0, 1).expect("empty-corpus feedback wait")
+        )
+    );
+
+    let suspended = CandidateGeneratorSpec::new(
+        crate::CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION - 1,
+        CandidateGeneratorAlgorithm::MutateNearCorpus {
+            maximum_distance: 1,
+        },
+    )
+    .expect("suspended corpus-mutation generator");
+    let suspended_id = repository
+        .publish_generator(&suspended)
+        .expect("publish suspended corpus-mutation generator");
+    let (_, suspended_request) = generated_integer_request(
+        &repository,
+        &lineage,
+        domain,
+        IntegerValue::Unsigned(5_000),
+        suspended_id,
+        "corpus-mutation-suspended",
+        1,
+    );
+    let suspended_discovery = repository
+        .discover_choice_opportunity(
+            "corpus-mutation-bounds",
+            empty_corpus.new_snapshot,
+            suspended_request.parent(),
+            suspended_request.opportunity(),
+        )
+        .expect("discover suspended opportunity");
+    let accepted = repository
+        .submit_branch_request(
+            "corpus-mutation-bounds",
+            suspended_discovery.new_snapshot,
+            &suspended_request,
+        )
+        .expect("retain suspended corpus-mutation request");
+    assert_eq!(
+        repository
+            .read_continuation_projection(
+                repository
+                    .lookup_frontier_projection(
+                        repository
+                            .read_snapshot(accepted.new_snapshot.content_id())
+                            .expect("suspended snapshot")
+                            .snapshot
+                            .roots()
+                            .exploration,
+                        suspended_request.id().expect("suspended request id"),
+                    )
+                    .expect("suspended frontier lookup")
+                    .0,
+            )
+            .expect("suspended frontier projection")
+            .state(),
+        ContinuationState::Open
+    );
+}
+
+#[test]
 fn progressive_integer_generator_enforces_exact_owner_bounds_before_writes() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let genesis = repository
