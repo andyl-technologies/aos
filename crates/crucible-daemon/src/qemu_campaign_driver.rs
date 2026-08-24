@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crucible::model::{
     BoundarySelector, CohortPolicy, MeasurementDefinitions, MeasurementId, MeasurementInstanceKey,
     MeasurementRuntimeSample, MeasurementSampleValue, MeasurementTerminalState, MetricDefinition,
-    MetricId, MetricSource, MetricValueType, ReducedRational,
+    MetricId, MetricSource, MetricValueType, ReducedRational, append_model_measurement_samples,
 };
 use crucible::{
     EventLogCoverageObservation, GuestMeasurementEvent, GuestMeasurementValue,
@@ -74,9 +74,6 @@ pub enum QemuFreshModeledDriverError {
     /// Measurement evaluation or campaign binding rejected the retained run.
     #[error("fresh campaign measurement evaluation failed: {0}")]
     Measurements(#[source] CrucibleMeasurementError),
-    /// The scenario requires sample producers not implemented by this driver slice.
-    #[error("fresh campaign measurement sample producers are not implemented")]
-    MeasurementProducersUnavailable,
     /// A guest measurement or semantic-marker message violated the scenario contract.
     #[error("fresh campaign guest measurement protocol failed at sequence {sequence}: {reason}")]
     GuestMeasurementProtocol {
@@ -557,15 +554,10 @@ fn campaign_measurements(
     pending: &QemuFreshPendingObservation,
 ) -> Result<crucible_campaign::MeasurementSet, QemuFreshModeledDriverError> {
     let definitions = pending.input.scenario().measurements();
-    if definitions
-        .definitions()
-        .iter()
-        .flat_map(|definition| &definition.metrics)
-        .any(|metric| metric.source != MetricSource::Guest)
-    {
-        return Err(QemuFreshModeledDriverError::MeasurementProducersUnavailable);
-    }
-    let samples = normalize_guest_measurements(definitions, &pending.event_log)?;
+    let mut samples = normalize_guest_measurements(definitions, &pending.event_log)?;
+    append_model_measurement_samples(definitions, &pending.event_log, &mut samples)
+        .map_err(CrucibleMeasurementError::from)
+        .map_err(QemuFreshModeledDriverError::Measurements)?;
     let mut node_icounts = BTreeMap::new();
     for entry in &pending.event_log {
         if let Some(node) = &entry.time().icount.node {

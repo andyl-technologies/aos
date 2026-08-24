@@ -17,6 +17,8 @@ pub const MAX_MEASUREMENT_RUNTIME_SAMPLES: usize = 1_000_000;
 pub const MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum definition-by-event visits accepted by one evaluation.
 pub const MAX_MEASUREMENT_EVENT_VISITS: usize = 4_000_000;
+/// Maximum model-metric-by-event visits accepted by sample projection.
+pub const MAX_MODEL_MEASUREMENT_EVENT_VISITS: usize = 4_000_000;
 /// Maximum canonical scheduler entries accepted by one evaluation.
 pub const MAX_MEASUREMENT_EVENT_ENTRIES: usize = 1_000_000;
 /// Maximum terminal per-node counters accepted by one evaluation.
@@ -614,6 +616,206 @@ pub enum MeasurementEvaluationError {
         /// Node whose terminal counter regressed.
         node: NodeId,
     },
+    /// A model-source event had an invalid authority or required typed field.
+    #[error("measurement model source found invalid `{kind}` event at sequence {sequence}")]
+    InvalidModelSourceEvent {
+        /// Exact scheduler sequence carrying the malformed event.
+        sequence: u64,
+        /// Stable scheduler event kind.
+        kind: &'static str,
+    },
+}
+
+/// Derives model-owned metric samples from an authenticated scheduler log.
+///
+/// One sample is emitted for each matching event and metric contract. Virtual
+/// time and scheduler-event metrics sample every entry; node icounts sample
+/// entries stamped for the declared node; modeled event, network-drop, and
+/// storage-completion metrics sample their exact typed event classes. Guest
+/// metrics remain the responsibility of the guest protocol adapter.
+///
+/// # Errors
+///
+/// Returns [`MeasurementEvaluationError`] when the log is unauthenticated or
+/// non-dense, a model-source event lacks a required typed attribute, or the
+/// deterministic visit, sample-count, or sample-byte bound is exceeded.
+pub fn derive_model_measurement_samples(
+    definitions: &MeasurementDefinitions,
+    entries: &[SchedulerEventLogEntry],
+) -> Result<Vec<MeasurementRuntimeSample>, MeasurementEvaluationError> {
+    let mut samples = Vec::new();
+    append_model_measurement_samples(definitions, entries, &mut samples)?;
+    Ok(samples)
+}
+
+/// Appends model-owned samples to an independently normalized sample stream.
+///
+/// This is the bounded mixed-source path: the runtime sample-count and byte
+/// limits apply to the existing guest samples plus newly derived model samples,
+/// and no second model-sample vector is allocated.
+///
+/// # Errors
+///
+/// Returns the same errors as [`derive_model_measurement_samples`], including
+/// when `samples` already exceeds the runtime sample bound or the combined
+/// stream exceeds a count or byte limit.
+pub fn append_model_measurement_samples(
+    definitions: &MeasurementDefinitions,
+    entries: &[SchedulerEventLogEntry],
+    samples: &mut Vec<MeasurementRuntimeSample>,
+) -> Result<(), MeasurementEvaluationError> {
+    validate_event_log(entries)?;
+    if samples.len() > MAX_MEASUREMENT_RUNTIME_SAMPLES {
+        return Err(MeasurementEvaluationError::LimitExceeded {
+            limit: "measurement-runtime-samples",
+        });
+    }
+
+    let model_metrics = definitions
+        .definitions()
+        .iter()
+        .flat_map(|definition| {
+            definition
+                .metrics
+                .iter()
+                .filter(|metric| metric.source != MetricSource::Guest)
+                .map(move |metric| (&definition.id, metric))
+        })
+        .collect::<Vec<_>>();
+    let visits = model_metrics.len().checked_mul(entries.len()).ok_or(
+        MeasurementEvaluationError::LimitExceeded {
+            limit: "model-measurement-event-visits",
+        },
+    )?;
+    if visits > MAX_MODEL_MEASUREMENT_EVENT_VISITS {
+        return Err(MeasurementEvaluationError::LimitExceeded {
+            limit: "model-measurement-event-visits",
+        });
+    }
+
+    let remaining = MAX_MEASUREMENT_RUNTIME_SAMPLES
+        .checked_sub(samples.len())
+        .ok_or(MeasurementEvaluationError::LimitExceeded {
+            limit: "measurement-runtime-samples",
+        })?;
+    samples.reserve(visits.min(remaining).min(4_096));
+    let mut sample_bytes = preflight_runtime_sample_bytes(samples)?;
+    for (measurement, metric) in model_metrics {
+        for entry in entries {
+            let Some(value) = model_sample_value(metric, entry)? else {
+                continue;
+            };
+            if samples.len() == MAX_MEASUREMENT_RUNTIME_SAMPLES {
+                return Err(MeasurementEvaluationError::LimitExceeded {
+                    limit: "measurement-runtime-samples",
+                });
+            }
+            let sample = MeasurementRuntimeSample::new(
+                entry.sequence(),
+                measurement.clone(),
+                metric.id.clone(),
+                value,
+            );
+            let separator = usize::from(!samples.is_empty());
+            let encoded_sample_bytes = encoded_runtime_sample_len(&sample)?;
+            sample_bytes = sample_bytes
+                .checked_add(separator)
+                .and_then(|length| length.checked_add(encoded_sample_bytes))
+                .ok_or(MeasurementEvaluationError::LimitExceeded {
+                    limit: "measurement-runtime-sample-bytes",
+                })?;
+            if sample_bytes > MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES {
+                return Err(MeasurementEvaluationError::LimitExceeded {
+                    limit: "measurement-runtime-sample-bytes",
+                });
+            }
+            samples.push(sample);
+        }
+    }
+    Ok(())
+}
+
+fn model_sample_value(
+    metric: &MetricDefinition,
+    entry: &SchedulerEventLogEntry,
+) -> Result<Option<MeasurementSampleValue>, MeasurementEvaluationError> {
+    let payload = entry.event_payload();
+    let value = match &metric.source {
+        MetricSource::Guest => None,
+        MetricSource::VirtualTime => Some(entry.at().ticks),
+        MetricSource::NodeIcount { node } => entry
+            .time()
+            .icount
+            .node
+            .as_ref()
+            .filter(|stamped| *stamped == node)
+            .map(|_node| entry.time().icount.icount.retired),
+        MetricSource::ModeledEventCount { event } if payload.kind() == "trigger_fired" => {
+            let observed = payload.event("event").ok_or(
+                MeasurementEvaluationError::InvalidModelSourceEvent {
+                    sequence: entry.sequence(),
+                    kind: "trigger_fired",
+                },
+            )?;
+            if !matches!(entry.source(), EventSource::Engine)
+                && !matches!(
+                    entry.source(),
+                    EventSource::Scenario { event } if event == observed
+                )
+            {
+                return Err(MeasurementEvaluationError::InvalidModelSourceEvent {
+                    sequence: entry.sequence(),
+                    kind: "trigger_fired",
+                });
+            }
+            (observed == event).then_some(1)
+        }
+        MetricSource::ModeledEventCount { .. } => None,
+        MetricSource::NetworkModeledDropCount { link } if payload.kind() == "message_dropped" => {
+            let observed = payload.string("link").ok_or(
+                MeasurementEvaluationError::InvalidModelSourceEvent {
+                    sequence: entry.sequence(),
+                    kind: "message_dropped",
+                },
+            )?;
+            if !matches!(
+                entry.source(),
+                EventSource::Engine | EventSource::Node { .. }
+            ) {
+                return Err(MeasurementEvaluationError::InvalidModelSourceEvent {
+                    sequence: entry.sequence(),
+                    kind: "message_dropped",
+                });
+            }
+            link.as_ref()
+                .is_none_or(|expected| expected.name == observed)
+                .then_some(1)
+        }
+        MetricSource::NetworkModeledDropCount { .. } => None,
+        MetricSource::StorageCompletionCount { node } if payload.kind() == "io_completion" => {
+            let observed = payload.node("node").ok_or(
+                MeasurementEvaluationError::InvalidModelSourceEvent {
+                    sequence: entry.sequence(),
+                    kind: "io_completion",
+                },
+            )?;
+            if !matches!(entry.source(), EventSource::Engine)
+                && !matches!(
+                    entry.source(),
+                    EventSource::Node { node } if node == observed
+                )
+            {
+                return Err(MeasurementEvaluationError::InvalidModelSourceEvent {
+                    sequence: entry.sequence(),
+                    kind: "io_completion",
+                });
+            }
+            (observed == node).then_some(1)
+        }
+        MetricSource::StorageCompletionCount { .. } => None,
+        MetricSource::SchedulerEventCount => Some(1),
+    };
+    Ok(value.map(MeasurementSampleValue::Unsigned))
 }
 
 /// Replays measurement boundaries and recomputes every declared aggregate.
@@ -787,7 +989,7 @@ fn canonical_evaluation_json(
 
 fn preflight_runtime_sample_bytes(
     samples: &[MeasurementRuntimeSample],
-) -> Result<(), MeasurementEvaluationError> {
+) -> Result<usize, MeasurementEvaluationError> {
     let mut counter = BoundedJsonByteCounter {
         length: 0,
         maximum: MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES,
@@ -801,7 +1003,28 @@ fn preflight_runtime_sample_bytes(
     }
     encoded.map_err(|error| MeasurementEvaluationError::CanonicalEncoding {
         reason: error.to_string(),
-    })
+    })?;
+    Ok(counter.length)
+}
+
+fn encoded_runtime_sample_len(
+    sample: &MeasurementRuntimeSample,
+) -> Result<usize, MeasurementEvaluationError> {
+    let mut counter = BoundedJsonByteCounter {
+        length: 0,
+        maximum: MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES,
+        exceeded: false,
+    };
+    let encoded = serde_json::to_writer(&mut counter, sample);
+    if counter.exceeded {
+        return Err(MeasurementEvaluationError::LimitExceeded {
+            limit: "measurement-runtime-sample-bytes",
+        });
+    }
+    encoded.map_err(|error| MeasurementEvaluationError::CanonicalEncoding {
+        reason: error.to_string(),
+    })?;
+    Ok(counter.length)
 }
 
 fn preflight_evaluation_bytes(

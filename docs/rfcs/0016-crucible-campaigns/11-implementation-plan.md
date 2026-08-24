@@ -156,8 +156,14 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   balanced begin/sample/end lifecycle, and feeds normalized guest samples into
   the verified measurement evaluator. ABI, malformed-message, typed event,
   exact-instance, and driver lifecycle regressions cover the boundary.
-- [ ] **T-CAM-3.3** Derive model-owned network, storage, scheduler, icount, and
+- [x] **T-CAM-3.3** Derive model-owned network, storage, scheduler, icount, and
   virtual-time metrics from canonical events.
+  The pure bounded projector now authenticates the dense scheduler log, derives
+  every closed v1 model source from exact typed event fields, fails closed on
+  malformed source events, and merges replay-identical model samples with the
+  independently validated guest stream before common windowing and exact
+  aggregation. Source, replay, malformed-event, visit-bound, and end-to-end
+  driver regressions pin the projection and retained evaluation.
 - [ ] **T-CAM-3.4** Implement observation, objective-evaluation, Pareto,
   lexicographic, top-`K`, fairness-reserve, and explanation records.
   The canonical bounded observation, verified-evaluation measurement-set v2,

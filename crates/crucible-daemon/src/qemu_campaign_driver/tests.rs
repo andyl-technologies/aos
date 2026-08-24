@@ -148,7 +148,7 @@ fn event_count_seals_final_drain_coverage_into_exact_candidate() {
 }
 
 #[test]
-fn measured_scenario_fails_closed_until_sample_producers_exist() {
+fn modeled_scheduler_metrics_are_derived_from_the_canonical_log() {
     let fixture = crucible::happy_path_scenario().expect("happy-path fixture");
     let scenario = measured_scenario(&fixture.scenario);
     let input = input_for_scenario(scenario, StopCondition::Terminal);
@@ -175,16 +175,22 @@ fn measured_scenario_fails_closed_until_sample_producers_exist() {
             QemuFreshStartMaterialization::genesis(),
         )
         .expect("terminal modeled stop");
-    let error = driver
+    let product = driver
         .seal(pending, Vec::new())
-        .expect_err("measurement samples are not yet available");
-
-    assert!(matches!(
-        error,
-        AttemptWorkerFailure::Terminal(
-            QemuFreshModeledDriverError::MeasurementProducersUnavailable
-        )
-    ));
+        .expect("model-owned measurement projection");
+    let AttemptExecutionProduct::Observation(candidate) = product else {
+        panic!("model-owned measurement run must return an observation")
+    };
+    let retained = candidate
+        .measurements()
+        .evaluation()
+        .expect("verified evaluation payload");
+    let payload = std::str::from_utf8(retained.payload()).expect("canonical measurement JSON");
+    assert!(payload.contains("\"scheduler-events\""));
+    assert!(payload.contains(&format!(
+        "\"aggregate\":{{\"kind\":\"unsigned\",\"value\":{}}}",
+        fixture.observations().len()
+    )));
 }
 
 #[test]
@@ -335,6 +341,7 @@ fn fresh_driver_retains_verified_guest_measurement_evaluation() {
 
     assert!(payload.contains("\"driver-window\""));
     assert!(payload.contains("\"healthy-peers\""));
+    assert!(payload.contains("\"scheduler-events\""));
     assert!(payload.contains("\"value\":3"));
 }
 
@@ -799,13 +806,22 @@ fn guest_measurement_definitions(base: &ScenarioDefForm) -> MeasurementDefinitio
             },
             timeout: None,
             cohort: CohortPolicy::All(vec![node]),
-            metrics: vec![MetricDefinition {
-                id: MetricId::parse("healthy-peers").expect("metric id"),
-                value_type: MetricValueType::UnsignedInteger,
-                unit: UnitId::parse("samples").expect("unit id"),
-                source: MetricSource::Guest,
-                aggregation: Aggregation::Sum,
-            }],
+            metrics: vec![
+                MetricDefinition {
+                    id: MetricId::parse("healthy-peers").expect("metric id"),
+                    value_type: MetricValueType::UnsignedInteger,
+                    unit: UnitId::parse("samples").expect("unit id"),
+                    source: MetricSource::Guest,
+                    aggregation: Aggregation::Sum,
+                },
+                MetricDefinition {
+                    id: MetricId::parse("scheduler-events").expect("metric id"),
+                    value_type: MetricValueType::UnsignedInteger,
+                    unit: UnitId::parse("events").expect("unit id"),
+                    source: MetricSource::SchedulerEventCount,
+                    aggregation: Aggregation::Count,
+                },
+            ],
         }],
     )
     .expect("guest measurement definitions")
