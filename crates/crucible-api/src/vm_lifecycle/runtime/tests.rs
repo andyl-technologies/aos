@@ -125,12 +125,17 @@ fn durable_run_state_recovers_every_incomplete_transaction_phase() {
         .unwrap_or_else(|error| panic!("first run should build: {error}"));
         let first_path = first.path().to_path_buf();
         manifest.owner.process_id = u32::MAX;
-        persist_atomic_json(&first_path.join("run-manifest.json"), &manifest)
-            .unwrap_or_else(|error| panic!("dead owner fixture should persist: {error}"));
         journal.phase = phase;
         journal.transaction = 17;
-        persist_atomic_json(&first_path.join("lifecycle-journal.json"), &journal)
-            .unwrap_or_else(|error| panic!("crash-point journal should persist: {error}"));
+        persist_run_state_atomic(
+            &first_path.join(PRODUCTION_RUN_STATE_FILE),
+            &manifest,
+            &journal,
+            source.plan().fault_signals().resource_limits(),
+            0,
+            0,
+        )
+        .unwrap_or_else(|error| panic!("crash-point state should persist: {error}"));
         drop(first);
 
         let (_second, _, _) = production_run_directory(
@@ -139,12 +144,12 @@ fn durable_run_state_recovers_every_incomplete_transaction_phase() {
             source.plan().fault_signals().resource_limits(),
         )
         .unwrap_or_else(|error| panic!("incomplete transaction should recover: {error}"));
-        let recovered: ProductionLifecycleJournal =
-            decode_run_json(&first_path.join("lifecycle-journal.json"))
-                .unwrap_or_else(|error| panic!("recovered journal should decode: {error}"));
-        assert_eq!(recovered.transaction, 17);
+        let recovered: ProductionRunState =
+            decode_run_json(&first_path.join(PRODUCTION_RUN_STATE_FILE))
+                .unwrap_or_else(|error| panic!("recovered state should decode: {error}"));
+        assert_eq!(recovered.journal.transaction, 17);
         assert!(matches!(
-            recovered.phase,
+            recovered.journal.phase,
             ProductionLifecycleJournalPhase::Quarantined
         ));
     }
@@ -163,7 +168,7 @@ fn durable_run_state_fails_closed_on_a_corrupt_journal() {
         source.plan().fault_signals().resource_limits(),
     )
     .unwrap_or_else(|error| panic!("first run should build: {error}"));
-    let journal = first.path().join("lifecycle-journal.json");
+    let journal = first.path().join(PRODUCTION_RUN_STATE_FILE);
     drop(first);
     fs::write(&journal, b"not-json")
         .unwrap_or_else(|error| panic!("corrupt journal fixture should write: {error}"));
@@ -175,11 +180,7 @@ fn durable_run_state_fails_closed_on_a_corrupt_journal() {
     )
     .err()
     .unwrap_or_else(|| panic!("corrupt journal should fail closed"));
-    assert!(
-        error
-            .to_string()
-            .contains("invalid prior lifecycle journal")
-    );
+    assert!(error.to_string().contains("preflight"));
 }
 
 #[test]
@@ -195,7 +196,7 @@ fn durable_run_state_fails_closed_on_a_corrupt_manifest() {
         source.plan().fault_signals().resource_limits(),
     )
     .unwrap_or_else(|error| panic!("first run should build: {error}"));
-    let manifest = first.path().join("run-manifest.json");
+    let manifest = first.path().join(PRODUCTION_RUN_STATE_FILE);
     drop(first);
     fs::write(&manifest, b"not-json")
         .unwrap_or_else(|error| panic!("corrupt manifest fixture should write: {error}"));
@@ -207,7 +208,7 @@ fn durable_run_state_fails_closed_on_a_corrupt_manifest() {
     )
     .err()
     .unwrap_or_else(|| panic!("corrupt manifest should fail closed"));
-    assert!(error.to_string().contains("invalid prior run manifest"));
+    assert!(error.to_string().contains("preflight"));
 }
 
 fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLifecycleLoop {
@@ -292,7 +293,8 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
             nodes: Vec::new(),
             completed_exits: Vec::new(),
         },
-        lifecycle_persistence: LifecycleJournalPersistence::new(run_directory.path()),
+        lifecycle_persistence: LifecycleStatePersistence::new(run_directory.path())
+            .unwrap_or_else(|error| panic!("test lifecycle state should initialize: {error}")),
         run_manifest: ProductionRunManifest {
             version: 2,
             scenario: scenario.id().to_hex(),
