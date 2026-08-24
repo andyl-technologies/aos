@@ -46,8 +46,8 @@ use std::time::Duration;
 
 use crate::{LifecycleApiError, debug_gateway::DebugGatewayProcess};
 use quantum_loop::{
-    LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE, decode_prior_run_state,
-    decode_run_json_bounded, persist_run_state_atomic,
+    DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
+    decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
 };
 
 mod assets;
@@ -600,7 +600,7 @@ fn production_run_directory(
     for (_, directory) in &run_indexes {
         let (mut manifest, mut journal, runtime_event_records, runtime_event_log_bytes) =
             decode_prior_run_state(directory, &scenario_identity, resource_limits)
-                .map_err(loop_factory_error)?;
+                .map_err(durable_run_state_api_error)?;
         let state_path = directory.join(PRODUCTION_RUN_STATE_FILE);
         if !manifest.clean_shutdown {
             let live_owner =
@@ -692,6 +692,25 @@ use network_faults::{
 };
 pub use search::production_vm_search_frontier;
 use storage_faults::{ProductionBlockFaultCoordinator, block_binding_for_vm, ninep_binding_for_vm};
+
+fn durable_run_state_api_error(error: DurableRunStateError) -> LifecycleApiError {
+    match error {
+        DurableRunStateError::ResourceLimit {
+            field,
+            current,
+            requested,
+            configured,
+            hard,
+        } => LifecycleApiError::ResourceLimit(crate::LifecycleResourceLimit {
+            field,
+            current,
+            requested,
+            configured,
+            hard,
+        }),
+        error => loop_factory_error(error.to_string()),
+    }
+}
 
 /// Builds a production lifecycle by directly restoring a durable fat checkpoint.
 ///

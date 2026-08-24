@@ -10,8 +10,8 @@ pub(super) use persistence::map_journal_limit;
 #[cfg(test)]
 pub(in crate::vm_lifecycle) use persistence::validate_recovered_lifecycle_journal;
 pub(in crate::vm_lifecycle) use persistence::{
-    PRODUCTION_RUN_STATE_FILE, decode_prior_run_state, decode_run_json_bounded,
-    persist_run_state_atomic,
+    DurableRunStateError, PRODUCTION_RUN_STATE_FILE, decode_prior_run_state,
+    decode_run_json_bounded, persist_run_state_atomic,
 };
 pub(in crate::vm_lifecycle::quantum_loop) use staging::*;
 

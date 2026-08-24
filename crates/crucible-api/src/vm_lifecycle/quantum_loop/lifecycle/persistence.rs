@@ -13,7 +13,9 @@ use crucible::model::FaultResourceLimitError;
 mod recovery;
 #[cfg(test)]
 pub(in crate::vm_lifecycle) use recovery::validate_recovered_lifecycle_journal;
-pub(in crate::vm_lifecycle) use recovery::{decode_prior_run_state, decode_run_json_bounded};
+pub(in crate::vm_lifecycle) use recovery::{
+    DurableRunStateError, decode_prior_run_state, decode_run_json_bounded,
+};
 
 const HARD_RUN_STATE_JSON_BYTES: u64 = 67_108_864;
 const PRODUCTION_RUN_STATE_VERSION: u32 = 2;

@@ -1,6 +1,7 @@
 //! Durable run-state aggregate resource admission regressions.
 
 use super::*;
+use crate::LifecycleResourceLimit;
 
 #[test]
 fn durable_run_state_rejects_old_outer_version_before_owned_decode() {
@@ -187,7 +188,18 @@ fn durable_run_state_preflights_aggregate_bytes_before_owned_decode() {
     let error = quantum_loop::decode_prior_run_state(root.path(), &"3".repeat(64), limits)
         .err()
         .unwrap_or_else(|| panic!("aggregate byte overflow should precede owned decode"));
-    assert!(error.contains("admit aggregate prior run state"));
+    assert!(matches!(
+        error,
+        DurableRunStateError::ResourceLimit {
+            field: "event_log_bytes",
+            current: 8,
+            requested,
+            configured,
+            hard,
+        } if requested == u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+            && configured == u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+            && hard == FaultResourceLimits::compiled_maximum().event_log_bytes
+    ));
 }
 
 #[test]
@@ -225,7 +237,26 @@ fn durable_run_state_preflights_process_count_before_owned_map_decode() {
     let error = quantum_loop::decode_prior_run_state(root.path(), &"3".repeat(64), limits)
         .err()
         .unwrap_or_else(|| panic!("process count should fail before owned map decode"));
-    assert!(error.contains("admit current process count before owned decode"));
+    assert!(matches!(
+        &error,
+        DurableRunStateError::ResourceLimit {
+            field: "nodes",
+            current: 0,
+            requested: 2,
+            configured: 1,
+            hard,
+        } if *hard == FaultResourceLimits::compiled_maximum().nodes
+    ));
+    assert!(matches!(
+        durable_run_state_api_error(error),
+        LifecycleApiError::ResourceLimit(LifecycleResourceLimit {
+            field: "nodes",
+            current: 0,
+            requested: 2,
+            configured: 1,
+            hard,
+        }) if hard == FaultResourceLimits::compiled_maximum().nodes
+    ));
 }
 
 #[test]
