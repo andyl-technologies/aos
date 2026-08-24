@@ -611,18 +611,6 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
-    /// Iterates live execution fingerprints without building an intermediate map.
-    pub(crate) fn execution_fingerprint_entries(
-        &mut self,
-    ) -> impl ExactSizeIterator<Item = Result<(&NodeId, crucible::ContentHash), BackendError>> {
-        self.nodes.iter_mut().map(|(node, backend)| {
-            backend
-                .execution_fingerprint()
-                .map(|fingerprint| (node, fingerprint.hash))
-                .map_err(BackendError::from)
-        })
-    }
-
     /// Iterates next fault-command sequences without building an intermediate map.
     pub(crate) fn fault_command_sequence_entries(
         &self,

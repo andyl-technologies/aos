@@ -107,6 +107,11 @@ enum ChannelCall {
     HostFingerprintBoundary,
     HostCheckpointClearWhileStopped,
     HostCheckpointAbort,
+    HostFaultEventLimit {
+        maximum_local_records: usize,
+        canonical_current_offset: usize,
+        configured_event_records: usize,
+    },
     QmpStop,
     QmpContinue,
     QmpTerminalLifecycle {
@@ -434,6 +439,30 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
 }
 
 impl QemuHostIoRuntime for ScriptedHostIoRuntime {
+    fn set_fault_event_staging_limit(
+        &mut self,
+        maximum_local_records: usize,
+        canonical_current_offset: usize,
+        configured_event_records: usize,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if self.staged_fault_events.len() > maximum_local_records {
+            return Err(QemuAsyncDriverRuntimeError::fault_event_storage(
+                canonical_current_offset.saturating_add(self.staged_fault_events.len()),
+                0,
+                configured_event_records,
+            ));
+        }
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::HostFaultEventLimit {
+                maximum_local_records,
+                canonical_current_offset,
+                configured_event_records,
+            });
+        Ok(())
+    }
+
     fn publish_current_execution_fingerprint(
         &mut self,
         _timeout: Duration,
@@ -696,41 +725,12 @@ fn qemu_node_routes_scheduler_operations_over_strict_channels() -> Result<(), Bo
     Ok(())
 }
 
-#[test]
-fn stale_execution_fingerprint_requests_production_control_boundary() -> Result<(), Box<dyn Error>>
-{
-    let log = shared_log();
-    let mut node = scripted_node_with_options(
-        Arc::clone(&log),
-        ScriptedNodeOptions {
-            fingerprint_retry_countdown: 1,
-            ..ScriptedNodeOptions::default()
-        },
-        std::iter::empty(),
-    )?;
-
-    assert_eq!(
-        node.execution_fingerprint()?,
-        ExecutionFingerprint {
-            hash: content_hash("fingerprint", "vm-a"),
-        }
-    );
-    node.shutdown_child()?;
-    assert_eq!(
-        recorded(&log),
-        vec![
-            ChannelCall::ShmemFingerprint,
-            ChannelCall::HostFingerprintBoundary,
-            ChannelCall::ShmemFingerprint,
-            ChannelCall::PluginQuit,
-            ChannelCall::QmpQuit,
-        ]
-    );
-    Ok(())
-}
-
 #[path = "node_tests/exact_lifecycle_tests.rs"]
 mod exact_lifecycle;
+#[path = "node_tests/fault_event_budget.rs"]
+mod fault_event_budget;
+#[path = "node_tests/fingerprint.rs"]
+mod fingerprint;
 
 fn scripted_node(
     log: SharedLog,

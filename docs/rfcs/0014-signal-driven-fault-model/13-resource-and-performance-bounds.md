@@ -188,9 +188,13 @@ decision, effect, and referenced full-value artifact required for explanation.
 `event_records` is one aggregate ceiling across referenced events, pending
 observations, raw QEMU occurrences, issued-action and commit ledgers, and active
 rule identities. The host derives the remaining capacity before a plugin
-control pump or fault transaction and applies that exact remainder to every
-live node. It never gives each collection or node an independent copy of the
-authored allowance.
+control pump or fault transaction. It freezes every non-target node at its
+current ownership, arms only the node whose control callback is about to run,
+and subtracts newly staged records before arming the next node. Restore installs
+the same aggregate policy before its first fingerprint control pump. It never
+gives each collection or node an independent copy of the authored allowance;
+LIMIT-2 coordinates report the complete canonical current count and the
+plan-authored aggregate ceiling rather than a per-node remainder.
 
 Canonical QEMU node, host-I/O, production fault-runtime, and complete VMState
 envelopes admit their representation against `fat_checkpoint_bytes` and its

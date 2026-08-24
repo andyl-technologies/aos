@@ -8,7 +8,11 @@ impl QemuFaultActionSink<'_> {
         node: &NodeId,
     ) -> Result<usize, FaultActionCommitError> {
         self.nodes
-            .fault_event_staging_allowance(node, self.maximum_event_records)
+            .fault_event_staging_allowance(
+                node,
+                self.maximum_event_records,
+                usize::try_from(self.resource_limits.event_records).unwrap_or(usize::MAX),
+            )
             .map_err(|_source| {
                 FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
             })

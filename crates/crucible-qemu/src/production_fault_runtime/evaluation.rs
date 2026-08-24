@@ -71,7 +71,37 @@ impl ProductionFaultRuntime {
         staged_ledger: Option<&StagedQemuActionLedger>,
     ) -> Result<usize, ProductionFaultRuntimeError> {
         let remaining = self.event_staging_capacity(additional_emitted_events, staged_ledger)?;
-        nodes.set_fault_event_staging_limit(remaining)?;
+        let staged = nodes.staged_fault_event_count()?;
+        let current = self
+            .resource_limits
+            .event_records
+            .checked_sub(u64::try_from(remaining).map_err(|_| {
+                FaultResourceLimitError::Representation {
+                    field: "event_records",
+                    value: u64::MAX,
+                }
+            })?)
+            .ok_or(FaultResourceLimitError::Representation {
+                field: "event_records",
+                value: u64::MAX,
+            })?;
+        self.resource_limits.reserve(
+            "event_records",
+            current,
+            u64::try_from(staged).map_err(|_| FaultResourceLimitError::Representation {
+                field: "event_records",
+                value: u64::MAX,
+            })?,
+        )?;
+        nodes.set_fault_event_staging_limit(
+            remaining,
+            usize::try_from(self.resource_limits.event_records).map_err(|_| {
+                FaultResourceLimitError::Representation {
+                    field: "event_records",
+                    value: self.resource_limits.event_records,
+                }
+            })?,
+        )?;
         Ok(remaining)
     }
 

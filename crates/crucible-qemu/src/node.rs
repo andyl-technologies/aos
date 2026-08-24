@@ -1269,10 +1269,16 @@ impl QemuNode {
 
     pub(crate) fn set_fault_event_staging_limit(
         &mut self,
-        maximum_event_records: usize,
+        maximum_local_records: usize,
+        canonical_current_offset: usize,
+        configured_event_records: usize,
     ) -> Result<(), QemuNodeError> {
         self.host_io_runtime
-            .set_fault_event_staging_limit(maximum_event_records)
+            .set_fault_event_staging_limit(
+                maximum_local_records,
+                canonical_current_offset,
+                configured_event_records,
+            )
             .map_err(|source| {
                 QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
             })
