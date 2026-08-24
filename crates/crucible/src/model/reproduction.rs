@@ -66,11 +66,21 @@ impl Error for FindingReproductionArtifactError {
 }
 
 /// Configuration for deterministic finding minimization.
+///
+/// Candidate enumeration is additionally bounded by
+/// [`MAX_MINIMIZATION_CANDIDATES`] and
+/// [`MAX_MINIMIZATION_CANDIDATE_WORK_BYTES`]. Those compiled limits are part
+/// of the minimization policy retained by campaign adapters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MinimizationConfig {
     /// Seed used to order candidate removals with content-address tie-breaks.
     pub seed: Seed,
 }
+
+/// Maximum replay candidates considered by one deterministic minimization.
+pub const MAX_MINIMIZATION_CANDIDATES: usize = 4_096;
+/// Maximum conservative candidate-copy work admitted by one minimization.
+pub const MAX_MINIMIZATION_CANDIDATE_WORK_BYTES: usize = 128 * 1024 * 1024;
 
 impl MinimizationConfig {
     /// Builds a minimization configuration.

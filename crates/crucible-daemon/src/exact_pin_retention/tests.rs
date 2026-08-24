@@ -16,8 +16,8 @@ use crucible::model::{
 use crucible::{
     AdvanceOutcome, Backend, BackendError, BackendInput, Checkpoint, CheckpointKind, Configuration,
     ContentHash, EventLog, ExecutionFingerprint, ExecutionHorizon, Icount, NodeId, RuntimeState,
-    ScenarioDef, SchedulerLivenessScenario, Shift, SimInstant, SingleScheduler,
-    SingleSchedulerCheckpoint, World,
+    ScenarioDef, SchedulerEvaluationBoundaryKind, SchedulerLivenessScenario, Shift, SimInstant,
+    SingleScheduler, SingleSchedulerCheckpoint, World,
 };
 use crucible_campaign::{
     AttemptResourceLimits, CampaignCommandId, CampaignLineage, CampaignMode, CampaignPolicy,
@@ -759,13 +759,16 @@ fn concrete_exact_resume_executor_materializes_the_root_before_replay_admission(
         BTreeMap::new(),
     )
     .expect("exact resume checkpoint")
-    .with_materialized_state(Some(crucible::MaterializedState::from_components(
-        BTreeMap::new(),
-        BTreeMap::new(),
-        scheduler.scheduler_state().expect("scheduler projection"),
-        scheduler.future_decision_rng_state().clone(),
-        scheduler.event_log_offset(),
-    )));
+    .with_materialized_state(Some(
+        crucible::MaterializedState::from_components_with_event_log_segments(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            scheduler.scheduler_state().expect("scheduler projection"),
+            scheduler.future_decision_rng_state().clone(),
+            scheduler.event_log_offset(),
+            scheduler.event_log_segment_dependencies().iter().copied(),
+        ),
+    ));
     let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
         .expect("exact resume QEMU snapshot");
     let checkpoint = fixture
@@ -1329,13 +1332,16 @@ fn attempt_checkpoint_materialization_accepts_only_exact_start_boundaries() {
         BTreeMap::new(),
     )
     .expect("post-selection checkpoint")
-    .with_materialized_state(Some(crucible::MaterializedState::from_components(
-        BTreeMap::new(),
-        BTreeMap::new(),
-        scheduler.scheduler_state().expect("scheduler projection"),
-        scheduler.future_decision_rng_state().clone(),
-        scheduler.event_log_offset(),
-    )));
+    .with_materialized_state(Some(
+        crucible::MaterializedState::from_components_with_event_log_segments(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            scheduler.scheduler_state().expect("scheduler projection"),
+            scheduler.future_decision_rng_state().clone(),
+            scheduler.event_log_offset(),
+            scheduler.event_log_segment_dependencies().iter().copied(),
+        ),
+    ));
     let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
         .expect("post-selection QEMU snapshot");
     let prepared = fixture
@@ -1478,6 +1484,86 @@ fn attempt_scheduler_checkpoint(
         .append_branch_prefix_overrides(decisions)
         .expect("append attempt branch prefix");
     scheduler.checkpoint().expect("capture attempt scheduler")
+}
+
+fn publish_scheduler_checkpoint(
+    store: &ExactCheckpointStore,
+    configuration: &Configuration,
+    event_count: u64,
+    vmstate_byte: u8,
+) -> ExactCheckpointId {
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "finding-retention",
+        Shift::new(0).expect("zero shift"),
+        1,
+        SimInstant { nanos: 1 },
+        Vec::new(),
+        Vec::new(),
+    )
+    .with_scenario_def(configuration.def.clone());
+    let mut scheduler = SingleScheduler::new(scenario).expect("build finding scheduler");
+    for event in 0..event_count {
+        scheduler
+            .append_evaluation_boundary(
+                crucible::VirtualTime { ticks: event },
+                SchedulerEvaluationBoundaryKind::Quantum,
+            )
+            .expect("append finding event boundary");
+    }
+    let scheduler = scheduler.checkpoint().expect("capture finding scheduler");
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        configuration,
+        None,
+        scheduler.frontier(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("finding exact checkpoint")
+    .with_materialized_state(Some(
+        crucible::MaterializedState::from_components_with_event_log_segments(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            scheduler.scheduler_state().expect("scheduler projection"),
+            scheduler.future_decision_rng_state().clone(),
+            scheduler.event_log_offset(),
+            scheduler.event_log_segment_dependencies().iter().copied(),
+        ),
+    ));
+    let materialized = checkpoint.state.as_ref().expect("materialized state");
+    assert_eq!(scheduler.scenario(), checkpoint.scenario_ref);
+    assert_eq!(scheduler.frontier(), checkpoint.virtual_time);
+    assert_eq!(
+        scheduler.scheduler_state().expect("scheduler projection"),
+        materialized.scheduler
+    );
+    assert_eq!(
+        scheduler.future_decision_rng_state(),
+        &materialized.decision_rng
+    );
+    assert_eq!(scheduler.event_log_offset(), materialized.event_log);
+    let scheduler_event_segments = scheduler
+        .event_log_segment_dependencies()
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    assert!(
+        scheduler_event_segments
+            .iter()
+            .copied()
+            .eq(materialized.event_log_segments.iter().copied())
+    );
+    let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
+        .expect("finding QEMU snapshot");
+    store
+        .prepare_capture(crate::CapturedExactCheckpoint::new_with_scheduler(
+            snapshot,
+            scheduler,
+            BlobHandle::from_bytes(vec![vmstate_byte; 4_096]),
+        ))
+        .and_then(|prepared| store.publish(&prepared))
+        .expect("publish finding exact checkpoint")
+        .root()
 }
 
 #[test]
@@ -1893,6 +1979,76 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
             .expect("load restarted selection"),
         Some(decoded)
     );
+}
+
+#[test]
+fn finding_exact_pin_selection_uses_nearest_authenticated_event_boundaries() {
+    let fixture = fixture("finding-boundaries");
+    let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.exact-pin-materialization",
+        "finding-boundaries",
+    ));
+    let pre = publish_scheduler_checkpoint(&fixture.checkpoints, &configuration, 3, 0x31);
+    let measurement_a = publish_scheduler_checkpoint(&fixture.checkpoints, &configuration, 5, 0x51);
+    let measurement_b = publish_scheduler_checkpoint(&fixture.checkpoints, &configuration, 5, 0x52);
+    let post = publish_scheduler_checkpoint(&fixture.checkpoints, &configuration, 7, 0x71);
+    let later = publish_scheduler_checkpoint(&fixture.checkpoints, &configuration, 9, 0x91);
+    let candidates = BTreeSet::from([pre, measurement_a, measurement_b, post, later]);
+    let pins = select_finding_exact_pins(
+        &fixture.checkpoints,
+        fixture.configuration,
+        FindingExactPinBoundaries::new(7, Some(5)).expect("finding boundaries"),
+        &candidates,
+    )
+    .expect("select finding checkpoints");
+    let selected_measurement = std::cmp::min(measurement_a, measurement_b);
+    assert_eq!(pins.pre_failure(), &BTreeSet::from([selected_measurement]));
+    assert_eq!(
+        pins.measurement_boundary(),
+        &BTreeSet::from([selected_measurement])
+    );
+    assert_eq!(pins.post_failure(), &BTreeSet::from([post]));
+    assert_eq!(pins.all().len(), 2);
+
+    let foreign_configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.exact-pin-materialization",
+        "finding-boundaries-foreign",
+    ));
+    let foreign =
+        publish_scheduler_checkpoint(&fixture.checkpoints, &foreign_configuration, 4, 0xf4);
+    assert!(matches!(
+        select_finding_exact_pins(
+            &fixture.checkpoints,
+            fixture.configuration,
+            FindingExactPinBoundaries::new(7, None).expect("failure boundary"),
+            &BTreeSet::from([foreign]),
+        ),
+        Err(ExactPinRetentionError::CheckpointConfigurationMismatch { .. })
+    ));
+    assert!(matches!(
+        FindingExactPinBoundaries::new(7, Some(8)),
+        Err(ExactPinRetentionError::InvalidFindingBoundaries)
+    ));
+
+    let excessive = (0..=MAX_FINDING_EXACT_PIN_CANDIDATES)
+        .map(|index| {
+            ExactCheckpointId::try_from(crucible_cas::content_store::ContentId::for_bytes(
+                ObjectKind::ExactManifest,
+                3,
+                &index.to_be_bytes(),
+            ))
+            .expect("candidate checkpoint id")
+        })
+        .collect();
+    assert!(matches!(
+        select_finding_exact_pins(
+            &fixture.checkpoints,
+            fixture.configuration,
+            FindingExactPinBoundaries::new(7, None).expect("failure boundary"),
+            &excessive,
+        ),
+        Err(ExactPinRetentionError::FindingCandidateLimit)
+    ));
 }
 
 #[test]

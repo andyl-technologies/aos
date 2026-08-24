@@ -1,7 +1,7 @@
 //! Atomic finding publication and imported finding-owner validation.
 
 use super::*;
-use crate::{ExactCheckpointId, FindingKind, FindingSignature, FindingTarget};
+use crate::{ExactCheckpointId, FindingExactPins, FindingKind, FindingSignature, FindingTarget};
 
 /// Stable result of publishing or rediscovering one campaign finding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,6 +42,38 @@ impl CampaignRepository {
         reproduction: ReproductionArtifactId,
         minimized: Option<ReproductionArtifactId>,
         exact_pins: BTreeSet<ExactCheckpointId>,
+    ) -> Result<FindingPublicationResult, CampaignRepositoryError> {
+        self.publish_finding_with_retention(
+            name,
+            expected_snapshot,
+            signature,
+            observation,
+            reproduction,
+            minimized,
+            FindingExactPins::from_untyped(exact_pins)?,
+        )
+    }
+
+    /// Publishes a finding with role-tagged exact-checkpoint retention.
+    ///
+    /// Rediscovery unions each role independently. The first observation and
+    /// original reproduction remain immutable, and a minimized reproduction
+    /// may be added exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error under the same fail-closed and failure-atomic contract
+    /// as [`Self::publish_finding`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_finding_with_retention(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        signature: FindingSignature,
+        observation: ObservationId,
+        reproduction: ReproductionArtifactId,
+        minimized: Option<ReproductionArtifactId>,
+        exact_pins: FindingExactPins,
     ) -> Result<FindingPublicationResult, CampaignRepositoryError> {
         let _guard = self.lock_mutation()?;
         let campaign_ref = campaign_ref(name)?;
@@ -119,8 +151,7 @@ impl CampaignRepository {
                 (Some(value), _) | (None, Some(value)) => Some(value),
                 (None, None) => None,
             };
-            let mut pins = existing.exact_pins().clone();
-            pins.extend(exact_pins);
+            let pins = existing.exact_pin_retention().union(&exact_pins)?;
             (
                 existing.observation(),
                 if already_present {
@@ -158,7 +189,7 @@ impl CampaignRepository {
             )
         };
 
-        let finding = Finding::new(
+        let finding = Finding::new_with_retention(
             signature,
             representative,
             original_reproduction,
@@ -272,7 +303,8 @@ impl CampaignRepository {
                 return Err(integrity("finding-property-is-not-a-failed-verdict"));
             }
         }
-        let reproduction = self.read_reproduction_artifact(reproduction.content_id())?;
+        let reproduction_id = reproduction;
+        let reproduction = self.read_reproduction_artifact(reproduction_id.content_id())?;
         if reproduction.finding_fingerprint() != signature.fingerprint()
             || reproduction.scenario() != child.scenario()
             || reproduction.configuration_artifact() != observation.child_content()
@@ -280,11 +312,19 @@ impl CampaignRepository {
             return Err(integrity("finding-candidate-reproduction-basis-mismatch"));
         }
         if let Some(minimized) = minimized {
-            let minimized = self.read_reproduction_artifact(minimized.content_id())?;
-            if minimized.finding_fingerprint() != signature.fingerprint()
-                || minimized.scenario() != child.scenario()
+            let minimized_value = self.read_reproduction_artifact(minimized.content_id())?;
+            if minimized_value.finding_fingerprint() != signature.fingerprint()
+                || minimized_value.scenario() != child.scenario()
             {
                 return Err(integrity("finding-candidate-minimized-basis-mismatch"));
+            }
+            let minimization = minimized_value
+                .minimization()
+                .ok_or_else(|| integrity("finding-candidate-minimized-has-no-retained-trace"))?;
+            if minimization.original() != reproduction_id {
+                return Err(integrity(
+                    "finding-candidate-minimization-original-mismatch",
+                ));
             }
         }
         match signature.target() {

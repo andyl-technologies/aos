@@ -2264,6 +2264,7 @@ pub(super) fn configuration_from_minimization_run(
         run.seed,
         run.original.artifact.id(),
         run.original.artifact.schedule(),
+        minimization_candidate_limit(&run.original.artifact),
     );
     if run.attempts.len() > candidates.len() {
         return Err(unified_operation_evidence_mismatch(

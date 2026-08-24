@@ -204,6 +204,7 @@ impl CampaignRecordKind {
             Self::ExpansionState => 2,
             Self::BranchPath => 2,
             Self::MeasurementSet => 2,
+            Self::ReproductionArtifact | Self::Finding => 2,
             _ => RECORD_SCHEMA_VERSION,
         }
     }
@@ -477,6 +478,15 @@ impl ObjectEnvelope {
         Self::new(record_kind, children, body)
     }
 
+    pub(crate) fn for_record_versioned(
+        record_kind: CampaignRecordKind,
+        schema_version: u32,
+        children: BTreeSet<ContentChild>,
+        body: Vec<u8>,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_versioned(record_kind, schema_version, children, body)
+    }
+
     fn new(
         record_kind: CampaignRecordKind,
         children: BTreeSet<ContentChild>,
@@ -567,7 +577,12 @@ impl ObjectEnvelope {
             || record_kind == CampaignRecordKind::Fact
                 && matches!(envelope.schema_version(), 2..=4)
             || record_kind == CampaignRecordKind::BranchPath && envelope.schema_version() == 1
-            || record_kind == CampaignRecordKind::MeasurementSet && envelope.schema_version() == 1;
+            || matches!(
+                record_kind,
+                CampaignRecordKind::MeasurementSet
+                    | CampaignRecordKind::ReproductionArtifact
+                    | CampaignRecordKind::Finding
+            ) && envelope.schema_version() == 1;
         if !version_supported {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported campaign record schema version",
@@ -585,6 +600,8 @@ impl ObjectEnvelope {
             CampaignRecordKind::Fact
                 | CampaignRecordKind::BranchPath
                 | CampaignRecordKind::MeasurementSet
+                | CampaignRecordKind::ReproductionArtifact
+                | CampaignRecordKind::Finding
         ) {
             let version = self
                 .envelope
