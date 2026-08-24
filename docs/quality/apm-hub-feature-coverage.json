@@ -1,0 +1,2746 @@
+[
+  {
+    "command": "aos hub access-token issue apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "6393875ac2935275defe3213f3753a2898380f23eabc102661f27aeb967d95dd"
+  },
+  {
+    "command": "aos hub access-token issue plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "5b6a1bb99c5c189a058f1d4be19009bc03e79b5a363421857ff77c2d4373ba7a"
+  },
+  {
+    "command": "aos hub access-token list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "7e2f8e900158e3e343e91eb5deee34b49e0f97f7742fd0d946918f30a904b318"
+  },
+  {
+    "command": "aos hub access-token retire apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "4ef3abba730611daddffb79adaa7c66b8df532671247be2a985ba1c8c1692efe"
+  },
+  {
+    "command": "aos hub access-token retire plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "0c8a9a74b5614440a6183f313924d7d6aeecc4596b008919e946fc459f1c6eb4"
+  },
+  {
+    "command": "aos hub binding create",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "53457215244fe32f89e49db62c520bf3b344dc18ea171710dd9754e9588cccca"
+  },
+  {
+    "command": "aos hub binding credential rotate",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "4f0484dfb091ee066d4fffcd4afaa528082ba1151adce558be2def6f687add63"
+  },
+  {
+    "command": "aos hub binding credential set",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "45a32afcce9a43691d18b76a6f6a04268dd676ec1d5fa0546fa18e51e57c5ea0"
+  },
+  {
+    "command": "aos hub binding credential validate",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "169a614bd64039fde6297be9c63af113389ace22f20a016f0a78d71eb0bca34f"
+  },
+  {
+    "command": "aos hub binding delete",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "b51e341059dbdf1cc0bd9c864a0b45f37c3648e4a68ea3e92b0a02f3dc20619a"
+  },
+  {
+    "command": "aos hub binding grant",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "8320543e4bb55ba9f450801f14d5b237162b884b361f392f1d9935d5a74bcbc0"
+  },
+  {
+    "command": "aos hub binding list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "8d1a78d0b6dbdbc3540292baf04d8ae6f7882cfeec76dd7780f39ec9bdf00722"
+  },
+  {
+    "command": "aos hub binding revoke",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "e8d46b7c0036e03f9337bda75aa0b801ba7bdb937d1f167c2d7dcf5824157eea"
+  },
+  {
+    "command": "aos hub binding show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "0bd860a230ae765ef2a5c4f90a7130e6f67f925f0544381916ae80541bcb3336"
+  },
+  {
+    "command": "aos hub binding write-revision list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "8ef6cf1b059f837ff679e9c0b961794684add1799b2381a4be19932c38f1b7fc"
+  },
+  {
+    "command": "aos hub binding write-revision show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "ee61cc363e86af037ed28af5e15e61a6476ad2f3042bccb05b832119266a4c25"
+  },
+  {
+    "command": "aos hub cache coverage repair",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "1ab543c6ee39304eb01490e009aa373950701c4b4a78b3518973766cf2c8599c"
+  },
+  {
+    "command": "aos hub cache coverage show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "c403112804ef0ece844931cc2b2f1440dbdfbfe626830463fa6a3d622954571d"
+  },
+  {
+    "command": "aos hub cache coverage validate",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "8ff955df938b95b8919130dcf68fdf602719037639696d421cc07b2bccf13fe4"
+  },
+  {
+    "command": "aos hub cache create",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "5b3ce751d0d21f32886a55bc9c97708c51860569e815e0909b2eefcfb138cc61"
+  },
+  {
+    "command": "aos hub cache delete",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "5baec232ca5705174401a02879d0b8d39abea8ab693bff98f1a44e7d9c80afa4"
+  },
+  {
+    "command": "aos hub cache gc first-sweep acknowledge",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "871a6fa7e299fc9d6ebb5c2303c971cc7aaffb5d46e425dd3367b436808b93a1"
+  },
+  {
+    "command": "aos hub cache gc first-sweep plan-acknowledgement",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "4a9f7f59d286304a3a3c8eb0fa5f8190dd1cdcfc72c1222d94479789b5e55555"
+  },
+  {
+    "command": "aos hub cache gc jobs abandon",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "599ca693e698002f9472f1fa313f3c76c2b8c827f6e49e8584e60ec080c7ea82"
+  },
+  {
+    "command": "aos hub cache gc jobs list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "ddedf62fb5cd6aa12df6eb8870deedccbe67e940cced1647d0765176c1262707"
+  },
+  {
+    "command": "aos hub cache gc jobs retry",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "7bf25794bfa1a7d42749287f9c9b954e3bf88ac8461c9f230a9a495ea7e0d8be"
+  },
+  {
+    "command": "aos hub cache gc jobs show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "d7e21af8c8b4995dc95970072733de79d0e9a0e23f6c544ea504e45950e89b84"
+  },
+  {
+    "command": "aos hub cache gc plan create",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "045ed5ea64af878b1ff3524f48c457924f121080c9d547c3c342e4a9160d8f7e"
+  },
+  {
+    "command": "aos hub cache gc plan show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "21dcae36cd3d75261d45c271a4f200fa20aa3392ab1ac4e9499fd47dd0920651"
+  },
+  {
+    "command": "aos hub cache gc policy set",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "909862057e39ba29d86cc9a71b2d688c7f714b48f84dddb2004364326d4d5d6c"
+  },
+  {
+    "command": "aos hub cache gc policy show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "5c863276da34739d3e6717b9e28cf4943f7a1b03ff6c55112af7b4fe6afbad2e"
+  },
+  {
+    "command": "aos hub cache gc run",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "1bbb7dc011da7ca62a6ac95d7cd02122edfb2734bc5754fa7504f0509eb9c976"
+  },
+  {
+    "command": "aos hub cache gc runs list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "f214daf2c01381711d14d81c144c08651dce49d1bd584be3083ccca94faea699"
+  },
+  {
+    "command": "aos hub cache gc runs show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "2c9f4755079364e7ebd80a0e1955bbe181afa2c970e5fc64207e56ffca589d84"
+  },
+  {
+    "command": "aos hub cache gc runs watch",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "86868e799b7013cdd91a823446caed35e3dcc8a4e25776ebff70e9e7c5174f0d"
+  },
+  {
+    "command": "aos hub cache integrate",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "7005b560f701e6edea36199231ff8414c66d189beced1e50d1d4d014162189cc"
+  },
+  {
+    "command": "aos hub cache integration list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "bfaae1eaeb12b519c20b8c09506b538593524a35ff2b4caff9b2a9dd411ac0f6"
+  },
+  {
+    "command": "aos hub cache integration show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "cdbd13b691a13d64410926d5d6d6b1904227984afda0385fde120dce34fcb083"
+  },
+  {
+    "command": "aos hub cache lease renew",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "f4b44b12e0a65542135a815a0ec4d50dd692c4461d44c025fe537ab49df33a72"
+  },
+  {
+    "command": "aos hub cache lease revoke",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "54fda9de1bd11aa311125eb96167740dcc2f03caf8b9545cee687e47eb689c40"
+  },
+  {
+    "command": "aos hub cache list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "956941c99582c47314805eb402330d2ed25f75b05925d80e8c34d3fb7631f8b1"
+  },
+  {
+    "command": "aos hub cache population list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "e5223fe24721169aa68e1dcae05d552a37e5f5bc923369c0be8bf9129b35c8e4"
+  },
+  {
+    "command": "aos hub cache population remove",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "c5563fa1a5a6bddd02e699e8c0ef4f02055d8355d48efec9d62084fc6f97b70a"
+  },
+  {
+    "command": "aos hub cache population run",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "30cbcb99e9091579feee61b61c0a6354ebea9bdbc616980ad69f6e13f5d39494"
+  },
+  {
+    "command": "aos hub cache population set",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "3888dd6282f560ecc942e161d6a93b9dc4ec0adb42847225455eda8ef21988a0"
+  },
+  {
+    "command": "aos hub cache retention explain",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "1a20b1cbd88df174cebd33a9238ab47f3e2d0bcf780e1fdbd7b07e6a0854a003"
+  },
+  {
+    "command": "aos hub cache retention list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "33e637c83deae76a923b80741462b30b1a1b84bbc6bfcb6accef7b6d1324663d"
+  },
+  {
+    "command": "aos hub cache retention refresh",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "ec97eb1d564abbd898bbba7dd0649099f6a78e8f7cbb4a48baa014e55602f4e7"
+  },
+  {
+    "command": "aos hub cache retention remove",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "f27c07288f702146a6e48559d20e91c447da0fe41897f16103c7939654fa41cd"
+  },
+  {
+    "command": "aos hub cache retention roots",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "5a262fa5d027576041c662ae045399281017335e7b3ac30099bc578f7acfcb0f"
+  },
+  {
+    "command": "aos hub cache retention set",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "2497acb75ffb0a368fc52e6b2993e70827c41957abbaaec2094b0e79a1951ed9"
+  },
+  {
+    "command": "aos hub cache root create",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "78dbc8182b6a252ed1159a94bc50b520083d1c0debca4560927e2c1fca800ddc"
+  },
+  {
+    "command": "aos hub cache root delete",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "915b44c4b359e35041fb1bdcfcd6f6fd1a51f21be071fbe84174f1abd8251176"
+  },
+  {
+    "command": "aos hub cache show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "e332ee83794d1d18a07123a6c1cd7d019c2ee913ceb945d18abe102babe447a4"
+  },
+  {
+    "command": "aos hub cache update",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "088660600612a49556f8b143afabfc3fbb8f4102ffd211e98dd6dcabaf1a45d4"
+  },
+  {
+    "command": "aos hub domain add",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "baa5c9c31ab027fd2a48c8185edc948554cd3d1907ff83fed93cf7f6af2cc5b8"
+  },
+  {
+    "command": "aos hub domain certificate configure",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "37cbb1369dd3ea29972cfc4afd47d4ef04690433ee5d4e0e74b749706af02477"
+  },
+  {
+    "command": "aos hub domain dns configure",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "0487436b3fabe34d98043117ecd7496c30dbfcfd31b7ff916bc40e752abee2d8"
+  },
+  {
+    "command": "aos hub domain list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "3b4d632cea0591225b565fa20f1326afb439011ae55b173cd9894bde295aecd8"
+  },
+  {
+    "command": "aos hub domain remove",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "1e03002f47e4199a1e1f834dce72245792b3be68f5b2251f2aff20ae77a0a159"
+  },
+  {
+    "command": "aos hub domain show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "20524c3a1d0db2b537ec5a0de74bb92c849a7862973d712f2f142c95ba626069"
+  },
+  {
+    "command": "aos hub domain status",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "4dd3245a0d6ad44c038a5851c523a178b796fc5e3e5341db6ee3258163ed65e4"
+  },
+  {
+    "command": "aos hub domain verify",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "2ab851e843263b9844c6b88d4357fdb616da6e626ac1a4b3a890d1f152a3c6dc"
+  },
+  {
+    "command": "aos hub endpoint activate",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "c35fbfe9140c0aac95ee1850f4bf04b0da8c2ba482ad16332f27b1e7dec60b98"
+  },
+  {
+    "command": "aos hub endpoint add",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "6c0269d9f9b32e64c8bb88daf5a29034c5126bce20d374a898266fc70dbc624e"
+  },
+  {
+    "command": "aos hub endpoint generation",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "36c42a47f8bc0afcc19e9d60d43a3133c028b3f74c5c40705bea72be3df3a991"
+  },
+  {
+    "command": "aos hub endpoint generations",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "27682e9e6046196f4c91d8a56cbb6bcdc32b74aa59c6cfd7e75123c14b56ac72"
+  },
+  {
+    "command": "aos hub endpoint grant",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "f9cbfb7b23a9c2356415ad5d6d2d6bfb3137d6e93c2a45f500fd10bf36f4eade"
+  },
+  {
+    "command": "aos hub endpoint list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "6b7950a3246333797e4d34c4101b18161c3ebb321ca3ecf0ffe118758fdc4e25"
+  },
+  {
+    "command": "aos hub endpoint remove",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "f94620efde40715fa55b13184d84e2770659105de5a7946c7b9e70473c99084d"
+  },
+  {
+    "command": "aos hub endpoint revoke",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "afdd3614b8c7d73e396e113bf0147d8a0ddfdb277775dd4c21cecc4bcbb3ba69"
+  },
+  {
+    "command": "aos hub endpoint show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "843448f881e9413072de5d0f1b7f1fb53550b905dc6a3efd3d278cc3c38d9823"
+  },
+  {
+    "command": "aos hub endpoint stage",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "f12a0552618d0d851725637a1d77620ccd648a6e07a1a0c7d3614e38132fff5e"
+  },
+  {
+    "command": "aos hub endpoint status",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "ae0bbaf34cb0f731d199483ac88aec3a0b404147dc6b238d2bbb3cbe4626c3e9"
+  },
+  {
+    "command": "aos hub gateway add",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "5bde72dbcbafd39fd5e85d1409f7632964762b3b939707dd6edf43e65028e156"
+  },
+  {
+    "command": "aos hub gateway disable",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "d5aa307f1b917605b3c7f76241fb149fda706fbd117ff54c2e9f5c673138ea85"
+  },
+  {
+    "command": "aos hub gateway enable",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "a1bdccb49faa784fbb5c626d48888cc8f0379c4b04bdc950e6e8643e2bef50c4"
+  },
+  {
+    "command": "aos hub gateway grant",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "df347af7e00f5f662cae41599c20525fea74cf8c78ab2000f1e47930a7f36bfc"
+  },
+  {
+    "command": "aos hub gateway list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "710871faab98e2677629fffbd3b47345c785d4dc93fc5506573d21f61625df6e"
+  },
+  {
+    "command": "aos hub gateway preview",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "8635d5b88c6c5306eb86ae9c2a3a292acd0096e72d735e8964ea367a7fa136a3"
+  },
+  {
+    "command": "aos hub gateway remove",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "b495175fc8969d37f66fb3c69f6155d9ab4190eb8763321c753606799546a0a0"
+  },
+  {
+    "command": "aos hub gateway revoke",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "d5444380561dd0684ecdf955dba7ec8c295414a49b8a874e5a4047b0591499d6"
+  },
+  {
+    "command": "aos hub gateway show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "908a368ad58a80c9c8567091558103f680a32c425c816d88739349d2343b905a"
+  },
+  {
+    "command": "aos hub gateway update",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "a88532703f0bc2e5deb761d050906d6cb1a22f7c9f94a5a879f19c9f0a672213"
+  },
+  {
+    "command": "aos hub instance branding show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "2cb4338ecbd92930fbe24d8dc1e7522f2e47b06bcdd8b86e4ce9d0056b926d98"
+  },
+  {
+    "command": "aos hub instance branding update apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "77039c4916fba320324d2cf8054636f1bfcee561ed08026f55782b4b37077896"
+  },
+  {
+    "command": "aos hub instance branding update plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "7334c9c3605074a096240ea5d90b188c2fd9fb32b9d5084836ef23e7b91dece4"
+  },
+  {
+    "command": "aos hub instance identity show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "2cb4338ecbd92930fbe24d8dc1e7522f2e47b06bcdd8b86e4ce9d0056b926d98"
+  },
+  {
+    "command": "aos hub instance identity update apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "77039c4916fba320324d2cf8054636f1bfcee561ed08026f55782b4b37077896"
+  },
+  {
+    "command": "aos hub instance identity update plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "7334c9c3605074a096240ea5d90b188c2fd9fb32b9d5084836ef23e7b91dece4"
+  },
+  {
+    "command": "aos hub instance resource-defaults show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "2cb4338ecbd92930fbe24d8dc1e7522f2e47b06bcdd8b86e4ce9d0056b926d98"
+  },
+  {
+    "command": "aos hub instance resource-defaults update apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "77039c4916fba320324d2cf8054636f1bfcee561ed08026f55782b4b37077896"
+  },
+  {
+    "command": "aos hub instance resource-defaults update plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "7334c9c3605074a096240ea5d90b188c2fd9fb32b9d5084836ef23e7b91dece4"
+  },
+  {
+    "command": "aos hub instance topology-defaults clear",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "432161a7ac62c8be7e9feeb027fc36e09c915afe941cc7c8a981b5d26f67677a"
+  },
+  {
+    "command": "aos hub instance topology-defaults set",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "95bac3f55899982b6465d71378633ab6aaa0152fc0031c09392e0f75a25b3468"
+  },
+  {
+    "command": "aos hub instance topology-defaults show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "90e3198796adfc2fde6ac6b2713e84ad9299747e0f0eaa48df6c5bfbbd3ac5a6"
+  },
+  {
+    "command": "aos hub login",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "03dff7d5bd4b3d555bf43215ec867d1daf4ae04fcdd17a0fbfff0a542ad8120d"
+  },
+  {
+    "command": "aos hub logout",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "1911c0d0cbb02f0a17affa8e92bd51d393995d5569ee5e85dc8405eb6123e5b6"
+  },
+  {
+    "command": "aos hub network-policy add",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "decaa797776a67253b39b94a952aa6225b5d4df8d4241126239368f610d04840"
+  },
+  {
+    "command": "aos hub network-policy grant",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "db717e2d339c8f456c0c45f69283333d5011b6211a4bb54dfd35cf9639851ac4"
+  },
+  {
+    "command": "aos hub network-policy list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "01cb051ef8ffc71f81f46d77338c15c1e30f2bfce213128509e06e2bcd7009b5"
+  },
+  {
+    "command": "aos hub network-policy remove",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "49a9f5f30a1b5aed4773b9b3ab496a76daae56f99fd5ebde97c534549e81c0d3"
+  },
+  {
+    "command": "aos hub network-policy revise",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "aa905dd133e141bafb70639e933bbc92d1d8be1c79f7a70134542796bd8cbc85"
+  },
+  {
+    "command": "aos hub network-policy revision activate",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "96af3a0eaf0a4627a08699f73ab6a8be976e41991cc2ea95b9756941758d6355"
+  },
+  {
+    "command": "aos hub network-policy revision list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "bf52c3651946b7e4211204fd9d05a3132ad0d1aa22256884490e3d376f7fadbd"
+  },
+  {
+    "command": "aos hub network-policy revision retire",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "9d4d777a0909cdc1b80df34e4a84d14260e9fadeb31f009cfdb743498de222cb"
+  },
+  {
+    "command": "aos hub network-policy revision show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "ab30fed6f0be20682a5a6cf5f903d282d2adb9e87bd1ad1949f8b73aebef9438"
+  },
+  {
+    "command": "aos hub network-policy revoke",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "6f27e60f44aeb9de64736738297ece4b37fe90d1245f98ca2244ff19d373b0ec"
+  },
+  {
+    "command": "aos hub network-policy show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "6ed7c7690f497948a616999f50b5da9bb5be3cf1f2d2cac74a9279077b3aa008"
+  },
+  {
+    "command": "aos hub network-policy status",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "24939e41a0c5dd60f8cbdcb8a44bf5b25f5fde19ce9db428500874080d94f8f3"
+  },
+  {
+    "command": "aos hub operation cancel",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "fc9f768337f41d3406352432d8e707fd6781b8a27c0c822e6d0bade1fb4cb6d5"
+  },
+  {
+    "command": "aos hub operation list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "87bc7b3b1bc76a89e1bf9f79dbce53e0581225aafe4dc2ae0062a106b0816172"
+  },
+  {
+    "command": "aos hub operation retry",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "19c0d20ee572014afb8a8a2419035b785ea2776dcb5dd62dea9d726cf269b138"
+  },
+  {
+    "command": "aos hub operation show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "5458d0e2bae1e155b374b6d90101ac5375c55fbc5791ee24ca40fb362670e8c1"
+  },
+  {
+    "command": "aos hub operation watch",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/operations.rs"
+    ],
+    "interface_sha256": "1c991da9f8c58f9918ce459e70e1acb3eede7f004b90dffdc25fcedf3ac6e7dd"
+  },
+  {
+    "command": "aos hub org audit list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy.rs"
+    ],
+    "interface_sha256": "a1ffc45b2fd01c690f51dbcaeb556f7d54d0439c919fe267a5f80f1c9b0bd2d4"
+  },
+  {
+    "command": "aos hub org create",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy.rs"
+    ],
+    "interface_sha256": "d7544c51bdb7cabce7393954192df4c37a2af549ab84ae993be25bc40e3cd647"
+  },
+  {
+    "command": "aos hub org delete",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy.rs"
+    ],
+    "interface_sha256": "3d6fa5c8069ac862ee65692d39d31b9cacdd3e65c95f7ad4e357a16116eab6f4"
+  },
+  {
+    "command": "aos hub org domain claim apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "046afc6e05078257f17a99327b73220f35f0ba8248ad4398748dd88366545289"
+  },
+  {
+    "command": "aos hub org domain claim plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "3929667d209579c442d516c077a43dd40fa835402f53943c876ba9a84d74fbbd"
+  },
+  {
+    "command": "aos hub org domain list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "f5df0da8d80d51bf5fac1d3a3428d5533c39198344cec93d56472f42aecb449f"
+  },
+  {
+    "command": "aos hub org domain release apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "79bd41f176950def2d09dedf4220877c3b0db87f60471c157bf35f7c7a7f3130"
+  },
+  {
+    "command": "aos hub org domain release plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "e8fc6511d40ef59e37952a714e4eedd269ccaf7d208be3935834e32a2f201157"
+  },
+  {
+    "command": "aos hub org domain show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "46698e5d096477b938375742f18384138d086bdd93a4f6bba640761517fc817c"
+  },
+  {
+    "command": "aos hub org domain verify apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "91a4893762b00089d7bf5e696eff814fd042df2d4c96926e349d606499f7becf"
+  },
+  {
+    "command": "aos hub org domain verify plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "6224476ce6d4a508d887fe0ba66e01e12474cddba69e9ba5360a9a754b0b361e"
+  },
+  {
+    "command": "aos hub org identity-provider remove apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "3b0004dac8952dcec7593b8f639e9f8c8655e26f3b3d7be901760f2a18b0a13f"
+  },
+  {
+    "command": "aos hub org identity-provider remove plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "eface3adc328c7697b42773c3b8c8eb7d1c2e236656fb17248d748756d1e8286"
+  },
+  {
+    "command": "aos hub org identity-provider set apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "d4ec6715de88b597bddfce7615fe15b19e1aa4d6cee3fc2da7752f57745f9a3f"
+  },
+  {
+    "command": "aos hub org identity-provider set plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "1172f41986444b7540c48d3ad4bcee401e1a654e1f0235c09ec32e712188ff98"
+  },
+  {
+    "command": "aos hub org identity-provider show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "514badbfbd38130978227785d9d46a99fce301b11dbfa58e89fe957ccd602299"
+  },
+  {
+    "command": "aos hub org invitation accept",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "ea5cf4bd2af72c067c176a121c42d6d11c1a130c6e849851c7033492ccdebedc"
+  },
+  {
+    "command": "aos hub org invitation cancel apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "edd734740662d230d318598ac39b9d3ec15f074acdfa78adc527daf6d3aef1da"
+  },
+  {
+    "command": "aos hub org invitation cancel plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "3a663e23756b22c6cd7a30782e8bdfeadb372cafe8a641f9a10965d967a6df73"
+  },
+  {
+    "command": "aos hub org invitation create apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "e584e02f5519b88a093d7184952fbd4e06ebed70ab8cf332e6a017cc38546eea"
+  },
+  {
+    "command": "aos hub org invitation create plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "2b5f2f2d80507f6e7a49491fa215448c1a2b6538bb813401230e831cc6032a93"
+  },
+  {
+    "command": "aos hub org invitation list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "b9cb7ad0d486cb680984ea59a24906532c3f4bb8b607dd6f7326c730338d054c"
+  },
+  {
+    "command": "aos hub org invitation show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "1ad3bf1741453ca747af9b9ad6abe65a0d003784abb7decb12abcb81e6927047"
+  },
+  {
+    "command": "aos hub org list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy.rs"
+    ],
+    "interface_sha256": "4f70ff903384f7917665dfbecf7553ebc3c32df09e6c8d440c3cfb5ee7651176"
+  },
+  {
+    "command": "aos hub org member remove apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "4b98e4bea6db7fd70d6314d65b34f9a5f5fd87b7141a4044938c48e7cfa12c4e"
+  },
+  {
+    "command": "aos hub org member remove plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "594aeb5859965101321307a854cd2d9268187785a14b4d2d1c07678305bb5c72"
+  },
+  {
+    "command": "aos hub org member set-role apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "e884fd389ce7ad34315a4f941aff2c12d3af42f7b19195f03f252907c9581f3d"
+  },
+  {
+    "command": "aos hub org member set-role plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "cf435e7b3062bde74f54db6d415190a4d960ca00ed42bda3efb5f328c9d3b8fb"
+  },
+  {
+    "command": "aos hub org member show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "5b3c22266949089f66edfa7a97ce572d8954269bb552a886fd06b53dc9d97d37"
+  },
+  {
+    "command": "aos hub org project create",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy.rs"
+    ],
+    "interface_sha256": "da31777a54d9ae6279c943e4b3e442bc1906871ff2e9adc252fc6484b8d34a8d"
+  },
+  {
+    "command": "aos hub org project delete",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy.rs"
+    ],
+    "interface_sha256": "e684a7756703de0baea944e29be672281523849728cc683cbb98d7035afe76f9"
+  },
+  {
+    "command": "aos hub org project list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy.rs"
+    ],
+    "interface_sha256": "b64d7608a102aaf58a9939473a2f5df0dbb2af081622422a8e9438f6e7f339ac"
+  },
+  {
+    "command": "aos hub org project show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy.rs"
+    ],
+    "interface_sha256": "b2cfae1f53161e0addc22b4d5867e9d78375e6de277258bd4b7ec22d03694997"
+  },
+  {
+    "command": "aos hub org service-account create apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "87947d76a54230c119881417170c0162d3aa837235f5916247cd40e56b26565d"
+  },
+  {
+    "command": "aos hub org service-account create plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "2c2aa07636e6b97b7d73aa2165d3969ee9e393072e0eba7bf58f87478707ffbb"
+  },
+  {
+    "command": "aos hub org service-account delete apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "682cbc666a96cef2f446aac9aae5248958078539f0edaef6145da43f0626343a"
+  },
+  {
+    "command": "aos hub org service-account delete plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "a3f32f58ef092803610c5f4034df2b764e5560cafb5755cfabc6ffa2208ff077"
+  },
+  {
+    "command": "aos hub org service-account list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "70c9b459ae315d44c512d5f6f79b7ee98638ad26b83ba60069ef135a6944fe59"
+  },
+  {
+    "command": "aos hub org service-account show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "3710fe7e5790a3f2fa74e8ee2310beb12a798c948209a055cc43cb5b02b83e41"
+  },
+  {
+    "command": "aos hub org service-account update apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "9fa3daa9ff9ca62cbce9ee25dad1cff3f98496d63e5d8126123e05a703318b7f"
+  },
+  {
+    "command": "aos hub org service-account update plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "8699fb2beb26e6288fadbf04c6d1d0336806bcdfd7f85a7e65537363ccd23463"
+  },
+  {
+    "command": "aos hub org show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy.rs"
+    ],
+    "interface_sha256": "efe4198f52fc3245e4ee1f18850a1fa4cb83695772ceae0e0df0b197ddd6784f"
+  },
+  {
+    "command": "aos hub org topology-defaults clear",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy.rs"
+    ],
+    "interface_sha256": "40e14150ca1690cf9ca7cc304c8a5d3abf2c637446f21026f70ff20309342b1f"
+  },
+  {
+    "command": "aos hub org topology-defaults set",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy.rs"
+    ],
+    "interface_sha256": "de02050698bdb857279216c45f691a6eaa30c86cc1c9d266816873a03e0f476b"
+  },
+  {
+    "command": "aos hub org topology-defaults show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy.rs"
+    ],
+    "interface_sha256": "ab3b50ad3a726ae6f6b4aeb6f7780fdcec2a90dac9008d153b0f366c4203c590"
+  },
+  {
+    "command": "aos hub org update",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy.rs"
+    ],
+    "interface_sha256": "3086adf23894604f8962e40dfaf63fe3b06a8d2afc7a09f7a82cf837aca5b6b5"
+  },
+  {
+    "command": "aos hub org webhook create",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy.rs"
+    ],
+    "interface_sha256": "9a9a8b8b827304e3b9531ad3d744a4b2ab06c760edf01fd2cbf7bdebaa8efa12"
+  },
+  {
+    "command": "aos hub org webhook delete",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy.rs"
+    ],
+    "interface_sha256": "590dcbb08899887cc34877fa52fdfe8204c02a2faa11c0dd048ed2636104c508"
+  },
+  {
+    "command": "aos hub org webhook list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy.rs"
+    ],
+    "interface_sha256": "b64d7608a102aaf58a9939473a2f5df0dbb2af081622422a8e9438f6e7f339ac"
+  },
+  {
+    "command": "aos hub placement add",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "fb2463d02cc7f8b0785368f80c50708051b7f2ce5113ece0a5faab5a75a8a418"
+  },
+  {
+    "command": "aos hub placement drain cancel",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "55ecbba95c87142337b42c97eed468ff80a3e139a3bd153e26ea3778434cc0e1"
+  },
+  {
+    "command": "aos hub placement eviction plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "67508ffebb729e3c00de20a6a8ce035ccd4e01b9b330db34132d050ac63e2259"
+  },
+  {
+    "command": "aos hub placement eviction run",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "19053d331869f1478d421594eda5d6efe46dbd007237d27adff4455aa53ab272"
+  },
+  {
+    "command": "aos hub placement list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "a4b7f772586ed2b01ba31d43b14a1d06f07ef1f42be431fd16118585dde9d47f"
+  },
+  {
+    "command": "aos hub placement presence",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "579b0a95fe01b456262f8ccea3305feab9b1e7f0f09991449e07e76b64855666"
+  },
+  {
+    "command": "aos hub placement promote",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "a165bce8cf4bbededc92605972d17412f5f09c99bc6c8a5670b4090016114ab1"
+  },
+  {
+    "command": "aos hub placement promotion cancel",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "4c1523abcf04eaa76a9d15ed643fb5067115df8cf40959d7b231e411c5a3853c"
+  },
+  {
+    "command": "aos hub placement remove",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "9dfe4ebb89435c02a3aa37190ae1bd24e10a466cb592b9072ed777a6df30ce7f"
+  },
+  {
+    "command": "aos hub placement repair",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "0485e818e251e1e0339c461987344937c222a661f91703433615daca117b7eab"
+  },
+  {
+    "command": "aos hub placement replicate",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "80e20e501242a208bc93e0ba58251b35e9d0a218f432bb440ff8c375a4c1fec9"
+  },
+  {
+    "command": "aos hub placement scan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "bd2d2f219632d20a173635da19ebec4a9748c58e81dcd2f3d693e315a4a38df3"
+  },
+  {
+    "command": "aos hub placement show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "38d32a83df07ae9e5533e8fc7022745ab7cbed664ea1a04e90e92e42ca39988a"
+  },
+  {
+    "command": "aos hub placement update",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "f32e1c15555a8a5baacdb578d7b08570dbcc4ee8ca7392547ab0334640b5f70c"
+  },
+  {
+    "command": "aos hub placement-equivalence confirm",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "47b12e08525d339687ab5dfa8f1ae07e510bba494d7dc1a0ccd3231daa4ec831"
+  },
+  {
+    "command": "aos hub placement-equivalence list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "d7138f9f7850d8f75daa0a13ab98596a91a36795abb81223fcbdb79b6a70fbec"
+  },
+  {
+    "command": "aos hub placement-equivalence remove",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "651d655f2ab57a211f3d7c25d1f07c21fda769602d6166f7392119822cb957bd"
+  },
+  {
+    "command": "aos hub placement-policy create",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "648ba5cd303fcc8c3d8f86467cf1f487a16187dd7f43725aabf4b2d981893054"
+  },
+  {
+    "command": "aos hub placement-policy list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "d7138f9f7850d8f75daa0a13ab98596a91a36795abb81223fcbdb79b6a70fbec"
+  },
+  {
+    "command": "aos hub placement-policy revise",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "8892c801fe09450ed590522930c0215740bcdf25cf36aebbd314253df8da578e"
+  },
+  {
+    "command": "aos hub placement-policy revisions",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "137daa7c7b3c11964d2d3133305b05710931a74ad2398c719a28d09454453683"
+  },
+  {
+    "command": "aos hub placement-policy show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "0e6276ae7e524884129264ba25bfeb72624a67bf34186ed4f15acc985449be18"
+  },
+  {
+    "command": "aos hub placement-policy test",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "f304289b3889f847627e68f2c7c30b687b1b5b44e91c2ddabc84c550bccb4823"
+  },
+  {
+    "command": "aos hub registry cache-stack add",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "106d8dc1680e4a96d130734dfbfbcddaa8b6b2f95ff39a21c9a4174dc461cf9c"
+  },
+  {
+    "command": "aos hub registry cache-stack move",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "98029f6cd149cf54236efc571349966f5e027b5f130dcf1f35dd98d6219c6b7b"
+  },
+  {
+    "command": "aos hub registry cache-stack remove",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "cd245cef76ecd85a9cc24f90627bc88928c5dec53fd62e26e5ebe6f4c1789f01"
+  },
+  {
+    "command": "aos hub registry cache-stack show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "5f85107f263262dff78c3e471fb2f9c8f8c7709b698f8b96513c47a2f59fa801"
+  },
+  {
+    "command": "aos hub registry cache-stack validate",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "024cf9534f8f8044143accf338a61d05c58a62ef99d5ff2b7cf11aa36426dfca"
+  },
+  {
+    "command": "aos hub registry channel list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "346272b03de95ff80a5c843b5d749fd282173b0c2221b5cc25526893d2eaf0ce"
+  },
+  {
+    "command": "aos hub registry channel show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "20fce1ce14f7f7e51266a42a855870ec3355efdf05e6db64db330b34fcd83e48"
+  },
+  {
+    "command": "aos hub registry configuration change-requests",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "dfe00c5591df41feabb30a948340588119fd9b777da7cd1fbbeef7a2dcba11b4"
+  },
+  {
+    "command": "aos hub registry configuration changesets",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "069d7a5882aa43bd8204cba6e2af0544c2d1a24d7cbcd81792fbfd64f682729b"
+  },
+  {
+    "command": "aos hub registry configuration diff",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "4b9f3258b99d923f8b96ba052a4b2e022464cc1ab7eabc2f1e1449042554cd31"
+  },
+  {
+    "command": "aos hub registry configuration log",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "e6943fbfede30388386771754c78d4bfa660e71c6b87296f25cc196730285b4f"
+  },
+  {
+    "command": "aos hub registry configuration show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "06e8c5aa5cab65ba92ce7a2ced10758c45ffe8dcedac5d47b51d54c525d80048"
+  },
+  {
+    "command": "aos hub registry create",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "22d47b6666bdbe4b4d255e39be99c714dd141e228bea6c3c32c8b8243716f304"
+  },
+  {
+    "command": "aos hub registry delete",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "aa09fbf12397191395d5e0af8857142f6683ffe54edb6030025091793346c383"
+  },
+  {
+    "command": "aos hub registry list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "106a735a4bb68a1bbf8874a61c4215954f051bfe84187887ff506288dee956cf"
+  },
+  {
+    "command": "aos hub registry mirror remove",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "6ce7af23c954a047ef25d59dd7b07ac473ecc30b7beb295bb0d72fbf547f659b"
+  },
+  {
+    "command": "aos hub registry mirror set",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "b749e8e256a05bf2e23959dc816a00d42b59d508a3547c4153848909fbe50641"
+  },
+  {
+    "command": "aos hub registry mirror show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "8126d99072a45dff55e350f0388ee75bbe1a0173ece915a063ccec9258afd2f2"
+  },
+  {
+    "command": "aos hub registry mirror sync",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "5cb4b26db3bb749d950f7334946d7025408df791de1af14bc49e976df87e9282"
+  },
+  {
+    "command": "aos hub registry package list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "346272b03de95ff80a5c843b5d749fd282173b0c2221b5cc25526893d2eaf0ce"
+  },
+  {
+    "command": "aos hub registry package show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "20fce1ce14f7f7e51266a42a855870ec3355efdf05e6db64db330b34fcd83e48"
+  },
+  {
+    "command": "aos hub registry publish abort",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "52e1ad70c791398b3726444bac9896049ac0178eb2d2f6925f84965b9a7fbe16"
+  },
+  {
+    "command": "aos hub registry publish begin",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "d2cd9aacccf714cec678bc3b32ba4b6b83c16abb0be72bc750839538106e9048"
+  },
+  {
+    "command": "aos hub registry publish commit",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "e061bb1329f5fd7478ccbde23be3e13551c5422275d0ee5a67c33e56a17f72ef"
+  },
+  {
+    "command": "aos hub registry publish list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "92acd68280c2edb581e20c092c44f82477d1ac064c7e0d96aaafba28467f8043"
+  },
+  {
+    "command": "aos hub registry publish show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "fa65f760988123f09fb329df82bffdcd69c8c639c9c8eb267f21e19164aa56f7"
+  },
+  {
+    "command": "aos hub registry publish upload",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "9d3fd915c1d614b02cf2901733fd56660940622e194b679718941eabc9afafab"
+  },
+  {
+    "command": "aos hub registry releases",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "1a9b8b87b10f7bc10a9af1126daf1d7be84948eff4e76794f42635d748d32bd3"
+  },
+  {
+    "command": "aos hub registry show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "934c1e49a4da039f2f2b8562196a5a95d88f4e0700eb219ebd4b7ced5abaa772"
+  },
+  {
+    "command": "aos hub registry update",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "c78e9050c91dae50a86d08b57c6997cc84e92d8b8f22ec52e27ca04dc1b7df21"
+  },
+  {
+    "command": "aos hub route add",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "e0015e99d45416f3025db209627aa0da2c30517bcf6729cf556127d29b4eaf30"
+  },
+  {
+    "command": "aos hub route canonical",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "96a75b034337ad5bb3b665aecd8308f9bb84b7c1af563b64638e5b5cdf2a1ac3"
+  },
+  {
+    "command": "aos hub route disable",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "ce1b4b3898c7e6c918061fd919225dc91f7a574039fb01fd399de67c3968a2f4"
+  },
+  {
+    "command": "aos hub route enable",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "8df250b54e15ee8d18e90b37dba936b84e58be468c3b439301f688110e293ae5"
+  },
+  {
+    "command": "aos hub route explain",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "a4f6b646cc3af33cd60ffd50a3e698bfaa2ec70f2a481f4ec4cbe2a2552184ab"
+  },
+  {
+    "command": "aos hub route list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "2ae98e88b92f4b63e23d29d0da936917073d2b90e740226ed542371230d40f7a"
+  },
+  {
+    "command": "aos hub route remove",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "bfd0cc5e64fba3f842d7cf3a489b3400f89a06268b1180fd7940943cebe19507"
+  },
+  {
+    "command": "aos hub route replace",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "79efee834191f5d942a631856b23938c7069fb04b99e4ec048ff1ea56c5f56f2"
+  },
+  {
+    "command": "aos hub route update",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "310e531a8a5a164070c457000475f1b013311e61b8c87f86907cbb7ccef8ba14"
+  },
+  {
+    "command": "aos hub signing-key enroll apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "bdc77777dd671650d85b8fdb6a37f0631114bf7f34db5b67f296f699ca8710fc"
+  },
+  {
+    "command": "aos hub signing-key enroll plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "07288521324352b173afcdce7c5038581ec9cf143dd8cabafff63b4e67c3ab9e"
+  },
+  {
+    "command": "aos hub signing-key list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "be880233d2d277e761bbf332c924399ef4377ad08c5bafa1d74847ff1d8ca56f"
+  },
+  {
+    "command": "aos hub signing-key retire apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "e9bc1b4485986dcc2e6b32301f18987feac957be8ab24f282d1bf081ae82cca6"
+  },
+  {
+    "command": "aos hub signing-key retire plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "968135d558c706054e51f50284ed19a7e699d126ea0859e34c7a68bd1da6e569"
+  },
+  {
+    "command": "aos hub signing-key rotate apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "34b76b8ecb63962fa6da86d793ce79366b25970a5cdc3c0e00561642d2820766"
+  },
+  {
+    "command": "aos hub signing-key rotate plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "fce07d0350ad05245e253e692c270edf25cfb95f9a094632e1c35262af20c39e"
+  },
+  {
+    "command": "aos hub signing-key show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "bc481bf41671f5cb6c18148ef3fa4c9622f9a7e7df7b41da3f2f482038aac669"
+  },
+  {
+    "command": "aos hub signing-key usage apply",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "9b37ab9d68d2a9eb7791f271ff40bde08f949f1d002d0298d2e73f7cfc7ebd5c"
+  },
+  {
+    "command": "aos hub signing-key usage plan",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "b8fad9aafa1e849b4239fe8d28d73b25cd098f09a17e8fafd264f7074b3b5a57"
+  },
+  {
+    "command": "aos hub signing-key usage show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_retained_control_cli_contract.rs"
+    ],
+    "interface_sha256": "3d5f52fbdda5c9157713b492b37a280e171a9c208d874fe3fe8ca1f07ccddc83"
+  },
+  {
+    "command": "aos hub surface explain",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "5be25c93635dadbead907e595dc6d57ad84fac7fafbae65be1f6c259265bf52d"
+  },
+  {
+    "command": "aos hub surface show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "31cff1ef11f9b0fd608221514fb85aa66df07427c40c2809c3189676be27e951"
+  },
+  {
+    "command": "aos hub surface topology",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/tenancy_read_authz.rs"
+    ],
+    "interface_sha256": "58073e00029da3e728fa36d0c324716b8f086a4193dce055463cb782d0e8d70c"
+  },
+  {
+    "command": "aos hub topology cutover generate",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_topology_cutover.rs"
+    ],
+    "interface_sha256": "fa8f3bc28305983e72b0e3a9cb15b67ce78ce37ff003166191d07a4e6f3b0941"
+  },
+  {
+    "command": "aos hub topology cutover materialize-verifier",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_topology_cutover.rs"
+    ],
+    "interface_sha256": "1865e68b71b92861c448b064f4100c3a9b01069db871e83d948304450ce57dea"
+  },
+  {
+    "command": "aos hub topology cutover verify",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/hub_topology_cutover.rs"
+    ],
+    "interface_sha256": "54bd3a2f4f0e911ad6eab93103ed7565a95d56c90e15873f2405771675f9fd08"
+  },
+  {
+    "command": "aos hub whoami",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "af1e1491d8f7d430c021b123b0f8121e2f28f11fc112049d4a56d5312c30ceb0"
+  },
+  {
+    "command": "apm attest catalog",
+    "coverage": "fleet",
+    "tests": [
+      "tests/fleet/package-attestation-quote.nix"
+    ],
+    "interface_sha256": "242802b06f585efbcbc6ade2eb19a404f150957cc749c21ddb57cf01765c0f03"
+  },
+  {
+    "command": "apm attest enroll",
+    "coverage": "fleet",
+    "tests": [
+      "tests/fleet/package-attestation-quote.nix"
+    ],
+    "interface_sha256": "725570aff62b698a96a626a98b70fc1e8aca1318dddec5e7e716080d19436093"
+  },
+  {
+    "command": "apm attest quote",
+    "coverage": "fleet",
+    "tests": [
+      "tests/fleet/package-attestation-quote.nix"
+    ],
+    "interface_sha256": "a3f06369420395d3dd0c2eb922b83ac89338d475c63007fbed91f3d805ff1693"
+  },
+  {
+    "command": "apm attest verify",
+    "coverage": "fleet",
+    "tests": [
+      "tests/fleet/package-attestation-quote.nix"
+    ],
+    "interface_sha256": "5194f2dec740c92111457a4b243bf3aaa249f75819cd54dd835dea87d0e15cc8"
+  },
+  {
+    "command": "apm autoremove",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "6b240068d3aed4d273d7a7127a15b9b9a5580661fa06086add4fb72d497eb14f"
+  },
+  {
+    "command": "apm clean",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "8a36af425237f80c810da20cc07160bf8bbb6d0ae00e545f62a8bbae6632eb2a"
+  },
+  {
+    "command": "apm credential encrypt",
+    "coverage": "fleet",
+    "tests": [
+      "tests/fleet/config-secret-reference.nix"
+    ],
+    "interface_sha256": "286bbae61ee72a68f15f3d914773597acc52780e369b57794125e6b2bacbc09a"
+  },
+  {
+    "command": "apm depends",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "78a82415f7b3b4fd7584f3bb9bb7a40ffaf6d70c648cdb6e880ff28760e7b7d3"
+  },
+  {
+    "command": "apm fetch",
+    "coverage": "fleet",
+    "tests": [
+      "tests/fleet/apm-desired-sequencing.nix"
+    ],
+    "interface_sha256": "463eeba0afc6d8707fa679de440cdbed237b31df0cc940747eec206103199723"
+  },
+  {
+    "command": "apm files",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "78f6504ff9745a5d8a8ca903b78c0ddc34b6e3df63ab5b7d884cb594d886cf7e"
+  },
+  {
+    "command": "apm full-upgrade",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "19323b63fce18f6858c606bc45efa6b0e2f5a87d442f8054c9e1b43b0e2dd8b4"
+  },
+  {
+    "command": "apm gc",
+    "coverage": "parser-only",
+    "tests": [
+      "tests/vm/apm/packages.nix"
+    ],
+    "interface_sha256": "04af636065ffcb64452b10be4be2103789be332a96959382619209c254f96610"
+  },
+  {
+    "command": "apm held",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "477d4f6eb9f182fb1dc778bd0b66fa094e1e27ccab7d731267a1879f205afeac"
+  },
+  {
+    "command": "apm hold",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "bdde2226d77aa609e5e9bcfb067edd79c4a0e72963b738594d4bd239827cead8"
+  },
+  {
+    "command": "apm info",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "dd2afe5548b2d18b15a48c7cdfec188e6d50bfeb974f882dd8ff8e687c2d570d"
+  },
+  {
+    "command": "apm install",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "0b754ac15b0a7e521845869616e472e204497d376aaf10e30e9e8903ca4ac314"
+  },
+  {
+    "command": "apm list",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "428a9b80791930d8264272b9c1b87803e69f74de4a5f5abfbd63c6857db0c24f"
+  },
+  {
+    "command": "apm orphans",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "653e0b33a291dcd383fb0b4a13a3574afeb49f72a16874f73c666c7b22d59c64"
+  },
+  {
+    "command": "apm policy",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "ac3a423e5006812d9419e750f69b0685a591469c30766075c8a53c30b8cf157c"
+  },
+  {
+    "command": "apm rdepends",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "5468b243c362bc21e9d7483bd9dbd6e1f3f47c1f7d67e1cfdbf35ca365517046"
+  },
+  {
+    "command": "apm reinstall",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "0deb7488cf63c64f87bde4ab249bec2d99f10755949b5b37f9501ca6d8698a8a"
+  },
+  {
+    "command": "apm remove",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "c37bdff036a7ea20adb4bd61c767b626fa0f9109349b96314956d5041609e2ba"
+  },
+  {
+    "command": "apm render-one",
+    "coverage": "fleet",
+    "tests": [
+      "tests/fleet/apm-desired-sequencing.nix"
+    ],
+    "interface_sha256": "8962cec9d04c02f38111a62f7b49a3827e6dafa75ba844fe2482e15a802b4cf4"
+  },
+  {
+    "command": "apm rollback",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "08da79a280e2f13555ee89e06dab0639f8e637c37015b59fd1cb0d93273e9f24"
+  },
+  {
+    "command": "apm search",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "5ab1871de3da7d9707a663e95bfdcfb7bc3492c5cd91fc5124cdc9a9c0187106"
+  },
+  {
+    "command": "apm show",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "a55d5a8632cb35685336cf0ca77bbdc37251658ff3596bb7d51648b2467bb9c4"
+  },
+  {
+    "command": "apm source",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/packages.nix"
+    ],
+    "interface_sha256": "48022252fe2867327089750c480ee9b67319c7fdd624a796f03922096249dd7b"
+  },
+  {
+    "command": "apm switch",
+    "coverage": "fleet",
+    "tests": [
+      "tests/fleet/apm-desired-sequencing.nix"
+    ],
+    "interface_sha256": "78713a4614cc68f839b46acc476e5c08df45ae0a5fb945e8ccda03ad38704189"
+  },
+  {
+    "command": "apm unhold",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "c7422f4f1ef020d3b68cc30333417ffec5a5fb180b7b862cc9320860dfe4e65f"
+  },
+  {
+    "command": "apm update",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "72e379e10114512b9375e1ae36019ef49c99fdd0025b0f827dad0432c0b3f5d6"
+  },
+  {
+    "command": "apm upgrade",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "38ca9118080c7612f9b9d4125360020bdc5c5d84513178acdab1ba431c9478dc"
+  },
+  {
+    "command": "apm verify",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "619abbeb7e5d1e8bc19b958ad1f847a094f91498de2b106700897977344538fa"
+  },
+  {
+    "command": "apr add",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "d8b2545e6d0d0a1e36e2ca9e64c952827663ae75db7f4d63996ce90230903d7b"
+  },
+  {
+    "command": "apr branch create",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/tracking.nix"
+    ],
+    "interface_sha256": "acf61e369853e95c8c98bdcd71a7440f2011acae37861af403e18c424cf22bb1"
+  },
+  {
+    "command": "apr branch delete",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/tracking.nix"
+    ],
+    "interface_sha256": "a229ea3b82c86c584cbe928070e75cc4dbb47632155861d2013d7f0f83e7107f"
+  },
+  {
+    "command": "apr branch list",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/tracking.nix"
+    ],
+    "interface_sha256": "7e06aae6409dfaa852a1b947ce1dd5a5504cd579be9d0e63cf402809a6cc1ec6"
+  },
+  {
+    "command": "apr branch switch",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/tracking.nix"
+    ],
+    "interface_sha256": "869dbdfdbcbe6318e0321fce0b31a68168bdb89d00fa5aac48c64379af437f9a"
+  },
+  {
+    "command": "apr cache gc",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/apr_cache_cli.rs"
+    ],
+    "interface_sha256": "7e081719ea03efe5c186fe18d33349f83dd015a866b109adf7f26bfbb911b1fd"
+  },
+  {
+    "command": "apr cache generate",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/apr_cache_cli.rs"
+    ],
+    "interface_sha256": "c4cad32b0a570bfd26f1e68e4de6b02136730ad4013086e14e42270f55061c4d"
+  },
+  {
+    "command": "apr change list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-package/tests/change_requests.rs"
+    ],
+    "interface_sha256": "1db9e870614d481ce5f24e41af9f5125fe38ec1cd4acc733cec95f3d4224a35a"
+  },
+  {
+    "command": "apr change merge",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-package/tests/change_requests.rs"
+    ],
+    "interface_sha256": "d82e6e10541f791b6586a3909c6f7cf85cfc0734c838af5d7af6466388e80939"
+  },
+  {
+    "command": "apr change show",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-package/tests/change_requests.rs"
+    ],
+    "interface_sha256": "718ac0a483298417f2dd136565ad50d119a7145d7787d182939f96ff265a9cc7"
+  },
+  {
+    "command": "apr channel advance",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/tracking.nix"
+    ],
+    "interface_sha256": "315671a11fbb2ac11ae280944797b25e98ae9413fa49718f7d32692e0afbcdd3"
+  },
+  {
+    "command": "apr channel init",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/tracking.nix"
+    ],
+    "interface_sha256": "70667bec176ab5238487ce40215a7fc70677a38820924c7df805f0c69101a322"
+  },
+  {
+    "command": "apr channel status",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/tracking.nix"
+    ],
+    "interface_sha256": "40b93b411613fa35acdade607a84b7a387e86877d51c9b09c7a894974d7a9327"
+  },
+  {
+    "command": "apr commit",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "c988dc8be264d526844485810f109775a28228c4000541d56a5b4f2d6ee40c7a"
+  },
+  {
+    "command": "apr create",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "0bb4c9248c40b16eb266f6f30936258029d7231514fd4f465b5609843b9f551c"
+  },
+  {
+    "command": "apr diff",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "ca776f8a1a11ce48619b062b73210eaa9021c3300f830bd87a4233e50f30ffc0"
+  },
+  {
+    "command": "apr disable",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "b87813066f1c681911fa38ae47ca9d4866f31f19ae59fa69e5d99663e90e53c8"
+  },
+  {
+    "command": "apr enable",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "a23f5c41b6cc0713eae316ce81c9af4f01274a092e4c7c730ddfe91e9dc541c4"
+  },
+  {
+    "command": "apr keys add",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/apr_keys_cli.rs"
+    ],
+    "interface_sha256": "94fc40404b6719c7161447bb5d676792343804cb249fdde993a50674b0060aa0"
+  },
+  {
+    "command": "apr keys generate",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/apr_keys_cli.rs"
+    ],
+    "interface_sha256": "8f5b610075533b88bdc34615dcf86bba8e74924641823bee4e036962e27f66f8"
+  },
+  {
+    "command": "apr keys list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/apr_keys_cli.rs"
+    ],
+    "interface_sha256": "51bdbc5d569bdd77b9927fef9df85382197239d92985ec72fa62d941764647cd"
+  },
+  {
+    "command": "apr keys register",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/apr_keys_cli.rs"
+    ],
+    "interface_sha256": "d63ff44f0e514ee0eca9824bbabd86d36534e4bae79b55c2995324a708a62e42"
+  },
+  {
+    "command": "apr keys retire",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/apr_keys_cli.rs"
+    ],
+    "interface_sha256": "264c7edf6c8da27bcffe1c8b512dcef622878c8280c4478bba1d84e4b50ed1e0"
+  },
+  {
+    "command": "apr list",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "2f72c2761a15ccdfe3537651f0989dfedcb3f673fb94d9977d8ff66d998b951c"
+  },
+  {
+    "command": "apr log",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "6b0deca56ad545cb13e3c8772b0694241880c0b18ad0c002ce5da5aeb101e266"
+  },
+  {
+    "command": "apr merge",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "24934fc367646d8636d81d718120b8550dcd6322259c117aa892b13a4d4f4592"
+  },
+  {
+    "command": "apr origin config",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/apr_origin_config_cli.rs"
+    ],
+    "interface_sha256": "1261bfe759795cc608f0a6740b2cbccb4111d76f90787ca53908db2998eb4a25"
+  },
+  {
+    "command": "apr origin upload",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/apr_origin_config_cli.rs"
+    ],
+    "interface_sha256": "77788c8f65e9cf2670ef072d90bc1dd8feb1093cbcff6181cbf65034ae416032"
+  },
+  {
+    "command": "apr packages",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "369cec42dfef9446cc3efe54d49998708e03ebe0e55fa6579806e19e46eb4a3d"
+  },
+  {
+    "command": "apr publish",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "93a73253d04e0456c761340c2ce70459d447e4a7c209f07dd8d5aa09d3a924e6"
+  },
+  {
+    "command": "apr pull",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "66e4901d17a0bec2d7c4946c4aa22b08e0f0bd179292a3716c40dd4f5a6756cf"
+  },
+  {
+    "command": "apr push",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "c2372c6cc38b2e9ece5125222119535e42e961722ec690ec081e05d5beb8057d"
+  },
+  {
+    "command": "apr release",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "fcb4dc0f29513027c6bf47720c2ba7e5e153ae4a01f74342c2c0a42d00fa83a1"
+  },
+  {
+    "command": "apr remove",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "aaf08e7bbf6ecd2eacbe986e61887047dd09e51be0693a1766ed6fd7182ea76b"
+  },
+  {
+    "command": "apr sb-certs add",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-package/tests/registry_sb_e2e.rs"
+    ],
+    "interface_sha256": "89dca1255a6c8c573ac5e4531a35c564db894c3dc308632adda2b0ab33e868db"
+  },
+  {
+    "command": "apr sb-certs list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-package/tests/registry_sb_e2e.rs"
+    ],
+    "interface_sha256": "1ec93d642967d89f1b243f83e07b6165c40a98780410a3201bb71cfaeb5b599e"
+  },
+  {
+    "command": "apr sb-certs retire",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-package/tests/registry_sb_e2e.rs"
+    ],
+    "interface_sha256": "06dcfd11cb4019975f06c3f59d7cb4f619d26bfb82e8c3f2e3829e76b6c195da"
+  },
+  {
+    "command": "apr sb-certs set-floor",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-package/tests/registry_sb_e2e.rs"
+    ],
+    "interface_sha256": "2b3da618e5c7643970b956a25ea30c363d9036b82f1e9707410c05013fc81591"
+  },
+  {
+    "command": "apr show",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "45545e1ebf270a352e47c22054315b1389d0ced903140d3bb9a01d63236534e5"
+  },
+  {
+    "command": "apr sign",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "c72401b7f1c1ef9065c43c77897ef4fcdcc495059fd5479cfbf999679176ad3a"
+  },
+  {
+    "command": "apr status",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "7ceceb9d11ad36ff5a1e39065d0f67e430e0295299416c686b6f05c6b85366f9"
+  },
+  {
+    "command": "apr store backfill",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/apr_cache_cli.rs"
+    ],
+    "interface_sha256": "b6f2e3c7c02bc736f9233413bd7a249a9a1ac086800ffd407145e12b4ea7b8de"
+  },
+  {
+    "command": "apr store bless",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/apr_cache_cli.rs"
+    ],
+    "interface_sha256": "8d53675a25a80c2f5268a92930e8986489258474bdd571cd2b1b4eec178c35ec"
+  },
+  {
+    "command": "apr store revoke",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/apr_cache_cli.rs"
+    ],
+    "interface_sha256": "08a33bc033cc52a6fe9b38340f18ffd192b395e36131e53c0a8a0502ecc64f7d"
+  },
+  {
+    "command": "apr store verify",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/apr_cache_cli.rs"
+    ],
+    "interface_sha256": "4b7de45f635384065003d4cfa171c602b5fef3fe476ec46adc578ea1671eff9d"
+  },
+  {
+    "command": "apr tag",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "86941a54e8f5fb1f288f76f162819445bdcdd11c681a89c4272d813a83ddc278"
+  },
+  {
+    "command": "apr trust list",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/apr_trust_cli.rs"
+    ],
+    "interface_sha256": "ec197f5da8ccc92a086520899e50e75a1201d8116d4195cb07510bffe7582a4a"
+  },
+  {
+    "command": "apr trust pin",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/apr_trust_cli.rs"
+    ],
+    "interface_sha256": "56138e84d4aed829121650871b3004843ff0a8b4d88e2501113ce95f1d97c22b"
+  },
+  {
+    "command": "apr trust remove",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos/tests/apr_trust_cli.rs"
+    ],
+    "interface_sha256": "8443e094bc04416d1e5adbe3b32ac0a6d10c96b8f81b99d3b29176a0139b637e"
+  },
+  {
+    "command": "apr unpublish",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "90ee41ff8e91cd0bc493b516dd41b16141dc538272f031e72b79a2b0eeb875be"
+  },
+  {
+    "command": "apr validate",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "8eb4c630e7a18e9ea587ccbacb588e39fbd05eeb16ba1e4ff105cbc09cc348a8"
+  },
+  {
+    "command": "apr verify",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "b782755f394df452bbd3d44d31f7c03507c975a957803eb5fd617911a60820df"
+  },
+  {
+    "command": "apr web generate",
+    "coverage": "vm",
+    "tests": [
+      "tests/vm/apm/registry.nix"
+    ],
+    "interface_sha256": "50dbb9d471e68e65489005c1c2241008ba0de92b40871f22854e4afa8307b3fb"
+  },
+  {
+    "command": "aos-hub index",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/e2e.rs"
+    ],
+    "interface_sha256": "abdb3571b38a7b3cf86ceef44837315f52c00ad851c19fdcb23e441cdaff4f57"
+  },
+  {
+    "command": "aos-hub init",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/_native-hub-production.nix"
+    ],
+    "interface_sha256": "11472f9120639c4bd4ee963df70155af5978c56b51aedb9acdc01b44b2c2c063"
+  },
+  {
+    "command": "aos-hub reset-root",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/password.rs"
+    ],
+    "interface_sha256": "6c4b5df1b3a0dd1fece99267628fa3db13ce53628262eeda83417d7f39fc43f4"
+  },
+  {
+    "command": "aos-hub schema dump",
+    "coverage": "unit-contract",
+    "tests": [
+      "crates/aos-hub/tests/dialect.rs"
+    ],
+    "interface_sha256": "5eaa42154dd63bac7652ce612d514af5d49d98073ad52971a9dc95a2601eaffb"
+  },
+  {
+    "command": "aos-hub serve",
+    "coverage": "native-fleet",
+    "tests": [
+      "tests/fleet/native-hub-apm-smoke.nix"
+    ],
+    "interface_sha256": "b4312d5b882b6c5966cde7fd5998cafd9d187fea4e4138124c23507b545841b7"
+  },
+  {
+    "command": "aos-hub validate repair",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/repair.rs"
+    ],
+    "interface_sha256": "3d34f9e9f8b19ebd8309b16fcd4bdacbfa905e763051e9e2d94ad24e85d84b25"
+  },
+  {
+    "command": "aos-hub validate run",
+    "coverage": "integration",
+    "tests": [
+      "crates/aos-hub/tests/hardening.rs"
+    ],
+    "interface_sha256": "8a8831a9c0420cd05de753d66c6391ac32292c2f15b43a659ef0fc4d253ec846"
+  },
+  {
+    "command": "aos-hub worker bootstrap-root",
+    "coverage": "external-provider",
+    "tests": [
+      "pkgs/tools/aos-hub-worker-do-e2e.nix"
+    ],
+    "interface_sha256": "974cd8bb16e1547ad6782f97b87ef22832e29b27a56f1195ae62c637c6a4f3a9"
+  },
+  {
+    "command": "aos-hub worker deploy",
+    "coverage": "external-provider",
+    "tests": [
+      "pkgs/tools/aos-hub-worker-do-e2e.nix"
+    ],
+    "interface_sha256": "1c3a861b812c0fca75dd9c807c18189a1fb792af23d4de970cf099b20a0e6968"
+  },
+  {
+    "command": "aos-hub worker install",
+    "coverage": "external-provider",
+    "tests": [
+      "pkgs/tools/aos-hub-worker-do-e2e.nix"
+    ],
+    "interface_sha256": "e2f16e4f5c5866313dffe80b64c87479850d07f8024f80418abe7a50d41ec31b"
+  },
+  {
+    "command": "aos-hub worker login",
+    "coverage": "external-provider",
+    "tests": [
+      "pkgs/tools/aos-hub-worker-do-e2e.nix"
+    ],
+    "interface_sha256": "9cd5a7a705cfc617b5d051694868a978c13de27a539c1123a079bc2988599539"
+  },
+  {
+    "command": "aos-hub worker logout",
+    "coverage": "external-provider",
+    "tests": [
+      "pkgs/tools/aos-hub-worker-do-e2e.nix"
+    ],
+    "interface_sha256": "ec0ae34e1b5715866c612c8e3d8c40b7742a12634df6286c740a0c17bf34cb11"
+  },
+  {
+    "command": "aos-hub worker provision",
+    "coverage": "external-provider",
+    "tests": [
+      "pkgs/tools/aos-hub-worker-do-e2e.nix"
+    ],
+    "interface_sha256": "0b8dbc4cf33a4d5b23dfbd56980ffe59d67959583568e50e81e16c1c4eae05be"
+  },
+  {
+    "command": "aos-hub worker whoami",
+    "coverage": "external-provider",
+    "tests": [
+      "pkgs/tools/aos-hub-worker-do-e2e.nix"
+    ],
+    "interface_sha256": "d4e9984f6e6f776de4b63534ea9295e8bbe2bbbeb97c8a9848b5e8373b40a8f0"
+  }
+]

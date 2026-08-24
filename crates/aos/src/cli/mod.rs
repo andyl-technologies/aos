@@ -27,6 +27,9 @@ mod server;
 mod test;
 mod vm;
 
+#[cfg(test)]
+mod feature_coverage;
+
 pub use cache::*;
 pub use hub::*;
 pub use hub_retained_control::*;
