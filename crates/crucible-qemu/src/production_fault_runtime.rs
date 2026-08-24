@@ -303,6 +303,8 @@ mod construction;
 pub(crate) use construction::validate_qemu_fingerprints;
 #[path = "production_fault_runtime/evaluation.rs"]
 mod evaluation;
+#[cfg(test)]
+pub(crate) use evaluation::map_fault_event_drain_error;
 use evaluation::runtime_collection_reservation;
 #[path = "production_fault_runtime/evidence.rs"]
 mod evidence;

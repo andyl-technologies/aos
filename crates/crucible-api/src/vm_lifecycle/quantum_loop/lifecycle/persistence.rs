@@ -113,6 +113,16 @@ pub(in crate::vm_lifecycle) fn validate_recovered_lifecycle_journal(
             limits.nodes
         ));
     }
+    if matches!(
+        journal.phase,
+        ProductionLifecycleJournalPhase::Idle | ProductionLifecycleJournalPhase::Committed
+    ) && !journal.nodes.is_empty()
+    {
+        return Err(format!(
+            "lifecycle journal phase {:?} cannot retain live node ownership",
+            journal.phase
+        ));
+    }
     for (index, node) in journal.nodes.iter().enumerate() {
         if node.node.is_empty()
             || journal.nodes[..index]
@@ -174,31 +184,60 @@ fn journal_process_ownership_is_exact(
     current: Option<&QemuProcessIdentity>,
     staged: Option<&QemuProcessIdentity>,
 ) -> bool {
-    let precommit =
-        current == Some(&node.current_process) && staged == node.replacement_process.as_ref();
-    if precommit {
-        return true;
+    match phase {
+        ProductionLifecycleJournalPhase::Idle | ProductionLifecycleJournalPhase::Committed => false,
+        ProductionLifecycleJournalPhase::Intent => {
+            current == Some(&node.current_process)
+                && staged.is_none()
+                && node.replacement_process.is_none()
+        }
+        ProductionLifecycleJournalPhase::Prepared
+        | ProductionLifecycleJournalPhase::ExitsReaped => {
+            current == Some(&node.current_process) && staged == node.replacement_process.as_ref()
+        }
+        ProductionLifecycleJournalPhase::Quarantined => {
+            quarantined_process_ownership_is_recoverable(node, current, staged)
+        }
     }
+}
 
-    // The manifest is published before the journal advances from ExitsReaped
-    // to Committed. Recovery must therefore admit that one exact ordering
-    // window, while still authenticating both journal generations. A terminal
-    // permanent-failure transaction has no replacement owner and removes its
-    // current process from the manifest in the same window.
-    if !matches!(
-        phase,
-        ProductionLifecycleJournalPhase::ExitsReaped
-            | ProductionLifecycleJournalPhase::Committed
-            | ProductionLifecycleJournalPhase::Quarantined
-    ) || staged.is_some()
-    {
+fn quarantined_process_ownership_is_recoverable(
+    node: &ProductionLifecycleJournalNode,
+    current: Option<&QemuProcessIdentity>,
+    staged: Option<&QemuProcessIdentity>,
+) -> bool {
+    if current == Some(&node.current_process) {
+        // Quarantine can follow Intent, any replacement-launch failure, or a
+        // manifest publication failure. The staged entry is either the exact
+        // journal replacement, absent because publication never committed, or
+        // still manifest-owned after commit consumed the journal copy.
+        return node
+            .replacement_process
+            .as_ref()
+            .is_none_or(|replacement| staged.is_none() || staged == Some(replacement));
+    }
+    if staged.is_some() {
         return false;
     }
-    node.replacement_process
-        .as_ref()
-        .map_or(current.is_none(), |replacement| {
-            current == Some(replacement)
-        })
+    if let Some(replacement) = node.replacement_process.as_ref() {
+        return current == Some(replacement);
+    }
+
+    // Commit moves replacement ownership into the manifest before persisting
+    // it, and consumes the journal's replacement field. If directory fsync
+    // then fails, quarantine durably observes the new manifest owner without
+    // a duplicate journal identity. Only a generation-advancing replacement
+    // transition can create that state. Permanent failure instead removes the
+    // manifest owner entirely.
+    (current.is_some()
+        && node.next_generation == node.current_generation.saturating_add(1)
+        && matches!(
+            node.transition.as_str(),
+            "Crash" | "PowerOff" | "PowerCycle" | "Reset"
+        ))
+        || (current.is_none()
+            && node.next_generation == node.current_generation
+            && node.transition == "PermanentFailure")
 }
 
 fn valid_lifecycle_transition(value: &str) -> bool {
