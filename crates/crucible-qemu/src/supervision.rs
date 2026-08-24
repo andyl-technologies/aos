@@ -9,6 +9,7 @@ mod accelerator_io_servicer;
 mod block_io_gate;
 mod block_io_servicer;
 mod block_node_gate;
+pub(crate) mod bounded_scheduler_preemption;
 mod deadline;
 mod device_host_work;
 mod host_io_runtime;

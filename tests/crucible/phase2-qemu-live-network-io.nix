@@ -116,7 +116,7 @@ in
             stop_observation_honors_timeout_without_a_state_change \
             watchdog_expiry_directly_resumes_stopped_target; do
             grep -Fxq \
-              "bounded_scheduler_preemption::tests::$test_name: test" \
+              "supervision::bounded_scheduler_preemption::tests::$test_name: test" \
               "$scheduler_test_list"
           done
           cargo test \
@@ -126,7 +126,7 @@ in
             --manifest-path crates/Cargo.toml \
             -p crucible-qemu \
             --lib \
-            bounded_scheduler_preemption::tests:: \
+            supervision::bounded_scheduler_preemption::tests:: \
             -- \
             --test-threads=1
           grep -Fxq \

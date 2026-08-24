@@ -740,7 +740,7 @@ fn stale_execution_fingerprint_requests_production_control_boundary() -> Result<
     Ok(())
 }
 
-#[path = "node_tests/exact_lifecycle.rs"]
+#[path = "node_tests/exact_lifecycle_tests.rs"]
 mod exact_lifecycle;
 
 fn scripted_node(

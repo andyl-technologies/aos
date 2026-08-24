@@ -31,19 +31,19 @@ use crucible_device::{
 };
 use crucible_qemu::{
     ProductionFaultRuntime, QemuAsyncDriverRuntimeError, QemuBlockFaultCoordinator,
-    QemuLive9pIoServiceStep, QemuLive9pIoServicer, QemuLive9pResponseEvidence,
-    QemuLiveBlockIoDeliveryStep, QemuLiveBlockIoIntakeStep, QemuLiveBlockIoServiceStep,
-    QemuLiveBlockIoServicer, QemuNinepFaultCoordinator, QemuSharedBlockDevice,
-    ResolvedVolatileCacheLoss, StorageArrayError, StorageFaultResolutionContext,
-    StorageFaultResolutionError, VolatileCacheLossReplay, block_delivery_fault_opportunity,
-    block_durability_config, block_persistence_fault_opportunity, block_request_fault_opportunity,
-    block_request_persistence_fault_opportunity, merge_block_fault_phase_directive,
-    plan_storage_array_write, read_storage_array, resolve_block_controller_transition,
-    resolve_block_fault_directive, resolve_block_persistence_media_directive,
-    resolve_storage_array_baseline, resolve_storage_array_policy,
-    resolve_storage_array_rebuild_failure, resolve_storage_array_rebuild_service,
-    resolve_volatile_cache_loss, storage_array_rebuild_fault_opportunity,
-    storage_recovery_event_key,
+    QemuLive9pIoServiceStep, QemuLive9pIoServicer,
+    QemuLive9pResponseEvidence as LiveNinepResponseEvidence, QemuLiveBlockIoDeliveryStep,
+    QemuLiveBlockIoIntakeStep, QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer,
+    QemuNinepFaultCoordinator, QemuSharedBlockDevice, ResolvedVolatileCacheLoss, StorageArrayError,
+    StorageFaultResolutionContext, StorageFaultResolutionError, VolatileCacheLossReplay,
+    block_delivery_fault_opportunity, block_durability_config, block_persistence_fault_opportunity,
+    block_request_fault_opportunity, block_request_persistence_fault_opportunity,
+    merge_block_fault_phase_directive, plan_storage_array_write, read_storage_array,
+    resolve_block_controller_transition, resolve_block_fault_directive,
+    resolve_block_persistence_media_directive, resolve_storage_array_baseline,
+    resolve_storage_array_policy, resolve_storage_array_rebuild_failure,
+    resolve_storage_array_rebuild_service, resolve_volatile_cache_loss,
+    storage_array_rebuild_fault_opportunity, storage_recovery_event_key,
 };
 
 /// Maximum phase/device settle transitions performed during one host poll.
