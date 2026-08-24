@@ -4,6 +4,12 @@ use super::*;
 
 mod persistence;
 pub(in crate::vm_lifecycle) use persistence::LifecycleJournalPersistence;
+pub(super) use persistence::map_journal_limit;
+#[cfg(test)]
+pub(in crate::vm_lifecycle) use persistence::validate_recovered_lifecycle_journal;
+pub(in crate::vm_lifecycle) use persistence::{
+    decode_prior_run_state, decode_run_json_bounded, persist_recovered_lifecycle_journal,
+};
 
 pub(super) struct PreparedTerminalReplacement {
     pub(super) decision: QemuNodeLifecycleDecision,
@@ -154,18 +160,23 @@ impl ProductionVmLifecycleLoop {
         &mut self,
         intents: &[QemuNodeLifecycleIntent],
         limits: FaultResourceLimits,
+        runtime_event_records: u64,
+        runtime_event_log_bytes: u64,
     ) -> Result<PreparedLifecyclePrecommit, SchedulerError> {
         let mut nodes = Vec::new();
         nodes
             .try_reserve_exact(intents.len())
             .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
         let completed_exit_count = self.lifecycle_journal.completed_exits.len();
+        let aggregate_event_records = runtime_event_records
+            .checked_add(u64::try_from(completed_exit_count).unwrap_or(u64::MAX))
+            .ok_or_else(|| {
+                lifecycle_resource_error("event_records", usize::MAX, intents.len(), limits)
+            })?;
         limits
             .reserve(
                 "event_records",
-                u64::try_from(completed_exit_count).map_err(|_| {
-                    lifecycle_resource_error("event_records", usize::MAX, 0, limits)
-                })?,
+                aggregate_event_records,
                 u64::try_from(intents.len()).map_err(|_| {
                     lifecycle_resource_error("event_records", 0, usize::MAX, limits)
                 })?,
@@ -173,7 +184,7 @@ impl ProductionVmLifecycleLoop {
             .map_err(|_| {
                 lifecycle_resource_error(
                     "event_records",
-                    completed_exit_count,
+                    usize::try_from(aggregate_event_records).unwrap_or(usize::MAX),
                     intents.len(),
                     limits,
                 )
@@ -232,7 +243,9 @@ impl ProductionVmLifecycleLoop {
                 )?,
                 action_sha256: try_lifecycle_hash(intent.action, nodes.len(), limits)?,
                 evidence_sha256: try_lifecycle_hash(
-                    ContentHash { bytes: [0; 32] },
+                    intent
+                        .event_evidence
+                        .unwrap_or(ContentHash { bytes: [0; 32] }),
                     nodes.len(),
                     limits,
                 )?,
@@ -256,7 +269,7 @@ impl ProductionVmLifecycleLoop {
             })?;
         self.lifecycle_journal.phase = ProductionLifecycleJournalPhase::Intent;
         self.lifecycle_journal.nodes = nodes;
-        self.reserve_lifecycle_journal_encoding(limits)?;
+        self.reserve_lifecycle_journal_encoding(limits, runtime_event_log_bytes)?;
         self.persist_lifecycle_journal()?;
         Ok(PreparedLifecyclePrecommit {
             checkpoint,
@@ -364,8 +377,28 @@ impl ProductionVmLifecycleLoop {
                         item.decision.node.name
                     ),
                 })?;
-            journal_node.replacement_process = identity;
+            if let Some(identity) = identity {
+                if self
+                    .run_manifest
+                    .staged_processes
+                    .contains_key(&item.decision.node.name)
+                {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "staged lifecycle node `{}` already owns a manifest process",
+                            item.decision.node.name
+                        ),
+                    });
+                }
+                self.run_manifest
+                    .staged_processes
+                    .insert(item.decision.node.name.clone(), identity.clone());
+                journal_node.replacement_process = Some(identity);
+            } else {
+                journal_node.replacement_process = None;
+            }
         }
+        self.persist_run_manifest()?;
         self.advance_lifecycle_journal(ProductionLifecycleJournalPhase::Prepared)
     }
 

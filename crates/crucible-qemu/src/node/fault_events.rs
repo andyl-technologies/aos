@@ -3,6 +3,122 @@
 use super::*;
 
 impl QemuNode {
+    /// Authenticates every pending event without releasing its current owner.
+    ///
+    /// Events already staged by the host pump remain staged, while events in
+    /// shared memory retain their consumer cursor. The returned copies are
+    /// therefore precommit evidence only; normal admission later consumes the
+    /// same sequence after durable intent publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when record storage cannot be admitted,
+    /// payload ownership cannot be copied, the transport is invalid, or the
+    /// previewed event sequence is not canonical.
+    pub(crate) fn preview_fault_events(
+        &mut self,
+        canonical_current: &mut usize,
+        configured_event_records: usize,
+        canonical_payload_bytes: &mut usize,
+        configured_payload_bytes: usize,
+        configured_inline_payload_bytes: usize,
+    ) -> Result<Vec<DequeuedFaultEvent>, QemuNodeError> {
+        if let Some(message) = &self.fault_event_terminal_failure {
+            return Err(QemuNodeError::fault_command(message.clone()));
+        }
+        let staged = self.host_io_runtime.staged_fault_events();
+        let published = self
+            .channels
+            .shmem_hot_path
+            .fault_event_count()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })?;
+        let required =
+            staged
+                .len()
+                .checked_add(published)
+                .ok_or(QemuNodeError::FaultEventStorage {
+                    current: u64::MAX,
+                    requested: u64::MAX,
+                    configured: u64::try_from(configured_event_records).unwrap_or(u64::MAX),
+                })?;
+        admit_fault_event_records(*canonical_current, required, configured_event_records)?;
+        let mut preview = Vec::new();
+        preview
+            .try_reserve_exact(required)
+            .map_err(|_| QemuNodeError::FaultEventStorage {
+                current: u64::try_from(*canonical_current).unwrap_or(u64::MAX),
+                requested: u64::try_from(required).unwrap_or(u64::MAX),
+                configured: u64::try_from(configured_event_records).unwrap_or(u64::MAX),
+            })?;
+        for event in staged {
+            if event.payload.len() > configured_inline_payload_bytes {
+                return Err(QemuNodeError::FaultEventInlinePayloadStorage {
+                    requested: u64::try_from(event.payload.len()).unwrap_or(u64::MAX),
+                    configured: u64::try_from(configured_inline_payload_bytes).unwrap_or(u64::MAX),
+                });
+            }
+            let record_bytes = event
+                .payload
+                .len()
+                .checked_add(crucible_shmem::FAULT_EVENT_HEADER_V1_BYTES)
+                .ok_or(QemuNodeError::FaultEventPayloadStorage {
+                    current: u64::MAX,
+                    requested: u64::MAX,
+                    configured: u64::try_from(configured_payload_bytes).unwrap_or(u64::MAX),
+                })?;
+            admit_fault_event_payload_bytes(
+                *canonical_payload_bytes,
+                record_bytes,
+                configured_payload_bytes,
+            )?;
+            let mut payload = Vec::new();
+            payload
+                .try_reserve_exact(event.payload.len())
+                .map_err(|_| QemuNodeError::FaultEventPayloadStorage {
+                    current: u64::try_from(*canonical_payload_bytes).unwrap_or(u64::MAX),
+                    requested: u64::try_from(record_bytes).unwrap_or(u64::MAX),
+                    configured: u64::try_from(configured_payload_bytes).unwrap_or(u64::MAX),
+                })?;
+            payload.extend_from_slice(&event.payload);
+            preview.push(DequeuedFaultEvent {
+                header: event.header.clone(),
+                payload,
+            });
+            *canonical_payload_bytes = canonical_payload_bytes
+                .checked_add(record_bytes)
+                .unwrap_or(configured_payload_bytes);
+        }
+        self.channels.shmem_hot_path.snapshot_fault_events(
+            &mut preview,
+            canonical_payload_bytes,
+            configured_payload_bytes,
+            configured_inline_payload_bytes,
+        )?;
+        let mut expected = self.next_fault_event_sequence;
+        for event in &preview {
+            if event.header.event_sequence != expected {
+                return Err(QemuNodeError::fault_command(format!(
+                    "fault event preview sequence mismatch: expected {expected}, observed {}",
+                    event.header.event_sequence
+                )));
+            }
+            expected = expected.checked_add(1).ok_or_else(|| {
+                QemuNodeError::fault_command("fault event preview sequence is exhausted")
+            })?;
+        }
+        *canonical_current =
+            canonical_current
+                .checked_add(required)
+                .ok_or(QemuNodeError::FaultEventStorage {
+                    current: u64::MAX,
+                    requested: u64::try_from(required).unwrap_or(u64::MAX),
+                    configured: u64::try_from(configured_event_records).unwrap_or(u64::MAX),
+                })?;
+        Ok(preview)
+    }
+
     /// Drains and sequence-validates every fault-rule event published so far.
     ///
     /// # Errors
@@ -148,6 +264,22 @@ fn admit_fault_event_records(
         return Ok(());
     }
     Err(QemuNodeError::FaultEventStorage {
+        current: u64::try_from(current).unwrap_or(u64::MAX),
+        requested: u64::try_from(requested).unwrap_or(u64::MAX),
+        configured: u64::try_from(configured).unwrap_or(u64::MAX),
+    })
+}
+
+fn admit_fault_event_payload_bytes(
+    current: usize,
+    requested: usize,
+    configured: usize,
+) -> Result<(), QemuNodeError> {
+    let admitted = current.checked_add(requested);
+    if admitted.is_some_and(|total| total <= configured) {
+        return Ok(());
+    }
+    Err(QemuNodeError::FaultEventPayloadStorage {
         current: u64::try_from(current).unwrap_or(u64::MAX),
         requested: u64::try_from(requested).unwrap_or(u64::MAX),
         configured: u64::try_from(configured).unwrap_or(u64::MAX),

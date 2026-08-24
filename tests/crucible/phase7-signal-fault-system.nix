@@ -115,6 +115,15 @@ in
             -p crucible-qemu-plugin \
             --lib \
             -- --list > "$plugin_lib_tests"
+          api_lib_tests="$TMPDIR/crucible-api-lib-tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-api \
+            --lib \
+            -- --list > "$api_lib_tests"
 
           run_exact_crucible_test() {
             test_name="$1"
@@ -151,6 +160,19 @@ in
               --target-dir "$target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-shmem \
+              --lib "$test_name" \
+              -- --exact --test-threads=1
+          }
+
+          run_exact_api_test() {
+            test_name="$1"
+            grep -Fqx "$test_name: test" "$api_lib_tests"
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-api \
               --lib "$test_name" \
               -- --exact --test-threads=1
           }
@@ -269,6 +291,10 @@ in
           run_exact_qemu_test \
             node::tests::fault_event_budget::fault_event_limit_rejects_before_consuming_staged_ownership
           run_exact_qemu_test \
+            node::tests::fault_event_budget::fault_event_payload_limit_rejects_before_copying_or_consuming_ownership
+          run_exact_qemu_test \
+            node::tests::fault_event_budget::fault_event_inline_payload_limit_rejects_before_copying_or_consuming_ownership
+          run_exact_qemu_test \
             node::tests::fault_event_budget::fingerprint_nodes_spend_one_sequential_fault_event_budget
           run_exact_qemu_test \
             node::tests::fault_event_budget::production_restore_requires_clean_fault_event_ownership
@@ -276,6 +302,24 @@ in
             node::tests::fault_event_budget::production_restore_rejects_fault_event_published_by_fingerprint
           run_exact_qemu_test \
             production_fault_runtime::runtime_tests::recovery_tests::live_host_fault_event_drain_reaches_production_authentication
+          run_exact_shmem_test \
+            fault_event::tests::event_snapshot_authenticates_without_consuming_transport_ownership
+          run_exact_shmem_test \
+            fault_event::tests::event_snapshot_rejects_payload_bytes_without_consuming_transport_ownership
+          run_exact_shmem_test \
+            fault_event::tests::event_snapshot_rejects_inline_payload_before_copying_or_consuming
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_an_unowned_journal_process_identity
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_an_arbitrary_current_with_an_owned_replacement
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_accepts_a_prepared_replacement_at_the_exact_node_limit
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_oversized_json_before_decode
+          run_exact_api_test \
+            vm_lifecycle::quantum_loop::lifecycle::persistence::tests::fixed_journal_writer_uses_only_reserved_storage
+          run_exact_api_test \
+            vm_lifecycle::quantum_loop::lifecycle::persistence::tests::fixed_journal_writer_rejects_growth_without_mutation
           run_exact_qemu_test \
             production_fault_runtime::checkpoint_codec::preflight::tests::preflight_applies_event_records_as_one_aggregate_ceiling
           run_exact_qemu_test \

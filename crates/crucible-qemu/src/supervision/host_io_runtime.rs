@@ -1384,6 +1384,10 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         Ok(std::mem::take(&mut self.staged_fault_events))
     }
 
+    fn staged_fault_events(&self) -> &[DequeuedFaultEvent] {
+        &self.staged_fault_events
+    }
+
     fn staged_fault_events_pending(&self) -> bool {
         !self.staged_fault_events.is_empty()
     }

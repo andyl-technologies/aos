@@ -186,6 +186,28 @@ pub enum QemuNodeError {
         /// Authored record ceiling governing the operation.
         configured: u64,
     },
+    /// Non-consuming occurrence preview exceeded its authored event-log byte ceiling.
+    #[error(
+        "cannot stage {requested} QEMU fault-event log bytes at current {current} against limit {configured}"
+    )]
+    FaultEventPayloadStorage {
+        /// Event-log bytes already retained by the production event continuation.
+        current: u64,
+        /// Additional canonical header and payload bytes required by the event.
+        requested: u64,
+        /// Authored aggregate event-log byte ceiling.
+        configured: u64,
+    },
+    /// Non-consuming occurrence preview exceeded its authored inline payload ceiling.
+    #[error(
+        "cannot stage a QEMU fault-event payload of {requested} bytes against inline limit {configured}"
+    )]
+    FaultEventInlinePayloadStorage {
+        /// Payload bytes required by the previewed event.
+        requested: u64,
+        /// Authored per-event inline payload ceiling.
+        configured: u64,
+    },
 }
 
 impl QemuNodeError {

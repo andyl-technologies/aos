@@ -47,6 +47,36 @@ pub enum FaultEventError {
     /// SHA-256 evidence authentication failed.
     #[error("fault-event evidence authentication failed")]
     EvidenceDigest,
+    /// Caller-owned preview storage cannot hold every published event.
+    #[error("fault-event preview storage has {available} slots for {required} events")]
+    PreviewCapacity {
+        /// Destination slots available without allocation.
+        available: usize,
+        /// Published events that must be inspected atomically.
+        required: usize,
+    },
+    /// Preview event-log bytes exceed the caller's authored aggregate ceiling.
+    #[error(
+        "fault-event preview needs {requested} event-log bytes at current {current} against limit {configured}"
+    )]
+    PreviewPayloadCapacity {
+        /// Event-log bytes already owned by the aggregate continuation.
+        current: u64,
+        /// Additional canonical header and payload bytes required by this event.
+        requested: u64,
+        /// Authored aggregate event-log byte ceiling.
+        configured: u64,
+    },
+    /// One preview payload exceeds the authored inline-payload ceiling.
+    #[error(
+        "fault-event preview payload needs {requested} bytes against inline limit {configured}"
+    )]
+    PreviewInlinePayloadCapacity {
+        /// Payload bytes required by this event.
+        requested: u64,
+        /// Authored per-event inline payload ceiling.
+        configured: u64,
+    },
     /// Generic SPSC transport invariant failed.
     #[error(transparent)]
     Transport(#[from] FaultTransportError),

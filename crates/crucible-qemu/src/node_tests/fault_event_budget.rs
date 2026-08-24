@@ -2,6 +2,62 @@
 
 use super::*;
 
+pub(super) fn snapshot_scripted_fault_events(
+    events: &VecDeque<DequeuedFaultEvent>,
+    destination: &mut Vec<DequeuedFaultEvent>,
+    canonical_payload_bytes: &mut usize,
+    configured_payload_bytes: usize,
+    configured_inline_payload_bytes: usize,
+) -> Result<(), QemuNodeError> {
+    if destination.capacity().saturating_sub(destination.len()) < events.len() {
+        return Err(QemuNodeError::FaultEventStorage {
+            current: u64::try_from(destination.len()).unwrap_or(u64::MAX),
+            requested: u64::try_from(events.len()).unwrap_or(u64::MAX),
+            configured: u64::try_from(destination.capacity()).unwrap_or(u64::MAX),
+        });
+    }
+    for event in events {
+        if event.payload.len() > configured_inline_payload_bytes {
+            return Err(QemuNodeError::FaultEventInlinePayloadStorage {
+                requested: u64::try_from(event.payload.len()).unwrap_or(u64::MAX),
+                configured: u64::try_from(configured_inline_payload_bytes).unwrap_or(u64::MAX),
+            });
+        }
+        let record_bytes = event
+            .payload
+            .len()
+            .checked_add(crucible_shmem::FAULT_EVENT_HEADER_V1_BYTES)
+            .ok_or(QemuNodeError::FaultEventPayloadStorage {
+                current: u64::MAX,
+                requested: u64::MAX,
+                configured: u64::try_from(configured_payload_bytes).unwrap_or(u64::MAX),
+            })?;
+        let admitted = canonical_payload_bytes.checked_add(record_bytes);
+        if admitted.is_none_or(|total| total > configured_payload_bytes) {
+            return Err(QemuNodeError::FaultEventPayloadStorage {
+                current: u64::try_from(*canonical_payload_bytes).unwrap_or(u64::MAX),
+                requested: u64::try_from(record_bytes).unwrap_or(u64::MAX),
+                configured: u64::try_from(configured_payload_bytes).unwrap_or(u64::MAX),
+            });
+        }
+        let mut payload = Vec::new();
+        payload
+            .try_reserve_exact(event.payload.len())
+            .map_err(|_| QemuNodeError::FaultEventPayloadStorage {
+                current: u64::try_from(*canonical_payload_bytes).unwrap_or(u64::MAX),
+                requested: u64::try_from(record_bytes).unwrap_or(u64::MAX),
+                configured: u64::try_from(configured_payload_bytes).unwrap_or(u64::MAX),
+            })?;
+        payload.extend_from_slice(&event.payload);
+        destination.push(DequeuedFaultEvent {
+            header: event.header.clone(),
+            payload,
+        });
+        *canonical_payload_bytes = admitted.unwrap_or(configured_payload_bytes);
+    }
+    Ok(())
+}
+
 #[test]
 fn node_set_arms_one_node_from_one_aggregate_fault_event_budget() -> Result<(), Box<dyn Error>> {
     let log_a = shared_log();
@@ -67,6 +123,81 @@ fn fault_event_limit_rejects_before_consuming_staged_ownership() -> Result<(), B
     ));
     assert!(events.is_empty());
     assert_eq!(canonical_current, 3);
+    assert!(node.fault_event_pending()?);
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+fn fault_event_payload_limit_rejects_before_copying_or_consuming_ownership()
+-> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let payload = vec![0x5a; 17];
+    let mut event = fault_event_with_sequence(1);
+    event.header.payload_hash = *blake3::hash(&payload).as_bytes();
+    event.header.payload_length = payload.len() as u32;
+    event.payload = payload;
+    let mut node = scripted_node_with_fault_events(Arc::clone(&log), [event])?;
+    let mut canonical_records = 2;
+    let mut canonical_payload_bytes = 11;
+    let record_bytes = 17 + crucible_shmem::FAULT_EVENT_HEADER_V1_BYTES;
+
+    let configured = 11 + record_bytes - 1;
+    let preview = node.preview_fault_events(
+        &mut canonical_records,
+        10,
+        &mut canonical_payload_bytes,
+        configured,
+        17,
+    );
+    assert!(
+        matches!(
+            preview,
+            Err(QemuNodeError::FaultEventPayloadStorage {
+                current: 11,
+                requested,
+                configured: observed_configured,
+            })
+                if requested == record_bytes as u64
+                    && observed_configured == configured as u64
+        ),
+        "unexpected preview result: {preview:?}"
+    );
+    assert_eq!(canonical_records, 2);
+    assert_eq!(canonical_payload_bytes, 11);
+    assert!(node.fault_event_pending()?);
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+fn fault_event_inline_payload_limit_rejects_before_copying_or_consuming_ownership()
+-> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let payload = vec![0xa5; 17];
+    let mut event = fault_event_with_sequence(1);
+    event.header.payload_hash = *blake3::hash(&payload).as_bytes();
+    event.header.payload_length = payload.len() as u32;
+    event.payload = payload;
+    let mut node = scripted_node_with_fault_events(Arc::clone(&log), [event])?;
+    let mut canonical_records = 2;
+    let mut canonical_event_log_bytes = 11;
+
+    assert!(matches!(
+        node.preview_fault_events(
+            &mut canonical_records,
+            10,
+            &mut canonical_event_log_bytes,
+            usize::MAX,
+            16,
+        ),
+        Err(QemuNodeError::FaultEventInlinePayloadStorage {
+            requested: 17,
+            configured: 16,
+        })
+    ));
+    assert_eq!(canonical_records, 2);
+    assert_eq!(canonical_event_log_bytes, 11);
     assert!(node.fault_event_pending()?);
     node.shutdown_child()?;
     Ok(())
