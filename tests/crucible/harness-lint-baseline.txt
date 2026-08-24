@@ -271,4 +271,6 @@ error-logging	crates/crucible-api/src/server.rs	stringly error	Result<_, String>
 error-logging	crates/crucible-api/src/server/debug_wire.rs	stringly error	Result<_, String>		10
 error-logging	crates/crucible-api/src/server/debug_reposition.rs	stringly error	Result<_, String>		4
 error-logging	crates/crucible-api/src/server/query_wire.rs	stringly error	Result<_, String>		1
+error-logging	crates/crucible-qemu/src/node_tests/fault_event_budget.rs	erased error	dyn Error		5
+error-logging	crates/crucible-qemu/src/node_tests/fingerprint.rs	erased error	dyn Error		1
 error-logging	crates/crucible-qemu/src/single_vm_fingerprint/terminal_trace.rs	stringly error	Result<_, String>		4

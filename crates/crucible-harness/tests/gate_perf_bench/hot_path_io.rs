@@ -37,7 +37,12 @@ const HOT_PATH_OWNERS: &[HotPathOwner] = &[
     ),
     owner(
         "crucible-qemu/src/supervision/host_io_runtime.rs",
-        &["pub struct QemuLiveHostIoRuntime", "fn signal_wake(&self)"],
+        &["pub struct QemuLiveHostIoRuntime"],
+        &[],
+    ),
+    owner(
+        "crucible-qemu/src/supervision/host_io_runtime/control.rs",
+        &["fn signal_wake(&self)"],
         &["wake.write_all(&1_u64.to_ne_bytes())"],
     ),
     owner(
@@ -389,7 +394,7 @@ fn advance_and_delivery_owners_have_no_socket_or_control_io() -> Result<(), Box<
     );
     assert_eq!(
         inventoried_paths.len(),
-        29,
+        30,
         "the scoped concrete Rust hot-path owner inventory must remain explicit"
     );
 
