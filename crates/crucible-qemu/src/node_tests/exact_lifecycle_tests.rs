@@ -23,6 +23,28 @@ fn permanent_failure_retires_and_removes_the_authoritative_generation() -> Resul
 }
 
 #[test]
+fn restored_replacement_requires_explicit_release_after_install() -> Result<(), Box<dyn Error>> {
+    let current_log = shared_log();
+    let replacement_log = shared_log();
+    let identity = node_id("vm-a");
+    let mut current = scripted_node(Arc::clone(&current_log), false, false, false)?;
+    current.force_quarantine_and_reap()?;
+    let replacement = scripted_node(Arc::clone(&replacement_log), false, false, false)?;
+    let mut nodes = QemuNodeSet::new();
+    assert!(nodes.insert(identity.clone(), current).is_none());
+
+    let plan = nodes.prepare_terminal_replacements(vec![identity.clone()])?;
+    let retired = nodes.commit_terminal_replacements(plan, vec![Some(replacement)]);
+    assert_eq!(retired.len(), 1);
+    assert!(!recorded(&replacement_log).contains(&ChannelCall::QmpContinue));
+
+    nodes.resume_restored_generation(&identity)?;
+    assert!(recorded(&replacement_log).contains(&ChannelCall::QmpContinue));
+    nodes.shutdown()?;
+    Ok(())
+}
+
+#[test]
 fn exact_snapshot_rejects_staged_fault_event_ownership() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
     let mut node =
