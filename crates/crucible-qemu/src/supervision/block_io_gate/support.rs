@@ -4,7 +4,7 @@ use crucible::{
     SchedulerError, SchedulerNodeId, SchedulerSendAuthorization, SchedulerSendAuthorizer,
 };
 
-pub(super) use crate::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
+pub(super) use crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 
 /// Authorizes the single node's block-I/O traffic.
 pub(super) struct GateSendAuthorizer;

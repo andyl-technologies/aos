@@ -8,7 +8,7 @@ use super::QemuLiveNetworkIoServicerError;
 use crate::{
     LaunchProfileError, QemuHostPluginSetupError, QemuLaunchCommandError,
     QemuMappedQuantumShmemHotPathError, QemuNodeChannelError, QmpError,
-    bounded_scheduler_preemption::BoundedSchedulerPreemptionError,
+    supervision::bounded_scheduler_preemption::BoundedSchedulerPreemptionError,
 };
 
 /// Failure produced by the live network-I/O certification.

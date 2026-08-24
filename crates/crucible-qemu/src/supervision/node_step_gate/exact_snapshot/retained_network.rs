@@ -98,7 +98,11 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
         })?;
     let (retained_frame, source_attempts, source_last_attempt_icount) =
         retained_transport_head(&source_transport, frame_payload)?;
-    eprintln!("crucible-live-network-io phase=retained-capture status=frame-retained");
+    tracing::debug!(
+        phase = "retained-capture",
+        status = "frame-retained",
+        "crucible live network I/O"
+    );
 
     let checkpoint = retained_network_checkpoint(&identity, CAPTURE_ICOUNT);
     let snapshot = source
@@ -138,7 +142,11 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
     source.force_crash_and_reap_for_gate().map_err(|error| {
         QemuLiveNodeStepGateError::node_op("force crash retained network source", error)
     })?;
-    eprintln!("crucible-live-network-io phase=retained-capture status=durably-published");
+    tracing::debug!(
+        phase = "retained-capture",
+        status = "durably-published",
+        "crucible live network I/O"
+    );
     drop(source);
     drop(snapshot);
 
@@ -200,7 +208,11 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
             ),
         });
     }
-    eprintln!("crucible-live-network-io phase=retained-restore status=state-verified");
+    tracing::debug!(
+        phase = "retained-restore",
+        status = "state-verified",
+        "crucible live network I/O"
+    );
 
     let first_retry_icount = restored_last_attempt_icount
         .checked_add(crucible_shmem::FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT)
@@ -358,8 +370,12 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
             }
         }
         let guest_acknowledgement_seen = guest_ack_identity.is_some();
-        eprintln!(
-            "crucible-live-network-io phase=retained-restore status=retry-progress icount={target} guest_ack={guest_acknowledgement_seen}"
+        tracing::debug!(
+            phase = "retained-restore",
+            status = "retry-progress",
+            icount = target,
+            guest_ack = guest_acknowledgement_seen,
+            "crucible live network I/O"
         );
         if guest_acknowledgement_seen {
             break;
@@ -395,7 +411,11 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
             ),
         });
     }
-    eprintln!("crucible-live-network-io phase=retained-restore status=guest-acknowledged");
+    tracing::debug!(
+        phase = "retained-restore",
+        status = "guest-acknowledged",
+        "crucible live network I/O"
+    );
     let (guest_ack_emit_icount, guest_ack_sequence) =
         guest_ack_identity.ok_or_else(|| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
             reason: String::from("restored retry lost its acknowledged frame identity"),

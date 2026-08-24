@@ -189,7 +189,7 @@ pub(super) fn ninep_result_evidence(
     action: &ResolvedBindingAction,
     request: &NinepRequestOpportunity,
     selected: &NinepResultDirective,
-    response: QemuLive9pResponseEvidence,
+    response: LiveNinepResponseEvidence,
 ) -> ContentHash {
     let result = match selected {
         NinepResultDirective::Normal => String::from("kind=normal"),
