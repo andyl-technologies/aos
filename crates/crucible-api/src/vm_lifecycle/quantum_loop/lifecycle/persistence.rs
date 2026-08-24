@@ -2,6 +2,231 @@
 
 use super::*;
 use crucible::model::FaultResourceLimitError;
+use serde::de::DeserializeOwned;
+use std::io::Read as _;
+
+const HARD_RUN_STATE_JSON_BYTES: u64 = 67_108_864;
+
+pub(in crate::vm_lifecycle) fn decode_run_json_bounded<T: DeserializeOwned>(
+    path: &Path,
+    configured_maximum: u64,
+) -> Result<T, String> {
+    let maximum = configured_maximum.min(HARD_RUN_STATE_JSON_BYTES);
+    let file = File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    let length = file
+        .metadata()
+        .map_err(|error| format!("inspect {}: {error}", path.display()))?
+        .len();
+    if length > maximum {
+        return Err(format!(
+            "{} contains {length} bytes, above the bounded maximum {maximum}",
+            path.display()
+        ));
+    }
+    let capacity = usize::try_from(length)
+        .map_err(|_| format!("{} length is not representable", path.display()))?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| format!("reserve {capacity} bytes for {}", path.display()))?;
+    file.take(maximum.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum {
+        return Err(format!("{} grew beyond {maximum} bytes", path.display()));
+    }
+    serde_json::from_slice(&bytes).map_err(|error| format!("decode {}: {error}", path.display()))
+}
+
+pub(in crate::vm_lifecycle) fn decode_prior_run_state(
+    directory: &Path,
+    scenario_identity: &str,
+    limits: FaultResourceLimits,
+) -> Result<(ProductionRunManifest, ProductionLifecycleJournal), String> {
+    let manifest_path = directory.join("run-manifest.json");
+    let manifest: ProductionRunManifest =
+        decode_run_json_bounded(&manifest_path, limits.event_log_bytes)
+            .map_err(|message| format!("invalid prior run manifest: {message}"))?;
+    if manifest.version != 2 || manifest.scenario != scenario_identity {
+        return Err(format!(
+            "prior run manifest {} has incompatible identity or version",
+            manifest_path.display()
+        ));
+    }
+    let process_records = manifest
+        .processes
+        .len()
+        .checked_add(manifest.staged_processes.len())
+        .ok_or_else(|| String::from("prior run process count overflow"))?;
+    if u64::try_from(process_records).unwrap_or(u64::MAX) > limits.nodes {
+        return Err(format!(
+            "prior run manifest has {process_records} process records above node limit {}",
+            limits.nodes
+        ));
+    }
+    let journal_path = directory.join("lifecycle-journal.json");
+    let journal = decode_run_json_bounded(&journal_path, limits.event_log_bytes)
+        .map_err(|message| format!("invalid prior lifecycle journal: {message}"))?;
+    validate_recovered_lifecycle_journal(&journal, &manifest, limits).map_err(|message| {
+        format!(
+            "invalid prior lifecycle journal {}: {message}",
+            journal_path.display()
+        )
+    })?;
+    Ok((manifest, journal))
+}
+
+pub(in crate::vm_lifecycle) fn validate_recovered_lifecycle_journal(
+    journal: &ProductionLifecycleJournal,
+    manifest: &ProductionRunManifest,
+    limits: FaultResourceLimits,
+) -> Result<(), String> {
+    if journal.version != 1 {
+        return Err(format!(
+            "unsupported lifecycle journal version {}",
+            journal.version
+        ));
+    }
+    let records = journal
+        .nodes
+        .len()
+        .checked_add(journal.completed_exits.len())
+        .ok_or_else(|| String::from("lifecycle journal record count overflow"))?;
+    if u64::try_from(records).unwrap_or(u64::MAX) > limits.event_records {
+        return Err(format!(
+            "lifecycle journal has {records} records above limit {}",
+            limits.event_records
+        ));
+    }
+    if u64::try_from(journal.nodes.len()).unwrap_or(u64::MAX) > limits.nodes {
+        return Err(format!(
+            "lifecycle journal has {} nodes above limit {}",
+            journal.nodes.len(),
+            limits.nodes
+        ));
+    }
+    for (index, node) in journal.nodes.iter().enumerate() {
+        if node.node.is_empty()
+            || journal.nodes[..index]
+                .iter()
+                .any(|prior| prior.node == node.node)
+        {
+            return Err(format!(
+                "lifecycle journal node {} is empty or duplicated",
+                node.node
+            ));
+        }
+        let current = manifest.processes.get(&node.node);
+        let staged = manifest.staged_processes.get(&node.node);
+        let replacement_is_owned = node
+            .replacement_process
+            .as_ref()
+            .is_none_or(|identity| current == Some(identity) || staged == Some(identity));
+        let current_is_owned = current == Some(&node.current_process)
+            || node
+                .replacement_process
+                .as_ref()
+                .is_some_and(|replacement| {
+                    current == Some(replacement) || staged == Some(replacement)
+                });
+        if !current_is_owned || !replacement_is_owned {
+            return Err(format!(
+                "lifecycle journal node {} is not bound to manifest process ownership",
+                node.node
+            ));
+        }
+        if node.current_generation == 0
+            || node.next_generation < node.current_generation
+            || node.next_generation > node.current_generation.saturating_add(1)
+            || !valid_lifecycle_transition(&node.transition)
+            || !valid_lifecycle_hash(&node.action_sha256)
+            || !valid_lifecycle_hash(&node.evidence_sha256)
+            || node.current_process.process_id == 0
+            || node.current_process.start_time_ticks == 0
+            || !node.current_process.executable.is_absolute()
+        {
+            return Err(format!(
+                "lifecycle journal node {} has invalid canonical fields",
+                node.node
+            ));
+        }
+    }
+    for exit in &journal.completed_exits {
+        if exit.node.is_empty()
+            || exit.generation == 0
+            || !valid_lifecycle_transition(&exit.transition)
+            || !valid_lifecycle_hash(&exit.action_sha256)
+            || !valid_lifecycle_hash(&exit.evidence_sha256)
+            || exit.expected_exit_code != exit.observed_exit_code
+            || exit.process.process_id == 0
+            || exit.process.start_time_ticks == 0
+            || !exit.process.executable.is_absolute()
+        {
+            return Err(format!(
+                "completed lifecycle exit for {} has invalid canonical fields",
+                exit.node
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn valid_lifecycle_transition(value: &str) -> bool {
+    matches!(
+        value,
+        "Boot" | "Crash" | "Reset" | "PowerOff" | "PowerCycle" | "PermanentFailure"
+    )
+}
+
+fn valid_lifecycle_hash(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+}
+
+pub(in crate::vm_lifecycle) fn persist_recovered_lifecycle_journal(
+    path: &Path,
+    journal: &ProductionLifecycleJournal,
+    limits: FaultResourceLimits,
+) -> Result<(), String> {
+    let mut counter = CountingJournalWriter::default();
+    serde_json::to_writer_pretty(&mut counter, journal)
+        .map_err(|error| format!("measure recovered lifecycle journal: {error}"))?;
+    limits
+        .reserve(
+            "event_log_bytes",
+            0,
+            u64::try_from(counter.length).unwrap_or(u64::MAX),
+        )
+        .map_err(|error| format!("admit recovered lifecycle journal: {error}"))?;
+    let mut encoding = Vec::new();
+    encoding
+        .try_reserve_exact(counter.length)
+        .map_err(|_| format!("reserve {} recovered journal bytes", counter.length))?;
+    serde_json::to_writer_pretty(
+        FixedJournalWriter {
+            destination: &mut encoding,
+        },
+        journal,
+    )
+    .map_err(|error| format!("encode recovered lifecycle journal: {error}"))?;
+    let next = path.with_extension("recovery-next");
+    let mut file = File::create(&next)
+        .map_err(|error| format!("create recovered journal {}: {error}", next.display()))?;
+    file.write_all(&encoding)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("flush recovered journal {}: {error}", next.display()))?;
+    fs::rename(&next, path)
+        .map_err(|error| format!("commit recovered journal {}: {error}", path.display()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("journal path {} has no parent", path.display()))?;
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("flush recovered journal directory: {error}"))
+}
 
 fn map_journal_limit(
     error: FaultResourceLimitError,
@@ -129,6 +354,7 @@ impl ProductionVmLifecycleLoop {
     pub(super) fn reserve_lifecycle_journal_encoding(
         &mut self,
         limits: FaultResourceLimits,
+        runtime_event_log_bytes: u64,
     ) -> Result<(), SchedulerError> {
         let mut counter = CountingJournalWriter::default();
         serde_json::to_writer_pretty(&mut counter, &self.lifecycle_journal).map_err(|error| {
@@ -156,7 +382,7 @@ impl ProductionVmLifecycleLoop {
         limits
             .reserve(
                 "event_log_bytes",
-                0,
+                runtime_event_log_bytes,
                 u64::try_from(required).unwrap_or(u64::MAX),
             )
             .map_err(|error| map_journal_limit(error, limits))?;

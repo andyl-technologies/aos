@@ -3,7 +3,10 @@
 use super::*;
 
 mod lifecycle;
-pub(super) use lifecycle::LifecycleJournalPersistence;
+pub(super) use lifecycle::{
+    LifecycleJournalPersistence, decode_prior_run_state, decode_run_json_bounded,
+    persist_recovered_lifecycle_journal, validate_recovered_lifecycle_journal,
+};
 use lifecycle::{
     PreparedLifecyclePrecommit, PreparedTerminalReplacement, lifecycle_resource_error,
     try_lifecycle_crash_detector, try_lifecycle_string,
@@ -1779,17 +1782,29 @@ impl ProductionVmLifecycleLoop {
                 self.inner.network_transaction_parts_mut();
             interceptor.preview_node_lifecycle_intents(fault_coordinate, backend)?
         };
-        let resource_limits = self
-            .fault_runtime
-            .lock()
-            .map_err(|_| SchedulerError::BoundaryViolation {
-                message: String::from("production fault runtime lock is poisoned"),
-            })?
-            .resource_limits();
+        let (resource_limits, runtime_event_records, runtime_event_log_bytes) = {
+            let runtime =
+                self.fault_runtime
+                    .lock()
+                    .map_err(|_| SchedulerError::BoundaryViolation {
+                        message: String::from("production fault runtime lock is poisoned"),
+                    })?;
+            let (event_records, event_log_bytes) = runtime
+                .lifecycle_journal_resource_usage()
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("measure lifecycle journal resource base: {error}"),
+                })?;
+            (runtime.resource_limits(), event_records, event_log_bytes)
+        };
         let mut lifecycle_precommit = if lifecycle_intents.is_empty() {
             None
         } else {
-            Some(self.begin_terminal_lifecycle_intent(&lifecycle_intents, resource_limits)?)
+            Some(self.begin_terminal_lifecycle_intent(
+                &lifecycle_intents,
+                resource_limits,
+                runtime_event_records,
+                runtime_event_log_bytes,
+            )?)
         };
         let evaluation = {
             let (scheduler, backend, interceptor, pending_outputs) =
