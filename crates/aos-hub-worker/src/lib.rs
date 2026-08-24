@@ -150,6 +150,7 @@ pub mod placeholder;
 pub(crate) mod r2_adapter;
 #[cfg(target_arch = "wasm32")]
 mod remotebackend;
+mod remoteprotocol;
 mod requestshard;
 #[cfg(target_arch = "wasm32")]
 pub mod secretversions;
@@ -2124,10 +2125,13 @@ mod entry {
                         return Response::error("forbidden", 403);
                     }
                     if path == crate::remotebackend::REMOTE_SQL_PATH {
-                        let operation: crate::remotebackend::RemoteSqlRequest = match req
-                            .json()
-                            .await
-                        {
+                        let body = match req.bytes().await {
+                            Ok(body) => body,
+                            Err(error) => {
+                                return Response::error(format!("remote SQL body: {error}"), 400)
+                            }
+                        };
+                        let operation = match crate::remoteprotocol::decode_request(&body) {
                             Ok(operation) => operation,
                             Err(error) => {
                                 return Response::error(format!("remote SQL decode: {error}"), 400)
