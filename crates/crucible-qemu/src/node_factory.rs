@@ -173,7 +173,7 @@ pub enum QemuNodeFactoryError {
         /// Primary QMP stop failure.
         stop: QemuNodeChannelError,
         /// Independent plugin-pause release failure.
-        release: crate::QemuAsyncDriverRuntimeError,
+        release: Box<crate::QemuAsyncDriverRuntimeError>,
     },
     /// The stopped process could not release its plugin pause request.
     #[error("QEMU restore plugin-pause release failed")]
@@ -753,7 +753,10 @@ where
     if let Err(stop) = qmp.stop_for_checkpoint() {
         let primary = match host_io_runtime.abort_checkpoint_pause() {
             Ok(()) => QemuNodeFactoryError::CheckpointStop { source: stop },
-            Err(release) => QemuNodeFactoryError::CheckpointStopAndPauseRelease { stop, release },
+            Err(release) => QemuNodeFactoryError::CheckpointStopAndPauseRelease {
+                stop,
+                release: Box::new(release),
+            },
         };
         return Err(reap_failed_restore_child(&mut child, primary));
     }
