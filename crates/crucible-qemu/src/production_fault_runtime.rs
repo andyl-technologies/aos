@@ -29,7 +29,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::checkpoint::bounded_cbor::{BoundedMap, BoundedSet};
 use crate::fault_action_sink::CommittedQemuActionEvidence;
-use crate::{ProductionFaultActionSink, QemuNodeSet};
+use crate::{ProductionFaultActionSink, QemuNodeError, QemuNodeSet};
 
 const MAX_QEMU_CHECKPOINT_NODES: u64 = 16_384;
 const MAX_QEMU_CHECKPOINT_ACTIONS: u64 = 1_073_741_824;
@@ -43,7 +43,8 @@ mod checkpoint_codec;
 pub use checkpoint_codec::ProductionFaultRuntimeCheckpointCodecError;
 mod fallible_clone;
 use fallible_clone::{
-    try_clone_action, try_clone_fault_events, try_clone_node_id as try_clone_ledger_node_id,
+    try_clone_action, try_clone_fault_events, try_clone_fault_id,
+    try_clone_node_id as try_clone_ledger_node_id, try_clone_target,
 };
 
 /// Complete resumable state for the production fault runtime.
@@ -270,4 +271,4 @@ mod lifecycle_tests;
 mod runtime_tests;
 #[cfg(test)]
 #[path = "production_fault_runtime/test_support.rs"]
-mod test_support;
+pub(crate) mod test_support;

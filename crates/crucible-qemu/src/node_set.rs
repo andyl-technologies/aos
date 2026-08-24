@@ -14,8 +14,7 @@ use crucible::{
 };
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_shmem::{
-    DequeuedFaultEvent, DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1,
-    MAX_FRAME_DELIVERY_ATTEMPTS,
+    DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1, MAX_FRAME_DELIVERY_ATTEMPTS,
 };
 
 #[cfg(target_os = "linux")]
@@ -431,14 +430,12 @@ impl QemuNodeSet {
     /// # Errors
     ///
     /// Returns [`BackendError`] when any node transport or sequence is invalid.
-    pub fn drain_fault_events(
+    pub(crate) fn visit_fault_event_nodes<E>(
         &mut self,
-        drained: &mut BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
-    ) -> Result<(), BackendError> {
+        mut visit: impl FnMut(&NodeId, &mut QemuNode) -> Result<(), E>,
+    ) -> Result<(), E> {
         for (node, backend) in &mut self.nodes {
-            backend
-                .drain_fault_events(drained.entry(node.clone()).or_default())
-                .map_err(BackendError::from)?;
+            visit(node, backend)?;
         }
         Ok(())
     }

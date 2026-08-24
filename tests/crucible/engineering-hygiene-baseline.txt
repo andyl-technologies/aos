@@ -132,7 +132,7 @@ shape-line|crates/crucible-qemu/src/node.rs|2645
 shape-line|crates/crucible-qemu/src/node_factory.rs|981
 shape-line|crates/crucible-qemu/src/node_factory/tests.rs|1108
 shape-line|crates/crucible-qemu/src/node_set.rs|1042
-shape-line|crates/crucible-qemu/src/node_tests.rs|957
+shape-line|crates/crucible-qemu/src/node_tests.rs|960
 shape-line|crates/crucible-qemu/src/qmp.rs|1091
 shape-line|crates/crucible-qemu/src/quantum.rs|2192
 shape-line|crates/crucible-qemu/src/realization.rs|2613

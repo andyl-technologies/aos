@@ -21,47 +21,65 @@ pub(super) fn node_lifecycle_decision(
     node: &NodeId,
     action_identity: ContentHash,
     event: &DequeuedFaultEvent,
-) -> Option<QemuNodeLifecycleDecision> {
+    current_nodes: usize,
+    resource_limits: FaultResourceLimits,
+) -> Result<Option<QemuNodeLifecycleDecision>, ProductionFaultRuntimeError> {
     if event.payload.get(0..8) != Some(b"CRUCLIF1") {
-        return None;
+        return Ok(None);
     }
-    let requested_transition =
-        lifecycle_transition_from_tag(u32::from(read_u16(&event.payload, 10)?))?;
-    let effective_transition = lifecycle_transition_from_tag(read_u32(&event.payload, 288)?)?;
-    let flags = read_u32(&event.payload, 296)?;
+    let requested_transition = lifecycle_transition_from_tag(u32::from(
+        read_u16(&event.payload, 10).ok_or(FaultExecutionError::CheckpointPresence)?,
+    ))
+    .ok_or(FaultExecutionError::CheckpointPresence)?;
+    let effective_transition = lifecycle_transition_from_tag(
+        read_u32(&event.payload, 288).ok_or(FaultExecutionError::CheckpointPresence)?,
+    )
+    .ok_or(FaultExecutionError::CheckpointPresence)?;
+    let flags = read_u32(&event.payload, 296).ok_or(FaultExecutionError::CheckpointPresence)?;
     let expected_exit_code = if flags & LIFECYCLE_TERMINAL_EXIT_REQUIRED != 0 {
         Some(match effective_transition {
             NodeLifecycleTransition::Crash => 70,
             NodeLifecycleTransition::PowerOff => 71,
             NodeLifecycleTransition::PermanentFailure => 72,
-            _ => return None,
+            _ => return Err(FaultExecutionError::CheckpointPresence.into()),
         })
     } else {
         None
     };
     let pre_exit_hash = if flags & 1 != 0 {
         Some(ContentHash {
-            bytes: event.payload[256..288].try_into().ok()?,
+            bytes: event.payload[256..288]
+                .try_into()
+                .map_err(|_| FaultExecutionError::CheckpointPresence)?,
         })
     } else {
         None
     };
-    let mut authorization_evidence: [u8; LIFECYCLE_EVIDENCE_BYTES] =
-        event.payload.as_slice().try_into().ok()?;
+    let mut authorization_evidence: [u8; LIFECYCLE_EVIDENCE_BYTES] = event
+        .payload
+        .as_slice()
+        .try_into()
+        .map_err(|_| FaultExecutionError::CheckpointPresence)?;
     authorization_evidence[24..32].fill(0);
-    Some(QemuNodeLifecycleDecision {
-        node: node.clone(),
+    Ok(Some(QemuNodeLifecycleDecision {
+        node: try_clone_ledger_node_id(node, || FaultResourceLimitError::Exceeded {
+            field: "nodes",
+            current: u64::try_from(current_nodes).unwrap_or(u64::MAX),
+            requested: 1,
+            configured: resource_limits.nodes,
+            hard: FaultResourceLimits::compiled_maximum().nodes,
+        })?,
         action: action_identity,
         requested_transition,
         effective_transition,
-        cause: read_u32(&event.payload, 292)?,
+        cause: read_u32(&event.payload, 292).ok_or(FaultExecutionError::CheckpointPresence)?,
         expected_exit_code,
         observed_icount: event.header.observed_icount,
         pre_exit_hash,
         event_evidence: ContentHash {
             bytes: Sha256::digest(authorization_evidence).into(),
         },
-    })
+    }))
 }
 
 pub(super) fn node_boot_requests(

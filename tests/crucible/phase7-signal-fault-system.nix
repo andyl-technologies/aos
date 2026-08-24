@@ -265,11 +265,21 @@ in
           run_exact_qemu_test \
             node::tests::fault_event_budget::node_set_arms_one_node_from_one_aggregate_fault_event_budget
           run_exact_qemu_test \
+            node::tests::fault_event_budget::fault_event_limit_rejects_before_consuming_staged_ownership
+          run_exact_qemu_test \
+            node::tests::fault_event_budget::fingerprint_nodes_spend_one_sequential_fault_event_budget
+          run_exact_qemu_test \
+            node::tests::fault_event_budget::production_restore_requires_clean_fault_event_ownership
+          run_exact_qemu_test \
+            node::tests::fault_event_budget::production_restore_rejects_fault_event_published_by_fingerprint
+          run_exact_qemu_test \
             production_fault_runtime::checkpoint_codec::preflight::tests::preflight_applies_event_records_as_one_aggregate_ceiling
           run_exact_qemu_test \
             production_fault_runtime::runtime_tests::recovery_tests::qemu_event_staging_uses_remaining_aggregate_ledger_capacity
           run_exact_plugin_test \
             fault_command::tests::bridge_translates_capabilities_and_local_rejections_at_logical_time
+          run_exact_plugin_test \
+            runtime::live_callbacks::tests::fault_event_control::control_boundary_retries_occurrence_event_after_host_drain_before_ack
           run_exact_qemu_test \
             fault_action_sink::node_payload::tests::memory_bit_flip_rejects_authored_length_before_expanding_mask
           run_exact_qemu_test \

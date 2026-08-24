@@ -56,6 +56,17 @@ impl ContentHash {
         canonical::content_hash_from_canonical_material(domain, material)
     }
 
+    /// Computes a stable content hash from already encoded canonical bytes.
+    ///
+    /// This is byte-for-byte equivalent to interpreting `material` as UTF-8
+    /// canonical material and passing it to [`Self::from_canonical_material`],
+    /// but it lets allocation-aware callers write into a fallibly reserved
+    /// byte buffer without constructing a second [`String`].
+    #[must_use]
+    pub fn from_canonical_material_bytes(domain: &str, material: &[u8]) -> Self {
+        canonical::content_hash_from_canonical_material_bytes(domain, material)
+    }
+
     /// Computes a canonical-material hash from lowercase hexadecimal bytes.
     ///
     /// This is byte-for-byte equivalent to hexadecimal-encoding `bytes` and
