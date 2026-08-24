@@ -2034,12 +2034,14 @@ pub(super) fn build_live_node(
             config.completion_timeout,
             identity,
             config.coverage,
-            block_servicer.as_mut(),
-            ninep_servicer.as_mut(),
-            capture.payload.as_slice(),
-            capture.capture_icount,
-            initial_network,
-            priming.emitted_frames,
+            BootNetworkBackpressureContinuation {
+                block: block_servicer.as_mut(),
+                ninep: ninep_servicer.as_mut(),
+                payload: capture.payload.as_slice(),
+                capture_icount: capture.capture_icount,
+                initial_network,
+                emitted_frames: priming.emitted_frames,
+            },
         )?;
     }
     if let (Some(servicer), Some(block)) = (block_servicer.as_mut(), config.shmem_block.as_ref()) {

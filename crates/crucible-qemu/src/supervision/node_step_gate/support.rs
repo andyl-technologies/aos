@@ -164,8 +164,8 @@ pub(super) fn prime_guest_off_boot_barrier(
     timeout: Duration,
     identity: LiveNodeIdentity<'_>,
     coverage: QemuLaunchPluginSwitch,
-    mut block: Option<&mut QemuLiveBlockIoServicer>,
-    mut ninep: Option<&mut QemuLive9pIoServicer>,
+    block: Option<&mut QemuLiveBlockIoServicer>,
+    ninep: Option<&mut QemuLive9pIoServicer>,
     boot_backpressure_payload: Option<&[u8]>,
 ) -> Result<PrimeGuestOutcome, QemuLiveNodeStepGateError> {
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
@@ -197,8 +197,8 @@ pub(super) fn prime_guest_off_boot_barrier(
         timeout,
         &mut hot_path,
         prime_ceiling,
-        block.as_deref_mut(),
-        ninep.as_deref_mut(),
+        block,
+        ninep,
         false,
     )?;
     QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)
@@ -220,18 +220,31 @@ pub(super) fn prime_guest_off_boot_barrier(
     })
 }
 
+/// Carries the state needed to continue a boot-time retained-network capture.
+pub(super) struct BootNetworkBackpressureContinuation<'a> {
+    pub(super) block: Option<&'a mut QemuLiveBlockIoServicer>,
+    pub(super) ninep: Option<&'a mut QemuLive9pIoServicer>,
+    pub(super) payload: &'a [u8],
+    pub(super) capture_icount: u64,
+    pub(super) initial_network: crate::QemuNetworkTransportCheckpoint,
+    pub(super) emitted_frames: Vec<crate::QemuNodeEmittedFrame>,
+}
+
 pub(super) fn continue_boot_network_backpressure_capture(
     setup: &crate::QemuHostPluginSetup,
     timeout: Duration,
     identity: LiveNodeIdentity<'_>,
     coverage: QemuLaunchPluginSwitch,
-    block: Option<&mut QemuLiveBlockIoServicer>,
-    ninep: Option<&mut QemuLive9pIoServicer>,
-    payload: &[u8],
-    capture_icount: u64,
-    initial_network: crate::QemuNetworkTransportCheckpoint,
-    mut emitted_frames: Vec<crate::QemuNodeEmittedFrame>,
+    continuation: BootNetworkBackpressureContinuation<'_>,
 ) -> Result<PrimeGuestOutcome, QemuLiveNodeStepGateError> {
+    let BootNetworkBackpressureContinuation {
+        block,
+        ninep,
+        payload,
+        capture_icount,
+        initial_network,
+        mut emitted_frames,
+    } = continuation;
     if capture_icount <= 1 {
         return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
             reason: String::from("continued boot backpressure capture must be later than icount 1"),
