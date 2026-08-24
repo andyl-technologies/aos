@@ -1591,6 +1591,106 @@ impl CampaignRepository {
         Ok(self.merkle.inspect_shallow(index)?.entry_count())
     }
 
+    /// Rebuilds exact completed visits partitioned by semantic branch edge.
+    ///
+    /// The projection authenticates the complete supplied snapshot first, then
+    /// follows the branch point's idempotent observation-credit index. Every
+    /// credited observation must contain exactly one scoped path segment for
+    /// `branch_point`, so duplicate observations and convergent causes cannot
+    /// receive additional credit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot closure or ancestry is invalid, a
+    /// credit/path basis is inconsistent, more than 65,536 credits are present,
+    /// more than 128 MiB of canonical evidence would be inspected, or storage
+    /// access fails.
+    pub fn project_branch_edge_visits(
+        &self,
+        snapshot: crate::CampaignSnapshotId,
+        branch_point: crate::BranchPointId,
+    ) -> Result<crate::BranchEdgeVisitStatistics, CampaignRepositoryError> {
+        self.validate_complete_head(snapshot.content_id())?;
+        let loaded = self.read_snapshot(snapshot.content_id())?;
+        let Some(index) = self.merkle.get(
+            loaded.snapshot.roots().observations,
+            branch_credit_index_key(branch_point),
+        )?
+        else {
+            return crate::BranchEdgeVisitStatistics::new(branch_point, 0, BTreeMap::new())
+                .map_err(Into::into);
+        };
+        let parent_visits = self.merkle.inspect_shallow(index)?.entry_count();
+        if parent_visits > crate::MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS {
+            return Err(integrity("branch-edge-visit-projection-count"));
+        }
+
+        let mut after = None;
+        let mut evidence_bytes = 0_usize;
+        let mut edge_visits = BTreeMap::<crate::BranchEdgeId, u64>::new();
+        let mut visited = 0_u64;
+        loop {
+            let page = self.merkle.scan(index, after, PROJECTION_SCAN_PAGE_ITEMS)?;
+            for (key, content) in page.entries() {
+                let credit = self.read_expansion_credit(*content)?;
+                evidence_bytes = charge_branch_edge_visit_evidence(
+                    evidence_bytes,
+                    credit.canonical_bytes().len(),
+                )?;
+                if credit.id().as_hash() != *key || credit.branch_point() != branch_point {
+                    return Err(integrity("branch-edge-visit-credit-index-mismatch"));
+                }
+
+                let observation = self.decode_observation(credit.observation().content_id())?;
+                evidence_bytes = charge_branch_edge_visit_evidence(
+                    evidence_bytes,
+                    observation.canonical_bytes().len(),
+                )?;
+                let attempt = self.read_attempt(observation.attempt().content_id())?;
+                evidence_bytes = charge_branch_edge_visit_evidence(
+                    evidence_bytes,
+                    attempt.canonical_bytes().len(),
+                )?;
+                let path = self.read_branch_path(attempt.path().content_id())?;
+                evidence_bytes = charge_branch_edge_visit_evidence(
+                    evidence_bytes,
+                    path.canonical_bytes().len(),
+                )?;
+                if observation.path() != attempt.path() {
+                    return Err(integrity("branch-edge-visit-observation-path-mismatch"));
+                }
+                let mut matching = path
+                    .segments()
+                    .ok_or_else(|| integrity("branch-edge-visits-require-scoped-paths"))?
+                    .iter()
+                    .filter(|segment| segment.branch_point() == branch_point);
+                let edge = matching
+                    .next()
+                    .ok_or_else(|| integrity("branch-edge-visit-path-missing-branch-point"))?
+                    .edge();
+                if matching.next().is_some() {
+                    return Err(integrity("branch-edge-visit-path-repeats-branch-point"));
+                }
+                let visits = edge_visits.entry(edge).or_default();
+                *visits = visits
+                    .checked_add(1)
+                    .ok_or_else(|| integrity("branch-edge-visit-count-overflow"))?;
+                visited = visited
+                    .checked_add(1)
+                    .ok_or_else(|| integrity("branch-edge-visit-count-overflow"))?;
+            }
+            let Some(next) = page.next_after() else {
+                break;
+            };
+            after = Some(next);
+        }
+        if visited != parent_visits {
+            return Err(integrity("branch-edge-visit-credit-scan-mismatch"));
+        }
+        crate::BranchEdgeVisitStatistics::new(branch_point, parent_visits, edge_visits)
+            .map_err(Into::into)
+    }
+
     fn finite_continuation_page(
         &self,
         view: CandidateViewRoots,
@@ -2080,6 +2180,19 @@ fn charge_corpus_mutation_input(
         .ok_or_else(|| integrity("corpus-mutation-generator-input-byte-limit"))?;
     if total > crate::CORPUS_MUTATION_GENERATOR_MAX_INPUT_BYTES {
         return Err(integrity("corpus-mutation-generator-input-byte-limit"));
+    }
+    Ok(total)
+}
+
+fn charge_branch_edge_visit_evidence(
+    prior: usize,
+    bytes: usize,
+) -> Result<usize, CampaignRepositoryError> {
+    let total = prior
+        .checked_add(bytes)
+        .ok_or_else(|| integrity("branch-edge-visit-projection-byte-limit"))?;
+    if total > crate::MAX_BRANCH_EDGE_VISIT_PROJECTION_BYTES {
+        return Err(integrity("branch-edge-visit-projection-byte-limit"));
     }
     Ok(total)
 }

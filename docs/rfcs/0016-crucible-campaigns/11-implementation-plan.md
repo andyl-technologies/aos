@@ -245,8 +245,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   invariants, and saturation, is implemented and conformance-tested. The
   progressive-widening `0`, `1/2`, and `1` exponent owner is also implemented
   with exact irrational comparison, initial allocation, visit-floor, ceiling,
-  and overflow semantics. Reward, novelty, finding, interval-feedback, and the
-  planner/generator integrations that consume these pure owners remain open.
+  and overflow semantics. The repository now also rebuilds a bounded exact
+  `BranchEdgeId` visit partition from idempotent observation credits and scoped
+  path segments, with restart equality and duplicate-credit protection. Reward,
+  novelty, finding, prior/fairness, interval-feedback, and the planner/generator
+  integrations that consume these pure owners remain open.
 - [x] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.

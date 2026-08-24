@@ -2699,6 +2699,12 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
     assert_eq!(pending.statistics().admitted_children, 0);
 
     let (selection, path, attempt) = branch_attempt(&repository, &first_request, &first_proposal);
+    let crate::SelectionOrigin::CampaignBranch {
+        edge: first_edge, ..
+    } = selection.origin()
+    else {
+        panic!("first campaign branch selection")
+    };
     let first_admitted = repository
         .admit_proposal(
             "finite-expansion",
@@ -3090,6 +3096,26 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         .expect("load nested observation projection");
     assert_eq!(nested_state.statistics().admitted_children, 1);
     assert_eq!(nested_state.statistics().completed_visits, 1);
+    let root_edge_visits = repository
+        .project_branch_edge_visits(nested_observed.new_snapshot, first_request.branch_point())
+        .expect("project root edge visits");
+    assert_eq!(
+        root_edge_visits.branch_point(),
+        first_request.branch_point()
+    );
+    assert_eq!(root_edge_visits.parent_visits(), 2);
+    assert_eq!(
+        root_edge_visits.edge_visits(),
+        &BTreeMap::from([(first_edge, 2)])
+    );
+    let nested_edge_visits = repository
+        .project_branch_edge_visits(nested_observed.new_snapshot, nested_branch_point)
+        .expect("project nested edge visits");
+    assert_eq!(nested_edge_visits.parent_visits(), 1);
+    assert_eq!(
+        nested_edge_visits.edge_visits(),
+        &BTreeMap::from([(nested_edge, 1)])
+    );
     let nested_restarted =
         CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
     assert_eq!(
@@ -3103,6 +3129,12 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
             .project_finite_expansion(nested_observed.new_snapshot, nested_branch_point, None, 10,)
             .expect("restart-project nested observation"),
         nested_id
+    );
+    assert_eq!(
+        nested_restarted
+            .project_branch_edge_visits(nested_observed.new_snapshot, first_request.branch_point(),)
+            .expect("restart-project root edge visits"),
+        root_edge_visits
     );
 
     let admitted_head = repository.head("finite-expansion").expect("admitted head");
