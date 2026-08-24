@@ -2028,6 +2028,7 @@ fn canonical_puct_planner_ranks_every_ready_offer_and_replays_owner_guidance() {
                 guidance.edge(),
                 forged_statistics,
                 guidance.novelty_events(),
+                guidance.objective_reward_micros(),
                 guidance.finding_events().clone(),
             )
             .expect("forged guidance");

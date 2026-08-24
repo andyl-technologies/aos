@@ -441,14 +441,29 @@ root entries, 1,000,000 aggregate occurrence entries, and 128 MiB of canonical
 finding bodies. Complete snapshot authentication precedes the shallow bounded
 fold, so large reproduction bodies are not reparsed per projection.
 
-Objective reward remains zero. The active tree-search policy produces the exact
-decomposed fixed-point score for every completed edge. Empty branch points
-retain no synthetic completed edge. For one offered unseen edge, the owner
-instead evaluates exactly one prospective addition: zero visits, reward,
-novelty, and finding events; canonical uniform prior over the completed edges
-plus that edge; and the fairness reservation because every completed edge has a
-positive visit count. The hypothetical contains no other offers, so its score
-is independent of planner page shape.
+Owner-published objective evaluations contribute signed scalar reward. For each
+canonical observation credited to the projection batch, the owner looks up the
+exact `(active_policy, observation)` evaluation key from RFC 01. Absence is
+neutral; a present value must decode as that exact policy/observation basis.
+The arbitrary-precision fixed reward is multiplied by `1_000_000`, divided with
+truncation toward zero, and saturated to signed 64-bit range. Those converted
+values are summed exactly per semantic edge and clamped once to signed 64-bit
+range. One nested observation therefore contributes once to every branch point
+on its authenticated cumulative path without being decoded again per edge.
+The request batch admits at most 65,536 unique evaluations and 128 MiB of
+globally deduplicated canonical evaluation, observation, and property-verdict
+bodies. Objective, visit, novelty, and finding projection share the same
+aggregate credited-observation ceiling.
+
+The active tree-search policy adds the signed objective sum to the saturating
+positive finding reward and produces the exact decomposed fixed-point score for
+every completed edge. Empty branch points retain no synthetic completed edge.
+For one offered unseen edge, the owner instead evaluates exactly one
+prospective addition: zero visits, reward, novelty, objective reward, and
+finding events; canonical uniform prior over the completed edges plus that
+edge; and the fairness reservation because every completed edge has a positive
+visit count. The hypothetical contains no other offers, so its score is
+independent of planner page shape.
 
 The first executable closed-planner checkpoint established the pure paged
 frontier loop before adaptive scoring. Engine
@@ -461,14 +476,17 @@ claim that PUCT is complete.
 
 Implementation version 2 additionally advertises
 `canonical-frontier-puct-v1`. The coordinator supplies an exact
-`PlannerCandidateGuidanceV1` beside every Ready offer, recomputed from the
+`PlannerCandidateGuidanceV2` beside every Ready offer, recomputed from the
 authenticated view and active policy. A whole served page is one bounded
 projection batch: at most 65,536 aggregate credited observations and 128 MiB of
 credit/path bodies, one bounded observation-root novelty scan, one bounded
 finding-root scan, and at most 128 MiB of unique decoded choice-domain bodies.
-Shared branch points, observations, findings, coverage bodies, and domains are
-not reparsed per offer. The retained request remains subject to its 32 MiB
-stored-body and 65,529-child profile.
+Shared branch points, observations, objective evaluations, findings, coverage
+bodies, and domains are not reparsed per offer. Objective work additionally
+admits at most 65,536 unique evaluations and 128 MiB of their deduplicated
+evaluation/observation/property basis bodies.
+The retained request remains subject to its 32 MiB stored-body and 65,529-child
+profile.
 
 Version 2 derives the exact score from the by-value policy and guidance, carries
 the best candidate across pages, and issues only at EOF. Higher fixed-point
@@ -477,10 +495,12 @@ total wins. Equal totals choose the lower `BranchEdgeId`, then the lower
 The engine receives no repository or Merkle authority. Local acceptance,
 restart, and imported-snapshot validation recompute every guidance record and
 rerun the complete pure transition. Version 1 remains replay-compatible and
-keeps its original least-position ordering. Model/explicit priors, objective
-reward, and their corresponding planner versions remain open; version 2 uses
-only uniform prospective/completed priors, global coverage novelty, configured
-closed finding rewards, and fairness.
+keeps its original least-position ordering. Guidance schema v1 remains
+identity-preserving for retained history; all newly projected guidance is
+schema v2. Model/explicit priors and their corresponding planner versions
+remain open; engine version 2 uses uniform prospective/completed priors, exact
+owner-published objective reward, global coverage novelty, configured closed
+finding rewards, and fairness.
 
 ## 03.5 Guidance signals and objectives
 

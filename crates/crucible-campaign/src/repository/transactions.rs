@@ -2338,6 +2338,7 @@ impl CampaignRepository {
                         &snapshot,
                         &puct_projections[&position.branch_point()],
                         &offer,
+                        crate::PlannerCandidateGuidance::current_schema_version(),
                         &mut domain_cache,
                         &mut domain_bytes,
                     )?;

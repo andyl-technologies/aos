@@ -669,6 +669,7 @@ impl CampaignRepository {
                     &snapshot,
                     &puct_projections[&position.branch_point()],
                     offer,
+                    guidance.schema_version(),
                     &mut domain_cache,
                     &mut domain_bytes,
                 )?;
@@ -1074,8 +1075,9 @@ impl CampaignRepository {
         &self,
         guidance: &crate::PlannerCandidateGuidance,
     ) -> Result<ContentId, CampaignRepositoryError> {
-        self.put_envelope(ObjectEnvelope::for_record(
+        self.put_envelope(ObjectEnvelope::for_record_versioned(
             crate::CampaignRecordKind::PlannerCandidateGuidance,
+            guidance.schema_version(),
             crate::object::content_children(guidance.content_children())?,
             guidance.canonical_bytes(),
         )?)
@@ -1436,6 +1438,9 @@ impl CampaignRepository {
             }
             CampaignFact::FindingPublished(id) => {
                 self.require_record_kind(id.content_id(), crate::CampaignRecordKind::Finding)?;
+            }
+            CampaignFact::ObjectiveEvaluationPublished(id) => {
+                self.read_objective_evaluation(id.content_id())?;
             }
             CampaignFact::BudgetGranted(_) | CampaignFact::PinChanged(_) => {}
         }

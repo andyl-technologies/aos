@@ -859,6 +859,7 @@ pub use executor_driver::{
     CampaignExecutorDriverConfigError, CampaignExecutorDriverError, CampaignExecutorStepOutcome,
 };
 pub use finding::FindingPublicationResult;
+pub use objective::ObjectiveEvaluationPublicationResult;
 pub use planner_driver::{
     CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPlannerDriverError,
     CampaignPlannerStepOutcome,
@@ -1090,6 +1091,16 @@ pub(crate) fn proposal_index_key(proposal: ProposalId) -> CampaignHash {
 
 pub(crate) fn attempt_observation_key(attempt: AttemptId) -> CampaignHash {
     map_key_content("observations.attempt", attempt.content_id())
+}
+
+pub(crate) fn objective_evaluation_key(
+    policy: CampaignPolicyId,
+    observation: ObservationId,
+) -> CampaignHash {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(policy.content_id().encode().as_bytes());
+    bytes.extend_from_slice(observation.content_id().encode().as_bytes());
+    CampaignHash::derive("crucible.campaign-objective-evaluation.v1", &bytes)
 }
 
 pub(crate) fn authoritative_choice_key(opportunity: ChoiceOpportunityId) -> CampaignHash {

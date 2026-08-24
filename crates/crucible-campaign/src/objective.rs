@@ -260,6 +260,33 @@ impl FixedReward {
         &self.denominator
     }
 
+    /// Converts this exact rational reward to signed millionths.
+    ///
+    /// The conversion multiplies by `1_000_000`, divides with truncation toward
+    /// zero, and saturates to the signed 64-bit range. This is the canonical
+    /// bridge from arbitrary-precision objective ranking to fixed-point PUCT.
+    #[must_use]
+    pub fn to_micros_saturating(&self) -> i64 {
+        let numerator = BigUint::from_bytes_be(&self.numerator) * BigUint::from(1_000_000_u64);
+        let denominator = BigUint::from_bytes_be(&self.denominator);
+        let quotient = numerator / denominator;
+        let digits = quotient.to_u64_digits();
+        let magnitude = match digits.as_slice() {
+            [] => 0,
+            [value] => *value,
+            [_, ..] => u64::MAX,
+        };
+        if self.negative {
+            if magnitude >= (1_u64 << 63) {
+                i64::MIN
+            } else {
+                -(magnitude as i64)
+            }
+        } else {
+            magnitude.min(i64::MAX as u64) as i64
+        }
+    }
+
     fn fraction(&self) -> (BigInt, BigUint) {
         let magnitude = BigUint::from_bytes_be(&self.numerator);
         let sign = if self.negative {

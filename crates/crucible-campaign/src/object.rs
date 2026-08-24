@@ -202,13 +202,14 @@ impl CampaignRecordKind {
     pub const fn schema_version(self) -> u32 {
         match self {
             Self::Snapshot => 2,
-            Self::Fact => 5,
+            Self::Fact => 6,
             Self::PlannerInvocation => 2,
             Self::PlannerStep => 4,
             Self::ExpansionState => 2,
             Self::BranchPath => 2,
             Self::MeasurementSet => 2,
             Self::ReproductionArtifact | Self::Finding => 2,
+            Self::PlannerCandidateGuidance => 2,
             _ => RECORD_SCHEMA_VERSION,
         }
     }
@@ -582,13 +583,14 @@ impl ObjectEnvelope {
         )?;
         let version_supported = envelope.schema_version() == record_kind.schema_version()
             || record_kind == CampaignRecordKind::Fact
-                && matches!(envelope.schema_version(), 2..=4)
+                && matches!(envelope.schema_version(), 2..=5)
             || record_kind == CampaignRecordKind::BranchPath && envelope.schema_version() == 1
             || matches!(
                 record_kind,
                 CampaignRecordKind::MeasurementSet
                     | CampaignRecordKind::ReproductionArtifact
                     | CampaignRecordKind::Finding
+                    | CampaignRecordKind::PlannerCandidateGuidance
             ) && envelope.schema_version() == 1;
         if !version_supported {
             return Err(CampaignCodecError::InvalidValue {
@@ -609,6 +611,7 @@ impl ObjectEnvelope {
                 | CampaignRecordKind::MeasurementSet
                 | CampaignRecordKind::ReproductionArtifact
                 | CampaignRecordKind::Finding
+                | CampaignRecordKind::PlannerCandidateGuidance
         ) {
             let version = self
                 .envelope
@@ -839,6 +842,9 @@ fn fact_children(fact: &CampaignFact) -> Result<BTreeSet<ContentChild>, Campaign
             vec![("observation", id.content_id())]
         }
         CampaignFact::FindingPublished(id) => vec![("finding", id.content_id())],
+        CampaignFact::ObjectiveEvaluationPublished(id) => {
+            vec![("objective-evaluation", id.content_id())]
+        }
         CampaignFact::PolicyActivated(activation) => vec![
             ("prior-policy", activation.prior().content_id()),
             ("next-policy", activation.next().content_id()),

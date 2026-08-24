@@ -2,7 +2,205 @@
 
 use super::*;
 
+/// Stable result of publishing one policy-bound objective evaluation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ObjectiveEvaluationPublicationResult {
+    /// Snapshot that owned the canonical observation and active policy.
+    pub prior_snapshot: CampaignSnapshotId,
+    /// Snapshot that first indexed the exact evaluation.
+    pub new_snapshot: CampaignSnapshotId,
+    /// Exact immutable evaluation made authoritative.
+    pub evaluation: ObjectiveEvaluationId,
+    /// Whether this evaluation was already authoritative.
+    pub replayed: bool,
+}
+
 impl CampaignRepository {
+    /// Publishes one verified objective evaluation into a named campaign.
+    ///
+    /// The execution-model adapter must already have proven that every retained
+    /// component came from the observation's verified measurement payload. This
+    /// owner boundary validates the active policy, canonical observation,
+    /// property filtering, deterministic scalar reward, and exact snapshot
+    /// precondition before its first write.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without writing when the snapshot is stale, the
+    /// evaluation is absent from the active policy/observation basis, another
+    /// evaluation already owns the same basis, or repository validation fails.
+    /// Storage failure after preflight may leave unreachable immutable objects
+    /// before the final ref compare-and-swap.
+    pub fn publish_objective_evaluation(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        evaluation: &ObjectiveEvaluation,
+    ) -> Result<ObjectiveEvaluationPublicationResult, CampaignRepositoryError> {
+        let _guard = self.lock_mutation()?;
+        let campaign_ref = campaign_ref(name)?;
+        let current_content = self
+            .refs
+            .read_ref(&campaign_ref)?
+            .ok_or(CampaignRepositoryError::NotFound)?;
+        let current = self.read_snapshot(current_content)?;
+        self.validate_complete_head(current_content)?;
+        let current_id = CampaignSnapshotId::from_content_id(current_content)?;
+        let evaluation_id = evaluation.id()?;
+        if let Some(replayed) =
+            self.find_objective_evaluation_result(current_content, evaluation_id)?
+        {
+            return Ok(replayed);
+        }
+        if expected_snapshot != current_id {
+            return Err(CampaignRepositoryError::Stale {
+                expected: expected_snapshot,
+                current: current_id,
+            });
+        }
+
+        self.validate_objective_evaluation_basis(&current, evaluation)?;
+        let key = objective_evaluation_key(evaluation.policy(), evaluation.observation());
+        match self
+            .merkle
+            .get(current.snapshot.roots().observations, key)?
+        {
+            Some(existing) if existing == evaluation_id.content_id() => {
+                return Ok(ObjectiveEvaluationPublicationResult {
+                    prior_snapshot: current_id,
+                    new_snapshot: current_id,
+                    evaluation: evaluation_id,
+                    replayed: true,
+                });
+            }
+            Some(_) => return Err(CampaignRepositoryError::AlreadyExists),
+            None => {}
+        }
+
+        if self.put_objective_evaluation(evaluation)? != evaluation_id.content_id() {
+            return Err(integrity("objective-evaluation-publication-id-mismatch"));
+        }
+        let mut roots = current.snapshot.roots();
+        roots.observations = self
+            .merkle
+            .insert(roots.observations, key, evaluation_id.content_id())?
+            .content_id();
+        roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
+        let transition =
+            self.put_fact(&CampaignFact::ObjectiveEvaluationPublished(evaluation_id))?;
+        let next = CampaignSnapshot::successor(
+            current_id,
+            current.snapshot.lineage(),
+            current.snapshot.active_policy(),
+            roots,
+            CampaignFactId::from_content_id(transition)?,
+        )?;
+        let next_content = self.put_snapshot(&next)?;
+        let checkpoint = self.prepare_local_successor_checkpoint(
+            current_content,
+            next_content,
+            None,
+            MAX_SIMPLE_SUCCESSOR_GROWTH,
+        )?;
+
+        match self
+            .refs
+            .compare_exchange(&campaign_ref, Some(current_content), next_content)?
+        {
+            RefCasOutcome::Advanced { .. } => {
+                self.promote_local_successor(current_content, next_content, checkpoint);
+                Ok(ObjectiveEvaluationPublicationResult {
+                    prior_snapshot: current_id,
+                    new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
+                    evaluation: evaluation_id,
+                    replayed: false,
+                })
+            }
+            RefCasOutcome::Conflict { current, .. } => {
+                Err(CampaignRepositoryError::RefConflict { current })
+            }
+        }
+    }
+
+    fn validate_objective_evaluation_basis(
+        &self,
+        snapshot: &LoadedSnapshot,
+        evaluation: &ObjectiveEvaluation,
+    ) -> Result<(), CampaignRepositoryError> {
+        if evaluation.policy() != snapshot.snapshot.active_policy() {
+            return Err(integrity("objective-evaluation-active-policy-mismatch"));
+        }
+        let policy = self.read_policy(evaluation.policy().content_id())?;
+        let observation = self.read_observation(evaluation.observation().content_id())?;
+        if self.merkle.get(
+            snapshot.snapshot.roots().observations,
+            attempt_observation_key(observation.attempt()),
+        )? != Some(evaluation.observation().content_id())
+        {
+            return Err(integrity(
+                "objective-evaluation-observation-is-not-canonical",
+            ));
+        }
+        let properties = self.read_property_verdict_set(observation.properties().content_id())?;
+        evaluation.validate_basis(&policy, &observation, &properties)?;
+        Ok(())
+    }
+
+    pub(super) fn validate_objective_evaluation_successor(
+        &self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        evaluation_id: ObjectiveEvaluationId,
+        choice_cache: &mut ChoiceValidationCache,
+    ) -> Result<(), CampaignRepositoryError> {
+        if child.snapshot.lineage() != parent.snapshot.lineage()
+            || child.snapshot.active_policy() != parent.snapshot.active_policy()
+        {
+            return Err(integrity(
+                "objective-evaluation-transition-changed-campaign-basis",
+            ));
+        }
+        let prior = parent.snapshot.roots();
+        let next = child.snapshot.roots();
+        if prior.graph != next.graph
+            || prior.exploration != next.exploration
+            || prior.corpus != next.corpus
+            || prior.coverage != next.coverage
+            || prior.findings != next.findings
+            || prior.pins != next.pins
+            || prior.accounting != next.accounting
+        {
+            return Err(integrity(
+                "objective-evaluation-transition-changed-unrelated-root",
+            ));
+        }
+
+        let evaluation =
+            self.read_objective_evaluation_cached(evaluation_id.content_id(), choice_cache)?;
+        self.validate_objective_evaluation_basis(parent, &evaluation)?;
+        let key = objective_evaluation_key(evaluation.policy(), evaluation.observation());
+        if self.merkle.get(prior.observations, key)?.is_some() {
+            return Err(integrity(
+                "objective-evaluation-transition-replaced-existing-basis",
+            ));
+        }
+        let expected = self.merkle.root_after_upserts(
+            prior.observations,
+            &BTreeMap::from([(key, evaluation_id.content_id())]),
+        )?;
+        if next.observations != expected || next.observations == prior.observations {
+            return Err(integrity(
+                "objective-evaluation-transition-observation-root",
+            ));
+        }
+        if !self.coordination_matches_parent_result(parent, next.coordination)? {
+            return Err(integrity(
+                "objective-evaluation-transition-coordination-root",
+            ));
+        }
+        Ok(())
+    }
+
     /// Publishes one complete deterministic survivor decision without advancing a campaign.
     ///
     /// The execution-model adapter must already have proven that every retained

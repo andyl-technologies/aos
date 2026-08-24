@@ -450,9 +450,9 @@ content_object_id!(
 content_object_id!(
     CampaignFactId,
     ObjectKind::CampaignFact,
-    [2, 3, 4, 5],
+    [2, 3, 4, 5, 6],
     "crucible.campaign.fact",
-    "Identifies one immutable campaign fact; versions 2 through 4 remain decodable for history compatibility."
+    "Identifies one immutable campaign fact; versions 2 through 5 remain decodable for history compatibility."
 );
 semantic_id!(
     CampaignCommandId,
@@ -631,8 +631,9 @@ content_object_id!(
 content_object_id!(
     PlannerCandidateGuidanceId,
     ObjectKind::Projection,
+    [1, 2],
     "crucible.campaign.planner-candidate-guidance",
-    "Identifies one snapshot-bound PUCT input for a planner candidate."
+    "Identifies one snapshot-bound PUCT input; schema v1 remains readable."
 );
 semantic_id!(
     CreditId,
