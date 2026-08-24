@@ -33,7 +33,8 @@ use crucible::{
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
     QemuNode, QemuNodeLifecycleDecision, QemuNodeLifecycleIntent, QemuProcessIdentity,
-    QemuVmSnapshot, linux_process_identity, quarantine_orphaned_qemu_process,
+    QemuSharedBlockDevice, QemuVmSnapshot, linux_process_identity,
+    quarantine_orphaned_qemu_process,
 };
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
