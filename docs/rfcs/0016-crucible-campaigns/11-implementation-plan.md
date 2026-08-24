@@ -491,10 +491,18 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   passes the drained event-log suffix to a distinct result-sealing phase.
   Cleanup failure takes terminal precedence while retaining an earlier driver
   diagnostic, and the runner itself rejects exact-resume roots before lifecycle
-  construction. The fresh runner also rejects every non-genesis discovery or
-  selected-branch start before installing resources: the production lifecycle
-  starts at scenario genesis, so it cannot be presented as thin replay until
-  exact schedule replay and live producer selection injection are wired. A
+  construction. The fresh runner now reconstructs non-genesis discovery starts
+  whose schedules contain only deterministic producer decisions and the
+  standardized model-sampled app-random selection. It starts at scenario
+  genesis, advances under the attempt's exact cancellation and execution-quanta
+  guard, requires every newly appended decision to equal the requested prefix,
+  and retains replayed event history under the same observation bounds before
+  lending the exact target to the modeled driver. Divergence, early terminal
+  state, cancellation, or quantum exhaustion still performs runner-owned
+  teardown. Legacy app-random values, explorer overrides, and every non-model
+  selection are rejected before installing resources. Exact live producer
+  injection for a `CampaignBranch` selection remains mandatory before a
+  selected-branch start can use this path. A
   concrete modeled driver now projects an already-materialized exact discovery
   or selected-branch child, preserves typed scheduler failures, stops at the
   requested choice/marker/time/event or terminal boundary, rejects uncommitted

@@ -27,8 +27,8 @@ use thiserror::Error;
 use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure, CrucibleArtifactError,
     CrucibleAttemptExecution, CrucibleResolvedAttemptStart, QemuFreshAttemptDriver,
-    QemuFreshAttemptLifecycle, encode_crucible_configuration_artifact,
-    encode_crucible_scenario_artifact,
+    QemuFreshAttemptLifecycle, QemuFreshStartMaterialization,
+    encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
 };
 
 /// Maximum scheduler entries retained by one in-memory fresh-attempt projection.
@@ -136,6 +136,7 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
         lifecycle: &mut QemuFreshAttemptLifecycle<'_>,
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
+        materialization: QemuFreshStartMaterialization,
     ) -> Result<Self::Pending, AttemptWorkerFailure<Self::Error>> {
         let scenario = input.scenario().scenario_def();
         let mut configuration = match input.start() {
@@ -148,10 +149,31 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
             ));
         }
 
-        let mut event_log = Vec::new();
-        let mut event_log_bytes = 0usize;
+        let (mut event_log, mut event_log_bytes, mut terminal_quiescence, terminal_verdict) =
+            materialization.into_parts();
         let mut discoveries = RetainedChoiceDiscoveries::default();
-        let mut terminal_quiescence = None;
+        if let Some(verdict) = terminal_verdict {
+            let stop = match verdict {
+                QuantumTerminalVerdict::Passed => ModeledStop::TerminalPassed,
+                QuantumTerminalVerdict::Failed(_) => ModeledStop::TerminalFailed,
+            };
+            let pending = lifecycle.pending_network_output_count();
+            if pending != 0 {
+                return Err(AttemptWorkerFailure::Terminal(
+                    QemuFreshModeledDriverError::PendingNetworkOutput(pending),
+                ));
+            }
+            return Ok(QemuFreshPendingObservation {
+                input: input.clone(),
+                configuration,
+                stop,
+                event_log,
+                event_log_bytes,
+                discoveries: discoveries.discoveries,
+                terminal_quiescence,
+            });
+        }
+        let mut observed_event_count = 0usize;
         loop {
             check_operational_signals(context)?;
             let outcome = lifecycle
@@ -174,10 +196,17 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
                 None => reached_requested_stop(
                     input.attempt().stop(),
                     &outcome,
-                    &event_log,
+                    observed_event_count,
                     &discoveries.discoveries,
                 ),
             };
+            observed_event_count = observed_event_count
+                .checked_add(outcome.event_log_entries.len())
+                .ok_or(AttemptWorkerFailure::Terminal(
+                    QemuFreshModeledDriverError::LimitExceeded {
+                        limit: "fresh-campaign-event-log-entry-count",
+                    },
+                ))?;
             configuration = append_quantum(
                 &mut event_log,
                 &mut event_log_bytes,
@@ -395,7 +424,7 @@ impl RetainedChoiceDiscoveries {
 fn reached_requested_stop(
     requested: &StopCondition,
     outcome: &QuantumOutcome,
-    event_log: &[SchedulerEventLogEntry],
+    observed_event_count: usize,
     discoveries: &BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
 ) -> Option<ModeledStop> {
     let reached = match requested {
@@ -412,8 +441,7 @@ fn reached_requested_stop(
             )
         }),
         StopCondition::VirtualTimeNanoseconds(deadline) => outcome.frontier.ticks >= *deadline,
-        StopCondition::EventCount(count) => event_log
-            .len()
+        StopCondition::EventCount(count) => observed_event_count
             .checked_add(outcome.event_log_entries.len())
             .and_then(|events| u64::try_from(events).ok())
             .is_some_and(|events| events >= *count),

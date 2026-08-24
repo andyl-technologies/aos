@@ -2160,10 +2160,19 @@ runs that cleanup. A cleanup or quarantine failure takes terminal precedence
 over an otherwise retryable or canceled driver result while retaining both
 diagnostics. The fresh runner independently rejects any exact-resume root before
 calling even an injected lifecycle factory. It also rejects a non-genesis
-discovery or selected-branch start before resource installation. A fresh
-process begins at scenario genesis and MUST NOT be reported as thin replay of a
-nonempty schedule until exact prefix replay and live producer selection
-injection are both authenticated. Concrete fresh-driver selection,
+target before resource installation when its schedule contains a legacy
+app-random value, an explorer override, or a typed selection other than the
+standardized model sample. For every other discovery target, the runner starts
+the fresh process at scenario genesis and performs exact prefix replay under
+the attempt's cancellation and execution-quanta guard. Every newly appended
+decision MUST equal the corresponding requested decision; replayed event
+history is retained under the same 1,000,000-entry and 64-MiB bounds used by
+result sealing. Divergence, early terminal state, cancellation, or quantum
+exhaustion fails closed and still tears down the lifecycle. A selected-branch
+start contains a `CampaignBranch` selection and remains rejected before launch
+until the live producer can receive and authenticate that exact alternative;
+the runner MUST NOT substitute seed changes or a post-hoc schedule append.
+Concrete fresh-driver selection,
 an independently admitted debugger world, and production worker composition
 remain open; no unsupported mode falls back to the packaged authority. The
 concrete modeled driver accepts an already-materialized authenticated discovery
