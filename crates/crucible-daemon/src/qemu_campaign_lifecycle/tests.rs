@@ -1,21 +1,33 @@
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
 #![allow(clippy::expect_used)]
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
-use crucible_api::{LifecycleApiError, ProductionVmLifecycleConfig, ProductionVmNodeLauncher};
-use crucible_campaign::{AttemptResourceLimits, ExecutionRetentionIntent};
-use crucible_cas::content_store::{ContentId, ObjectKind};
+use crucible::{
+    Checkpoint, CheckpointKind, Configuration, ScenarioDef, SchedulerEventLogEntry, VirtualTime,
+};
+use crucible_api::{
+    LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
+    ProductionVmNodeLauncher,
+};
+use crucible_campaign::{
+    Attempt, AttemptResourceLimits, AttemptStart, BranchPath, CampaignHash, CampaignLineage,
+    ConfigurationArtifact, ConfigurationId, ExecutionRetentionIntent, ScenarioArtifact,
+    ScenarioDefId, StopCondition,
+};
+use crucible_cas::content_store::{BlobHandle, ContentId, ObjectKind};
 use crucible_qemu::{
     QemuChildProcessContract, QemuLaunchResourceRequirements, QemuNodeChild,
-    QemuPreparedRunDirectory, QemuVmRealizationError,
+    QemuPreparedRunDirectory, QemuReplayOracleValidation, QemuVmRealizationError, QemuVmSnapshot,
 };
 
 use super::*;
 use crate::{
-    ExecutionCancellation, ExecutionCheckpointRequest, QemuAttemptOperationalBoundary,
-    QemuAttemptResourceGuard,
+    AttemptExecutionProduct, CrucibleAttemptExecution, CrucibleMaterializationTier,
+    CrucibleResolvedAttemptStart, ExecutionCancellation, ExecutionCheckpointRequest,
+    QemuAttemptOperationalBoundary, QemuAttemptResourceGuard,
 };
 
 #[derive(Default)]
@@ -304,4 +316,369 @@ fn lifecycle_construction_failure_quarantines_installed_guard() {
     ));
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+}
+
+struct FakeFreshLifecycle {
+    order: Arc<Mutex<Vec<&'static str>>>,
+    cleanup_error: bool,
+}
+
+impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
+    fn drive_quantum(
+        &mut self,
+        _request: crucible::QuantumRequest,
+    ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
+        Err(crucible::SchedulerError::BoundaryViolation {
+            message: String::from("fake lifecycle does not drive scheduler quanta"),
+        })
+    }
+
+    fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
+        None
+    }
+
+    fn exact_checkpoint_ready(&mut self) -> Result<bool, crucible::SchedulerError> {
+        Ok(true)
+    }
+
+    fn fault_evidence_snapshot(
+        &self,
+    ) -> Result<ProductionFaultEvidenceSnapshot, crucible::SchedulerError> {
+        Err(crucible::SchedulerError::BoundaryViolation {
+            message: String::from("fake lifecycle has no production fault evidence"),
+        })
+    }
+
+    fn pending_network_output_count(&self) -> usize {
+        0
+    }
+
+    fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, crucible::SchedulerError> {
+        self.order
+            .lock()
+            .expect("fresh lifecycle order")
+            .push("shutdown");
+        if self.cleanup_error {
+            Err(crucible::SchedulerError::BoundaryViolation {
+                message: String::from("injected fresh lifecycle cleanup failure"),
+            })
+        } else {
+            Ok(vec![SchedulerEventLogEntry::execution_budget_exhausted(
+                7,
+                VirtualTime { ticks: 11 },
+                "final-drain-test",
+            )])
+        }
+    }
+}
+
+struct FakeFreshLifecycleFactory {
+    order: Arc<Mutex<Vec<&'static str>>>,
+    cleanup_error: bool,
+}
+
+impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
+    type Lifecycle = FakeFreshLifecycle;
+    type Error = &'static str;
+
+    fn start_fresh_lifecycle(
+        &mut self,
+        _scenario: &ScenarioDef,
+        _source: &crucible::ScenarioDefForm,
+        _context: &AttemptExecutionContext,
+    ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
+        self.order
+            .lock()
+            .expect("fresh lifecycle order")
+            .push("begin");
+        Ok(FakeFreshLifecycle {
+            order: Arc::clone(&self.order),
+            cleanup_error: self.cleanup_error,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FakeFreshDriverFailure {
+    Retryable,
+}
+
+struct FakeFreshDriver {
+    order: Arc<Mutex<Vec<&'static str>>>,
+    failure: Option<FakeFreshDriverFailure>,
+}
+
+impl QemuFreshAttemptDriver for FakeFreshDriver {
+    type Pending = &'static str;
+    type Error = &'static str;
+
+    fn drive(
+        &mut self,
+        lifecycle: &mut QemuFreshAttemptLifecycle<'_>,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+    ) -> Result<Self::Pending, AttemptWorkerFailure<Self::Error>> {
+        self.order
+            .lock()
+            .expect("fresh lifecycle order")
+            .push("drive");
+        assert_eq!(lifecycle.pending_network_output_count(), 0);
+        assert!(
+            lifecycle
+                .exact_checkpoint_ready()
+                .expect("checkpoint ready")
+        );
+        match self.failure {
+            None => Ok("pending modeled result"),
+            Some(FakeFreshDriverFailure::Retryable) => {
+                Err(AttemptWorkerFailure::Retryable("driver retry"))
+            }
+        }
+    }
+
+    fn seal(
+        &mut self,
+        pending: Self::Pending,
+        final_events: Vec<SchedulerEventLogEntry>,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
+        assert_eq!(pending, "pending modeled result");
+        assert_eq!(final_events.len(), 1);
+        assert_eq!(final_events[0].sequence(), 7);
+        let mut order = self.order.lock().expect("fresh lifecycle order");
+        assert_eq!(order.last(), Some(&"shutdown"));
+        order.push("seal");
+        Ok(test_checkpoint_product())
+    }
+}
+
+#[test]
+fn fresh_runner_seals_only_after_runner_owned_shutdown() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+
+    let outcome = runner
+        .execute(&fresh_runner_input(), &fresh_runner_context())
+        .expect("fresh execution should seal after cleanup");
+
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "drive", "shutdown", "seal"]
+    );
+    assert_eq!(
+        outcome.materialization(),
+        CrucibleMaterializationTier::ThinReplay
+    );
+    assert!(matches!(
+        outcome.product(),
+        AttemptExecutionProduct::ExactCheckpoint(_)
+    ));
+}
+
+#[test]
+fn fresh_runner_rejects_resume_origin_before_factory_invocation() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
+        ObjectKind::ExactManifest,
+        3,
+        b"fresh-runner-resume-origin",
+    ))
+    .expect("exact checkpoint fixture");
+    let resumed = fresh_runner_context().with_resume_checkpoint(Some(checkpoint));
+
+    let error = runner
+        .execute(&fresh_runner_input(), &resumed)
+        .expect_err("fresh runner must reject a resume origin");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::ResumeCheckpointUnsupported(actual)
+        ) if actual == checkpoint
+    ));
+    assert!(order.lock().expect("fresh lifecycle order").is_empty());
+}
+
+#[test]
+fn fresh_runner_cleans_up_and_preserves_driver_failure_classification() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: Some(FakeFreshDriverFailure::Retryable),
+        },
+    );
+
+    let error = runner
+        .execute(&fresh_runner_input(), &fresh_runner_context())
+        .expect_err("driver retry should remain classified");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::Driver("driver retry"))
+    ));
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "drive", "shutdown"]
+    );
+}
+
+#[test]
+fn fresh_cleanup_failure_overrides_driver_retry_and_retains_diagnostics() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: true,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: Some(FakeFreshDriverFailure::Retryable),
+        },
+    );
+
+    let error = runner
+        .execute(&fresh_runner_input(), &fresh_runner_context())
+        .expect_err("cleanup failure must take precedence");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::CleanupAfterDriver {
+            driver: "driver retry",
+            ..
+        })
+    ));
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "drive", "shutdown"]
+    );
+}
+
+#[test]
+fn production_lifecycle_resource_admission_keeps_retry_and_cancel_classes() {
+    let unavailable = classify_production_lifecycle_failure(
+        QemuAttemptProductionVmLifecycleError::ResourceInstallation(
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation: "install test resources",
+                message: String::from("temporarily unavailable"),
+            },
+        ),
+    );
+    assert!(matches!(unavailable, AttemptWorkerFailure::Retryable(_)));
+
+    let canceled = classify_production_lifecycle_failure(
+        QemuAttemptProductionVmLifecycleError::ResourceInstallation(
+            QemuVmRealizationError::Canceled {
+                operation: "install test resources",
+            },
+        ),
+    );
+    assert!(matches!(canceled, AttemptWorkerFailure::Canceled(_)));
+
+    let terminal = classify_production_lifecycle_failure(
+        QemuAttemptProductionVmLifecycleError::ScenarioIdentityMismatch,
+    );
+    assert!(matches!(terminal, AttemptWorkerFailure::Terminal(_)));
+}
+
+fn fresh_runner_input() -> CrucibleAttemptExecution {
+    let scenario = crucible::crash_restart_scenario()
+        .expect("built-in scenario")
+        .scenario;
+    let definition = scenario.scenario_def();
+    let scenario_id = ScenarioDefId::from_hash(CampaignHash::from_bytes(definition.id().bytes));
+    let scenario_artifact =
+        ScenarioArtifact::new(scenario_id, 1, b"scenario".to_vec()).expect("scenario artifact");
+    let scenario_content = scenario_artifact.id().expect("scenario artifact id");
+    let configuration = Configuration::genesis(definition);
+    let configuration_id =
+        ConfigurationId::from_hash(CampaignHash::from_bytes(configuration.id().bytes));
+    let configuration_artifact = ConfigurationArtifact::new(
+        scenario_id,
+        scenario_content,
+        configuration_id,
+        1,
+        b"configuration".to_vec(),
+    )
+    .expect("configuration artifact");
+    let configuration_content = configuration_artifact
+        .id()
+        .expect("configuration artifact id");
+    let lineage = CampaignLineage::new(
+        scenario_id,
+        scenario_content,
+        configuration_id,
+        configuration_content,
+        "crucible-test",
+        "qemu-test",
+        BTreeMap::from([(String::from("control"), 1)]),
+        1,
+        1,
+    )
+    .expect("campaign lineage");
+    let path = BranchPath::new(Vec::new()).expect("genesis branch path");
+    let attempt = Attempt::new(
+        AttemptStart::Discover {
+            configuration: configuration_content,
+        },
+        path.id().expect("branch path id"),
+        StopCondition::Terminal,
+    )
+    .expect("discovery attempt");
+
+    CrucibleAttemptExecution::from_test_parts(
+        lineage,
+        scenario,
+        attempt,
+        path,
+        CrucibleResolvedAttemptStart::Discover { configuration },
+    )
+}
+
+fn fresh_runner_context() -> AttemptExecutionContext {
+    context(resources(4), ExecutionCancellation::default())
+}
+
+fn test_checkpoint_product() -> AttemptExecutionProduct {
+    let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.fresh-campaign-runner",
+        "sealed-product",
+    ));
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &configuration,
+        None,
+        VirtualTime::default(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("fresh runner checkpoint boundary");
+    let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
+        .expect("fresh runner QEMU snapshot");
+    AttemptExecutionProduct::ExactCheckpoint(Box::new(crate::CapturedExactCheckpoint::new(
+        snapshot,
+        BlobHandle::from_bytes(vec![0x5a; 512]),
+    )))
 }

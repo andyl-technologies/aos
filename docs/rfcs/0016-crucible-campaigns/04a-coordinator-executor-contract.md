@@ -2146,15 +2146,25 @@ A mismatched guard is released before rejection; construction failure transfers
 the installed guard to quarantine. The worker's exact-origin router sends a
 durable paused-root incarnation only to its resume runner and a rootless
 incarnation only to its fresh runner while preserving retry, cancellation, and
-terminal classification. Concrete fresh-driver selection, modeled-result
-projection, and an independently admitted debugger world remain open; no
-unsupported mode falls back to the packaged authority. A
+terminal classification. The fresh runner gives its modeled driver only a
+narrow drive-and-evidence facade: the driver cannot invoke lifecycle shutdown,
+release generation leases, or access node-launch authority. It returns a
+pending modeled result, then the runner performs final event drain, process
+reap, generation-lease release, and aggregate guard release before supplying
+the drained dense event-log suffix to result sealing. Driver failure still
+runs that cleanup. A cleanup or quarantine failure takes terminal precedence
+over an otherwise retryable or canceled driver result while retaining both
+diagnostics. The fresh runner independently rejects any exact-resume root before
+calling even an injected lifecycle factory. Concrete fresh-driver selection,
+the semantic projection that incorporates the final suffix, and an
+independently admitted debugger world remain open; no unsupported mode falls
+back to the packaged authority. A
 concrete exact-resume adapter obtains one prepared generation directory from the
 guard, streams and authenticates the durable exact root into its pinned VMState
 inode, constructs the root-bound real-node launcher, and exposes only the
 guarded live facade to the session. Fresh exact-cache, baked-genesis, and thin
-image provisioning, the modeled driver, and production worker/factory selection
-remain mandatory before the guarded path may launch a campaign QEMU. A
+image provisioning, the concrete modeled driver, and production worker/factory
+selection remain mandatory before the guarded path may launch a campaign QEMU. A
 process-only Linux facade
 now validates a daemon-incarnation
 namespace, non-root child IDs, task and finish bounds before acquiring the

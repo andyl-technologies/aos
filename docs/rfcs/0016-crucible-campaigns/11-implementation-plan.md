@@ -483,10 +483,16 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   the installed limits and cancellation incarnation, and quarantines the guard
   if lifecycle construction fails. An exact-origin worker router now keeps
   fresh execution and durable paused-root resume on disjoint runners without
-  collapsing their failure classifications. Concrete fresh-driver selection,
-  modeled-result projection, fresh exact-cache, baked/thin image provisioning,
-  the modeled attempt driver, and production worker composition remain open. Real-node exact-
-  checkpoint capture is now an executor-owned, guard-retaining operation: it
+  collapsing their failure classifications. The fresh runner now lends only
+  bounded drive/evidence operations to its modeled driver, retains shutdown
+  authority, always performs final drain and process/resource cleanup, and
+  passes the drained event-log suffix to a distinct result-sealing phase.
+  Cleanup failure takes terminal precedence while retaining an earlier driver
+  diagnostic, and the runner itself rejects exact-resume roots before lifecycle
+  construction. Concrete fresh-driver selection, the semantic result
+  projection, fresh exact-cache, baked/thin image provisioning, and production
+  worker composition remain open. Real-node exact-checkpoint capture is now an
+  executor-owned, guard-retaining operation: it
   seals and exact-binds configuration, node icount, and event-log continuation
   before paused VMState/host-I/O capture. The real-node executor now completes
   final drain and reap before synchronizing, reauthenticating, and lending a

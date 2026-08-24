@@ -4,22 +4,30 @@
 //! context and the production lifecycle scheduler. It installs one exact
 //! process/resource guard before lifecycle construction, validates the guard's
 //! resource and cancellation incarnation, and transfers that authority into
-//! [`QemuAttemptProductionVmNodeLauncher`]. The fresh path never silently
+//! [`QemuAttemptProductionVmNodeLauncher`]. [`QemuFreshExecutionRunner`] keeps
+//! final drain and teardown outside the modeled driver and seals a result only
+//! after those final events are available. The fresh path never silently
 //! substitutes for an exact-checkpoint resume.
 
-use crucible::{ScenarioDef, ScenarioDefForm};
+use crucible::{
+    QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ScenarioDef,
+    ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
+};
 use crucible_api::{
-    LifecycleApiError, ProductionVmLifecycleConfig, ProductionVmLifecycleLoop,
-    build_production_vm_lifecycle_loop_with_launcher,
+    LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
+    ProductionVmLifecycleLoop, build_production_vm_lifecycle_loop_with_launcher,
 };
 use crucible_campaign::ExactCheckpointId;
 use crucible_qemu::QemuVmRealizationError;
 use thiserror::Error;
 
 use crate::{
-    AttemptExecutionContext, MAX_QEMU_ATTEMPT_GENERATION_NODES, QemuAttemptGenerationResourceOwner,
-    QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard,
-    QemuAttemptProductionVmNodeLauncher, QemuAttemptResourceGuard, QemuAttemptResourceGuardFactory,
+    AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
+    CrucibleAttemptExecution, CrucibleExecutionOutcome, CrucibleExecutionRunner,
+    CrucibleMaterializationTier, MAX_QEMU_ATTEMPT_GENERATION_NODES,
+    QemuAttemptGenerationResourceOwner, QemuAttemptOperationalBoundary,
+    QemuAttemptProcessResourceGuard, QemuAttemptProductionVmNodeLauncher, QemuAttemptResourceGuard,
+    QemuAttemptResourceGuardFactory,
 };
 
 /// Failure to bind an admitted attempt to a fresh production VM lifecycle.
@@ -56,6 +64,273 @@ pub enum QemuAttemptProductionVmLifecycleError {
 pub struct QemuAttemptProductionVmLifecycleFactory<R> {
     config: ProductionVmLifecycleConfig,
     resources: R,
+}
+
+/// Runner-owned fresh lifecycle operations hidden from modeled drivers.
+///
+/// The owner includes shutdown because the campaign runner, rather than the
+/// modeled driver, must perform the final event drain and resource teardown.
+/// Drivers receive only [`QemuFreshAttemptLifecycle`], which deliberately does
+/// not expose this terminal capability.
+pub trait QemuFreshAttemptLifecycleOwner {
+    /// Advances one scheduler quantum under the attempt resource guard.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the scheduler or guarded backend cannot
+    /// complete the exact quantum.
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError>;
+
+    /// Observes the terminal verdict without consuming checkpoint ownership.
+    #[must_use]
+    fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict>;
+
+    /// Returns whether every live node can enter an exact checkpoint now.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when live-node or host-I/O state cannot be
+    /// inspected consistently.
+    fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError>;
+
+    /// Captures read-only production fault evidence at the current boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when a fault adapter or retained trace cannot
+    /// be inspected consistently.
+    fn fault_evidence_snapshot(&self) -> Result<ProductionFaultEvidenceSnapshot, SchedulerError>;
+
+    /// Returns the number of guest frames not yet globally committed.
+    #[must_use]
+    fn pending_network_output_count(&self) -> usize;
+
+    /// Performs final drain, process reap, lease release, and aggregate release.
+    ///
+    /// Returned entries are the only scheduler observations produced during
+    /// teardown and must be supplied to modeled result sealing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when final drain or resource cleanup cannot
+    /// be attested. The implementation must retain unfinished authority in
+    /// quarantine on failure.
+    fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError>;
+}
+
+impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        QuantumLoop::drive_quantum(self, request)
+    }
+
+    fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
+        QuantumLoop::terminal_verdict_for_stop(self)
+    }
+
+    fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
+        ProductionVmLifecycleLoop::exact_checkpoint_ready(self)
+    }
+
+    fn fault_evidence_snapshot(&self) -> Result<ProductionFaultEvidenceSnapshot, SchedulerError> {
+        ProductionVmLifecycleLoop::fault_evidence_snapshot(self)
+    }
+
+    fn pending_network_output_count(&self) -> usize {
+        ProductionVmLifecycleLoop::pending_network_output_count(self)
+    }
+
+    fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        QuantumLoop::shutdown(self)
+    }
+}
+
+/// Narrow modeled-execution view of one guarded fresh QEMU lifecycle.
+///
+/// This facade exposes bounded scheduler progress and read-only evidence but no
+/// shutdown or raw node-launch authority. The runner therefore remains the
+/// unique owner of final drain and resource release.
+pub struct QemuFreshAttemptLifecycle<'a> {
+    owner: &'a mut dyn QemuFreshAttemptLifecycleOwner,
+}
+
+impl QemuFreshAttemptLifecycle<'_> {
+    /// Advances exactly one scheduler quantum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the guarded lifecycle rejects or cannot
+    /// complete the quantum.
+    pub fn drive_quantum(
+        &mut self,
+        request: QuantumRequest,
+    ) -> Result<QuantumOutcome, SchedulerError> {
+        self.owner.drive_quantum(request)
+    }
+
+    /// Observes the terminal verdict without consuming checkpoint ownership.
+    #[must_use]
+    pub fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
+        self.owner.terminal_verdict_for_stop()
+    }
+
+    /// Returns whether every live node can enter an exact checkpoint now.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the live checkpoint boundary cannot be
+    /// inspected consistently.
+    pub fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
+        self.owner.exact_checkpoint_ready()
+    }
+
+    /// Captures read-only production fault evidence at the current boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when retained production evidence cannot be
+    /// inspected consistently.
+    pub fn fault_evidence_snapshot(
+        &self,
+    ) -> Result<ProductionFaultEvidenceSnapshot, SchedulerError> {
+        self.owner.fault_evidence_snapshot()
+    }
+
+    /// Returns the number of guest frames not yet globally committed.
+    #[must_use]
+    pub fn pending_network_output_count(&self) -> usize {
+        self.owner.pending_network_output_count()
+    }
+}
+
+/// Factory for one guarded fresh lifecycle used by the campaign runner.
+pub trait QemuFreshAttemptLifecycleFactory {
+    /// Exact lifecycle owner created for one attempt.
+    type Lifecycle: QemuFreshAttemptLifecycleOwner;
+    /// Factory-specific admission or construction failure.
+    type Error;
+
+    /// Starts one fresh lifecycle under the admitted attempt context.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified failure for invalid semantic input, canceled or
+    /// unavailable resource installation, or lifecycle construction failure.
+    fn start_fresh_lifecycle(
+        &mut self,
+        scenario: &ScenarioDef,
+        source: &ScenarioDefForm,
+        context: &AttemptExecutionContext,
+    ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>>;
+}
+
+/// Two-phase modeled driver for one guarded fresh production lifecycle.
+///
+/// [`Self::drive`] may advance and inspect the lifecycle but cannot shut it
+/// down. [`Self::seal`] runs only after runner-owned shutdown has supplied every
+/// final event-log entry, preventing a candidate from being accepted at a
+/// pre-teardown observable boundary.
+pub trait QemuFreshAttemptDriver {
+    /// Driver state retained between modeled stop and final shutdown drain.
+    type Pending;
+    /// Driver-specific modeled or result-construction failure.
+    type Error;
+
+    /// Drives the lifecycle to a modeled stop without returning an accepted product.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified retryable, canceled, or terminal modeled failure.
+    fn drive(
+        &mut self,
+        lifecycle: &mut QemuFreshAttemptLifecycle<'_>,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<Self::Pending, AttemptWorkerFailure<Self::Error>>;
+
+    /// Seals one product after final lifecycle drain and resource cleanup.
+    ///
+    /// `final_events` is the complete dense suffix produced during shutdown.
+    /// A conforming observation builder must incorporate it into the canonical
+    /// evidence or reject the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified failure when the drained events cannot be projected
+    /// into the exact modeled result.
+    fn seal(
+        &mut self,
+        pending: Self::Pending,
+        final_events: Vec<SchedulerEventLogEntry>,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>>;
+}
+
+/// Fresh-process QEMU campaign runner with runner-owned final teardown.
+pub struct QemuFreshExecutionRunner<F, D> {
+    lifecycles: F,
+    driver: D,
+}
+
+impl<F, D> QemuFreshExecutionRunner<F, D> {
+    /// Creates a fresh runner from its guarded lifecycle factory and modeled driver.
+    #[must_use]
+    pub const fn new(lifecycles: F, driver: D) -> Self {
+        Self { lifecycles, driver }
+    }
+
+    /// Returns the guarded lifecycle factory.
+    #[must_use]
+    pub const fn lifecycle_factory(&self) -> &F {
+        &self.lifecycles
+    }
+
+    /// Returns mutable access to the guarded lifecycle factory.
+    #[must_use]
+    pub const fn lifecycle_factory_mut(&mut self) -> &mut F {
+        &mut self.lifecycles
+    }
+
+    /// Returns the modeled fresh-attempt driver.
+    #[must_use]
+    pub const fn driver(&self) -> &D {
+        &self.driver
+    }
+
+    /// Returns mutable access to the modeled fresh-attempt driver.
+    #[must_use]
+    pub const fn driver_mut(&mut self) -> &mut D {
+        &mut self.driver
+    }
+
+    /// Consumes the runner into its lifecycle factory and driver.
+    #[must_use]
+    pub fn into_parts(self) -> (F, D) {
+        (self.lifecycles, self.driver)
+    }
+}
+
+/// Failure from one phase of [`QemuFreshExecutionRunner`].
+#[derive(Debug, Error)]
+pub enum QemuFreshExecutionRunnerError<F, D> {
+    /// The fresh runner was asked to execute a durable resume incarnation.
+    #[error("fresh production QEMU runner cannot resume exact checkpoint `{0}`")]
+    ResumeCheckpointUnsupported(ExactCheckpointId),
+    /// Guarded lifecycle admission or construction failed.
+    #[error("fresh production QEMU lifecycle construction failed")]
+    Lifecycle(F),
+    /// Modeled driving or post-shutdown result sealing failed.
+    #[error("fresh production QEMU attempt driver failed")]
+    Driver(D),
+    /// Final drain, process reap, or resource release failed.
+    #[error("fresh production QEMU lifecycle cleanup failed: {0}")]
+    Cleanup(SchedulerError),
+    /// Cleanup failed after the driver had already returned a failure.
+    #[error("fresh production QEMU lifecycle cleanup failed after driver failure: {cleanup}")]
+    CleanupAfterDriver {
+        /// Original driver failure retained for diagnosis.
+        driver: D,
+        /// Higher-priority cleanup failure.
+        cleanup: SchedulerError,
+    },
 }
 
 impl<R> QemuAttemptProductionVmLifecycleFactory<R> {
@@ -165,6 +440,147 @@ where
         build(QemuAttemptProductionVmNodeLauncher::new(owner))
             .map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)
     }
+}
+
+impl<R> QemuFreshAttemptLifecycleFactory for QemuAttemptProductionVmLifecycleFactory<R>
+where
+    R: QemuAttemptResourceGuardFactory,
+    R::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
+{
+    type Lifecycle = ProductionVmLifecycleLoop;
+    type Error = QemuAttemptProductionVmLifecycleError;
+
+    fn start_fresh_lifecycle(
+        &mut self,
+        scenario: &ScenarioDef,
+        source: &ScenarioDefForm,
+        context: &AttemptExecutionContext,
+    ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
+        self.begin_fresh(scenario, source, context)
+            .map_err(classify_production_lifecycle_failure)
+    }
+}
+
+impl<F, D> CrucibleExecutionRunner for QemuFreshExecutionRunner<F, D>
+where
+    F: QemuFreshAttemptLifecycleFactory,
+    D: QemuFreshAttemptDriver,
+{
+    type Error = QemuFreshExecutionRunnerError<F::Error, D::Error>;
+
+    fn execute(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        if let Some(checkpoint) = context.resume_checkpoint() {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::ResumeCheckpointUnsupported(checkpoint),
+            ));
+        }
+        let scenario = input.scenario().scenario_def();
+        let mut lifecycle = self
+            .lifecycles
+            .start_fresh_lifecycle(&scenario, input.scenario(), context)
+            .map_err(map_fresh_lifecycle_failure)?;
+        let driven = {
+            let mut facade = QemuFreshAttemptLifecycle {
+                owner: &mut lifecycle,
+            };
+            self.driver.drive(&mut facade, input, context)
+        };
+        let cleanup = lifecycle.shutdown();
+
+        let (pending, final_events) = match (driven, cleanup) {
+            (Ok(pending), Ok(events)) => (pending, events),
+            (Err(failure), Ok(_events)) => return Err(map_fresh_driver_failure(failure)),
+            (Ok(_pending), Err(cleanup)) => {
+                return Err(AttemptWorkerFailure::Terminal(
+                    QemuFreshExecutionRunnerError::Cleanup(cleanup),
+                ));
+            }
+            (Err(failure), Err(cleanup)) => {
+                return Err(AttemptWorkerFailure::Terminal(
+                    cleanup_after_fresh_driver_failure(failure, cleanup),
+                ));
+            }
+        };
+        let product = self
+            .driver
+            .seal(pending, final_events)
+            .map_err(map_fresh_driver_failure)?;
+        Ok(CrucibleExecutionOutcome::new(
+            product,
+            CrucibleMaterializationTier::ThinReplay,
+        ))
+    }
+}
+
+fn classify_production_lifecycle_failure(
+    error: QemuAttemptProductionVmLifecycleError,
+) -> AttemptWorkerFailure<QemuAttemptProductionVmLifecycleError> {
+    match &error {
+        QemuAttemptProductionVmLifecycleError::ResourceInstallation(
+            QemuVmRealizationError::StoreUnavailable { .. }
+            | QemuVmRealizationError::ExecutorUnavailable { .. },
+        ) => AttemptWorkerFailure::Retryable(error),
+        QemuAttemptProductionVmLifecycleError::ResourceInstallation(
+            QemuVmRealizationError::Canceled { .. },
+        ) => AttemptWorkerFailure::Canceled(error),
+        QemuAttemptProductionVmLifecycleError::ResumeCheckpointUnsupported(_)
+        | QemuAttemptProductionVmLifecycleError::ScenarioIdentityMismatch
+        | QemuAttemptProductionVmLifecycleError::InvalidNodeCount(_)
+        | QemuAttemptProductionVmLifecycleError::ResourceInstallation(_)
+        | QemuAttemptProductionVmLifecycleError::ResourceContractMismatch
+        | QemuAttemptProductionVmLifecycleError::ResourceContractCleanup(_)
+        | QemuAttemptProductionVmLifecycleError::Lifecycle(_) => {
+            AttemptWorkerFailure::Terminal(error)
+        }
+    }
+}
+
+fn map_fresh_lifecycle_failure<F, D>(
+    failure: AttemptWorkerFailure<F>,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    match failure {
+        AttemptWorkerFailure::Retryable(error) => {
+            AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::Lifecycle(error))
+        }
+        AttemptWorkerFailure::Canceled(error) => {
+            AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::Lifecycle(error))
+        }
+        AttemptWorkerFailure::Terminal(error) => {
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Lifecycle(error))
+        }
+    }
+}
+
+fn map_fresh_driver_failure<F, D>(
+    failure: AttemptWorkerFailure<D>,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    match failure {
+        AttemptWorkerFailure::Retryable(error) => {
+            AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::Driver(error))
+        }
+        AttemptWorkerFailure::Canceled(error) => {
+            AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::Driver(error))
+        }
+        AttemptWorkerFailure::Terminal(error) => {
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Driver(error))
+        }
+    }
+}
+
+fn cleanup_after_fresh_driver_failure<F, D>(
+    failure: AttemptWorkerFailure<D>,
+    cleanup: SchedulerError,
+) -> QemuFreshExecutionRunnerError<F, D> {
+    let driver = match failure {
+        AttemptWorkerFailure::Retryable(error)
+        | AttemptWorkerFailure::Canceled(error)
+        | AttemptWorkerFailure::Terminal(error) => error,
+    };
+    QemuFreshExecutionRunnerError::CleanupAfterDriver { driver, cleanup }
 }
 
 #[cfg(test)]
