@@ -25,6 +25,7 @@ impl ProductionVmLifecycleLoop {
     pub(super) fn begin_terminal_lifecycle_intent(
         &mut self,
         intents: &[QemuNodeLifecycleIntent],
+        scheduler_checkpoint: &SingleSchedulerCheckpoint,
         limits: FaultResourceLimits,
         runtime_event_records: u64,
         runtime_event_log_bytes: u64,
@@ -126,6 +127,7 @@ impl ProductionVmLifecycleLoop {
                 intent,
                 current_generation,
                 next_generation,
+                scheduler_checkpoint,
                 nodes.len(),
                 limits,
             )?;

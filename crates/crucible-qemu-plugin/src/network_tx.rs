@@ -4,7 +4,7 @@
 //! core owns only registration-time-fixed metadata and a per-ring sequence
 //! counter; callers provide the already-mapped outbound ring storage for
 //! `(vm_slot -> SLOT_NET_ROUTER)`.
-
+mod continuation;
 use std::{
     cell::Cell,
     os::raw::{c_int, c_void},

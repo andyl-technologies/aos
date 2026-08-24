@@ -15,6 +15,9 @@ impl ProductionFaultRuntime {
         same_coordinate_sequence: u64,
         nodes: &mut QemuNodeSet,
     ) -> Result<BindingEvaluation, ProductionFaultRuntimeError> {
+        if self.lifecycle_work_in_flight.is_some() || self.lifecycle_release_in_flight.is_some() {
+            return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
+        }
         self.apply_event_staging_capacity(nodes, &[], None)?;
         let Some(runtime) = self.runtime.as_ref() else {
             return Ok(BindingEvaluation::default());
@@ -89,6 +92,9 @@ impl ProductionFaultRuntime {
         opportunity: &FaultOpportunity,
         same_coordinate_sequence: u64,
     ) -> Result<BindingEvaluation, ProductionFaultRuntimeError> {
+        if self.lifecycle_work_in_flight.is_some() || self.lifecycle_release_in_flight.is_some() {
+            return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
+        }
         let Some(runtime) = self.runtime.as_ref() else {
             return Ok(BindingEvaluation::default());
         };
@@ -134,6 +140,9 @@ impl ProductionFaultRuntime {
         &mut self,
         boundary: SignalBoundarySnapshot,
     ) -> Result<(), ProductionFaultRuntimeError> {
+        if self.lifecycle_work_in_flight.is_some() || self.lifecycle_release_in_flight.is_some() {
+            return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
+        }
         if let Some(runtime) = &mut self.runtime {
             runtime.set_boundary_snapshot(boundary)?;
         }

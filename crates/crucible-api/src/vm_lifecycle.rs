@@ -366,6 +366,12 @@ pub struct ProductionNodeFaultEvidence {
     pub generation: u64,
     /// Stable service-state spelling used in evidence artifacts.
     pub service_state: &'static str,
+    /// Scheduler-owned activity at the evidence boundary.
+    pub scheduler_activity: SchedulerNodeActivity,
+    /// Whether the production backend retains a QEMU process for this node.
+    pub backend_owned: bool,
+    /// Exact relationship between backend, current manifest, and staged owner.
+    pub process_ownership: &'static str,
 }
 
 /// Exact observable state of all production fault adapters at one boundary.

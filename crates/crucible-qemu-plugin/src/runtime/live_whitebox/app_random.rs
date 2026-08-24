@@ -132,6 +132,7 @@ impl WhiteboxGuestInputWriter for LiveGuestMemoryWriter {
 pub(super) struct LiveAppRandomState {
     capability: WhiteboxGuestInputCapability,
     decisions: LiveAppRandomDecisionSource,
+    restore_decisions: Option<LiveAppRandomDecisionSource>,
 }
 
 impl LiveAppRandomState {
@@ -143,8 +144,39 @@ impl LiveAppRandomState {
         Self {
             capability,
             decisions: LiveAppRandomDecisionSource::new(config, branch_plan),
+            // Restore launches execute a throwaway boot-barrier quantum before
+            // loading VMState. Retain a second, already-allocated decision
+            // source so the logical-restore boundary can discard any priming
+            // draws without allocating in a QEMU callback. Cold launches never
+            // arm that boundary, so this owner remains unused there.
+            restore_decisions: Some(LiveAppRandomDecisionSource::new(config, branch_plan)),
         }
     }
+
+    pub(super) fn restore_continuation(&mut self) -> Result<(), LiveWhiteboxError> {
+        restore_app_random_decisions(&mut self.decisions, &mut self.restore_decisions)
+    }
+
+    #[cfg(test)]
+    pub(super) const fn draws_for_test(&self) -> u64 {
+        self.decisions.draws
+    }
+
+    #[cfg(test)]
+    pub(super) const fn set_draws_for_test(&mut self, draws: u64) {
+        self.decisions.draws = draws;
+    }
+}
+
+fn restore_app_random_decisions(
+    decisions: &mut LiveAppRandomDecisionSource,
+    restore_decisions: &mut Option<LiveAppRandomDecisionSource>,
+) -> Result<(), LiveWhiteboxError> {
+    let restored = restore_decisions
+        .take()
+        .ok_or(LiveWhiteboxError::AppRandomRestoreAlreadyApplied)?;
+    *decisions = restored;
+    Ok(())
 }
 
 struct LiveAppRandomDecisionSource {
@@ -437,6 +469,32 @@ mod tests {
         plugin.advance_by(17);
         engine.advance_by(17);
         assert_eq!(plugin.next_u64(), engine.next_u64());
+    }
+
+    #[test]
+    fn logical_restore_discards_priming_draws_exactly_once() {
+        let args = PluginArgs::parse(
+            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=11,app_random_cap=8,app_random_node=node-a,app_random_draw_offset=2,app_random_positions=6e6f64652d612f776f726b6c6f6164:2",
+        )
+        .unwrap_or_else(|error| panic!("continuation configuration should parse: {error}"));
+        let config = args
+            .app_random()
+            .unwrap_or_else(|| panic!("continuation configuration should include app-random"));
+        let branch_plan = AppRandomBranchPlan::default();
+        let mut decisions = LiveAppRandomDecisionSource::new(config, &branch_plan);
+        let mut restore_decisions = Some(LiveAppRandomDecisionSource::new(config, &branch_plan));
+        decisions.draws = 7;
+        decisions.streams.clear();
+
+        restore_app_random_decisions(&mut decisions, &mut restore_decisions)
+            .unwrap_or_else(|error| panic!("first logical restore should apply: {error}"));
+
+        assert_eq!(decisions.draws, 2);
+        assert_eq!(decisions.streams.len(), 1);
+        assert!(matches!(
+            restore_app_random_decisions(&mut decisions, &mut restore_decisions),
+            Err(LiveWhiteboxError::AppRandomRestoreAlreadyApplied)
+        ));
     }
 
     #[test]

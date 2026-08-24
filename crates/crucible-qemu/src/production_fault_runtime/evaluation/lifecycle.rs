@@ -20,7 +20,7 @@ impl ProductionFaultRuntime {
         same_coordinate_sequence: u64,
         nodes: &mut QemuNodeSet,
     ) -> Result<Vec<QemuNodeLifecycleIntent>, ProductionFaultRuntimeError> {
-        if self.lifecycle_work_in_flight.is_some() {
+        if self.lifecycle_work_in_flight.is_some() || self.lifecycle_release_in_flight.is_some() {
             return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
         }
         let configured_event_records = usize::try_from(self.resource_limits.event_records)

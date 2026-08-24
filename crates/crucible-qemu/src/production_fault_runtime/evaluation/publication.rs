@@ -182,7 +182,7 @@ mod tests {
         assert_eq!(publication.search_choices(), std::slice::from_ref(&choice));
         assert_eq!(publication.expected_observations(), 1);
         publication.publish(&mut runtime);
-        assert_eq!(runtime.node_boot_requests()[0].name, "node-a");
+        assert_eq!(runtime.pending_node_boot[0].name, "node-a");
         assert_eq!(
             runtime.pending_search_choices[0],
             (coordinate, vec![choice])

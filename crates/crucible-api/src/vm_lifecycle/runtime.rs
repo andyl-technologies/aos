@@ -190,33 +190,7 @@ impl ProductionVmLifecycleLoop {
             .world()
             .vm_nodes()
             .iter()
-            .map(|node| {
-                let generation = self
-                    .node_generations
-                    .get(&node.id)
-                    .copied()
-                    .ok_or_else(|| SchedulerError::BoundaryViolation {
-                        message: format!("production node `{}` has no generation", node.id.name),
-                    })?;
-                let service_state = match self.node_service_states.get(&node.id) {
-                    Some(ProductionNodeServiceState::Running) => "running",
-                    Some(ProductionNodeServiceState::PoweredOff) => "powered_off",
-                    Some(ProductionNodeServiceState::PermanentlyFailed) => "permanently_failed",
-                    None => {
-                        return Err(SchedulerError::BoundaryViolation {
-                            message: format!(
-                                "production node `{}` has no service state",
-                                node.id.name
-                            ),
-                        });
-                    }
-                };
-                Ok(ProductionNodeFaultEvidence {
-                    node: node.id.clone(),
-                    generation,
-                    service_state,
-                })
-            })
+            .map(|node| self.production_node_fault_evidence(&node.id))
             .collect::<Result<Vec<_>, SchedulerError>>()?;
         Ok(ProductionFaultEvidenceSnapshot {
             frontier,

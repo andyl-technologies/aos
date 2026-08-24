@@ -16,6 +16,29 @@ impl LiveVcpuTimeCallbackState {
         else {
             return Ok(());
         };
+        let applied_generation = self
+            .logical_restore_continuation_generation
+            .load(Ordering::Acquire);
+        if applied_generation != request.generation {
+            if applied_generation != 0 {
+                return Err(
+                    LiveVcpuTimeCallbackError::LogicalRestoreContinuationReused {
+                        applied_generation,
+                        requested_generation: request.generation,
+                    },
+                );
+            }
+            if let Some(network) = self.network.as_ref() {
+                network.tx.restore_next_seq(network.restore_tx_sequence);
+            }
+            super::super::live_whitebox::restore_app_random_continuation().map_err(|source| {
+                LiveVcpuTimeCallbackError::WhiteboxCallback {
+                    message: source.to_string(),
+                }
+            })?;
+            self.logical_restore_continuation_generation
+                .store(request.generation, Ordering::Release);
+        }
         let offset = request.target_icount.checked_sub(raw_icount).ok_or(
             LiveVcpuTimeCallbackError::InitialRawIcountBeyondLogical {
                 raw_icount,

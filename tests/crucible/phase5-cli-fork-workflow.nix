@@ -237,7 +237,11 @@
     ++ failuresFor "crates/crucible-api/src/vm_lifecycle/runtime.rs" apiRuntime [
       {
         label = "production relaunch preowns authenticated launch configuration";
-        needle = "let launch = self.launch_configs.get(node)";
+        needle = "fn prepare_terminal_lifecycle_ownership(";
+      }
+      {
+        label = "production relaunch binds the app-random continuation";
+        needle = "bind_successor_app_random(launch.clone(), successor_app_random)";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/launch/plugin_config.rs" qemuLaunch [

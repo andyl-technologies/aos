@@ -38,6 +38,16 @@ impl SingleScheduler {
         Ok(())
     }
 
+    /// Returns the scheduler-owned activity of one VM node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` is not a VM.
+    pub fn vm_node_activity(&self, node: &NodeId) -> Result<SchedulerNodeActivity, SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        Ok(self.nodes[index].activity)
+    }
+
     /// Replaces one VM's scheduler activity at an authenticated lifecycle boundary.
     ///
     /// `Halted` models a powered-off VM that may later return to `Runnable`;

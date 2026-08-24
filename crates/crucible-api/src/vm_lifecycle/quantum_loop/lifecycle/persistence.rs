@@ -9,7 +9,6 @@
 
 use super::*;
 use crucible::model::FaultResourceLimitError;
-
 mod recovery;
 #[cfg(test)]
 pub(in crate::vm_lifecycle) use recovery::validate_recovered_lifecycle_journal;
@@ -124,10 +123,11 @@ pub(in crate::vm_lifecycle) fn persist_run_state_atomic(
         journal,
     };
     let mut counter = CountingJournalWriter::default();
-    serde_json::to_writer_pretty(&mut counter, &state)
-        .map_err(|error| DurableRunStateError::Invalid {
+    serde_json::to_writer_pretty(&mut counter, &state).map_err(|error| {
+        DurableRunStateError::Invalid {
             message: format!("measure durable lifecycle state: {error}"),
-        })?;
+        }
+    })?;
     limits
         .reserve(
             "event_log_bytes",
@@ -419,31 +419,36 @@ impl ProductionVmLifecycleLoop {
                 message: format!("measure lifecycle transaction journal: {error}"),
             }
         })?;
-        let replacement_growth =
-            self.lifecycle_journal
-                .nodes
-                .iter()
-                .try_fold(0_usize, |total, node| {
-                    let escaped_node = node.node.len().checked_mul(6)?;
-                    let path_bytes = node
-                        .current_process
-                        .executable
-                        .as_os_str()
-                        .as_encoded_bytes()
-                        .len();
-                    let escaped_path = path_bytes.checked_mul(6)?;
-                    // A staged owner adds another map key and process identity,
-                    // while the journal adds the same replacement identity.
-                    // Six bytes per input byte is JSON's maximum escaping growth;
-                    // 256 covers the fixed field names, numeric values, and the
-                    // later completed-exit fields.
-                    let identity_growth =
-                        escaped_node.checked_add(escaped_path)?.checked_add(256)?;
-                    total.checked_add(identity_growth.checked_mul(2)?)
-                });
-        let numeric_growth = (20_usize.saturating_sub(decimal_digits(runtime_event_records)))
-            .checked_add(20_usize.saturating_sub(decimal_digits(runtime_event_log_bytes)));
-        let required = replacement_growth
+        let (publication_growth, numeric_growth) = if allow_storage_growth {
+            let publication_growth =
+                self.lifecycle_journal
+                    .nodes
+                    .iter()
+                    .try_fold(0_usize, |total, node| {
+                        let escaped_node = node.node.len().checked_mul(6)?;
+                        let path_bytes = node
+                            .current_process
+                            .executable
+                            .as_os_str()
+                            .as_encoded_bytes()
+                            .len();
+                        let escaped_path = path_bytes.checked_mul(6)?;
+                        // A staged owner adds another map key and process identity,
+                        // while the journal adds the same replacement identity.
+                        // Six bytes per input byte is JSON's maximum escaping growth;
+                        // 512 covers fixed field names, pretty-printing, process
+                        // identifiers, numeric values, and completed-exit fields.
+                        let identity_growth =
+                            escaped_node.checked_add(escaped_path)?.checked_add(512)?;
+                        total.checked_add(identity_growth.checked_mul(2)?)
+                    });
+            let numeric_growth = (20_usize.saturating_sub(decimal_digits(runtime_event_records)))
+                .checked_add(20_usize.saturating_sub(decimal_digits(runtime_event_log_bytes)));
+            (publication_growth, numeric_growth)
+        } else {
+            (Some(0), Some(0))
+        };
+        let required = publication_growth
             .and_then(|growth| numeric_growth.and_then(|digits| growth.checked_add(digits)))
             .and_then(|growth| counter.length.checked_add(growth))
             .ok_or_else(|| lifecycle_resource_error("event_log_bytes", 0, usize::MAX, limits))?;
