@@ -152,6 +152,11 @@
     cargoEnv = controllerCargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
+    # Nextest lists hundreds of controller test binaries concurrently. The
+    # sandbox's default 1,024-descriptor soft limit is below that bounded
+    # inventory, so raise only the soft descriptor ceiling. This does not
+    # change Cargo, Nextest, Nix, or Ninja parallelism.
+    cargoNextestOpenFilesLimit = 4096;
     passthru = {
       cargoArtifacts = controllerArtifacts;
       cargoDeps = cargoDeps;
@@ -262,6 +267,7 @@
       cargo_workspace=crates
       cargo_workspace_flags=${workspaceCargoFlags}
       cargo_member_flags=${packageFlags}
+      cargo_nextest_open_files_limit=4096
       cargo_doc=warning-free
       cargo_doctest=hermetic
       gate_license_boundary=crucible-harness/gate_license_boundary
