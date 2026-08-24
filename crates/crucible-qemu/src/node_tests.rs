@@ -145,6 +145,7 @@ struct ScriptedHostIoRuntime {
     log: SharedLog,
     outcomes: VecDeque<QemuAsyncWaitOutcome>,
     fault_results: VecDeque<DequeuedFaultResult>,
+    staged_fault_events: Vec<DequeuedFaultEvent>,
 }
 
 #[derive(Clone)]
@@ -492,6 +493,7 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
         &mut self,
         _timeout: Duration,
         payload_buffer: Vec<u8>,
+        _maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
         let result = self.fault_results.pop_front().ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new("await fault result", "no scripted fault result")
@@ -516,6 +518,7 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
         &mut self,
         _timeout: Duration,
         maximum_payload_bytes: usize,
+        _maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
         let result = self.fault_results.front().ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(
@@ -539,6 +542,16 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
                 "scripted fault result disappeared after admission",
             )
         })
+    }
+
+    fn take_staged_fault_events(
+        &mut self,
+    ) -> Result<Vec<DequeuedFaultEvent>, QemuAsyncDriverRuntimeError> {
+        Ok(std::mem::take(&mut self.staged_fault_events))
+    }
+
+    fn staged_fault_events_pending(&self) -> bool {
+        !self.staged_fault_events.is_empty()
     }
 }
 
@@ -604,34 +617,6 @@ fn live_fault_sequences_continue_after_capability_admission() -> Result<(), Box<
     assert_eq!(node.reserve_fault_command_sequence()?, 2);
     assert_eq!(node.reserve_fault_command_sequence()?, 3);
 
-    Ok(())
-}
-
-#[test]
-fn invalid_fault_event_sequence_is_terminal_across_retries() -> Result<(), Box<dyn Error>> {
-    let log = shared_log();
-    let mut node = scripted_node_with_fault_events(
-        Arc::clone(&log),
-        [fault_event_with_sequence(1), fault_event_with_sequence(3)],
-    )?;
-    let mut retained = Vec::new();
-
-    let first_error = node
-        .drain_fault_events(&mut retained)
-        .expect_err("a sequence gap must fail closed");
-    assert_eq!(retained.len(), 2);
-    let second_error = node
-        .drain_fault_events(&mut retained)
-        .expect_err("retry must preserve the terminal sequence failure");
-    assert_eq!(retained.len(), 2);
-    assert_eq!(first_error.to_string(), second_error.to_string());
-    assert!(first_error.to_string().contains("expected 2, observed 3"));
-    let pending_error = node
-        .fault_event_pending()
-        .expect_err("checkpoint admission must observe the terminal failure");
-    assert_eq!(first_error.to_string(), pending_error.to_string());
-
-    node.shutdown_child()?;
     Ok(())
 }
 
@@ -821,6 +806,8 @@ fn scripted_node_with_fault_events(
     log: SharedLog,
     events: impl IntoIterator<Item = DequeuedFaultEvent>,
 ) -> Result<QemuNode, Box<dyn Error>> {
+    let mut events = events.into_iter();
+    let staged_fault_events = events.next().into_iter().collect();
     let channels = QemuNodeChannels::new(
         ScriptedPluginControl {
             log: Arc::clone(&log),
@@ -834,7 +821,7 @@ fn scripted_node_with_fault_events(
             teardown_coverage: Arc::new(Mutex::new(Vec::new())),
             fault_commands: Arc::new(Mutex::new(Vec::new())),
             stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
-            fault_events: Arc::new(Mutex::new(events.into_iter().collect())),
+            fault_events: Arc::new(Mutex::new(events.collect())),
             fingerprint_retry_countdown: Arc::new(Mutex::new(0)),
         },
         ScriptedQmpMachineControl {
@@ -855,6 +842,7 @@ fn scripted_node_with_fault_events(
             log,
             outcomes: VecDeque::new(),
             fault_results: VecDeque::new(),
+            staged_fault_events,
         },
         2,
     ))
@@ -931,6 +919,7 @@ fn scripted_node_with_coverage(
             log,
             outcomes: runtime_outcomes.into_iter().collect(),
             fault_results: VecDeque::new(),
+            staged_fault_events: Vec::new(),
         },
         2,
     ))

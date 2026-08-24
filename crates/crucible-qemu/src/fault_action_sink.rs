@@ -434,6 +434,15 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             .map_err(|error| {
                 FaultActionCommitError::Fatal(FaultRuntimeError::ResourceLimit(error))
             })?;
+        let maximum_event_records =
+            usize::try_from(self.resource_limits.event_records).map_err(|_source| {
+                FaultActionCommitError::Fatal(FaultRuntimeError::ResourceLimit(
+                    FaultResourceLimitError::Representation {
+                        field: "event_records",
+                        value: self.resource_limits.event_records,
+                    },
+                ))
+            })?;
         self.committed
             .try_reserve_exact(total_actions)
             .map_err(|_| {
@@ -508,6 +517,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                     preparation_header,
                     &preparation_payload,
                     maximum_evidence,
+                    maximum_event_records,
                 )
                 .map_err(map_preparation_result_error)?;
             let DequeuedFaultResult::Valid {
@@ -620,15 +630,14 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             )?;
             let result = self
                 .nodes
-                .apply_fault_command_at_current_boundary_with_result_buffer(
+                .apply_fault_command_at_current_boundary_with_limits(
                     &prepared.node,
                     header,
                     &prepared.payload,
                     result_buffer,
+                    maximum_event_records,
                 )
-                .map_err(|_source| {
-                    FaultActionCommitError::Fatal(FaultRuntimeError::AdapterTransactionRollback)
-                })?;
+                .map_err(map_preparation_result_error)?;
             let (evidence, result_buffer) = validate_typed_node_result_decoded(
                 &request,
                 &prepared.payload,
@@ -688,15 +697,14 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             ))?;
             let result = self
                 .nodes
-                .apply_fault_command_at_current_boundary_with_result_buffer(
+                .apply_fault_command_at_current_boundary_with_limits(
                     &prepared.node,
                     mutation_header,
                     &mutation_payload,
                     result_buffer,
+                    maximum_event_records,
                 )
-                .map_err(|_source| {
-                    FaultActionCommitError::Fatal(FaultRuntimeError::AdapterTransactionRollback)
-                })?;
+                .map_err(map_preparation_result_error)?;
             let DequeuedFaultResult::Valid {
                 header: result_header,
                 payload: mut result_payload,
@@ -775,15 +783,14 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             ))?;
             let result = self
                 .nodes
-                .apply_fault_command_at_current_boundary_with_result_buffer(
+                .apply_fault_command_at_current_boundary_with_limits(
                     &prepared.node,
                     header,
                     &prepared.payload,
                     result_buffer,
+                    maximum_event_records,
                 )
-                .map_err(|_source| {
-                    FaultActionCommitError::Fatal(FaultRuntimeError::AdapterTransactionRollback)
-                })?;
+                .map_err(map_preparation_result_error)?;
             let (evidence, _result_buffer) = validate_typed_node_result_decoded(
                 &request,
                 &prepared.payload,

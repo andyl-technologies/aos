@@ -941,9 +941,7 @@ fn nested_fault_command_pump_uses_published_scheduler_state() {
         .fault_command_pump_active
         .store(true, Ordering::Release);
 
-    state
-        .pump_fault_commands(0)
-        .unwrap_or_else(|error| panic!("nested scheduler query should not repump: {error}"));
+    assert!(matches!(state.pump_fault_commands(0), Ok(true)));
 
     assert!(state.fault_command_pump_active.load(Ordering::Acquire));
     state

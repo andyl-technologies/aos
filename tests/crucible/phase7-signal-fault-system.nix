@@ -106,6 +106,15 @@ in
             -p crucible-shmem \
             --lib \
             -- --list > "$shmem_lib_tests"
+          plugin_lib_tests="$TMPDIR/crucible-qemu-plugin-lib-tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu-plugin \
+            --lib \
+            -- --list > "$plugin_lib_tests"
 
           run_exact_crucible_test() {
             test_name="$1"
@@ -142,6 +151,19 @@ in
               --target-dir "$target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-shmem \
+              --lib "$test_name" \
+              -- --exact --test-threads=1
+          }
+
+          run_exact_plugin_test() {
+            test_name="$1"
+            grep -Fqx "$test_name: test" "$plugin_lib_tests"
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu-plugin \
               --lib "$test_name" \
               -- --exact --test-threads=1
           }
@@ -234,6 +256,12 @@ in
             fault_action_sink::tests::dynamic_prepare_limit_preserves_authored_coordinates
           run_exact_qemu_test \
             supervision::host_io_runtime::tests::preparation_result_is_admitted_before_exact_storage_allocation
+          run_exact_qemu_test \
+            supervision::host_io_runtime::tests::fault_result_publication_waits_for_the_full_control_pump
+          run_exact_qemu_test \
+            node::tests::fault_command::invalid_fault_event_sequence_is_terminal_across_retries
+          run_exact_plugin_test \
+            fault_command::tests::bridge_translates_capabilities_and_local_rejections_at_logical_time
           run_exact_qemu_test \
             fault_action_sink::node_payload::tests::memory_bit_flip_rejects_authored_length_before_expanding_mask
           run_exact_qemu_test \

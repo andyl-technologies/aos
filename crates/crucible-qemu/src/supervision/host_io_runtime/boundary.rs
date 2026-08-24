@@ -2,6 +2,40 @@
 
 use super::*;
 
+impl QemuLiveHostIoRuntime {
+    /// Publishes the earliest exact completion across every attached host device.
+    pub(super) fn publish_device_completion_deadline(
+        &self,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let block = self
+            .block
+            .as_ref()
+            .map(|block| block.servicer.next_completion_icount())
+            .transpose()
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new(
+                    "inspect block completion deadline",
+                    source.to_string(),
+                )
+            })?
+            .flatten();
+        let ninep = self
+            .ninep
+            .as_ref()
+            .and_then(|ninep| ninep.servicer.next_completion_icount());
+        let accelerator = self
+            .accelerator
+            .as_ref()
+            .and_then(QemuLiveAcceleratorServicer::next_completion_icount);
+        let deadline = [block, ninep, accelerator].into_iter().flatten().min();
+        self.region
+            .node_slot(self.vm_slot)
+            .map_err(map_slot_error)?
+            .store_device_completion_deadline_icount(deadline.unwrap_or(0));
+        Ok(())
+    }
+}
+
 /// Returns the number of poll attempts that fit within `timeout`, at least one.
 pub(super) fn bounded_poll_attempts(timeout: Duration, poll_interval: Duration) -> u64 {
     let interval = poll_interval.as_micros().max(1);

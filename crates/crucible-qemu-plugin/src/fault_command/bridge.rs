@@ -299,9 +299,8 @@ impl FaultCommandBridge {
     /// Drains completed results, submits every published command, then drains
     /// synchronous QEMU rejections.
     ///
-    /// `logical_icount_offset` is the scheduler logical coordinate minus QEMU's
-    /// raw retired count and must be the same offset used by the sim-loop
-    /// authorization ceiling.
+    /// `logical_icount_offset` is scheduler-logical minus QEMU raw retired count.
+    /// The return is true only after every visible result and event crosses shared memory.
     ///
     /// # Errors
     ///
@@ -312,7 +311,7 @@ impl FaultCommandBridge {
         &mut self,
         logical_icount_offset: u64,
         raw_icount: u64,
-    ) -> Result<(), FaultCommandBridgeError> {
+    ) -> Result<bool, FaultCommandBridgeError> {
         if !self.initialized {
             return Err(FaultCommandBridgeError::NotInitialized);
         }
@@ -320,10 +319,10 @@ impl FaultCommandBridge {
             .checked_add(logical_icount_offset)
             .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
         if !self.poll_results(logical_icount_offset)? {
-            return Ok(());
+            return Ok(false);
         }
         if !self.poll_events(logical_icount_offset)? {
-            return Ok(());
+            return Ok(false);
         }
         loop {
             let command = match self.pending_command.take() {
@@ -366,7 +365,7 @@ impl FaultCommandBridge {
             };
             if !self.results.can_enqueue(required_result_payload)? {
                 self.pending_command = Some(command);
-                return Ok(());
+                return Ok(false);
             }
             match command {
                 DequeuedFaultCommand::Valid { header, payload } => {
@@ -392,16 +391,16 @@ impl FaultCommandBridge {
             // Preserve the earliest QEMU completion point before a later
             // locally rejected command can publish ahead of it.
             if !self.poll_results(logical_icount_offset)? {
-                return Ok(());
+                return Ok(false);
             }
             if !self.poll_events(logical_icount_offset)? {
-                return Ok(());
+                return Ok(false);
             }
         }
-        if self.poll_results(logical_icount_offset)? {
-            let _drained = self.poll_events(logical_icount_offset)?;
+        if !self.poll_results(logical_icount_offset)? {
+            return Ok(false);
         }
-        Ok(())
+        self.poll_events(logical_icount_offset)
     }
 
     fn submit(

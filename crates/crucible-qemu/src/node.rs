@@ -25,7 +25,7 @@ use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_shmem::{
     DequeuedFaultEvent, DequeuedFaultResult, FAULT_COMMAND_FLAG_PREPARE_ONLY, FaultCapabilityRowV1,
     FaultCommandHeaderV1, FaultResultStatus, FingerprintSample as QemuFingerprintSample,
-    HARD_FAULT_PAYLOAD_BYTES, SchedulerPreemptionCommand,
+    HARD_FAULT_EVENT_CAPACITY, HARD_FAULT_PAYLOAD_BYTES, SchedulerPreemptionCommand,
     SchedulerPreemptionKind as ShmemSchedulerPreemptionKind,
 };
 // crucible-lint: allow host-nondeterminism-state -- node transport exposes untrusted causal records for scheduler validation.
@@ -48,6 +48,7 @@ use crate::{
 mod checkpoint_probe;
 mod error;
 mod exact_snapshot;
+mod fault_events;
 pub use error::{QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeError};
 
 /// Stable Linux identity for one launched QEMU process generation.
@@ -1215,66 +1216,6 @@ impl QemuNode {
         self.channels.shmem_hot_path.dequeue_fault_result()
     }
 
-    /// Drains and sequence-validates every fault-rule event published so far.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeError`] when transport authentication fails or the
-    /// per-node event sequence has a gap, duplicate, or overflow.
-    pub fn drain_fault_events(
-        &mut self,
-        events: &mut Vec<DequeuedFaultEvent>,
-    ) -> Result<(), QemuNodeError> {
-        if let Some(message) = &self.fault_event_terminal_failure {
-            return Err(QemuNodeError::fault_command(message.clone()));
-        }
-        while let Some(event) =
-            self.channels
-                .shmem_hot_path
-                .dequeue_fault_event()
-                .map_err(|source| {
-                    QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-                })?
-        {
-            let event_sequence = event.header.event_sequence;
-            events.push(event);
-            if event_sequence != self.next_fault_event_sequence {
-                let message = format!(
-                    "fault event sequence mismatch: expected {}, observed {}",
-                    self.next_fault_event_sequence, event_sequence
-                );
-                self.fault_event_terminal_failure = Some(message.clone());
-                return Err(QemuNodeError::fault_command(message));
-            }
-            self.next_fault_event_sequence = match self.next_fault_event_sequence.checked_add(1) {
-                Some(sequence) => sequence,
-                None => {
-                    let message = String::from("fault event sequence is exhausted");
-                    self.fault_event_terminal_failure = Some(message.clone());
-                    return Err(QemuNodeError::fault_command(message));
-                }
-            };
-        }
-        Ok(())
-    }
-
-    /// Reports whether a QEMU event still awaits runtime admission.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeError`] when the event transport is invalid.
-    pub fn fault_event_pending(&mut self) -> Result<bool, QemuNodeError> {
-        if let Some(message) = &self.fault_event_terminal_failure {
-            return Err(QemuNodeError::fault_command(message.clone()));
-        }
-        self.channels
-            .shmem_hot_path
-            .fault_event_pending()
-            .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-            })
-    }
-
     /// Applies one admitted QEMU fault command at the exact current boundary.
     ///
     /// The method refuses to advance the guest. It authenticates the command
@@ -1298,6 +1239,7 @@ impl QemuNode {
                 payload,
                 None,
                 HARD_FAULT_PAYLOAD_BYTES as usize,
+                HARD_FAULT_EVENT_CAPACITY as usize,
             );
         }
         // Compatibility APPLY callers have not staged a result buffer. Admit
@@ -1321,27 +1263,31 @@ impl QemuNode {
             payload,
             Some(result_buffer),
             0,
+            HARD_FAULT_EVENT_CAPACITY as usize,
         )
     }
 
-    /// Applies one admitted command using result storage reserved by the caller.
+    /// Applies one admitted command using caller-reserved result storage and
+    /// an authored occurrence-event staging limit.
     ///
     /// # Errors
     ///
     /// Returns [`QemuNodeError`] under the same conditions as
-    /// [`Self::apply_fault_command_at_current_boundary`], and when the supplied
-    /// result buffer is smaller than the published evidence.
-    pub(crate) fn apply_fault_command_at_current_boundary_with_result_buffer(
+    /// [`Self::apply_fault_command_at_current_boundary`], and when either
+    /// caller-owned result storage or event staging is insufficient.
+    pub(crate) fn apply_fault_command_at_current_boundary_with_limits(
         &mut self,
         header: FaultCommandHeaderV1,
         payload: &[u8],
         result_buffer: Vec<u8>,
+        maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuNodeError> {
         self.apply_fault_command_at_current_boundary_with_storage(
             header,
             payload,
             Some(result_buffer),
             0,
+            maximum_event_records,
         )
     }
 
@@ -1350,6 +1296,7 @@ impl QemuNode {
         header: FaultCommandHeaderV1,
         payload: &[u8],
         maximum_payload_bytes: usize,
+        maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuNodeError> {
         if header.command_flags & FAULT_COMMAND_FLAG_PREPARE_ONLY == 0 {
             return Err(QemuNodeError::fault_command(
@@ -1361,6 +1308,7 @@ impl QemuNode {
             payload,
             None,
             maximum_payload_bytes,
+            maximum_event_records,
         )
     }
 
@@ -1370,6 +1318,7 @@ impl QemuNode {
         payload: &[u8],
         result_buffer: Option<Vec<u8>>,
         maximum_preparation_payload_bytes: usize,
+        maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuNodeError> {
         let before = self.current_icount()?;
         if header.target_icount != before.retired {
@@ -1414,22 +1363,32 @@ impl QemuNode {
                 QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
             })?;
         let result = match result_buffer {
-            Some(result_buffer) => self
-                .host_io_runtime
-                .await_fault_result(self.async_policy.advance_completion_timeout, result_buffer),
+            Some(result_buffer) => self.host_io_runtime.await_fault_result(
+                self.async_policy.advance_completion_timeout,
+                result_buffer,
+                maximum_event_records,
+            ),
             None => self.host_io_runtime.await_fault_preparation_result(
                 self.async_policy.advance_completion_timeout,
                 maximum_preparation_payload_bytes,
+                maximum_event_records,
             ),
         }
         .map_err(|source| {
-            source.fault_result_storage.map_or_else(
-                || QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source)),
-                |(requested, configured)| QemuNodeError::FaultResultStorage {
+            if let Some((requested, configured)) = source.fault_result_storage {
+                QemuNodeError::FaultResultStorage {
                     requested: u64::from(requested),
                     configured: u64::from(configured),
-                },
-            )
+                }
+            } else if let Some((current, requested, configured)) = source.fault_event_storage {
+                QemuNodeError::FaultEventStorage {
+                    current,
+                    requested,
+                    configured,
+                }
+            } else {
+                QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
+            }
         })?;
         let after = self.current_icount()?;
         if after != before {
