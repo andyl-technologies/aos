@@ -349,6 +349,14 @@ in
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_preflights_process_count_before_owned_map_decode
           run_exact_api_test \
+            server::resource_limit::tests::rpc_resource_limit_response_preserves_exact_coordinates
+          run_exact_api_test \
+            client::resource_limit::tests::rpc_resource_limit_decodes_to_typed_lifecycle_error
+          run_exact_api_test \
+            vm_lifecycle::process_owners::decode_budget::tests::lifecycle_record_allocation_reports_previously_owned_record_usage
+          run_exact_api_test \
+            vm_lifecycle::quantum_loop::lifecycle::persistence::recovery::error::tests::decode_allocation_error_adds_the_complete_runtime_base
+          run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_owned_decode_is_canonical_and_escape_free
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state_recovers_an_unfinished_run_before_reuse

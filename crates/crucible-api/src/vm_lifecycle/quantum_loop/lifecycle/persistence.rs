@@ -17,7 +17,7 @@ pub(in crate::vm_lifecycle) use recovery::{
     DurableRunStateError, decode_prior_run_state, decode_run_json_bounded,
 };
 
-const HARD_RUN_STATE_JSON_BYTES: u64 = 67_108_864;
+pub(in crate::vm_lifecycle) const HARD_RUN_STATE_JSON_BYTES: u64 = 67_108_864;
 const PRODUCTION_RUN_STATE_VERSION: u32 = 2;
 pub(in crate::vm_lifecycle) const PRODUCTION_RUN_STATE_FILE: &str = "run-state.json";
 
