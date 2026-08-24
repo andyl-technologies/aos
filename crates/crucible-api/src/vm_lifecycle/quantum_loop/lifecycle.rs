@@ -41,6 +41,26 @@ impl ProductionVmLifecycleLoop {
         terminal_decisions
             .try_reserve_exact(intents.len())
             .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
+        let mut prepared_replacements = Vec::new();
+        prepared_replacements
+            .try_reserve_exact(intents.len())
+            .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
+        let mut observed_exit_codes = Vec::new();
+        observed_exit_codes
+            .try_reserve_exact(intents.len())
+            .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
+        let mut block_handles = Vec::new();
+        block_handles
+            .try_reserve_exact(intents.len())
+            .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
+        let mut replacement_nodes = Vec::new();
+        replacement_nodes
+            .try_reserve_exact(intents.len())
+            .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
+        let mut replacement_values = Vec::new();
+        replacement_values
+            .try_reserve_exact(intents.len())
+            .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
         let completed_exit_count = self.lifecycle_journal.completed_exits.len();
         let aggregate_event_records = runtime_event_records
             .checked_add(u64::try_from(completed_exit_count).unwrap_or(u64::MAX))
@@ -109,6 +129,12 @@ impl ProductionVmLifecycleLoop {
             process_owners.push(Some(PreparedLifecycleProcessOwner {
                 action: intent.action,
                 decision_node: Some(NodeId {
+                    name: try_lifecycle_string(&intent.node.name, nodes.len(), limits)?,
+                }),
+                backend_node: Some(NodeId {
+                    name: try_lifecycle_string(&intent.node.name, nodes.len(), limits)?,
+                }),
+                observed_exit_node: Some(NodeId {
                     name: try_lifecycle_string(&intent.node.name, nodes.len(), limits)?,
                 }),
                 manifest_node,
@@ -181,6 +207,11 @@ impl ProductionVmLifecycleLoop {
             actions,
             process_owners,
             terminal_decisions,
+            prepared_replacements,
+            observed_exit_codes,
+            block_handles,
+            replacement_nodes,
+            replacement_values,
             reserved_event_records,
             reserved_event_log_bytes: u64::try_from(reserved_event_log_bytes).map_err(|_| {
                 lifecycle_resource_error("event_log_bytes", 0, reserved_event_log_bytes, limits)

@@ -15,11 +15,15 @@ pub(in crate::vm_lifecycle::quantum_loop) struct PreparedTerminalReplacement {
     pub(in crate::vm_lifecycle::quantum_loop) debug_backend_path: Option<PathBuf>,
     pub(in crate::vm_lifecycle::quantum_loop) crash_detector: String,
     pub(in crate::vm_lifecycle::quantum_loop) process_owner: Option<PreparedLifecycleProcessOwner>,
+    pub(in crate::vm_lifecycle::quantum_loop) backend_node: Option<NodeId>,
+    pub(in crate::vm_lifecycle::quantum_loop) observed_exit_node: Option<NodeId>,
 }
 
 pub(in crate::vm_lifecycle::quantum_loop) struct PreparedLifecycleProcessOwner {
     pub(in crate::vm_lifecycle::quantum_loop) action: ContentHash,
     pub(in crate::vm_lifecycle::quantum_loop) decision_node: Option<NodeId>,
+    pub(in crate::vm_lifecycle::quantum_loop) backend_node: Option<NodeId>,
+    pub(in crate::vm_lifecycle::quantum_loop) observed_exit_node: Option<NodeId>,
     pub(in crate::vm_lifecycle::quantum_loop) manifest_node: String,
     pub(in crate::vm_lifecycle::quantum_loop) manifest_identity: QemuProcessIdentity,
     pub(in crate::vm_lifecycle::quantum_loop) journal_identity: QemuProcessIdentity,
@@ -36,6 +40,13 @@ pub(in crate::vm_lifecycle::quantum_loop) struct PreparedLifecyclePrecommit {
     pub(in crate::vm_lifecycle::quantum_loop) process_owners:
         Vec<Option<PreparedLifecycleProcessOwner>>,
     pub(in crate::vm_lifecycle::quantum_loop) terminal_decisions: Vec<PreparedLifecycleTerminal>,
+    pub(in crate::vm_lifecycle::quantum_loop) prepared_replacements:
+        Vec<PreparedTerminalReplacement>,
+    pub(in crate::vm_lifecycle::quantum_loop) observed_exit_codes: Vec<(NodeId, i32)>,
+    pub(in crate::vm_lifecycle::quantum_loop) block_handles:
+        Vec<(ContentHash, QemuSharedBlockDevice)>,
+    pub(in crate::vm_lifecycle::quantum_loop) replacement_nodes: Vec<NodeId>,
+    pub(in crate::vm_lifecycle::quantum_loop) replacement_values: Vec<Option<QemuNode>>,
     pub(in crate::vm_lifecycle::quantum_loop) reserved_event_records: u64,
     pub(in crate::vm_lifecycle::quantum_loop) reserved_event_log_bytes: u64,
 }
