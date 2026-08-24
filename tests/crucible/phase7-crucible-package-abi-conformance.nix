@@ -82,11 +82,19 @@
       }
       {
         label = "vendored cargo dependencies";
-        needle = "cargoDeps = pkgs.fetchCargoVendor";
+        needle = "cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};";
       }
       {
         label = "frozen offline cargo gate";
         needle = "cargo test \\\n              --frozen \\\n              --offline";
+      }
+      {
+        label = "ABI owners fail closed on zero registered tests";
+        needle = "require_test_set() {";
+      }
+      {
+        label = "engine ABI owner exact registration guard";
+        needle = "require_test_set 2 engine";
       }
       {
         label = "shmem ABI owner test";
@@ -115,6 +123,10 @@
       {
         label = "ABI gate result marker";
         needle = "gate=gate:abi-conformance";
+      }
+      {
+        label = "ABI zero-test guard result marker";
+        needle = "zero_test_guards=exact-count-and-canonical-owner";
       }
       {
         label = "version bump result marker";

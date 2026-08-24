@@ -25,7 +25,7 @@ and [`12-qemu-plugin.md`](12-qemu-plugin.md); virtual time in
 ## 4.1 What "hermetic instruction-level determinism" means
 
 Two systems that merely agree on which messages were delivered, in what order,
-are *behaviorally equivalent at the network policy* but may have taken wildly
+are *behaviorally equivalent at the network boundary* but may have taken wildly
 different interior paths to get there — different interrupt-handler entry points,
 different scheduler decisions inside the guest, different memory contents at a
 crash point. That is not enough to (a) reproduce an interior bug, (b) fork a run
@@ -79,7 +79,7 @@ execution fingerprint (4.8), a panic backtrace — is also bit-identical.
   (bit-identical `S` and `T`), not merely *same-delivered-message-sequence*.
   Message-sequence determinism is a strictly weaker property that this contract
   implies but is not implied by; the harness MUST verify the interior, not only
-  the network policy. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §4.1,
+  the network boundary. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §4.1,
   §4.8.
 
 - **[DET-3]** Per-VM determinism MUST be achieved by *eliminating nondeterminism

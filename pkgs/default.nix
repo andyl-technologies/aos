@@ -422,6 +422,7 @@
     "installCargoArtifacts"
     "cargoArtifactContract"
     "cargoNextest"
+    "cargoNextestOpenFilesLimit"
     "nextestFlags"
     "cargoFlags"
     "buildType"
