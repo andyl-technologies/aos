@@ -187,18 +187,33 @@ fn journal_process_ownership_is_exact(
     match phase {
         ProductionLifecycleJournalPhase::Idle | ProductionLifecycleJournalPhase::Committed => false,
         ProductionLifecycleJournalPhase::Intent => {
-            current == Some(&node.current_process)
-                && staged.is_none()
-                && node.replacement_process.is_none()
+            current == Some(&node.current_process) && node.replacement_process.is_none()
         }
-        ProductionLifecycleJournalPhase::Prepared
-        | ProductionLifecycleJournalPhase::ExitsReaped => {
+        ProductionLifecycleJournalPhase::Prepared => {
             current == Some(&node.current_process) && staged == node.replacement_process.as_ref()
+        }
+        ProductionLifecycleJournalPhase::ExitsReaped => {
+            (current == Some(&node.current_process) && staged == node.replacement_process.as_ref())
+                || committed_process_ownership_is_exact(node, current, staged)
         }
         ProductionLifecycleJournalPhase::Quarantined => {
             quarantined_process_ownership_is_recoverable(node, current, staged)
         }
     }
+}
+
+fn committed_process_ownership_is_exact(
+    node: &ProductionLifecycleJournalNode,
+    current: Option<&QemuProcessIdentity>,
+    staged: Option<&QemuProcessIdentity>,
+) -> bool {
+    if staged.is_some() {
+        return false;
+    }
+    node.replacement_process.as_ref().map_or_else(
+        || current.is_none() && node.transition == "PermanentFailure",
+        |replacement| current == Some(replacement),
+    )
 }
 
 fn quarantined_process_ownership_is_recoverable(
@@ -223,21 +238,9 @@ fn quarantined_process_ownership_is_recoverable(
         return current == Some(replacement);
     }
 
-    // Commit moves replacement ownership into the manifest before persisting
-    // it, and consumes the journal's replacement field. If directory fsync
-    // then fails, quarantine durably observes the new manifest owner without
-    // a duplicate journal identity. Only a generation-advancing replacement
-    // transition can create that state. Permanent failure instead removes the
-    // manifest owner entirely.
-    (current.is_some()
-        && node.next_generation == node.current_generation.saturating_add(1)
-        && matches!(
-            node.transition.as_str(),
-            "Crash" | "PowerOff" | "PowerCycle" | "Reset"
-        ))
-        || (current.is_none()
-            && node.next_generation == node.current_generation
-            && node.transition == "PermanentFailure")
+    current.is_none()
+        && node.next_generation == node.current_generation
+        && node.transition == "PermanentFailure"
 }
 
 fn valid_lifecycle_transition(value: &str) -> bool {

@@ -297,6 +297,8 @@ in
           run_exact_qemu_test \
             mapped_quantum::fault_event_tests::mapped_preview_preserves_exact_production_resource_coordinates
           run_exact_qemu_test \
+            mapped_quantum::fault_event_tests::mapped_inline_preview_preserves_exact_production_resource_coordinates
+          run_exact_qemu_test \
             node::tests::fault_event_budget::fingerprint_nodes_spend_one_sequential_fault_event_budget
           run_exact_qemu_test \
             node::tests::fault_event_budget::production_restore_requires_clean_fault_event_ownership
@@ -320,6 +322,10 @@ in
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_prepared_ownership_in_intent_or_committed_phase
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_accepts_both_quarantined_manifest_commit_windows
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_accepts_manifest_first_intent_and_exits_reaped_windows
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_unrelated_quarantined_postcommit_owner
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_oversized_json_before_decode
           run_exact_api_test \

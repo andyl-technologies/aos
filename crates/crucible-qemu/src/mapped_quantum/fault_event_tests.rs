@@ -29,15 +29,14 @@ impl SchedulerSendAuthorizer for AllowMappedTestSends {
     }
 }
 
-#[test]
-fn mapped_preview_preserves_exact_production_resource_coordinates()
--> Result<(), Box<dyn std::error::Error>> {
+fn mapped_event_hot_path(
+    payload: &[u8],
+) -> Result<QemuMappedQuantumShmemHotPath, Box<dyn std::error::Error>> {
     let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
     let layout = allocation.layout();
     let mut shmem = tempfile::tempfile()?;
     shmem.set_len(layout.region_size)?;
     shmem.write_all(&allocation.setup_region_bytes()?)?;
-    let payload = b"mapped-event-budget";
     {
         let mut producer = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
         let transport = producer.fault_event_transport_mut(0)?;
@@ -78,7 +77,18 @@ fn mapped_preview_preserves_exact_production_resource_coordinates()
         },
         0,
     );
-    let mut hot_path = QemuMappedQuantumShmemHotPath::new(config, region, AllowMappedTestSends)?;
+    Ok(QemuMappedQuantumShmemHotPath::new(
+        config,
+        region,
+        AllowMappedTestSends,
+    )?)
+}
+
+#[test]
+fn mapped_preview_preserves_exact_production_resource_coordinates()
+-> Result<(), Box<dyn std::error::Error>> {
+    let payload = b"mapped-event-budget";
+    let mut hot_path = mapped_event_hot_path(payload)?;
     let mut preview = Vec::with_capacity(1);
     let mut current = 9;
     let requested = payload.len() + FAULT_EVENT_HEADER_V1_BYTES;
@@ -105,6 +115,46 @@ fn mapped_preview_preserves_exact_production_resource_coordinates()
         }) if observed_requested == requested as u64
             && observed_configured == configured as u64
             && hard == FaultResourceLimits::compiled_maximum().event_log_bytes
+    ));
+    assert!(preview.is_empty());
+    assert_eq!(current, 9);
+    assert_eq!(
+        QemuShmemHotPathChannel::fault_event_count(&mut hot_path)?,
+        1
+    );
+    Ok(())
+}
+
+#[test]
+fn mapped_inline_preview_preserves_exact_production_resource_coordinates()
+-> Result<(), Box<dyn std::error::Error>> {
+    let payload = b"mapped-inline-event-budget";
+    let mut hot_path = mapped_event_hot_path(payload)?;
+    let mut preview = Vec::with_capacity(1);
+    let mut current = 9;
+    let configured = payload.len() - 1;
+    let error = QemuShmemHotPathChannel::snapshot_fault_events(
+        &mut hot_path,
+        &mut preview,
+        &mut current,
+        usize::MAX,
+        configured,
+    )
+    .err()
+    .ok_or("mapped preview should reject the inline payload limit")?;
+    let production = crate::production_fault_runtime::map_fault_event_drain_error(error);
+
+    assert!(matches!(
+        production,
+        ProductionFaultRuntimeError::ResourceLimit(FaultResourceLimitError::Exceeded {
+            field: "event_inline_payload_bytes",
+            current: 0,
+            requested,
+            configured: observed_configured,
+            hard,
+        }) if requested == payload.len() as u64
+            && observed_configured == configured as u64
+            && hard == FaultResourceLimits::compiled_maximum().event_inline_payload_bytes
     ));
     assert!(preview.is_empty());
     assert_eq!(current, 9);
