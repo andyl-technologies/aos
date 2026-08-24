@@ -26,6 +26,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use aos_core::output::TransferProgress;
+use sha1::Sha1;
+use sha2::{Digest, Sha256};
 
 use crate::registry::dumb_http;
 
@@ -447,13 +449,11 @@ fn write_tree_recursive(repo: &git2::Repository, tree: &git2::Tree, dest: &Path)
                 write_tree_recursive(repo, subtree, &path)?;
             }
             Some(git2::ObjectType::Blob) => {
-                let object = entry.to_object(repo)?;
-                let blob = object
-                    .as_blob()
-                    .ok_or_else(|| anyhow::anyhow!("blob entry {name} is not a blob"))?;
+                let content = read_blob_content(repo, entry.id())
+                    .with_context(|| format!("reading blob for {}", path.display()))?;
                 let filemode = entry.filemode();
                 if filemode == 0o120000 {
-                    let target = std::str::from_utf8(blob.content())
+                    let target = std::str::from_utf8(&content)
                         .with_context(|| format!("symlink target for {name} is not UTF-8"))?;
                     std::os::unix::fs::symlink(target, &path)
                         .with_context(|| format!("creating symlink {}", path.display()))?;
@@ -467,7 +467,7 @@ fn write_tree_recursive(repo: &git2::Repository, tree: &git2::Tree, dest: &Path)
                         .open(&path)
                         .with_context(|| format!("creating {}", path.display()))?;
                     use std::io::Write;
-                    file.write_all(blob.content())
+                    file.write_all(&content)
                         .with_context(|| format!("writing {}", path.display()))?;
                 }
             }
@@ -477,6 +477,88 @@ fn write_tree_recursive(repo: &git2::Repository, tree: &git2::Tree, dest: &Path)
         }
     }
     Ok(())
+}
+
+/// Read blob bytes directly from the object database.
+///
+/// libgit2's experimental SHA-256 support can construct a zero-length object
+/// view for a non-empty delta-compressed blob received in a pack. Extraction
+/// verifies the reconstructed bytes against the tree entry's content address
+/// and fails closed if the fetch layer did not repair the object from the
+/// registry's loose-object correctness floor.
+fn read_blob_content(repo: &git2::Repository, oid: git2::Oid) -> Result<Vec<u8>> {
+    let odb = repo.odb().context("opening object database")?;
+    let object = odb
+        .read(oid)
+        .with_context(|| format!("reading object {oid}"))?;
+    if object.kind() != git2::ObjectType::Blob {
+        bail!(
+            "tree entry {oid} resolved to {:?}, not a blob",
+            object.kind()
+        );
+    }
+    if !object_matches_oid(oid, object.kind(), object.data()) {
+        bail!("blob {oid} content does not match its SHA-256 object id");
+    }
+    Ok(object.data().to_vec())
+}
+
+/// Verify raw object bytes against their Git content address.
+fn object_matches_oid(oid: git2::Oid, kind: git2::ObjectType, data: &[u8]) -> bool {
+    let kind = match kind {
+        git2::ObjectType::Commit => "commit",
+        git2::ObjectType::Tree => "tree",
+        git2::ObjectType::Blob => "blob",
+        git2::ObjectType::Tag => "tag",
+        _ => return false,
+    };
+    let header = format!("{kind} {}\0", data.len());
+    match oid.as_bytes().len() {
+        20 => {
+            let mut hasher = Sha1::new();
+            hasher.update(header.as_bytes());
+            hasher.update(data);
+            hasher.finalize().as_slice() == oid.as_bytes()
+        }
+        32 => {
+            let mut hasher = Sha256::new();
+            hasher.update(header.as_bytes());
+            hasher.update(data);
+            hasher.finalize().as_slice() == oid.as_bytes()
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod object_identity_tests {
+    use super::*;
+
+    #[test]
+    fn sha256_identity_rejects_empty_reconstruction_for_nonempty_blob() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut options = git2::RepositoryInitOptions::new();
+        options.bare(true).object_format(git2::ObjectFormat::Sha256);
+        let repo = git2::Repository::init_opts(tmp.path(), &options).unwrap();
+        let odb = repo.odb().unwrap();
+        let content = b"non-empty registry metadata\n";
+        let oid = odb.write(git2::ObjectType::Blob, content).unwrap();
+
+        assert!(object_matches_oid(oid, git2::ObjectType::Blob, content));
+        assert!(!object_matches_oid(oid, git2::ObjectType::Blob, b""));
+    }
+
+    #[test]
+    fn sha1_identity_remains_supported_for_legacy_repository_reads() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = git2::Repository::init_bare(tmp.path()).unwrap();
+        let odb = repo.odb().unwrap();
+        let content = b"legacy registry metadata\n";
+        let oid = odb.write(git2::ObjectType::Blob, content).unwrap();
+
+        assert!(object_matches_oid(oid, git2::ObjectType::Blob, content));
+        assert!(!object_matches_oid(oid, git2::ObjectType::Blob, b""));
+    }
 }
 
 /// Map every semver-parseable tag's annotated tag-object OID to its version.
@@ -775,11 +857,10 @@ pub(crate) fn objects_dir(repo_dir: &Path) -> Result<PathBuf> {
 /// Index downloaded packfiles into the repository's object store.
 ///
 /// Each entry of `packs` is the raw bytes of a `.pack` file. libgit2's pack
-/// indexer (equivalent to `git index-pack`) regenerates the `.idx` and
-/// verifies the pack, so objects become addressable by their true content
-/// hash — a tampered pack yields objects under unexpected ids that the graph
-/// walk in [`missing_objects_blocking`] simply will not find under the ids it
-/// expects. The `.idx` therefore never has to be downloaded or trusted.
+/// indexer (equivalent to `git index-pack`) regenerates the `.idx`; the graph
+/// walk in [`missing_objects_blocking`] independently verifies reconstructed
+/// object bytes against their SHA-256 ids before trusting them. The server's
+/// `.idx` therefore never has to be downloaded or trusted.
 ///
 /// # Errors
 ///
@@ -797,13 +878,16 @@ pub(crate) fn index_packs_blocking(repo_dir: &Path, packs: &[Vec<u8>]) -> Result
 }
 
 /// Walk the object graph reachable from `targets` over the *local* object
-/// store and return the hex OIDs that are referenced but absent.
+/// store and return the hex OIDs that are absent or whose reconstructed bytes
+/// do not match their content address.
 ///
 /// Traversal uses libgit2 objects (commit -> tree + parents, tree -> entries,
 /// tag -> target), so every OID originates from git2 and is never parsed from
-/// a hex string. Objects already present — whether in a pack or loose — are
-/// traversed in place with no network access; the returned set is the frontier
-/// the caller must download (loose) before walking can continue past it.
+/// a hex string. Objects already present and valid — whether in a pack or loose
+/// — are traversed in place with no network access. Invalid packed objects are
+/// part of the returned frontier so the dumb-HTTP fetcher replaces them with
+/// the origin's individually hash-verified loose object before traversal
+/// resumes.
 ///
 /// # Errors
 ///
@@ -812,6 +896,7 @@ pub(crate) fn index_packs_blocking(repo_dir: &Path, packs: &[Vec<u8>]) -> Result
 pub(crate) fn missing_objects_blocking(repo_dir: &Path, targets: &[String]) -> Result<Vec<String>> {
     use std::collections::HashSet;
     let repo = open(repo_dir)?;
+    let odb = repo.odb().context("opening object database")?;
     let mut missing: HashSet<String> = HashSet::new();
     let mut visited: HashSet<git2::Oid> = HashSet::new();
     let mut stack: Vec<git2::Oid> = Vec::new();
@@ -830,6 +915,19 @@ pub(crate) fn missing_objects_blocking(repo_dir: &Path, targets: &[String]) -> R
         if !visited.insert(oid) {
             continue;
         }
+        let raw = match odb.read(oid) {
+            Ok(raw) => raw,
+            Err(e) if e.code() == git2::ErrorCode::NotFound => {
+                missing.insert(oid.to_string());
+                continue;
+            }
+            Err(e) => return Err(e).with_context(|| format!("reading raw object {oid}")),
+        };
+        if !object_matches_oid(oid, raw.kind(), raw.data()) {
+            missing.insert(oid.to_string());
+            continue;
+        }
+
         let object = match repo.find_object(oid, None) {
             Ok(object) => object,
             Err(e) if e.code() == git2::ErrorCode::NotFound => {

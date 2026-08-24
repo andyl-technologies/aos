@@ -95,7 +95,7 @@ Stop the Hub and back up the complete state root. It contains:
 - `/var/lib/aos-hub/hub.db` and any SQLite WAL files;
 - `/var/lib/aos-hub/secret.key`, used to seal stored credentials and hosted
   signing-key material;
-- local filesystem storage bindings placed beneath the state root.
+- local filesystem bindings placed beneath the state root.
 
 The secret key is created with mode `0600` on first production use. It may also
 be supplied from a protected file through `AOS_HUB_SECRET_KEY_FILE`. Losing it
@@ -115,7 +115,7 @@ restart; exchange the durable provisioning token again.
 
 ## Add registry storage
 
-Managed registries use named storage bindings. The simplest native binding is
+Managed registries use named bindings. The simplest native binding is
 a directory writable by the service account:
 
 ```sh

@@ -2,13 +2,13 @@
 //!
 //! Logical object metadata is distinct from physical placement inventory. This
 //! workflow shows NAR identity and recursively resolved closure presence without
-//! implying that one successful placement represents every delivery route.
+//! implying that one successful placement represents every route.
 
 use leptos::ev::{Event, SubmitEvent};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, StatusBadge};
+use crate::components::{HashValue, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 /// Renders cache search and exact object/closure inspection.
@@ -264,13 +264,13 @@ fn CacheObjectCard(object: aos_proto_types::CacheObject) -> impl IntoView {
     view! {
         <article class="revision-card">
             <div class="compact-list-row">
-                <div><strong>{object.store_name}</strong><code>{object.store_hash}</code></div>
+                <div><strong>{object.store_name}</strong><HashValue value=object.store_hash/></div>
                 <StatusBadge state=object.compression.clone() positive=!object.signature.is_empty()/>
             </div>
             <div class="resource-identity">
-                <div><span>"NAR hash"</span><code>{object.nar_hash}</code></div>
+                <div><span>"NAR hash"</span><HashValue value=object.nar_hash/></div>
                 <div><span>"NAR bytes"</span><strong>{object.nar_size}</strong></div>
-                <div><span>"File hash"</span><code>{object.file_hash}</code></div>
+                <div><span>"File hash"</span><HashValue value=object.file_hash/></div>
                 <div><span>"File bytes"</span><strong>{object.file_size}</strong></div>
                 <div><span>"References"</span><strong>{object.refs.len()}</strong></div>
                 <div><span>"Uploaded"</span><strong>{object.uploaded_at}</strong></div>
@@ -370,7 +370,7 @@ fn ClosureDetail(closure: aos_proto_types::CacheClosureResponse) -> impl IntoVie
             <div class="compact-list">
                 {closure.nodes.into_iter().map(|node| view! {
                     <div class="compact-list-row">
-                        <div><strong>{node.store_name}</strong><code>{node.store_hash}</code></div>
+                        <div><strong>{node.store_name}</strong><HashValue value=node.store_hash/></div>
                         <span>{format!("{} bytes · {} refs", node.file_size, node.refs.len())}</span>
                         <StatusBadge state=if node.present { "present" } else { "missing" }.to_string() positive=node.present/>
                     </div>

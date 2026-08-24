@@ -634,7 +634,7 @@ mod tests {
             .await
             .unwrap();
         let binding_id = db
-            .create_topology_storage_binding(
+            .create_topology_binding(
                 Some(org_id),
                 &uuid::Uuid::new_v4().simple().to_string(),
                 &org.stable_id,
@@ -656,7 +656,7 @@ mod tests {
             .create_surface_placement(&NewSurfacePlacementSpec {
                 surface: SurfaceTarget::Registry(registry_id),
                 name: "primary".into(),
-                storage_binding_id: binding_id,
+                binding_id: binding_id,
                 prefix: format!("registries/{slug}/system"),
                 kind: "complete".into(),
                 desired_state: "active".into(),
@@ -710,7 +710,7 @@ mod tests {
             .await
             .unwrap();
         let binding_id = db
-            .create_topology_storage_binding(
+            .create_topology_binding(
                 Some(org_id),
                 &uuid::Uuid::new_v4().simple().to_string(),
                 &org.stable_id,
@@ -732,7 +732,7 @@ mod tests {
             .create_surface_placement(&NewSurfacePlacementSpec {
                 surface: SurfaceTarget::BinaryCache(cache_id),
                 name: "primary".into(),
-                storage_binding_id: binding_id,
+                binding_id: binding_id,
                 prefix: "caches/placement-cache".into(),
                 kind: "complete".into(),
                 desired_state: "active".into(),

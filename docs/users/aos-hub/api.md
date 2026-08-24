@@ -98,7 +98,7 @@ grants, and separately reports this token's scope, permissions, and expiry.
 `ListAccessTokens`, `PlanIssueAccessToken`/`IssueAccessToken`, and
 `PlanRetireAccessToken`/`RetireAccessToken`. Requests use canonical stable
 authorization scopes and native permission verbs such as `read`, `publish`,
-`storage_binding.manage`, or `cache.gc.plan`. There are no registry-token RPC
+`binding.manage`, or `cache.gc.plan`. There are no registry-token RPC
 aliases. Token metadata includes its non-secret comment, creation, expiry,
 last-use, rotation, retirement, and lifecycle state; the plaintext secret is
 returned once by the issuance apply response.

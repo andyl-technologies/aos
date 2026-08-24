@@ -8,9 +8,11 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
+
+use super::organization_scope::surface_authorization_scope;
 
 /// Renders placement-policy inventory, revision, and test workflows.
 #[component]
@@ -87,7 +89,7 @@ fn PolicyCard(
     });
 
     view! {
-        <details class="binding-card"><summary><div><span class="resource-kind">{policy.kind.clone()}</span><h3>{policy.name.clone()}</h3><code>{policy.stable_id.clone()}</code></div><StatusBadge state=format!("revision {}", policy.current_revision) positive=true/></summary><div class="binding-details"><div class="resource-identity"><div><span>"Current digest"</span><code>{policy.current_content_digest.clone()}</code></div><div><span>"Version"</span><code>{policy.resource_version.clone()}</code></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading policy revisions…"</p> }>{move || Suspend::new(async move { match revisions.await.as_ref() { Ok(revisions) => view! { <div class="compact-list">{revisions.iter().map(|revision| view! { <div class="compact-list-row"><div><strong>{format!("Revision {}", revision.revision)}</strong><code>{revision.content_digest.clone()}</code><span>{format!("created by {}", revision.created_by)}</span></div></div> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } })}</Suspense><div class="subworkflow-grid"><PolicyMutationForm client=client.clone() surface=surface.clone() policy=Some(policy.clone())/><PolicyTest client=client surface=surface policy=policy/></div></div></details>
+        <details class="binding-card"><summary><div><span class="resource-kind">{policy.kind.clone()}</span><h3>{policy.name.clone()}</h3><code>{policy.stable_id.clone()}</code></div><StatusBadge state=format!("revision {}", policy.current_revision) positive=true/></summary><div class="binding-details"><div class="resource-identity"><div><span>"Current digest"</span><HashValue value=policy.current_content_digest.clone()/></div><div><span>"Version"</span><code>{policy.resource_version.clone()}</code></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading policy revisions…"</p> }>{move || Suspend::new(async move { match revisions.await.as_ref() { Ok(revisions) => view! { <div class="compact-list">{revisions.iter().map(|revision| view! { <div class="compact-list-row"><div><strong>{format!("Revision {}", revision.revision)}</strong><HashValue value=revision.content_digest.clone()/><span>{format!("created by {}", revision.created_by)}</span></div></div> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } })}</Suspense><div class="subworkflow-grid"><PolicyMutationForm client=client.clone() surface=surface.clone() policy=Some(policy.clone())/><PolicyTest client=client surface=surface policy=policy/></div></div></details>
     }
 }
 
@@ -133,6 +135,76 @@ fn PolicyMutationForm(
     client: ApiClient,
     surface: aos_proto_types::SurfaceRef,
     policy: Option<aos_proto_types::PlacementPolicy>,
+) -> impl IntoView {
+    let choices_client = client.clone();
+    let choices_surface = surface.clone();
+    let choices = LocalResource::new(move || {
+        let client = choices_client.clone();
+        let surface = choices_surface.clone();
+        async move { load_policy_choices(&client, &surface).await }
+    });
+
+    view! {
+        <Suspense fallback=move || view! { <section class="subworkflow"><p class="loading-row">"Loading placements and network policies…"</p></section> }>
+            {move || {
+                let client = client.clone();
+                let surface = surface.clone();
+                let policy = policy.clone();
+                Suspend::new(async move {
+                    match choices.await.as_ref() {
+                        Ok(choices) => view! { <PolicyMutationFormEditor client=client surface=surface policy=policy choices=choices.clone()/> }.into_any(),
+                        Err(detail) => view! { <section class="subworkflow"><InlineError detail=detail.clone()/></section> }.into_any(),
+                    }
+                })
+            }}
+        </Suspense>
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PolicyChoices {
+    placements: Vec<aos_proto_types::Placement>,
+    boundaries: Vec<aos_proto_types::NetworkPolicy>,
+}
+
+async fn load_policy_choices(
+    client: &ApiClient,
+    surface: &aos_proto_types::SurfaceRef,
+) -> Result<PolicyChoices, String> {
+    let topology = client
+        .call::<_, aos_proto_types::GetSurfaceTopologyResponse>(
+            aos_proto_types::TOPOLOGY_SERVICE_GET_SURFACE_TOPOLOGY_PATH,
+            &aos_proto_types::GetSurfaceTopologyRequest {
+                surface: Some(surface.clone()),
+            },
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    let (owner_scope_key, _) = surface_authorization_scope(client, surface).await?;
+    let boundaries = client
+        .collect_pages::<_, aos_proto_types::ListNetworkPoliciesResponse, _, _, _>(
+            aos_proto_types::NETWORK_POLICY_SERVICE_LIST_NETWORK_POLICIES_PATH,
+            move |page_token| aos_proto_types::ListTopologyResourcesRequest {
+                owner_scope_key: owner_scope_key.clone(),
+                page_size: 100,
+                page_token,
+            },
+            |response| (response.network_policies, response.next_page_token),
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    Ok(PolicyChoices {
+        placements: topology.placements,
+        boundaries,
+    })
+}
+
+#[component]
+fn PolicyMutationFormEditor(
+    client: ApiClient,
+    surface: aos_proto_types::SurfaceRef,
+    policy: Option<aos_proto_types::PlacementPolicy>,
+    choices: PolicyChoices,
 ) -> impl IntoView {
     let policy_id = RwSignal::new(
         policy
@@ -210,18 +282,38 @@ fn PolicyMutationForm(
     let on_apply = apply(client, apply_path, pending, error, busy);
 
     view! {
-        <section class=if revising { "subworkflow" } else { "subworkflow policy-create" }><h4>{if revising { "Create policy revision" } else { "Create placement policy" }}</h4><form class="editor-form" on:submit=on_plan>{(!revising).then(|| view! { <label><span>"Policy ID"</span><input required prop:value=move || policy_id.get() on:input=move |event| policy_id.set(event_target_value(&event))/></label><label><span>"Display name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label> })}<PolicyFields signals=signals/><div class="form-actions"><button class="secondary-button" type="submit" disabled=move || busy.get()>{if revising { "Review revision" } else { "Review policy" }}</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section>
+        <section class=if revising { "subworkflow" } else { "subworkflow policy-create" }><h4>{if revising { "Create policy revision" } else { "Create placement policy" }}</h4><form class="editor-form" on:submit=on_plan>{(!revising).then(|| view! { <label><span>"Short name"</span><input required prop:value=move || policy_id.get() on:input=move |event| policy_id.set(event_target_value(&event))/></label><label><span>"Display name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label> })}<PolicyFields signals=signals choices=choices/><div class="form-actions"><button class="secondary-button" type="submit" disabled=move || busy.get()>{if revising { "Review revision" } else { "Review policy" }}</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section>
     }
 }
 
 #[component]
-fn PolicyFields(signals: PolicySignals) -> impl IntoView {
+fn PolicyFields(signals: PolicySignals, choices: PolicyChoices) -> impl IntoView {
+    let placements = choices.placements;
+    let boundaries = choices.boundaries;
+    if signals.boundary.get_untracked().is_empty() {
+        if let Some(boundary) = boundaries.first() {
+            signals.boundary.set(format!(
+                "{}@{}",
+                boundary.stable_id, boundary.default_revision
+            ));
+        }
+    }
+    let selected_boundaries = boundaries.clone();
+    let on_boundary_change = move |event| {
+        let value = event_target_value(&event);
+        let revision = selected_boundaries
+            .iter()
+            .find(|boundary| boundary.stable_id == value)
+            .map(|boundary| boundary.default_revision)
+            .unwrap_or_default();
+        signals.boundary.set(format!("{value}@{revision}"));
+    };
     view! {
         <label><span>"Selection kind"</span><select prop:value=move || signals.kind.get() on:change=move |event| signals.kind.set(event_target_value(&event))><option value="ordered-failover">"Ordered failover"</option><option value="local-then-remote">"Local then remote"</option><option value="hash-partition">"Hash partition"</option></select></label>
         {move || match signals.kind.get().as_str() {
-            "ordered-failover" => view! { <label class="full-field"><span>"Placements in failover order (one per line)"</span><textarea required prop:value=move || signals.members.get() on:input=move |event| signals.members.set(event_target_value(&event))></textarea></label> }.into_any(),
-            "local-then-remote" => view! { <label><span>"Local boundary (stable-id@revision)"</span><input required prop:value=move || signals.boundary.get() on:input=move |event| signals.boundary.set(event_target_value(&event))/></label><label class="full-field"><span>"Local placements (one per line)"</span><textarea required prop:value=move || signals.local.get() on:input=move |event| signals.local.set(event_target_value(&event))></textarea></label><label class="full-field"><span>"Remote placements (one per line)"</span><textarea required prop:value=move || signals.remote.get() on:input=move |event| signals.remote.set(event_target_value(&event))></textarea></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.allow_remote_fallback.get() on:change=move |event| signals.allow_remote_fallback.set(event_target_checked(&event))/><span>"Allow remote fallback"</span></label> }.into_any(),
-            "hash-partition" => view! { <label class="full-field"><span>"Ranges (start-end=primary,replica; one per line)"</span><textarea required prop:value=move || signals.ranges.get() on:input=move |event| signals.ranges.set(event_target_value(&event))></textarea></label><label class="full-field"><span>"Complete fallback placements (one per line)"</span><textarea prop:value=move || signals.fallback.get() on:input=move |event| signals.fallback.set(event_target_value(&event))></textarea></label> }.into_any(),
+            "ordered-failover" => view! { <fieldset class="full-field"><legend>"Placements in failover order"</legend><p class="muted">"Selections follow the displayed read order."</p>{placements.iter().map(|placement| { let name = placement.name.clone(); let selected_name = name.clone(); let read_order = placement.spec.as_ref().map(|spec| spec.read_order).unwrap_or_default(); view! { <label class="checkbox-field"><input type="checkbox" prop:checked=move || has_line(&signals.members.get(), &selected_name) on:change=move |event| set_line(signals.members, &name, event_target_checked(&event))/><span>{format!("{} · read order {read_order}", placement.name)}</span></label> } }).collect_view()}</fieldset> }.into_any(),
+            "local-then-remote" => { let on_boundary_change = on_boundary_change.clone(); view! { <label><span>"Local network policy"</span><select required prop:value=move || signals.boundary.get().split_once('@').map(|(id, _)| id.to_string()).unwrap_or_default() on:change=on_boundary_change>{boundaries.iter().map(|boundary| view! { <option value=boundary.stable_id.clone()>{format!("{} · revision {}", boundary.name, boundary.default_revision)}</option> }).collect_view()}</select>{boundaries.is_empty().then(|| view! { <small>"No network policies are available in this owner scope."</small> })}</label><fieldset class="full-field"><legend>"Local placements"</legend>{placements.iter().map(|placement| { let name = placement.name.clone(); let selected_name = name.clone(); view! { <label class="checkbox-field"><input type="checkbox" prop:checked=move || has_line(&signals.local.get(), &selected_name) on:change=move |event| set_line(signals.local, &name, event_target_checked(&event))/><span>{placement.name.clone()}</span></label> } }).collect_view()}</fieldset><fieldset class="full-field"><legend>"Remote placements"</legend>{placements.iter().map(|placement| { let name = placement.name.clone(); let selected_name = name.clone(); view! { <label class="checkbox-field"><input type="checkbox" prop:checked=move || has_line(&signals.remote.get(), &selected_name) on:change=move |event| set_line(signals.remote, &name, event_target_checked(&event))/><span>{placement.name.clone()}</span></label> } }).collect_view()}</fieldset><label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.allow_remote_fallback.get() on:change=move |event| signals.allow_remote_fallback.set(event_target_checked(&event))/><span>"Allow remote fallback"</span></label> }.into_any() },
+            "hash-partition" => view! { <label class="full-field"><span>"Hash ranges"</span><textarea required placeholder="0-32768=primary,replica" prop:value=move || signals.ranges.get() on:input=move |event| signals.ranges.set(event_target_value(&event))></textarea><small>"One range per line. Placement names must come from the inventory below."</small></label><fieldset class="full-field"><legend>"Complete fallback placements"</legend>{placements.iter().map(|placement| { let name = placement.name.clone(); let selected_name = name.clone(); view! { <label class="checkbox-field"><input type="checkbox" prop:checked=move || has_line(&signals.fallback.get(), &selected_name) on:change=move |event| set_line(signals.fallback, &name, event_target_checked(&event))/><span>{placement.name.clone()}</span></label> } }).collect_view()}</fieldset> }.into_any(),
             _ => ().into_any(),
         }}
         <label class="full-field"><span>"Retry conditions (one per line)"</span><textarea prop:value=move || signals.retry_on.get() on:input=move |event| signals.retry_on.set(event_target_value(&event))></textarea></label>
@@ -308,7 +400,7 @@ fn build_policy(
                 .collect();
             Selector::LocalThenRemote(aos_proto_types::LocalThenRemotePlacementPolicy {
                 replica_groups,
-                local_boundary: Some(aos_proto_types::NetworkBoundaryRevisionRef {
+                local_boundary: Some(aos_proto_types::NetworkPolicyRevisionRef {
                     boundary_id,
                     revision,
                 }),
@@ -550,7 +642,7 @@ fn EquivalenceRow(
         error,
         busy,
     );
-    view! { <div class="revision-card"><div class="compact-list-row"><div><strong>{format!("{} ↔ {}", equivalence.placement_a, equivalence.placement_b)}</strong><code>{equivalence.evidence_digest}</code></div><StatusBadge state=equivalence.state positive=true/><button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Review removal"</button></div><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></div> }
+    view! { <div class="revision-card"><div class="compact-list-row"><div><strong>{format!("{} ↔ {}", equivalence.placement_a, equivalence.placement_b)}</strong><HashValue value=equivalence.evidence_digest/></div><StatusBadge state=equivalence.state positive=true/><button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Review removal"</button></div><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></div> }
 }
 
 #[component]
@@ -641,6 +733,20 @@ fn lines(value: &str) -> Vec<String> {
     }
     values
 }
+
+fn has_line(value: &str, candidate: &str) -> bool {
+    value.lines().map(str::trim).any(|line| line == candidate)
+}
+
+fn set_line(signal: RwSignal<String>, candidate: &str, selected: bool) {
+    let mut values = lines(&signal.get_untracked());
+    values.retain(|value| value != candidate);
+    if selected {
+        values.push(candidate.to_string());
+    }
+    signal.set(values.join("\n"));
+}
+
 fn reload() {
     crate::app::refresh();
 }

@@ -3,7 +3,7 @@
 - **Status:** Implemented (phases 1–4) — `crates/aos-registry-hub`.
   **Topology follow-up:** [RFC-0012](../0012-hub-surface-topology/README.md)
   proposes the authoritative next topology for registries, binary caches,
-  storage placements, delivery routes/domains, registry/cache integrations,
+  storage placements, routes/domains, registry/cache integrations,
   and cache retention/GC. It supersedes the target topology in files 03, 04,
   05, 11, and 12 while preserving this RFC as the history of the shipped
   implementation. Until RFC-0012 is implemented, the shipped RFC-0004 model
@@ -13,7 +13,7 @@
   presence+integrity validation), machine-path facade, no-JS browse UI,
   cache-freshness probes, `aos.registry.v1` read path, local-first
   `serve --dev`. Phase 2: tenancy/IAM, tokens/JWT/device-flow/sessions/
-  magic-links, storage bindings + nested URLs + visibility, authenticated
+  magic-links, bindings + nested URLs + visibility, authenticated
   upload facade. Phase 3: audit + SQL config change-sets, no-JS producer
   console, cache stacks + `apm` miss-fallthrough, per-org OIDC SSO.
   Phase 4: hosted signing keys + web channel advance (AES-256-GCM secret
@@ -98,7 +98,7 @@ is a live proposal and its own file carries its working status.
 | [00-problem-and-goal.md](00-problem-and-goal.md) | The problem (no server to *manage* a static registry) and the goal |
 | [01-architecture.md](01-architecture.md) | Stance — a control plane over a static data plane — and architecture / runtime targets |
 | [02-tenancy-iam-auth.md](02-tenancy-iam-auth.md) | Tenancy and IAM, authentication (sessions/tokens/SSO), the access matrix |
-| [03-api-storage-frontends.md](03-api-storage-frontends.md) | `aos.registry.v1` over ConnectRPC, `StorageBinding` + shared buckets, direct/proxied frontends |
+| [03-api-storage-frontends.md](03-api-storage-frontends.md) | `aos.registry.v1` over ConnectRPC, `Binding` + shared buckets, direct/proxied frontends |
 | [04-caching-and-mirroring.md](04-caching-and-mirroring.md) | Cache stores, stacks, consistency validation; mirroring other registries |
 | [05-url-cli-and-config.md](05-url-cli-and-config.md) | URL design (one URL, three audiences), CLI convergence, configuration management |
 | [06-web-surface.md](06-web-surface.md) | UI surface map, the static SPA on the registry's own CDN, sitemap / page flows / visual design |

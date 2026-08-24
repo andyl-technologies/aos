@@ -52,7 +52,7 @@ pub enum ControlError {
     Serialization(String),
 }
 
-/// A bounded, canonical route-safe identity that remains stable across renames and moves.
+/// A bounded, route advertisement-safe identity that remains stable across renames and moves.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct StableId(String);
@@ -81,7 +81,7 @@ impl StableId {
         if !valid {
             return Err(ControlError::Invalid {
                 field: "stable_id",
-                reason: "must use canonical route-safe kind:opaque-id syntax".into(),
+                reason: "must use route advertisement-safe kind:opaque-id syntax".into(),
             });
         }
         Ok(Self(value))

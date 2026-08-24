@@ -240,12 +240,12 @@ is the mechanism, plus an honest one-way teardown caveat for modules.
    grant rather than a quiet host action. The honest caveat remains: loaded
    modules **persist one-way** after the package stops (global — same caveat as
    the gated-target sandbox).
-2. **`network: host`.** Choosing host networking trades the network boundary
+2. **`network: host`.** Choosing host networking trades the network policy
    away: the package's ports and firewall rules are host-level, and any netns it
    creates (k3s pods) lives in the host. The grant is still host-fulfilled (the
    host firewall, not a container-local netns), and the manifest makes that trade
    explicit rather than implicit. A `network: private` package keeps a real,
-   auto-reverting network boundary.
+   auto-reverting network policy.
 
 Everything else (mounts, devices, caps, fs writes) is scoped to the container
 and reverts on teardown — so the boundary strength is a *gradient set by the

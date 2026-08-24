@@ -32,7 +32,7 @@ Connect-JSON router — no Worker-only capability is introduced.
 A cache is a **sibling of a registry**, not a child of one. Both are
 org-scoped logical surfaces with explicit placements, optionally bound to an
 exact signing-key generation through a typed usage, and exposed through one or
-more delivery routes. They differ
+more routes. They differ
 only in payload: a registry's surface is a git wire surface (refs, signed
 tags, releases, channels); a cache's surface is a NAR + narinfo object store.
 
@@ -40,7 +40,7 @@ tags, releases, channels); a cache's surface is a NAR + narinfo object store.
 org  (acme)                         ── or no org: an instance-level standalone cache (org_id NULL)
  ├── projects ─────────────> registries        git surface: releases, channels, packages
  │                               │ cache_stack   (advertised substituter URLs)
- ├── storage_bindings ──────────┼──> buckets / prefixes      "hosted in different buckets"
+ ├── bindings ──────────┼──> buckets / prefixes      "hosted in different buckets"
  ├── signing keys + usages ─────┤                            signs registries AND caches
  ├── frontends ─────────────────┴──> domains / CDN URLs      serves_git | serves_cache | serves_web
  │                                                           "served with different URLs / CDNs"
@@ -57,7 +57,7 @@ existing primitives — **no new storage or frontend concept is invented**:
 | --- | --- |
 | Caches need not be linked to any registry | a `caches` row with **no** `cache_registry_links` — a bare, standalone Nix cache |
 | Linked to **one or more** registries | `cache_registry_links(cache_id, registry_id, …)` is a join — many-to-many in both directions |
-| Hosted in **different buckets** | `caches.storage_binding_id` → `storage_bindings` (local-fs / R2 today; S3 later) + a per-cache `prefix` |
+| Hosted in **different buckets** | `caches.binding_id` → `bindings` (local-fs / R2 today; S3 later) + a per-cache `prefix` |
 | Served with **different URLs / CDNs** | one or more `frontends` rows with `serves_cache = 1`, each its own domain / base path |
 
 A managed cache, once served through a frontend, produces a substituter URL;
@@ -85,7 +85,7 @@ concept (a shareable binding+prefix several registries advertise) is realized
 
 ## Storage layout
 
-A cache's surface lives at `{storage_binding.root}/{cache.prefix}` — the same
+A cache's surface lives at `{binding.root}/{cache.prefix}` — the same
 binding+prefix addressing a registry surface uses — laid out as a standard Nix
 binary cache so stock Nix, `apm`, and the hub's own facade all read it
 unchanged:
@@ -207,9 +207,9 @@ frontends(… ,
   access_log_source NULL, -- direct-mode CDN log ingestion for LRU backfill
   primary BOOL)          -- the one advertised primary origin
 
--- storage_bindings: additive columns — the missing "can this be served
+-- bindings: additive columns — the missing "can this be served
 -- directly / must the hub authenticate to origin?" facts.
-storage_bindings(… ,
+bindings(… ,
   access,                -- public | private
   public_base_url NULL,  -- set iff access=public; enables a Direct frontend
   credential_ref NULL)   -- sealed SigV4 credential for proxying a private origin
@@ -270,7 +270,7 @@ composes with cache stacks); `range_passthrough`; and `cache_control`/`etag`
 passthrough so a downstream CDN still caches the proxied response. Conservative
 defaults (≈5s connect, 30s read, stream on, range on, one retry with failover).
 
-**Backend access mode (new).** Each `storage_bindings` row is marked
+**Backend access mode (new).** Each `bindings` row is marked
 `access = public | private` with an optional `public_base_url`. This is the
 fact that makes mapping decidable: a `public` binding (with a `public_base_url`)
 can back a **Direct** frontend and the hub can hand out plain GET URLs; a
@@ -600,9 +600,9 @@ the current spec. Phases are orderable; A lands first, E last.
       from the generation's SSH public line via `nix_sign::nix_public_key_from_ssh_line`
       — public material, no sealer). **Remaining:** client `Range:` → `206`
       streaming on the *worker* (with #19; native already streams).
-- [x] **Backend access mode:** v23 adds `storage_bindings.access`
+- [x] **Backend access mode:** v23 adds `bindings.access`
       (public|private), `public_base_url`, and `credential_ref` (additive, safe
-      default `public`); `set_storage_binding_access` setter + `aos-hub binding
+      default `public`); `set_binding_access` setter + `aos-hub binding
       set-access` CLI; `create_frontend` rejects a **Direct** frontend over a
       private binding (must be proxied/presigned). Unit-tested. **Remaining (with
       the proxy slice):** the SigV4/presigned *use* of `credential_ref`.

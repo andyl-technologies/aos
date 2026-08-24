@@ -297,7 +297,7 @@ state and reimage onto a correctly sized disk.
 ## Recover AOS Hub state
 
 Stop the Hub before copying its native state. Restore `hub.db`, SQLite WAL
-files, `secret.key`, local storage bindings, external binding data, and service
+files, `secret.key`, local bindings, external binding data, and service
 configuration from one consistent recovery point. A database without the
 matching sealing key cannot read sealed credentials or hosted keys.
 

@@ -8,7 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{HelpTooltip, InlineError, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 #[derive(Clone, Copy)]
@@ -127,7 +127,7 @@ fn ImageCard(image: aos_proto_types::SystemImage) -> impl IntoView {
                 <div><span>"Compression"</span><strong>{display_or(&image.compression, "none")}</strong></div>
                 <div><span>"Boot verification"</span><strong>{image.boot_verification}</strong></div>
             </div>
-            <div class="compact-list-row"><span>"SHA-256"</span><code>{image.sha256}</code></div>
+            <div class="compact-list-row"><span>"SHA-256"</span><HashValue value=image.sha256/></div>
             <div class="compact-list-row"><span>"Compatible targets"</span><span>{image.compatible_targets.join(", ")}</span></div>
             <div class="form-actions">
                 <a class="button" href=image.download_url download=image.filename>"Download image"</a>

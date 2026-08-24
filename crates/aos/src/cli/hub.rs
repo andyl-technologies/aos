@@ -120,7 +120,7 @@ pub struct HubAccessPolicyArgs {
     /// Permit this external client class (repeatable)
     #[arg(long = "external-client-class")]
     pub external_client_classes: Vec<String>,
-    /// Pin the private network boundary revision
+    /// Pin the private network policy revision
     #[arg(long)]
     pub access_boundary: Option<String>,
 }
@@ -185,10 +185,10 @@ pub enum HubCmd {
         #[command(subcommand)]
         command: HubCacheCmd,
     },
-    /// Manage storage bindings
-    StorageBinding {
+    /// Manage bindings
+    Binding {
         #[command(subcommand)]
-        command: HubStorageBindingCmd,
+        command: HubBindingCmd,
     },
     /// Inspect a registry or binary-cache surface
     Surface {
@@ -216,21 +216,21 @@ pub enum HubCmd {
         command: HubDomainCmd,
     },
     /// Manage network-boundary identities and revisions
-    NetworkBoundary {
+    NetworkPolicy {
         #[command(subcommand)]
-        command: HubNetworkBoundaryCmd,
+        command: HubNetworkPolicyCmd,
     },
-    /// Manage delivery endpoints
+    /// Manage endpoints
     Endpoint {
         #[command(subcommand)]
         command: HubEndpointCmd,
     },
-    /// Manage storage gateways
+    /// Manage gateways
     Gateway {
         #[command(subcommand)]
         command: HubGatewayCmd,
     },
-    /// Manage surface delivery routes
+    /// Manage surface routes
     Route {
         #[command(subcommand)]
         command: HubRouteCmd,
@@ -764,7 +764,7 @@ pub enum HubOrgTopologyDefaultsCmd {
         access: HubAccessArgs,
         org: String,
         #[arg(long)]
-        storage_binding: Option<String>,
+        binding: Option<String>,
         #[arg(long)]
         domain: Option<String>,
         #[arg(long)]
@@ -780,7 +780,7 @@ pub enum HubOrgTopologyDefaultsCmd {
         access: HubAccessArgs,
         org: String,
         #[arg(long)]
-        storage_binding: bool,
+        binding: bool,
         #[arg(long)]
         domain: bool,
         #[arg(long)]
@@ -793,8 +793,8 @@ pub enum HubOrgTopologyDefaultsCmd {
 }
 
 #[derive(Subcommand)]
-pub enum HubStorageBindingCmd {
-    /// List the storage bindings under an org
+pub enum HubBindingCmd {
+    /// List the bindings under an org
     List {
         /// Hub base URL; defaults to the active profile
         #[arg(long, env = "AOS_HUB")]
@@ -802,13 +802,13 @@ pub enum HubStorageBindingCmd {
         /// Hub access JWT; defaults to AOS_TOKEN or the matching active profile
         #[arg(long, env = "AOS_TOKEN")]
         token: Option<String>,
-        /// Organization slug
+        /// Organization slug; omit for instance-owned bindings
         #[arg(long)]
-        org: String,
+        org: Option<String>,
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
-    /// Create a storage binding under an org (needs registry.configure)
+    /// Create a binding under an org (needs registry.configure)
     Create {
         /// Hub base URL; defaults to the active profile
         #[arg(long, env = "AOS_HUB")]
@@ -852,7 +852,7 @@ pub enum HubStorageBindingCmd {
         #[command(flatten)]
         mutation: HubMutationArgs,
     },
-    /// Show one storage binding
+    /// Show one binding
     Show {
         #[command(flatten)]
         access: HubAccessArgs,
@@ -862,12 +862,12 @@ pub enum HubStorageBindingCmd {
     /// Manage purpose-scoped binding credentials
     Credential {
         #[command(subcommand)]
-        command: HubStorageBindingCredentialCmd,
+        command: HubBindingCredentialCmd,
     },
     /// Inspect immutable binding write revisions
     WriteRevision {
         #[command(subcommand)]
-        command: HubStorageBindingWriteRevisionCmd,
+        command: HubBindingWriteRevisionCmd,
     },
     /// Grant a consumer scope access to a binding
     Grant {
@@ -900,7 +900,7 @@ pub enum HubStorageBindingCmd {
 }
 
 #[derive(Subcommand)]
-pub enum HubStorageBindingCredentialCmd {
+pub enum HubBindingCredentialCmd {
     /// Set the current credential reference for one purpose
     Set {
         #[command(flatten)]
@@ -950,7 +950,7 @@ pub enum HubStorageBindingCredentialCmd {
 }
 
 #[derive(Subcommand)]
-pub enum HubStorageBindingWriteRevisionCmd {
+pub enum HubBindingWriteRevisionCmd {
     /// List immutable write revisions
     List {
         #[command(flatten)]
@@ -1103,7 +1103,7 @@ pub enum HubDomainCertificateCmd {
 }
 
 #[derive(Subcommand)]
-pub enum HubNetworkBoundaryCmd {
+pub enum HubNetworkPolicyCmd {
     /// List stable boundary identities
     List {
         #[command(flatten)]
@@ -1206,7 +1206,7 @@ pub enum HubNetworkBoundaryCmd {
     /// Manage immutable boundary revisions
     Revision {
         #[command(subcommand)]
-        command: HubNetworkBoundaryRevisionCmd,
+        command: HubNetworkPolicyRevisionCmd,
     },
     /// Show all revision lifecycle and observation state
     Status {
@@ -1225,7 +1225,7 @@ pub enum HubNetworkBoundaryCmd {
 }
 
 #[derive(Subcommand)]
-pub enum HubNetworkBoundaryRevisionCmd {
+pub enum HubNetworkPolicyRevisionCmd {
     /// List immutable revisions and lifecycle state
     List {
         #[command(flatten)]
@@ -1264,7 +1264,7 @@ pub enum HubNetworkBoundaryRevisionCmd {
 
 #[derive(Subcommand)]
 pub enum HubEndpointCmd {
-    /// List delivery endpoints
+    /// List endpoints
     List {
         #[command(flatten)]
         access: HubAccessArgs,
@@ -1294,7 +1294,7 @@ pub enum HubEndpointCmd {
         endpoint: String,
         generation: i64,
     },
-    /// Add an endpoint with an exact network boundary
+    /// Add an endpoint with an exact network policy
     Add {
         #[command(flatten)]
         access: HubAccessArgs,
@@ -1307,7 +1307,7 @@ pub enum HubEndpointCmd {
         #[arg(long)]
         acknowledge_cleartext: bool,
         #[arg(long)]
-        network_boundary: String,
+        network_policy: String,
         #[arg(long, value_parser = ["hub", "external", "layer7"])]
         ingress: String,
         #[arg(long, value_parser = ["hub-native", "hub-worker", "external", "layer7"])]
@@ -1404,7 +1404,7 @@ pub enum HubEndpointCmd {
 
 #[derive(Subcommand)]
 pub enum HubGatewayCmd {
-    /// List storage gateways for a binding
+    /// List gateways for a binding
     List {
         #[command(flatten)]
         access: HubAccessArgs,
@@ -1413,13 +1413,13 @@ pub enum HubGatewayCmd {
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
-    /// Show one storage gateway and its desired generation
+    /// Show one gateway and its desired generation
     Show {
         #[command(flatten)]
         access: HubAccessArgs,
         gateway: String,
     },
-    /// Add a storage gateway
+    /// Add a gateway
     Add {
         #[command(flatten)]
         access: HubAccessArgs,
@@ -1547,7 +1547,7 @@ pub enum HubRouteCmd {
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
-    /// Add a disabled, non-canonical route
+    /// Add a disabled, non-route advertisement
     Add {
         #[command(flatten)]
         access: HubAccessArgs,
@@ -2277,7 +2277,7 @@ pub enum HubPlacementCmd {
         name: Option<String>,
         /// Stable storage-binding name
         #[arg(long = "binding")]
-        storage_binding: Option<String>,
+        binding: Option<String>,
         /// Binding-relative object prefix
         #[arg(long)]
         prefix: Option<String>,
@@ -2811,12 +2811,12 @@ mod tests {
     use clap::Parser as _;
 
     use crate::cli::{
-        Cli, Commands, HubAccessTokenCmd, HubAccessTokenIssueCmd, HubCacheCmd,
+        Cli, Commands, HubAccessTokenCmd, HubAccessTokenIssueCmd, HubBindingCmd, HubCacheCmd,
         HubCacheRetentionCmd, HubCmd, HubIdentityProviderCmd, HubIdentityProviderSetCmd,
-        HubInvitationCmd, HubInvitationCreateCmd, HubNetworkBoundaryCmd, HubOperationCmd,
-        HubOrgCmd, HubOrganizationDomainCmd, HubOrganizationDomainVerifyCmd, HubPlacementCmd,
+        HubInvitationCmd, HubInvitationCreateCmd, HubNetworkPolicyCmd, HubOperationCmd, HubOrgCmd,
+        HubOrganizationDomainCmd, HubOrganizationDomainVerifyCmd, HubPlacementCmd,
         HubPlacementDrainCmd, HubRegistryCacheStackCmd, HubRegistryCmd, HubRouteCmd,
-        HubServiceAccountCmd, HubServiceAccountUpdateCmd, HubStorageBindingCmd, HubSurfaceCmd,
+        HubServiceAccountCmd, HubServiceAccountUpdateCmd, HubSurfaceCmd,
     };
 
     fn parse_cli<I, T>(args: I) -> Result<Cli, clap::Error>
@@ -3099,11 +3099,11 @@ mod tests {
     }
 
     #[test]
-    fn storage_binding_replaces_the_legacy_binding_command() {
+    fn binding_replaces_the_legacy_storage_binding_command() {
         let cli = parse_cli([
             "aos",
             "hub",
-            "storage-binding",
+            "binding",
             "list",
             "--hub",
             "https://aos.example",
@@ -3114,8 +3114,8 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Hub {
-                command: HubCmd::StorageBinding {
-                    command: HubStorageBindingCmd::List { .. }
+                command: HubCmd::Binding {
+                    command: HubBindingCmd::List { .. }
                 }
             }
         ));
@@ -3123,7 +3123,7 @@ mod tests {
             parse_cli([
                 "aos",
                 "hub",
-                "binding",
+                "storage-binding",
                 "list",
                 "--hub",
                 "https://aos.example",
@@ -3135,11 +3135,11 @@ mod tests {
     }
 
     #[test]
-    fn storage_binding_accepts_worker_native_r2_bindings() {
+    fn binding_accepts_worker_native_r2_bindings() {
         let cli = parse_cli([
             "aos",
             "hub",
-            "storage-binding",
+            "binding",
             "create",
             "--hub",
             "https://aos.example",
@@ -3158,8 +3158,8 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Hub {
-                command: HubCmd::StorageBinding {
-                    command: HubStorageBindingCmd::Create {
+                command: HubCmd::Binding {
+                    command: HubBindingCmd::Create {
                         stable_id: Some(ref stable_id),
                         bucket_binding: Some(ref binding),
                         ..
@@ -3170,15 +3170,39 @@ mod tests {
     }
 
     #[test]
-    fn storage_binding_list_requires_an_organization() {
+    fn binding_list_accepts_instance_scope_without_an_organization() {
+        let list = parse_cli([
+            "aos",
+            "hub",
+            "binding",
+            "list",
+            "--hub",
+            "https://aos.example",
+        ])
+        .unwrap();
+        assert!(matches!(
+            list.command,
+            Commands::Hub {
+                command: HubCmd::Binding {
+                    command: HubBindingCmd::List { org: None, .. }
+                }
+            }
+        ));
+
         assert!(
             parse_cli([
                 "aos",
                 "hub",
-                "storage-binding",
-                "list",
+                "binding",
+                "create",
                 "--hub",
                 "https://aos.example",
+                "--name",
+                "native-storage",
+                "--kind",
+                "local-fs",
+                "--root",
+                "/var/lib/aos-hub/storage",
             ])
             .is_err()
         );
@@ -3218,7 +3242,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_route_requires_a_typed_surface() {
+    fn route_advertisement_requires_a_typed_surface() {
         let cli = parse_cli([
             "aos",
             "hub",
@@ -3254,7 +3278,7 @@ mod tests {
             parse_cli([
                 "aos",
                 "hub",
-                "network-boundary",
+                "network-policy",
                 "revision",
                 "activate",
                 "--hub",
@@ -3268,7 +3292,7 @@ mod tests {
         let parsed = parse_cli([
             "aos",
             "hub",
-            "network-boundary",
+            "network-policy",
             "revision",
             "activate",
             "--hub",
@@ -3284,8 +3308,8 @@ mod tests {
         assert!(matches!(
             parsed.command,
             Commands::Hub {
-                command: HubCmd::NetworkBoundary {
-                    command: HubNetworkBoundaryCmd::Revision { .. }
+                command: HubCmd::NetworkPolicy {
+                    command: HubNetworkPolicyCmd::Revision { .. }
                 }
             }
         ));

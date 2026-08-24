@@ -137,7 +137,7 @@ The recovery set consists of:
 
 - `hub.db` and any SQLite WAL files;
 - `secret.key`, or the file named by `AOS_HUB_SECRET_KEY_FILE`;
-- local registry and cache storage bindings;
+- local registry and cache bindings;
 - externally stored S3-compatible objects at a consistent point;
 - reverse-proxy and AOS service configuration;
 - external domains, IdP settings, and recovery identities.

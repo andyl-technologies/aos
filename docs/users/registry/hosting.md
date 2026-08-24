@@ -208,7 +208,7 @@ The local staging directory may be removed after the publication reports
 `ready`.
 
 Continue with [Operate AOS Hub](../aos-hub/) for native and Worker deployment,
-storage bindings, IAM, backup, and monitoring.
+bindings, IAM, backup, and monitoring.
 
 ## Persist non-secret producer defaults
 

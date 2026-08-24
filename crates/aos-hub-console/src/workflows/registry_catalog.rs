@@ -8,7 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, StatusBadge};
+use crate::components::{HashValue, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 /// Renders the package or channel catalog selected by the canonical page.
@@ -146,7 +146,7 @@ fn PackageDetail(package: aos_proto_types::Package) -> impl IntoView {
                     <div class="compact-list">
                         {version.platforms.into_iter().map(|platform| view! {
                             <div class="compact-list-row">
-                                <strong>{platform.platform}</strong><code>{platform.nar_hash}</code>
+                                <strong>{platform.platform}</strong><HashValue value=platform.nar_hash/>
                                 <span>{format!("{} NAR bytes · {} closure bytes", platform.nar_size, platform.closure_size)}</span>
                             </div>
                         }).collect_view()}

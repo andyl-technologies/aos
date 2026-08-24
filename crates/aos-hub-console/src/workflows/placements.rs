@@ -8,15 +8,15 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
-use super::delivery_routes::DeliveryRouteWorkflow;
+use super::gateways::binding_option_label;
 use super::organization_scope::surface_authorization_scope;
 use super::placement_policies::{PlacementEquivalencePanel, PlacementPolicyPanel};
-use super::storage_gateways::storage_binding_option_label;
+use super::routes::RouteWorkflow;
 
 /// Renders placement workflows and delegates unrelated pages onward.
 #[component]
@@ -30,7 +30,7 @@ pub(super) fn PlacementWorkflow(route: ConsoleRoute, client: ApiClient) -> impl 
             <Placements client=client surface=cache_surface(path)/>
         }
         .into_any(),
-        _ => view! { <DeliveryRouteWorkflow route=route client=client/> }.into_any(),
+        _ => view! { <RouteWorkflow route=route client=client/> }.into_any(),
     }
 }
 
@@ -68,14 +68,14 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
     let bindings = LocalResource::new(move || {
         let client = binding_client.clone();
         let surface = binding_surface.clone();
-        async move { load_surface_storage_bindings(&client, &surface).await }
+        async move { load_surface_bindings(&client, &surface).await }
     });
     let create_surface = surface;
 
     view! {
         <div class="workflow-stack">
             <section class="panel resource-panel">
-                <div class="section-heading"><div><p class="section-kicker">"Physical topology"</p><div class="section-title"><h2>"Storage & replicas"</h2><HelpTooltip term="Placements" summary="Placements connect this logical surface to storage bindings; desired state and controller evidence are shown separately."/></div></div></div>
+                <div class="section-heading"><div><p class="section-kicker">"Physical topology"</p><div class="section-title"><h2>"Storage & replicas"</h2><HelpTooltip term="Placements" summary="Placements connect this logical surface to bindings; desired state and controller evidence are shown separately."/></div></div></div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading placements…"</p> }>
                     {move || {
                         let client = view_client.clone();
@@ -96,7 +96,7 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
             <PlacementEquivalencePanel client=client.clone() surface=create_surface.clone()/>
             <PlacementReplication client=client.clone() surface=replication_surface/>
             {can_manage.then(|| view! {
-                <Suspense fallback=move || view! { <section class="panel editor-panel"><p class="loading-row">"Loading storage bindings…"</p></section> }>
+                <Suspense fallback=move || view! { <section class="panel editor-panel"><p class="loading-row">"Loading bindings…"</p></section> }>
                     {move || {
                         let client = client.clone();
                         let surface = create_surface.clone();
@@ -113,20 +113,20 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
     }
 }
 
-async fn load_surface_storage_bindings(
+async fn load_surface_bindings(
     client: &ApiClient,
     surface: &aos_proto_types::SurfaceRef,
-) -> Result<Vec<aos_proto_types::StorageBinding>, String> {
+) -> Result<Vec<aos_proto_types::Binding>, String> {
     let (owner_scope_key, _) = surface_authorization_scope(client, surface).await?;
     client
-        .collect_pages::<_, aos_proto_types::ListStorageBindingsResponse, _, _, _>(
-            aos_proto_types::STORAGE_BINDING_SERVICE_LIST_STORAGE_BINDINGS_PATH,
-            move |page_token| aos_proto_types::ListStorageBindingsRequest {
+        .collect_pages::<_, aos_proto_types::ListBindingsResponse, _, _, _>(
+            aos_proto_types::BINDING_SERVICE_LIST_BINDINGS_PATH,
+            move |page_token| aos_proto_types::ListBindingsRequest {
                 owner_scope_key: owner_scope_key.clone(),
                 page_size: 100,
                 page_token,
             },
-            |response| (response.storage_bindings, response.next_page_token),
+            |response| (response.bindings, response.next_page_token),
         )
         .await
         .map_err(|failure| failure.to_string())
@@ -136,7 +136,7 @@ async fn load_surface_storage_bindings(
 fn PlacementCreate(
     client: ApiClient,
     surface: aos_proto_types::SurfaceRef,
-    bindings: Vec<aos_proto_types::StorageBinding>,
+    bindings: Vec<aos_proto_types::Binding>,
 ) -> impl IntoView {
     let name = RwSignal::new(String::new());
     let binding = RwSignal::new(
@@ -186,7 +186,7 @@ fn PlacementCreate(
         let request = aos_proto_types::PlanCreatePlacementRequest {
             surface: Some(surface.clone()),
             name: name.get_untracked().trim().to_string(),
-            storage_binding_id: binding.get_untracked().trim().to_string(),
+            binding_id: binding.get_untracked().trim().to_string(),
             prefix: prefix.get_untracked().trim().to_string(),
             kind: placement_kind,
             desired_state: state.get_untracked(),
@@ -216,7 +216,7 @@ fn PlacementCreate(
     );
 
     view! {
-        <section class="panel editor-panel"><h2>"Create placement"</h2><form class="editor-form" on:submit=on_plan><label><span>"Name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Storage binding"</span><select required prop:value=move || binding.get() on:change=move |event| binding.set(event_target_value(&event))>{bindings.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{storage_binding_option_label(choice)}</option> }).collect_view()}</select>{bindings.is_empty().then(|| view! { <small>"No compatible storage bindings exist in this surface's owner scope."</small> })}</label><label><span>"Object prefix"</span><input required prop:value=move || prefix.get() on:input=move |event| prefix.set(event_target_value(&event))/></label><label><span>"Kind"</span><select prop:value=move || kind.get() on:change=move |event| kind.set(event_target_value(&event))><option value="complete">"Complete"</option><option value="shard">"Shard"</option><option value="archive">"Archive"</option></select></label><label><span>"Desired state"</span><select prop:value=move || state.get() on:change=move |event| state.set(event_target_value(&event))><option value="active">"Active"</option><option value="draining">"Draining"</option><option value="offline">"Offline"</option></select></label><label><span>"Read order"</span><input required type="number" prop:value=move || read_order.get() on:input=move |event| read_order.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || read_enabled.get() on:change=move |event| read_enabled.set(event_target_checked(&event))/><span>"Enable reads"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || conditional_writes.get() on:change=move |event| conditional_writes.set(event_target_checked(&event))/><span>"Require conditional writes"</span></label>{move || (kind.get() == "shard").then(|| view! { <label><span>"Hash range start"</span><input required type="number" min="0" max="65535" prop:value=move || range_start.get() on:input=move |event| range_start.set(event_target_value(&event))/></label><label><span>"Hash range end"</span><input required type="number" min="1" max="65536" prop:value=move || range_end.get() on:input=move |event| range_end.set(event_target_value(&event))/></label> })}<div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || binding.get().is_empty()>"Review placement"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section>
+        <section class="panel editor-panel"><h2>"Create placement"</h2><form class="editor-form" on:submit=on_plan><label><span>"Name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Binding"</span><select required prop:value=move || binding.get() on:change=move |event| binding.set(event_target_value(&event))>{bindings.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{binding_option_label(choice)}</option> }).collect_view()}</select>{bindings.is_empty().then(|| view! { <small>"No compatible bindings exist in this surface's owner scope."</small> })}</label><label><span>"Object prefix"</span><input required prop:value=move || prefix.get() on:input=move |event| prefix.set(event_target_value(&event))/></label><label><span>"Kind"</span><select prop:value=move || kind.get() on:change=move |event| kind.set(event_target_value(&event))><option value="complete">"Complete"</option><option value="shard">"Shard"</option><option value="archive">"Archive"</option></select></label><label><span>"Desired state"</span><select prop:value=move || state.get() on:change=move |event| state.set(event_target_value(&event))><option value="active">"Active"</option><option value="draining">"Draining"</option><option value="offline">"Offline"</option></select></label><label><span>"Read order"</span><input required type="number" prop:value=move || read_order.get() on:input=move |event| read_order.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || read_enabled.get() on:change=move |event| read_enabled.set(event_target_checked(&event))/><span>"Enable reads"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || conditional_writes.get() on:change=move |event| conditional_writes.set(event_target_checked(&event))/><span>"Require conditional writes"</span></label>{move || (kind.get() == "shard").then(|| view! { <label><span>"Hash range start"</span><input required type="number" min="0" max="65535" prop:value=move || range_start.get() on:input=move |event| range_start.set(event_target_value(&event))/></label><label><span>"Hash range end"</span><input required type="number" min="1" max="65536" prop:value=move || range_end.get() on:input=move |event| range_end.set(event_target_value(&event))/></label> })}<div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || binding.get().is_empty()>"Review placement"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section>
     }
 }
 
@@ -283,7 +283,7 @@ fn PlacementCard(
     );
 
     view! {
-        <details class="binding-card"><summary><div><span class="resource-kind">{status.derived_role.clone()}</span><h3>{placement.name.clone()}</h3><code>{format!("{}:{}", placement.storage_binding_name, placement.prefix)}</code></div><StatusBadge state=observation.state.clone() positive=observation.state == "ready"/></summary><div class="binding-details"><div class="resource-identity"><div><span>"Kind"</span><strong>{spec.kind}</strong></div><div><span>"Desired state"</span><strong>{spec.desired_state}</strong></div><div><span>"Observed completeness"</span><strong>{observation.completeness}</strong></div><div><span>"Effective read"</span><strong>{yes_no(status.effective_read_enabled)}</strong></div><div><span>"Effective write"</span><strong>{yes_no(status.effective_write_enabled)}</strong></div><div><span>"Version"</span><code>{placement.resource_version.clone()}</code></div></div><div class="subworkflow-grid">{can_manage.then(|| view! { <section class="subworkflow"><h4>"Desired placement state"</h4><form class="stacked-form" on:submit=on_update><label><span>"State"</span><select prop:value=move || state.get() on:change=move |event| state.set(event_target_value(&event))><option value="active">"Active"</option><option value="draining">"Draining"</option><option value="offline">"Offline"</option></select></label><label><span>"Read order"</span><input type="number" prop:value=move || read_order.get() on:input=move |event| read_order.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || read_enabled.get() on:change=move |event| read_enabled.set(event_target_checked(&event))/><span>"Enable reads"</span></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review update"</button></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> })}{(can_manage || can_evict).then(|| view! { <PlacementActions client=client.clone() surface=surface.clone() placement=placement.clone() can_manage=can_manage can_evict=can_evict/> })}</div>{can_manage.then(|| view! { <PlacementOperations client=client surface=surface placement=placement/> })}</div></details>
+        <details class="binding-card"><summary><div><span class="resource-kind">{status.derived_role.clone()}</span><h3>{placement.name.clone()}</h3><code>{format!("{}:{}", placement.binding_name, placement.prefix)}</code></div><StatusBadge state=observation.state.clone() positive=observation.state == "ready"/></summary><div class="binding-details"><div class="resource-identity"><div><span>"Kind"</span><strong>{spec.kind}</strong></div><div><span>"Desired state"</span><strong>{spec.desired_state}</strong></div><div><span>"Observed completeness"</span><strong>{observation.completeness}</strong></div><div><span>"Effective read"</span><strong>{yes_no(status.effective_read_enabled)}</strong></div><div><span>"Effective write"</span><strong>{yes_no(status.effective_write_enabled)}</strong></div><div><span>"Version"</span><code>{placement.resource_version.clone()}</code></div></div><div class="subworkflow-grid">{can_manage.then(|| view! { <section class="subworkflow"><h4>"Desired placement state"</h4><form class="stacked-form" on:submit=on_update><label><span>"State"</span><select prop:value=move || state.get() on:change=move |event| state.set(event_target_value(&event))><option value="active">"Active"</option><option value="draining">"Draining"</option><option value="offline">"Offline"</option></select></label><label><span>"Read order"</span><input type="number" prop:value=move || read_order.get() on:input=move |event| read_order.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || read_enabled.get() on:change=move |event| read_enabled.set(event_target_checked(&event))/><span>"Enable reads"</span></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review update"</button></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> })}{(can_manage || can_evict).then(|| view! { <PlacementActions client=client.clone() surface=surface.clone() placement=placement.clone() can_manage=can_manage can_evict=can_evict/> })}</div>{can_manage.then(|| view! { <PlacementOperations client=client surface=surface placement=placement/> })}</div></details>
     }
 }
 
@@ -504,7 +504,7 @@ fn SurfaceDiagnostics(
                     <h4>"Locate an object"</h4>
                     <form class="stacked-form" on:submit=on_presence><label><span>"Object reference"</span><input required placeholder="store hash, path, or release object" prop:value=move || object_ref.get() on:input=move |event| object_ref.set(event_target_value(&event))/></label><button class="secondary-button" type="submit" disabled=move || presence_busy.get()>"Inspect placement evidence"</button></form>
                     {move || presence_error.get().map(|detail| view! { <InlineError detail=detail/> })}
-                    {move || presences.get().map(|items| if items.is_empty() { view! { <p class="muted">"No placement has reported this object."</p> }.into_any() } else { view! { <div class="compact-list">{items.into_iter().map(|item| view! { <div class="compact-list-row"><div><strong>{item.placement_name}</strong><code>{display_or(&item.content_digest, "digest unavailable")}</code></div><span>{format!("{} bytes", item.size)}</span><StatusBadge state=item.state.clone() positive=item.state == "present"/></div> }).collect_view()}</div> }.into_any() })}
+                    {move || presences.get().map(|items| if items.is_empty() { view! { <p class="muted">"No placement has reported this object."</p> }.into_any() } else { view! { <div class="compact-list">{items.into_iter().map(|item| view! { <div class="compact-list-row"><div><strong>{item.placement_name}</strong>{if item.content_digest.is_empty() { view! { <span>"digest unavailable"</span> }.into_any() } else { view! { <HashValue value=item.content_digest/> }.into_any() }}</div><span>{format!("{} bytes", item.size)}</span><StatusBadge state=item.state.clone() positive=item.state == "present"/></div> }).collect_view()}</div> }.into_any() })}
                 </section>
             </div>
         </section>

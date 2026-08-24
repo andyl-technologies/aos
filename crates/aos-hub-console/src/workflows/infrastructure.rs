@@ -13,18 +13,16 @@ use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
+use super::gateways::{binding_option_label, endpoint_option_label, gateway_option_label};
 use super::networking::NetworkingWorkflow;
 use super::organization_scope::organization_authorization_scope;
-use super::storage_gateways::{
-    endpoint_option_label, gateway_option_label, storage_binding_option_label,
-};
 
 /// Renders infrastructure pages handled by this implementation boundary.
 #[component]
 pub(super) fn InfrastructureWorkflow(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
     match (&route.scope, route.page.key) {
         (ConsoleScope::Instance, "storage") => view! {
-            <StorageBindings
+            <Bindings
                 client=client
                 owner_scope_key="instance".to_string()
                 organization_slug=None
@@ -33,11 +31,11 @@ pub(super) fn InfrastructureWorkflow(route: ConsoleRoute, client: ApiClient) -> 
         }
         .into_any(),
         (ConsoleScope::Organization { slug }, "storage") => view! {
-            <OrganizationStorageBindings client=client organization=slug.clone() creation_only=false/>
+            <OrganizationBindings client=client organization=slug.clone() creation_only=false/>
         }
         .into_any(),
         (ConsoleScope::Organization { slug }, "storage-new") => view! {
-            <OrganizationStorageBindings client=client organization=slug.clone() creation_only=true/>
+            <OrganizationBindings client=client organization=slug.clone() creation_only=true/>
         }
         .into_any(),
         (ConsoleScope::Instance, "defaults") => {
@@ -52,7 +50,7 @@ pub(super) fn InfrastructureWorkflow(route: ConsoleRoute, client: ApiClient) -> 
 }
 
 #[component]
-fn OrganizationStorageBindings(
+fn OrganizationBindings(
     client: ApiClient,
     organization: String,
     creation_only: bool,
@@ -73,7 +71,7 @@ fn OrganizationStorageBindings(
                 Suspend::new(async move {
                     match scope.await.as_ref() {
                         Ok(owner_scope_key) => view! {
-                            <StorageBindings
+                            <Bindings
                                 client=client
                                 owner_scope_key=owner_scope_key.clone()
                                 organization_slug=Some(organization)
@@ -90,13 +88,13 @@ fn OrganizationStorageBindings(
 }
 
 #[component]
-fn StorageBindings(
+fn Bindings(
     client: ApiClient,
     owner_scope_key: String,
     organization_slug: Option<String>,
     creation_only: bool,
 ) -> impl IntoView {
-    let can_create = client.allows("storage_binding.manage");
+    let can_create = client.allows("binding.manage");
     let list_client = client.clone();
     let list_scope = owner_scope_key.clone();
     let inventory = LocalResource::new(move || {
@@ -104,14 +102,14 @@ fn StorageBindings(
         let owner_scope_key = list_scope.clone();
         async move {
             client
-                .collect_pages::<_, aos_proto_types::ListStorageBindingsResponse, _, _, _>(
-                    aos_proto_types::STORAGE_BINDING_SERVICE_LIST_STORAGE_BINDINGS_PATH,
-                    move |page_token| aos_proto_types::ListStorageBindingsRequest {
+                .collect_pages::<_, aos_proto_types::ListBindingsResponse, _, _, _>(
+                    aos_proto_types::BINDING_SERVICE_LIST_BINDINGS_PATH,
+                    move |page_token| aos_proto_types::ListBindingsRequest {
                         owner_scope_key: owner_scope_key.clone(),
                         page_size: 100,
                         page_token,
                     },
-                    |response| (response.storage_bindings, response.next_page_token),
+                    |response| (response.bindings, response.next_page_token),
                 )
                 .await
         }
@@ -125,23 +123,23 @@ fn StorageBindings(
                     <div>
                         <p class="section-kicker">"Storage identity"</p>
                         <div class="section-title">
-                            <h2>"Storage bindings"</h2>
-                            <HelpTooltip term="Storage bindings" summary="Bindings name provider storage and its capability or credential lifecycle. Placements decide which surfaces use each binding."/>
+                            <h2>"Bindings"</h2>
+                            <HelpTooltip term="Bindings" summary="Bindings name provider storage and its capability or credential lifecycle. Placements decide which surfaces use each binding."/>
                         </div>
                     </div>
-                    {organization_slug.as_ref().filter(|_| can_create).map(|slug| view! { <a class="button" href=format!("/-/org/{slug}/storage-bindings/new")>"Create storage binding"</a> })}
+                    {organization_slug.as_ref().filter(|_| can_create).map(|slug| view! { <a class="button" href=format!("/-/org/{slug}/bindings/new")>"Create binding"</a> })}
                 </div>
-                <Suspense fallback=move || view! { <p class="loading-row">"Loading storage bindings…"</p> }>
+                <Suspense fallback=move || view! { <p class="loading-row">"Loading bindings…"</p> }>
                     {move || {
                         let client = inventory_view_client.clone();
                         let organization_slug = organization_slug.clone();
                         Suspend::new(async move {
                             match inventory.await.as_ref() {
-                                Ok(bindings) if bindings.is_empty() => view! { <p class="muted">"No storage bindings in this scope."</p> }.into_any(),
+                                Ok(bindings) if bindings.is_empty() => view! { <p class="muted">"No bindings in this scope."</p> }.into_any(),
                                 Ok(bindings) => view! {
                                     <div class="binding-list">
                                         {bindings.iter().cloned().map(|binding| view! {
-                                            <StorageBindingCard client=client.clone() binding=binding organization_slug=organization_slug.clone()/>
+                                            <BindingCard client=client.clone() binding=binding organization_slug=organization_slug.clone()/>
                                         }).collect_view()}
                                     </div>
                                 }.into_any(),
@@ -151,13 +149,13 @@ fn StorageBindings(
                     }}
                 </Suspense>
             </section> })}
-            {creation_only.then(|| view! { <StorageBindingCreate client=client owner_scope_key=owner_scope_key/> })}
+            {creation_only.then(|| view! { <BindingCreate client=client owner_scope_key=owner_scope_key/> })}
         </div>
     }
 }
 
 #[component]
-fn StorageBindingCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
+fn BindingCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
     let name = RwSignal::new(String::new());
     let kind = RwSignal::new("s3".to_string());
     let root = RwSignal::new(String::new());
@@ -197,10 +195,10 @@ fn StorageBindingCreate(client: ApiClient, owner_scope_key: String) -> impl Into
         };
         let client = plan_client.clone();
         let idempotency_key = idempotency_key("storage-binding-create");
-        let request = aos_proto_types::PlanStorageBindingMutationRequest {
+        let request = aos_proto_types::PlanBindingMutationRequest {
             stable_id: String::new(),
             owner_scope_key: plan_scope.clone(),
-            spec: Some(aos_proto_types::StorageBindingSpec {
+            spec: Some(aos_proto_types::BindingSpec {
                 name: name.get_untracked().trim().to_string(),
                 provider: Some(provider),
             }),
@@ -213,7 +211,7 @@ fn StorageBindingCreate(client: ApiClient, owner_scope_key: String) -> impl Into
         spawn_local(async move {
             let result = client
                 .call::<_, aos_proto_types::TopologyPlanResponse>(
-                    aos_proto_types::STORAGE_BINDING_SERVICE_PLAN_CREATE_STORAGE_BINDING_PATH,
+                    aos_proto_types::BINDING_SERVICE_PLAN_CREATE_BINDING_PATH,
                     &request,
                 )
                 .await
@@ -236,9 +234,9 @@ fn StorageBindingCreate(client: ApiClient, owner_scope_key: String) -> impl Into
         busy.set(true);
         spawn_local(async move {
             match client
-                .call::<_, aos_proto_types::StorageBindingResponse>(
-                    aos_proto_types::STORAGE_BINDING_SERVICE_CREATE_STORAGE_BINDING_PATH,
-                    &reviewed.storage_binding_apply(),
+                .call::<_, aos_proto_types::BindingResponse>(
+                    aos_proto_types::BINDING_SERVICE_CREATE_BINDING_PATH,
+                    &reviewed.binding_apply(),
                 )
                 .await
             {
@@ -251,7 +249,7 @@ fn StorageBindingCreate(client: ApiClient, owner_scope_key: String) -> impl Into
 
     view! {
         <section class="panel editor-panel">
-            <h2>"Create storage binding"</h2>
+            <h2>"Create binding"</h2>
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"Name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label>
                 <label><span>"Provider"</span><select prop:value=move || kind.get() on:change=move |event| kind.set(event_target_value(&event))>
@@ -279,9 +277,9 @@ fn StorageBindingCreate(client: ApiClient, owner_scope_key: String) -> impl Into
 }
 
 #[component]
-fn StorageBindingCard(
+fn BindingCard(
     client: ApiClient,
-    binding: aos_proto_types::StorageBinding,
+    binding: aos_proto_types::Binding,
     organization_slug: Option<String>,
 ) -> impl IntoView {
     let health = binding.health.clone().unwrap_or_default();
@@ -323,16 +321,16 @@ fn StorageBindingCard(
                     </div>
                     <StorageGrantEditor client=client.clone() binding=binding.clone()/>
                 </div>
-                <StorageBindingDelete client=client binding=binding/>
+                <BindingDelete client=client binding=binding/>
             </div>
         </details>
     }
 }
 
 fn storage_provider_details(
-    spec: &aos_proto_types::StorageBindingSpec,
+    spec: &aos_proto_types::BindingSpec,
 ) -> Option<Vec<(&'static str, String)>> {
-    use aos_proto_types::storage_binding_spec::Provider;
+    use aos_proto_types::binding_spec::Provider;
 
     let details = match spec.provider.as_ref()? {
         Provider::LocalFilesystem(provider) => {
@@ -376,21 +374,21 @@ fn object_storage_details(
 #[component]
 fn StorageWriteRevisions(
     client: ApiClient,
-    binding: aos_proto_types::StorageBinding,
+    binding: aos_proto_types::Binding,
     organization_slug: Option<String>,
 ) -> impl IntoView {
-    let Some(storage_binding) = storage_binding_ref(&binding, organization_slug.as_deref()) else {
-        return view! { <InlineError detail="The storage binding has no canonical owner reference.".to_string()/> }.into_any();
+    let Some(binding) = binding_ref(&binding, organization_slug.as_deref()) else {
+        return view! { <InlineError detail="The binding has no canonical owner reference.".to_string()/> }.into_any();
     };
     let revisions = LocalResource::new(move || {
         let client = client.clone();
-        let storage_binding = storage_binding.clone();
+        let binding = binding.clone();
         async move {
             client
-                .collect_pages::<_, aos_proto_types::ListStorageBindingWriteRevisionsResponse, _, _, _>(
-                    aos_proto_types::STORAGE_BINDING_SERVICE_LIST_STORAGE_BINDING_WRITE_REVISIONS_PATH,
-                    move |page_token| aos_proto_types::ListStorageBindingWriteRevisionsRequest {
-                        storage_binding: Some(storage_binding.clone()),
+                .collect_pages::<_, aos_proto_types::ListBindingWriteRevisionsResponse, _, _, _>(
+                    aos_proto_types::BINDING_SERVICE_LIST_BINDING_WRITE_REVISIONS_PATH,
+                    move |page_token| aos_proto_types::ListBindingWriteRevisionsRequest {
+                        binding: Some(binding.clone()),
                         page_size: 100,
                         page_token,
                     },
@@ -418,10 +416,7 @@ fn StorageWriteRevisions(
 }
 
 #[component]
-fn StorageCredentialEditor(
-    client: ApiClient,
-    binding: aos_proto_types::StorageBinding,
-) -> impl IntoView {
+fn StorageCredentialEditor(client: ApiClient, binding: aos_proto_types::Binding) -> impl IntoView {
     let purpose = RwSignal::new("write".to_string());
     let secret_ref = RwSignal::new(String::new());
     let fingerprint = RwSignal::new(String::new());
@@ -446,8 +441,8 @@ fn StorageCredentialEditor(
         };
         let client = plan_client.clone();
         let idempotency_key = idempotency_key("storage-credential");
-        let request = aos_proto_types::PlanStorageBindingCredentialRequest {
-            storage_binding_id: binding_id.clone(),
+        let request = aos_proto_types::PlanBindingCredentialRequest {
+            binding_id: binding_id.clone(),
             purpose: purpose.get_untracked().trim().to_string(),
             secret_version_ref: secret_ref.get_untracked().trim().to_string(),
             expected_resource_version: version.clone(),
@@ -456,9 +451,9 @@ fn StorageCredentialEditor(
             credential_fingerprint: fingerprint.get_untracked().trim().to_string(),
         };
         let path = if current_generation == 0 {
-            aos_proto_types::STORAGE_BINDING_SERVICE_PLAN_SET_STORAGE_BINDING_CREDENTIAL_PATH
+            aos_proto_types::BINDING_SERVICE_PLAN_SET_BINDING_CREDENTIAL_PATH
         } else {
-            aos_proto_types::STORAGE_BINDING_SERVICE_PLAN_ROTATE_STORAGE_BINDING_CREDENTIAL_PATH
+            aos_proto_types::BINDING_SERVICE_PLAN_ROTATE_BINDING_CREDENTIAL_PATH
         };
         busy.set(true);
         error.set(None);
@@ -483,14 +478,14 @@ fn StorageCredentialEditor(
         };
         let client = apply_client.clone();
         let path = if rotate {
-            aos_proto_types::STORAGE_BINDING_SERVICE_ROTATE_STORAGE_BINDING_CREDENTIAL_PATH
+            aos_proto_types::BINDING_SERVICE_ROTATE_BINDING_CREDENTIAL_PATH
         } else {
-            aos_proto_types::STORAGE_BINDING_SERVICE_SET_STORAGE_BINDING_CREDENTIAL_PATH
+            aos_proto_types::BINDING_SERVICE_SET_BINDING_CREDENTIAL_PATH
         };
         busy.set(true);
         spawn_local(async move {
             match client
-                .call::<_, aos_proto_types::StorageBindingCredentialResponse>(
+                .call::<_, aos_proto_types::BindingCredentialResponse>(
                     path,
                     &reviewed.storage_credential_apply(),
                 )
@@ -521,7 +516,7 @@ fn StorageCredentialEditor(
 #[component]
 fn StorageCredentialValidation(
     client: ApiClient,
-    binding: aos_proto_types::StorageBinding,
+    binding: aos_proto_types::Binding,
 ) -> impl IntoView {
     let purpose = RwSignal::new("write".to_string());
     let generation = RwSignal::new(String::new());
@@ -545,8 +540,8 @@ fn StorageCredentialValidation(
         };
         let client = plan_client.clone();
         let idempotency_key = idempotency_key("storage-credential-validate");
-        let request = aos_proto_types::PlanValidateStorageBindingCredentialRequest {
-            storage_binding_id: binding_id.clone(),
+        let request = aos_proto_types::PlanValidateBindingCredentialRequest {
+            binding_id: binding_id.clone(),
             purpose: purpose.get_untracked().trim().to_string(),
             generation: generation_value,
             expected_resource_version: credential_version.get_untracked().trim().to_string(),
@@ -555,7 +550,14 @@ fn StorageCredentialValidation(
         busy.set(true);
         error.set(None);
         spawn_local(async move {
-            let result = client.call::<_, aos_proto_types::TopologyPlanResponse>(aos_proto_types::STORAGE_BINDING_SERVICE_PLAN_VALIDATE_STORAGE_BINDING_CREDENTIAL_PATH, &request).await.map_err(|failure| failure.to_string()).and_then(|response| PendingPlan::from_response(response, idempotency_key));
+            let result = client
+                .call::<_, aos_proto_types::TopologyPlanResponse>(
+                    aos_proto_types::BINDING_SERVICE_PLAN_VALIDATE_BINDING_CREDENTIAL_PATH,
+                    &request,
+                )
+                .await
+                .map_err(|failure| failure.to_string())
+                .and_then(|response| PendingPlan::from_response(response, idempotency_key));
             match result {
                 Ok(reviewed) => pending.set(Some(reviewed)),
                 Err(detail) => error.set(Some(detail)),
@@ -570,7 +572,13 @@ fn StorageCredentialValidation(
         let client = client.clone();
         busy.set(true);
         spawn_local(async move {
-            match client.call::<_, aos_proto_types::OperationResponse>(aos_proto_types::STORAGE_BINDING_SERVICE_VALIDATE_STORAGE_BINDING_CREDENTIAL_PATH, &reviewed.topology_apply()).await {
+            match client
+                .call::<_, aos_proto_types::OperationResponse>(
+                    aos_proto_types::BINDING_SERVICE_VALIDATE_BINDING_CREDENTIAL_PATH,
+                    &reviewed.topology_apply(),
+                )
+                .await
+            {
                 Ok(_) => reload(),
                 Err(failure) => error.set(Some(failure.to_string())),
             }
@@ -592,10 +600,7 @@ fn StorageCredentialValidation(
 }
 
 #[component]
-fn StorageGrantEditor(
-    client: ApiClient,
-    binding: aos_proto_types::StorageBinding,
-) -> impl IntoView {
+fn StorageGrantEditor(client: ApiClient, binding: aos_proto_types::Binding) -> impl IntoView {
     let consumer_scope = RwSignal::new(String::new());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
@@ -609,7 +614,7 @@ fn StorageGrantEditor(
         let client = plan_client.clone();
         let idempotency_key = idempotency_key("storage-binding-grant");
         let request = aos_proto_types::PlanConsumerScopeGrantRequest {
-            resource_kind: "storage_binding".to_string(),
+            resource_kind: "binding".to_string(),
             resource_stable_id: binding_id.clone(),
             resource_generation: 0,
             consumer_scope_key: consumer_scope.get_untracked().trim().to_string(),
@@ -622,7 +627,7 @@ fn StorageGrantEditor(
         spawn_local(async move {
             let result = client
                 .call::<_, aos_proto_types::TopologyPlanResponse>(
-                    aos_proto_types::STORAGE_BINDING_SERVICE_PLAN_GRANT_STORAGE_BINDING_SCOPE_PATH,
+                    aos_proto_types::BINDING_SERVICE_PLAN_GRANT_BINDING_SCOPE_PATH,
                     &request,
                 )
                 .await
@@ -646,7 +651,7 @@ fn StorageGrantEditor(
         spawn_local(async move {
             match client
                 .call::<_, aos_proto_types::ConsumerScopeGrantResponse>(
-                    aos_proto_types::STORAGE_BINDING_SERVICE_GRANT_STORAGE_BINDING_SCOPE_PATH,
+                    aos_proto_types::BINDING_SERVICE_GRANT_BINDING_SCOPE_PATH,
                     &reviewed.consumer_grant_apply(),
                 )
                 .await
@@ -684,7 +689,7 @@ fn StorageGrantRow(client: ApiClient, grant: aos_proto_types::ConsumerScopeGrant
         spawn_local(async move {
             let result = client
                 .call::<_, aos_proto_types::TopologyPlanResponse>(
-                    aos_proto_types::STORAGE_BINDING_SERVICE_PLAN_REVOKE_STORAGE_BINDING_SCOPE_PATH,
+                    aos_proto_types::BINDING_SERVICE_PLAN_REVOKE_BINDING_SCOPE_PATH,
                     &request,
                 )
                 .await
@@ -706,7 +711,7 @@ fn StorageGrantRow(client: ApiClient, grant: aos_proto_types::ConsumerScopeGrant
         spawn_local(async move {
             match client
                 .call::<_, aos_proto_types::ConsumerScopeGrantResponse>(
-                    aos_proto_types::STORAGE_BINDING_SERVICE_REVOKE_STORAGE_BINDING_SCOPE_PATH,
+                    aos_proto_types::BINDING_SERVICE_REVOKE_BINDING_SCOPE_PATH,
                     &reviewed.consumer_grant_apply(),
                 )
                 .await
@@ -721,10 +726,7 @@ fn StorageGrantRow(client: ApiClient, grant: aos_proto_types::ConsumerScopeGrant
 }
 
 #[component]
-fn StorageBindingDelete(
-    client: ApiClient,
-    binding: aos_proto_types::StorageBinding,
-) -> impl IntoView {
+fn BindingDelete(client: ApiClient, binding: aos_proto_types::Binding) -> impl IntoView {
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -744,7 +746,7 @@ fn StorageBindingDelete(
         spawn_local(async move {
             let result = client
                 .call::<_, aos_proto_types::TopologyPlanResponse>(
-                    aos_proto_types::STORAGE_BINDING_SERVICE_PLAN_DELETE_STORAGE_BINDING_PATH,
+                    aos_proto_types::BINDING_SERVICE_PLAN_DELETE_BINDING_PATH,
                     &request,
                 )
                 .await
@@ -766,7 +768,7 @@ fn StorageBindingDelete(
         spawn_local(async move {
             match client
                 .call::<_, aos_proto_types::DeleteTopologyResourceResponse>(
-                    aos_proto_types::STORAGE_BINDING_SERVICE_DELETE_STORAGE_BINDING_PATH,
+                    aos_proto_types::BINDING_SERVICE_DELETE_BINDING_PATH,
                     &reviewed.delete_apply(),
                 )
                 .await
@@ -794,10 +796,10 @@ fn TopologyDefaultsEditor(client: ApiClient, organization: Option<String>) -> im
 
 #[derive(Clone, Debug)]
 struct TopologyDefaultChoices {
-    bindings: Vec<aos_proto_types::StorageBinding>,
+    bindings: Vec<aos_proto_types::Binding>,
     domains: Vec<aos_proto_types::Domain>,
-    endpoints: Vec<aos_proto_types::DeliveryEndpoint>,
-    gateways: Vec<aos_proto_types::StorageGateway>,
+    endpoints: Vec<aos_proto_types::Endpoint>,
+    gateways: Vec<aos_proto_types::Gateway>,
 }
 
 async fn load_topology_defaults(
@@ -814,7 +816,7 @@ async fn load_topology_defaults(
         Some(org_slug) => (
             client
                 .call::<_, aos_proto_types::TopologyDefaultsResponse>(
-                    aos_proto_types::STORAGE_BINDING_SERVICE_GET_ORGANIZATION_TOPOLOGY_DEFAULTS_PATH,
+                    aos_proto_types::BINDING_SERVICE_GET_ORGANIZATION_TOPOLOGY_DEFAULTS_PATH,
                     &aos_proto_types::GetOrganizationTopologyDefaultsRequest {
                         org_slug: org_slug.clone(),
                     },
@@ -826,7 +828,7 @@ async fn load_topology_defaults(
         None => (
             client
                 .call::<_, aos_proto_types::TopologyDefaultsResponse>(
-                    aos_proto_types::STORAGE_BINDING_SERVICE_GET_INSTANCE_TOPOLOGY_DEFAULTS_PATH,
+                    aos_proto_types::BINDING_SERVICE_GET_INSTANCE_TOPOLOGY_DEFAULTS_PATH,
                     &aos_proto_types::GetInstanceTopologyDefaultsRequest {},
                 )
                 .await
@@ -836,14 +838,14 @@ async fn load_topology_defaults(
     };
     let binding_scope = owner_scope_key.clone();
     let bindings = client
-        .collect_pages::<_, aos_proto_types::ListStorageBindingsResponse, _, _, _>(
-            aos_proto_types::STORAGE_BINDING_SERVICE_LIST_STORAGE_BINDINGS_PATH,
-            move |page_token| aos_proto_types::ListStorageBindingsRequest {
+        .collect_pages::<_, aos_proto_types::ListBindingsResponse, _, _, _>(
+            aos_proto_types::BINDING_SERVICE_LIST_BINDINGS_PATH,
+            move |page_token| aos_proto_types::ListBindingsRequest {
                 owner_scope_key: binding_scope.clone(),
                 page_size: 100,
                 page_token,
             },
-            |response| (response.storage_bindings, response.next_page_token),
+            |response| (response.bindings, response.next_page_token),
         )
         .await
         .map_err(|failure| failure.to_string())?;
@@ -861,30 +863,30 @@ async fn load_topology_defaults(
         .await
         .map_err(|failure| failure.to_string())?;
     let endpoints = client
-        .collect_pages::<_, aos_proto_types::ListDeliveryEndpointsResponse, _, _, _>(
-            aos_proto_types::DELIVERY_SERVICE_LIST_DELIVERY_ENDPOINTS_PATH,
+        .collect_pages::<_, aos_proto_types::ListEndpointsResponse, _, _, _>(
+            aos_proto_types::DELIVERY_SERVICE_LIST_ENDPOINTS_PATH,
             move |page_token| aos_proto_types::ListTopologyResourcesRequest {
                 owner_scope_key: owner_scope_key.clone(),
                 page_size: 100,
                 page_token,
             },
-            |response| (response.delivery_endpoints, response.next_page_token),
+            |response| (response.endpoints, response.next_page_token),
         )
         .await
         .map_err(|failure| failure.to_string())?;
     let mut gateways = Vec::new();
     for binding in &bindings {
-        let storage_binding = storage_binding_ref(binding, organization.as_deref())
-            .ok_or_else(|| "a storage binding has no canonical reference".to_string())?;
+        let binding = binding_ref(binding, organization.as_deref())
+            .ok_or_else(|| "a binding has no canonical reference".to_string())?;
         let mut binding_gateways = client
-            .collect_pages::<_, aos_proto_types::ListStorageGatewaysResponse, _, _, _>(
-                aos_proto_types::DELIVERY_SERVICE_LIST_STORAGE_GATEWAYS_PATH,
-                move |page_token| aos_proto_types::ListStorageGatewaysRequest {
-                    storage_binding: Some(storage_binding.clone()),
+            .collect_pages::<_, aos_proto_types::ListGatewaysResponse, _, _, _>(
+                aos_proto_types::DELIVERY_SERVICE_LIST_GATEWAYS_PATH,
+                move |page_token| aos_proto_types::ListGatewaysRequest {
+                    binding: Some(binding.clone()),
                     page_size: 100,
                     page_token,
                 },
-                |response| (response.storage_gateways, response.next_page_token),
+                |response| (response.gateways, response.next_page_token),
             )
             .await
             .map_err(|failure| failure.to_string())?;
@@ -909,12 +911,12 @@ fn TopologyDefaultsForm(
     organization: Option<String>,
     choices: TopologyDefaultChoices,
 ) -> impl IntoView {
-    let storage_binding = RwSignal::new(defaults.storage_binding_id.clone());
+    let binding = RwSignal::new(defaults.binding_id.clone());
     let domain = RwSignal::new(defaults.domain_id.clone());
-    let endpoint = RwSignal::new(defaults.delivery_endpoint_id.clone());
-    let endpoint_generation = RwSignal::new(defaults.delivery_endpoint_generation.to_string());
-    let gateway = RwSignal::new(defaults.storage_gateway_id.clone());
-    let gateway_generation = RwSignal::new(defaults.storage_gateway_generation.to_string());
+    let endpoint = RwSignal::new(defaults.endpoint_id.clone());
+    let endpoint_generation = RwSignal::new(defaults.endpoint_generation.to_string());
+    let gateway = RwSignal::new(defaults.gateway_id.clone());
+    let gateway_generation = RwSignal::new(defaults.gateway_generation.to_string());
     let endpoint_choices = choices.endpoints.clone();
     let selected_endpoints = choices.endpoints;
     let gateway_choices = choices.gateways.clone();
@@ -974,21 +976,21 @@ fn TopologyDefaultsForm(
         let request = aos_proto_types::PlanSetTopologyDefaultsRequest {
             defaults: Some(aos_proto_types::TopologyDefaults {
                 scope_key: scope_key.clone(),
-                storage_binding_id: storage_binding.get_untracked().trim().to_string(),
+                binding_id: binding.get_untracked().trim().to_string(),
                 domain_id: domain.get_untracked().trim().to_string(),
-                delivery_endpoint_id: endpoint.get_untracked().trim().to_string(),
-                delivery_endpoint_generation: endpoint_gen,
-                storage_gateway_id: gateway.get_untracked().trim().to_string(),
-                storage_gateway_generation: gateway_gen,
+                endpoint_id: endpoint.get_untracked().trim().to_string(),
+                endpoint_generation: endpoint_gen,
+                gateway_id: gateway.get_untracked().trim().to_string(),
+                gateway_generation: gateway_gen,
                 resource_version: version.clone(),
             }),
             expected_resource_version: version.clone(),
             idempotency_key: idempotency_key.clone(),
         };
         let path = if plan_org.is_some() {
-            aos_proto_types::STORAGE_BINDING_SERVICE_PLAN_SET_ORGANIZATION_TOPOLOGY_DEFAULTS_PATH
+            aos_proto_types::BINDING_SERVICE_PLAN_SET_ORGANIZATION_TOPOLOGY_DEFAULTS_PATH
         } else {
-            aos_proto_types::STORAGE_BINDING_SERVICE_PLAN_SET_INSTANCE_TOPOLOGY_DEFAULTS_PATH
+            aos_proto_types::BINDING_SERVICE_PLAN_SET_INSTANCE_TOPOLOGY_DEFAULTS_PATH
         };
         busy.set(true);
         error.set(None);
@@ -1012,9 +1014,9 @@ fn TopologyDefaultsForm(
         };
         let client = apply_client.clone();
         let path = if organization.is_some() {
-            aos_proto_types::STORAGE_BINDING_SERVICE_SET_ORGANIZATION_TOPOLOGY_DEFAULTS_PATH
+            aos_proto_types::BINDING_SERVICE_SET_ORGANIZATION_TOPOLOGY_DEFAULTS_PATH
         } else {
-            aos_proto_types::STORAGE_BINDING_SERVICE_SET_INSTANCE_TOPOLOGY_DEFAULTS_PATH
+            aos_proto_types::BINDING_SERVICE_SET_INSTANCE_TOPOLOGY_DEFAULTS_PATH
         };
         busy.set(true);
         spawn_local(async move {
@@ -1031,7 +1033,7 @@ fn TopologyDefaultsForm(
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Defaults for new plans"</p><h2>"Topology defaults"</h2><p>"These values seed future editors. They never migrate live placements or routes."</p></div></div><form class="editor-form" on:submit=on_plan><label><span>"Storage binding"</span><select prop:value=move || storage_binding.get() on:change=move |event| storage_binding.set(event_target_value(&event))><option value="">"No default"</option>{choices.bindings.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{storage_binding_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Domain"</span><select prop:value=move || domain.get() on:change=move |event| domain.set(event_target_value(&event))><option value="">"No default"</option>{choices.domains.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{choice.hostname.clone()}</option> }).collect_view()}</select></label><label><span>"Delivery endpoint"</span><select prop:value=move || endpoint.get() on:change=on_endpoint_change><option value="">"No default"</option>{endpoint_choices.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{endpoint_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Endpoint generation"</span><input readonly aria-readonly="true" prop:value=move || endpoint_generation.get()/></label><label><span>"Storage gateway"</span><select prop:value=move || gateway.get() on:change=on_gateway_change><option value="">"No default"</option>{gateway_choices.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{gateway_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Gateway generation"</span><input readonly aria-readonly="true" prop:value=move || gateway_generation.get()/></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review defaults"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Defaults for new plans"</p><h2>"Topology defaults"</h2><p>"These values seed future editors. They never migrate live placements or routes."</p></div></div><form class="editor-form" on:submit=on_plan><label><span>"Binding"</span><select prop:value=move || binding.get() on:change=move |event| binding.set(event_target_value(&event))><option value="">"No default"</option>{choices.bindings.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{binding_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Domain"</span><select prop:value=move || domain.get() on:change=move |event| domain.set(event_target_value(&event))><option value="">"No default"</option>{choices.domains.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{choice.hostname.clone()}</option> }).collect_view()}</select></label><label><span>"Endpoint"</span><select prop:value=move || endpoint.get() on:change=on_endpoint_change><option value="">"No default"</option>{endpoint_choices.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{endpoint_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Endpoint generation"</span><input readonly aria-readonly="true" prop:value=move || endpoint_generation.get()/></label><label><span>"Gateway"</span><select prop:value=move || gateway.get() on:change=on_gateway_change><option value="">"No default"</option>{gateway_choices.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{gateway_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Gateway generation"</span><input readonly aria-readonly="true" prop:value=move || gateway_generation.get()/></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review defaults"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1046,8 +1048,8 @@ fn storage_provider(
     region: &str,
     access: &str,
     deployment_binding: &str,
-) -> Result<aos_proto_types::storage_binding_spec::Provider, String> {
-    use aos_proto_types::storage_binding_spec::Provider;
+) -> Result<aos_proto_types::binding_spec::Provider, String> {
+    use aos_proto_types::binding_spec::Provider;
     match kind {
         "local-fs" if !root.trim().is_empty() => Ok(Provider::LocalFilesystem(
             aos_proto_types::LocalFilesystemStorageProvider {
@@ -1103,28 +1105,28 @@ fn storage_provider(
     }
 }
 
-fn provider_label(provider: &aos_proto_types::storage_binding_spec::Provider) -> &'static str {
+fn provider_label(provider: &aos_proto_types::binding_spec::Provider) -> &'static str {
     match provider {
-        aos_proto_types::storage_binding_spec::Provider::LocalFilesystem(_) => "Local filesystem",
-        aos_proto_types::storage_binding_spec::Provider::S3(_) => "S3-compatible",
-        aos_proto_types::storage_binding_spec::Provider::R2(_) => "Cloudflare R2 API",
-        aos_proto_types::storage_binding_spec::Provider::DeploymentR2(_) => "Worker R2 binding",
+        aos_proto_types::binding_spec::Provider::LocalFilesystem(_) => "Local filesystem",
+        aos_proto_types::binding_spec::Provider::S3(_) => "S3-compatible",
+        aos_proto_types::binding_spec::Provider::R2(_) => "Cloudflare R2 API",
+        aos_proto_types::binding_spec::Provider::DeploymentR2(_) => "Worker R2 binding",
     }
 }
-fn storage_binding_ref(
-    binding: &aos_proto_types::StorageBinding,
+fn binding_ref(
+    binding: &aos_proto_types::Binding,
     organization_slug: Option<&str>,
-) -> Option<aos_proto_types::StorageBindingRef> {
+) -> Option<aos_proto_types::BindingRef> {
     let target = if binding.owner_scope_key == "instance" {
-        aos_proto_types::storage_binding_ref::Target::InstanceDefault(true)
+        aos_proto_types::binding_ref::Target::InstanceDefault(true)
     } else {
         let org_slug = organization_slug?.to_string();
         let name = binding.spec.as_ref()?.name.clone();
-        aos_proto_types::storage_binding_ref::Target::Organization(
-            aos_proto_types::OrganizationStorageBindingRef { org_slug, name },
+        aos_proto_types::binding_ref::Target::Organization(
+            aos_proto_types::OrganizationBindingRef { org_slug, name },
         )
     };
-    Some(aos_proto_types::StorageBindingRef {
+    Some(aos_proto_types::BindingRef {
         target: Some(target),
     })
 }
@@ -1145,15 +1147,13 @@ mod tests {
 
     #[test]
     fn deployment_binding_displays_physical_bucket() {
-        let spec = aos_proto_types::StorageBindingSpec {
+        let spec = aos_proto_types::BindingSpec {
             name: "default".to_string(),
-            provider: Some(
-                aos_proto_types::storage_binding_spec::Provider::DeploymentR2(
-                    aos_proto_types::DeploymentR2StorageProvider {
-                        bucket_binding: "aos-hub-staging-surfaces".to_string(),
-                    },
-                ),
-            ),
+            provider: Some(aos_proto_types::binding_spec::Provider::DeploymentR2(
+                aos_proto_types::DeploymentR2StorageProvider {
+                    bucket_binding: "aos-hub-staging-surfaces".to_string(),
+                },
+            )),
         };
         assert_eq!(
             storage_provider_details(&spec),

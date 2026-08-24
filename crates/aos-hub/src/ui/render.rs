@@ -6,7 +6,7 @@
 //!
 //! The pure primitives (`escape`, `table`, `human_size`, `key_fingerprint`)
 //! and the retained identity-page foundation — the page chrome (`page_with_session`,
-//! `StateLine`, `SessionIndicator`, `Pager`, `csrf_field`, `brand`, `ago`, the
+//! `StateLine`, `SessionIndicator`, `Pager`, `csrf_field`, `ago`, the
 //! small table/`meter`/`datalist`/`urlencode` helpers) — are single-sourced in
 //! the shared, wasm-clean [`aos_hub_core::web`] (RFC-0004 Phase 5,
 //! console-dedup stage A) so the hub and Worker render byte-identically. They
@@ -24,8 +24,8 @@
 // wasm-clean core crate; re-export them so the hub's richer page builders, the
 // retained identity pages and shared browse surface render byte-identically.
 pub use aos_hub_core::web::console_render::{
-    ago, brand, csrf_field, datalist, live_table, meter, page_with_session, set_app_version,
-    set_brand, table_raw_headers, urlencode, Pager, SessionIndicator, StateLine,
+    ago, csrf_field, datalist, live_table, meter, page_with_session, set_app_version,
+    table_raw_headers, urlencode, Pager, SessionIndicator, StateLine,
 };
 pub use aos_hub_core::web::render::{escape, human_size, key_fingerprint, table};
 

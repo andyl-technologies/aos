@@ -184,7 +184,7 @@ async fn empty_managed() -> (Arc<Database>, PathBuf, i64, i64) {
     )
     .await;
     db.grant_consumer_scope(
-        aos_hub::db::GrantResource::NetworkBoundary {
+        aos_hub::db::GrantResource::NetworkPolicy {
             id: "instance:public",
         },
         &registry.owner_scope_key,
@@ -194,7 +194,7 @@ async fn empty_managed() -> (Arc<Database>, PathBuf, i64, i64) {
     )
     .await
     .unwrap();
-    common::configure_hub_delivery_route(
+    common::configure_hub_route(
         &db,
         SurfaceTarget::Registry(registry_id),
         placement.id,
@@ -236,7 +236,7 @@ async fn cache_route_serves_through_the_selected_placement() {
         "range-cache",
     )
     .await;
-    common::configure_hub_delivery_route(
+    common::configure_hub_route(
         &db,
         SurfaceTarget::BinaryCache(cache),
         placement.id,
@@ -293,7 +293,7 @@ async fn native_cache_streams_preserve_session_and_bearer_authorization() {
         .create_surface_placement(&NewSurfacePlacementSpec {
             surface,
             name: "cache".to_string(),
-            storage_binding_id: binding,
+            binding_id: binding,
             prefix: "cache".to_string(),
             kind: "complete".to_string(),
             desired_state: "active".to_string(),
@@ -307,7 +307,7 @@ async fn native_cache_streams_preserve_session_and_bearer_authorization() {
     db.observe_surface_placement(placement.id, "ready", "complete", 1)
         .await
         .unwrap();
-    common::configure_hub_delivery_route(
+    common::configure_hub_route(
         &db,
         surface,
         placement.id,
