@@ -4,6 +4,20 @@ use core::sync::atomic::Ordering;
 
 use super::*;
 
+/// Mutable aggregate limits used while copying a non-consuming event preview.
+///
+/// The running byte coordinate is shared across staged and shared-memory
+/// owners so neither source can independently spend the same configured
+/// event-log allowance.
+pub struct FaultEventPreviewBudget<'a> {
+    /// Running canonical event-log byte usage.
+    pub canonical_payload_bytes: &'a mut usize,
+    /// Authored aggregate event-log byte ceiling.
+    pub configured_payload_bytes: usize,
+    /// Authored per-event inline-payload byte ceiling.
+    pub configured_inline_payload_bytes: usize,
+}
+
 /// Returns the number of published events without consuming them.
 ///
 /// # Errors
@@ -54,9 +68,7 @@ pub fn snapshot_fault_events(
     arena: &[u8],
     arena_region_offset: u64,
     destination: &mut Vec<DequeuedFaultEvent>,
-    canonical_payload_bytes: &mut usize,
-    configured_payload_bytes: usize,
-    configured_inline_payload_bytes: usize,
+    budget: FaultEventPreviewBudget<'_>,
 ) -> Result<(), FaultEventError> {
     let live = fault_event_count(ring, slots)?;
     let available = destination.capacity().saturating_sub(destination.len());
@@ -113,30 +125,31 @@ pub fn snapshot_fault_events(
         )
         .map_err(FaultTransportError::Abi)?;
         header.authenticate_payload(payload)?;
-        if payload.len() > configured_inline_payload_bytes {
+        if payload.len() > budget.configured_inline_payload_bytes {
             return Err(FaultEventError::PreviewInlinePayloadCapacity {
                 requested: u64::try_from(payload.len()).unwrap_or(u64::MAX),
-                configured: u64::try_from(configured_inline_payload_bytes).unwrap_or(u64::MAX),
+                configured: u64::try_from(budget.configured_inline_payload_bytes)
+                    .unwrap_or(u64::MAX),
             });
         }
         let record_bytes = payload
             .len()
             .checked_add(FAULT_EVENT_HEADER_V1_BYTES)
             .ok_or(FaultTransportError::ArithmeticOverflow)?;
-        let admitted = canonical_payload_bytes.checked_add(record_bytes);
-        if admitted.is_none_or(|total| total > configured_payload_bytes) {
+        let admitted = budget.canonical_payload_bytes.checked_add(record_bytes);
+        if admitted.is_none_or(|total| total > budget.configured_payload_bytes) {
             return Err(FaultEventError::PreviewPayloadCapacity {
-                current: u64::try_from(*canonical_payload_bytes).unwrap_or(u64::MAX),
+                current: u64::try_from(*budget.canonical_payload_bytes).unwrap_or(u64::MAX),
                 requested: u64::try_from(record_bytes).unwrap_or(u64::MAX),
-                configured: u64::try_from(configured_payload_bytes).unwrap_or(u64::MAX),
+                configured: u64::try_from(budget.configured_payload_bytes).unwrap_or(u64::MAX),
             });
         }
         let mut owned = Vec::new();
         owned.try_reserve_exact(payload.len()).map_err(|_| {
             FaultEventError::PreviewPayloadCapacity {
-                current: u64::try_from(*canonical_payload_bytes).unwrap_or(u64::MAX),
+                current: u64::try_from(*budget.canonical_payload_bytes).unwrap_or(u64::MAX),
                 requested: u64::try_from(record_bytes).unwrap_or(u64::MAX),
-                configured: u64::try_from(configured_payload_bytes).unwrap_or(u64::MAX),
+                configured: u64::try_from(budget.configured_payload_bytes).unwrap_or(u64::MAX),
             }
         })?;
         owned.extend_from_slice(payload);
@@ -144,7 +157,7 @@ pub fn snapshot_fault_events(
             header,
             payload: owned,
         });
-        *canonical_payload_bytes = admitted.unwrap_or(configured_payload_bytes);
+        *budget.canonical_payload_bytes = admitted.unwrap_or(budget.configured_payload_bytes);
         expected_start = slot.reservation_end;
     }
     Ok(())

@@ -327,17 +327,23 @@ in
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_impossible_permanent_failure_ownership
           run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_unpublishable_replacement_transitions
+          run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_unjournaled_staged_process_owner
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_unrelated_quarantined_postcommit_owner
           run_exact_api_test \
-            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_oversized_json_before_decode
+            vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_rejects_oversized_json_before_decode
           run_exact_api_test \
-            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_persists_one_aggregate_envelope
+            vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_persists_one_aggregate_envelope
           run_exact_api_test \
-            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_preflights_aggregate_bytes_before_owned_decode
+            vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_preflights_aggregate_bytes_before_owned_decode
           run_exact_api_test \
-            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_preflights_process_count_before_owned_map_decode
+            vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_preflights_process_count_before_owned_map_decode
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state_recovers_an_unfinished_run_before_reuse
+          run_exact_api_test \
+            vm_lifecycle::runtime::tests::durable_run_state_rejects_empty_active_transaction_phases
           run_exact_api_test \
             vm_lifecycle::quantum_loop::lifecycle::process_ownership::tests::terminal_process_ownership_binds_service_state_to_exact_transition
           run_exact_api_test \

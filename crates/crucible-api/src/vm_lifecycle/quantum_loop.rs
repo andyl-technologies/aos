@@ -775,11 +775,7 @@ impl ProductionVmLifecycleLoop {
                     });
                 }
             };
-            if !lifecycle_precommit
-                .actions
-                .iter()
-                .any(|action| *action == decision.action)
-            {
+            if !lifecycle_precommit.actions.contains(&decision.action) {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
                         "terminal lifecycle action for `{}` lost its precommit checkpoint",
@@ -1056,8 +1052,7 @@ impl ProductionVmLifecycleLoop {
                     node.name
                 ),
             })?;
-            if let Err(error) = self.configure_replacement_fault_coordinators(&node, &mut launched)
-            {
+            if let Err(error) = self.configure_replacement_fault_coordinators(node, &mut launched) {
                 let containment = launched.force_quarantine_and_reap();
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
@@ -1102,10 +1097,10 @@ impl ProductionVmLifecycleLoop {
                 })?;
                 block_handles.push((binding.device_hash(), handle));
             }
-            if self.node_service_states.get(&item.decision.node).is_none()
-                || self.node_run_directories.get(&item.decision.node).is_none()
-                || self.node_generations.get(&item.decision.node).is_none()
-                || self.launch_configs.get(&item.decision.node).is_none()
+            if !self.node_service_states.contains_key(&item.decision.node)
+                || !self.node_run_directories.contains_key(&item.decision.node)
+                || !self.node_generations.contains_key(&item.decision.node)
+                || !self.launch_configs.contains_key(&item.decision.node)
                 || (self.debug_backend_paths.contains_key(&item.decision.node)
                     && item.debug_backend_path.is_none())
             {
@@ -1770,6 +1765,14 @@ impl ProductionVmLifecycleLoop {
                 return Err(self.quarantine_precommit_lifecycle_intent(&lifecycle_intents, error));
             }
         };
+        if !lifecycle_intents.is_empty()
+            && let Err(error) = self.persist_lifecycle_state()
+        {
+            if let Ok(mut runtime) = self.fault_runtime.lock() {
+                runtime.poison();
+            }
+            return Err(self.quarantine_precommit_lifecycle_intent(&lifecycle_intents, error));
+        }
         let lifecycle_work = self
             .fault_runtime
             .lock()
