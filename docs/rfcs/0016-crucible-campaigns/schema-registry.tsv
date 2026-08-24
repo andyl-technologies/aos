@@ -107,8 +107,12 @@ crucible.campaign.loopback-frame	16	crucible-daemon::campaign_loopback	component
 crucible.campaign-local-policy	1	crucible-daemon::campaign_policy	deployment-config	gate:component-contract
 crucible.campaign-component-authorities	1	crucible-daemon::campaign_bootstrap	deployment-secret	gate:component-contract
 crucible.campaign-import	1	crucible-cli::campaign_import	deployment-config	gate:component-contract
-crucible.executor.crucible-scenario-payload	1	crucible-daemon::crucible_artifact	execution-model-payload	gate:component-contract,gate:campaign-replay
+crucible.executor.crucible-scenario-payload	2	crucible-daemon::crucible_artifact	execution-model-payload	gate:component-contract,gate:campaign-replay
 crucible.executor.crucible-configuration-payload	2	crucible-daemon::crucible_artifact	execution-model-payload	gate:component-contract,gate:campaign-replay
+crucible.executor.crucible-reproduction-payload	2	crucible-daemon::crucible_artifact	execution-model-payload	gate:component-contract,gate:campaign-replay
+crucible.execution.scenario-form	6	crucible::model	execution-model-payload	gate:campaign-model,gate:campaign-replay
+crucible.execution.measurement-definitions	1	crucible::model	execution-model-payload	gate:campaign-model,gate:campaign-replay
+crucible.execution.reproduction-artifact	6	crucible::model	execution-model-payload	gate:campaign-replay,gate:content-address
 crucible.execution.schedule	2	crucible::model	execution-model-payload	gate:typed-choice,gate:campaign-replay
 crucible.execution.selection-decision	1	crucible::model	execution-model-payload	gate:typed-choice,gate:campaign-replay
 crucible.execution.checkpoint	4	crucible::model	checkpoint	gate:typed-choice,gate:campaign-replay

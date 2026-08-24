@@ -430,6 +430,36 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     assert_eq!(campaign_import[1], "1");
     assert_eq!(campaign_import[2], "crucible-cli::campaign_import");
     assert_eq!(campaign_import[3], "deployment-config");
+    for (schema, version, owner) in [
+        (
+            "crucible.executor.crucible-scenario-payload",
+            "2",
+            "crucible-daemon::crucible_artifact",
+        ),
+        (
+            "crucible.executor.crucible-reproduction-payload",
+            "2",
+            "crucible-daemon::crucible_artifact",
+        ),
+        ("crucible.execution.scenario-form", "6", "crucible::model"),
+        (
+            "crucible.execution.measurement-definitions",
+            "1",
+            "crucible::model",
+        ),
+        (
+            "crucible.execution.reproduction-artifact",
+            "6",
+            "crucible::model",
+        ),
+    ] {
+        let record = rows
+            .get(schema)
+            .unwrap_or_else(|| panic!("missing execution-model schema {schema}"));
+        assert_eq!(record[1], version);
+        assert_eq!(record[2], owner);
+        assert_eq!(record[3], "execution-model-payload");
+    }
     for schema in [
         "crucible.campaign.gc-plan",
         "crucible.campaign.gc-root-manifest",

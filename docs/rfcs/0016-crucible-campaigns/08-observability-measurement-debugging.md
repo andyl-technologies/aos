@@ -49,6 +49,69 @@ Boolean/enumerated values, or bounded integer vectors. Aggregations include
 count, sum, min, max, exact mean rational, histogram over declared integer bins,
 first/last, and event delta. Overflow behavior is checked and explicit.
 
+The initial executable definition component is
+`crucible.model.measurement-definitions.v1`. One scenario admits at most 4,096
+measurement windows, 1,024 metrics per window, and 65,536 metrics in aggregate.
+A fixed-memory preflight also limits the aggregate canonical component body to
+32 MiB before allocating its encoded representation.
+A cohort admits at most 4,096 nodes. Enumerations and histogram boundary sets
+admit at most 4,096 values, integer vectors declare a nonzero maximum no greater
+than 65,536 elements, compound boundaries admit at most 64 children and 32
+levels, and every measurement identifier is 1-128 bytes in the closed ASCII
+profile `[A-Za-z0-9._\-/:]+`. Constructors sort measurement IDs, metric IDs,
+cohort nodes, enumeration alternatives, and histogram boundaries before
+content addressing and reject duplicates.
+
+Scenario TOML and compact scenario forms write schema v6. Scenario v5 remains
+readable only as the exact compatibility form with no measurement definitions;
+empty definitions deliberately preserve the prior scenario identity. A
+nonempty component contributes its exact component content hash to scenario
+identity. Reproduction artifacts carrying v6 scenario bytes write outer v6,
+while prior outer v5 artifacts remain readable.
+
+The measurement component's canonical body is whitespace-free UTF-8 JSON over
+the field order shown above; the repeated `metrics` Rust field has wire key
+`metric` so TOML renders `[[measurement.metric]]`. Struct fields retain
+declaration order; enums use the lowercase `snake_case` `kind` tag, cohort
+variants additionally use the `value` field, options use JSON `null` or their
+value, integers use canonical
+decimal JSON numbers, and collections use the canonical orders required above.
+No object map with implementation-dependent key order occurs in this body. Its
+identity is
+`H("crucible.model.measurement-definitions.v1", lowercase_hex(body))`, using
+the execution model's canonical-material hash function. Scenario compact v6
+stores that body as one length-prefixed blob and readers must re-encode and
+compare it exactly after semantic validation. Campaign `ScenarioArtifact`
+payload v1 remains the retained scenario-form-v5 profile; new scenario-form-v6
+imports use payload v2.
+
+The closed v1 tags are:
+
+- value types `signed_integer`, `unsigned_integer`, `reduced_rational`,
+  `boolean`, `enumerated`, and `integer_vector`;
+- sources `guest`, `virtual_time`, `node_icount`, `modeled_event_count`,
+  `network_modeled_drop_count`, `storage_completion_count`, and
+  `scheduler_event_count`;
+- aggregations `count`, `sum`, `min`, `max`, `exact_mean`, `histogram`, `first`,
+  `last`, and `event_delta`;
+- timeouts `virtual_time`, `node_icount`, and `event_count`; and
+- cohort policies `all`, `any`, and `quorum`.
+
+Boundary tags are `scenario_genesis`, `scenario_ready`, `plan_event`,
+`fault_opportunity`, `fault_transition`, `fault_applied`, `guest_marker`,
+`property_verdict`, `virtual_time`, `node_icount`, `event_count`,
+`scheduler_quiescence`, `network_idle`, `all`, and `any`. Fault boundaries name
+an exact scenario fault-binding ID; guest markers are declarations in this
+component and additionally require at least one white-box-enabled VM.
+
+Model-owned sources produce unsigned integer samples; other type/source pairs
+fail admission. The unit registry is `boolean`, `bytes`, `dimensionless`,
+`events`, `instructions`, `operations`, `packets`, `ratio`, `samples`, and
+`virtual_nanoseconds`. Adding a tag or unit requires a component schema version.
+Model-owned virtual time, node icount, event counts, network drops, and storage
+completions require `virtual_nanoseconds`, `instructions`, `events`, `packets`,
+and `operations` respectively.
+
 Example:
 
 ```toml
@@ -145,15 +208,19 @@ discovered choice opportunities and branch points
 event-log range and evidence digests
 ```
 
-The initial canonical record layer represents exact samples as bounded Boolean,
+The canonical record layer represents exact samples as bounded Boolean,
 signed-integer, unsigned-integer, identifier-text, or opaque scenario-typed byte
-values. One `MeasurementSeries` retains a nonempty ordered sample vector, a
+values. The immutable scenario definition now validates and content-addresses
+measurement windows, static boundary references, cohort rules, metric types,
+sources, and exact aggregation policy before execution. One
+`MeasurementSeries` retains a nonempty ordered sample vector, a
 same-type declared aggregate, and its evidence children. `MeasurementSet`,
 `PropertyVerdictSet`, and `CoverageProjection` are bounded name/identity maps or
-sets with generic child-bearing envelopes. Scenario measurement definitions,
-aggregate recomputation, rationals/histograms, and objective evaluation remain
-owned by T-CAM-3.1 through T-CAM-3.4; this record layer does not treat a claimed
-aggregate as independently verified policy input.
+sets with generic child-bearing envelopes. Runtime boundary evaluation,
+aggregate recomputation, rational/histogram observation values, canonical stop
+evidence, and objective evaluation remain owned by T-CAM-3.1 through T-CAM-3.4;
+this record layer does not treat a claimed aggregate as independently verified
+policy input.
 
 The observation stores both `ConfigurationId` and
 `ConfigurationArtifactId`. The former is semantic graph identity; the latter is

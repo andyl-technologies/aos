@@ -134,6 +134,12 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
 
 - [ ] **T-CAM-3.1** Add scenario measurement definitions, boundary selectors,
   cohort rules, metric types, exact aggregations, and canonical stop outcomes.
+  The pure scenario-owned v1 definition component now provides bounded static
+  boundary selectors, validated node cohorts, typed metric sources and values,
+  exact aggregation declarations, deterministic ordering, and scenario-v6
+  identity/serialization with measurement-free v5 read compatibility. Runtime
+  boundary evaluation, exact aggregate recomputation, and canonical satisfying
+  stop evidence remain open, so this task is not yet complete.
 - [ ] **T-CAM-3.2** Add guest measurement begin/sample/end and semantic-marker
   protocol messages with scenario validation and limits.
 - [ ] **T-CAM-3.3** Derive model-owned network, storage, scheduler, icount, and

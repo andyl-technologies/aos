@@ -568,10 +568,28 @@ impl World {
         seed: Seed,
         app_random_draw_cap: u64,
     ) -> ScenarioDef {
-        let material = scenario_world_plan_properties_seed_app_random_cap_material(
+        self.scenario_def_from_components_with_measurements_and_app_random_draw_cap(
+            plan,
+            properties,
+            &MeasurementDefinitions::empty(),
+            seed,
+            app_random_draw_cap,
+        )
+    }
+
+    pub(super) fn scenario_def_from_components_with_measurements_and_app_random_draw_cap(
+        &self,
+        plan: &Plan,
+        properties: &Properties,
+        measurements: &MeasurementDefinitions,
+        seed: Seed,
+        app_random_draw_cap: u64,
+    ) -> ScenarioDef {
+        let material = scenario_world_plan_properties_measurements_seed_app_random_cap_material(
             self,
             plan,
             properties,
+            measurements,
             seed,
             app_random_draw_cap,
         );

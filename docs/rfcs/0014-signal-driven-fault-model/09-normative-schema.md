@@ -10,13 +10,21 @@ schema unless explicitly marked `specification-only`.
 Every scenario using this system declares:
 
 ```toml
-schema = "crucible.scenario.v5"
+schema = "crucible.scenario.v6"
 
 [plan]
 kind = "event_graph"
 fault_model = "signal_bindings_v2"
 seed = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 ```
+
+Version 6 adds the scenario-owned measurement-definition component specified
+by RFC-0016 §08.2-§08.3. Readers accept version 5 only as the exact legacy form
+with an empty measurement component. New writes use version 6, and a version-5
+document that attempts to carry `[[measurement]]` is rejected. The compact
+scenario envelope follows the same `scenario-def-form.v5` read / v6 write rule;
+reproduction artifacts containing v6 scenarios write outer version 6 while
+outer version 5 remains readable for prior artifacts.
 
 - All tables are closed. Unknown or duplicate keys, duplicate IDs, implicit
   numeric conversions, TOML floats, datetimes, and heterogeneous arrays fail.
