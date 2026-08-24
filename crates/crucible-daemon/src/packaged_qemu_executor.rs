@@ -64,6 +64,7 @@ impl PackagedQemuExecutorConfig {
     /// Returns [`PackagedQemuExecutorConfigError`] when the worker count or
     /// checkpoint ceiling is zero, or the worker count exceeds the configured
     /// execution-slot ceiling.
+    // crucible-lint: allow rust-allow -- the deployment contract keeps every startup-fixed authority and bound explicit.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         campaign: CampaignName,

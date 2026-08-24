@@ -12,8 +12,8 @@ pub struct LifecycleResourceLimit {
     pub current: u64,
     /// Additional usage requested by the operation.
     pub requested: u64,
-    /// Scenario-authored ceiling.
+    /// Active authored or operation-specific configured ceiling.
     pub configured: u64,
-    /// Compiled hard ceiling.
+    /// Compiled hard ceiling for the named resource domain.
     pub hard: u64,
 }

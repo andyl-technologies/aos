@@ -4,10 +4,6 @@
 //! RPC ABI that [`crate::RpcControlClient`] emits, dispatches into a
 //! [`LifecycleControlPlane`], and serializes lifecycle, `Control`, `Watch`, and
 //! unary `Send` responses without taking ownership of scheduler semantics.
-use std::convert::Infallible;
-use std::future::Future;
-use std::sync::Arc;
-
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Extension, State};
@@ -29,6 +25,9 @@ use futures_util::stream;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
+use std::convert::Infallible;
+use std::future::Future;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, OwnedMutexGuard, watch};
 use tokio::task::JoinSet;
@@ -62,6 +61,7 @@ use crate::streaming::{
 use crate::transport_security::DebugTransportIdentity;
 use crate::{ControlClientError, DebugAuthorizationPolicy, HelloRequest};
 
+mod resource_limit;
 type SharedLifecycleControlPlane<L, F> = Arc<Mutex<LifecycleControlPlane<L, F>>>;
 
 /// Runtime policy for the HTTP/2 lifecycle server.
@@ -2655,9 +2655,9 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
             "session-command-rejected",
             &error.to_string(),
         ),
+        LifecycleApiError::ResourceLimit(limit) => resource_limit::response(&limit),
         LifecycleApiError::RpcAbi { .. }
         | LifecycleApiError::GenesisGraph { .. }
-        | LifecycleApiError::ResourceLimit(..)
         | LifecycleApiError::LoopFactory { .. }
         | LifecycleApiError::AttemptOperational { .. }
         | LifecycleApiError::CommandChannelClosed { .. }
