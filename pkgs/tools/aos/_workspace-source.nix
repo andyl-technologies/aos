@@ -36,6 +36,8 @@ in
         || pathString == "${repoRootString}/flake.nix"
         || pathString == "${repoRootString}/justfile"
         || pathString == "${repoRootString}/docs"
+        || pathString == "${repoRootString}/docs/quality"
+        || lib.hasPrefix "${repoRootString}/docs/quality/" pathString
         || pathString == "${repoRootString}/docs/rfcs"
         || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
       );
