@@ -491,9 +491,20 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   passes the drained event-log suffix to a distinct result-sealing phase.
   Cleanup failure takes terminal precedence while retaining an earlier driver
   diagnostic, and the runner itself rejects exact-resume roots before lifecycle
-  construction. Concrete fresh-driver selection, the semantic result
-  projection, fresh exact-cache, baked/thin image provisioning, and production
-  worker composition remain open. Real-node exact-checkpoint capture is now an
+  construction. A concrete fresh modeled driver now begins from the exact
+  authenticated discovery or selected-branch child, preserves typed scheduler
+  failures, stops at the requested choice/marker/time/event or terminal
+  boundary, rejects uncommitted network output, and retains dense event state
+  under exact 1,000,000-entry/64-MiB-material bounds plus choice state under the
+  canonical 65,530-record/128-MiB bounds with shared immutable contracts. Its post-shutdown seal incorporates the final drained
+  suffix, runs bounded offline property evaluation, derives
+  duplicate-insensitive per-point coverage identities, reconstructs the exact
+  scenario and child artifacts, and emits a complete `ObservationCandidate`.
+  It deliberately emits no undeclared measurements; measurement definitions,
+  raw event-log evidence, and objective aggregation remain T-CAM-3 work.
+  Concrete driver selection, fresh exact-cache, baked/thin image provisioning,
+  and production worker composition remain open. Real-node exact-checkpoint
+  capture is now an
   executor-owned, guard-retaining operation: it
   seals and exact-binds configuration, node icount, and event-log continuation
   before paused VMState/host-I/O capture. The real-node executor now completes
@@ -851,7 +862,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   above immutable ceilings, and unsupported locality. The local supervisor
   facade refuses startup unless advertised ceilings exactly equal enforced
   slots, CPU, memory, disk, and execution-quanta limits. The concrete host
-  resource guard's Linux cgroup/quota owner, modeled driver, the versioned
+  resource guard's Linux cgroup/quota owner, the versioned
   paused-restore reset of the plugin coverage novelty bitmap/ring plus host
   consumer state, coverage-aware live advancement and canonical coverage
   projection, hot-fork realization,

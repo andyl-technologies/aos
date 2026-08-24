@@ -328,12 +328,61 @@ impl ChoiceDiscovery {
     pub const fn opportunity(&self) -> &ChoiceOpportunity {
         &self.opportunity
     }
+
+    /// Reuses dependencies from another validated discovery with the same contract.
+    ///
+    /// Both values were validated when constructed. This operation compares
+    /// their compact content-addressed reference contract before sharing the
+    /// already-authenticated immutable values, avoiding repeated hashing of a
+    /// large domain used by many opportunities.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the discoveries name different declaration or
+    /// domain records, or when their copied reference contracts differ.
+    pub fn share_dependencies_from(&mut self, validated: &Self) -> Result<(), CampaignCodecError> {
+        if self.opportunity.declaration() != validated.opportunity.declaration()
+            || self.opportunity.domain() != validated.opportunity.domain()
+            || self.opportunity.reference_contract_hash()
+                != validated.opportunity.reference_contract_hash()
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "choice discoveries do not share one validated dependency contract",
+            });
+        }
+        self.declaration = Arc::clone(&validated.declaration);
+        self.domain = Arc::clone(&validated.domain);
+        Ok(())
+    }
 }
 
 /// Maximum aggregate canonical bytes for unique choice records in one candidate.
 pub const MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES: usize = 128 * 1024 * 1024;
 /// Maximum number of choice discoveries carried by one candidate.
 pub const MAX_OBSERVATION_CHOICE_DISCOVERIES: usize = crate::observation::MAX_DISCOVERED_CHOICES;
+
+fn charge_choice_discovery_record(
+    charged_records: &mut BTreeSet<ContentId>,
+    charged_bytes: &mut usize,
+    id: ContentId,
+    encoded_bytes: impl FnOnce() -> usize,
+) -> Result<(), CampaignCodecError> {
+    if !charged_records.insert(id) {
+        return Ok(());
+    }
+    *charged_bytes =
+        charged_bytes
+            .checked_add(encoded_bytes())
+            .ok_or(CampaignCodecError::LimitExceeded {
+                limit: "observation-choice-discovery-bytes",
+            })?;
+    if *charged_bytes > MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES {
+        return Err(CampaignCodecError::LimitExceeded {
+            limit: "observation-choice-discovery-bytes",
+        });
+    }
+    Ok(())
+}
 
 /// Complete immutable executor result published before campaign admission.
 ///
@@ -377,68 +426,62 @@ impl ObservationCandidate {
         let mut shared_declarations: BTreeMap<SelectableId, Arc<SelectableDeclaration>> =
             BTreeMap::new();
         let mut shared_domains: BTreeMap<ChoiceDomainId, Arc<ChoiceDomain>> = BTreeMap::new();
+        let mut validated_contracts = BTreeMap::new();
         let mut charged_records = BTreeSet::new();
         let mut charged_bytes = 0usize;
         let mut discovered_choices = discovered_choices;
         for discovery in &mut discovered_choices {
-            discovery
-                .opportunity
-                .validate_references(&discovery.declaration, &discovery.domain)?;
+            let declaration = discovery.opportunity.declaration();
+            let domain = discovery.opportunity.domain();
+            let contract = discovery.opportunity.reference_contract_hash();
+            match validated_contracts.get(&(declaration, domain)) {
+                Some(validated) if *validated == contract => {}
+                Some(_) => {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "choice opportunities sharing references disagree on their contract",
+                    });
+                }
+                None => {
+                    discovery
+                        .opportunity
+                        .validate_references(&discovery.declaration, &discovery.domain)?;
+                    validated_contracts.insert((declaration, domain), contract);
+                }
+            }
             let opportunity = discovery.opportunity.id()?;
             if !discovered_ids.insert(opportunity) {
                 return Err(CampaignCodecError::InvalidValue {
                     reason: "observation candidate contains duplicate choice opportunities",
                 });
             }
-            let declaration = discovery.declaration.id()?;
             if let Some(existing) = shared_declarations.get(&declaration) {
-                if existing.as_ref() != discovery.declaration.as_ref() {
-                    return Err(CampaignCodecError::InvalidValue {
-                        reason: "choice declaration ID has conflicting canonical bodies",
-                    });
-                }
                 discovery.declaration = Arc::clone(existing);
             } else {
                 shared_declarations.insert(declaration, Arc::clone(&discovery.declaration));
             }
-            let domain = discovery.domain.id()?;
             if let Some(existing) = shared_domains.get(&domain) {
-                if existing.as_ref() != discovery.domain.as_ref() {
-                    return Err(CampaignCodecError::InvalidValue {
-                        reason: "choice domain ID has conflicting canonical bodies",
-                    });
-                }
                 discovery.domain = Arc::clone(existing);
             } else {
                 shared_domains.insert(domain, Arc::clone(&discovery.domain));
             }
-            for (id, bytes) in [
-                (
-                    declaration.content_id(),
-                    discovery.declaration.canonical_bytes().len(),
-                ),
-                (
-                    domain.content_id(),
-                    discovery.domain.canonical_bytes().len(),
-                ),
-                (
-                    opportunity.content_id(),
-                    crate::codec::encode(&discovery.opportunity).len(),
-                ),
-            ] {
-                if charged_records.insert(id) {
-                    charged_bytes = charged_bytes.checked_add(bytes).ok_or(
-                        CampaignCodecError::LimitExceeded {
-                            limit: "observation-choice-discovery-bytes",
-                        },
-                    )?;
-                    if charged_bytes > MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES {
-                        return Err(CampaignCodecError::LimitExceeded {
-                            limit: "observation-choice-discovery-bytes",
-                        });
-                    }
-                }
-            }
+            charge_choice_discovery_record(
+                &mut charged_records,
+                &mut charged_bytes,
+                declaration.content_id(),
+                || discovery.declaration.canonical_bytes().len(),
+            )?;
+            charge_choice_discovery_record(
+                &mut charged_records,
+                &mut charged_bytes,
+                domain.content_id(),
+                || discovery.domain.canonical_bytes().len(),
+            )?;
+            charge_choice_discovery_record(
+                &mut charged_records,
+                &mut charged_bytes,
+                opportunity.content_id(),
+                || discovery.opportunity.canonical_bytes().len(),
+            )?;
         }
         if &discovered_ids != observation.discovered_choices() {
             return Err(CampaignCodecError::InvalidValue {

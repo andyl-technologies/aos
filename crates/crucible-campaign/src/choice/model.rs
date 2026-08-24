@@ -417,6 +417,12 @@ pub struct ChoiceOpportunity {
 }
 
 impl ChoiceOpportunity {
+    /// Returns strict canonical runtime-opportunity bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
     /// Decodes one canonical runtime opportunity body.
     ///
     /// # Errors

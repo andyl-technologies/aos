@@ -154,6 +154,12 @@ pub struct QemuFreshAttemptLifecycle<'a> {
 }
 
 impl QemuFreshAttemptLifecycle<'_> {
+    pub(crate) fn new(
+        owner: &mut dyn QemuFreshAttemptLifecycleOwner,
+    ) -> QemuFreshAttemptLifecycle<'_> {
+        QemuFreshAttemptLifecycle { owner }
+    }
+
     /// Advances exactly one scheduler quantum.
     ///
     /// # Errors
@@ -484,9 +490,7 @@ where
             .start_fresh_lifecycle(&scenario, input.scenario(), context)
             .map_err(map_fresh_lifecycle_failure)?;
         let driven = {
-            let mut facade = QemuFreshAttemptLifecycle {
-                owner: &mut lifecycle,
-            };
+            let mut facade = QemuFreshAttemptLifecycle::new(&mut lifecycle);
             self.driver.drive(&mut facade, input, context)
         };
         let cleanup = lifecycle.shutdown();

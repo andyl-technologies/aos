@@ -2160,15 +2160,48 @@ runs that cleanup. A cleanup or quarantine failure takes terminal precedence
 over an otherwise retryable or canceled driver result while retaining both
 diagnostics. The fresh runner independently rejects any exact-resume root before
 calling even an injected lifecycle factory. Concrete fresh-driver selection,
-the semantic projection that incorporates the final suffix, and an
-independently admitted debugger world remain open; no unsupported mode falls
-back to the packaged authority. A
+an independently admitted debugger world, and production worker composition
+remain open; no unsupported mode falls back to the packaged authority. The
+concrete fresh modeled driver begins from the authenticated discovery child or
+selected branch child and advances only empty-control scheduler quanta. It
+checks cancellation and the exact-checkpoint request before and after each
+quantum, preserves the scheduler's typed retry/cancel/terminal failure class,
+and fails closed rather than returning an observation when a checkpoint request
+wins before the fresh runner gains capture authority. It stops on the first
+exact requested choice, named guest marker, virtual-time deadline, modeled
+event-count boundary, or scenario terminal verdict. A terminal verdict takes
+precedence over a coincident requested boundary, and no modeled stop is accepted
+while a network output remains globally uncommitted.
+
+The driver retains at most 1,000,000 dense scheduler entries, at most 64 MiB of
+their aggregate canonical identity material, and admits at most 1,000,000
+property-by-event evaluation visits. It deduplicates at most 65,530
+self-contained discovered-choice bundles by exact opportunity identity, shares
+equal declaration/domain values by content identity, and enforces the candidate
+format's 128 MiB aggregate unique-record bound while discoveries arrive. After
+runner-owned shutdown, it appends the final dense event suffix under the same
+bounds before any semantic result is built. The complete retained log is checked by the offline
+assertion evaluator under the scenario's white-box and final-quiescence policy;
+`Violated` and `NeverReachedFail` become failed campaign properties,
+`Passed`/`Satisfied` become passed properties, and other non-failing terminal
+states remain inconclusive. Any failed property takes the observation stop;
+otherwise the exact requested or terminal stop is retained. Each unique basic
+block or named coverage point becomes the campaign coverage identity carrying
+the bytes of
+`H("crucible.scheduler.event-log.coverage-observation.v1", canonical point)`;
+event position and duplicate hits do not perturb the grow-only identity. The
+driver reconstructs and exact-checks the scenario artifact, encodes the final
+schedule as the child artifact, and binds child, path, attempt, property,
+coverage, empty initial measurement set, and discoveries into one
+`ObservationCandidate`. Scenario-declared measurement definitions, retained raw
+event-log evidence, and objective aggregation remain the separate T-CAM-3 work;
+this driver does not synthesize undeclared metrics. A
 concrete exact-resume adapter obtains one prepared generation directory from the
 guard, streams and authenticates the durable exact root into its pinned VMState
 inode, constructs the root-bound real-node launcher, and exposes only the
-guarded live facade to the session. Fresh exact-cache, baked-genesis, and thin
-image provisioning, the concrete modeled driver, and production worker/factory
-selection remain mandatory before the guarded path may launch a campaign QEMU. A
+guarded live facade to the session. Fresh exact-cache, baked-genesis, thin image
+provisioning, and production worker/factory selection remain mandatory before
+the guarded path may launch a campaign QEMU. A
 process-only Linux facade
 now validates a daemon-incarnation
 namespace, non-root child IDs, task and finish bounds before acquiring the

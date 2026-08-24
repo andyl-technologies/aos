@@ -94,6 +94,7 @@ pub mod executor_worker;
 pub mod paused_checkpoint_promotion;
 pub mod planner_loopback;
 pub mod planner_process;
+pub mod qemu_campaign_driver;
 pub mod qemu_campaign_lifecycle;
 #[cfg(target_os = "linux")]
 pub mod qemu_exact_resume_executor;
@@ -287,6 +288,10 @@ pub use planner_process::{
     CANONICAL_PLANNER_WORKER_ARGUMENT, CanonicalPlannerProcessCancellation,
     CanonicalPlannerProcessConfig, CanonicalPlannerProcessError, CanonicalPlannerProcessSupervisor,
     serve_canonical_planner_process_once,
+};
+pub use qemu_campaign_driver::{
+    MAX_QEMU_CAMPAIGN_ASSERTION_EVENT_VISITS, MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
+    MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, QemuFreshModeledDriver, QemuFreshModeledDriverError,
 };
 pub use qemu_campaign_lifecycle::{
     QemuAttemptProductionVmLifecycleError, QemuAttemptProductionVmLifecycleFactory,
