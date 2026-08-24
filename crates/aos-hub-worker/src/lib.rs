@@ -891,7 +891,7 @@ mod entry {
             .id_from_name(&instance_name)
             .and_then(|id| id.get_stub_with_location_hint("wnam"))?;
         let started_at = worker::Date::now().as_millis();
-        let mut resp = stub.fetch_with_request(req).await?;
+        let resp = stub.fetch_with_request(req).await?;
         let duration_ms = worker::Date::now().as_millis().saturating_sub(started_at);
         let prior_timing = resp
             .headers()
@@ -900,8 +900,14 @@ mod entry {
         let timing = prior_timing
             .map(|prior| format!("{prior}, {timing_name};dur={duration_ms}"))
             .unwrap_or_else(|| format!("{timing_name};dur={duration_ms}"));
-        resp.headers_mut().set("server-timing", &timing)?;
-        resp.headers_mut().set("x-aos-hub-shard", shard_kind)?;
+        // Responses returned by Durable Object fetches carry the Fetch API's
+        // immutable header guard. Replace that view with an owned header copy
+        // before adding edge timing and routing evidence, while preserving the
+        // original response body, status, and encoding configuration.
+        let headers = resp.headers().clone();
+        headers.set("server-timing", &timing)?;
+        headers.set("x-aos-hub-shard", shard_kind)?;
+        let resp = resp.with_headers(headers);
         worker::console_log!(
             "hub_edge_request status={} route={shard_kind} dispatch_ms={duration_ms}",
             resp.status_code()
@@ -1909,7 +1915,7 @@ mod entry {
         let runtime = shard_request_runtime(env, runtime).await?;
         let started_at = worker::Date::now().as_millis();
         let sql_before = runtime.remote_sql_metrics.snapshot();
-        let mut response = crate::bridge::dispatch(
+        let response = crate::bridge::dispatch(
             runtime.router,
             runtime.service.as_ref(),
             runtime.console_deps,
@@ -1930,7 +1936,11 @@ mod entry {
         let timing = existing_timing
             .map(|existing| format!("{existing}, {shard_timing}"))
             .unwrap_or(shard_timing);
-        response.headers_mut().set("server-timing", &timing)?;
+        // A nested dispatcher may return a Fetch-backed response with immutable
+        // headers. Always install a mutable copy before appending diagnostics.
+        let headers = response.headers().clone();
+        headers.set("server-timing", &timing)?;
+        let response = response.with_headers(headers);
         worker::console_log!(
             "hub_shard_request shard={shard} method={method} path={path} status={} duration_ms={duration_ms} sql_calls={} sql_ms={} sql_rows_read={}",
             response.status_code(),
