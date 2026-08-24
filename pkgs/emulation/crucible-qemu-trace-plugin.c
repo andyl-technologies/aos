@@ -1732,7 +1732,11 @@ on_det_ipi_delivery(
   (void)userdata;
 
   det_ipi_events++;
-  if (trace_file == NULL || !extended_fingerprint) {
+  /* The explicitly enabled IPI probe is also a negative-control observation
+   * surface under ordinary TCG, where extended sim fingerprint capture is not
+   * available. Keep ordinary non-extended traces unchanged, but never hide a
+   * deterministic delivery from an opted-in probe. */
+  if (trace_file == NULL || (!extended_fingerprint && !det_ipi_probe)) {
     return;
   }
 
