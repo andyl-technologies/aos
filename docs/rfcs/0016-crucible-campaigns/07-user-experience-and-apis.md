@@ -121,7 +121,8 @@ campaign explicitly admits defaults; otherwise validation fails.
 ## 07.3 CLI lifecycle
 
 ```text
-crucible campaign create NAME --lineage LINEAGE.bin --policy POLICY.bin
+crucible campaign create NAME --lineage LINEAGE.bin --policy POLICY.bin \
+  [--start-command COMMAND]
 crucible campaign validate NAME|POLICY
 crucible campaign start NAME [--workers N] [--memory SIZE]
 crucible campaign pause NAME --expected SNAPSHOT --command COMMAND \
@@ -159,9 +160,16 @@ repository state. It streams one body at a time and reports the exact derived
 configuration and generator identities in every supported output format.
 The command intentionally takes neither `--socket` nor `--principal`.
 `create` then creates the first snapshot and named ref or exactly replays the
-authenticated genesis basis. `derive` similarly names one exact authenticated
-source snapshot and may activate an already imported compatible canonical
-policy. A runtime-capable local daemon also receives
+authenticated genesis basis. With `--start-command`, the client immediately
+submits a separate `Resume` command whose precondition is the exact genesis
+snapshot returned by that checked creation response. The two mutations are not
+atomic: if creation succeeds and start fails, repeating the same command safely
+replays creation and retries the idempotent start command. Version 2 of the CLI
+campaign-acceptance report retains both checked results by nesting the start
+command, prior snapshot, resulting snapshot, and replay bit under the creation
+result. `derive` similarly names one exact authenticated source snapshot and
+may activate an already imported compatible canonical policy. A runtime-capable
+local daemon also receives
 `--campaign-component-authority FILE`, the strict owner-only version-one
 planner/debugger authority bundle specified in §04a. The current control-only
 service may omit it. Supplying both `--campaign-runtime NAME` and

@@ -56,7 +56,7 @@ use serde::Serialize;
 const CAMPAIGN_HEAD_REPORT_SCHEMA: &str = "crucible.cli.campaign-head.v1";
 const CAMPAIGN_MUTATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-mutation.v1";
 const CAMPAIGN_PAGE_REPORT_SCHEMA: &str = "crucible.cli.campaign-page.v1";
-const CAMPAIGN_ACCEPTANCE_REPORT_SCHEMA: &str = "crucible.cli.campaign-acceptance.v1";
+const CAMPAIGN_ACCEPTANCE_REPORT_SCHEMA: &str = "crucible.cli.campaign-acceptance.v2";
 const MAX_CAMPAIGN_SELECTOR_SCAN_ITEMS: u32 = 4_096;
 const MAX_CAMPAIGN_SELECTOR_PREDICATES: usize = 16;
 
@@ -132,8 +132,17 @@ enum CampaignPageEntry {
 
 enum PreparedCampaignCommand {
     Create(CreateCampaignRequest),
+    CreateAndStart(CreateCampaignRequest, CampaignCommandId),
     Derive(DeriveCampaignRequest),
     Branch(SubmitCampaignBranchRequest),
+}
+
+#[derive(Serialize)]
+struct CampaignCreateStartReport {
+    command: String,
+    prior_snapshot: String,
+    new_snapshot: String,
+    replayed: bool,
 }
 
 #[derive(Serialize)]
@@ -146,6 +155,8 @@ enum CampaignAcceptanceReport {
         lineage: String,
         active_policy: String,
         replayed: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        start: Option<CampaignCreateStartReport>,
     },
     Derive {
         schema: &'static str,
@@ -351,7 +362,18 @@ fn prepare_campaign_command(
                 .map_err(|error| {
                     usage_error(format!("invalid campaign creation basis: {error}"))
                 })?;
-            Ok(Some(PreparedCampaignCommand::Create(request)))
+            let start_command = create
+                .start_command
+                .as_deref()
+                .map(CampaignCommandId::parse)
+                .transpose()
+                .map_err(|error| {
+                    usage_error(format!("invalid campaign start command ID: {error}"))
+                })?;
+            Ok(Some(match start_command {
+                Some(command) => PreparedCampaignCommand::CreateAndStart(request, command),
+                None => PreparedCampaignCommand::Create(request),
+            }))
         }
         CampaignCommand::Derive(derive) => {
             let source = campaign_name(&derive.source)?;
@@ -1408,18 +1430,9 @@ where
     S::Error: CampaignServiceFailureSource,
 {
     match prepared {
-        PreparedCampaignCommand::Create(request) => {
-            let response = client
-                .create_campaign(&request)
-                .map_err(|error| backend_error(format!("campaign creation failed: {error}")))?;
-            Ok(CampaignAcceptanceReport::Create {
-                schema: CAMPAIGN_ACCEPTANCE_REPORT_SCHEMA,
-                campaign: request.campaign().as_str().to_owned(),
-                snapshot: response.snapshot().to_string(),
-                lineage: response.lineage().to_string(),
-                active_policy: response.active_policy().to_string(),
-                replayed: response.replayed(),
-            })
+        PreparedCampaignCommand::Create(request) => apply_campaign_create(client, request, None),
+        PreparedCampaignCommand::CreateAndStart(request, command) => {
+            apply_campaign_create(client, request, Some(command))
         }
         PreparedCampaignCommand::Derive(request) => {
             let response = client
@@ -1449,6 +1462,58 @@ where
             })
         }
     }
+}
+
+fn apply_campaign_create<S>(
+    client: &CampaignClient<S>,
+    request: CreateCampaignRequest,
+    start_command: Option<CampaignCommandId>,
+) -> Result<CampaignAcceptanceReport, CliError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
+    let response = client
+        .create_campaign(&request)
+        .map_err(|error| backend_error(format!("campaign creation failed: {error}")))?;
+    let start = if let Some(command) = start_command {
+        let control = ControlRequest {
+            command,
+            expected_snapshot: response.snapshot(),
+            action: CampaignControlAction::Resume,
+        };
+        let start_request = ApplyCampaignCommandRequest::new(
+            request.principal().clone(),
+            request.campaign().clone(),
+            control,
+        )
+        .map_err(|error| usage_error(format!("invalid campaign start request: {error}")))?;
+        let started = client
+            .apply_campaign_command(&start_request)
+            .map_err(|error| {
+                backend_error(format!(
+                    "campaign was created but immediate start failed: {error}"
+                ))
+            })?;
+        Some(CampaignCreateStartReport {
+            command: command.to_string(),
+            prior_snapshot: started.prior_snapshot().to_string(),
+            new_snapshot: started.new_snapshot().to_string(),
+            replayed: started.replayed(),
+        })
+    } else {
+        None
+    };
+
+    Ok(CampaignAcceptanceReport::Create {
+        schema: CAMPAIGN_ACCEPTANCE_REPORT_SCHEMA,
+        campaign: request.campaign().as_str().to_owned(),
+        snapshot: response.snapshot().to_string(),
+        lineage: response.lineage().to_string(),
+        active_policy: response.active_policy().to_string(),
+        replayed: response.replayed(),
+        start,
+    })
 }
 
 fn apply_campaign_mutation<S>(
@@ -1788,15 +1853,30 @@ fn campaign_acceptance_fields(report: &CampaignAcceptanceReport) -> Vec<(&'stati
             lineage,
             active_policy,
             replayed,
+            start,
             ..
-        } => vec![
-            ("operation", "create"),
-            ("campaign", campaign),
-            ("snapshot", snapshot),
-            ("lineage", lineage),
-            ("active_policy", active_policy),
-            ("replayed", if *replayed { "true" } else { "false" }),
-        ],
+        } => {
+            let mut fields = vec![
+                ("operation", "create"),
+                ("campaign", campaign.as_str()),
+                ("snapshot", snapshot.as_str()),
+                ("lineage", lineage.as_str()),
+                ("active_policy", active_policy.as_str()),
+                ("replayed", if *replayed { "true" } else { "false" }),
+            ];
+            if let Some(start) = start {
+                fields.extend([
+                    ("start_command", start.command.as_str()),
+                    ("start_prior_snapshot", start.prior_snapshot.as_str()),
+                    ("start_snapshot", start.new_snapshot.as_str()),
+                    (
+                        "start_replayed",
+                        if start.replayed { "true" } else { "false" },
+                    ),
+                ]);
+            }
+            fields
+        }
         CampaignAcceptanceReport::Derive {
             source_campaign,
             source_snapshot,
@@ -2126,12 +2206,17 @@ mod tests {
             assert!(matches!(
                 request.command().action,
                 CampaignControlAction::Pause(ActiveAttemptPolicy::ExactCheckpoint)
+                    | CampaignControlAction::Resume
             ));
+            let next = match request.command().action {
+                CampaignControlAction::Resume => snapshot("started"),
+                _ => snapshot("mutated"),
+            };
             Ok(ApplyCampaignCommandResponse::new(
                 request,
                 CampaignCommandResult {
                     prior_snapshot: request.command().expected_snapshot,
-                    new_snapshot: snapshot("mutated"),
+                    new_snapshot: next,
                     replayed: false,
                 },
             )
@@ -2620,6 +2705,12 @@ mod tests {
                 lineage: lineage("lineage").to_string(),
                 active_policy: policy("policy").to_string(),
                 replayed: false,
+                start: Some(CampaignCreateStartReport {
+                    command: hash("start").to_hex(),
+                    prior_snapshot: snapshot("created").to_string(),
+                    new_snapshot: snapshot("started").to_string(),
+                    replayed: false,
+                }),
             },
             CampaignAcceptanceReport::Derive {
                 schema: CAMPAIGN_ACCEPTANCE_REPORT_SCHEMA,
@@ -2650,14 +2741,33 @@ mod tests {
             assert_eq!(decoded["schema"], CAMPAIGN_ACCEPTANCE_REPORT_SCHEMA);
             assert!(decoded.get("operation").is_some());
             assert!(decoded.get("replayed").is_some());
+            if matches!(&report, CampaignAcceptanceReport::Create { .. }) {
+                assert_eq!(decoded["start"]["command"], hash("start").to_hex());
+                assert_eq!(
+                    decoded["start"]["prior_snapshot"],
+                    snapshot("created").to_string()
+                );
+                assert_eq!(
+                    decoded["start"]["new_snapshot"],
+                    snapshot("started").to_string()
+                );
+            }
 
             let table =
                 render_campaign_acceptance(&report, OutputFormat::Table).expect("table report");
             assert!(table.contains("operation"));
             assert!(table.contains("replayed"));
+            if matches!(&report, CampaignAcceptanceReport::Create { .. }) {
+                assert!(table.contains("start_command"));
+                assert!(table.contains("start_snapshot"));
+            }
             let markdown = render_campaign_acceptance(&report, OutputFormat::Markdown)
                 .expect("Markdown report");
             assert!(markdown.contains("| replayed |"));
+            if matches!(&report, CampaignAcceptanceReport::Create { .. }) {
+                assert!(markdown.contains("| start_prior_snapshot |"));
+                assert!(markdown.contains("| start_replayed |"));
+            }
         }
     }
 
@@ -3097,6 +3207,33 @@ mod tests {
                 if value == snapshot("created").to_string()
         ));
 
+        let started = accept_start_over_loopback(
+            CreateCampaignRequest::new(
+                principal.clone(),
+                CampaignName::new("started").expect("started campaign name"),
+                campaign_records().0,
+                policy_record.clone(),
+            )
+            .expect("create-and-start request"),
+            CampaignCommandId::from_hash(hash("start-command")),
+        );
+        assert!(matches!(
+            started,
+            CampaignAcceptanceReport::Create {
+                snapshot: value,
+                replayed: false,
+                start: Some(CampaignCreateStartReport {
+                    prior_snapshot,
+                    new_snapshot,
+                    replayed: false,
+                    ..
+                }),
+                ..
+            } if value == snapshot("created").to_string()
+                && prior_snapshot == snapshot("created").to_string()
+                && new_snapshot == snapshot("started").to_string()
+        ));
+
         let derive = accept_over_loopback(PreparedCampaignCommand::Derive(
             DeriveCampaignRequest::new(
                 principal.clone(),
@@ -3322,14 +3459,32 @@ mod tests {
         let create = prepare_campaign_command(
             &CampaignCommand::Create(CampaignCreateArgs {
                 name: "created".to_owned(),
-                lineage: lineage_path,
+                lineage: lineage_path.clone(),
                 policy: policy_path.clone(),
+                start_command: None,
             }),
             &principal,
         )
         .expect("prepare creation")
         .expect("prepared creation request");
         assert!(matches!(create, PreparedCampaignCommand::Create(_)));
+
+        let start_command = CampaignCommandId::from_hash(hash("start-created"));
+        let create_and_start = prepare_campaign_command(
+            &CampaignCommand::Create(CampaignCreateArgs {
+                name: "started".to_owned(),
+                lineage: lineage_path,
+                policy: policy_path.clone(),
+                start_command: Some(start_command.to_string()),
+            }),
+            &principal,
+        )
+        .expect("prepare creation with immediate start")
+        .expect("prepared create-and-start request");
+        assert!(matches!(
+            create_and_start,
+            PreparedCampaignCommand::CreateAndStart(_, command) if command == start_command
+        ));
 
         let derive = prepare_campaign_command(
             &CampaignCommand::Derive(CampaignDeriveArgs {
@@ -3352,6 +3507,7 @@ mod tests {
                     name: "invalid".to_owned(),
                     lineage: corrupt_path,
                     policy: temporary.path().join("absent-policy.bin"),
+                    start_command: None,
                 }),
                 &principal,
             )
@@ -3990,6 +4146,7 @@ mod tests {
             })
         ));
 
+        let create_start = hash("create-start").to_hex();
         let create = Cli::try_parse_from([
             "crucible",
             "campaign",
@@ -4003,14 +4160,20 @@ mod tests {
             "lineage.bin",
             "--policy",
             "policy.bin",
+            "--start-command",
+            &create_start,
         ])
         .expect("campaign create arguments");
         assert!(matches!(
             create.command,
             Commands::Campaign(CampaignArgs {
-                command: CampaignCommand::Create(CampaignCreateArgs { ref name, .. }),
+                command: CampaignCommand::Create(CampaignCreateArgs {
+                    ref name,
+                    ref start_command,
+                    ..
+                }),
                 ..
-            }) if name == "created"
+            }) if name == "created" && start_command.as_deref() == Some(create_start.as_str())
         ));
 
         let derive = Cli::try_parse_from([
@@ -4450,6 +4613,28 @@ mod tests {
         let client = CampaignClient::new(service);
         let report =
             apply_campaign_acceptance(&client, prepared).expect("checked campaign acceptance");
+        server.join().expect("campaign server thread");
+        report
+    }
+
+    fn accept_start_over_loopback(
+        request: CreateCampaignRequest,
+        command: CampaignCommandId,
+    ) -> CampaignAcceptanceReport {
+        let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
+        let server = thread::spawn(move || {
+            for _operation in 0..2 {
+                serve_loopback_campaign_once(&mut server_stream, &FixedHeadService)
+                    .expect("serve create-and-start operation");
+            }
+        });
+        let service = LoopbackCampaignService::new(client_stream).expect("loopback client");
+        let client = CampaignClient::new(service);
+        let report = apply_campaign_acceptance(
+            &client,
+            PreparedCampaignCommand::CreateAndStart(request, command),
+        )
+        .expect("checked create-and-start acceptance");
         server.join().expect("campaign server thread");
         report
     }
