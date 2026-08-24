@@ -16,7 +16,8 @@
   apiLifecycle = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle.rs;
   apiRuntime =
     builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/runtime.rs
-    + builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
+    + builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs
+    + builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/restart_ownership.rs;
   qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch/plugin_config.rs;
   qemuNodeLaunch = builtins.readFile ../../crates/crucible-qemu/src/supervision/node_step_gate/support.rs;
   pluginRuntime = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_whitebox/app_random.rs;
@@ -235,8 +236,8 @@
     ]
     ++ failuresFor "crates/crucible-api/src/vm_lifecycle/runtime.rs" apiRuntime [
       {
-        label = "production relaunch reuses authenticated launch configuration";
-        needle = ".get(&decision.node)\n                .cloned()";
+        label = "production relaunch preowns authenticated launch configuration";
+        needle = "let launch = self.launch_configs.get(node)";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/launch/plugin_config.rs" qemuLaunch [

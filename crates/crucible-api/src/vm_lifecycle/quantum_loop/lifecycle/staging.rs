@@ -17,6 +17,8 @@ pub(in crate::vm_lifecycle::quantum_loop) struct PreparedTerminalReplacement {
     pub(in crate::vm_lifecycle::quantum_loop) process_owner: Option<PreparedLifecycleProcessOwner>,
     pub(in crate::vm_lifecycle::quantum_loop) backend_node: Option<NodeId>,
     pub(in crate::vm_lifecycle::quantum_loop) observed_exit_node: Option<NodeId>,
+    pub(in crate::vm_lifecycle::quantum_loop) fault_coordinators:
+        PreparedLifecycleFaultCoordinators,
 }
 
 pub(in crate::vm_lifecycle::quantum_loop) struct PreparedLifecycleProcessOwner {
@@ -24,6 +26,8 @@ pub(in crate::vm_lifecycle::quantum_loop) struct PreparedLifecycleProcessOwner {
     pub(in crate::vm_lifecycle::quantum_loop) decision_node: Option<NodeId>,
     pub(in crate::vm_lifecycle::quantum_loop) backend_node: Option<NodeId>,
     pub(in crate::vm_lifecycle::quantum_loop) observed_exit_node: Option<NodeId>,
+    pub(in crate::vm_lifecycle::quantum_loop) terminal_ownership:
+        Option<PreparedLifecycleTerminalOwnership>,
     pub(in crate::vm_lifecycle::quantum_loop) manifest_node: String,
     pub(in crate::vm_lifecycle::quantum_loop) manifest_identity: QemuProcessIdentity,
     pub(in crate::vm_lifecycle::quantum_loop) journal_identity: QemuProcessIdentity,
