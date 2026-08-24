@@ -1265,6 +1265,26 @@ impl SchedulerEventLogEntry {
         self.content_hash
     }
 
+    /// Returns the byte length of this entry's canonical identity material.
+    ///
+    /// This length provides a deterministic, conservative work unit for
+    /// consumers that retain scheduler entries across multiple quanta. It
+    /// includes variable-sized payload material but excludes container
+    /// allocation overhead.
+    #[must_use]
+    pub fn canonical_material_len(&self) -> usize {
+        scheduler_event_log_entry_material(
+            self.sequence,
+            &self.at,
+            &self.source,
+            self.level,
+            self.class,
+            &self.event_payload,
+            &self.payload,
+        )
+        .len()
+    }
+
     /// Returns whether this entry's content hash matches its canonical material.
     #[must_use]
     pub fn has_valid_content_hash(&self) -> bool {
@@ -1859,6 +1879,21 @@ pub enum EventLogCoverageObservation {
     },
 }
 
+impl EventLogCoverageObservation {
+    /// Returns the deterministic identity of this semantic coverage point.
+    ///
+    /// The identity excludes event position and source metadata so repeated
+    /// observations of one basic block or named marker collapse to one
+    /// grow-only coverage identity.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        ContentHash::from_canonical_material(
+            "crucible.scheduler.event-log.coverage-observation.v1",
+            &event_log_coverage_observation_material(self),
+        )
+    }
+}
+
 /// One event-log entry retained by the coverage projection.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EventLogCoverageProjectionEntry {
@@ -1921,7 +1956,7 @@ pub fn event_log_coverage_projection(
         .collect::<Vec<_>>();
     let unique_material = entries
         .iter()
-        .map(event_log_coverage_observation_material)
+        .map(|entry| event_log_coverage_observation_material(&entry.observation))
         .collect::<BTreeSet<_>>();
     let content_hash = if unique_material.is_empty() {
         ContentHash::default()

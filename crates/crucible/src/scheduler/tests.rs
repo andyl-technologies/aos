@@ -754,6 +754,26 @@ fn quantum_outcome_carries_step_decisions() {
 }
 
 #[test]
+fn coverage_observation_identity_excludes_event_position() {
+    let observation = EventLogCoverageObservation::Named {
+        node: NodeId {
+            name: String::from("node-a"),
+        },
+        marker: MarkerId::from_name("covered"),
+    };
+    let repeated = observation.clone();
+    let distinct = EventLogCoverageObservation::Named {
+        node: NodeId {
+            name: String::from("node-a"),
+        },
+        marker: MarkerId::from_name("other"),
+    };
+
+    assert_eq!(observation.content_hash(), repeated.content_hash());
+    assert_ne!(observation.content_hash(), distinct.content_hash());
+}
+
+#[test]
 fn exact_local_deadline_selects_scheduler_horizon_and_ceiling() {
     let horizon = horizon_from_exact_local_event(
         SimInstant { nanos: 100 },
