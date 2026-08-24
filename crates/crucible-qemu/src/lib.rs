@@ -318,6 +318,7 @@ pub use storage_fault_resolver::{
     resolve_storage_array_rebuild_service, resolve_volatile_cache_loss,
     storage_array_rebuild_fault_opportunity, storage_recovery_event_key,
 };
+#[cfg(target_os = "linux")]
 pub use supervision::bounded_scheduler_preemption::BoundedSchedulerPreemptionError;
 #[cfg(target_os = "linux")]
 pub use supervision::{
