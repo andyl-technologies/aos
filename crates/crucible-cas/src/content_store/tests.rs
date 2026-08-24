@@ -1954,6 +1954,41 @@ fn metrics_distinguish_complete_abandoned_and_failed_deferred_reads() {
 }
 
 #[test]
+fn metrics_measure_synchronous_and_deferred_host_latency() {
+    let delay = Duration::from_millis(2);
+    let child = Arc::new(MemoryBlobBackend::new("latency-child", 1_024));
+    let delayed = Arc::new(DelayedMetricsBackend {
+        child: child.clone(),
+        delay,
+    });
+    let (store, state) = MetricsStore::new("latency-metrics", delayed);
+    let bytes = b"latency bytes";
+    let id = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
+    put_bytes(child.as_ref(), id, bytes).expect("seed latency child");
+
+    assert!(store.contains(id).expect("delayed contains"));
+    assert_eq!(
+        store
+            .read(id, None)
+            .expect("delayed handle")
+            .read_all(TEST_READ_LIMIT)
+            .expect("delayed stream"),
+        bytes
+    );
+    let second = b"second latency object";
+    let second_id = ContentId::for_bytes(ObjectKind::Trace, 1, second);
+    put_bytes(&store, second_id, second).expect("delayed put");
+
+    let minimum = u64::try_from(delay.as_nanos()).expect("test duration fits u64");
+    let snapshot = state.snapshot();
+    assert!(snapshot.contains_elapsed_nanoseconds >= minimum);
+    assert!(snapshot.read_elapsed_nanoseconds >= minimum);
+    assert!(snapshot.read_stream_open_elapsed_nanoseconds >= minimum);
+    assert!(snapshot.read_stream_read_elapsed_nanoseconds >= minimum);
+    assert!(snapshot.put_elapsed_nanoseconds >= minimum);
+}
+
+#[test]
 fn closed_store_graph_rejects_cycles_missing_routes_and_unreachable_nodes() {
     let root = node_id("root");
     assert!(matches!(
@@ -2366,6 +2401,72 @@ impl ImmutableBlobBackend for FixedReadBackend {
         Err(StoreError::Unsupported {
             capability: "fixed-read test put",
         })
+    }
+}
+
+struct DelayedMetricsBackend {
+    child: Arc<MemoryBlobBackend>,
+    delay: Duration,
+}
+
+impl ImmutableBlobBackend for DelayedMetricsBackend {
+    fn name(&self) -> &str {
+        "delayed-metrics"
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        self.child.capabilities()
+    }
+
+    fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+        thread::sleep(self.delay);
+        self.child.contains(id)
+    }
+
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        thread::sleep(self.delay);
+        let blob = self.child.read(id, range)?;
+        let source = Arc::new(DelayedBlobSource {
+            source: blob.clone(),
+            delay: self.delay,
+        });
+        Ok(blob.with_observed_source(source))
+    }
+
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        thread::sleep(self.delay);
+        self.child.put_if_absent(id, source)
+    }
+}
+
+struct DelayedBlobSource {
+    source: BlobHandle,
+    delay: Duration,
+}
+
+impl BlobSource for DelayedBlobSource {
+    fn logical_length(&self) -> u64 {
+        self.source.logical_length()
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        thread::sleep(self.delay);
+        Ok(Box::new(DelayedBlobReader {
+            reader: self.source.open()?,
+            delay: self.delay,
+        }))
+    }
+}
+
+struct DelayedBlobReader {
+    reader: Box<dyn Read + Send>,
+    delay: Duration,
+}
+
+impl Read for DelayedBlobReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        thread::sleep(self.delay);
+        self.reader.read(output)
     }
 }
 

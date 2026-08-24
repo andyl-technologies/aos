@@ -345,7 +345,7 @@ PackedStore         map many logical small objects into immutable physical packs
 CompressedStore     encode/decode without changing logical identity
 EncryptedStore      authenticated physical encryption outside plaintext identity
 QuotaStore          enforce bounded physical and logical accounting
-MetricsStore        emit operation/stream/byte/error counters without changing results
+MetricsStore        emit operation/stream/byte/error/latency counters without changing results
 NamespacedStore     isolate deployments and authorization domains
 ```
 
@@ -447,8 +447,10 @@ open/read/length/authentication failures, and bytes actually delivered. Stream
 completion requires observing exact declared length followed by end-of-file;
 dropping a reader before that boundary counts as abandonment rather than
 success. Graph introspection returns those counters by bounded node ID without
-returning child paths or credentials. Host-side latency remains open for an
-observer boundary rather than introducing host time into logical storage code.
+returning child paths or credentials. Saturating elapsed-nanosecond counters use
+the host monotonic clock around child calls and deferred stream operations; they
+are operational telemetry and never enter logical identities, canonical
+records, ordering, or storage results.
 
 Direct constructors for composition layers are private. Callers may use a leaf
 alone or an admitted `StoreGraph`, so arbitrary trait-object nesting cannot

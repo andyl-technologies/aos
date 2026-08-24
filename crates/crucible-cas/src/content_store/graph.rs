@@ -239,12 +239,18 @@ pub struct StoreNodeMetrics {
     pub contains_calls: u64,
     /// `contains` operations that found the requested object.
     pub contains_hits: u64,
+    /// Host monotonic time spent in child `contains` operations.
+    pub contains_elapsed_nanoseconds: u64,
     /// Logical read handles requested.
     pub read_calls: u64,
     /// Declared logical bytes made available by successful read calls.
     pub read_logical_bytes: u64,
+    /// Host monotonic time spent acquiring child read handles.
+    pub read_elapsed_nanoseconds: u64,
     /// Attempts to open streams from returned read handles.
     pub read_stream_opens: u64,
+    /// Host monotonic time spent opening returned read streams.
+    pub read_stream_open_elapsed_nanoseconds: u64,
     /// Streams drained through authenticated end-of-file.
     pub read_stream_completions: u64,
     /// Streams dropped before their authenticated end-of-file.
@@ -253,10 +259,14 @@ pub struct StoreNodeMetrics {
     pub read_stream_failures: u64,
     /// Logical bytes actually delivered through opened read streams.
     pub read_stream_bytes: u64,
+    /// Host monotonic time spent in underlying stream-read calls.
+    pub read_stream_read_elapsed_nanoseconds: u64,
     /// Logical immutable puts attempted.
     pub put_calls: u64,
     /// Declared logical bytes accepted by successful put calls.
     pub put_logical_bytes: u64,
+    /// Host monotonic time spent in child immutable puts.
+    pub put_elapsed_nanoseconds: u64,
     /// Synchronous child operations that returned an error.
     pub failures: u64,
 }
@@ -469,15 +479,22 @@ impl StoreGraph {
                     metrics: StoreNodeMetrics {
                         contains_calls: snapshot.contains_calls,
                         contains_hits: snapshot.contains_hits,
+                        contains_elapsed_nanoseconds: snapshot.contains_elapsed_nanoseconds,
                         read_calls: snapshot.read_calls,
                         read_logical_bytes: snapshot.read_logical_bytes,
+                        read_elapsed_nanoseconds: snapshot.read_elapsed_nanoseconds,
                         read_stream_opens: snapshot.read_stream_opens,
+                        read_stream_open_elapsed_nanoseconds: snapshot
+                            .read_stream_open_elapsed_nanoseconds,
                         read_stream_completions: snapshot.read_stream_completions,
                         read_stream_abandons: snapshot.read_stream_abandons,
                         read_stream_failures: snapshot.read_stream_failures,
                         read_stream_bytes: snapshot.read_stream_bytes,
+                        read_stream_read_elapsed_nanoseconds: snapshot
+                            .read_stream_read_elapsed_nanoseconds,
                         put_calls: snapshot.put_calls,
                         put_logical_bytes: snapshot.put_logical_bytes,
+                        put_elapsed_nanoseconds: snapshot.put_elapsed_nanoseconds,
                         failures: snapshot.failures,
                     },
                 }

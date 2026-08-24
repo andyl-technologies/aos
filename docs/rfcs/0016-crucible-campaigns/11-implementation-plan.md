@@ -1032,10 +1032,11 @@ Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
 The admitted graph checkpoint currently provides bounded acyclic validation,
 exact kind routing, logical verification, ordered tiers and promotion,
 source-authoritative read-through caching, write-through mirroring, and
-path-free saturating synchronous operation/byte/error counters plus deferred
-stream opens, authenticated completions, partial abandonments, failures, and
-delivered bytes over memory, durable directory, and packed leaves. Read-through
-falls through only on exact absence,
+path-free saturating synchronous operation/byte/error/elapsed-nanosecond counters
+plus deferred stream opens, authenticated completions, partial abandonments,
+failures, delivered bytes, and open/read elapsed nanoseconds over memory,
+durable directory, and packed leaves. Read-through falls through only on exact
+absence,
 treats promotion as non-semantic, and never reports cache durability as
 authoritative source durability. Durable write-back now requires durable
 streaming staging/destination children, acknowledges only after staging plus a
@@ -1049,9 +1050,8 @@ durable-child and non-overlapping-path admission, lifecycle exclusion,
 single-pass staging authentication, transfer completion, and stale GC plans.
 Destination-specific durability policy plumbing,
 compression/encryption below plaintext identity, restart-safe aggregate quota,
-namespaced authorization, S3, composed administrative inventory/GC, and
-host-side latency metrics remain open; therefore T-CAM-5.5 is not checked by
-this checkpoint.
+namespaced authorization, S3, and composed administrative inventory/GC remain
+open; therefore T-CAM-5.5 is not checked by this checkpoint.
 
 The packed leaf now provides immutable bounded multi-object pack files, a
 checksummed persistent logical index with monotonic generations, full logical
