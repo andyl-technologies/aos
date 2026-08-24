@@ -377,64 +377,8 @@ pub struct ProductionFaultEvidenceSnapshot {
     pub nodes: Vec<ProductionNodeFaultEvidence>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum ProductionLifecycleJournalPhase {
-    Idle,
-    Intent,
-    Prepared,
-    ExitsReaped,
-    Committed,
-    Quarantined,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-struct ProductionLifecycleJournalNode {
-    node: String,
-    current_process: QemuProcessIdentity,
-    replacement_process: Option<QemuProcessIdentity>,
-    current_generation: u64,
-    next_generation: u64,
-    transition: String,
-    action_sha256: String,
-    evidence_sha256: String,
-    expected_exit_code: Option<i32>,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-struct ProductionLifecycleCompletedExit {
-    transaction: u64,
-    node: String,
-    process: QemuProcessIdentity,
-    generation: u64,
-    transition: String,
-    action_sha256: String,
-    evidence_sha256: String,
-    expected_exit_code: i32,
-    observed_exit_code: i32,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-struct ProductionLifecycleJournal {
-    version: u32,
-    transaction: u64,
-    phase: ProductionLifecycleJournalPhase,
-    nodes: Vec<ProductionLifecycleJournalNode>,
-    completed_exits: Vec<ProductionLifecycleCompletedExit>,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-struct ProductionRunManifest {
-    version: u32,
-    scenario: String,
-    owner: QemuProcessIdentity,
-    processes: BTreeMap<String, QemuProcessIdentity>,
-    staged_processes: BTreeMap<String, QemuProcessIdentity>,
-    clean_shutdown: bool,
-    recovered_after_host_exit: bool,
-}
-
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProductionRunState {
     version: u32,
     runtime_event_records: u64,
@@ -525,6 +469,11 @@ pub struct ProductionVmLifecycleLoop {
 mod config;
 mod helpers;
 mod network_faults;
+mod process_owners;
+use process_owners::{
+    ProductionLifecycleCompletedExit, ProductionLifecycleJournal, ProductionLifecycleJournalNode,
+    ProductionLifecycleJournalPhase, ProductionRunManifest,
+};
 mod quantum_loop;
 mod runtime;
 mod search;
@@ -704,8 +653,8 @@ fn production_run_directory(
         owner: linux_process_identity(std::process::id())
             .map_err(|error| loop_factory_error(format!("identify lifecycle owner: {error}")))?
             .ok_or_else(|| loop_factory_error("lifecycle process has no Linux process identity"))?,
-        processes: BTreeMap::new(),
-        staged_processes: BTreeMap::new(),
+        processes: process_owners::ProductionProcessOwners::new(),
+        staged_processes: process_owners::ProductionProcessOwners::new(),
         clean_shutdown: false,
         recovered_after_host_exit: false,
     };
@@ -713,8 +662,8 @@ fn production_run_directory(
         version: 1,
         transaction: 0,
         phase: ProductionLifecycleJournalPhase::Idle,
-        nodes: Vec::new(),
-        completed_exits: Vec::new(),
+        nodes: Vec::new().into(),
+        completed_exits: Vec::new().into(),
     };
     persist_run_state_atomic(
         &path.join(PRODUCTION_RUN_STATE_FILE),
@@ -893,6 +842,10 @@ fn build_production_vm_lifecycle_loop_with_restore(
         config,
         source.plan().fault_signals().resource_limits(),
     )?;
+    run_manifest
+        .processes
+        .try_reserve_exact(nodes.len())
+        .map_err(|()| loop_factory_error("reserve initial QEMU process ownership"))?;
     let mut backends = ProductionNodeSet::new();
     let mut launch_configs = BTreeMap::new();
     let mut block_bindings = BTreeMap::new();
@@ -1214,7 +1167,8 @@ fn build_production_vm_lifecycle_loop_with_restore(
         }
         run_manifest
             .processes
-            .insert(vm.id.name.clone(), process_identity);
+            .insert_reserved(vm.id.name.clone(), process_identity)
+            .map_err(|()| loop_factory_error("initial QEMU process reservation was exhausted"))?;
         if let Err(message) = persist_run_state_atomic(
             &run_directory.path().join(PRODUCTION_RUN_STATE_FILE),
             &run_manifest,

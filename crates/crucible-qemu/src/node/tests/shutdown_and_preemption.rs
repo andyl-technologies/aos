@@ -20,6 +20,19 @@ fn orphan_quarantine_ignores_a_reused_process_identity() -> Result<(), Box<dyn E
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn process_identity_components_reuse_preowned_executable_storage() -> Result<(), Box<dyn Error>> {
+    let current = linux_process_identity(std::process::id())?
+        .ok_or("test process should have a Linux process identity")?;
+    let (process_id, start_time_ticks) =
+        super::super::linux_process_identity_components(std::process::id(), &current.executable)?;
+
+    assert_eq!(process_id, current.process_id);
+    assert_eq!(start_time_ticks, current.start_time_ticks);
+    Ok(())
+}
+
 #[test]
 fn qemu_node_publishes_scheduler_preemption_before_owned_run() -> Result<(), Box<dyn Error>> {
     let log = shared_log();

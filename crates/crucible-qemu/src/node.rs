@@ -11,7 +11,7 @@ use std::process::Child;
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
-use std::path::PathBuf;
+use std::path::Path;
 
 #[cfg(target_os = "linux")]
 use crucible::model::{FaultCoordinate, ResolvedBindingAction};
@@ -49,73 +49,13 @@ mod checkpoint_probe;
 mod error;
 mod exact_snapshot;
 mod fault_events;
+#[cfg(target_os = "linux")]
+mod process_identity;
 pub use error::{QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeError};
-
-/// Stable Linux identity for one launched QEMU process generation.
 #[cfg(target_os = "linux")]
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct QemuProcessIdentity {
-    /// Operating-system process identifier.
-    pub process_id: u32,
-    /// Linux `/proc` start-time ticks, which prevent PID-reuse confusion.
-    pub start_time_ticks: u64,
-    /// Canonical executable reached through `/proc/<pid>/exe`.
-    pub executable: PathBuf,
-}
-
-/// Returns the current Linux identity for `process_id`, when it still exists.
-///
-/// # Errors
-///
-/// Returns [`QemuNodeError`] when `/proc` exists for the PID but its identity
-/// cannot be read or decoded.
+use process_identity::linux_process_identity_components;
 #[cfg(target_os = "linux")]
-pub fn linux_process_identity(
-    process_id: u32,
-) -> Result<Option<QemuProcessIdentity>, QemuNodeError> {
-    let proc_directory = PathBuf::from("/proc").join(process_id.to_string());
-    let stat = match std::fs::read_to_string(proc_directory.join("stat")) {
-        Ok(stat) => stat,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(QemuNodeError::fault_command(format!(
-                "read process identity for PID {process_id}: {error}"
-            )));
-        }
-    };
-    let suffix = stat
-        .rsplit_once(") ")
-        .map(|(_, suffix)| suffix)
-        .ok_or_else(|| {
-            QemuNodeError::fault_command(format!("malformed /proc/{process_id}/stat"))
-        })?;
-    let start_time_ticks = suffix
-        .split_ascii_whitespace()
-        .nth(19)
-        .ok_or_else(|| {
-            QemuNodeError::fault_command(format!("missing start time in /proc/{process_id}/stat"))
-        })?
-        .parse::<u64>()
-        .map_err(|error| {
-            QemuNodeError::fault_command(format!(
-                "invalid start time in /proc/{process_id}/stat: {error}"
-            ))
-        })?;
-    let executable = match std::fs::read_link(proc_directory.join("exe")) {
-        Ok(executable) => executable,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(QemuNodeError::fault_command(format!(
-                "read executable identity for PID {process_id}: {error}"
-            )));
-        }
-    };
-    Ok(Some(QemuProcessIdentity {
-        process_id,
-        start_time_ticks,
-        executable,
-    }))
-}
+pub use process_identity::{QemuProcessIdentity, linux_process_identity};
 
 /// Force-kills a surviving QEMU only when its complete recorded identity matches.
 ///
@@ -1503,6 +1443,23 @@ impl QemuNode {
                 self.process_id()
             ))
         })
+    }
+
+    /// Returns numeric identity components after authenticating a preowned executable path.
+    ///
+    /// The successful path uses fixed stack storage, allowing lifecycle code to
+    /// populate preallocated durable ownership after launch without allocating.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when `/proc` cannot be read, its bounded stat
+    /// representation is malformed, or the executable inode does not match.
+    #[cfg(target_os = "linux")]
+    pub fn process_identity_components(
+        &self,
+        expected_executable: &Path,
+    ) -> Result<(u32, u64), QemuNodeError> {
+        linux_process_identity_components(self.process_id(), expected_executable)
     }
 
     /// Waits for the exact child to complete a terminal lifecycle fault.
