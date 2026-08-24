@@ -1999,14 +1999,20 @@ impl ProductionVmLifecycleLoop {
                 pending_outputs,
             )?
         };
-        let (decisions, boot_requests) = self
+        let lifecycle_work = self
             .fault_runtime
             .lock()
             .map_err(|_| SchedulerError::BoundaryViolation {
                 message: String::from("production fault runtime lock is poisoned"),
             })?
-            .take_node_lifecycle_work();
-        if let Err(error) = self.apply_signal_fault_lifecycle_work(&decisions, &boot_requests) {
+            .take_node_lifecycle_work()
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("take production lifecycle work: {error}"),
+            })?;
+        if let Err(error) = self.apply_signal_fault_lifecycle_work(
+            lifecycle_work.decisions(),
+            lifecycle_work.boot_requests(),
+        ) {
             self.fault_runtime
                 .lock()
                 .map_err(|_| SchedulerError::BoundaryViolation {
@@ -2015,6 +2021,15 @@ impl ProductionVmLifecycleLoop {
                 .poison();
             return Err(error);
         }
+        self.fault_runtime
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("production fault runtime lock is poisoned"),
+            })?
+            .acknowledge_node_lifecycle_work(lifecycle_work)
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("acknowledge production lifecycle work: {error}"),
+            })?;
         Ok(append)
     }
 

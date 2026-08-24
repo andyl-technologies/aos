@@ -10,6 +10,9 @@ impl ProductionFaultRuntime {
     /// Returns [`ProductionFaultRuntimeError`] when canonical ledger storage
     /// cannot be reserved for the clone.
     pub fn try_clone(&self) -> Result<Self, ProductionFaultRuntimeError> {
+        if self.lifecycle_work_in_flight.is_some() {
+            return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
+        }
         Ok(Self {
             plan_id: self.plan_id,
             resource_limits: self.resource_limits,
@@ -90,6 +93,8 @@ impl ProductionFaultRuntime {
             )?,
             pending_node_lifecycle: self.pending_node_lifecycle.clone(),
             pending_node_boot: self.pending_node_boot.clone(),
+            lifecycle_work_sequence: self.lifecycle_work_sequence,
+            lifecycle_work_in_flight: None,
             pending_search_choices: self.pending_search_choices.clone(),
         })
     }
@@ -166,6 +171,8 @@ impl ProductionFaultRuntime {
             pending_qemu_events: PendingQemuEventMap::new(),
             pending_node_lifecycle: Vec::new(),
             pending_node_boot: Vec::new(),
+            lifecycle_work_sequence: 0,
+            lifecycle_work_in_flight: None,
             pending_search_choices: Vec::new(),
         })
     }
@@ -328,6 +335,8 @@ impl ProductionFaultRuntime {
             pending_qemu_events,
             pending_node_lifecycle: Vec::new(),
             pending_node_boot: Vec::new(),
+            lifecycle_work_sequence: 0,
+            lifecycle_work_in_flight: None,
             pending_search_choices: Vec::new(),
         })
     }
