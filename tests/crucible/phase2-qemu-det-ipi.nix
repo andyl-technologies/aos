@@ -83,6 +83,10 @@
         label = "delivery icount field";
         needle = ''"delivery_icount\":%" PRIu64'';
       }
+      {
+        label = "commanded probe targets the authenticated SIPI sender";
+        needle = "const unsigned int target_vcpu = src_vcpu;";
+      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
