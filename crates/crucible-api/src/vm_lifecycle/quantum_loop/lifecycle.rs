@@ -3,6 +3,7 @@
 use super::*;
 
 mod persistence;
+mod process_ownership;
 pub(in crate::vm_lifecycle) use persistence::LifecycleJournalPersistence;
 pub(super) use persistence::map_journal_limit;
 pub(in crate::vm_lifecycle) use persistence::{

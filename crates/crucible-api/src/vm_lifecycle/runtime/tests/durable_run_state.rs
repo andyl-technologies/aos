@@ -312,7 +312,7 @@ fn durable_run_state_accepts_both_quarantined_manifest_commit_windows() {
     let journal = recovery_journal(
         ProductionLifecycleJournalPhase::Quarantined,
         current.clone(),
-        None,
+        Some(replacement.clone()),
     );
 
     let unpublished = recovery_manifest(current, Some(replacement.clone()));
@@ -330,6 +330,55 @@ fn durable_run_state_accepts_both_quarantined_manifest_commit_windows() {
         FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("post-rename quarantine state should recover: {error}"));
+}
+
+#[test]
+fn durable_run_state_accepts_manifest_first_intent_and_exits_reaped_windows() {
+    let current = recovery_process(7, "/aos/qemu-current");
+    let replacement = recovery_process(8, "/aos/qemu-replacement");
+
+    let intent = recovery_journal(
+        ProductionLifecycleJournalPhase::Intent,
+        current.clone(),
+        None,
+    );
+    let staged_manifest = recovery_manifest(current.clone(), Some(replacement.clone()));
+    quantum_loop::validate_recovered_lifecycle_journal(
+        &intent,
+        &staged_manifest,
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("manifest-first Intent state should recover: {error}"));
+
+    let exits_reaped = recovery_journal(
+        ProductionLifecycleJournalPhase::ExitsReaped,
+        current,
+        Some(replacement.clone()),
+    );
+    let committed_manifest = recovery_manifest(replacement, None);
+    quantum_loop::validate_recovered_lifecycle_journal(
+        &exits_reaped,
+        &committed_manifest,
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("manifest-first ExitsReaped state should recover: {error}"));
+}
+
+#[test]
+fn durable_run_state_rejects_unrelated_quarantined_postcommit_owner() {
+    let current = recovery_process(7, "/aos/qemu-current");
+    let unrelated = recovery_process(99, "/aos/unrelated-qemu");
+    let journal = recovery_journal(ProductionLifecycleJournalPhase::Quarantined, current, None);
+    let manifest = recovery_manifest(unrelated, None);
+
+    let error = quantum_loop::validate_recovered_lifecycle_journal(
+        &journal,
+        &manifest,
+        FaultResourceLimits::default(),
+    )
+    .err()
+    .unwrap_or_else(|| panic!("unrelated quarantined process owner should fail closed"));
+    assert!(error.contains("not bound to manifest process ownership"));
 }
 
 #[test]

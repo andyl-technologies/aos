@@ -1122,27 +1122,7 @@ impl ProductionVmLifecycleLoop {
                     ),
                 });
             }
-            if item.service_state != ProductionNodeServiceState::PermanentlyFailed
-                && (self
-                    .run_manifest
-                    .processes
-                    .get(&item.decision.node.name)
-                    .is_none()
-                    || self
-                        .lifecycle_journal
-                        .nodes
-                        .iter()
-                        .find(|journal_node| journal_node.node == item.decision.node.name)
-                        .and_then(|journal_node| journal_node.replacement_process.as_ref())
-                        .is_none())
-            {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "terminal replacement for `{}` lost its staged process identity",
-                        item.decision.node.name
-                    ),
-                });
-            }
+            self.validate_terminal_process_ownership(&item.decision.node, item.service_state)?;
         }
         let mut replacement_nodes = Vec::new();
         replacement_nodes
@@ -1211,37 +1191,7 @@ impl ProductionVmLifecycleLoop {
 
         for item in prepared.drain(..) {
             let node = item.decision.node;
-            match item.service_state {
-                ProductionNodeServiceState::PermanentlyFailed => {
-                    self.run_manifest.processes.remove(&node.name);
-                }
-                ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff => {
-                    let identity = self
-                        .lifecycle_journal
-                        .nodes
-                        .iter_mut()
-                        .find(|journal_node| journal_node.node == node.name)
-                        .and_then(|journal_node| journal_node.replacement_process.take())
-                        .ok_or_else(|| SchedulerError::BoundaryViolation {
-                            message: format!(
-                                "committed replacement for `{}` lost its process identity",
-                                node.name
-                            ),
-                        })?;
-                    let process =
-                        self.run_manifest
-                            .processes
-                            .get_mut(&node.name)
-                            .ok_or_else(|| SchedulerError::BoundaryViolation {
-                                message: format!(
-                                    "committed replacement for `{}` lost its manifest owner",
-                                    node.name
-                                ),
-                            })?;
-                    *process = identity;
-                }
-            }
-            self.run_manifest.staged_processes.remove(&node.name);
+            self.commit_terminal_process_ownership(&node, item.service_state)?;
             *self.node_service_states.get_mut(&node).ok_or_else(|| {
                 SchedulerError::BoundaryViolation {
                     message: String::from("validated lifecycle service owner disappeared"),
