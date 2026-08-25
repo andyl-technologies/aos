@@ -348,6 +348,7 @@ impl ExpansionState {
     /// Returns [`CampaignCodecError`] when a root is not a Merkle node, the page
     /// size is outside 1 through 10,000, the continuation map exceeds the page
     /// size, or the next cursor is not the page's last request.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         source_snapshot: CampaignSnapshotId,

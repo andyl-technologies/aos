@@ -103,6 +103,7 @@ pub(super) fn read_bounded_file_with_boundary(
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
     use std::fs;

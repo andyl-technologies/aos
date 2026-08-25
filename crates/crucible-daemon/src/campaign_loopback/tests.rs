@@ -1,3 +1,6 @@
+//! Campaign loopback framing, poisoning, authorization, and deadline tests.
+
+// crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
 #![allow(clippy::expect_used)]
 
 use std::collections::BTreeSet;

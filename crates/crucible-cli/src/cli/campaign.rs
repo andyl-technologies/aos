@@ -2045,6 +2045,7 @@ const fn finding_kind_label(kind: FindingKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
     use super::*;

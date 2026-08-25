@@ -1310,6 +1310,7 @@ impl CampaignPolicy {
     ///
     /// Returns [`CampaignCodecError::InvalidValue`] when a collection exceeds
     /// its bound, a map key disagrees with its value, or a stop name is invalid.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         scenario: ScenarioDefId,

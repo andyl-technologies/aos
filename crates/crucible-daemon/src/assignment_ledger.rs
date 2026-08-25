@@ -452,6 +452,7 @@ pub enum AssignmentPublish {
 // operational result crosses every ledger backend, and allocating merely to
 // shrink the successful discriminant would add a new failure mode to CAS
 // reconciliation. AttemptRuntimeState has a fixed 16 KiB encoded ceiling.
+// crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttemptStateCas {

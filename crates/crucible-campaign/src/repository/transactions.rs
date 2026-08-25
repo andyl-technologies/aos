@@ -1386,6 +1386,7 @@ impl CampaignRepository {
     /// Returns an error for stale input, an unauthoritative or already-disposed
     /// proposal, invalid selection/path/attempt closure, exhausted attempt budget,
     /// inconsistent dedup indexes, publication failure, or final ref conflict.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn admit_proposal(
         &self,
@@ -1833,6 +1834,7 @@ impl CampaignRepository {
     ///
     /// Returns an error for a stale snapshot, an engine/artifact/state mismatch,
     /// a missing artifact dependency, or failed immutable publication.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_planner_invocation(
         &self,
@@ -2845,6 +2847,7 @@ impl CampaignRepository {
     /// Returns a canonical, integrity, or store error when the payload is
     /// invalid, its exact artifact basis is absent or inconsistent, or the
     /// resulting reproduction cannot be placed and authenticated.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_reproduction_artifact(
         &self,
@@ -2893,6 +2896,7 @@ impl CampaignRepository {
     /// Returns a canonical, integrity, or store error when the trace is
     /// inconsistent, its original or artifact basis is unavailable, or the
     /// resulting record cannot be placed and authenticated.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_minimized_reproduction_artifact(
         &self,

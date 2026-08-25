@@ -230,6 +230,7 @@ impl LinuxQemuAttemptProcessQuarantine {
     /// A running result means the detached worker still owns the exact
     /// authority and continues after this method returns.
     // This clock bounds host-only observation and never enters modeled state.
+    // crucible-lint: allow clippy-disallowed-method -- the bounded host operation is operational only and cannot enter modeled state.
     #[allow(clippy::disallowed_methods)]
     #[must_use]
     pub(crate) fn wait(&self, timeout: Duration) -> LinuxQemuAttemptProcessQuarantineStatus {

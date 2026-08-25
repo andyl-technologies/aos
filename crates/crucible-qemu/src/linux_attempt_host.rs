@@ -53,6 +53,7 @@ impl LinuxQemuAttemptHostConfig {
     ///
     /// Returns [`QemuVmRealizationError::Executor`] when any namespace,
     /// credential, task, project-ID, timeout, or inode bound is invalid.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         cgroup_root: impl Into<PathBuf>,

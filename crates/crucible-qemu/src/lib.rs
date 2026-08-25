@@ -66,16 +66,19 @@ mod linux_attempt_process;
 #[cfg(target_os = "linux")]
 // The lifecycle-bound quota/run-directory owner remains behind the combined
 // public host-resource facade.
+// crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
 #[allow(dead_code)]
 mod linux_attempt_storage;
 #[cfg(target_os = "linux")]
 // Raw cgroup mutation stays internal; `linux_attempt_process` exposes only the
 // sealed process owner needed by the still-separate quota/session composition.
+// crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
 #[allow(dead_code)]
 mod linux_cgroup;
 #[cfg(target_os = "linux")]
 // Raw project-quota mutation stays internal; `linux_attempt_storage` owns its
 // allocation, naming, directory, and release lifecycle.
+// crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
 #[allow(dead_code)]
 mod linux_project_quota;
 #[cfg(target_os = "linux")]

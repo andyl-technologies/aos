@@ -65,7 +65,7 @@ const FENCE_SPECS: &[FenceSpec] = &[
         safe_wrapper_contract: &[
             "Unsafe boundary discipline:",
             "public callers use safe setup descriptor handover wrappers",
-            "validate the fixed two-fd order and descriptor count",
+            "validate the fixed three-fd order and descriptor count",
         ],
     },
     FenceSpec {
@@ -112,6 +112,12 @@ const FENCE_SPECS: &[FenceSpec] = &[
     },
     FenceSpec {
         package: "crucible",
+        root: "src/lib.rs",
+        unsafe_boundary: false,
+        safe_wrapper_contract: &[],
+    },
+    FenceSpec {
+        package: "crucible-campaign",
         root: "src/lib.rs",
         unsafe_boundary: false,
         safe_wrapper_contract: &[],

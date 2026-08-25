@@ -1,3 +1,6 @@
+//! Objective evaluation, Pareto, PUCT, and bounded-work tests.
+
+// crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
 #![allow(clippy::expect_used)]
 
 use super::*;

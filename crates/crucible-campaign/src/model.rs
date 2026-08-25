@@ -90,6 +90,7 @@ impl CampaignLineage {
     ///
     /// Returns [`CampaignCodecError`] when a version identifier or schema is
     /// empty, zero, or exceeds its bound.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         scenario: ScenarioDefId,
@@ -495,6 +496,7 @@ impl CampaignPlanningView {
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] if any root is not a Merkle-node object.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         graph: ContentId,
@@ -525,6 +527,7 @@ impl CampaignPlanningView {
         ))
     }
 
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     const fn from_validated_roots(
         graph: ContentId,

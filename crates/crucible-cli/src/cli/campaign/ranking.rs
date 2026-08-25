@@ -561,6 +561,7 @@ fn render_ranking_entries(entries: &[CampaignRankingEntry], markdown: bool) -> S
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
     use crucible_campaign::{CampaignRecordKind, PlannerStepId};

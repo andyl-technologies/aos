@@ -74,6 +74,7 @@ fn spec_index_rules_reject_missing_doc_lines_wrong_docs_and_table_drift() {
         package: "crucible-sim",
         root: "src/lib.rs",
         spec_files: &["04", "08", "09"],
+        supplemental_spec: None,
         section_6_row: true,
     };
     let good_source = r#"
@@ -172,7 +173,15 @@ fn crate_root_doc_index_failures(
 }
 
 fn expected_spec_index_line(spec: &CrateSpecIndexEntry) -> String {
-    format!("Spec index: RFC-0010 files {}.", spec.spec_files.join(", "))
+    match (spec.spec_files.is_empty(), spec.supplemental_spec) {
+        (true, Some(supplemental)) => format!("Spec index: {supplemental}."),
+        (false, Some(supplemental)) => format!(
+            "Spec index: RFC-0010 files {}; {supplemental}.",
+            spec.spec_files.join(", ")
+        ),
+        (false, None) => format!("Spec index: RFC-0010 files {}.", spec.spec_files.join(", ")),
+        (true, None) => "Spec index: no owning specification.".to_string(),
+    }
 }
 
 fn crate_root_doc_lines(source: &str) -> Vec<&str> {

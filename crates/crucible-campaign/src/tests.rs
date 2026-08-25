@@ -1,5 +1,6 @@
 //! Unit tests for campaign canonical primitives.
 
+// crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
 #![allow(clippy::expect_used)]
 
 use super::codec::{Canonical, Decoder, Encoder, decode, encode};

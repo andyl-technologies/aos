@@ -1803,6 +1803,7 @@ fn timeout_io_error() -> LoopbackCampaignProtocolError {
 
 // Monotonic transport time bounds only operational socket blocking and never
 // enters campaign semantic state or content identity.
+// crucible-lint: allow clippy-disallowed-method -- the bounded host operation is operational only and cannot enter modeled state.
 #[allow(clippy::disallowed_methods)]
 fn transport_now() -> Instant {
     Instant::now()

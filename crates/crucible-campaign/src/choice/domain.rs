@@ -295,6 +295,7 @@ impl IntegerDomain {
     /// Returns [`CampaignCodecError`] for representation mismatch, an inverted
     /// range, zero step, invalid unit, duplicate or illegal landmarks, or
     /// semantic version zero.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         semantic_version: u32,

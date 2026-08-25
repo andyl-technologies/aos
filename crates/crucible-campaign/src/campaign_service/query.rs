@@ -1497,6 +1497,7 @@ impl ExplainCampaignAttemptResponse {
     /// Returns [`CampaignCodecError`] when any snapshot, accounting,
     /// exploration, coordination, path, selection, proposal, planner-step,
     /// completion, or encoded-size invariant is invalid.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         request: &ExplainCampaignAttemptRequest,
@@ -3071,6 +3072,7 @@ impl Canonical for GetCampaignGraphObjectResponse {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
     use std::collections::{BTreeMap, BTreeSet};

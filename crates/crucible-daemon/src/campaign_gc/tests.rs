@@ -1,5 +1,6 @@
 //! Canonical identity and bound tests for campaign GC plan headers.
 
+// crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
 #![allow(clippy::expect_used)]
 
 use std::collections::{BTreeMap, BTreeSet};

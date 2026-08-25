@@ -898,6 +898,7 @@ impl Observation {
     ///
     /// Returns an error for an invalid stop outcome, too many discovered
     /// choices, or an oversized encoded record.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         attempt: AttemptId,

@@ -46,6 +46,10 @@ const ARTIFACT_SPECS: &[ArtifactSpec] = &[
         expected: ExpectedArtifact::FleetStoreBinary,
     },
     ArtifactSpec {
+        package: "crucible-campaign",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
         package: "crucible-shmem",
         expected: ExpectedArtifact::Library,
     },

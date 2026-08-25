@@ -1208,6 +1208,7 @@ fn validate_proof_nodes(
     Ok(())
 }
 
+// crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
 #[allow(clippy::too_many_arguments)]
 fn decode_proof_nodes(
     decoder: &mut Decoder<'_>,
@@ -1458,6 +1459,7 @@ const fn invalid(reason: &'static str) -> CampaignStoreError {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
     use super::*;

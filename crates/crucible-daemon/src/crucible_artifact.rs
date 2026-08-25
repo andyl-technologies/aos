@@ -726,6 +726,7 @@ fn campaign_configuration_id(id: crucible::ContentHash) -> ConfigurationId {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
 #[allow(clippy::expect_used)]
 mod tests {
     use std::collections::BTreeSet;

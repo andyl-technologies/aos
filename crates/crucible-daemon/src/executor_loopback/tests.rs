@@ -1,5 +1,6 @@
 //! Conformance tests for the strict executor Unix-stream adapter.
 
+// crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
 #![allow(clippy::expect_used)]
 
 use std::collections::{BTreeMap, BTreeSet};

@@ -1,7 +1,7 @@
 //! Campaign runtime lifecycle regressions.
 
-// crucible-lint: allow panic-shortcut, host-time -- bounded channel deadlines
-// make background-thread failures local and deterministic.
+// crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
+// crucible-lint: allow clippy-disallowed-method -- bounded channel deadlines localize background failures.
 #![allow(clippy::expect_used, clippy::disallowed_methods)]
 
 use std::collections::VecDeque;

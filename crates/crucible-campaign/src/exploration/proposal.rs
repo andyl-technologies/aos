@@ -22,6 +22,7 @@ impl Proposal {
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] when the ordinal is zero.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         branch_point: BranchPointId,

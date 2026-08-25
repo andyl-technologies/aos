@@ -194,6 +194,7 @@ impl Canonical for GetCampaignSnapshotResponse {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
     use crucible_cas::content_store::{ContentId, ObjectKind};

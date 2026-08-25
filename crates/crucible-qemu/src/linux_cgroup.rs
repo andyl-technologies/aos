@@ -830,8 +830,9 @@ impl LinuxQemuCgroupWatcher {
     ///
     /// Returns [`LinuxQemuCgroupWatcherWaitError::Timeout`] with this watcher
     /// when the deadline expires, or a terminal watcher/thread failure.
-    // This clock bounds a host-only join. It never enters modeled or canonical
-    // Crucible state.
+    /// This clock bounds a host-only join and never enters modeled or canonical
+    /// Crucible state.
+    // crucible-lint: allow clippy-disallowed-method -- the bounded host operation is operational only and cannot enter modeled state.
     #[allow(clippy::disallowed_methods)]
     pub fn wait(
         mut self,

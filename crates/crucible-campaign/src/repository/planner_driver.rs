@@ -34,6 +34,7 @@ impl<S> CampaignPlannerDriver<S> {
     /// repository use different planner authorities, an identity cannot be
     /// derived, the configured basis names different engines, or the page
     /// limit is outside `1..=10,000`.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         repository: Arc<CampaignRepository>,

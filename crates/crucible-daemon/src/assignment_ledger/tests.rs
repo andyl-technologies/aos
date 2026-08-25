@@ -1,5 +1,6 @@
 //! Conformance tests for memory and crash-safe directory assignment ledgers.
 
+// crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
 #![allow(clippy::expect_used)]
 
 use std::fs;

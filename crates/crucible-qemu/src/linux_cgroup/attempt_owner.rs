@@ -354,8 +354,8 @@ fn owner_quarantine_status(
 
 #[cfg(test)]
 mod tests {
-    // crucible-lint: allow panic-shortcut, host-time -- test fixtures use panic
-    // shortcuts and bounded host polling for failure localization.
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
+    // crucible-lint: allow clippy-disallowed-method -- bounded host polling localizes background failures.
     #![allow(clippy::expect_used, clippy::disallowed_methods)]
 
     use std::fs;

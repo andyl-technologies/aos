@@ -1,3 +1,6 @@
+//! Campaign policy authorization and operation-matrix tests.
+
+// crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
 #![allow(clippy::expect_used)]
 
 use super::*;
