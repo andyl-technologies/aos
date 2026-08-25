@@ -6146,11 +6146,8 @@ impl RpcService {
         let generation = endpoint.desired_generation.ok_or_else(|| {
             RpcError::FailedPrecondition("endpoint has no desired generation".to_string())
         })?;
-        if req.resource_generation != generation {
-            return Err(RpcError::FailedPrecondition(
-                "endpoint generation is stale".to_string(),
-            ));
-        }
+        req.resource_generation =
+            resolve_endpoint_grant_generation(req.resource_generation, generation)?;
         let resource = crate::db::GrantResource::Endpoint {
             id: &endpoint.id,
             generation,
@@ -35177,6 +35174,35 @@ fn write_outcome_result(outcome: SurfaceWriteOutcome) -> Result<(), RpcError> {
     match outcome {
         SurfaceWriteOutcome::Created | SurfaceWriteOutcome::Overwritten => Ok(()),
         other => Err(write_outcome_error(other)),
+    }
+}
+
+/// Resolves the CLI's zero-generation sentinel to the endpoint's current target.
+fn resolve_endpoint_grant_generation(
+    requested_generation: i64,
+    desired_generation: i64,
+) -> Result<i64, RpcError> {
+    if requested_generation == 0 || requested_generation == desired_generation {
+        Ok(desired_generation)
+    } else {
+        Err(RpcError::FailedPrecondition(
+            "endpoint generation is stale".to_string(),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod endpoint_grant_generation_tests {
+    use super::{resolve_endpoint_grant_generation, RpcError};
+
+    #[test]
+    fn resolves_cli_sentinel_and_preserves_stale_generation_fence() {
+        assert_eq!(resolve_endpoint_grant_generation(0, 2).unwrap(), 2);
+        assert_eq!(resolve_endpoint_grant_generation(2, 2).unwrap(), 2);
+        assert!(matches!(
+            resolve_endpoint_grant_generation(1, 2),
+            Err(RpcError::FailedPrecondition(message)) if message == "endpoint generation is stale"
+        ));
     }
 }
 
