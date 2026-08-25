@@ -561,7 +561,7 @@ in
             exit 1
           fi
           if grep '|node|' "$production_matrix" \
-            | grep -Ev '\|gate:(live-node-lifecycle-fault|live-fault-hardware|patch-microtests)\|'
+            | grep -Ev '\|gate:(live-node-lifecycle-fault|live-node-lifecycle-matrix|live-fault-hardware|patch-microtests)\|'
           then
             echo 'FAIL: a node effect lacks a live QEMU conformance gate' >&2
             exit 1
@@ -660,6 +660,12 @@ in
             "${patchMicrotests}/per-patch/0109-crucible-control-boundary-node-faults.patch.result"
           grep -Fxq 'patched_fixture_exercised=true' \
             "${patchMicrotests}/per-patch/0109-crucible-control-boundary-node-faults.patch.result"
+          grep -Fxq \
+            'production_effect_row=node.hang|node-vcpu-watchdog-recovery|gate:live-node-lifecycle-matrix|actual-patched-qemu|CRUCHNG1+CRUCWDC1+CRUCLIF1' \
+            "${patchMicrotests}/per-patch/0056-crucible-node-lifecycle-faults.patch.result"
+          grep -Fq \
+            'node.hang|node|node.hang|gate:live-node-lifecycle-matrix|tests/crucible/phase2-qemu-node-lifecycle.nix via gate:patch-microtests|' \
+            "$production_matrix"
 
           hardware_result=${liveFaultHardware}/result
           grep -Fxq PASS "$hardware_result"
