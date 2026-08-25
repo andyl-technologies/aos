@@ -170,6 +170,24 @@ fn endpoint_probe_configuration(
     }
 }
 
+fn network_policy_revision_update_mask(
+    protected_transport: bool,
+    trusted_ingress: bool,
+    source_allowlist_cidrs: bool,
+    probe_location: bool,
+) -> Vec<String> {
+    [
+        protected_transport.then_some("protected_transport_required"),
+        trusted_ingress.then_some("trusted_ingress"),
+        source_allowlist_cidrs.then_some("source_allowlist_cidrs"),
+        probe_location.then_some("probe_location_configuration_ref"),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::to_string)
+    .collect()
+}
+
 /// Handles `aos hub login` through device authorization or explicit bootstrap.
 async fn login(
     printer: &Printer,
@@ -279,6 +297,23 @@ mod tests {
                 .and_then(|trusted| trusted.configuration),
             Some(Configuration::None(true))
         ));
+    }
+
+    #[test]
+    fn network_policy_revision_masks_use_service_field_names() {
+        assert_eq!(
+            network_policy_revision_update_mask(true, true, true, true),
+            [
+                "protected_transport_required",
+                "trusted_ingress",
+                "source_allowlist_cidrs",
+                "probe_location_configuration_ref",
+            ]
+        );
+        assert_eq!(
+            network_policy_revision_update_mask(false, false, true, false),
+            ["source_allowlist_cidrs"]
+        );
     }
 
     #[test]
@@ -5763,20 +5798,12 @@ async fn network_policy(printer: &Printer, command: &HubNetworkPolicyCmd) -> Res
                     }),
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
                     idempotency_key: new_idempotency_key(),
-                    update_mask: [
-                        protected_transport
-                            .as_ref()
-                            .map(|_| "spec.protected_transport_required"),
-                        updates_trusted_ingress.then_some("spec.trusted_ingress"),
-                        ((!cidrs.is_empty() || *clear_cidrs)
-                            .then_some("spec.source_allowlist_cidrs")),
-                        ((probe_location.is_some() || *clear_probe_location)
-                            .then_some("spec.probe_location_configuration_ref")),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .map(str::to_string)
-                    .collect(),
+                    update_mask: network_policy_revision_update_mask(
+                        protected_transport.is_some(),
+                        updates_trusted_ingress,
+                        !cidrs.is_empty() || *clear_cidrs,
+                        probe_location.is_some() || *clear_probe_location,
+                    ),
                 },
                 mutation,
                 |plan_id, idempotency_key, confirmation_hash| {
