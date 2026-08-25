@@ -18,7 +18,7 @@ use crate::{
     GuidanceWeight, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS, MeasurementSeries, MetricValue,
     PlannerEngine, PlannerProposalDisposition, PlannerRequest, PlannerResponse, PlannerState,
     PlannerStepProposal, PlannerSubmission, PlanningBudget, PlanningUsage, PolicyArtifact,
-    ProgressiveWideningPolicy, PropertyEvidence, PuctPolicy, PurePlannerEngine,
+    ProbabilityModelId, ProgressiveWideningPolicy, PropertyEvidence, PuctPolicy, PurePlannerEngine,
     QueryCampaignFindingsRequest, QueryCampaignFrontierRequest, RepositoryCampaignService,
     RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
 };
@@ -336,6 +336,67 @@ fn branch_request(
         StopCondition::NextChoice,
     )
     .expect("branch request")
+}
+
+fn modeled_branch_request(
+    repository: &CampaignRepository,
+    lineage: &CampaignLineage,
+    parent: ConfigurationArtifactId,
+    parent_configuration: ConfigurationId,
+    command: &str,
+    model: ProbabilityModelId,
+    prior_weights: BTreeMap<ChoiceValue, u64>,
+) -> BranchRequest {
+    let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
+    let declaration = SelectableDeclaration::new(
+        "product.network.retry",
+        ChoiceSource::Workload {
+            producer: "network-product".to_owned(),
+        },
+        domain.clone(),
+        ChoiceValue::Boolean(false),
+        ChoiceClassContext::new(BTreeSet::from(["network-recovery".to_owned()]))
+            .expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("declaration");
+    repository
+        .publish_choice_domain(&domain)
+        .expect("publish domain");
+    repository
+        .publish_selectable(&declaration)
+        .expect("publish declaration");
+    let opportunity = ChoiceOpportunity::new(
+        lineage.scenario(),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test", command.as_bytes()),
+            producer: CampaignHash::derive("test", b"network-product"),
+        },
+        command,
+        Some(model),
+    )
+    .expect("modeled opportunity");
+    repository
+        .publish_choice_opportunity(&opportunity)
+        .expect("publish modeled opportunity");
+
+    BranchRequest::new(
+        opportunity.branch_point_id(parent_configuration),
+        parent,
+        opportunity.id().expect("opportunity id"),
+        domain.id().expect("domain id"),
+        CandidateSource::modeled_finite(model, prior_weights).expect("modeled finite source"),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            command.as_bytes(),
+        ))),
+        BranchBudget::new(2, 2).expect("branch budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("modeled branch request")
 }
 
 fn finite_proposal(

@@ -2607,30 +2607,74 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
     let genesis = repository
         .create("finite-expansion", &lineage, &policy, &BTreeMap::new())
         .expect("create");
-    let unweighted_request = branch_request(
+    let model = ProbabilityModelId::from_hash(CampaignHash::derive(
+        "test.finite-expansion-model.v1",
+        b"network retry",
+    ));
+    let first_request = modeled_branch_request(
         &repository,
         &lineage,
         lineage.genesis_content(),
         lineage.genesis(),
         "finite-expansion",
-    );
-    let first_request = BranchRequest::new(
-        unweighted_request.branch_point(),
-        unweighted_request.parent(),
-        unweighted_request.opportunity(),
-        unweighted_request.domain(),
-        CandidateSource::weighted_finite(BTreeMap::from([
+        model,
+        BTreeMap::from([
             (ChoiceValue::Boolean(false), 1),
             (ChoiceValue::Boolean(true), 3),
-        ]))
-        .expect("weighted finite source"),
-        unweighted_request.cause(),
-        unweighted_request.budget(),
-        unweighted_request.stop().clone(),
+        ]),
+    );
+    assert_eq!(first_request.source().model_prior(), Some(model));
+    let discovered = repository
+        .discover_choice_opportunity(
+            "finite-expansion",
+            genesis.snapshot_id(),
+            first_request.parent(),
+            first_request.opportunity(),
+        )
+        .expect("discover modeled opportunity");
+    let wrong_model = ProbabilityModelId::from_hash(CampaignHash::derive(
+        "test.finite-expansion-model.v1",
+        b"wrong network retry",
+    ));
+    let mismatched_request = BranchRequest::new(
+        first_request.branch_point(),
+        first_request.parent(),
+        first_request.opportunity(),
+        first_request.domain(),
+        CandidateSource::modeled_finite(
+            wrong_model,
+            BTreeMap::from([
+                (ChoiceValue::Boolean(false), 1),
+                (ChoiceValue::Boolean(true), 3),
+            ]),
+        )
+        .expect("mismatched modeled source"),
+        first_request.cause(),
+        first_request.budget(),
+        first_request.stop().clone(),
     )
-    .expect("weighted first request");
+    .expect("mismatched modeled request");
+    assert!(matches!(
+        repository.submit_branch_request(
+            "finite-expansion",
+            discovered.new_snapshot,
+            &mismatched_request,
+        ),
+        Err(CampaignRepositoryError::Codec(
+            CampaignCodecError::InvalidValue {
+                reason: "branch request modeled prior disagrees with its opportunity"
+            }
+        ))
+    ));
+    assert_eq!(
+        repository
+            .head("finite-expansion")
+            .expect("head after rejected modeled prior")
+            .snapshot_id(),
+        discovered.new_snapshot
+    );
     let first_requested = repository
-        .submit_known_branch_request("finite-expansion", genesis.snapshot_id(), &first_request)
+        .submit_branch_request("finite-expansion", discovered.new_snapshot, &first_request)
         .expect("first request");
     let second_request = BranchRequest::new(
         first_request.branch_point(),
