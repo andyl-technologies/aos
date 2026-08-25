@@ -2,11 +2,11 @@
 //!
 //! This module owns the language-neutral integer arithmetic used by future
 //! adaptive planner engines. The repository supplies an owner-built completed-
-//! visit partition, coverage-novelty fold, weighted finding reward, and exact
-//! objective reward for each semantic edge. A versioned planner may rank
-//! prospective candidate edges with these inputs. Explicit finite-source
-//! weights are normalized here so planner components receive only exact,
-//! owner-derived priors.
+//! visit partition, coverage-novelty and inverse-frequency rarity fold,
+//! weighted finding reward, and exact objective reward for each semantic edge.
+//! A versioned planner may rank prospective candidate edges with these inputs.
+//! Explicit finite-source weights are normalized here so planner components
+//! receive only exact, owner-derived priors.
 
 use std::{cmp::Ordering, collections::BTreeMap};
 
@@ -125,6 +125,7 @@ impl BranchEdgeVisitStatistics {
 pub(crate) struct BranchPuctProjectedEvidence {
     pub(crate) prior_weights: BTreeMap<BranchEdgeId, u64>,
     pub(crate) novelty_events: BTreeMap<BranchEdgeId, u64>,
+    pub(crate) rarity_weights: BTreeMap<BranchEdgeId, u64>,
     pub(crate) finding_weights: BTreeMap<FindingKind, u64>,
     pub(crate) finding_events: BTreeMap<BranchEdgeId, BTreeMap<FindingKind, u64>>,
     pub(crate) objective_reward_micros: BTreeMap<BranchEdgeId, i64>,
@@ -140,8 +141,8 @@ pub(crate) struct BranchProspectivePriorBasis {
 ///
 /// This projection assigns canonical normalized priors across completed edges,
 /// reserves fairness for the least-visited edge (breaking ties by
-/// [`BranchEdgeId`]), incorporates owner-derived coverage novelty, and adds
-/// policy-weighted owner-verified finding occurrences to reward.
+/// [`BranchEdgeId`]), retains owner-derived coverage novelty and rarity, and
+/// adds policy-weighted owner-verified finding occurrences to reward.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BranchPuctProjection {
     branch_point: BranchPointId,
@@ -150,6 +151,7 @@ pub struct BranchPuctProjection {
     parent_visits: u64,
     edge_prior_weights: BTreeMap<BranchEdgeId, u64>,
     edge_novelty_events: BTreeMap<BranchEdgeId, u64>,
+    edge_rarity_weights: BTreeMap<BranchEdgeId, u64>,
     edge_finding_events: BTreeMap<BranchEdgeId, BTreeMap<FindingKind, u64>>,
     edge_finding_reward_micros: BTreeMap<BranchEdgeId, i64>,
     edge_objective_reward_micros: BTreeMap<BranchEdgeId, i64>,
@@ -182,6 +184,7 @@ impl BranchPuctProjection {
             BranchPuctProjectedEvidence {
                 prior_weights: edge_prior_weights,
                 novelty_events: BTreeMap::new(),
+                rarity_weights: BTreeMap::new(),
                 finding_weights: BTreeMap::new(),
                 finding_events: BTreeMap::new(),
                 objective_reward_micros: BTreeMap::new(),
@@ -209,6 +212,7 @@ impl BranchPuctProjection {
             BranchPuctProjectedEvidence {
                 prior_weights: edge_prior_weights,
                 novelty_events: edge_novelty_events,
+                rarity_weights: BTreeMap::new(),
                 finding_weights: BTreeMap::new(),
                 finding_events: BTreeMap::new(),
                 objective_reward_micros: BTreeMap::new(),
@@ -226,6 +230,7 @@ impl BranchPuctProjection {
         let BranchPuctProjectedEvidence {
             prior_weights: edge_prior_weights,
             novelty_events: edge_novelty_events,
+            rarity_weights: edge_rarity_weights,
             finding_weights,
             finding_events: edge_finding_events,
             objective_reward_micros: edge_objective_reward_micros,
@@ -246,6 +251,14 @@ impl BranchPuctProjection {
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "branch novelty events disagree with completed edges",
+            });
+        }
+        if edge_rarity_weights
+            .iter()
+            .any(|(edge, weight)| *weight == 0 || !visits.edge_visits.contains_key(edge))
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "branch rarity weights disagree with completed edges",
             });
         }
         if finding_weights.values().any(|weight| *weight == 0)
@@ -332,6 +345,7 @@ impl BranchPuctProjection {
             parent_visits,
             edge_prior_weights,
             edge_novelty_events,
+            edge_rarity_weights,
             edge_finding_events,
             edge_finding_reward_micros: edge_rewards,
             edge_objective_reward_micros,
@@ -374,6 +388,12 @@ impl BranchPuctProjection {
     #[must_use]
     pub const fn edge_novelty_events(&self) -> &BTreeMap<BranchEdgeId, u64> {
         &self.edge_novelty_events
+    }
+
+    /// Returns exact inverse-frequency coverage rarity mass by semantic edge.
+    #[must_use]
+    pub const fn edge_rarity_weights(&self) -> &BTreeMap<BranchEdgeId, u64> {
+        &self.edge_rarity_weights
     }
 
     /// Returns weighted owner-verified finding occurrences by edge and class.
@@ -1239,6 +1259,7 @@ mod tests {
             BranchPuctProjectedEvidence {
                 prior_weights: BTreeMap::from([(completed, 1)]),
                 novelty_events: BTreeMap::from([(completed, 3)]),
+                rarity_weights: BTreeMap::new(),
                 finding_weights: BTreeMap::from([(FindingKind::Divergence, 7)]),
                 finding_events: BTreeMap::from([(
                     completed,
@@ -1313,6 +1334,7 @@ mod tests {
             BranchPuctProjectedEvidence {
                 prior_weights: BTreeMap::from([(*first, 1), (*second, 2)]),
                 novelty_events: BTreeMap::new(),
+                rarity_weights: BTreeMap::new(),
                 finding_weights: BTreeMap::new(),
                 finding_events: BTreeMap::new(),
                 objective_reward_micros: BTreeMap::new(),
@@ -1448,6 +1470,7 @@ mod tests {
             BranchPuctProjectedEvidence {
                 prior_weights: BTreeMap::from([(edge, 1)]),
                 novelty_events: BTreeMap::new(),
+                rarity_weights: BTreeMap::new(),
                 finding_weights: BTreeMap::from([(FindingKind::Divergence, u64::MAX)]),
                 finding_events: BTreeMap::from([(
                     edge,
@@ -1473,6 +1496,7 @@ mod tests {
                 BranchPuctProjectedEvidence {
                     prior_weights: BTreeMap::from([(edge, 1)]),
                     novelty_events: BTreeMap::new(),
+                    rarity_weights: BTreeMap::new(),
                     finding_weights: BTreeMap::new(),
                     finding_events: BTreeMap::from([(
                         edge,

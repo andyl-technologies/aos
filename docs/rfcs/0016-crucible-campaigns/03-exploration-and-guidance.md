@@ -366,10 +366,31 @@ snapshot owner; duplicate or unauthenticated occurrences cannot affect this
 term. Existing finding-root, occurrence, body-byte, credit, and proposal bounds
 also bound every comparison.
 
+Generator implementation-version 16 adds inverse-frequency coverage rarity
+before version 15's interval terms. Let `Q = 65,536`, the canonical observation
+ceiling, and let `f(i)` be coverage identity `i`'s positive occurrence count
+across the exact snapshot. Every occurrence of `i` in a credited observation
+contributes `floor(Q / f(i))` to that observation's semantic edge. Let `A_e` be
+the checked sum for edge `e`; an exterior or unobserved endpoint uses
+`(A_e, N_e) = (0, 1)`. Compare
+
+```text
+A(a, b) = abs(A_a * N_b - A_b * N_a) / (N_a * N_b)
+```
+
+as an exact nonnegative rational, then compare version 15's finding, unique
+coverage, objective, landmark, PUCT, cardinality, and lower-offset terms. The
+winning interval retains the same landmark-or-midpoint rule. Because
+`1 <= f(i) <= Q`, every contribution is positive and bounded; globally unique
+identities receive the largest mass while repeated identities retain decreasing
+but nonzero guidance. The owner derives both unique novelty and rarity from one
+bounded canonical observation scan, so arrival order, duplicate causes, and
+unauthenticated coverage cannot affect either term.
+
 Other algorithms remain valid suspended specifications but fail closed at
 proposal issuance and expansion projection until their versioned cursor and
 feedback owners are implemented. Earlier and unknown implementation versions
-remain suspended rather than being reinterpreted as versions 2 through 15; this
+remain suspended rather than being reinterpreted as versions 2 through 16; this
 preserves owner validation of histories created before executable enumeration
 landed.
 
@@ -520,6 +541,13 @@ telemetry or opaque measurement payloads.
   finding and observation projections. Local issue, import, and restart MUST
   reproduce the comparison, while versions 11 through 14 MUST ignore the new
   leading term.
+- **[GUIDE-32]** Rarity-progressive implementation-version 16 MUST rank
+  intervals first by exact endpoint mean inverse-frequency coverage rarity,
+  then by version 15's finding, unique-coverage, objective, landmark, PUCT,
+  cardinality, and lower-offset terms. Frequencies, rarity mass, visit
+  denominators, and edge ownership MUST come from the bounded canonical
+  observation projection. Local issue, import, and restart MUST reproduce the
+  comparison, while versions 11 through 15 MUST ignore the new leading term.
 
 ## 03.4 Tree policy: deterministic MCTS/PUCT
 
@@ -617,6 +645,15 @@ observations, visits at most 1,000,000 coverage identities, retains at most
 65,536 branch-relevant identities, and charges at most 128 MiB of unique
 canonical observation and coverage bodies. It is read-only and identical after
 restart/import.
+
+The same scan retains inverse-frequency rarity without a second repository
+pass. With `Q = 65,536`, every occurrence of identity `i` contributes
+`floor(Q / f(i))` to its credited semantic edge, where `f(i)` is that
+identity's positive global canonical-observation frequency. The checked
+per-edge sum is zero only for an edge without coverage, gives globally unique
+identities maximum mass, and gives repeated identities decreasing nonzero
+mass. It inherits the novelty fold's exact snapshot, identity, observation,
+byte, and restart bounds.
 
 Owner-verified findings contribute a policy-weighted positive reward. The
 closed signal names are `finding.property-violation`, `finding.divergence`, and

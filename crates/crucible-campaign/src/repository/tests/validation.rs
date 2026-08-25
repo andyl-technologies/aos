@@ -3318,6 +3318,187 @@ fn finding_progressive_integer_prioritizes_verified_reward_discontinuity() {
 }
 
 #[test]
+fn rarity_progressive_integer_prioritizes_inverse_frequency_discontinuity() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let campaign = "generated-rarity-progressive";
+    let genesis = repository
+        .create(campaign, &lineage, &policy, &BTreeMap::new())
+        .expect("create rarity-progressive campaign");
+    let domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(16),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("scale"),
+            vec![IntegerValue::Unsigned(2), IntegerValue::Unsigned(6)],
+        )
+        .expect("rarity-progressive domain"),
+    );
+    let generator = CandidateGeneratorSpec::new(
+        crate::RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::ProgressiveInteger {
+            initial_strata: 3,
+            feedback_interval: 2,
+        },
+    )
+    .expect("rarity-progressive generator");
+    let generator_id = repository
+        .publish_generator(&generator)
+        .expect("publish rarity-progressive generator");
+    let (_, request) = generated_integer_request(
+        &repository,
+        &lineage,
+        domain,
+        IntegerValue::Unsigned(8),
+        generator_id,
+        "rarity-progressive",
+        9,
+    );
+    let requested = repository
+        .submit_known_branch_request(campaign, genesis.snapshot_id(), &request)
+        .expect("submit rarity-progressive request");
+
+    let shared = [b"shared-a".as_slice(), b"shared-b", b"shared-c"]
+        .into_iter()
+        .map(|label| CampaignHash::derive("test.rarity-progressive", label))
+        .collect::<BTreeSet<_>>();
+    let unique = CampaignHash::derive("test.rarity-progressive", b"unique");
+    let mut current = requested.new_snapshot;
+    let mut observations = Vec::new();
+    for (index, value) in [0_u64, 8, 16].into_iter().enumerate() {
+        let head = repository
+            .head(campaign)
+            .expect("rarity-progressive proposal head");
+        let proposal = finite_proposal(
+            &request,
+            &policy,
+            &head,
+            ChoiceValue::Integer(IntegerValue::Unsigned(value)),
+            index as u64 + 1,
+        );
+        let proposed = repository
+            .issue_proposal(campaign, current, &proposal)
+            .expect("issue rarity-progressive initial proposal");
+        let (selection, path, attempt) = branch_attempt(&repository, &request, &proposal);
+        let admitted = repository
+            .admit_proposal(
+                campaign,
+                proposed.new_snapshot,
+                proposed.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("admit rarity-progressive initial proposal");
+        current = admitted.new_snapshot;
+        let mut coverage = if index < 2 {
+            shared.clone()
+        } else {
+            BTreeSet::new()
+        };
+        if index == 0 {
+            coverage.insert(unique);
+        }
+        observations.push(generated_observation_with_coverage(
+            &repository,
+            &lineage,
+            &admitted,
+            &path,
+            request.opportunity(),
+            &format!("rarity-progressive-{index}"),
+            coverage,
+        ));
+    }
+    for observation in observations.iter().take(2) {
+        current = repository
+            .publish_observation(campaign, current, observation)
+            .expect("publish rarity-progressive observation")
+            .new_snapshot;
+    }
+
+    let projection = repository
+        .project_branch_puct(current, request.branch_point())
+        .expect("project rarity-progressive guidance");
+    let mut rarity = projection
+        .edge_rarity_weights()
+        .values()
+        .copied()
+        .collect::<Vec<_>>();
+    rarity.sort_unstable();
+    assert_eq!(rarity, vec![98_304, 163_840]);
+    assert_eq!(
+        projection
+            .edge_novelty_events()
+            .values()
+            .copied()
+            .sum::<u64>(),
+        1
+    );
+
+    let ready = repository
+        .head(campaign)
+        .expect("rarity-progressive ready head");
+    let planner_state = CanonicalFrontierPlanner::initial_state().expect("planner state");
+    let (_, _, invocation) =
+        canonical_planner_basis_with_page(&repository, campaign, current, &planner_state, None, 16);
+    let planner_request = repository
+        .build_planner_request(current, invocation.id().expect("planner invocation id"))
+        .expect("build rarity-progressive planner request");
+    let planner_output = CanonicalFrontierPlanner
+        .plan(&planner_request)
+        .expect("plan rarity-progressive frontier");
+    let PlannerProposalDisposition::Issue { proposals, .. } =
+        planner_output.proposal().disposition()
+    else {
+        panic!("ready rarity-progressive request did not issue");
+    };
+    assert_eq!(
+        proposals.first().map(Proposal::value),
+        Some(&ChoiceValue::Integer(IntegerValue::Unsigned(12)))
+    );
+
+    let unique_only_candidate = finite_proposal(
+        &request,
+        &policy,
+        &ready,
+        ChoiceValue::Integer(IntegerValue::Unsigned(2)),
+        4,
+    );
+    let before_rejection = blobs
+        .object_count()
+        .expect("objects before rarity-discontinuity substitution");
+    assert!(matches!(
+        repository.issue_proposal(campaign, current, &unique_only_candidate),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-value-does-not-match-source-order"
+        })
+    ));
+    assert_eq!(
+        blobs
+            .object_count()
+            .expect("objects after rarity-discontinuity substitution"),
+        before_rejection
+    );
+
+    let discontinuity = finite_proposal(
+        &request,
+        &policy,
+        &ready,
+        ChoiceValue::Integer(IntegerValue::Unsigned(12)),
+        4,
+    );
+    let refined = repository
+        .issue_proposal(campaign, current, &discontinuity)
+        .expect("issue rarity-progressive refinement");
+    CampaignRepository::new(repository.blobs.clone(), repository.refs.clone())
+        .validate_complete_head(refined.new_snapshot.content_id())
+        .expect("restart validates rarity-progressive refinement");
+}
+
+#[test]
 fn corpus_mutation_generator_tracks_retained_values_by_portable_proposal_set() {
     let (repository, lineage, base_policy, blobs) = counted_fixture();
     let policy = CampaignPolicy::new(

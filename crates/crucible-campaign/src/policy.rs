@@ -160,6 +160,13 @@ pub const COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 1
 /// retain their own interval order.
 pub const FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 15;
 
+/// Implementation version for rarity-sensitive progressive integer refinement.
+///
+/// Version 16 retains version 15's finding, coverage, objective, landmark, and
+/// PUCT terms but first compares the exact mean inverse-frequency coverage
+/// rarity mass at the two interval endpoints.
+pub const RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 16;
+
 /// Maximum initial strata admitted by executable progressive-integer versions.
 pub const PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA: u32 = 4_096;
 

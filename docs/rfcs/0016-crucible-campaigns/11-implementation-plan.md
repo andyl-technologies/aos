@@ -294,7 +294,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   endpoint mean active-policy-weighted verified finding-reward discontinuity
   before version 14's terms, while versions 11 through 14 retain their prior
   order; local issue and restart/import replay reject a coverage-only
-  substitution before writes.
+  substitution before writes. Implementation version 16 now compares exact
+  endpoint mean inverse-frequency coverage-rarity discontinuity before version
+  15's terms, while versions 11 through 15 retain their prior order; local issue
+  and restart/import replay reject a unique-coverage-only substitution before
+  writes.
 - [x] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.
@@ -352,8 +356,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   discontinuity before version 13's terms, while versions 11 through 13 retain
   their prior order. Implementation-version 15 adds exact
   active-policy-weighted finding-reward mean discontinuity before version 14's
-  terms, while versions 11 through 14 retain their prior order. Static
-  continuation projection remains valid after modeled observations exist: it
+  terms, while versions 11 through 14 retain their prior order.
+  Implementation-version 16 adds exact inverse-frequency coverage-rarity mean
+  discontinuity before version 15's terms, while versions 11 through 15 retain
+  their prior order. Static continuation projection remains valid after modeled
+  observations exist: it
   binds the exact observation root and projects exact completed visits from
   canonical branch-point credit sets. The independent exact PUCT arithmetic and
   guidance projection are consumed only by canonical frontier engine version 2;
