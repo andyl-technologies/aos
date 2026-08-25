@@ -63,5 +63,27 @@
           f"-l sha256:7,11,12,15 "
           f"-g sha256 -q {nonce}"
       )
+
+      evidence = "/tmp/package-attestation-enrollment-proof"
+      identity_catalog = "/tmp/package-attestation-identities.json"
+      target.succeed(
+          f"printf '%s\\n' 'fleet out-of-band enrollment approval' > {evidence}"
+      )
+      enrolled_raw = target.succeed(
+          f"{apm} --json attest enroll "
+          f"--quote-dir {out_dir} "
+          f"--label fleet-target "
+          f"--method out-of-band "
+          f"--evidence-file {evidence} "
+          f"--catalog-file {identity_catalog}"
+      )
+      enrolled = json.loads(enrolled_raw)
+      assert enrolled["label"] == "fleet-target", enrolled
+      assert enrolled["method"] == "out-of-band", enrolled
+      target.succeed(f"test -s {identity_catalog}")
+
+      catalog_raw = target.succeed(f"{apm} --json attest catalog --system")
+      catalog = json.loads(catalog_raw)
+      assert isinstance(catalog, (dict, list)), catalog
     '';
 }
