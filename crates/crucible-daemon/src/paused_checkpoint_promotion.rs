@@ -25,9 +25,9 @@ use thiserror::Error;
 use crate::{
     AssignmentLedger, AttemptAdmissionValidator, AttemptExecutionKey,
     CheckpointPromotionCompletionOutcome, CheckpointPromotionRecovery,
-    CheckpointPromotionStageOutcome, CrucibleArtifactError, CrucibleAttemptExecution,
-    CrucibleResolvedAttemptStart, ExactCheckpointStore, ExactCheckpointStoreError,
-    ExecutionCancellation, LocalExecutorError, LocalExecutorSupervisor,
+    CheckpointPromotionRestartWork, CheckpointPromotionStageOutcome, CrucibleArtifactError,
+    CrucibleAttemptExecution, CrucibleResolvedAttemptStart, ExactCheckpointStore,
+    ExactCheckpointStoreError, ExecutionCancellation, LocalExecutorError, LocalExecutorSupervisor,
     MaterializedAttemptCheckpoint, PausedCheckpointPromotionRecovery,
     PrepareReplayOraclePromotionError, PreparedProductionAttemptReplayOraclePromotion,
     PreparedReplayOraclePromotion, ProductionAttemptCheckpointRestoreError,
@@ -410,6 +410,35 @@ pub enum PausedCheckpointPromotionRecoveryResolutionError {
     ExecutionBasisMismatch,
 }
 
+/// No-write restart result ready for a short supervisor or publication phase.
+#[derive(Debug)]
+pub enum PreparedPausedCheckpointPromotionRestart {
+    /// A raw pause passed semantic resolution and guarded replay comparison.
+    Stage(Box<PreparedPausedCheckpointPromotion>),
+    /// A staged replacement was already complete and reauthenticated.
+    Reconcile(Box<PublishedPausedCheckpointPromotion>),
+}
+
+/// Failure to prepare one durable promotion phase after restart.
+#[derive(Debug, Error)]
+pub enum PausedCheckpointPromotionRestartPreparationError {
+    /// Raw-pause semantic input or its execution basis was invalid.
+    #[error(transparent)]
+    Resolution(#[from] PausedCheckpointPromotionRecoveryResolutionError),
+    /// A staged pair's immutable attempt input was unavailable or invalid.
+    #[error(transparent)]
+    Repository(#[from] CampaignRepositoryError),
+    /// A staged pair's nested Crucible input failed strict decoding.
+    #[error(transparent)]
+    Artifact(#[from] CrucibleArtifactError),
+    /// Guarded raw-root comparison or no-write replacement preparation failed.
+    #[error(transparent)]
+    Preparation(#[from] Box<PausedCheckpointPromotionPreparationError>),
+    /// A staged production source/replacement pair failed full authentication.
+    #[error(transparent)]
+    Staged(#[from] ProductionAttemptCheckpointRestoreError),
+}
+
 /// Resolves a durable raw pause into owned production-comparison input.
 ///
 /// Repository and artifact authentication happen without supervisor ownership
@@ -446,6 +475,64 @@ pub fn resolve_production_paused_checkpoint_promotion_recovery(
         execution,
         cancellation,
     })
+}
+
+/// Prepares one durable paused-root restart phase without supervisor ownership.
+///
+/// Raw pauses resolve their exact repository input and run the complete guarded
+/// multi-node replay comparison. Staged pairs skip QEMU and fully authenticate
+/// the already-published production source/replacement relationship. Neither
+/// path writes immutable objects or operational ledger state.
+///
+/// # Errors
+///
+/// Returns [`PausedCheckpointPromotionRestartPreparationError`] when semantic
+/// input, guarded comparison, or the staged production pair fails closed.
+pub fn prepare_production_paused_checkpoint_promotion_restart<F>(
+    store: &CampaignExecutorStore,
+    checkpoints: &ExactCheckpointStore,
+    work: CheckpointPromotionRestartWork,
+    run_state_root: &Path,
+    cancellation: ExecutionCancellation,
+    factory: &mut F,
+) -> Result<
+    PreparedPausedCheckpointPromotionRestart,
+    PausedCheckpointPromotionRestartPreparationError,
+>
+where
+    F: ProductionPausedCheckpointReplayFactory,
+{
+    match work {
+        CheckpointPromotionRestartWork::Paused(recovery) => {
+            let resolved = resolve_production_paused_checkpoint_promotion_recovery(
+                store,
+                recovery,
+                cancellation,
+            )?;
+            let prepared = validate_and_prepare_production_paused_checkpoint_promotion(
+                checkpoints,
+                resolved.target(run_state_root),
+                factory,
+            )
+            .map_err(Box::new)?;
+            Ok(PreparedPausedCheckpointPromotionRestart::Stage(Box::new(
+                prepared,
+            )))
+        }
+        CheckpointPromotionRestartWork::Staged(recovery) => {
+            let input = resolve_attempt_execution_input(store, recovery.key())?;
+            let execution = decode_crucible_attempt_execution(store, &input)?;
+            let published = recover_published_production_paused_checkpoint_promotion(
+                checkpoints,
+                execution.scenario(),
+                &cancellation,
+                recovery,
+            )?;
+            Ok(PreparedPausedCheckpointPromotionRestart::Reconcile(
+                Box::new(published),
+            ))
+        }
+    }
 }
 
 /// Staging failure retaining the sole prepared promotion token.
