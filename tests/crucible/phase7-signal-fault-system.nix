@@ -384,6 +384,14 @@ in
           run_exact_api_test \
             vm_lifecycle::checkpoint_store::publication::tests::published_checkpoint_count_ignores_transaction_staging_directories
           run_exact_api_test \
+            vm_lifecycle::checkpoint_store::read_budget::tests::checkpoint_read_budget_rejects_manifest_before_file_allocation
+          run_exact_api_test \
+            vm_lifecycle::checkpoint_store::read_budget::tests::checkpoint_read_allocation_failure_keeps_pre_reservation_coordinates
+          run_exact_api_test \
+            vm_lifecycle::checkpoint_store::recovery::tests::production_checkpoint_load_rejects_manifest_bytes_before_decode
+          run_exact_api_test \
+            vm_lifecycle::checkpoint_store::decode::tests::production_manifest_decode_rejects_hostile_target_length_before_elements
+          run_exact_api_test \
             vm_lifecycle::checkpoint_recovery::tests::fresh_process_removes_only_abandoned_checkpoint_staging
           run_exact_api_test \
             vm_lifecycle::storage_faults::tests::ambiguous_shared_ninep_commit_poisons_runtime_before_return
