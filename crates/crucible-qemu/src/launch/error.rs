@@ -42,6 +42,12 @@ pub enum QemuLaunchCommandError {
     /// App-random was configured without enabling the white-box callback.
     #[error("app-random QEMU launch requires white-box mode")]
     AppRandomWhileWhiteboxDisabled,
+    /// A selectable catalog was configured without enabling white-box callbacks.
+    #[error("guest-selectable QEMU launch requires white-box mode")]
+    SelectableCatalogWhileWhiteboxDisabled,
+    /// The composite setup plan could not be encoded within its fixed profile.
+    #[error("QEMU plugin setup plan cannot be represented canonically")]
+    InvalidPluginSetupPlan,
     /// Only part of the app-random branch configuration was supplied.
     #[error("app-random branch seed and prefix draw count must be configured together")]
     InvalidAppRandomBranchConfiguration,

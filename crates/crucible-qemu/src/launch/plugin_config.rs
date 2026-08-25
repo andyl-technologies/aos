@@ -168,6 +168,8 @@ pub struct QemuLaunchPluginConfig {
     whitebox: QemuLaunchPluginSwitch,
     whitebox_setup: Option<QemuWhiteboxSetupValidation>,
     app_random: Option<QemuLaunchAppRandomConfig>,
+    selectable_catalog_plan:
+        Option<crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
     coverage: QemuLaunchPluginSwitch,
     fingerprint: QemuLaunchPluginSwitch,
     fingerprint_oracle: QemuLaunchPluginSwitch,
@@ -188,6 +190,7 @@ impl QemuLaunchPluginConfig {
             whitebox: QemuLaunchPluginSwitch::Off,
             whitebox_setup: None,
             app_random: None,
+            selectable_catalog_plan: None,
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
             fingerprint_oracle: QemuLaunchPluginSwitch::Off,
@@ -252,6 +255,16 @@ impl QemuLaunchPluginConfig {
     #[must_use]
     pub fn with_app_random(mut self, config: QemuLaunchAppRandomConfig) -> Self {
         self.app_random = Some(config);
+        self
+    }
+
+    /// Returns a config carrying the launch-authenticated guest-selectable catalog.
+    #[must_use]
+    pub fn with_selectable_catalog_plan(
+        mut self,
+        plan: crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan,
+    ) -> Self {
+        self.selectable_catalog_plan = Some(plan);
         self
     }
 
@@ -333,6 +346,26 @@ impl QemuLaunchPluginConfig {
             Some(config) => config.branch_plan(),
             None => empty_app_random_branch_plan(),
         }
+    }
+
+    /// Returns the immutable guest-selectable catalog plan passed during setup.
+    #[must_use]
+    pub fn selectable_catalog_plan(
+        &self,
+    ) -> &crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan {
+        match &self.selectable_catalog_plan {
+            Some(plan) => plan,
+            None => empty_selectable_catalog_plan(),
+        }
+    }
+
+    /// Returns the complete process-neutral plugin setup plan.
+    #[must_use]
+    pub fn plugin_setup_plan(&self) -> crucible_protocol::plugin_setup_plan::PluginSetupPlan {
+        crucible_protocol::plugin_setup_plan::PluginSetupPlan::new(
+            self.app_random_branch_plan().clone(),
+            self.selectable_catalog_plan().clone(),
+        )
     }
 
     /// Returns the single-VM fingerprint sampling switch passed to the plugin.
@@ -468,6 +501,12 @@ impl QemuLaunchPluginConfig {
                 return Err(QemuLaunchCommandError::WhiteboxSetupValidationWhileDisabled);
             }
         }
+        if self.selectable_catalog_plan.as_ref().is_some_and(|plan| {
+            plan != &crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::default()
+        }) && self.whitebox != QemuLaunchPluginSwitch::On
+        {
+            return Err(QemuLaunchCommandError::SelectableCatalogWhileWhiteboxDisabled);
+        }
         if let Some(app_random) = &self.app_random {
             if self.whitebox != QemuLaunchPluginSwitch::On {
                 return Err(QemuLaunchCommandError::AppRandomWhileWhiteboxDisabled);
@@ -531,6 +570,14 @@ fn empty_app_random_branch_plan()
 -> &'static crucible_protocol::app_random_branch_plan::AppRandomBranchPlan {
     static EMPTY: std::sync::OnceLock<
         crucible_protocol::app_random_branch_plan::AppRandomBranchPlan,
+    > = std::sync::OnceLock::new();
+    EMPTY.get_or_init(Default::default)
+}
+
+fn empty_selectable_catalog_plan()
+-> &'static crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan {
+    static EMPTY: std::sync::OnceLock<
+        crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan,
     > = std::sync::OnceLock::new();
     EMPTY.get_or_init(Default::default)
 }
@@ -633,6 +680,39 @@ mod tests {
         assert_eq!(
             config.validate(),
             Err(QemuLaunchCommandError::InvalidAppRandomBranchConfiguration)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn selectable_catalog_requires_whitebox_mode() -> Result<(), Box<dyn std::error::Error>> {
+        use crucible_protocol::selectable_catalog_plan::{
+            SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
+            SelectablePlanLimits, SelectablePlanPresence,
+        };
+
+        let empty = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0)
+            .with_selectable_catalog_plan(SelectableCatalogPlan::default());
+        assert_eq!(empty.validate(), Ok(()));
+
+        let declaration = SelectablePlanDeclaration::new(
+            "network.policy",
+            vec![1, 2],
+            vec![1],
+            vec!["recovery".to_owned()],
+            SelectablePlanPresence::Required,
+        )?;
+        let plan = SelectableCatalogPlan::new(
+            SelectablePlanLimits::new(1, 3, 3)?,
+            vec![declaration],
+            SelectablePlanContinuation::cold(),
+        )?;
+        let config = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0)
+            .with_selectable_catalog_plan(plan);
+
+        assert_eq!(
+            config.validate(),
+            Err(QemuLaunchCommandError::SelectableCatalogWhileWhiteboxDisabled)
         );
         Ok(())
     }

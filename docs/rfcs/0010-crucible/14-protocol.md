@@ -246,7 +246,9 @@ reject a truncated region.
   selectable catalog plan, its total length is at most 36 MiB plus 28 bytes,
   and no alternate or trailing encoding is accepted. A v2 peer MUST reject the
   composite body and a v3 peer MUST reject the raw v2 body. Only then may the
-  plugin reply `SetupAck`. *Gate:*
+  plugin reply `SetupAck`. A host with any non-default selectable catalog or
+  continuation MUST reject negotiation below v3 rather than silently sending
+  only the app-random subplan. *Gate:*
   `gate:abi-conformance`. *Spec:* §3.7, §5.
 
 ### 3.8 `SetupAck` (plugin → host, tag `0x02`)

@@ -467,6 +467,15 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
             node_count: layout.node_count,
         })
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
+    if negotiated.proto_version < 3
+        && plugin_setup_plan.selectable_catalog_plan() != &SelectableCatalogPlan::default()
+    {
+        return Err(
+            QemuHostPluginSetupError::SelectableCatalogRequiresProtocolV3 {
+                negotiated: negotiated.proto_version,
+            },
+        );
+    }
     let setup_plan_bytes = if negotiated.proto_version >= 3 {
         plugin_setup_plan
             .encode()
@@ -1238,6 +1247,14 @@ pub enum QemuHostPluginSetupError {
         /// Canonical selectable-plan failure.
         source: SelectableCatalogPlanError,
     },
+    /// Negotiation selected the legacy profile for a nonempty selectable plan.
+    #[error(
+        "guest-selectable catalog setup requires control protocol v3, negotiated v{negotiated}"
+    )]
+    SelectableCatalogRequiresProtocolV3 {
+        /// Negotiated legacy control-protocol version.
+        negotiated: u32,
+    },
     /// The negotiated composite plugin setup plan could not be encoded.
     #[error("composite plugin setup plan encoding failed: {source}")]
     PluginSetupPlan {
@@ -1486,6 +1503,49 @@ pub(crate) mod tests {
             Ok(Err(error)) => Err(error.into()),
             Err(_panic) => Err("legacy plugin setup peer panicked".into()),
         }
+    }
+
+    #[test]
+    fn qemu_host_rejects_selectable_catalog_downgrade_to_v2() -> Result<(), Box<dyn Error>> {
+        use crucible_protocol::selectable_catalog_plan::{
+            SelectablePlanDeclaration, SelectablePlanPresence,
+        };
+
+        let config = RegionConfig::new(1, 4, 0);
+        let layout = RegionLayout::for_config(config)?;
+        let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        let plugin_peer =
+            thread::spawn(move || plugin_peer_complete_setup_version(plugin_socket, 2));
+        let declaration = SelectablePlanDeclaration::new(
+            "network.policy",
+            vec![1, 2],
+            vec![1],
+            vec!["recovery".to_owned()],
+            SelectablePlanPresence::Required,
+        )?;
+        let selectable = SelectableCatalogPlan::new(
+            SelectablePlanLimits::new(1, 3, 3)?,
+            vec![declaration],
+            SelectablePlanContinuation::cold(),
+        )?;
+        let plan = PluginSetupPlan::new(AppRandomBranchPlan::default(), selectable);
+
+        let error = match complete_qemu_host_plugin_setup_with_plugin_setup_plan(
+            resources.into_setup_resources(),
+            config,
+            0,
+            &QemuFaultCapabilityRequirement::abi_boundary_v1(),
+            &plan,
+        ) {
+            Ok(_setup) => return Err("v2 discarded a nonempty selectable plan".into()),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            QemuHostPluginSetupError::SelectableCatalogRequiresProtocolV3 { negotiated: 2 }
+        ));
+        assert!(matches!(plugin_peer.join(), Ok(Err(_))));
+        Ok(())
     }
 
     #[test]
