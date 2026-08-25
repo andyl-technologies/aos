@@ -398,6 +398,17 @@ the world may be paused immediately before the reply, cloned, and given
 different replies in sibling children. The opportunity still defines a branch
 point when only exact restore or thin replay is available.
 
+The plugin represents that boundary explicitly. Choice authority may return an
+immediate reply or a `Pending` disposition. `Pending` retains the exact request
+and trap coordinate, leaves the complete reply reservation zero-filled, and
+requests native VMStop before another guest instruction is admitted. Catalog
+freeze occurs before `setup_complete` becomes host-observable. On an exact
+restore launch, throwaway boot-barrier registrations use a separate cold
+incarnation; the VMState logical-restore boundary swaps a preallocated catalog
+carrying the authenticated registered set, counters, sequence watermarks, and
+pending request before acknowledging restore. Immutable declarations are
+shared, but pending tokens are incarnation-specific and cannot cross the swap.
+
 The wire protocol contains no Rust-native layouts, pointers, callbacks, or
 QEMU-private objects. The version-1 codec is owned by
 `crucible-protocol::selectable`; `crucible-guest` exposes typed emission and

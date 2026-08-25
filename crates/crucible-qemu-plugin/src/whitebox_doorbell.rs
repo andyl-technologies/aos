@@ -50,8 +50,8 @@ pub use selectable::{
     SelectableCatalogLimits, SelectableCatalogPhase, SelectableDecisionAuthority,
     SelectableDoorbellError, SelectableDoorbellOutcome, SelectableDoorbellService,
     SelectableDoorbellServiceError, SelectableExpectedDeclaration, SelectableExpectedPresence,
-    SelectablePendingRequest, SelectableRegistrationService, SelectableReplyService,
-    handle_whitebox_selectable_callback,
+    SelectablePendingRequest, SelectableRegistrationService, SelectableReplyDisposition,
+    SelectableReplyService, handle_whitebox_selectable_callback,
 };
 
 /// QEMU plugin API label for translation-block instrumentation.

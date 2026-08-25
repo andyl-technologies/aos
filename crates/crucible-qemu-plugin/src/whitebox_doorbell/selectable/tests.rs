@@ -70,9 +70,34 @@ impl SelectableReplyService for Service {
         &mut self,
         request: &SelectionRequest,
         coordinate: SelectableCallbackCoordinate,
-    ) -> Result<SelectionReply, SelectableDoorbellServiceError> {
+    ) -> Result<SelectableReplyDisposition, SelectableDoorbellServiceError> {
         self.requests.push((request.clone(), coordinate));
-        Ok(self.reply.clone())
+        Ok(self.reply.clone().into())
+    }
+}
+
+struct PendingService {
+    request: Option<(SelectionRequest, SelectableCallbackCoordinate)>,
+}
+
+impl SelectableRegistrationService for PendingService {
+    fn register_selectable(
+        &mut self,
+        _registration: &SelectableRegister,
+        _coordinate: SelectableCallbackCoordinate,
+    ) -> Result<(), SelectableDoorbellServiceError> {
+        Ok(())
+    }
+}
+
+impl SelectableReplyService for PendingService {
+    fn serve_selection(
+        &mut self,
+        request: &SelectionRequest,
+        coordinate: SelectableCallbackCoordinate,
+    ) -> Result<SelectableReplyDisposition, SelectableDoorbellServiceError> {
+        self.request = Some((request.clone(), coordinate));
+        Ok(SelectableReplyDisposition::Pending)
     }
 }
 
@@ -200,6 +225,40 @@ fn request_writes_one_sequence_bound_zero_padded_reply_at_trap()
     assert_eq!(&written[..reply_bytes.len()], reply_bytes);
     assert!(written[reply_bytes.len()..].iter().all(|byte| *byte == 0));
     assert_eq!(written.len(), 160);
+    Ok(())
+}
+
+#[test]
+fn pending_request_keeps_the_zero_filled_guest_reservation_untouched()
+-> Result<(), Box<dyn std::error::Error>> {
+    let doorbell = doorbell();
+    let request = request(9, 160)?;
+    let request_bytes = request.encode()?;
+    let mut reader = Memory::new(request_bytes.clone());
+    let mut writer = Memory::new(Vec::new());
+    let mut service = PendingService { request: None };
+
+    let outcome = handle_whitebox_selectable_callback(
+        &doorbell,
+        &capability(&doorbell)?,
+        &mut reader,
+        &mut service,
+        &mut writer,
+        event(request_bytes.len()),
+    )?;
+
+    assert_eq!(
+        outcome,
+        SelectableDoorbellOutcome::Pending {
+            request: request.clone(),
+            coordinate: SelectableCallbackCoordinate::new(77, 2),
+        }
+    );
+    assert_eq!(
+        service.request,
+        Some((request, SelectableCallbackCoordinate::new(77, 2)))
+    );
+    assert!(writer.writes.is_empty());
     Ok(())
 }
 

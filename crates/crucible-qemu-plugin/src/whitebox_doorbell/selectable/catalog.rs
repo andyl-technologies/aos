@@ -24,7 +24,7 @@ use thiserror::Error;
 
 use super::{
     SelectableCallbackCoordinate, SelectableDoorbellServiceError, SelectableRegistrationService,
-    SelectableReplyService,
+    SelectableReplyDisposition, SelectableReplyService,
 };
 
 /// Absolute implementation ceiling for declarations in one node catalog.
@@ -221,7 +221,7 @@ impl SelectableExpectedDeclaration {
 /// Launch-authenticated expected catalog indexed by selectable identifier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SelectableCatalogExpectation {
-    declarations: BTreeMap<String, SelectableExpectedDeclaration>,
+    declarations: Arc<BTreeMap<String, SelectableExpectedDeclaration>>,
 }
 
 impl SelectableCatalogExpectation {
@@ -249,15 +249,41 @@ impl SelectableCatalogExpectation {
             }
         }
         Ok(Self {
-            declarations: indexed,
+            declarations: Arc::new(indexed),
         })
     }
 
     /// Returns expectations in canonical identifier order.
     #[must_use]
-    pub const fn declarations(&self) -> &BTreeMap<String, SelectableExpectedDeclaration> {
-        &self.declarations
+    pub fn declarations(&self) -> &BTreeMap<String, SelectableExpectedDeclaration> {
+        self.declarations.as_ref()
     }
+}
+
+fn catalog_basis_from_plan(
+    plan: &SelectableCatalogPlan,
+) -> Result<(SelectableCatalogLimits, SelectableCatalogExpectation), SelectableCatalogError> {
+    let plan_limits = plan.limits();
+    let limits = SelectableCatalogLimits::new(
+        plan_limits.declarations(),
+        plan_limits.requests_per_selectable(),
+        plan_limits.total_requests(),
+    )?;
+    let declarations = plan
+        .declarations()
+        .values()
+        .map(|declaration| {
+            SelectableExpectedDeclaration::from_registration(
+                declaration.registration(),
+                match declaration.presence() {
+                    SelectablePlanPresence::Required => SelectableExpectedPresence::Required,
+                    SelectablePlanPresence::Optional => SelectableExpectedPresence::Optional,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let expectation = SelectableCatalogExpectation::new(declarations, limits)?;
+    Ok((limits, expectation))
 }
 
 /// Current lifecycle phase of one guest-selectable catalog.
@@ -391,26 +417,36 @@ impl SelectableCatalog {
     /// Returns [`SelectableCatalogError`] if plugin and process-protocol bounds
     /// drift or the plan cannot be represented by the plugin state machine.
     pub fn from_plan(plan: &SelectableCatalogPlan) -> Result<Self, SelectableCatalogError> {
-        let plan_limits = plan.limits();
-        let limits = SelectableCatalogLimits::new(
-            plan_limits.declarations(),
-            plan_limits.requests_per_selectable(),
-            plan_limits.total_requests(),
-        )?;
-        let declarations = plan
-            .declarations()
-            .values()
-            .map(|declaration| {
-                SelectableExpectedDeclaration::from_registration(
-                    declaration.registration(),
-                    match declaration.presence() {
-                        SelectablePlanPresence::Required => SelectableExpectedPresence::Required,
-                        SelectablePlanPresence::Optional => SelectableExpectedPresence::Optional,
-                    },
-                )
-            })
-            .collect::<Vec<_>>();
-        let expectation = SelectableCatalogExpectation::new(declarations, limits)?;
+        let (limits, expectation) = catalog_basis_from_plan(plan)?;
+        Self::restore_from_plan_basis(plan, limits, expectation)
+    }
+
+    /// Builds the cold-launch and exact-restore catalog incarnations together.
+    ///
+    /// The two catalogs share one immutable expectation allocation. The cold
+    /// catalog admits throwaway boot-barrier registrations, while the restored
+    /// catalog retains the exact authenticated continuation for an allocation-
+    /// free swap after VMState load. Their pending-request tokens belong to
+    /// distinct private incarnations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelectableCatalogError`] if plugin and process-protocol bounds
+    /// drift or the plan cannot be represented by the plugin state machine.
+    pub fn launch_pair_from_plan(
+        plan: &SelectableCatalogPlan,
+    ) -> Result<(Self, Self), SelectableCatalogError> {
+        let (limits, expectation) = catalog_basis_from_plan(plan)?;
+        let cold = Self::new(limits, expectation.clone())?;
+        let restored = Self::restore_from_plan_basis(plan, limits, expectation)?;
+        Ok((cold, restored))
+    }
+
+    fn restore_from_plan_basis(
+        plan: &SelectableCatalogPlan,
+        limits: SelectableCatalogLimits,
+        expectation: SelectableCatalogExpectation,
+    ) -> Result<Self, SelectableCatalogError> {
         let mut catalog = Self::new(limits, expectation)?;
         let continuation = plan.continuation();
         catalog.phase = match continuation.phase() {
@@ -766,18 +802,19 @@ impl SelectableCatalog {
 
 /// Host authority that resolves one catalog-admitted pending request.
 pub trait SelectableDecisionAuthority {
-    /// Returns the exact reply for one retained frozen-catalog request.
+    /// Returns an exact reply or preserves one retained request as pending.
     ///
     /// # Errors
     ///
     /// Returns [`SelectableDoorbellServiceError`] when semantic narrowed-domain
     /// validation, opportunity construction, selection, or continuation
-    /// authority cannot produce a reply. The caller retains `pending` so the
-    /// failure can be checkpointed or retried without admitting another request.
+    /// authority cannot produce a disposition. The caller retains `pending` on
+    /// failure or [`SelectableReplyDisposition::Pending`] so the request can be
+    /// checkpointed or retried without admitting another request.
     fn decide_selection(
         &mut self,
         pending: &SelectablePendingRequest,
-    ) -> Result<SelectionReply, SelectableDoorbellServiceError>;
+    ) -> Result<SelectableReplyDisposition, SelectableDoorbellServiceError>;
 }
 
 /// Combined catalog and decision service used by the safe doorbell callback.
@@ -820,7 +857,9 @@ impl<A> CatalogedSelectableService<A> {
     /// Returns [`SelectableDoorbellServiceError`] when there is no pending
     /// request, decision authority fails, or reply completion violates catalog
     /// ownership or sequence invariants.
-    pub fn resolve_pending(&mut self) -> Result<SelectionReply, SelectableDoorbellServiceError>
+    pub fn resolve_pending(
+        &mut self,
+    ) -> Result<SelectableReplyDisposition, SelectableDoorbellServiceError>
     where
         A: SelectableDecisionAuthority,
     {
@@ -829,11 +868,13 @@ impl<A> CatalogedSelectableService<A> {
                 SelectableCatalogError::NoPendingRequest.to_string(),
             )
         })?;
-        let reply = self.authority.decide_selection(&pending)?;
-        self.catalog
-            .complete_request(&pending, &reply)
-            .map_err(catalog_service_error)?;
-        Ok(reply)
+        let disposition = self.authority.decide_selection(&pending)?;
+        if let SelectableReplyDisposition::Reply(reply) = &disposition {
+            self.catalog
+                .complete_request(&pending, reply)
+                .map_err(catalog_service_error)?;
+        }
+        Ok(disposition)
     }
 }
 
@@ -857,7 +898,7 @@ where
         &mut self,
         request: &SelectionRequest,
         coordinate: SelectableCallbackCoordinate,
-    ) -> Result<SelectionReply, SelectableDoorbellServiceError> {
+    ) -> Result<SelectableReplyDisposition, SelectableDoorbellServiceError> {
         self.catalog
             .begin_request(request, coordinate)
             .map_err(catalog_service_error)?;

@@ -356,6 +356,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                     self.target_architecture,
                     self.execution_model.smp_vcpus(),
                     capabilities.request_shutdown,
+                    capabilities.request_vmstop,
                 )
                 .map_err(|source| {
                     live_callback_registration_error(LiveVcpuTimeCallbackError::WhiteboxCallback {
