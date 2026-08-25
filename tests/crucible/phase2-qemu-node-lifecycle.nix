@@ -266,6 +266,7 @@ in
               printf 'watchdog=transition_after-reset\n'
               printf 'boot_policy=require_ready-live-guest-callback\n'
               printf 'recovery=transactional-remove\n'
+              printf 'production_effect_row=node.hang|node-vcpu-watchdog-recovery|gate:live-node-lifecycle-matrix|actual-patched-qemu|CRUCHNG1+CRUCWDC1+CRUCLIF1\n'
             } > "$out/result"
           '';
         }
