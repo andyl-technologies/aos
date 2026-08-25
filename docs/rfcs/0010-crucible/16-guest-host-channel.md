@@ -385,6 +385,15 @@ Above the per-arch doorbell sits one architecture-independent binary protocol.
 This is the only format the host marker decoder understands, and it is the format
 the guest emitter (§16.6) produces. It is deliberately small and rigid.
 
+RFC-0016 §02.7 additionally assigns the same synchronous trap transport a
+separate, independently versioned selectable register/request/reply message
+family. Those messages do not extend or reinterpret the closed marker-kind
+table below: dispatch first distinguishes the registered selectable version and
+kind prefix from this `CRBL` marker frame, then invokes exactly one codec. The
+selectable family owns its own golden vectors, byte ceiling, and version bump
+rule in `crucible-protocol::selectable`; wiring that dispatcher and catalog
+authority is RFC-0016 T-CAM-2.5.
+
 The shared ABI owner is `crucible-protocol::doorbell_frame`: the
 `WhiteboxDoorbellFrame` codec encodes and decodes the canonical frame, the
 `GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS` corpus freezes byte-exact examples,

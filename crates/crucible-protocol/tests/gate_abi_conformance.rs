@@ -10,18 +10,21 @@ use crucible_protocol::{
     ControlCodecFuzzOutcome, ControlDirection, ControlGoldenVector, ControlGoldenVectorMessage,
     ControlTag, GOLDEN_CONTROL_VECTORS, GOLDEN_VECTOR_PROTOCOL_VERSION,
     GOLDEN_VECTOR_REGENERATION_RULE, GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS,
-    GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS, HostMsg, PluginMsg,
-    WHITEBOX_DOORBELL_ASSERTION_FLAVOR_COUNT, WHITEBOX_DOORBELL_FRAME_MAGIC,
-    WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE, WHITEBOX_DOORBELL_KIND_METRIC_SAMPLE,
-    WHITEBOX_DOORBELL_KIND_SEMANTIC_MARKER, WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT,
-    WHITEBOX_DOORBELL_MARKER_KIND_COUNT, WHITEBOX_DOORBELL_PROTOCOL_VERSION,
-    WHITEBOX_MARKER_BODY_MAX_BYTES, WHITEBOX_MEASUREMENT_VALUE_KIND_COUNT,
-    WHITEBOX_MEASUREMENT_VECTOR_MAX_ELEMENTS, WhiteboxAssertionMarkerFlavor, WhiteboxDoorbellFrame,
-    WhiteboxDoorbellFrameDecodeError, WhiteboxDoorbellMarkerKind, WhiteboxLifecycleMarkerEvent,
-    WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError, WhiteboxMarkerPayloadEncodeError,
-    WhiteboxMeasurementValue, WhiteboxMeasurementValueKind, WhiteboxMetricSampleBody,
-    WhiteboxSemanticMarkerBody, WhiteboxSemanticMarkerDetail, control_decode_host_msg,
-    control_decode_plugin_msg, control_encode_host_msg, control_encode_plugin_msg,
+    GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS, HostMsg, PluginMsg, SELECTABLE_DIGEST_BYTES,
+    SELECTABLE_GOLDEN_VECTOR_REGENERATION_RULE, SELECTABLE_MESSAGE_KIND_REGISTER,
+    SELECTABLE_MESSAGE_KIND_REPLY, SELECTABLE_MESSAGE_KIND_REQUEST, SELECTABLE_PROTOCOL_VERSION,
+    SelectableRegister, SelectionReply, SelectionRequest, WHITEBOX_DOORBELL_ASSERTION_FLAVOR_COUNT,
+    WHITEBOX_DOORBELL_FRAME_MAGIC, WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE,
+    WHITEBOX_DOORBELL_KIND_METRIC_SAMPLE, WHITEBOX_DOORBELL_KIND_SEMANTIC_MARKER,
+    WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT, WHITEBOX_DOORBELL_MARKER_KIND_COUNT,
+    WHITEBOX_DOORBELL_PROTOCOL_VERSION, WHITEBOX_MARKER_BODY_MAX_BYTES,
+    WHITEBOX_MEASUREMENT_VALUE_KIND_COUNT, WHITEBOX_MEASUREMENT_VECTOR_MAX_ELEMENTS,
+    WhiteboxAssertionMarkerFlavor, WhiteboxDoorbellFrame, WhiteboxDoorbellFrameDecodeError,
+    WhiteboxDoorbellMarkerKind, WhiteboxLifecycleMarkerEvent, WhiteboxMarkerPayload,
+    WhiteboxMarkerPayloadDecodeError, WhiteboxMarkerPayloadEncodeError, WhiteboxMeasurementValue,
+    WhiteboxMeasurementValueKind, WhiteboxMetricSampleBody, WhiteboxSemanticMarkerBody,
+    WhiteboxSemanticMarkerDetail, control_decode_host_msg, control_decode_plugin_msg,
+    control_encode_host_msg, control_encode_plugin_msg, decode_selectable_message_kind,
     decode_whitebox_marker_payload, encode_whitebox_doorbell_frame, encode_whitebox_marker_frame,
     encode_whitebox_marker_payload_body, run_control_codec_fuzz_target,
 };
@@ -36,9 +39,107 @@ fn protocol_abi_conformance_runs_named_checks() {
     assert_doorbell_marker_payload_golden_vectors();
     assert_doorbell_marker_kind_vocabulary();
     assert_doorbell_marker_subvocabularies();
+    assert_selectable_v1_golden_vectors();
     assert_doorbell_decoder_fuzz_corpus();
     assert_structure_aware_fuzz_corpus();
     assert_protocol_codec_fuzz_corpus();
+}
+
+#[test]
+fn guest_selectable_v1_golden_vectors_match_live_codec_bytes() {
+    assert_selectable_v1_golden_vectors();
+}
+
+fn assert_selectable_v1_golden_vectors() {
+    assert!(SELECTABLE_GOLDEN_VECTOR_REGENERATION_RULE.contains("SELECTABLE_PROTOCOL_VERSION"));
+    let registration = SelectableRegister::new(
+        0x0102_0304_0506_0708,
+        "net",
+        vec![0xaa, 0xbb],
+        vec![1],
+        vec![String::from("a"), String::from("z")],
+    )
+    .unwrap_or_else(|error| panic!("selectable registration vector must build: {error}"));
+    let registration_bytes = registration
+        .encode()
+        .unwrap_or_else(|error| panic!("selectable registration vector must encode: {error}"));
+    assert_eq!(
+        registration_bytes,
+        [
+            1, 0, 1, 0, 56, 0, 0, 0, 68, 0, 0, 0, 8, 7, 6, 5, 4, 3, 2, 1, 56, 0, 0, 0, 3, 0, 0, 0,
+            59, 0, 0, 0, 2, 0, 0, 0, 61, 0, 0, 0, 1, 0, 0, 0, 62, 0, 0, 0, 6, 0, 0, 0, 2, 0, 0, 0,
+            b'n', b'e', b't', 0xaa, 0xbb, 1, 1, 0, b'a', 1, 0, b'z',
+        ]
+    );
+    assert_eq!(
+        decode_selectable_message_kind(&registration_bytes)
+            .map(|kind| (SELECTABLE_PROTOCOL_VERSION, kind.wire_value())),
+        Ok((
+            SELECTABLE_PROTOCOL_VERSION,
+            SELECTABLE_MESSAGE_KIND_REGISTER
+        ))
+    );
+
+    let request = SelectionRequest::new(9, "net", "epoch/1", Some(vec![0xaa]), 104)
+        .unwrap_or_else(|error| panic!("selection request vector must build: {error}"));
+    let request_bytes = request
+        .encode()
+        .unwrap_or_else(|error| panic!("selection request vector must encode: {error}"));
+    assert_eq!(
+        &request_bytes[..59],
+        &[
+            1, 0, 2, 0, 48, 0, 1, 0, 104, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 3, 0, 0, 0,
+            51, 0, 0, 0, 7, 0, 0, 0, 58, 0, 0, 0, 1, 0, 0, 0, 59, 0, 0, 0, b'n', b'e', b't', b'e',
+            b'p', b'o', b'c', b'h', b'/', b'1', 0xaa,
+        ]
+    );
+    assert!(request_bytes[59..].iter().all(|byte| *byte == 0));
+    assert_eq!(
+        decode_selectable_message_kind(&request_bytes).map(|kind| kind.wire_value()),
+        Ok(SELECTABLE_MESSAGE_KIND_REQUEST)
+    );
+
+    let reply = SelectionReply::selected(
+        9,
+        [1; SELECTABLE_DIGEST_BYTES],
+        [2; SELECTABLE_DIGEST_BYTES],
+        vec![3, 4],
+    )
+    .unwrap_or_else(|error| panic!("selection reply vector must build: {error}"));
+    let reply_bytes = reply
+        .encode()
+        .unwrap_or_else(|error| panic!("selection reply vector must encode: {error}"));
+    assert_eq!(
+        &reply_bytes[..24],
+        &[
+            1, 0, 3, 0, 96, 0, 0, 0, 98, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ]
+    );
+    assert_eq!(&reply_bytes[24..56], &[1; SELECTABLE_DIGEST_BYTES]);
+    assert_eq!(&reply_bytes[56..88], &[2; SELECTABLE_DIGEST_BYTES]);
+    assert_eq!(&reply_bytes[88..], &[96, 0, 0, 0, 2, 0, 0, 0, 3, 4]);
+    assert_eq!(
+        decode_selectable_message_kind(&reply_bytes).map(|kind| kind.wire_value()),
+        Ok(SELECTABLE_MESSAGE_KIND_REPLY)
+    );
+}
+
+#[test]
+fn guest_selectable_v1_schemas_are_registered_exactly() {
+    let registry = include_str!("../../../docs/rfcs/0016-crucible-campaigns/schema-registry.tsv");
+    for schema in [
+        "crucible.guest-selectable.register",
+        "crucible.guest-selectable.request",
+        "crucible.guest-selectable.reply",
+    ] {
+        let expected = format!(
+            "{schema}\t1\tcrucible-protocol::selectable\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance"
+        );
+        assert!(
+            registry.lines().any(|line| line == expected),
+            "missing exact selectable schema row {schema}"
+        );
+    }
 }
 
 #[test]

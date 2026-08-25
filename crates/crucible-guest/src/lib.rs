@@ -10,7 +10,8 @@
 //!
 //! Module map: the crate root owns CLI argument parsing, marker construction,
 //! and the Linux doorbell instruction transport; [`guest_introspection_agent`]
-//! owns the argv exec, PTY, resize, and optional SSH-compatible guest service.
+//! owns the argv exec, PTY, resize, and optional SSH-compatible guest service;
+//! [`selectable`] owns typed guest choice registration and request helpers.
 //! `crucible-protocol` remains the owner of every wire format.
 //!
 //! Unsafe boundary discipline: public callers use safe doorbell and marker accessors; private inline
@@ -21,8 +22,21 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod guest_introspection_agent;
+pub mod selectable;
+
+pub use selectable::{
+    GuestSelectableError, GuestSelectableRegistration, GuestSelection,
+    emit_selectable_registration, request_selection,
+};
 
 pub use crucible_protocol::{
+    SELECTABLE_DIGEST_BYTES, SELECTABLE_GOLDEN_VECTOR_REGENERATION_RULE,
+    SELECTABLE_IDENTIFIER_MAX_BYTES, SELECTABLE_MESSAGE_KIND_REGISTER,
+    SELECTABLE_MESSAGE_KIND_REPLY, SELECTABLE_MESSAGE_KIND_REQUEST, SELECTABLE_MESSAGE_MAX_BYTES,
+    SELECTABLE_PROTOCOL_VERSION, SELECTABLE_REGISTER_HEADER_BYTES,
+    SELECTABLE_SEMANTIC_TAG_MAX_COUNT, SELECTION_REPLY_HEADER_BYTES,
+    SELECTION_REQUEST_HEADER_BYTES, SelectableMessageKind, SelectableProtocolError,
+    SelectableRegister, SelectionReply, SelectionReplyStatus, SelectionRequest,
     WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HINT_BYTES,
     WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT, WHITEBOX_DOORBELL_ABIS,
     WHITEBOX_DOORBELL_ASSERTION_FLAVOR_COUNT, WHITEBOX_DOORBELL_FRAME_HEADER_LEN,
@@ -47,8 +61,9 @@ pub use crucible_protocol::{
     WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError, WhiteboxMarkerPayloadEncodeError,
     WhiteboxMeasurementBoundaryBody, WhiteboxMeasurementValue, WhiteboxMeasurementValueKind,
     WhiteboxMetricSampleBody, WhiteboxRandomRequestBody, WhiteboxReducedRational,
-    WhiteboxSemanticMarkerBody, WhiteboxSemanticMarkerDetail, decode_whitebox_marker_payload,
-    encode_aarch64_hint_instruction, encode_whitebox_doorbell_frame, encode_whitebox_marker_frame,
+    WhiteboxSemanticMarkerBody, WhiteboxSemanticMarkerDetail, decode_selectable_message_kind,
+    decode_whitebox_marker_payload, encode_aarch64_hint_instruction,
+    encode_whitebox_doorbell_frame, encode_whitebox_marker_frame,
     encode_whitebox_marker_payload_body, encode_x86_64_out_imm8_al_instruction,
     whitebox_doorbell_abi_for_architecture,
 };

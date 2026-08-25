@@ -92,7 +92,7 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
 - [ ] **T-CAM-2.3** Normalize genuine explorable decisions through the selection
   envelope and provide an explicit offline migration/rejection policy for older
   schedule artifacts.
-- [ ] **T-CAM-2.4** Implement versioned register/request/reply guest messages and
+- [x] **T-CAM-2.4** Implement versioned register/request/reply guest messages and
   typed Rust guest helpers with complete negative decode and allocation tests.
 - [ ] **T-CAM-2.5** Freeze guest selectable catalogs at setup, validate scenario
   expectations, support bounded narrowed runtime offers, and checkpoint pending
@@ -110,6 +110,18 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
 `gate:e2e-determinism`, `gate:license-boundary`.
 
 **Manual gate:** accepted §14 Phase 2 real-guest choice flight.
+
+The version-1 selectable ABI is now a pure, architecture-independent codec in
+`crucible-protocol` with closed register/request/reply kinds, a 4,608-byte
+aggregate bound, checked dense byte ranges, exact request/reply sequence
+binding, a zero-filled mutable reply reservation, and a closed typed rejection
+vocabulary. `crucible-guest` emits immutable setup registrations and validates
+that a reply exactly occupies the lent request buffer without a stale sequence
+or dirty tail. Golden vectors, every-truncation decoding, malformed range and
+reserved-field cases, and allocation-before-bound regressions run under
+`gate:abi-conformance`. This completes only T-CAM-2.4: catalog freezing,
+scenario/declaration reconciliation, host doorbell dispatch, narrowed-domain
+authority, and pending-request checkpoint ownership remain T-CAM-2.5.
 
 The application-random path now implements the pure normalization and
 application contract, executor-side verification of uniform model samples, live
