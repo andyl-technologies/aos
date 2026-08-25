@@ -71,6 +71,12 @@ impl PluginSetupPlan {
         &self.selectable_catalog_plan
     }
 
+    /// Consumes the composite and returns both independently validated plans.
+    #[must_use]
+    pub fn into_parts(self) -> (AppRandomBranchPlan, SelectableCatalogPlan) {
+        (self.app_random_branch_plan, self.selectable_catalog_plan)
+    }
+
     /// Encodes this plan in the canonical composite descriptor-body format.
     ///
     /// # Errors

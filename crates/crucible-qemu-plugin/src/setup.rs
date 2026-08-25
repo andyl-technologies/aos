@@ -2,8 +2,8 @@
 //!
 //! The setup path consumes the `Setup` descriptors, maps the shared-memory
 //! region for exactly the advertised byte length, validates the region header,
-//! authenticates the sealed app-random branch plan, and arms the wake fd for
-//! later event-loop registration. The caller then proves plugin callback
+//! authenticates the version-negotiated sealed plugin plan, and arms the wake
+//! fd for later event-loop registration. The caller then proves plugin callback
 //! ownership, registers the wake fd, and sends `SetupAck(0)` with the returned
 //! completion token. Descriptor validity comes from the fixed SCM_RIGHTS
 //! handoff; mmap lifetime is owned by the returned [`PluginSetupCompletion`]
@@ -23,7 +23,10 @@ use crucible_protocol::{
     app_random_branch_plan::{
         AppRandomBranchPlan, AppRandomBranchPlanError, MAX_APP_RANDOM_BRANCH_PLAN_BYTES,
     },
-    plugin_send_setup_ack, recv_setup_with_descriptors,
+    plugin_send_setup_ack,
+    plugin_setup_plan::{PLUGIN_SETUP_PLAN_MAX_BYTES, PluginSetupPlan, PluginSetupPlanError},
+    recv_setup_with_descriptors,
+    selectable_catalog_plan::SelectableCatalogPlan,
 };
 #[cfg(unix)]
 use crucible_shmem::{
@@ -169,6 +172,7 @@ pub struct PluginSetupCompletion {
     validated_region: ValidatedSetupRegion,
     wake_fd: ArmedWakeFd,
     app_random_branch_plan: AppRandomBranchPlan,
+    selectable_catalog_plan: Option<SelectableCatalogPlan>,
     registered_wake_fd: Option<RegisteredWakeFd>,
 }
 
@@ -201,6 +205,12 @@ impl PluginSetupCompletion {
     #[must_use]
     pub const fn app_random_branch_plan(&self) -> &AppRandomBranchPlan {
         &self.app_random_branch_plan
+    }
+
+    /// Returns the validated selectable catalog plan when negotiated by v3.
+    #[must_use]
+    pub const fn selectable_catalog_plan(&self) -> Option<&SelectableCatalogPlan> {
+        self.selectable_catalog_plan.as_ref()
     }
 
     /// Returns evidence that the wake fd was registered with QEMU.
@@ -295,15 +305,16 @@ where
     let region_len = setup.region_len;
     let shmem_fd = setup.descriptors.shmem_fd;
     let wake_fd = setup.descriptors.wake_fd;
-    let app_random_branch_plan_fd = setup.descriptors.app_random_branch_plan_fd;
+    let plugin_setup_plan_fd = setup.descriptors.plugin_setup_plan_fd;
 
-    let app_random_branch_plan = match read_app_random_branch_plan(app_random_branch_plan_fd) {
-        Ok(plan) => plan,
-        Err(source) => {
-            send_setup_failure_ack(writer, PluginSetupFailureStage::ValidateAppRandomBranchPlan)?;
-            return Err(PluginSetupError::ValidateAppRandomBranchPlan { source });
-        }
-    };
+    let decoded_plans =
+        match read_plugin_setup_plan(plugin_setup_plan_fd, handshake.proto_version()) {
+            Ok(plans) => plans,
+            Err(source) => {
+                send_setup_failure_ack(writer, PluginSetupFailureStage::ValidatePluginSetupPlan)?;
+                return Err(PluginSetupError::ValidatePluginSetupPlan { source });
+            }
+        };
 
     // The mmap lifetime is carried by `MappedSetupRegion`; no raw pointer to
     // shmem escapes setup without that owner and the validated-region token.
@@ -337,15 +348,23 @@ where
         mapped_region,
         validated_region,
         wake_fd,
-        app_random_branch_plan,
+        app_random_branch_plan: decoded_plans.app_random_branch_plan,
+        selectable_catalog_plan: decoded_plans.selectable_catalog_plan,
         registered_wake_fd: None,
     })
 }
 
+#[cfg(unix)]
+struct DecodedPluginSetupPlans {
+    app_random_branch_plan: AppRandomBranchPlan,
+    selectable_catalog_plan: Option<SelectableCatalogPlan>,
+}
+
 #[cfg(target_os = "linux")]
-fn read_app_random_branch_plan(
+fn read_plugin_setup_plan(
     fd: OwnedFd,
-) -> Result<AppRandomBranchPlan, AppRandomBranchPlanDescriptorError> {
+    protocol_version: u32,
+) -> Result<DecodedPluginSetupPlans, PluginSetupPlanDescriptorError> {
     let required_seals =
         libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
     let observed_seals = unsafe {
@@ -354,13 +373,13 @@ fn read_app_random_branch_plan(
         libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS)
     };
     if observed_seals < 0 {
-        return Err(AppRandomBranchPlanDescriptorError::Io {
-            operation: "read app-random branch-plan seals",
+        return Err(PluginSetupPlanDescriptorError::Io {
+            operation: "read plugin setup-plan seals",
             errno: last_errno(),
         });
     }
     if observed_seals & required_seals != required_seals {
-        return Err(AppRandomBranchPlanDescriptorError::MissingSeals {
+        return Err(PluginSetupPlanDescriptorError::MissingSeals {
             observed: observed_seals,
             required: required_seals,
         });
@@ -373,8 +392,8 @@ fn read_app_random_branch_plan(
         libc::fstat(fd.as_raw_fd(), stat.as_mut_ptr())
     };
     if status != 0 {
-        return Err(AppRandomBranchPlanDescriptorError::Io {
-            operation: "stat app-random branch-plan descriptor",
+        return Err(PluginSetupPlanDescriptorError::Io {
+            operation: "stat plugin setup-plan descriptor",
             errno: last_errno(),
         });
     }
@@ -383,18 +402,23 @@ fn read_app_random_branch_plan(
         stat.assume_init()
     };
     if stat.st_mode & libc::S_IFMT != libc::S_IFREG {
-        return Err(AppRandomBranchPlanDescriptorError::NotRegular);
+        return Err(PluginSetupPlanDescriptorError::NotRegular);
     }
+    let maximum = if protocol_version >= 3 {
+        PLUGIN_SETUP_PLAN_MAX_BYTES
+    } else {
+        MAX_APP_RANDOM_BRANCH_PLAN_BYTES
+    };
     let length = usize::try_from(stat.st_size).map_err(|_error| {
-        AppRandomBranchPlanDescriptorError::InvalidLength {
+        PluginSetupPlanDescriptorError::InvalidLength {
             bytes: usize::MAX,
-            maximum: MAX_APP_RANDOM_BRANCH_PLAN_BYTES,
+            maximum,
         }
     })?;
-    if length == 0 || length > MAX_APP_RANDOM_BRANCH_PLAN_BYTES {
-        return Err(AppRandomBranchPlanDescriptorError::InvalidLength {
+    if length == 0 || length > maximum {
+        return Err(PluginSetupPlanDescriptorError::InvalidLength {
             bytes: length,
-            maximum: MAX_APP_RANDOM_BRANCH_PLAN_BYTES,
+            maximum,
         });
     }
 
@@ -402,9 +426,9 @@ fn read_app_random_branch_plan(
     let mut read = 0_usize;
     while read < bytes.len() {
         let offset = libc::off_t::try_from(read).map_err(|_error| {
-            AppRandomBranchPlanDescriptorError::InvalidLength {
+            PluginSetupPlanDescriptorError::InvalidLength {
                 bytes: length,
-                maximum: MAX_APP_RANDOM_BRANCH_PLAN_BYTES,
+                maximum,
             }
         })?;
         let result = unsafe {
@@ -422,29 +446,44 @@ fn read_app_random_branch_plan(
             if errno == libc::EINTR {
                 continue;
             }
-            return Err(AppRandomBranchPlanDescriptorError::Io {
-                operation: "read app-random branch-plan descriptor",
+            return Err(PluginSetupPlanDescriptorError::Io {
+                operation: "read plugin setup-plan descriptor",
                 errno,
             });
         }
         let count = usize::try_from(result).unwrap_or(0);
         if count == 0 {
-            return Err(AppRandomBranchPlanDescriptorError::Truncated {
+            return Err(PluginSetupPlanDescriptorError::Truncated {
                 expected: length,
                 actual: read,
             });
         }
         read += count;
     }
-    AppRandomBranchPlan::decode(&bytes)
-        .map_err(|source| AppRandomBranchPlanDescriptorError::Decode { source })
+    if protocol_version >= 3 {
+        let plan = PluginSetupPlan::decode(&bytes)
+            .map_err(|source| PluginSetupPlanDescriptorError::DecodeComposite { source })?;
+        let (app_random_branch_plan, selectable_catalog_plan) = plan.into_parts();
+        Ok(DecodedPluginSetupPlans {
+            app_random_branch_plan,
+            selectable_catalog_plan: Some(selectable_catalog_plan),
+        })
+    } else {
+        let app_random_branch_plan = AppRandomBranchPlan::decode(&bytes)
+            .map_err(|source| PluginSetupPlanDescriptorError::DecodeAppRandom { source })?;
+        Ok(DecodedPluginSetupPlans {
+            app_random_branch_plan,
+            selectable_catalog_plan: None,
+        })
+    }
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
-fn read_app_random_branch_plan(
+fn read_plugin_setup_plan(
     _fd: OwnedFd,
-) -> Result<AppRandomBranchPlan, AppRandomBranchPlanDescriptorError> {
-    Err(AppRandomBranchPlanDescriptorError::UnsupportedPlatform)
+    _protocol_version: u32,
+) -> Result<DecodedPluginSetupPlans, PluginSetupPlanDescriptorError> {
+    Err(PluginSetupPlanDescriptorError::UnsupportedPlatform)
 }
 
 #[cfg(unix)]
@@ -665,11 +704,30 @@ fn last_errno() -> i32 {
 }
 
 #[cfg(all(test, target_os = "linux"))]
-pub(crate) fn test_app_random_branch_plan_fd() -> OwnedFd {
+pub(crate) fn test_plugin_setup_plan_fd() -> OwnedFd {
+    let selectable = SelectableCatalogPlan::new(
+        crucible_protocol::selectable_catalog_plan::SelectablePlanLimits::new(1, 1, 1)
+            .unwrap_or_else(|error| panic!("test selectable limits must validate: {error}")),
+        Vec::new(),
+        crucible_protocol::selectable_catalog_plan::SelectablePlanContinuation::cold(),
+    )
+    .unwrap_or_else(|error| panic!("test selectable plan must validate: {error}"));
+    let bytes = PluginSetupPlan::new(AppRandomBranchPlan::default(), selectable)
+        .encode()
+        .unwrap_or_else(|error| panic!("test plugin setup plan must encode: {error}"));
+    test_sealed_setup_plan_fd(&bytes)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn test_legacy_plugin_setup_plan_fd() -> OwnedFd {
+    test_sealed_setup_plan_fd(&AppRandomBranchPlan::default().encode())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn test_sealed_setup_plan_fd(bytes: &[u8]) -> OwnedFd {
     use std::os::fd::FromRawFd;
 
-    let bytes = AppRandomBranchPlan::default().encode();
-    let name = c"crucible-test-app-random-branch-plan";
+    let name = c"crucible-test-plugin-setup-plan";
     let raw_fd = unsafe {
         // SAFETY: the C string is static and memfd_create returns a new fd.
         libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
@@ -817,11 +875,11 @@ pub enum PluginSetupError {
         /// Underlying validation error.
         source: RegionSetupValidationError,
     },
-    /// Validating the immutable branch-plan descriptor failed.
-    #[error("setup app-random branch-plan validation failed")]
-    ValidateAppRandomBranchPlan {
+    /// Validating the immutable version-negotiated setup-plan descriptor failed.
+    #[error("setup plugin-plan validation failed")]
+    ValidatePluginSetupPlan {
         /// Underlying descriptor or canonical-plan failure.
-        source: AppRandomBranchPlanDescriptorError,
+        source: PluginSetupPlanDescriptorError,
     },
     /// The handshake node count disagrees with the mapped shared-memory header.
     #[error(
@@ -872,10 +930,10 @@ pub enum PluginSetupError {
     },
 }
 
-/// Invalid immutable descriptor carrying the setup-time app-random branch plan.
+/// Invalid immutable descriptor carrying the version-negotiated plugin plan.
 #[cfg(unix)]
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum AppRandomBranchPlanDescriptorError {
+pub enum PluginSetupPlanDescriptorError {
     /// Descriptor metadata or content I/O failed.
     #[error("{operation} failed with errno {errno}")]
     Io {
@@ -885,10 +943,10 @@ pub enum AppRandomBranchPlanDescriptorError {
         errno: i32,
     },
     /// The descriptor was not a regular memfd-like file.
-    #[error("app-random branch-plan descriptor is not a regular file")]
+    #[error("plugin setup-plan descriptor is not a regular file")]
     NotRegular,
     /// The descriptor did not carry every immutability seal.
-    #[error("app-random branch-plan seals {observed:#x} do not include {required:#x}")]
+    #[error("plugin setup-plan seals {observed:#x} do not include {required:#x}")]
     MissingSeals {
         /// Observed seal mask.
         observed: i32,
@@ -896,7 +954,7 @@ pub enum AppRandomBranchPlanDescriptorError {
         required: i32,
     },
     /// The descriptor length was empty, unrepresentable, or oversized.
-    #[error("app-random branch-plan descriptor has {bytes} bytes, maximum {maximum}")]
+    #[error("plugin setup-plan descriptor has {bytes} bytes, maximum {maximum}")]
     InvalidLength {
         /// Actual or overflow-saturated byte count.
         bytes: usize,
@@ -904,21 +962,27 @@ pub enum AppRandomBranchPlanDescriptorError {
         maximum: usize,
     },
     /// The descriptor ended before its statted length.
-    #[error("app-random branch-plan descriptor ended at {actual} bytes, expected {expected}")]
+    #[error("plugin setup-plan descriptor ended at {actual} bytes, expected {expected}")]
     Truncated {
         /// Statted byte length.
         expected: usize,
         /// Bytes read before EOF.
         actual: usize,
     },
-    /// The descriptor body was not a canonical plan.
-    #[error("app-random branch-plan body is invalid: {source}")]
-    Decode {
-        /// Canonical plan failure.
+    /// The v2 descriptor body was not a canonical app-random plan.
+    #[error("v2 app-random branch-plan body is invalid: {source}")]
+    DecodeAppRandom {
+        /// Canonical app-random plan failure.
         source: AppRandomBranchPlanError,
     },
+    /// The v3 descriptor body was not a canonical composite plugin plan.
+    #[error("v3 composite plugin setup-plan body is invalid: {source}")]
+    DecodeComposite {
+        /// Canonical composite-plan failure.
+        source: PluginSetupPlanError,
+    },
     /// Immutable plan descriptors are not implemented on this platform.
-    #[error("app-random branch-plan descriptors require Linux memfd seals")]
+    #[error("plugin setup-plan descriptors require Linux memfd seals")]
     UnsupportedPlatform,
 }
 

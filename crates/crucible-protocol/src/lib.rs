@@ -5,8 +5,8 @@
 //! This dual-licensed L1 crate implements independently implementable framing,
 //! versioned codecs, and golden vectors over owned buffers, without QEMU headers,
 //! callbacks, native pointers, or private types. Its Unix descriptor handover
-//! attaches the shared-memory, wake, and immutable app-random branch-plan
-//! descriptors to the setup frame.
+//! attaches the shared-memory, wake, and immutable version-negotiated plugin
+//! plan descriptors to the setup frame.
 //!
 //! Module map: the crate root owns the frame-format constants, closed tag
 //! registry, message bodies, pure codec, frame I/O helpers, handshake
@@ -643,8 +643,8 @@ pub struct SetupDescriptorFds {
     pub shmem_fd: RawFd,
     /// Wake descriptor, sent second in the `SCM_RIGHTS` list.
     pub wake_fd: RawFd,
-    /// Sealed app-random branch-plan descriptor, sent third.
-    pub app_random_branch_plan_fd: RawFd,
+    /// Sealed v2 app-random or v3 composite plugin-plan descriptor, sent third.
+    pub plugin_setup_plan_fd: RawFd,
 }
 
 /// Owned descriptors received from an inbound `Setup` frame.
@@ -655,8 +655,8 @@ pub struct ReceivedSetupDescriptors {
     pub shmem_fd: OwnedFd,
     /// Wake descriptor received second in the `SCM_RIGHTS` list.
     pub wake_fd: OwnedFd,
-    /// Sealed app-random branch-plan descriptor received third.
-    pub app_random_branch_plan_fd: OwnedFd,
+    /// Sealed v2 app-random or v3 composite plugin-plan descriptor received third.
+    pub plugin_setup_plan_fd: OwnedFd,
 }
 
 /// A decoded `Setup` frame plus its attached descriptors.
@@ -2093,7 +2093,7 @@ fn ensure_waiting_for_setup_ack(state: ControlLifecycleState) -> Result<(), Cont
 ///
 /// The descriptors are attached as `SCM_RIGHTS` ancillary data using
 /// `sendmsg`, in the RFC-defined order
-/// `[shmem_fd, wake_fd, app_random_branch_plan_fd]`.
+/// `[shmem_fd, wake_fd, plugin_setup_plan_fd]`.
 ///
 /// # Errors
 ///
@@ -2111,7 +2111,7 @@ pub fn send_setup_with_descriptors(
     let fds = [
         descriptors.shmem_fd,
         descriptors.wake_fd,
-        descriptors.app_random_branch_plan_fd,
+        descriptors.plugin_setup_plan_fd,
     ];
     send_frame_with_fds(socket_fd, &frame, &fds)
 }
@@ -2120,7 +2120,7 @@ pub fn send_setup_with_descriptors(
 ///
 /// The frame must carry exactly three `SCM_RIGHTS` descriptors. The returned
 /// descriptors are owned, marked close-on-exec, and returned in the RFC-defined
-/// order: shmem first, wake second, immutable app-random branch plan third.
+/// order: shmem first, wake second, immutable version-negotiated plugin plan third.
 ///
 /// # Errors
 ///
@@ -2505,7 +2505,7 @@ fn append_rights_fds(
 fn setup_descriptors_from_raw_fds(
     fds: Vec<RawFd>,
 ) -> Result<ReceivedSetupDescriptors, DescriptorHandoverError> {
-    let [shmem_fd, wake_fd, app_random_branch_plan_fd] =
+    let [shmem_fd, wake_fd, plugin_setup_plan_fd] =
         match <[RawFd; SETUP_DESCRIPTOR_COUNT]>::try_from(fds) {
             Ok(fds) => fds,
             Err(fds) => {
@@ -2516,15 +2516,15 @@ fn setup_descriptors_from_raw_fds(
         };
 
     if let Err(error) = set_cloexec_on_raw_fd(shmem_fd) {
-        close_raw_fds(vec![shmem_fd, wake_fd, app_random_branch_plan_fd]);
+        close_raw_fds(vec![shmem_fd, wake_fd, plugin_setup_plan_fd]);
         return Err(error);
     }
     if let Err(error) = set_cloexec_on_raw_fd(wake_fd) {
-        close_raw_fds(vec![shmem_fd, wake_fd, app_random_branch_plan_fd]);
+        close_raw_fds(vec![shmem_fd, wake_fd, plugin_setup_plan_fd]);
         return Err(error);
     }
-    if let Err(error) = set_cloexec_on_raw_fd(app_random_branch_plan_fd) {
-        close_raw_fds(vec![shmem_fd, wake_fd, app_random_branch_plan_fd]);
+    if let Err(error) = set_cloexec_on_raw_fd(plugin_setup_plan_fd) {
+        close_raw_fds(vec![shmem_fd, wake_fd, plugin_setup_plan_fd]);
         return Err(error);
     }
 
@@ -2533,7 +2533,7 @@ fn setup_descriptors_from_raw_fds(
         ReceivedSetupDescriptors {
             shmem_fd: OwnedFd::from_raw_fd(shmem_fd),
             wake_fd: OwnedFd::from_raw_fd(wake_fd),
-            app_random_branch_plan_fd: OwnedFd::from_raw_fd(app_random_branch_plan_fd),
+            plugin_setup_plan_fd: OwnedFd::from_raw_fd(plugin_setup_plan_fd),
         }
     };
     Ok(descriptors)

@@ -118,7 +118,7 @@ fn lifecycle_stream_wires_real_frames_setup_descriptors_and_run_silence()
         SetupDescriptorFds {
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
-            app_random_branch_plan_fd: shmem.as_raw_fd(),
+            plugin_setup_plan_fd: shmem.as_raw_fd(),
         },
     )?;
     let ReceivedSetup {
@@ -460,7 +460,7 @@ fn host_running_lifecycle_stream(
         SetupDescriptorFds {
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
-            app_random_branch_plan_fd: shmem.as_raw_fd(),
+            plugin_setup_plan_fd: shmem.as_raw_fd(),
         },
     )?;
     let _ = crucible_protocol::recv_setup_with_descriptors(peer.as_raw_fd())?;
@@ -515,7 +515,7 @@ fn plugin_setup_lifecycle_stream(
         SetupDescriptorFds {
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
-            app_random_branch_plan_fd: shmem.as_raw_fd(),
+            plugin_setup_plan_fd: shmem.as_raw_fd(),
         },
     )?;
     let _ = plugin.plugin_recv_setup_with_descriptors()?;

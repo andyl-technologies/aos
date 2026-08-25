@@ -143,9 +143,10 @@ coordinate. The plugin catalog converts cold/restored plans bidirectionally and
 creates a fresh token incarnation on restore, so prior-process tokens cannot
 complete a restored pending request. The canonical `CRUCSUP1` composite now
 length-frames the independently versioned app-random and selectable plans for
-the future setup profile. The existing control-protocol v2 third descriptor
-remains the raw app-random plan; selectable plan handoff will use an explicitly
-negotiated v3 setup profile rather than silently redefining that v2 descriptor.
+the negotiated setup profile. The existing control-protocol v2 third descriptor
+remains the raw app-random plan, while v3 now hands off the complete composite;
+the plugin decodes only the exact negotiated profile and retains the selectable
+continuation for later catalog activation.
 
 The application-random path now implements the pure normalization and
 application contract, executor-side verification of uniform model samples, live
@@ -679,7 +680,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   whose schedules contain only deterministic producer decisions and the
   standardized app-random model/branch selection. Before launch it derives a
   bounded per-node producer plan from the repository-resolved target and sends
-  it as the sealed third control-protocol v2 `Setup` descriptor. Lifecycle
+  it through the version-negotiated sealed third `Setup` descriptor. Lifecycle
   construction first requires the plugin-plan and scheduler-selection identity
   sets to match exactly and rejects plans for missing or white-box-disabled
   nodes. The plugin

@@ -27,7 +27,7 @@ fn setup_handover_transfers_three_descriptors_in_fixed_order() -> Result<(), Box
         SetupDescriptorFds {
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
-            app_random_branch_plan_fd: branch_plan.as_raw_fd(),
+            plugin_setup_plan_fd: branch_plan.as_raw_fd(),
         },
     )?;
 
@@ -37,15 +37,15 @@ fn setup_handover_transfers_three_descriptors_in_fixed_order() -> Result<(), Box
             ReceivedSetupDescriptors {
                 shmem_fd,
                 wake_fd,
-                app_random_branch_plan_fd,
+                plugin_setup_plan_fd,
             },
     } = recv_setup_with_descriptors(plugin.as_raw_fd())?;
     assert_eq!(region_len, 450_560);
     assert_close_on_exec(shmem_fd.as_raw_fd())?;
     assert_close_on_exec(wake_fd.as_raw_fd())?;
-    assert_close_on_exec(app_random_branch_plan_fd.as_raw_fd())?;
+    assert_close_on_exec(plugin_setup_plan_fd.as_raw_fd())?;
 
-    assert_received_fd_order(shmem_fd, wake_fd, app_random_branch_plan_fd)?;
+    assert_received_fd_order(shmem_fd, wake_fd, plugin_setup_plan_fd)?;
 
     Ok(())
 }
@@ -71,11 +71,11 @@ fn setup_handover_accepts_split_descriptor_control_messages() -> Result<(), Box<
             ReceivedSetupDescriptors {
                 shmem_fd,
                 wake_fd,
-                app_random_branch_plan_fd,
+                plugin_setup_plan_fd,
             },
     } = recv_setup_with_descriptors(plugin.as_raw_fd())?;
     assert_eq!(region_len, 8192);
-    assert_received_fd_order(shmem_fd, wake_fd, app_random_branch_plan_fd)?;
+    assert_received_fd_order(shmem_fd, wake_fd, plugin_setup_plan_fd)?;
 
     Ok(())
 }
@@ -94,7 +94,7 @@ fn setup_handover_reports_closed_peer_on_send() -> Result<(), Box<dyn Error>> {
         SetupDescriptorFds {
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
-            app_random_branch_plan_fd: branch_plan.as_raw_fd(),
+            plugin_setup_plan_fd: branch_plan.as_raw_fd(),
         },
     );
 
