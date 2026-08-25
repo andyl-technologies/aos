@@ -1955,24 +1955,48 @@ impl Database {
         let origin_prefix = normalize_base_path(&spec.origin_prefix)?;
         let access_policy_digest = sha256_hex(&spec.access_policy_json);
         let content_digest = sha256_hex(&canonical_json(spec)?);
-        let reservation_id = format!("gateway-path:{}", Uuid::new_v4().simple());
+        let current_path = self
+            .backend
+            .query_opt(
+                "SELECT path_reservation_id, endpoint_id, client_base_path
+                 FROM gateway_revisions
+                 WHERE gateway_id = ?1 AND generation = ?2",
+                &vals![gateway_id, previous],
+            )
+            .await?
+            .context("desired gateway revision does not exist")?;
+        let current_reservation_id: String = current_path.get(0)?;
+        let current_endpoint_id: String = current_path.get(1)?;
+        let current_client_base_path: String = current_path.get(2)?;
+        let reuses_reservation =
+            current_endpoint_id == spec.endpoint_id && current_client_base_path == client_base_path;
+        let reservation_id = if reuses_reservation {
+            current_reservation_id
+        } else {
+            format!("gateway-path:{}", Uuid::new_v4().simple())
+        };
         let event_id = format!("gateway-revision:{}", Uuid::new_v4().simple());
         let next_resource_version = expected_resource_version + 1;
         let now = unix_now();
-        let mut statements = vec![
-            Statement::new(
-                "INSERT INTO gateway_path_reservations
+        let mut statements = Vec::new();
+        if !reuses_reservation {
+            statements.push(
+                Statement::new(
+                    "INSERT INTO gateway_path_reservations
                      (reservation_id, gateway_id, endpoint_id, client_base_path, created_at)
                      VALUES (?1, ?2, ?3, ?4, ?5)",
-                vals![
-                    reservation_id,
-                    gateway_id,
-                    spec.endpoint_id,
-                    client_base_path,
-                    now
-                ],
-            )
-            .unchecked(),
+                    vals![
+                        reservation_id,
+                        gateway_id,
+                        spec.endpoint_id,
+                        client_base_path,
+                        now
+                    ],
+                )
+                .expecting(1),
+            );
+        }
+        statements.extend([
             Statement::new(
                 "INSERT INTO gateway_revisions (gateway_id, generation, org_id,
                      owner_scope_key, path_reservation_id, binding_id, endpoint_id,
@@ -2086,7 +2110,7 @@ impl Database {
                 ],
             )
             .unchecked(),
-        ];
+        ]);
         for grant in carry_forward_grants {
             statements.push(
                 Statement::new(
@@ -4651,6 +4675,89 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn gateway_revision_reuses_an_unchanged_path_reservation() {
+        let (db, _, _, _, _) = route_fixture().await;
+        db.backend
+            .execute(
+                "UPDATE endpoint_revisions SET ingress_kind = 'layer7'
+                 WHERE endpoint_id = 'endpoint:route-probes' AND generation = 1",
+                &[],
+            )
+            .await
+            .unwrap();
+        let org = db.org_by_slug("route-probes").await.unwrap().unwrap();
+        let binding = db
+            .binding_by_stable_id("binding:route-probes")
+            .await
+            .unwrap()
+            .unwrap();
+        let mut spec = GatewayRevisionSpec {
+            binding_id: binding.id,
+            endpoint_id: "endpoint:route-probes".to_string(),
+            endpoint_generation: 1,
+            client_base_path: "/cache".to_string(),
+            origin_prefix: "/objects".to_string(),
+            access_policy_kind: "public".to_string(),
+            access_boundary_id: None,
+            access_boundary_revision: None,
+            external_provider_kind: None,
+            external_provider_resource_id: None,
+            external_provider_revision: None,
+            access_policy_json: r#"{"public":true}"#.to_string(),
+        };
+        let gateway = db
+            .create_gateway(
+                "gateway:reusable-path",
+                &org.stable_id,
+                Some(org.id),
+                &spec,
+                "test",
+            )
+            .await
+            .unwrap();
+        let owner = db
+            .load_consumer_scope_grant(
+                GrantResource::Gateway {
+                    id: &gateway.id,
+                    generation: 1,
+                },
+                &org.stable_id,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        spec.origin_prefix = "/objects-v2".to_string();
+        let revised = db
+            .revise_gateway(
+                &gateway.id,
+                &spec,
+                &GatewayGrantCarryForward {
+                    consumer_scope_key: owner.consumer_scope_key,
+                    grant_generation: owner.grant_generation,
+                    resource_version: owner.resource_version,
+                },
+                &[],
+                gateway.resource_version,
+                "test",
+                "request:gateway-reusable-path",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(revised.desired_generation, Some(2));
+        assert_eq!(
+            db.gateway_revision(&gateway.id, 2)
+                .await
+                .unwrap()
+                .unwrap()
+                .spec
+                .origin_prefix,
+            "/objects-v2"
+        );
     }
 
     #[tokio::test]
