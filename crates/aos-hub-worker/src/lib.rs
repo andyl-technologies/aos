@@ -165,6 +165,56 @@ pub mod workerkv;
 #[cfg(target_arch = "wasm32")]
 pub mod workerqueue;
 
+/// Derives the stable identity of one registry's current index input.
+///
+/// Queue envelopes deliberately have unique operation IDs, but several publish
+/// or maintenance events may request the same derived index. Fencing builds by
+/// the configuration version and publication identity coalesces those
+/// duplicates while still admitting a new build whenever either input changes.
+fn registry_index_build_id(
+    registry_id: i64,
+    registry_resource_version: i64,
+    publication_id: Option<&str>,
+) -> String {
+    use sha2::{Digest as _, Sha256};
+
+    let mut digest = Sha256::new();
+    digest.update(b"aos-registry-index-build-v1\0");
+    digest.update(registry_id.to_be_bytes());
+    digest.update(registry_resource_version.to_be_bytes());
+    match publication_id {
+        Some(publication_id) => {
+            digest.update([1]);
+            digest.update(publication_id.as_bytes());
+        }
+        None => digest.update([0]),
+    }
+    hex::encode(digest.finalize())
+}
+
+#[cfg(test)]
+mod index_build_identity_tests {
+    use super::registry_index_build_id;
+
+    #[test]
+    fn identity_coalesces_duplicates_and_tracks_both_input_versions() {
+        let original = registry_index_build_id(7, 3, Some("publication-a"));
+        assert_eq!(
+            original,
+            registry_index_build_id(7, 3, Some("publication-a"))
+        );
+        assert_ne!(
+            original,
+            registry_index_build_id(7, 4, Some("publication-a"))
+        );
+        assert_ne!(
+            original,
+            registry_index_build_id(7, 3, Some("publication-b"))
+        );
+        assert_ne!(original, registry_index_build_id(7, 3, None));
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 mod entry {
     //! The Workers runtime entry points: the `fetch` and `scheduled` handlers.
@@ -1452,10 +1502,25 @@ mod entry {
                         };
                         let reindexer =
                             WorkerReindexer::new(bucket, Arc::clone(&db), secret_versions, egress);
+                        let publication_state = db
+                            .registry_publication_state(*registry_id)
+                            .await
+                            .map_err(|error| {
+                                worker::Error::RustError(format!(
+                                    "job reindex {registry_id} publication state: {error:#}"
+                                ))
+                            })?;
+                        let build_id = crate::registry_index_build_id(
+                            *registry_id,
+                            registry.resource_version,
+                            publication_state
+                                .as_ref()
+                                .and_then(|state| state.current_publication_id.as_deref()),
+                        );
                         let claim = db
                             .claim_registry_index_build(
                                 *registry_id,
-                                &envelope.operation_id,
+                                &build_id,
                                 now_for_worker(),
                                 900,
                             )
@@ -1489,7 +1554,7 @@ mod entry {
                             if let Err(failure_error) = db
                                 .fail_registry_index_build(
                                     *registry_id,
-                                    &envelope.operation_id,
+                                    &build_id,
                                     &owner_token,
                                     &detail,
                                     now_for_worker(),
@@ -1519,7 +1584,7 @@ mod entry {
                             })?;
                         db.complete_registry_index_build(
                             *registry_id,
-                            &envelope.operation_id,
+                            &build_id,
                             &owner_token,
                             base_generation,
                             target_generation,

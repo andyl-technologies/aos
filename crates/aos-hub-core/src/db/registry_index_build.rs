@@ -108,7 +108,7 @@ impl Database {
         let state: String = row.get(3)?;
         let existing_lease: Option<i64> = row.get(4)?;
         let resource_version: i64 = row.get(5)?;
-        if existing_build_id == build_id && state != "building" {
+        if existing_build_id == build_id && matches!(state.as_str(), "published" | "no_change") {
             return Ok(RegistryIndexBuildClaim::AlreadyFinished);
         }
         if existing_build_id == build_id && generation >= existing_target {
@@ -339,5 +339,32 @@ mod tests {
                 .unwrap(),
             RegistryIndexBuildClaim::AlreadyFinished
         );
+    }
+
+    #[tokio::test]
+    async fn failed_stable_build_identity_can_be_retried() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("build-retry", &[], false)
+            .await
+            .unwrap();
+        let build = "c".repeat(32);
+        let RegistryIndexBuildClaim::Acquired { owner_token, .. } = db
+            .claim_registry_index_build(registry_id, &build, 100, 60)
+            .await
+            .unwrap()
+        else {
+            panic!("first build did not acquire its generation")
+        };
+        db.fail_registry_index_build(registry_id, &build, &owner_token, "retryable", 101)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            db.claim_registry_index_build(registry_id, &build, 102, 60)
+                .await
+                .unwrap(),
+            RegistryIndexBuildClaim::Acquired { .. }
+        ));
     }
 }
