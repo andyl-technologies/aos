@@ -1380,14 +1380,27 @@ fn single_scheduler_checkpoint_round_trips_complete_device_and_event_state() {
     let pending = event(17, &consumer, &producer, 0, b"pending-input");
     let mut scheduler = test_scheduler(vec![node.clone()], vec![pending.clone()]);
     scheduler = scheduler.with_device_sub_node(disk_with_reads("a", "disk-a", &[(11, 8)]));
+    let retained = ObservableEvent::console_output(
+        VirtualTime { ticks: 11 },
+        NodeId {
+            name: String::from("a"),
+        },
+        b"checkpoint-prefix".to_vec(),
+    );
+    let appended = QuantumLoop::append_backend_observable_events(&mut scheduler, vec![retained])
+        .unwrap_or_else(|error| panic!("scheduler event should append: {error}"));
     let checkpoint = scheduler
         .checkpoint()
         .unwrap_or_else(|error| panic!("scheduler checkpoint should capture: {error}"));
+    assert_eq!(checkpoint.retained_event_log_base_events(), 0);
+    assert_eq!(checkpoint.retained_event_log_entries(), appended.entries);
     let bytes = checkpoint
         .canonical_bytes()
         .unwrap_or_else(|error| panic!("scheduler checkpoint should encode: {error}"));
     let decoded = SingleSchedulerCheckpoint::from_canonical_bytes(&bytes)
         .unwrap_or_else(|error| panic!("scheduler checkpoint should decode: {error}"));
+    assert_eq!(decoded.retained_event_log_base_events(), 0);
+    assert_eq!(decoded.retained_event_log_entries(), appended.entries);
 
     let mut restored = test_scheduler(vec![node], vec![pending]);
     restored = restored.with_device_sub_node(disk_with_reads("a", "disk-a", &[]));
@@ -1402,6 +1415,56 @@ fn single_scheduler_checkpoint_round_trips_complete_device_and_event_state() {
             .unwrap_or_else(|error| panic!("restored scheduler should encode: {error}")),
         bytes
     );
+}
+
+#[test]
+fn live_backend_event_log_suffix_is_adopted_atomically() {
+    let mut scheduler = test_scheduler(Vec::new(), Vec::new());
+    let before = scheduler.event_log().offset();
+    let mut backend_log = scheduler.event_log().clone();
+    let entry = scheduler_event_log_entry(
+        before.events,
+        VirtualTime { ticks: 13 },
+        SchedulerEventLogPayload::Observable(ObservableEventPayload::ConsoleOutput {
+            node: NodeId {
+                name: String::from("a"),
+            },
+            bytes: b"paused-drain".to_vec(),
+        }),
+    );
+    let expected = backend_log
+        .append_entries(vec![entry.clone()])
+        .unwrap_or_else(|error| panic!("backend suffix should append: {error}"));
+
+    let adopted = scheduler
+        .adopt_live_backend_event_log_suffix(&backend_log)
+        .unwrap_or_else(|error| panic!("exact backend suffix should be adopted: {error}"));
+
+    assert_eq!(adopted.entries, vec![entry]);
+    assert_eq!(adopted.offset, expected.offset);
+    assert_eq!(scheduler.event_log().offset(), backend_log.offset());
+
+    let accepted = scheduler.event_log().offset();
+    let mut foreign = scheduler.event_log().clone();
+    let foreign_entry = scheduler_event_log_entry(
+        accepted.events,
+        VirtualTime { ticks: 17 },
+        SchedulerEventLogPayload::Observable(ObservableEventPayload::ConsoleOutput {
+            node: NodeId {
+                name: String::from("a"),
+            },
+            bytes: b"foreign-drain".to_vec(),
+        }),
+    );
+    foreign
+        .append_entries(vec![foreign_entry])
+        .unwrap_or_else(|error| panic!("foreign suffix should be structurally valid: {error}"));
+    foreign.offset.prefix = ContentHash::from_bytes(b"foreign-prefix");
+
+    scheduler
+        .adopt_live_backend_event_log_suffix(&foreign)
+        .expect_err("foreign final offset must fail closed");
+    assert_eq!(scheduler.event_log().offset(), accepted);
 }
 
 #[test]

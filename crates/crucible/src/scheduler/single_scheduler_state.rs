@@ -933,6 +933,16 @@ impl SingleScheduler {
         self.event_log.offset()
     }
 
+    /// Returns the scheduler-owned unified event log.
+    ///
+    /// The returned capability is read-only. Live backend adapters append
+    /// through [`QuantumLoop`] so dense sequencing and condition-prefix
+    /// validation remain scheduler-owned.
+    #[must_use]
+    pub const fn event_log(&self) -> &EventLog {
+        &self.event_log
+    }
+
     /// Returns the scheduler-owned condition-evaluation prefix.
     #[must_use]
     pub fn condition_event_log_prefix(&self) -> &ConditionEventLogPrefix {

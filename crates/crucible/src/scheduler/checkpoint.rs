@@ -317,6 +317,27 @@ impl SingleSchedulerCheckpoint {
         &self.wire.event_log.segment_dependencies
     }
 
+    /// Returns the exact event entries retained for condition and evidence replay.
+    ///
+    /// A scheduler created at run genesis retains a zero-based complete prefix.
+    /// A continuation reconstructed from an offset-only source may instead
+    /// retain a suffix whose first sequence is reported by
+    /// [`Self::retained_event_log_base_events`]. Callers that require complete
+    /// run evidence must reject a nonzero base or load the authenticated prior
+    /// segment closure before interpreting this slice as the whole run.
+    #[must_use]
+    pub fn retained_event_log_entries(&self) -> &[SchedulerEventLogEntry] {
+        &self.wire.event_log.condition_entries
+    }
+
+    /// Returns the dense sequence preceding the retained event-entry suffix.
+    ///
+    /// Zero means [`Self::retained_event_log_entries`] starts at run genesis.
+    #[must_use]
+    pub const fn retained_event_log_base_events(&self) -> u64 {
+        self.wire.event_log.condition_base_events
+    }
+
     /// Encodes the complete scheduler continuation canonically.
     ///
     /// # Errors
