@@ -2207,8 +2207,9 @@ Invocation by guarded launch, baked/thin image
 provisioning, and a real ext4 project-quota enforcement VM gate remain mandatory
 before this host owner is selected by the production executor.
 
-This authority is not yet selected by the production executor flight. The
-guarded launch/session path transfers retained pre-install and active-node
+The packaged production executor now selects this authority after capturing
+and admitting baked genesis but before binding its endpoint. The guarded
+launch/session path transfers retained pre-install and active-node
 children into the abstract attempt guard, and the daemon guard composes
 cancellation, quantum accounting, descriptor-pinned preparation, and
 all-or-quarantine cleanup around the concrete combined Linux host owner. A
@@ -2328,12 +2329,13 @@ result sealing. Divergence, early terminal state, cancellation, or quantum
 exhaustion fails closed and still tears down the lifecycle. The runner MUST NOT
 substitute seed changes or a post-hoc schedule append for a `CampaignBranch`
 selection.
-The daemon-packaged executor now selects the concrete fresh driver and the
-version-four exact-resume driver in a fixed worker pool with a shared aggregate
+The daemon-packaged executor now selects the concrete fresh driver, the
+version-four exact-resume driver, and one concrete packaged replay-oracle
+factory per semantic worker in a fixed worker pool with a shared aggregate
 resource owner and disjoint stable worker recovery roots. The exact-origin
 router never sends a retained root through fresh reconstruction. An
-independently admitted debugger world and the concrete packaged replay-oracle
-factory remain open; no unsupported mode falls back to the packaged authority. The
+independently admitted debugger world remains open; no unsupported mode falls
+back to the packaged authority. The
 concrete modeled driver accepts an already-materialized authenticated discovery
 child or selected branch child and advances only empty-control scheduler quanta. It
 checks cancellation and the exact-checkpoint request before and after each
@@ -2393,8 +2395,12 @@ same bounded version-four native store, tears every process down, and admits
 the result only when its exact World live-node set authenticates. This
 read-only capability grants neither campaign publication nor replay admission
 by itself. Fresh exact-cache and packaged thin-image materialization remain
-separate optimizations; concrete packaged replay-oracle comparison remains
-mandatory before the packaged service may advertise exact restore. A
+separate optimization choices from campaign semantics. A concrete node-specific
+factory prepares the authenticated fat and baked artifact pairs in disjoint
+pinned generations and returns the guarded real-node comparison session.
+Packaged startup captures the baked source before endpoint binding, installs one
+fixed promotion owner per semantic worker, and advertises exact restore only
+after that nonempty owner set exists. A
 process-only Linux facade
 now validates a daemon-incarnation
 namespace, non-root child IDs, task and finish bounds before acquiring the
@@ -2524,19 +2530,21 @@ comparison, or publication work. The ordinary guarded lifecycle now constructs
 the adapter's independent baked-genesis source candidate at exact scenario
 genesis and admits only a complete version-four native closure with exactly the
 World live-node set. Constructing the packaged node-specific materializer and
-real-node replay factory over that source remains open. The
-packaged capability set is derived from this owner: the default composition
-installs no promotion worker and advertises only `ThinReplay`; a composition
-with at least one fixed promotion owner also advertises `ExactRestore` and
-reports the installed owner count.
+real-node replay factory over that source is now implemented: a shared compact
+catalog avoids complete-closure rescans, one target snapshot is decoded at a
+time, and every artifact stream observes the exact attempt guard. Packaged
+startup installs one such promotion owner per semantic worker. The packaged
+capability set is derived from that fixed owner set: a nonempty set advertises
+`ExactRestore` and reports its installed count. Native-catalog cleanup remains
+open.
 
 Concrete production-loop process reconstruction and exact-resume modeled-driver
 selection are implemented: a resume-only installer rejects `NotRun` before
 native publication or resource installation, the guarded lifecycle restores the
 complete version-four loop, and the packaged worker routes retained roots only
-to the exact-resume runner. Native-catalog cleanup, concrete packaged replay
-factory construction, and enabling that owner in the default composition
-remain open, so the packaged executor does not yet advertise exact resume.
+to the exact-resume runner. Native-catalog cleanup remains open. The packaged
+executor installs the concrete replay owners during startup and advertises exact
+resume only after that installation succeeds.
 Version-two roots
 remain readable for legacy authentication but are incomplete campaign continuations and MUST be
 rejected by attempt resume before VMState materialization. The

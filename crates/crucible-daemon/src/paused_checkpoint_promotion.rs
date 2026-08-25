@@ -192,6 +192,7 @@ pub trait ProductionPausedCheckpointReplayFactory {
     #[allow(clippy::type_complexity)]
     fn begin_target(
         &mut self,
+        exact_root: ExactCheckpointId,
         world: &World,
         configuration: &Configuration,
         target: &crucible_api::ProductionExactCheckpointReplayTarget,
@@ -671,6 +672,7 @@ where
         };
         let (mut realization_store, mut executor, mut guard) = factory
             .begin_target(
+                installed.checkpoint(),
                 target.source.world(),
                 installed.configuration(),
                 &next,

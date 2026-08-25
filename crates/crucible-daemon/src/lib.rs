@@ -330,7 +330,9 @@ pub use planner_process::{
 };
 pub use qemu_baked_genesis::{
     ProductionBakedGenesisCaptureError, ProductionBakedGenesisCheckpoint,
-    ProductionBakedGenesisCheckpointError, capture_production_baked_genesis,
+    ProductionBakedGenesisCheckpointError, ProductionBakedGenesisReplayFactory,
+    ProductionBakedGenesisReplayLauncher, ProductionBakedGenesisReplayStore,
+    capture_production_baked_genesis,
 };
 pub use qemu_campaign_driver::{
     MAX_QEMU_CAMPAIGN_ASSERTION_EVENT_VISITS, MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
@@ -340,8 +342,9 @@ pub use qemu_campaign_lifecycle::{
     QemuAttemptProductionVmLifecycleError, QemuAttemptProductionVmLifecycleFactory,
     QemuFreshAttemptDriver, QemuFreshAttemptLifecycle, QemuFreshAttemptLifecycleFactory,
     QemuFreshAttemptLifecycleOwner, QemuFreshDriveOutcome, QemuFreshExecutionRunner,
-    QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCaptureFailure,
-    QemuFreshGenesisCheckpointError, QemuFreshStartMaterialization, QemuFreshStartReplayError,
+    QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
+    QemuFreshGenesisCheckpointCaptureFailure, QemuFreshGenesisCheckpointError,
+    QemuFreshStartMaterialization, QemuFreshStartReplayError,
     capture_fresh_genesis_checkpoint_candidate,
 };
 pub use qemu_campaign_resume::{

@@ -452,9 +452,15 @@ capture a separate candidate at the exact scenario-genesis ready boundary
 without executing a modeled quantum, tear QEMU down, and admit only a complete
 version-four native closure whose live-node set exactly equals the World. That
 capability is the authenticated bootstrap source for baked-genesis replay; it
-does not publish a campaign root or advertise exact restore. Materializing it
-through the packaged node-specific thin launcher, the automatic concrete
-comparison flight, capability advertisement, and native-catalog cleanup remain
+does not publish a campaign root or advertise exact restore. The concrete
+node-specific replay factory now shares one completely authenticated compact
+target catalog, opens only the requested baked snapshot, streams the selected
+fat and baked artifact pairs into separate descriptor-pinned generations under
+one exact attempt guard, and launches them through disjoint exact and thin
+profile capabilities. Packaged startup captures that baked source before
+binding the endpoint, installs one fixed promotion owner per semantic worker,
+and advertises `ExactRestore` only when that nonempty owner set exists.
+Assignment-root-aware cleanup of abandoned native catalog entries remains
 gated in the implementation plan.
 
 A newly captured exact root records replay-oracle state `NotRun` and is not

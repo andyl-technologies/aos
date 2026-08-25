@@ -16,10 +16,13 @@ use crate::node_factory::{
     QemuPreparedWarmRestoreLaunch, spawn_setup_and_restore_prepared_qemu_node_guarded,
 };
 use crate::{
-    QemuCapturedVmState, QemuChildProcessContract, QemuExactSnapshotPolicy, QemuHostIoRuntime,
-    QemuLaunchCommand, QemuLoadvmCommandAuthorization, QemuLoadvmRealizationAdmission, QemuNode,
+    QemuCapturedVmState, QemuChildProcessContract, QemuExactSnapshotPolicy,
+    QemuGuardedExactNodeLaunch, QemuGuardedRestoredNodeLaunch, QemuHostIoRuntime,
+    QemuLaunchCommand, QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError,
+    QemuLoadvmCommandAuthorization, QemuLoadvmRealizationAdmission, QemuNode,
     QemuNodeFactoryRuntime, QemuNodeRestorePlan, QemuPreparedRunDirectory, QemuSpawnError,
-    QemuVmStateBinding, QemuWarmRestoreLaunchError, spawn_setup_and_restore_qemu_node,
+    QemuVmStateBinding, QemuWarmRestoreLaunchError, launch_qemu_live_node_exact_snapshot_guarded,
+    launch_qemu_live_node_restored_guarded, spawn_setup_and_restore_qemu_node,
 };
 
 use super::{
@@ -417,6 +420,43 @@ pub struct QemuPreparedThinWarmRestoreNodeLauncher<A, R, F> {
     _runtime: std::marker::PhantomData<fn() -> (A, R)>,
 }
 
+/// Scenario-profile exact-target launcher for one replay-oracle generation.
+///
+/// Unlike the lower-level generic launcher, this owner reuses the same
+/// scenario-aware live-node gate profile as the production lifecycle, including
+/// block, 9p, network, app-random, and fault-channel configuration.
+pub struct QemuExactProfileWarmRestoreNodeLauncher {
+    config: QemuLiveNodeStepGateConfig,
+    run_directory: QemuPreparedRunDirectory,
+    vmstate_binding: QemuVmStateBinding,
+    snapshot: ContentHash,
+    checkpoint: ContentHash,
+    identity: OwnedLiveNodeIdentity,
+    failed_child: Option<crate::QemuNodeChild>,
+}
+
+/// Scenario-profile thin-path launcher for one replay-oracle generation.
+pub struct QemuThinProfileWarmRestoreNodeLauncher {
+    config: QemuLiveNodeStepGateConfig,
+    run_directory: QemuPreparedRunDirectory,
+    vmstate_binding: QemuVmStateBinding,
+    checkpoint: ContentHash,
+    identity: OwnedLiveNodeIdentity,
+    failed_child: Option<crate::QemuNodeChild>,
+}
+
+struct OwnedLiveNodeIdentity {
+    node: String,
+    router: String,
+    crash_detector: String,
+}
+
+impl OwnedLiveNodeIdentity {
+    fn borrowed(&self) -> QemuLiveNodeIdentity<'_> {
+        QemuLiveNodeIdentity::new(&self.node, &self.router, &self.crash_detector)
+    }
+}
+
 /// Paired launch authorities used by one guarded replay-oracle executor.
 ///
 /// `exact` owns the selected target's exact-root materialization; `thin` owns
@@ -498,6 +538,69 @@ impl<A, R, F> QemuPreparedThinWarmRestoreNodeLauncher<A, R, F> {
     }
 }
 
+impl QemuExactProfileWarmRestoreNodeLauncher {
+    /// Creates one exact-target launcher from a retained production profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] unless the profile names the pinned
+    /// directory and both required artifacts carry the exact-root binding.
+    pub fn new(
+        config: QemuLiveNodeStepGateConfig,
+        run_directory: QemuPreparedRunDirectory,
+        vmstate_binding: QemuVmStateBinding,
+        snapshot: &QemuVmSnapshot,
+        node: impl Into<String>,
+        crash_detector: impl Into<String>,
+    ) -> Result<Self, QemuVmRealizationError> {
+        validate_profile_materialization(&config, &run_directory, vmstate_binding)?;
+        Ok(Self {
+            config,
+            run_directory,
+            vmstate_binding,
+            snapshot: snapshot.id(),
+            checkpoint: snapshot.checkpoint().id,
+            identity: OwnedLiveNodeIdentity {
+                node: node.into(),
+                router: String::from("crucible-router"),
+                crash_detector: crash_detector.into(),
+            },
+            failed_child: None,
+        })
+    }
+}
+
+impl QemuThinProfileWarmRestoreNodeLauncher {
+    /// Creates one independently bound baked-genesis or ancestor launcher.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] unless the profile names the pinned
+    /// directory and both required artifacts carry the thin-catalog binding.
+    pub fn new(
+        config: QemuLiveNodeStepGateConfig,
+        run_directory: QemuPreparedRunDirectory,
+        vmstate_binding: QemuVmStateBinding,
+        checkpoint: ContentHash,
+        node: impl Into<String>,
+        crash_detector: impl Into<String>,
+    ) -> Result<Self, QemuVmRealizationError> {
+        validate_profile_materialization(&config, &run_directory, vmstate_binding)?;
+        Ok(Self {
+            config,
+            run_directory,
+            vmstate_binding,
+            checkpoint,
+            identity: OwnedLiveNodeIdentity {
+                node: node.into(),
+                router: String::from("crucible-router"),
+                crash_detector: crash_detector.into(),
+            },
+            failed_child: None,
+        })
+    }
+}
+
 impl<X, T> QemuReplayValidationNodeLauncher<X, T> {
     /// Pairs disjoint exact-probe and thin-path launch authorities.
     #[must_use]
@@ -567,6 +670,14 @@ where
     type Node = QemuNode;
 }
 
+impl QemuNodeLauncher for QemuExactProfileWarmRestoreNodeLauncher {
+    type Node = QemuNode;
+}
+
+impl QemuNodeLauncher for QemuThinProfileWarmRestoreNodeLauncher {
+    type Node = QemuNode;
+}
+
 impl<X, T> QemuNodeLauncher for QemuReplayValidationNodeLauncher<X, T>
 where
     X: QemuNodeLauncher,
@@ -619,6 +730,18 @@ where
     R: QemuHostIoRuntime + 'static,
     F: FnMut(&Configuration) -> QemuNodeFactoryRuntime<A, R>,
 {
+    fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild> {
+        self.failed_child.take()
+    }
+}
+
+impl QemuFailedLaunchChildSource for QemuExactProfileWarmRestoreNodeLauncher {
+    fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild> {
+        self.failed_child.take()
+    }
+}
+
+impl QemuFailedLaunchChildSource for QemuThinProfileWarmRestoreNodeLauncher {
     fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild> {
         self.failed_child.take()
     }
@@ -741,6 +864,67 @@ where
             |_current_icount| {},
         );
         retain_warm_restore_result(result, &mut self.failed_child)
+    }
+}
+
+impl QemuGuardedNodeRealizationLauncher for QemuExactProfileWarmRestoreNodeLauncher {
+    fn launch_materialized_exact_node_guarded(
+        &mut self,
+        config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+        restore: QemuNodeRestorePlan<'_>,
+        process_contract: &QemuChildProcessContract,
+    ) -> Result<Self::Node, QemuVmRealizationError> {
+        require_no_failed_launch_child(&self.failed_child)?;
+        if snapshot.id() != self.snapshot || restore.checkpoint().id != self.checkpoint {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "guarded exact-profile warm restore",
+                message: String::from(
+                    "snapshot metadata does not match the materialized exact target",
+                ),
+            });
+        }
+        let result = launch_qemu_live_node_exact_snapshot_guarded(
+            &self.config,
+            QemuGuardedExactNodeLaunch::new(
+                &self.run_directory,
+                process_contract,
+                self.vmstate_binding,
+                self.identity.borrowed(),
+                snapshot,
+            ),
+        );
+        retain_profile_restore_result(result, &mut self.failed_child, config)
+    }
+}
+
+impl QemuGuardedThinNodeRealizationLauncher for QemuThinProfileWarmRestoreNodeLauncher {
+    fn launch_thin_path_node_guarded(
+        &mut self,
+        config: &Configuration,
+        restore: QemuNodeRestorePlan<'_>,
+        process_contract: &QemuChildProcessContract,
+    ) -> Result<Self::Node, QemuVmRealizationError> {
+        require_no_failed_launch_child(&self.failed_child)?;
+        if restore.checkpoint().id != self.checkpoint {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "guarded thin-profile warm restore",
+                message: String::from(
+                    "restore checkpoint does not match the materialized thin target",
+                ),
+            });
+        }
+        let result = launch_qemu_live_node_restored_guarded(
+            &self.config,
+            QemuGuardedRestoredNodeLaunch::new(
+                &self.run_directory,
+                process_contract,
+                self.vmstate_binding,
+                self.identity.borrowed(),
+                restore,
+            ),
+        );
+        retain_profile_restore_result(result, &mut self.failed_child, config)
     }
 }
 
@@ -1657,6 +1841,54 @@ fn warm_restore_error(source: QemuWarmRestoreLaunchError) -> QemuVmRealizationEr
     QemuVmRealizationError::Executor {
         operation: "launch warm QEMU node",
         message: source.to_string(),
+    }
+}
+
+fn validate_profile_materialization(
+    config: &QemuLiveNodeStepGateConfig,
+    run_directory: &QemuPreparedRunDirectory,
+    binding: QemuVmStateBinding,
+) -> Result<(), QemuVmRealizationError> {
+    if config.run_directory() != run_directory.path() {
+        return Err(QemuVmRealizationError::InvalidCheckpoint {
+            role: "scenario-profile warm restore",
+            message: String::from(
+                "launch profile does not name the descriptor-pinned run directory",
+            ),
+        });
+    }
+    run_directory
+        .require_exact_vmstate(binding)
+        .map_err(profile_materialization_error)?;
+    if config.resource_requirements().has_root_overlay() {
+        run_directory
+            .require_exact_root_overlay(binding)
+            .map_err(profile_materialization_error)?;
+    }
+    Ok(())
+}
+
+fn profile_materialization_error(source: QemuSpawnError) -> QemuVmRealizationError {
+    QemuVmRealizationError::Executor {
+        operation: "admit scenario-profile warm restore artifacts",
+        message: source.to_string(),
+    }
+}
+
+fn retain_profile_restore_result(
+    result: Result<QemuNode, QemuLiveNodeStepGateError>,
+    failed_child: &mut Option<crate::QemuNodeChild>,
+    config: &Configuration,
+) -> Result<QemuNode, QemuVmRealizationError> {
+    match result {
+        Ok(node) => Ok(node),
+        Err(mut source) => {
+            *failed_child = source.take_unreaped_child();
+            Err(QemuVmRealizationError::Executor {
+                operation: "launch scenario-profile warm QEMU node",
+                message: format!("configuration {}: {source}", config.id().to_hex()),
+            })
+        }
     }
 }
 

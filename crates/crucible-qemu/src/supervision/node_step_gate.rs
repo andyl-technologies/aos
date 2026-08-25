@@ -275,6 +275,17 @@ impl QemuLiveNodeStepGateConfig {
         self
     }
 
+    /// Returns this launch profile without an operator debugger endpoint.
+    ///
+    /// Background bake and replay-oracle generations must not reuse a live
+    /// attempt's private gdbstub socket path or operator listener. Removing the
+    /// endpoint does not change modeled guest execution.
+    #[must_use]
+    pub fn without_gdbstub(mut self) -> Self {
+        self.gdbstub = None;
+        self
+    }
+
     /// Returns the fixed host-resource baseline for this launch profile.
     ///
     /// The value is independent of the generation run-directory namespace and
@@ -299,6 +310,12 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub fn root_image(&self) -> Option<&Path> {
         self.root_image.as_deref()
+    }
+
+    /// Returns the generation run directory sealed into this launch profile.
+    #[must_use]
+    pub fn run_directory(&self) -> &Path {
+        &self.run_directory
     }
 
     /// Builds a node-step configuration with bounded defaults.
@@ -696,10 +713,6 @@ impl QemuLiveNodeStepGateConfig {
     ) -> Self {
         self.fault_capabilities = Some(capabilities);
         self
-    }
-
-    pub(super) fn run_directory(&self) -> &Path {
-        &self.run_directory
     }
 }
 
@@ -1622,6 +1635,15 @@ pub struct QemuGuardedExactNodeLaunch<'a> {
     snapshot: &'a QemuVmSnapshot,
 }
 
+/// Complete borrowed basis for one guarded authorized warm restore.
+pub struct QemuGuardedRestoredNodeLaunch<'a> {
+    run_directory: &'a QemuPreparedRunDirectory,
+    process_contract: &'a QemuChildProcessContract,
+    vmstate_binding: QemuVmStateBinding,
+    identity: QemuLiveNodeIdentity<'a>,
+    restore: QemuNodeRestorePlan<'a>,
+}
+
 /// Complete borrowed basis for one guarded fresh node launch.
 #[derive(Clone, Copy, Debug)]
 pub struct QemuGuardedFreshNodeLaunch<'a> {
@@ -1692,6 +1714,55 @@ impl<'a> QemuGuardedExactNodeLaunch<'a> {
             snapshot,
         }
     }
+}
+
+impl<'a> QemuGuardedRestoredNodeLaunch<'a> {
+    /// Seals pinned storage, process, authorization, and scheduler-name inputs.
+    #[must_use]
+    pub const fn new(
+        run_directory: &'a QemuPreparedRunDirectory,
+        process_contract: &'a QemuChildProcessContract,
+        vmstate_binding: QemuVmStateBinding,
+        identity: QemuLiveNodeIdentity<'a>,
+        restore: QemuNodeRestorePlan<'a>,
+    ) -> Self {
+        Self {
+            run_directory,
+            process_contract,
+            vmstate_binding,
+            identity,
+            restore,
+        }
+    }
+}
+
+/// Launches one authorized warm restore through a pinned process contract.
+///
+/// This is the generic guarded counterpart of
+/// [`launch_qemu_live_node_restored`]. Replay-oracle thin paths use it with a
+/// baked-genesis or proper-ancestor restore admission whose VMState and root
+/// overlay were materialized under a role-specific binding.
+///
+/// # Errors
+///
+/// Returns [`QemuLiveNodeStepGateError`] when the prepared artifacts, guarded
+/// process contract, restore admission, setup, or mandatory cleanup fails.
+pub fn launch_qemu_live_node_restored_guarded(
+    config: &QemuLiveNodeStepGateConfig,
+    request: QemuGuardedRestoredNodeLaunch<'_>,
+) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+    build_live_node_with_authority(
+        config,
+        request.run_directory.path(),
+        request.identity,
+        Some(request.restore),
+        true,
+        LiveNodeSpawnAuthority::Guarded {
+            run_directory: request.run_directory,
+            process_contract: request.process_contract,
+            vmstate_binding: Some(request.vmstate_binding),
+        },
+    )
 }
 
 /// Launches one exact-snapshot node through a descriptor-pinned process contract.
