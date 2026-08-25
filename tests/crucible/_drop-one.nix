@@ -16,6 +16,12 @@
 #                                sim-gated behavioral patch); a live boot probe
 #                                compares the full QEMU with the full-minus-N
 #                                variant.
+#   drop-one-binary            : the focused boot does not reach N, but removing
+#                                N changes the same-builder emulator executable.
+#   drop-one-test-fixture      : N changes only an explicitly catalogued QEMU
+#                                test fixture; the shipped executable stays byte
+#                                identical while the exact fixture material is
+#                                present in full and absent in full-minus-N.
 #   drop-one-composition       : the patch drops and builds, but the generic
 #                                behavioral workload does not reach its effect;
 #                                bind that result to its focused stock-negative
@@ -28,6 +34,7 @@
   attrPath,
   expectAbsentSymbols ? [],
   expectInternalBuildFailures ? [],
+  expectTestFixtureEvidence ? [],
   # RTC clock mode for the behavioral sim-divergence probe (see _sim-diverge.nix).
   rtcClock ? "vm",
   dropOneRepository ?
@@ -38,6 +45,15 @@
     import ./_drop-one-build.nix {
       inherit pkgs lib qemuPackage index dropOneRepository;
       attrPath = "${attrPath}.build";
+    },
+  # A same-builder assembly reference derived by dropping the test-only 0081
+  # patch. That patch changes only tests/tcg material, so this avoids comparing
+  # variant ELFs against the differently packaged production derivation.
+  binaryReferenceBuildDrv ?
+    import ./_drop-one-build.nix {
+      inherit pkgs lib qemuPackage dropOneRepository;
+      index = 78;
+      attrPath = "${attrPath}.binaryReference";
     },
   # Behavioral (sim-gated, no exported ABI symbol) patches are discriminated by
   # a live variant-divergence sim probe. Only consumed when the build succeeds
@@ -60,6 +76,12 @@
     )
     expectInternalBuildFailures
     + lib.optionalString (expectInternalBuildFailures != []) "\n";
+  testFixtureEvidenceMaterial =
+    lib.concatMapStringsSep "\n" (
+      evidence: "${evidence.path}|${evidence.fullSourceNeedle}"
+    )
+    expectTestFixtureEvidence
+    + lib.optionalString (expectTestFixtureEvidence != []) "\n";
   hasSymbols = expectAbsentSymbols != [];
 in
   pkgs.mkDerivation {
@@ -82,9 +104,13 @@ in
     EXPECT_ABSENT_SYMBOLS = symbolsMaterial;
     EXPECT_INTERNAL_IDENTIFIERS = internalIdentifiersMaterial;
     DROP_ONE_REPOSITORY = "${dropOneRepository}";
-    passAsFile = ["internalBuildEvidenceMaterial"];
-    inherit internalBuildEvidenceMaterial;
+    passAsFile = [
+      "internalBuildEvidenceMaterial"
+      "testFixtureEvidenceMaterial"
+    ];
+    inherit internalBuildEvidenceMaterial testFixtureEvidenceMaterial;
     BUILD_DRV = "${buildDrv}";
+    BINARY_REFERENCE_BUILD_DRV = "${binaryReferenceBuildDrv}";
     FULL_QEMU = "${qemuPackage}/bin/qemu-system-x86_64";
     # Only behavioral (no-symbol) patches consult the sim-divergence probe; for
     # symbol patches this stays empty so the probe is never built.
@@ -257,21 +283,87 @@ in
                     } > "$out/attribution.env"
                     ;;
                   none)
-                    # The generic workload does not reach N's effect
-                    # (non-discriminating). Fall back to composition: LIVE
-                    # drop-clean + build (this gate) + the patch's own full-series
-                    # micro-test stock negative control (run by the aggregate).
-                    # Flagged as a latent runtime gap (its microtest needs a
-                    # runtime upgrade -- tracked separately).
-                    {
-                      echo "attribution_method=drop-one-composition"
-                      echo "drop_conflicts=false"
-                      echo "full_minus_n_build_succeeds=true"
-                      echo "effect_is_sim_gated=true"
-                      echo "sim_diverge_workload_non_discriminating=true"
-                      echo "runtime_effect_evidence=drop-clean-plus-build-plus-microtest-stock-negative-control"
-                      echo "latent_gap_microtest_needs_runtime_upgrade=true"
-                    } > "$out/attribution.env"
+                    # The generic workload is deliberately small and does not
+                    # reach every late control-plane effect. Prove that N is
+                    # nevertheless load-bearing at the shipped-artifact boundary.
+                    # Byte-identical binaries are accepted only for the explicit
+                    # test-fixture manifest below, whose exact material is checked
+                    # against both source graphs.
+                    test "$(cat "$BINARY_REFERENCE_BUILD_DRV/outcome")" = built \
+                      || fail "assembly-reference variant did not build"
+                    test "$(cat "$BINARY_REFERENCE_BUILD_DRV/dropped-patch")" = \
+                      0081-crucible-deferred-result-evidence-test.patch \
+                      || fail "assembly-reference variant dropped the wrong patch"
+                    reference="$BINARY_REFERENCE_BUILD_DRV/variant-qemu-system-x86_64"
+                    test -x "$reference" \
+                      || fail "assembly-reference QEMU is missing"
+                    reference_sha256=$(sha256sum "$reference" | gawk '{ print $1 }')
+                    variant_sha256=$(sha256sum "$variant" | gawk '{ print $1 }')
+                    if [ "$reference_sha256" != "$variant_sha256" ]; then
+                      {
+                        echo "attribution_method=drop-one-binary"
+                        echo "drop_conflicts=false"
+                        echo "full_minus_n_build_succeeds=true"
+                        echo "sim_diverge_workload_non_discriminating=true"
+                        echo "assembly_reference_patch=0081-crucible-deferred-result-evidence-test.patch"
+                        echo "assembly_reference_executable_sha256=$reference_sha256"
+                        echo "variant_executable_sha256=$variant_sha256"
+                        echo "same_builder_executable_changes_without_patch=true"
+                      } > "$out/attribution.env"
+                    else
+                      test -s "$testFixtureEvidenceMaterialPath" \
+                        || fail "byte-identical full-minus-$DROP_INDEX lacks explicit test-fixture evidence"
+                      variant_ref=$(gawk -F= '$1 == "prepared_ref" { print $2 }' \
+                        "$BUILD_DRV/prepared-ref.env")
+                      test -n "$variant_ref" \
+                        || fail "test-fixture variant is missing its prepared ref"
+                      fixture_count=0
+                      : > "$TMPDIR/expected-fixture-paths"
+                      while IFS='|' read -r source_path full_source_needle; do
+                        test -n "$source_path" \
+                          || fail "test-fixture evidence has an empty source path"
+                        test -n "$full_source_needle" \
+                          || fail "test-fixture evidence has an empty source needle"
+                        full_fixture_source="$TMPDIR/full-fixture-source"
+                        variant_fixture_source="$TMPDIR/variant-fixture-source"
+                        git --git-dir="$DROP_ONE_REPOSITORY/repo.git" \
+                          show "refs/heads/patch-stack:$source_path" \
+                          > "$full_fixture_source" \
+                          || fail "cannot read full test fixture $source_path"
+                        grep -Fq "$full_source_needle" "$full_fixture_source" \
+                          || fail "full stack lacks catalogued test-fixture material in $source_path"
+                        git --git-dir="$DROP_ONE_REPOSITORY/repo.git" \
+                          show "$variant_ref:$source_path" \
+                          > "$variant_fixture_source" \
+                          || fail "cannot read full-minus-N test fixture $source_path"
+                        if grep -Fq "$full_source_needle" "$variant_fixture_source"; then
+                          fail "full-minus-$DROP_INDEX retains catalogued test-fixture material in $source_path"
+                        fi
+                        printf '%s\n' "$source_path" >> "$TMPDIR/expected-fixture-paths"
+                        fixture_count=$((fixture_count + 1))
+                      done < "$testFixtureEvidenceMaterialPath"
+                      test "$fixture_count" -gt 0
+                      LC_ALL=C sort -u "$TMPDIR/expected-fixture-paths" \
+                        > "$TMPDIR/expected-fixture-paths.sorted"
+                      git --git-dir="$DROP_ONE_REPOSITORY/repo.git" diff --name-only \
+                        "$variant_ref" refs/heads/patch-stack \
+                        | LC_ALL=C sort -u > "$TMPDIR/actual-fixture-paths.sorted"
+                      cmp "$TMPDIR/expected-fixture-paths.sorted" \
+                        "$TMPDIR/actual-fixture-paths.sorted" \
+                        || fail "byte-identical test-fixture drop changes uncatalogued source paths"
+                      {
+                        echo "attribution_method=drop-one-test-fixture"
+                        echo "drop_conflicts=false"
+                        echo "full_minus_n_build_succeeds=true"
+                        echo "sim_diverge_workload_non_discriminating=true"
+                        echo "assembly_reference_patch=0081-crucible-deferred-result-evidence-test.patch"
+                        echo "assembly_reference_executable_sha256=$reference_sha256"
+                        echo "variant_executable_sha256=$variant_sha256"
+                        echo "same_builder_executable_byte_identical=true"
+                        echo "exact_test_fixture_source_loss_verified=true"
+                        echo "test_fixture_evidence_count=$fixture_count"
+                      } > "$out/attribution.env"
+                    fi
                     ;;
                   *)
                     fail "unexpected sim-diverge classification: $cls"
