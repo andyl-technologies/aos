@@ -16,7 +16,8 @@
 //! `doorbell_abi` owns the shared white-box doorbell instruction ABI;
 //! `doorbell_frame` owns the shared white-box doorbell marker frame ABI; `doorbell_marker`
 //! owns the marker-kind vocabulary and body codecs; `selectable` owns the
-//! guest choice register/request/reply ABI; `preemption` owns deterministic IPI arithmetic;
+//! guest choice register/request/reply ABI; `selectable_catalog_plan` owns the
+//! sealed catalog and continuation launch body; `preemption` owns deterministic IPI arithmetic;
 //! `golden_vectors` owns the frozen ABI corpus; `codec_fuzz` owns its fuzz target and corpus.
 //!
 //! Unsafe boundary discipline: raw `sendmsg`/`recvmsg` and ancillary-buffer
@@ -48,6 +49,7 @@ pub mod guest_introspection;
 pub mod guest_introspection_doorbell;
 mod preemption;
 mod selectable;
+pub mod selectable_catalog_plan;
 
 use std::io::{ErrorKind, Read, Write};
 #[cfg(unix)]
@@ -107,7 +109,7 @@ pub use selectable::{
     SELECTABLE_SEMANTIC_TAG_MAX_COUNT, SELECTION_REPLY_HEADER_BYTES,
     SELECTION_REQUEST_HEADER_BYTES, SelectableMessageKind, SelectableProtocolError,
     SelectableRegister, SelectionReply, SelectionReplyStatus, SelectionRequest,
-    decode_selectable_message_kind,
+    decode_selectable_message_kind, validate_selectable_identifier,
 };
 
 use thiserror::Error;

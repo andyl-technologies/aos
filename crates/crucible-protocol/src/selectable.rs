@@ -117,6 +117,20 @@ pub fn decode_selectable_message_kind(
         .ok_or(SelectableProtocolError::UnknownMessageKind { actual })
 }
 
+/// Validates one selectable or instance identifier against the v1 grammar.
+///
+/// # Errors
+///
+/// Returns [`SelectableProtocolError`] when `value` is empty, exceeds the
+/// identifier byte ceiling, or contains a byte outside ASCII alphanumeric plus
+/// `._-/:`.
+pub fn validate_selectable_identifier(
+    field: &'static str,
+    value: &str,
+) -> Result<(), SelectableProtocolError> {
+    validate_identifier(field, value)
+}
+
 /// One guest selectable declaration registered during setup.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SelectableRegister {

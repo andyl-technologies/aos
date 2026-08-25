@@ -5,6 +5,11 @@
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use crucible_protocol::selectable_catalog_plan::{
+    SELECTABLE_CATALOG_PLAN_HEADER_BYTES, SELECTABLE_CATALOG_PLAN_MAGIC,
+    SELECTABLE_CATALOG_PLAN_VERSION, SelectableCatalogPlan, SelectablePlanContinuation,
+    SelectablePlanLimits,
+};
 use crucible_protocol::{
     CODEC_FUZZ_REGRESSION_CORPUS, CONTROL_PROTOCOL_VERSION, ControlCodecFuzzCase,
     ControlCodecFuzzOutcome, ControlDirection, ControlGoldenVector, ControlGoldenVectorMessage,
@@ -40,9 +45,38 @@ fn protocol_abi_conformance_runs_named_checks() {
     assert_doorbell_marker_kind_vocabulary();
     assert_doorbell_marker_subvocabularies();
     assert_selectable_v1_golden_vectors();
+    assert_selectable_catalog_plan_v1_golden_vector();
     assert_doorbell_decoder_fuzz_corpus();
     assert_structure_aware_fuzz_corpus();
     assert_protocol_codec_fuzz_corpus();
+}
+
+#[test]
+fn guest_selectable_catalog_plan_v1_golden_vector_matches_live_codec() {
+    assert_selectable_catalog_plan_v1_golden_vector();
+}
+
+fn assert_selectable_catalog_plan_v1_golden_vector() {
+    let plan = SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(1, 1, 1)
+            .unwrap_or_else(|error| panic!("catalog plan limits must validate: {error}")),
+        Vec::new(),
+        SelectablePlanContinuation::cold(),
+    )
+    .unwrap_or_else(|error| panic!("empty catalog plan must validate: {error}"));
+    let bytes = plan
+        .encode()
+        .unwrap_or_else(|error| panic!("empty catalog plan must encode: {error}"));
+    let mut expected = vec![0_u8; SELECTABLE_CATALOG_PLAN_HEADER_BYTES];
+    expected[..8].copy_from_slice(&SELECTABLE_CATALOG_PLAN_MAGIC);
+    expected[8..12].copy_from_slice(&SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
+    expected[12..16].copy_from_slice(&(96_u32).to_be_bytes());
+    expected[16..20].copy_from_slice(&(96_u32).to_be_bytes());
+    expected[24..28].copy_from_slice(&(1_u32).to_be_bytes());
+    expected[40..48].copy_from_slice(&(1_u64).to_be_bytes());
+    expected[48..56].copy_from_slice(&(1_u64).to_be_bytes());
+    assert_eq!(bytes, expected);
+    assert_eq!(SelectableCatalogPlan::decode(&bytes), Ok(plan));
 }
 
 #[test]
@@ -140,6 +174,11 @@ fn guest_selectable_v1_schemas_are_registered_exactly() {
             "missing exact selectable schema row {schema}"
         );
     }
+    let catalog_plan = "crucible.guest-selectable.catalog-plan\t1\tcrucible-protocol::selectable_catalog_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
+    assert!(
+        registry.lines().any(|line| line == catalog_plan),
+        "missing exact selectable catalog-plan schema row"
+    );
 }
 
 #[test]

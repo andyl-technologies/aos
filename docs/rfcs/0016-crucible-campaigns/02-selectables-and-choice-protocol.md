@@ -403,6 +403,46 @@ QEMU-private objects. The version-1 codec is owned by
 `crucible-protocol::selectable`; `crucible-guest` exposes typed emission and
 reply-validation helpers over the architecture-specific doorbell transport.
 
+The launch-authenticated node-local catalog and checkpoint continuation use the
+independent `crucible.guest-selectable.catalog-plan` version-1 descriptor body.
+Every integer is big-endian. Its 96-byte header is:
+
+```text
+offset  size  field
+------  ----  ----------------------------------------------------------
+  0      8   magic = "CRUCSCP1"
+  8      4   schema_version = 1
+ 12      4   header_len = 96
+ 16      4   total_len
+ 20      4   flags: bit 0 frozen, bit 1 last registration present,
+                  bit 2 last completed request present, bit 3 pending
+ 24      4   declaration_limit
+ 28      4   expected_declaration_count
+ 32      4   registered_identifier_count
+ 36      4   completed_counter_count
+ 40      8   requests_per_selectable_limit
+ 48      8   total_request_limit
+ 56      8   total_completed_requests
+ 64      8   last_registration_sequence, or zero when absent
+ 72      8   last_completed_request_sequence, or zero when absent
+ 80      8   pending_trap_icount, or zero when absent
+ 88      4   pending_vcpu_index, or zero when absent
+ 92      4   pending_request_len, or zero when absent
+```
+
+The header is followed by strictly identifier-ordered expected declarations,
+registered identifiers, completed counters, and then the pending request when
+present. An expected entry is `presence:u8` (`0 Optional`, `1 Required`), three
+zero reserved bytes, `body_len:u32`, and one canonical sequence-zero
+`SelectableRegisterV1`. A registered identifier is `len:u16 | bytes`; a
+completed counter is `len:u16 | bytes | count:u64`. The pending body is one
+complete canonical `SelectionRequestV1`, including its zero-filled reply
+reservation. The encoded total and per-collection counts are exact, absent
+optional header fields are zero, every continuation identifier is declared,
+every completed/pending identifier is registered, required frozen declarations
+are present, request counts respect the encoded ceilings, and no trailing or
+alternate encoding is accepted. The complete plan is at most 32 MiB.
+
 Guest libraries expose typed helpers:
 
 ```rust,illustrative
