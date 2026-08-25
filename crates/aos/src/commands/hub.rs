@@ -6699,7 +6699,6 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
                         access_policy: build_access_policy(policy, false)?,
                     }),
                     idempotency_key: new_idempotency_key(),
-                    update_mask: vec!["revision".into()],
                     ..Default::default()
                 },
                 mutation,
