@@ -292,6 +292,33 @@ recovery policies legal in the current protocol state. The narrowed domain is
 hashed into the opportunity. It may never broaden beyond the scenario
 declaration.
 
+For a node-qualified guest request, let `LP(s) = u64be(len(utf8(s))) ||
+utf8(s)`. The host derives the two version-one opportunity coordinates as:
+
+```text
+scheduler_coordinate = H(
+  "crucible.guest-selectable.scheduler-coordinate.v1",
+  LP(node) || u64be(trap_icount) || u32be(vcpu_index)
+)
+producer_coordinate = H(
+  "crucible.guest-selectable.producer-coordinate.v1",
+  selectable_semantic_id || u32be(guest_protocol_version)
+)
+```
+
+The request's validated logical `instance_key` is retained separately in the
+opportunity. The transport sequence and guest virtual reply address are
+operational continuation data and MUST NOT perturb semantic opportunity
+identity. The executor decodes optional narrowed bytes as one strict
+`ChoiceDomainV1`, requires it to be a legal subset that still contains the
+scenario default, and constructs the exact opportunity before exposing a
+discovery or selecting a value. A discovery attempt stopped at `NextChoice`
+does not reply or resume the guest. Deterministic continuation records and
+replies with the scenario default. Thin replay consumes an already authenticated
+default, locked, or campaign-branch selection only at the reconstructed exact
+opportunity; a campaign branch additionally re-derives its branch point from
+the current parent configuration before reply publication.
+
 - **[SEL-14]** Scenario admission MUST resolve all statically declared
   environment selectables and validate policy selectors before guest start.
 - **[SEL-15]** A required guest selectable mismatch MUST stop the run before the
@@ -444,7 +471,11 @@ canonical reply plus a zero tail to the retained guest virtual range, and only
 then charges completion and clears the pending request. The single entry makes
 duplicate or pipelined replies bounded backpressure and a loud protocol error.
 Semantic narrowed-domain authority and durable checkpoint composition remain
-host/coordinator responsibilities.
+host/coordinator responsibilities. The daemon's current semantic boundary
+implements scenario lookup, narrowed-domain validation, opportunity derivation,
+`NextChoice` discovery, default continuation, and exact campaign-branch replay.
+Pending-request checkpoint composition remains required before exact restore is
+enabled for selectable-bearing scenarios.
 
 The wire protocol contains no Rust-native layouts, pointers, callbacks, or
 QEMU-private objects. The version-1 codec is owned by

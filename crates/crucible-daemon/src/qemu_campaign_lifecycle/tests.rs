@@ -3,27 +3,32 @@
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
 #![allow(clippy::expect_used)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible::{
     AppRandomDecision, AppRandomSelectable, Checkpoint, CheckpointKind, Configuration, Decision,
-    NodeId, RngDecision, RngStreamId, ScenarioDef, SchedulerEventLogEntry, Seed, SelectionDecision,
-    VirtualTime, step,
+    Icount, NodeId, NodeTemplate, Plan, Properties, ReadyPoint, RngDecision, RngStreamId,
+    ScenarioDef, ScenarioDefForm, ScenarioSelectableLimits, ScenarioSelectables,
+    SchedulerEventLogEntry, Seed, SelectionDecision, VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    step,
 };
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
     ProductionVmNodeLauncher,
 };
 use crucible_campaign::{
-    Attempt, AttemptResourceLimits, AttemptStart, BranchPath, CampaignHash, CampaignLineage,
+    Attempt, AttemptResourceLimits, AttemptStart, BooleanDomain, BranchPath, CampaignHash,
+    CampaignLineage, ChoiceClassContext, ChoiceDomain, ChoiceSource, ChoiceValue,
     ConfigurationArtifact, ConfigurationId, ExecutionRetentionIntent, ScenarioArtifact,
-    ScenarioDefId, StopCondition,
+    ScenarioDefId, SelectableDeclaration, Selection, StopCondition,
 };
 use crucible_cas::content_store::{
     BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, ObjectKind,
 };
+use crucible_protocol::SelectionRequest;
+use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
 use crucible_qemu::{
     QemuChildProcessContract, QemuLaunchResourceRequirements, QemuLiveNodeStepGateConfig,
     QemuNodeChild, QemuPreparedRunDirectory, QemuReplayOracleValidation, QemuVmRealizationError,
@@ -100,7 +105,7 @@ fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
 }
 
 #[test]
-fn selected_start_rejects_a_canonical_name_in_a_foreign_rng_domain() {
+fn app_random_projection_ignores_a_campaign_selection_outside_its_owned_stream() {
     let scenario = ScenarioDef::from_canonical_material_with_seed(
         "crucible.test.campaign.branch-plan",
         "scenario=foreign-stream-domain",
@@ -132,10 +137,10 @@ fn selected_start_rejects_a_canonical_name_in_a_foreign_rng_domain() {
         Decision::Selection(SelectionDecision::new(&selection)),
     );
 
-    assert!(matches!(
-        app_random_branch_replay(&target),
-        Err(reason) if reason.contains("nonstandard app-random stream")
-    ));
+    let (selections, plans) =
+        app_random_branch_replay(&target).expect("foreign producer stays outside this adapter");
+    assert!(selections.is_empty());
+    assert!(plans.is_empty());
 }
 
 #[derive(Default)]
@@ -429,6 +434,8 @@ fn lifecycle_construction_failure_quarantines_installed_guard() {
 struct FakeFreshLifecycle {
     order: Arc<Mutex<Vec<&'static str>>>,
     cleanup_error: bool,
+    pending: Vec<crucible_qemu::QemuNodeSelectablePendingRequest>,
+    replies: Arc<Mutex<Vec<crucible_protocol::SelectionReply>>>,
 }
 
 impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
@@ -475,17 +482,19 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
         &mut self,
     ) -> Result<Vec<crucible_qemu::QemuNodeSelectablePendingRequest>, crucible::SchedulerError>
     {
-        Ok(Vec::new())
+        Ok(std::mem::take(&mut self.pending))
     }
 
     fn enqueue_selectable_reply(
         &mut self,
         _pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
-        _reply: &crucible_protocol::SelectionReply,
+        reply: &crucible_protocol::SelectionReply,
     ) -> Result<(), crucible::SchedulerError> {
-        Err(crucible::SchedulerError::BoundaryViolation {
-            message: String::from("fresh lifecycle fixture has no selectable transport"),
-        })
+        self.replies
+            .lock()
+            .expect("fresh lifecycle replies")
+            .push(reply.clone());
+        Ok(())
     }
 
     fn capture_attempt_checkpoint(
@@ -553,6 +562,8 @@ impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
         Ok(FakeFreshLifecycle {
             order: Arc::clone(&self.order),
             cleanup_error: self.cleanup_error,
+            pending: Vec::new(),
+            replies: Arc::new(Mutex::new(Vec::new())),
         })
     }
 }
@@ -1113,6 +1124,120 @@ fn fresh_runner_replays_supported_non_genesis_start_before_driver() {
     assert_eq!(
         order.lock().expect("fresh lifecycle order").as_slice(),
         ["begin", "replay", "drive", "shutdown", "seal"]
+    );
+}
+
+#[test]
+fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
+    let node = NodeId {
+        name: String::from("router-a"),
+    };
+    let world = World::from_nodes(vec![WorldNode {
+        id: node.clone(),
+        arch: NodeTemplate::DEFAULT_ARCH,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::from("guest-selectable-replay-test"),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+        white_box: WhiteBoxPolicy::Enabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }])
+    .expect("guest selectable replay World");
+    let declaration = SelectableDeclaration::new(
+        "product.recovery",
+        ChoiceSource::Guest {
+            node: node.name.clone(),
+            protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+        },
+        ChoiceDomain::Boolean(BooleanDomain::new(1).expect("Boolean domain")),
+        ChoiceValue::Boolean(false),
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::from([String::from("recovery")]),
+        true,
+    )
+    .expect("guest selectable declaration");
+    let selectables = ScenarioSelectables::new(
+        &world,
+        ScenarioSelectableLimits::new(4, 8, 16, 32).expect("selectable limits"),
+        vec![declaration],
+    )
+    .expect("scenario selectables");
+    let source = ScenarioDefForm::from_components(
+        &world,
+        &Plan::empty(),
+        &Properties::empty(),
+        Seed::from_u64(17),
+    )
+    .expect("guest selectable replay scenario")
+    .with_selectables(selectables)
+    .expect("attach guest selectables");
+    let scenario = ScenarioDefId::from_hash(CampaignHash::from_bytes(source.id().bytes));
+    let parent = Configuration::genesis(source.scenario_def());
+    let request = SelectionRequest::new(9, "product.recovery", "routing-epoch-7", None, 256)
+        .expect("guest request");
+    let pending = SelectablePlanPendingRequest::new(request, 41, 0, 0x1000);
+    let discovery =
+        crate::guest_selectable::resolve_guest_selectable(scenario, &source, &node, &pending)
+            .expect("runtime opportunity");
+    let default_selection = Selection::new(
+        discovery.opportunity(),
+        discovery.domain(),
+        discovery.opportunity().default().clone(),
+        crucible_campaign::SelectionOrigin::Default,
+    )
+    .expect("default guest selection");
+    let default_target = step(
+        &parent,
+        Decision::Selection(SelectionDecision::new(&default_selection)),
+    );
+    assert_eq!(
+        unsupported_fresh_replay_decision(&default_target),
+        None,
+        "the runner prefilter must admit default guest replay"
+    );
+    let parent_id = ConfigurationId::from_hash(CampaignHash::from_bytes(parent.id().bytes));
+    let selection = Selection::new_campaign_branch(
+        discovery.opportunity(),
+        discovery.domain(),
+        ChoiceValue::Boolean(true),
+        discovery.opportunity().branch_point_id(parent_id),
+    )
+    .expect("campaign selection");
+    let target = step(
+        &parent,
+        Decision::Selection(SelectionDecision::new(&selection)),
+    );
+    let replies = Arc::new(Mutex::new(Vec::new()));
+    let mut lifecycle = FakeFreshLifecycle {
+        order: Arc::new(Mutex::new(Vec::new())),
+        cleanup_error: false,
+        pending: vec![
+            crucible_qemu::QemuNodeSelectablePendingRequest::from_test_parts(node, pending),
+        ],
+        replies: Arc::clone(&replies),
+    };
+    let mut current = parent;
+
+    apply_replayed_guest_selectables::<(), ()>(
+        &mut lifecycle,
+        scenario,
+        &source,
+        &target,
+        &mut current,
+    )
+    .expect("exact guest branch replay");
+
+    assert_eq!(current, target);
+    let replies = replies.lock().expect("fresh lifecycle replies");
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0].selected_value(),
+        Some(ChoiceValue::Boolean(true).canonical_bytes().as_slice())
     );
 }
 

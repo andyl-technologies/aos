@@ -1789,6 +1789,18 @@ Until the exact selectable continuation is composed into the production
 checkpoint, selectable-enabled exact restore fails before process launch rather
 than silently installing a cold catalog.
 
+At each paused guest selectable request, the modeled daemon driver resolves the
+node-local name against that exact V7 component, decodes an optional strict
+narrowed domain, rejects any widening or default exclusion, and derives the
+language-neutral guest opportunity coordinates from RFC 02. A `NextChoice`
+attempt retains the complete declaration/domain/opportunity discovery without
+replying. Other discovery execution records and returns the declared default.
+Thin start replay consumes an authenticated default, locked, or campaign-branch
+selection only when the reconstructed opportunity and domain match; branch
+replay also re-derives the edge from the exact current parent before publishing
+the reply. No request sequence, reply address, repository callback, or native
+QEMU value enters the semantic identity or selection engine.
+
 Before selection resolution, the adapter linearly preflights a maximum of
 4,096 selection decisions and 256 MiB of conservative aggregate prefix-byte
 work for campaign-branch provenance. Prefix-byte work is encoded schedule bytes

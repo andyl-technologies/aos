@@ -22,8 +22,6 @@ pub(super) fn app_random_branch_replay(
     let mut selections = BTreeMap::new();
     let mut plan_entries = BTreeMap::<NodeId, Vec<AppRandomBranchPlanEntry>>::new();
 
-    validate_branch_placement(decisions)?;
-
     for (index, decision) in decisions.iter().enumerate() {
         let Decision::RngDraw(draw) = decision else {
             continue;
@@ -113,31 +111,4 @@ pub(super) fn app_random_branch_replay(
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     Ok((selections, plans))
-}
-
-fn validate_branch_placement(decisions: &[Decision]) -> Result<(), String> {
-    for (index, decision) in decisions.iter().enumerate() {
-        let Decision::Selection(selection) = decision else {
-            continue;
-        };
-        if !selection.is_campaign_branch() {
-            continue;
-        }
-        let Some(Decision::RngDraw(draw)) = index
-            .checked_sub(1)
-            .and_then(|previous| decisions.get(previous))
-        else {
-            return Err(format!(
-                "campaign selection at decision {index} is not preceded by an app-random draw"
-            ));
-        };
-        if !draw.stream.is_default_domain()
-            || app_random_stream_name_components(&draw.stream.name).is_none()
-        {
-            return Err(format!(
-                "campaign selection at decision {index} follows a nonstandard app-random stream"
-            ));
-        }
-    }
-    Ok(())
 }

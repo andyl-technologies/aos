@@ -155,9 +155,12 @@ production lifecycle and daemon modeled-driver facade. Daemon-side scenario
 schema V7 now owns canonical typed declarations and nonzero per-node/world
 ceilings. Fresh production launch derives each white-box node's sealed catalog
 plan from that exact scenario component; selectable-enabled exact restore fails
-closed until its continuation exists. Semantic narrowed-domain validation and
-selection, reply application, plus durable checkpoint composition remain
-required to complete T-CAM-2.5.
+closed until its continuation exists. The daemon now resolves node-qualified
+requests against the scenario, validates bounded narrowed domains, derives the
+stable runtime opportunity, stops discovery without replying, applies exact
+defaults for deterministic continuation, and consumes authenticated campaign
+selections at the matching thin-replay boundary. Durable checkpoint composition
+remains required to complete T-CAM-2.5.
 The process-neutral `CRUCSCP2` catalog-plan codec now freezes the future sealed
 descriptor body, including exact expectations, limits, registered identifiers,
 sequence watermarks, completed counters, and a complete pending request/trap

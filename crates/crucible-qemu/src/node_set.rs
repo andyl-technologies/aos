@@ -53,6 +53,16 @@ pub struct QemuNodeSelectablePendingRequest {
 }
 
 impl QemuNodeSelectablePendingRequest {
+    /// Builds a node-qualified request for cross-crate transport tests.
+    ///
+    /// Production code obtains this token only from
+    /// [`QemuNodeSet::drain_pending_selectable_requests`].
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn from_test_parts(node: NodeId, pending: SelectablePlanPendingRequest) -> Self {
+        Self { node, pending }
+    }
+
     /// Returns the exact scheduler node that owns the pending request.
     #[must_use]
     pub const fn node(&self) -> &NodeId {
@@ -999,6 +1009,9 @@ impl SimulationBackend for QemuNodeSet {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- fixture setup uses panic shortcuts for failure localization.
+    #![allow(clippy::expect_used)]
+
     use crucible::{AdvanceOutcome, Icount};
     use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
     use crucible_protocol::{SelectionReply, SelectionReplyStatus, SelectionRequest};
