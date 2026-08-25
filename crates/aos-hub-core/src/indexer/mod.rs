@@ -64,7 +64,7 @@ use crate::db::{
 };
 use crate::fetch::SurfaceFetch;
 
-use self::load::{load_registry_tree, ObjectReader};
+use self::load::{load_registry_tree_with_reader, ObjectReader};
 
 /// Maximum branches (channels) processed per index run.
 ///
@@ -427,7 +427,7 @@ async fn index_registry_inner(
             .with_context(|| format!("verifying commit {commit_oid}"))?;
     }
 
-    let tree = load_registry_tree(fetch, commit_oid).await?;
+    let tree = load_registry_tree_with_reader(&reader, commit_oid).await?;
 
     // In-band rotation: the roster committed by a verified commit extends
     // the trusted set for tag verification (apm pins these on sync).
@@ -463,8 +463,8 @@ async fn index_registry_inner(
                     bail!("release tag '{tag_name}' does not target a commit");
                 }
                 let source_commit = lenient.tag.object.clone();
-                let release_tree = load_registry_tree(
-                    fetch,
+                let release_tree = load_registry_tree_with_reader(
+                    reader,
                     aos_registry_surface::object::Oid::from_hex(&source_commit)?,
                 )
                 .await

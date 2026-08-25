@@ -15,6 +15,7 @@
 //! Phase 5).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
 
 use anyhow::{bail, Context, Result};
 use aos_registry_surface::manifest::{
@@ -60,13 +61,20 @@ const OBJECT_FETCH_CONCURRENCY: usize = 32;
 /// content hash against the oid it was requested by.
 pub struct ObjectReader<'a> {
     fetch: &'a dyn SurfaceFetch,
+    // Release generations normally share most tree and blob objects. Keep the
+    // verified decoded form for this index pass so concurrent retained-release
+    // walks do not repeatedly pay object-store and inflate latency.
+    cache: Mutex<BTreeMap<Oid, (ObjectKind, Vec<u8>)>>,
 }
 
 impl<'a> ObjectReader<'a> {
     /// Create a reader over a surface transport.
     #[must_use]
     pub fn new(fetch: &'a dyn SurfaceFetch) -> Self {
-        Self { fetch }
+        Self {
+            fetch,
+            cache: Mutex::new(BTreeMap::new()),
+        }
     }
 
     /// Read and verify one loose object.
@@ -77,13 +85,28 @@ impl<'a> ObjectReader<'a> {
     /// guarantees loose presence, so absence is surface corruption), fails
     /// to inflate, or hashes to a different oid.
     pub async fn read(&self, oid: Oid) -> Result<(ObjectKind, Vec<u8>)> {
+        if let Some(decoded) = self
+            .cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
+            .get(&oid)
+            .cloned()
+        {
+            return Ok(decoded);
+        }
+
         let path = oid.loose_path();
         let bytes = self
             .fetch
             .fetch(&path)
             .await?
             .with_context(|| format!("loose object {path} is missing from the surface"))?;
-        object::decode_loose(&bytes, Some(oid))
+        let decoded = object::decode_loose(&bytes, Some(oid))?;
+        self.cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
+            .insert(oid, decoded.clone());
+        Ok(decoded)
     }
 
     /// Read one loose object, requiring a specific kind.
@@ -136,6 +159,21 @@ pub struct LoadedTree {
 /// fails its format parser.
 pub async fn load_registry_tree(fetch: &dyn SurfaceFetch, commit_oid: Oid) -> Result<LoadedTree> {
     let reader = ObjectReader::new(fetch);
+    load_registry_tree_with_reader(&reader, commit_oid).await
+}
+
+/// Loads a committed registry tree through a reader shared by one index pass.
+///
+/// Sharing the reader lets retained release generations reuse verified Git
+/// objects while preserving the same hash and kind checks as an isolated load.
+///
+/// # Errors
+///
+/// Returns the same validation and transport errors as [`load_registry_tree`].
+pub(crate) async fn load_registry_tree_with_reader(
+    reader: &ObjectReader<'_>,
+    commit_oid: Oid,
+) -> Result<LoadedTree> {
     let commit = reader.read_commit(commit_oid).await?;
     let root_tree = object::tree_map(&reader.read_kind(commit.tree, ObjectKind::Tree).await?)?;
 
