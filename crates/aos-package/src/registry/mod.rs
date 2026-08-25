@@ -282,7 +282,7 @@ impl RegistrySet {
                 Err(e) => {
                     // Log warning but continue — a missing cache just means
                     // the registry hasn't been synced yet.
-                    eprintln!("warning: skipping registry '{}': {}", config.name, e);
+                    eprintln!("warning: skipping registry '{}': {e:#}", config.name);
                 }
             }
         }
