@@ -73,6 +73,8 @@ pub struct ProductionExactCheckpointClosure {
     scenario: ContentHash,
     configuration: ContentHash,
     manifest: Vec<u8>,
+    run_state_root: PathBuf,
+    source: ScenarioDefForm,
     object_directory: PathBuf,
     objects: Vec<ProductionExactCheckpointObject>,
 }
@@ -108,6 +110,76 @@ impl ProductionExactCheckpointClosure {
         &self.objects
     }
 
+    /// Opens one exact object at its first byte.
+    ///
+    /// Callers must drain the stream and authenticate its exact declared length
+    /// and complete content identity before publishing or executing any bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when `identity` is not in this closure,
+    /// or the retained object is unavailable or has changed length.
+    pub fn open_object(
+        &self,
+        identity: ContentHash,
+    ) -> Result<Box<dyn Read + Send>, LifecycleApiError> {
+        let object = self
+            .objects
+            .binary_search_by_key(&identity, |object| object.identity)
+            .ok()
+            .and_then(|index| self.objects.get(index))
+            .ok_or_else(|| loop_factory_error("exact checkpoint object is not in the manifest"))?;
+        let path = object_path(&self.object_directory, identity);
+        let source = File::open(&path).map_err(|error| {
+            loop_factory_error(format!(
+                "open exact checkpoint object {}: {error}",
+                identity.to_hex()
+            ))
+        })?;
+        let observed_length = source
+            .metadata()
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "inspect exact checkpoint object {}: {error}",
+                    identity.to_hex()
+                ))
+            })?
+            .len();
+        if observed_length != object.length {
+            return Err(loop_factory_error(format!(
+                "exact checkpoint object {} length changed from {} to {observed_length}",
+                identity.to_hex(),
+                object.length
+            )));
+        }
+        Ok(Box::new(source))
+    }
+
+    /// Reapplies the complete scenario-aware production restore validator.
+    ///
+    /// This authenticates every canonical continuation, artifact aggregate,
+    /// node set, scheduler projection, and fault/network state under the exact
+    /// source scenario. It performs no closure publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when any retained object is unavailable,
+    /// corrupt, semantically inconsistent, or outside the authored bounds.
+    pub fn validate_complete(&self) -> Result<(), LifecycleApiError> {
+        let restored = load_exact_checkpoint_set(
+            &self.run_state_root,
+            &self.source.scenario_def(),
+            &self.source,
+            self.identity,
+        )?;
+        if restored.configuration.id() != self.configuration {
+            return Err(loop_factory_error(
+                "portable checkpoint restored a different configuration",
+            ));
+        }
+        Ok(())
+    }
+
     /// Streams and authenticates one exact object into `destination`.
     ///
     /// No bytes from an unlisted object can be read through this capability.
@@ -131,29 +203,7 @@ impl ProductionExactCheckpointClosure {
             .ok()
             .and_then(|index| self.objects.get(index))
             .ok_or_else(|| loop_factory_error("exact checkpoint object is not in the manifest"))?;
-        let path = object_path(&self.object_directory, identity);
-        let mut source = File::open(&path).map_err(|error| {
-            loop_factory_error(format!(
-                "open exact checkpoint object {}: {error}",
-                identity.to_hex()
-            ))
-        })?;
-        let observed_length = source
-            .metadata()
-            .map_err(|error| {
-                loop_factory_error(format!(
-                    "inspect exact checkpoint object {}: {error}",
-                    identity.to_hex()
-                ))
-            })?
-            .len();
-        if observed_length != object.length {
-            return Err(loop_factory_error(format!(
-                "exact checkpoint object {} length changed from {} to {observed_length}",
-                identity.to_hex(),
-                object.length
-            )));
-        }
+        let mut source = self.open_object(identity)?;
 
         let mut hasher = blake3::Hasher::new();
         let mut copied = 0_u64;
@@ -796,6 +846,8 @@ pub fn open_exact_checkpoint_closure(
         scenario,
         configuration: decoded.configuration,
         manifest,
+        run_state_root: run_state_root.to_path_buf(),
+        source: source.clone(),
         object_directory,
         objects,
     })

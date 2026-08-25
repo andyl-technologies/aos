@@ -712,10 +712,16 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   directory. A matching production-store installer accepts that narrow source
   interface, authenticates and semantically restores the complete closure in a
   private bounded store before publishing any destination object, then installs
-  immutable objects idempotently and commits the manifest last. Campaign
-  exact-root versioning and CAS retention of that complete multi-node
-  trigger/assertion/fault/network continuation remain open before the packaged
-  executor may advertise exact resume. A guarded-only
+  immutable objects idempotently and commits the manifest last. Campaign CAS
+  now retains that complete closure under exact-root version four: a canonical
+  production-manifest leaf and typed production-object leaves are covered by
+  bounded 4,096-entry index envelopes, and the root binds the exact scenario,
+  configuration, production identity, counts, and aggregate bytes. Preparation
+  authenticates native and CAS identities without writes; publication places
+  all leaves and indexes before the root; loading reconstructs a lazy portable
+  source for the production semantic installer. Concrete packaged capture,
+  ledger handoff, production-loop reconstruction, and capability advertisement
+  remain open before the executor may claim exact resume. A guarded-only
   exact-root launcher now consumes that
   pinned authority, rechecks the selected snapshot and checkpoint identities,
   and uses the sealed child-process contract for pre-`exec` containment. The
