@@ -10,9 +10,11 @@ use crucible::model::{
     MeasurementId, MetricDefinition, MetricId, MetricSource, MetricValueType, UnitId,
 };
 use crucible::{
-    Configuration, EventLog, EventLogOffset, Icount, MarkerId, NodeId, ObservableEvent, Plan,
-    Properties, QuantumOutcome, QuantumTerminalVerdict, ScenarioDefForm, SchedulerError,
+    Configuration, EventLog, EventLogOffset, Icount, MarkerId, NodeId, NodeTemplate,
+    ObservableEvent, Plan, Properties, QuantumOutcome, QuantumTerminalVerdict, ReadyPoint,
+    ScenarioDefForm, ScenarioSelectableLimits, ScenarioSelectables, SchedulerError,
     SchedulerEventLogEntry, SchedulerQuiescence, Seed, VirtualTime, WhiteBoxPolicy, World,
+    WorldNode,
 };
 use crucible_campaign::{
     Attempt, AttemptResourceLimits, AttemptStart, BooleanDomain, BranchPath, CampaignHash,
@@ -20,6 +22,8 @@ use crucible_campaign::{
     ChoiceOpportunity, ChoiceSource, ChoiceValue, ConfigurationId, ExecutionRetentionIntent,
     PropertyVerdict, ScenarioDefId, SelectableDeclaration, StopCondition, StopOutcome,
 };
+use crucible_protocol::SelectionRequest;
+use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
 
 use super::*;
 use crate::{ExecutionCancellation, ExecutionCheckpointRequest, QemuFreshAttemptLifecycleOwner};
@@ -28,6 +32,12 @@ struct FakeLifecycle {
     outcomes: VecDeque<Result<QuantumOutcome, SchedulerError>>,
     terminal: Option<QuantumTerminalVerdict>,
     drives: usize,
+}
+
+struct PendingSelectableLifecycle {
+    outcome: Option<QuantumOutcome>,
+    pending: Vec<crucible_qemu::QemuNodeSelectablePendingRequest>,
+    replies: Vec<crucible_protocol::SelectionReply>,
 }
 
 impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
@@ -81,6 +91,67 @@ impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
     ) -> Result<crucible_api::ProductionFaultEvidenceSnapshot, SchedulerError> {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("fake lifecycle has no fault evidence"),
+        })
+    }
+
+    fn pending_network_output_count(&self) -> usize {
+        0
+    }
+
+    fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        Ok(Vec::new())
+    }
+}
+
+impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
+    fn drive_quantum(
+        &mut self,
+        _request: QuantumRequest,
+    ) -> Result<QuantumOutcome, SchedulerError> {
+        self.outcome
+            .take()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("selectable lifecycle exhausted its quantum"),
+            })
+    }
+
+    fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
+        None
+    }
+
+    fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
+        Ok(false)
+    }
+
+    fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<crucible_qemu::QemuNodeSelectablePendingRequest>, SchedulerError> {
+        Ok(std::mem::take(&mut self.pending))
+    }
+
+    fn enqueue_selectable_reply(
+        &mut self,
+        _pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
+        reply: &crucible_protocol::SelectionReply,
+    ) -> Result<(), SchedulerError> {
+        self.replies.push(reply.clone());
+        Ok(())
+    }
+
+    fn capture_attempt_checkpoint(
+        &mut self,
+        _context: &crate::AttemptExecutionContext,
+    ) -> Result<crate::CapturedAttemptCheckpoint, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("selectable lifecycle has no checkpoint authority"),
+        })
+    }
+
+    fn fault_evidence_snapshot(
+        &self,
+    ) -> Result<crucible_api::ProductionFaultEvidenceSnapshot, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("selectable lifecycle has no fault evidence"),
         })
     }
 
@@ -664,6 +735,94 @@ fn next_choice_retains_the_complete_discovery_bundle() {
 }
 
 #[test]
+fn pending_guest_choice_stops_without_reply_and_retains_scenario_discovery() {
+    let (input, node) = input_with_guest_selectable(StopCondition::NextChoice);
+    let configuration = starting_configuration(&input);
+    let mut owner = PendingSelectableLifecycle {
+        outcome: Some(outcome(
+            configuration.clone(),
+            Vec::new(),
+            EventLogOffset::default(),
+            1,
+        )),
+        pending: vec![pending_guest_request(node, None)],
+        replies: Vec::new(),
+    };
+    let pending = {
+        let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+        expect_observation(
+            QemuFreshModeledDriver::new()
+                .drive(
+                    &mut lifecycle,
+                    &input,
+                    &context(),
+                    QemuFreshStartMaterialization::genesis(),
+                )
+                .expect("guest choice discovery"),
+        )
+    };
+
+    assert_eq!(pending.configuration, configuration);
+    assert_eq!(pending.discoveries.len(), 1);
+    assert!(owner.replies.is_empty());
+}
+
+#[test]
+fn pending_guest_choice_applies_and_replies_with_exact_default() {
+    let (input, node) = input_with_guest_selectable(StopCondition::EventCount(1));
+    let configuration = starting_configuration(&input);
+    let mut event_log = EventLog::new();
+    let event = event_log
+        .append_observable_events([ObservableEvent::guest_marker(
+            Icount { retired: 41 },
+            node.clone(),
+            MarkerId::from_name("after-choice"),
+        )])
+        .expect("choice event");
+    let mut owner = PendingSelectableLifecycle {
+        outcome: Some(outcome(configuration, event.entries, event.offset, 41)),
+        pending: vec![pending_guest_request(node, None)],
+        replies: Vec::new(),
+    };
+    let pending = {
+        let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+        expect_observation(
+            QemuFreshModeledDriver::new()
+                .drive(
+                    &mut lifecycle,
+                    &input,
+                    &context(),
+                    QemuFreshStartMaterialization::genesis(),
+                )
+                .expect("guest default selection"),
+        )
+    };
+
+    let decision = pending
+        .configuration
+        .schedule
+        .decisions()
+        .last()
+        .expect("default selection decision");
+    let Decision::Selection(decision) = decision else {
+        panic!("guest default must append one typed selection")
+    };
+    let selection = decision.selection().expect("canonical guest selection");
+    assert_eq!(selection.origin(), SelectionOrigin::Default);
+    assert_eq!(selection.value(), &ChoiceValue::Boolean(false));
+    assert_eq!(pending.discoveries.len(), 1);
+    assert_eq!(owner.replies.len(), 1);
+    assert_eq!(
+        owner.replies[0].status(),
+        crucible_protocol::SelectionReplyStatus::Selected
+    );
+    assert_eq!(
+        owner.replies[0].selected_value(),
+        Some(ChoiceValue::Boolean(false).canonical_bytes().as_slice())
+    );
+}
+
+#[test]
 fn terminal_run_projects_offline_property_verdicts() {
     let fixture = crucible::happy_path_scenario().expect("happy-path fixture");
     let input = input_for_scenario(fixture.scenario.clone(), StopCondition::Terminal);
@@ -827,6 +986,69 @@ fn input(stop: StopCondition) -> CrucibleAttemptExecution {
     )
     .expect("minimal scenario");
     input_for_scenario(scenario, stop)
+}
+
+fn input_with_guest_selectable(stop: StopCondition) -> (CrucibleAttemptExecution, NodeId) {
+    let node = NodeId {
+        name: String::from("router-a"),
+    };
+    let world = World::from_nodes(vec![WorldNode {
+        id: node.clone(),
+        arch: NodeTemplate::DEFAULT_ARCH,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::from("guest-selectable-driver-test"),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+        white_box: WhiteBoxPolicy::Enabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }])
+    .expect("guest selectable World");
+    let declaration = SelectableDeclaration::new(
+        "product.recovery",
+        ChoiceSource::Guest {
+            node: node.name.clone(),
+            protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+        },
+        ChoiceDomain::Boolean(BooleanDomain::new(1).expect("Boolean domain")),
+        ChoiceValue::Boolean(false),
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::from([String::from("recovery")]),
+        true,
+    )
+    .expect("guest selectable declaration");
+    let selectables = ScenarioSelectables::new(
+        &world,
+        ScenarioSelectableLimits::new(4, 8, 16, 32).expect("selectable limits"),
+        vec![declaration],
+    )
+    .expect("scenario selectables");
+    let scenario = ScenarioDefForm::from_components(
+        &world,
+        &Plan::empty(),
+        &Properties::empty(),
+        Seed::from_u64(7),
+    )
+    .expect("guest selectable scenario")
+    .with_selectables(selectables)
+    .expect("attach guest selectables");
+    (input_for_scenario(scenario, stop), node)
+}
+
+fn pending_guest_request(
+    node: NodeId,
+    narrowed: Option<Vec<u8>>,
+) -> crucible_qemu::QemuNodeSelectablePendingRequest {
+    let request = SelectionRequest::new(9, "product.recovery", "routing-epoch-7", narrowed, 256)
+        .expect("guest selection request");
+    crucible_qemu::QemuNodeSelectablePendingRequest::from_test_parts(
+        node,
+        SelectablePlanPendingRequest::new(request, 41, 0, 0x1000),
+    )
 }
 
 fn input_for_scenario(scenario: ScenarioDefForm, stop: StopCondition) -> CrucibleAttemptExecution {

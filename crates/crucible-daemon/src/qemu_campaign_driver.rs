@@ -15,21 +15,26 @@ use crucible::model::{
     MetricId, MetricSource, MetricValueType, ReducedRational, append_model_measurement_samples,
 };
 use crucible::{
-    EventLogCoverageObservation, GuestMeasurementEvent, GuestMeasurementValue,
+    Decision, EventLogCoverageObservation, GuestMeasurementEvent, GuestMeasurementValue,
     HostAssertionOutcomeKind, NodeId, ObservableEventPayload, OfflineAssertionCheckError,
     OfflineAssertionChecker, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
     SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    SchedulerOperationalFailureClass, SchedulerQuiescence, VirtualTime,
+    SchedulerOperationalFailureClass, SchedulerQuiescence, SelectionDecision, VirtualTime, step,
 };
 use crucible_campaign::{
     CampaignCodecError, CampaignHash, ChoiceDiscovery, ChoiceDomainId, ChoiceOpportunityId,
     CoverageProjection, MAX_OBSERVATION_CHOICE_DISCOVERIES, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
     Observation, ObservationCandidate, PropertyEvidence, PropertyVerdict, PropertyVerdictSet,
-    SelectableId, StopCondition, StopOutcome,
+    SelectableId, Selection, SelectionOrigin, StopCondition, StopOutcome,
 };
 use crucible_cas::content_store::ContentId;
+use crucible_protocol::SelectionReply;
+use crucible_qemu::QemuNodeSelectablePendingRequest;
 use thiserror::Error;
 
+use crate::guest_selectable::{
+    GuestSelectableError, resolve_guest_selectable, selected_guest_reply,
+};
 use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure, CrucibleArtifactError,
     CrucibleAttemptExecution, CrucibleMeasurementError, CrucibleResolvedAttemptStart,
@@ -85,6 +90,9 @@ pub enum QemuFreshModeledDriverError {
     /// A repeated opportunity ID carried conflicting canonical bodies.
     #[error("fresh campaign lifecycle returned conflicting bodies for opportunity `{0}`")]
     ConflictingChoice(ChoiceOpportunityId),
+    /// A paused guest selectable request violated the scenario or reply contract.
+    #[error("fresh campaign guest selectable failed: {0}")]
+    GuestSelectable(#[source] GuestSelectableError),
     /// Retained event or property-evaluation work exceeded the driver bound.
     #[error("fresh campaign modeled projection exceeded `{limit}`")]
     LimitExceeded {
@@ -160,6 +168,16 @@ trait QemuModeledAttemptLifecycle {
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError>;
 
+    fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError>;
+
+    fn enqueue_selectable_reply(
+        &mut self,
+        pending: &QemuNodeSelectablePendingRequest,
+        reply: &SelectionReply,
+    ) -> Result<(), SchedulerError>;
+
     fn pending_network_output_count(&self) -> usize;
 }
 
@@ -174,6 +192,20 @@ impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         QemuFreshAttemptLifecycle::exact_checkpoint_ready(self)
+    }
+
+    fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError> {
+        QemuFreshAttemptLifecycle::drain_pending_selectable_requests(self)
+    }
+
+    fn enqueue_selectable_reply(
+        &mut self,
+        pending: &QemuNodeSelectablePendingRequest,
+        reply: &SelectionReply,
+    ) -> Result<(), SchedulerError> {
+        QemuFreshAttemptLifecycle::enqueue_selectable_reply(self, pending, reply)
     }
 
     fn pending_network_output_count(&self) -> usize {
@@ -267,7 +299,7 @@ fn drive_modeled_attempt(
         if check_operational_signals(lifecycle, context)? {
             return Ok(QemuFreshDriveOutcome::CheckpointRequested);
         }
-        let outcome = lifecycle
+        let mut outcome = lifecycle
             .drive_quantum(QuantumRequest {
                 configuration: configuration.clone(),
                 control: Vec::new(),
@@ -287,6 +319,9 @@ fn drive_modeled_attempt(
         };
         if terminal_stop.is_none() && checkpoint_is_ready(lifecycle, context)? {
             return Ok(QemuFreshDriveOutcome::CheckpointRequested);
+        }
+        if terminal_stop.is_none() {
+            resolve_pending_guest_choices(lifecycle, input, &mut outcome, &mut discoveries)?;
         }
         let stop = terminal_stop.or_else(|| {
             reached_requested_stop(
@@ -329,6 +364,60 @@ fn drive_modeled_attempt(
             },
         ));
     }
+}
+
+fn resolve_pending_guest_choices(
+    lifecycle: &mut impl QemuModeledAttemptLifecycle,
+    input: &CrucibleAttemptExecution,
+    outcome: &mut QuantumOutcome,
+    discoveries: &mut RetainedChoiceDiscoveries,
+) -> Result<(), AttemptWorkerFailure<QemuFreshModeledDriverError>> {
+    let pending = lifecycle
+        .drain_pending_selectable_requests()
+        .map_err(classify_scheduler_error)?;
+    let mut continuations = Vec::with_capacity(pending.len());
+    for pending in pending {
+        let discovery = resolve_guest_selectable(
+            input.lineage().scenario(),
+            input.scenario(),
+            pending.node(),
+            pending.pending(),
+        )
+        .map_err(|error| {
+            AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::GuestSelectable(error))
+        })?;
+        discoveries
+            .insert(discovery.clone())
+            .map_err(AttemptWorkerFailure::Terminal)?;
+        if input.attempt().stop() != &StopCondition::NextChoice {
+            let selection = Selection::new(
+                discovery.opportunity(),
+                discovery.domain(),
+                discovery.opportunity().default().clone(),
+                SelectionOrigin::Default,
+            )
+            .map_err(|error| {
+                AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::GuestSelectable(
+                    GuestSelectableError::Campaign(error),
+                ))
+            })?;
+            let reply = selected_guest_reply(pending.pending(), &discovery, &selection).map_err(
+                |error| {
+                    AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::GuestSelectable(
+                        error,
+                    ))
+                },
+            )?;
+            continuations.push((pending, reply, SelectionDecision::new(&selection)));
+        }
+    }
+    for (pending, reply, decision) in continuations {
+        lifecycle
+            .enqueue_selectable_reply(&pending, &reply)
+            .map_err(classify_scheduler_error)?;
+        outcome.configuration = step(&outcome.configuration, Decision::Selection(decision));
+    }
+    Ok(())
 }
 
 fn require_settled_network(

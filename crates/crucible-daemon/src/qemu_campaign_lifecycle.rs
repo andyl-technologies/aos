@@ -20,12 +20,15 @@ use crucible_api::{
     build_production_vm_lifecycle_loop_from_exact_closure_with_launcher,
     build_production_vm_lifecycle_loop_with_launcher,
 };
-use crucible_campaign::ExactCheckpointId;
+use crucible_campaign::{CampaignHash, ConfigurationId, ExactCheckpointId, SelectionOrigin};
 use crucible_cas::content_store::StoreError;
 use crucible_protocol::SelectionReply;
 use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuVmRealizationError};
 use thiserror::Error;
 
+use crate::guest_selectable::{
+    GuestSelectableError, resolve_guest_selectable, selected_guest_reply,
+};
 use crate::{
     AttemptCheckpointResult, AttemptExecutionContext, AttemptExecutionProduct,
     AttemptWorkerFailure, CapturedAttemptCheckpoint, CheckpointHandoffFailure,
@@ -611,6 +614,9 @@ pub enum QemuFreshStartReplayError {
     /// The lifecycle scheduler rejected one replay quantum.
     #[error("fresh start replay scheduler failed: {0}")]
     Scheduler(#[source] SchedulerError),
+    /// A paused guest selectable did not match the exact replay decision.
+    #[error("fresh start replay guest selectable failed: {0}")]
+    GuestSelectable(#[source] GuestSelectableError),
     /// Replay produced a schedule outside the exact requested prefix.
     #[error("fresh start replay diverged from the requested schedule")]
     Diverged,
@@ -1032,7 +1038,7 @@ where
             .lifecycles
             .start_fresh_lifecycle(&scenario, input.scenario(), start, context)
             .map_err(map_fresh_lifecycle_failure)?;
-        let materialization = materialize_fresh_start(&mut lifecycle, start, context);
+        let materialization = materialize_fresh_start(&mut lifecycle, input, start, context);
         let driven = materialization.and_then(|materialization| {
             let mut facade = QemuFreshAttemptLifecycle::new(&mut lifecycle);
             let outcome = self
@@ -1098,15 +1104,17 @@ fn unsupported_fresh_replay_decision(target: &Configuration) -> Option<usize> {
         .iter()
         .position(|decision| match decision {
             Decision::Override(_) | Decision::AppRandom(_) => true,
-            Decision::Selection(selection) => {
-                !selection.is_app_random_model_sample() && !selection.is_campaign_branch()
-            }
+            Decision::Selection(selection) => selection.selection().map_or(true, |decoded| {
+                matches!(decoded.origin(), SelectionOrigin::ModelSample(_))
+                    && !selection.is_app_random_model_sample()
+            }),
             Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Preemption(_) => false,
         })
 }
 
 fn materialize_fresh_start<F, D>(
     lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
+    input: &CrucibleAttemptExecution,
     target: &Configuration,
     context: &AttemptExecutionContext,
 ) -> Result<QemuFreshStartMaterialization, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
@@ -1136,7 +1144,7 @@ fn materialize_fresh_start<F, D>(
             ));
         }
 
-        let next = &outcome.configuration;
+        let mut next = outcome.configuration;
         let next_len = next.schedule.len();
         if next.def != target.def
             || next_len < prior_len
@@ -1148,11 +1156,20 @@ fn materialize_fresh_start<F, D>(
                 QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Diverged),
             ));
         }
+        let terminal = lifecycle.terminal_verdict_for_stop();
+        if terminal.is_none() {
+            apply_replayed_guest_selectables(
+                lifecycle,
+                input.lineage().scenario(),
+                input.scenario(),
+                target,
+                &mut next,
+            )?;
+        }
 
         append_start_replay_events(&mut replay, &outcome.event_log_entries)?;
         replay.terminal_quiescence = outcome.scheduler_quiescence;
-        current = outcome.configuration;
-        let terminal = lifecycle.terminal_verdict_for_stop();
+        current = next;
         if current == *target {
             replay.terminal_verdict = terminal;
             return Ok(replay);
@@ -1166,6 +1183,76 @@ fn materialize_fresh_start<F, D>(
 
     Err(AttemptWorkerFailure::Terminal(
         QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::QuantumLimit),
+    ))
+}
+
+fn apply_replayed_guest_selectables<F, D>(
+    lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
+    scenario: crucible_campaign::ScenarioDefId,
+    source: &ScenarioDefForm,
+    target: &Configuration,
+    current: &mut Configuration,
+) -> Result<(), AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>> {
+    let pending = lifecycle
+        .drain_pending_selectable_requests()
+        .map_err(map_start_replay_scheduler_failure)?;
+    let mut replayed = current.clone();
+    let mut replies = Vec::with_capacity(pending.len());
+    for pending in pending {
+        let discovery =
+            resolve_guest_selectable(scenario, source, pending.node(), pending.pending())
+                .map_err(start_replay_guest_selectable_failure)?;
+        let Some(Decision::Selection(decision)) =
+            target.schedule.decisions().get(replayed.schedule.len())
+        else {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Diverged),
+            ));
+        };
+        let selection = decision
+            .selection()
+            .map_err(GuestSelectableError::Campaign)
+            .map_err(start_replay_guest_selectable_failure)?;
+        match selection.origin() {
+            SelectionOrigin::Default | SelectionOrigin::LockedReplay => {
+                selection.validate_replay(discovery.opportunity(), discovery.domain())
+            }
+            SelectionOrigin::CampaignBranch { .. } => {
+                let parent =
+                    ConfigurationId::from_hash(CampaignHash::from_bytes(replayed.id().bytes));
+                selection.validate_branch_replay(
+                    discovery.opportunity(),
+                    discovery.domain(),
+                    discovery.opportunity().branch_point_id(parent),
+                )
+            }
+            SelectionOrigin::ModelSample(_) => {
+                Err(crucible_campaign::CampaignCodecError::InvalidValue {
+                    reason: "guest selectable replay does not admit model-sample provenance",
+                })
+            }
+        }
+        .map_err(GuestSelectableError::Campaign)
+        .map_err(start_replay_guest_selectable_failure)?;
+        let reply = selected_guest_reply(pending.pending(), &discovery, &selection)
+            .map_err(start_replay_guest_selectable_failure)?;
+        replies.push((pending, reply));
+        replayed = crucible::step(&replayed, Decision::Selection(decision.clone()));
+    }
+    for (pending, reply) in replies {
+        lifecycle
+            .enqueue_selectable_reply(&pending, &reply)
+            .map_err(map_start_replay_scheduler_failure)?;
+    }
+    *current = replayed;
+    Ok(())
+}
+
+fn start_replay_guest_selectable_failure<F, D>(
+    error: GuestSelectableError,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+        QemuFreshStartReplayError::GuestSelectable(error),
     ))
 }
 

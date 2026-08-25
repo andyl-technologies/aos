@@ -52,7 +52,9 @@
 //! [`qemu_lifecycle_launcher`] streams lifecycle checkpoint artifacts into one
 //! exact guarded process generation;
 //! [`qemu_campaign_lifecycle`] installs that launcher beneath the exact admitted
-//! campaign-attempt resource and cancellation contract;
+//! campaign-attempt resource and cancellation contract, while its private
+//! guest-selectable boundary resolves paused ABI requests into scenario-bound
+//! campaign opportunities and replies;
 //! [`qemu_resource_guard`] binds one indivisible host process/filesystem owner
 //! to signal-driven cancellation and exact quantum accounting;
 //! [`planner_loopback`] owns
@@ -91,6 +93,7 @@ pub mod executor_server;
 pub mod executor_service;
 pub mod executor_supervisor;
 pub mod executor_worker;
+mod guest_selectable;
 pub mod packaged_qemu_executor;
 #[cfg(target_os = "linux")]
 pub mod paused_checkpoint_promotion;
@@ -294,6 +297,7 @@ pub use executor_worker::{
     resolve_attempt_execution_input, retry_pending_attempt_result, retry_pending_checkpoint_result,
     stage_prepared_attempt_result, stage_prepared_checkpoint_result,
 };
+pub use guest_selectable::GuestSelectableError;
 pub use packaged_qemu_executor::{
     AttachedPackagedQemuExecutor, PackagedQemuExecutor, PackagedQemuExecutorCompletion,
     PackagedQemuExecutorConfig, PackagedQemuExecutorConfigError, PackagedQemuExecutorError,
