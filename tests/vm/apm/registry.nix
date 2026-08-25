@@ -5632,6 +5632,7 @@ in {
 
       $APR keys generate canary --registry trust-reg > /tmp/keys-generate-canary.out 2>&1
       KEY_CANARY=$(grep -o 'trust-reg:Ed25519:[A-Za-z0-9+/=]*' /tmp/keys-generate-canary.out | head -1)
+      KEY_CANARY_PATH="$HOME/.config/apm/keys/trust-reg-canary.key"
 
       if $APR keys generate root --registry trust-reg \
         > /tmp/keys-generate-overwrite.out 2>&1; then
@@ -5647,6 +5648,7 @@ in {
         --key "$KEY_ROOT_PATH"
       REG_DIR="$REG_STORAGE/trust-reg"
       TRUST_FILE="$HOME/.config/apm/trusted-keys.d/trust-reg.pub"
+      $APR add "file://$REG_DIR" --name trust-reg --no-clone --no-verify
 
       assert_file_exists "$REG_DIR/keys.toml" \
         "apr create writes committed keys.toml"
@@ -5654,6 +5656,28 @@ in {
         "initial committed key id is recorded"
       assert_file_contains "$REG_DIR/keys.toml" "$KEY_ROOT" \
         "initial committed key value is recorded"
+
+      $APR keys register backup-external --key "$KEY_BACKUP_PATH" \
+        --registry trust-reg > /tmp/keys-register-path.out 2>&1 || {
+        cat /tmp/keys-register-path.out
+        fail "apr keys register records an existing external key path"
+      }
+      assert_file_contains /tmp/keys-register-path.out "$KEY_BACKUP" \
+        "apr keys register reports the derived trust key"
+      assert_file_contains "$HOME/.config/apm/registries.d/trust-reg.toml" \
+        '"backup-external"' \
+        "apr keys register persists path-backed key resolution"
+      $APR keys register canary-external \
+        --key-command "cat $KEY_CANARY_PATH" --registry trust-reg \
+        > /tmp/keys-register-command.out 2>&1 || {
+        cat /tmp/keys-register-command.out
+        fail "apr keys register records an external key command"
+      }
+      assert_file_contains /tmp/keys-register-command.out "$KEY_CANARY" \
+        "apr keys register derives a trust key from command output"
+      assert_file_contains "$HOME/.config/apm/registries.d/trust-reg.toml" \
+        'canary-external' \
+        "apr keys register persists command-backed key resolution"
 
       $APR keys list --registry trust-reg > /tmp/keys-list-initial.out 2>&1 || {
         cat /tmp/keys-list-initial.out
@@ -5828,11 +5852,109 @@ in {
   };
 
   # -------------------------------------------------------------------------
+  # registry-change-workflow — Review and promote Hub-authored Git changes
+  # -------------------------------------------------------------------------
+  registry-change-workflow = testing.mkVMTest {
+    name = "apm-registry-change-workflow";
+    rootfsDeps = fixtures.commonDeps ++ [pkgs.jq];
+    memory = 512;
+    testScript = ''
+      ${fixtures.setupPreamble}
+
+      echo "==> Test: APR lists, reviews, and promotes a Hub change request"
+
+      $APR keys generate maintainer --registry change-reg \
+        > /tmp/change-key.out 2>&1
+      TRUST_KEY=$(grep -o 'change-reg:Ed25519:[A-Za-z0-9+/=]*' \
+        /tmp/change-key.out | head -1)
+      KEY_PATH="$HOME/.config/apm/keys/change-reg-maintainer.key"
+      $APR create change-reg --trust-key "$TRUST_KEY" \
+        --trust-key-id maintainer --key "$KEY_PATH"
+      REG_DIR="$REG_STORAGE/change-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+
+      git init --bare --object-format=sha256 /tmp/change-origin.git
+      git --git-dir=/tmp/change-origin.git symbolic-ref HEAD \
+        "refs/heads/$DEFAULT_BRANCH"
+      git -C "$REG_DIR" remote add origin /tmp/change-origin.git
+      $APR add file:///tmp/change-origin.git --name change-reg --no-clone \
+        --trust-key "$TRUST_KEY"
+      $APR keys register maintainer --key "$KEY_PATH" --registry change-reg
+      git -C "$REG_DIR" push --set-upstream origin "$DEFAULT_BRANCH"
+
+      BASE_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
+      printf '%s\n' '# reviewed Hub configuration fixture' \
+        >> "$REG_DIR/registry.toml"
+      git -C "$REG_DIR" add registry.toml
+      git -C "$REG_DIR" commit -m \
+        'hub: propose registry configuration
+
+AOS-Change-Id: change-001'
+      DRAFT_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
+      git -C "$REG_DIR" push origin \
+        "$DRAFT_COMMIT:refs/hub/changes/change-001"
+      git -C "$REG_DIR" reset --hard "$BASE_COMMIT"
+
+      $APR --json change list --registry change-reg \
+        > /tmp/change-list.json 2> /tmp/change-list.err || {
+        cat /tmp/change-list.err
+        fail "apr change list reads Hub change refs from the configured remote"
+      }
+      ${pkgs.jq}/bin/jq -e --arg commit "$DRAFT_COMMIT" \
+        '.change_requests | length == 1
+          and .[0].id == "change-001"
+          and .[0].commit == $commit
+          and .[0].change_id == "change-001"' \
+        /tmp/change-list.json >/dev/null
+      $APR change show change-001 --registry change-reg \
+        > /tmp/change-show.out 2>&1
+      assert_file_contains /tmp/change-show.out \
+        'reviewed Hub configuration fixture' \
+        "apr change show displays the proposed configuration"
+      $APR --json change show change-001 --stat --registry change-reg \
+        > /tmp/change-show-stat.json
+      ${pkgs.jq}/bin/jq -e \
+        '.id == "change-001" and .stat == true and (.output | contains("registry.toml"))' \
+        /tmp/change-show-stat.json >/dev/null
+
+      $APR --json change merge change-001 --key-id maintainer \
+        --registry change-reg > /tmp/change-merge.json
+      ${pkgs.jq}/bin/jq -e \
+        --arg draft "$DRAFT_COMMIT" --arg branch "$DEFAULT_BRANCH" \
+        '.id == "change-001"
+          and .branch == $branch
+          and .promoted_from == $draft
+          and (.commit | length == 64)' \
+        /tmp/change-merge.json >/dev/null
+      assert_file_contains "$REG_DIR/registry.toml" \
+        'reviewed Hub configuration fixture' \
+        "apr change merge promotes the reviewed tree"
+      LOCAL_HEAD=$(git -C "$REG_DIR" rev-parse HEAD)
+      REMOTE_HEAD=$(git --git-dir=/tmp/change-origin.git \
+        rev-parse "refs/heads/$DEFAULT_BRANCH")
+      test "$LOCAL_HEAD" = "$REMOTE_HEAD" || \
+        fail "apr change merge must push the promoted commit"
+      git -C "$REG_DIR" cat-file commit HEAD > /tmp/change-commit.out
+      assert_file_contains /tmp/change-commit.out 'gpgsig-sha256 ' \
+        "promoted change carries a maintainer signature"
+
+      if $APR change show missing --registry change-reg \
+        > /tmp/change-show-missing.out 2>&1; then
+        fail "apr change show should reject an unknown change id"
+      else
+        pass "apr change show rejects an unknown change id"
+      fi
+
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
   # closure-generate — Closure files created and well-formed
   # -------------------------------------------------------------------------
   closure-generate = testing.mkVMTest {
     name = "apm-closure-generate";
-    rootfsDeps = closureWorkflowDeps;
+    rootfsDeps = closureWorkflowDeps ++ [pkgs.jq];
     memory = 1024;
     testScript = ''
       ${fixtures.setupPreamble}
@@ -5942,6 +6064,60 @@ in {
         assert_file_contains "$ROOT_FILE" "$ref_hash" \
           "closure-root store record includes direct reference $ref_hash"
       done
+
+      echo "==> Exercise APR store graph maintenance commands"
+      $APR --json store verify --registry test-reg \
+        > /tmp/store-verify.json
+      ${pkgs.jq}/bin/jq -e '.action == "store_verify" and .errors == 0' \
+        /tmp/store-verify.json >/dev/null
+      $APR --json store verify --deep --registry test-reg \
+        > /tmp/store-verify-deep.json
+      ${pkgs.jq}/bin/jq -e \
+        '.action == "store_verify" and .errors == 0 and .deep_checked > 0' \
+        /tmp/store-verify-deep.json >/dev/null
+
+      $APR --json store bless "$ROOT_STORE" --registry test-reg --no-commit \
+        > /tmp/store-bless.json
+      ${pkgs.jq}/bin/jq -e '.action == "store_bless" and .committed == false' \
+        /tmp/store-bless.json >/dev/null
+      $APR --json store revoke "$ROOT_STORE" --registry test-reg --no-commit \
+        > /tmp/store-revoke.json
+      ${pkgs.jq}/bin/jq -e '.action == "store_revoke" and .committed == false' \
+        /tmp/store-revoke.json >/dev/null
+      if $APR store verify --registry test-reg \
+        > /tmp/store-verify-revoked.out 2>&1; then
+        cat /tmp/store-verify-revoked.out
+        fail "apr store verify should reject a revoked published root"
+      else
+        pass "apr store verify rejects a revoked published root"
+      fi
+      $APR store bless "$ROOT_STORE" --registry test-reg --no-commit \
+        > /tmp/store-rebless.out
+      $APR store verify --deep --registry test-reg \
+        > /tmp/store-verify-reblessed.out
+
+      rm -rf "$REG_DIR/store"
+      $APR --json store backfill --registry test-reg --no-commit \
+        > /tmp/store-backfill.json
+      ${pkgs.jq}/bin/jq -e \
+        '.action == "store_backfill" and .roots == 2 and .created > 0 and .committed == false' \
+        /tmp/store-backfill.json >/dev/null
+      $APR store verify --deep --registry test-reg \
+        > /tmp/store-verify-backfilled.out
+
+      echo "==> Exercise APR staged static-cache garbage collection"
+      $APR cache generate --registry test-reg --no-commit \
+        > /tmp/cache-generate-default.out
+      $APR --json cache gc --registry test-reg --max-age 0 --dry-run \
+        > /tmp/cache-gc-dry-run.json
+      ${pkgs.jq}/bin/jq -e \
+        '.action == "cache_gc" and .dry_run == true and .candidates > 0' \
+        /tmp/cache-gc-dry-run.json >/dev/null
+      $APR --json cache gc --registry test-reg --max-age 0 \
+        > /tmp/cache-gc.json
+      ${pkgs.jq}/bin/jq -e \
+        '.action == "cache_gc" and .dry_run == false and .deleted_files > 0' \
+        /tmp/cache-gc.json >/dev/null
 
       $APR verify --registry test-reg > /tmp/closure-verify-ok.out 2>&1 || {
         cat /tmp/closure-verify-ok.out
