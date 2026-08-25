@@ -15,6 +15,7 @@
 //! Phase 5).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
@@ -67,6 +68,8 @@ pub struct ObjectReader<'a> {
     cache: Mutex<BTreeMap<Oid, (ObjectKind, Vec<u8>)>>,
     attempted_bundles: Mutex<BTreeSet<String>>,
     bundle_gates: Mutex<BTreeMap<String, Arc<futures_util::lock::Mutex<()>>>>,
+    bundle_fetches: AtomicUsize,
+    loose_fetches: AtomicUsize,
 }
 
 impl<'a> ObjectReader<'a> {
@@ -78,6 +81,8 @@ impl<'a> ObjectReader<'a> {
             cache: Mutex::new(BTreeMap::new()),
             attempted_bundles: Mutex::new(BTreeSet::new()),
             bundle_gates: Mutex::new(BTreeMap::new()),
+            bundle_fetches: AtomicUsize::new(0),
+            loose_fetches: AtomicUsize::new(0),
         }
     }
 
@@ -99,6 +104,7 @@ impl<'a> ObjectReader<'a> {
         }
 
         let path = oid.loose_path();
+        self.loose_fetches.fetch_add(1, Ordering::Relaxed);
         let bytes = self
             .fetch
             .fetch(&path)
@@ -147,6 +153,7 @@ impl<'a> ObjectReader<'a> {
         }
 
         let path = aos_registry_surface::object_bundle::shard_path(&shard)?;
+        self.bundle_fetches.fetch_add(1, Ordering::Relaxed);
         let Some(bytes) = self
             .fetch
             .fetch_bounded(&path, aos_registry_surface::object_bundle::MAX_BUNDLE_BYTES)
@@ -177,6 +184,20 @@ impl<'a> ObjectReader<'a> {
             .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
             .extend(decoded);
         Ok(())
+    }
+
+    /// Returns bundle reads, loose fallbacks, and verified cached objects.
+    pub(crate) fn stats(&self) -> Result<(usize, usize, usize)> {
+        let cached = self
+            .cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
+            .len();
+        Ok((
+            self.bundle_fetches.load(Ordering::Relaxed),
+            self.loose_fetches.load(Ordering::Relaxed),
+            cached,
+        ))
     }
 
     /// Read one loose object, requiring a specific kind.
@@ -650,6 +671,7 @@ mod bundle_tests {
                 assert_eq!(first.unwrap().0, ObjectKind::Blob);
                 assert_eq!(second.unwrap().0, ObjectKind::Blob);
                 assert_eq!(fetch.reads.load(Ordering::SeqCst), 1);
+                assert_eq!(reader.stats().unwrap(), (1, 0, 2));
                 return;
             }
         }
