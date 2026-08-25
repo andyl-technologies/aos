@@ -6,6 +6,9 @@
 //! Semantic narrowing and reply selection stay outside the GPL-side process.
 
 use crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan;
+use crucible_protocol::selectable_transport::{
+    SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING,
+};
 
 use super::*;
 use crate::{
@@ -79,6 +82,24 @@ impl LiveSelectableState {
         Ok(())
     }
 
+    /// Projects the retained request into the bounded plugin-to-host record.
+    pub(super) fn pending_transport_record(
+        &self,
+    ) -> Result<SelectablePendingTransportRecord, LiveWhiteboxError> {
+        let pending =
+            self.catalog
+                .pending_request()
+                .ok_or_else(|| LiveWhiteboxError::Callback {
+                    message: "selectable callback reported pending without retained catalog state"
+                        .to_owned(),
+                })?;
+        SelectablePendingTransportRecord::new(
+            pending.request().clone(),
+            pending.reply_range().guest_address(),
+        )
+        .map_err(callback_error)
+    }
+
     #[cfg(test)]
     pub(super) const fn catalog(&self) -> &SelectableCatalog {
         &self.catalog
@@ -102,6 +123,12 @@ impl SelectableReplyService for LiveSelectableState {
         coordinate: SelectableCallbackCoordinate,
         reply_range: crate::GuestMemoryRange,
     ) -> Result<SelectableReplyDisposition, SelectableDoorbellServiceError> {
+        // Validate the stricter marker-transport profile before mutating the
+        // catalog or asking QEMU to stop. A standalone guest request may use
+        // the full doorbell buffer, while a deferred request must also carry
+        // its process-neutral reply address to the host.
+        SelectablePendingTransportRecord::new(request.clone(), reply_range.guest_address())
+            .map_err(|error| SelectableDoorbellServiceError::new(error.to_string()))?;
         self.catalog
             .begin_request(request, coordinate, reply_range)
             .map_err(service_error)?;
@@ -112,6 +139,24 @@ impl SelectableReplyService for LiveSelectableState {
             )));
         }
         Ok(SelectableReplyDisposition::Pending)
+    }
+}
+
+impl LiveWhiteboxMarkerShmemProducer {
+    pub(super) fn record_selectable_pending(
+        &mut self,
+        current_icount: u64,
+        vcpu_index: u32,
+        record: &SelectablePendingTransportRecord,
+    ) -> Result<(), LiveWhiteboxError> {
+        let payload = record.encode().map_err(callback_error)?;
+        self.record(
+            current_icount,
+            vcpu_index,
+            WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING,
+            &payload,
+        )
+        .map_err(callback_error)
     }
 }
 

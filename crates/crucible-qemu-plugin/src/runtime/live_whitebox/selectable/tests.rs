@@ -132,6 +132,44 @@ fn live_catalog_freezes_and_retains_a_request_before_vmstop()
         SelectableCallbackCoordinate::new(50, 1)
     );
     assert_eq!(state.catalog().total_completed_requests(), 0);
+    let transport = state.pending_transport_record()?;
+    assert_eq!(transport.request(), &request);
+    assert_eq!(transport.guest_virtual_address(), 0x4000);
+    Ok(())
+}
+
+#[test]
+fn deferred_transport_bound_rejects_before_catalog_mutation_or_vmstop()
+-> Result<(), Box<dyn std::error::Error>> {
+    VMSTOP_STATUS.set(0);
+    VMSTOP_CALLS.set(0);
+    let plan = cold_plan()?;
+    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop)?;
+    state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
+    state.freeze()?;
+    let request = SelectionRequest::new(
+        2,
+        "network.policy",
+        "epoch/7",
+        Some(vec![2]),
+        crucible_protocol::SELECTABLE_MESSAGE_MAX_BYTES,
+    )?;
+
+    assert!(
+        state
+            .serve_selection(
+                &request,
+                SelectableCallbackCoordinate::new(50, 1),
+                crate::GuestMemoryRange::new(
+                    crate::GuestMemoryAddressSpace::Virtual,
+                    0x4000,
+                    request.reply_capacity(),
+                ),
+            )
+            .is_err()
+    );
+    assert_eq!(VMSTOP_CALLS.get(), 0);
+    assert!(state.catalog().pending_request().is_none());
     Ok(())
 }
 

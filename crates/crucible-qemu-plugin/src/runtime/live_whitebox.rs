@@ -455,9 +455,16 @@ impl LiveWhiteboxState {
                 .selectable
                 .as_mut()
                 .ok_or(LiveWhiteboxError::SelectableNotConfigured)?;
-            selectable
-                .handle(&self.doorbell, self.apis, &mut reader, event)
-                .map(|_outcome| ())
+            let outcome = selectable.handle(&self.doorbell, self.apis, &mut reader, event)?;
+            if matches!(outcome, crate::SelectableDoorbellOutcome::Pending { .. }) {
+                let record = selectable.pending_transport_record()?;
+                self.marker_sink.output.record_selectable_pending(
+                    current_icount,
+                    vcpu_index as u32,
+                    &record,
+                )?;
+            }
+            Ok(())
         } else {
             if is_setup_complete_marker(&payload)
                 && let Some(selectable) = self.selectable.as_mut()

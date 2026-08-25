@@ -138,10 +138,15 @@ guest registrations, freezes before publishing `setup_complete`, retains an
 exact request without touching its zero-filled reply reservation, and requests
 native VMStop. It preallocates cold-priming and restored catalog incarnations
 over one shared declaration allocation, then swaps the exact continuation once
-at the logical-restore boundary before acknowledgement. Daemon-side scenario
-conversion, host-visible pending-plan capture, semantic narrowed-domain
-validation, selected-reply delivery, and durable checkpoint composition remain
-required to complete T-CAM-2.5.
+at the logical-restore boundary before acknowledgement. The live plugin now
+publishes one bounded, versioned pending-request record through the existing
+lossless marker ring after retention and VMStop request; the mapped host adapter
+reconstructs the exact request, trap coordinate, and guest virtual reply target
+without granting it semantic authority. Deferred requests use a 4,576-byte
+nested-request profile so the 32-byte transport header cannot overflow the
+4,608-byte marker entry. Daemon-side scenario conversion, semantic
+narrowed-domain validation, selected-reply delivery, completion accounting, and
+durable checkpoint composition remain required to complete T-CAM-2.5.
 The process-neutral `CRUCSCP2` catalog-plan codec now freezes the future sealed
 descriptor body, including exact expectations, limits, registered identifiers,
 sequence watermarks, completed counters, and a complete pending request/trap

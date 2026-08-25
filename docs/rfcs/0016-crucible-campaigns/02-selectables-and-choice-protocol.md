@@ -409,10 +409,37 @@ carrying the authenticated registered set, counters, sequence watermarks, and
 pending request before acknowledging restore. Immutable declarations are
 shared, but pending tokens are incarnation-specific and cannot cross the swap.
 
+After retaining the request and successfully requesting VMStop, the plugin
+publishes one `crucible.guest-selectable.pending-request` version-1 record
+through the existing lossless plugin-to-host white-box marker ring. The marker
+entry supplies the trap icount and vCPU index. Its canonical body is:
+
+```text
+offset  size  field
+------  ----  ----------------------------------------------------------
+  0      8   magic = "CRUCSPQ1"
+  8      2   version = 1, little-endian
+ 10      2   header_len = 32, little-endian
+ 12      4   total_len, little-endian
+ 16      8   guest_virtual_reply_address, little-endian
+ 24      4   selection_request_len, little-endian
+ 28      4   reserved = 0
+ 32      N   canonical SelectionRequestV1
+```
+
+The complete body remains within the marker ring's 4,608-byte payload, so a
+deferred request is limited to 4,576 nested bytes. A larger standalone request
+fails before catalog mutation or VMStop. The host drain reconstructs the exact
+process-neutral pending-plan coordinate but does not grant semantic choice
+authority. Host-to-plugin reply delivery, completion accounting, and durable
+checkpoint composition remain separate required boundaries.
+
 The wire protocol contains no Rust-native layouts, pointers, callbacks, or
 QEMU-private objects. The version-1 codec is owned by
-`crucible-protocol::selectable`; `crucible-guest` exposes typed emission and
-reply-validation helpers over the architecture-specific doorbell transport.
+`crucible-protocol::selectable`; the deferred transport is owned by
+`crucible-protocol::selectable_transport`; `crucible-guest` exposes typed
+emission and reply-validation helpers over the architecture-specific doorbell
+transport.
 
 The launch-authenticated node-local catalog and checkpoint continuation use the
 independent `crucible.guest-selectable.catalog-plan` version-2 descriptor body.
