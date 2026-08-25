@@ -240,6 +240,25 @@ in
         ${pkgs.grep}/bin/grep -Eiq "$pattern" "$output"
       }
 
+      reviewed_apply_error() {
+        label=$1
+        pattern=$2
+        shift 2
+        plan_file="/tmp/$label-expected-plan.json"
+        hub_cli "$@" --plan --idempotency-key "$label-plan" >"$plan_file"
+        plan_id=$(${pkgs.jq}/bin/jq -er .data.plan.plan_id "$plan_file")
+        confirm_hash=$(${pkgs.jq}/bin/jq -er .data.plan.confirmation_hash "$plan_file")
+        output="/tmp/$label-expected-apply-error.json"
+        if hub_cli "$@" --plan-id "$plan_id" --confirm-hash "$confirm_hash" \
+          --yes --idempotency-key "$label-apply" >"$output" 2>&1; then
+          echo "$label apply unexpectedly succeeded" >&2
+          ${pkgs.coreutils}/bin/cat "$output" >&2
+          return 1
+        fi
+        ${pkgs.coreutils}/bin/cat "$output" >&2
+        ${pkgs.grep}/bin/grep -Eiq "$pattern" "$output"
+      }
+
       echo '==> Exercise the installed aos client against the native service'
       ${pkgs.aos}/bin/aos --json hub whoami --hub "$hub_url" --token "$token" \
         >/tmp/whoami.json
@@ -422,6 +441,127 @@ in
       ${pkgs.jq}/bin/jq -e \
         '.data | tostring | test("failed|succeeded|cancelled")' \
         /tmp/credential-operation-watch.json >/dev/null
+
+      echo '==> Exercise network-policy revision and grant lifecycle'
+      reviewed network-policy-add network-policy add operations-allowlist \
+        --stable-id operations-allowlist --kind source-allowlist --org operations \
+        --allowlist-id operations-allowlist-v1 --protected-transport required \
+        --probe-location native-operations >/tmp/network-policy-add.json
+      hub_cli network-policy list --org operations --page-size 1 \
+        >/tmp/network-policy-list.json
+      hub_cli network-policy show operations-allowlist \
+        >/tmp/network-policy-show.json
+      hub_cli network-policy status operations-allowlist \
+        >/tmp/network-policy-status.json
+      network_policy_version=$(resource_version /tmp/network-policy-show.json)
+      reviewed network-policy-revise network-policy revise operations-allowlist \
+        --cidr 10.20.0.0/16 --if-version "$network_policy_version" \
+        >/tmp/network-policy-revise.json
+      hub_cli network-policy revision list operations-allowlist --page-size 1 \
+        >/tmp/network-policy-revisions.json
+      hub_cli network-policy revision show operations-allowlist@2 \
+        >/tmp/network-policy-revision-two.json
+      network_revision_two_version=$(resource_version /tmp/network-policy-revision-two.json)
+      expect_hub_error network-policy-activate-unverified 'verified staged' \
+        network-policy revision activate \
+        operations-allowlist@2 --mode overlap --default-for-new-plans yes \
+        --if-version "$network_revision_two_version" \
+        --plan --idempotency-key network-policy-activate-unverified
+      hub_cli network-policy revision show operations-allowlist@1 \
+        >/tmp/network-policy-revision-one.json
+      network_revision_one_version=$(resource_version /tmp/network-policy-revision-one.json)
+      reviewed_apply_error network-policy-retire-staged 'active|retiring' \
+        network-policy revision retire \
+        operations-allowlist@1 --if-version "$network_revision_one_version" \
+        >/tmp/network-policy-retire.json
+      reviewed network-policy-grant network-policy grant operations-allowlist \
+        --consumer-scope "$consumer_org_scope" >/tmp/network-policy-grant.json
+      network_policy_grant_version=$(resource_version /tmp/network-policy-grant.json)
+      reviewed network-policy-revoke network-policy revoke operations-allowlist \
+        --consumer-scope "$consumer_org_scope" \
+        --if-version "$network_policy_grant_version" \
+        >/tmp/network-policy-revoke.json
+
+      echo '==> Exercise endpoint generation and grant lifecycle'
+      reviewed endpoint-add endpoint add http://127.0.0.1:18420 \
+        --stable-id operations-endpoint --org operations --acknowledge-cleartext \
+        --network-policy instance:public@1 --ingress hub \
+        --listener-provider hub-native --listener-resource-id native-operations-v1 \
+        --probe-provider native-file --probe-signer-secret-ref native-probe-v1 \
+        --probe-public-key 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo \
+        >/tmp/endpoint-add.json
+      hub_cli endpoint list --org operations --page-size 1 >/tmp/endpoint-list.json
+      hub_cli endpoint show operations-endpoint >/tmp/endpoint-show.json
+      hub_cli endpoint generations operations-endpoint --page-size 1 \
+        >/tmp/endpoint-generations.json
+      hub_cli endpoint generation operations-endpoint 1 \
+        >/tmp/endpoint-generation-one.json
+      hub_cli endpoint status operations-endpoint >/tmp/endpoint-status.json
+      endpoint_version=$(resource_version /tmp/endpoint-show.json)
+      reviewed endpoint-stage endpoint stage operations-endpoint \
+        --ingress layer7 --listener-provider layer7 \
+        --listener-resource-id native-operations-v2 \
+        --if-version "$endpoint_version" \
+        >/tmp/endpoint-stage.json
+      hub_cli endpoint generation operations-endpoint 2 \
+        >/tmp/endpoint-generation-two.json
+      hub_cli endpoint show operations-endpoint >/tmp/endpoint-before-activate.json
+      endpoint_activate_version=$(resource_version /tmp/endpoint-before-activate.json)
+      reviewed endpoint-activate endpoint activate operations-endpoint 2 \
+        --if-version "$endpoint_activate_version" \
+        >/tmp/endpoint-activate.json
+      reviewed endpoint-grant endpoint grant operations-endpoint \
+        --consumer-scope "$consumer_org_scope" >/tmp/endpoint-grant.json
+      endpoint_grant_version=$(resource_version /tmp/endpoint-grant.json)
+      reviewed endpoint-revoke endpoint revoke operations-endpoint \
+        --consumer-scope "$consumer_org_scope" \
+        --if-version "$endpoint_grant_version" >/tmp/endpoint-revoke.json
+
+      echo '==> Exercise gateway generation, authorization, and lifecycle'
+      reviewed gateway-add gateway add --stable-id operations-gateway \
+        --binding operations:archive --endpoint operations-endpoint@2 \
+        --client-base-path /archive --origin-prefix /objects --access public \
+        >/tmp/gateway-add.json
+      hub_cli gateway list --binding operations:archive --page-size 1 \
+        >/tmp/gateway-list.json
+      hub_cli gateway show operations-gateway >/tmp/gateway-show.json
+      hub_cli gateway preview operations-gateway >/tmp/gateway-preview.json
+      gateway_version=$(resource_version /tmp/gateway-show.json)
+      reviewed gateway-update gateway update operations-gateway \
+        --origin-prefix /objects-v2 --access public --if-version "$gateway_version" \
+        >/tmp/gateway-update.json
+      reviewed gateway-grant gateway grant operations-gateway@2 \
+        --consumer-scope "$consumer_org_scope" >/tmp/gateway-grant.json
+      gateway_grant_version=$(resource_version /tmp/gateway-grant.json)
+      reviewed gateway-revoke gateway revoke operations-gateway@2 \
+        --consumer-scope "$consumer_org_scope" \
+        --if-version "$gateway_grant_version" >/tmp/gateway-revoke.json
+      hub_cli gateway show operations-gateway >/tmp/gateway-before-enable.json
+      gateway_enable_version=$(resource_version /tmp/gateway-before-enable.json)
+      expect_hub_error gateway-enable-unreconciled 'reconciled and ready' \
+        gateway enable operations-gateway --if-version "$gateway_enable_version" \
+        --plan --idempotency-key gateway-enable-unreconciled
+      hub_cli gateway show operations-gateway >/tmp/gateway-before-disable.json
+      gateway_disable_version=$(resource_version /tmp/gateway-before-disable.json)
+      reviewed gateway-disable gateway disable operations-gateway \
+        --if-version "$gateway_disable_version" >/tmp/gateway-disable.json
+      hub_cli gateway show operations-gateway >/tmp/gateway-before-remove.json
+      gateway_remove_version=$(resource_version /tmp/gateway-before-remove.json)
+      reviewed gateway-remove gateway remove operations-gateway \
+        --if-version "$gateway_remove_version" >/tmp/gateway-remove.json
+
+      hub_cli endpoint show operations-endpoint >/tmp/endpoint-before-remove.json
+      endpoint_remove_version=$(resource_version /tmp/endpoint-before-remove.json)
+      reviewed endpoint-remove endpoint remove operations-endpoint \
+        --if-version "$endpoint_remove_version" >/tmp/endpoint-remove.json
+      hub_cli network-policy show operations-allowlist \
+        >/tmp/network-policy-before-remove.json
+      network_policy_remove_version=$(resource_version \
+        /tmp/network-policy-before-remove.json)
+      reviewed network-policy-remove network-policy remove operations-allowlist \
+        --if-version "$network_policy_remove_version" \
+        >/tmp/network-policy-remove.json
+
       hub_cli binding show operations:archive >/tmp/binding-before-delete.json
       binding_delete_version=$(resource_version /tmp/binding-before-delete.json)
       echo '==> Delete the unused binding'
