@@ -244,6 +244,8 @@ in
         /tmp/registry-show.json >/dev/null
       registry_version=$(${pkgs.jq}/bin/jq -er .data.registry.resource_version \
         /tmp/registry-show.json)
+      registry_id=$(${pkgs.jq}/bin/jq -er .data.registry.stable_id \
+        /tmp/registry-show.json)
 
       echo '==> Provision and reconcile native local-filesystem storage'
       ${pkgs.aos}/bin/aos --json hub binding list \
@@ -425,6 +427,68 @@ in
         --if-version "$token_version" --idempotency-key access-token-retire-plan
       retained_apply access-token-retire access-token retire \
         >/tmp/access-token-retire.json
+
+      echo '==> Exercise externally custodied signing-key lifecycle and usage pins'
+      printf '%s' '11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo' \
+        >/tmp/signing-key-generation-1.pub
+      printf '%s' 'PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw' \
+        >/tmp/signing-key-generation-2.pub
+      hub_cli signing-key list --scope "$org_scope" >/tmp/signing-keys-empty.json
+      ${pkgs.jq}/bin/jq -e '(.data.signing_keys // []) == []' \
+        /tmp/signing-keys-empty.json >/dev/null
+      retained_plan signing-key-enroll signing-key enroll plan release-root \
+        --scope "$org_scope" \
+        --public-key-file /tmp/signing-key-generation-1.pub \
+        --public-key-fingerprint 21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9 \
+        --custody external --idempotency-key signing-key-enroll-plan
+      retained_apply signing-key-enroll signing-key enroll \
+        >/tmp/signing-key-enroll.json
+      hub_cli signing-key show --scope "$org_scope" release-root \
+        >/tmp/signing-key-show.json
+      signing_key_id=$(${pkgs.jq}/bin/jq -er \
+        '[.. | objects | .stable_id? // empty][0]' /tmp/signing-key-show.json)
+      signing_key_version=$(resource_version /tmp/signing-key-show.json)
+      hub_cli signing-key list --scope "$org_scope" --page-size 1 \
+        | ${pkgs.jq}/bin/jq -e '.data | tostring | contains("release-root")' >/dev/null
+
+      retained_plan signing-key-usage signing-key usage plan \
+        --consumer "$registry_id" --purpose registry-publication \
+        --signing-key "$signing_key_id" --generation 1 \
+        --state active --if-version absent \
+        --idempotency-key signing-key-usage-plan
+      retained_apply signing-key-usage signing-key usage \
+        >/tmp/signing-key-usage.json
+      hub_cli signing-key usage show --consumer "$registry_id" \
+        --purpose registry-publication >/tmp/signing-key-usage-show.json
+      usage_version=$(resource_version /tmp/signing-key-usage-show.json)
+
+      retained_plan signing-key-rotate signing-key rotate plan release-root \
+        --scope "$org_scope" \
+        --public-key-file /tmp/signing-key-generation-2.pub \
+        --public-key-fingerprint 39f713d0a644253f04529421b9f51b9b08979d08295959c4f3990ee617f5139f \
+        --custody external --if-version "$signing_key_version" \
+        --idempotency-key signing-key-rotate-plan
+      retained_apply signing-key-rotate signing-key rotate \
+        >/tmp/signing-key-rotate.json
+      hub_cli signing-key show --scope "$org_scope" release-root \
+        >/tmp/signing-key-rotated.json
+      ${pkgs.jq}/bin/jq -e \
+        '[.data | .. | objects | .generation? // empty] | any(. == 2 or . == "2")' \
+        /tmp/signing-key-rotated.json >/dev/null
+
+      retained_plan signing-key-usage-rotate signing-key usage plan \
+        --consumer "$registry_id" --purpose registry-publication \
+        --signing-key "$signing_key_id" --generation 2 \
+        --state detached --if-version "$usage_version" \
+        --idempotency-key signing-key-usage-rotate-plan
+      retained_apply signing-key-usage-rotate signing-key usage \
+        >/tmp/signing-key-usage-detached.json
+      signing_key_version=$(resource_version /tmp/signing-key-rotated.json)
+      retained_plan signing-key-retire signing-key retire plan release-root \
+        --scope "$org_scope" --if-version "$signing_key_version" \
+        --idempotency-key signing-key-retire-plan
+      retained_apply signing-key-retire signing-key retire \
+        >/tmp/signing-key-retire.json
       reviewed project-create org project create operations --path platform --name Platform \
         >/tmp/project-create.json
       ${pkgs.aos}/bin/aos --json hub org project list operations \
