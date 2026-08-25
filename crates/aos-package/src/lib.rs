@@ -2036,6 +2036,12 @@ pub enum WebCommand {
 /// Static git-origin subcommands.
 #[derive(Subcommand)]
 pub enum OriginCommand {
+    /// Prepare bounded index bundles in an already materialized static surface
+    PrepareIndexBundles {
+        /// Static registry surface directory containing the root objects store
+        #[arg(long)]
+        surface_dir: PathBuf,
+    },
     /// Upload the dumb-HTTP git origin surface to one or more destinations
     Upload {
         /// Backend URL to upload static origin files to; repeat for multiple destinations

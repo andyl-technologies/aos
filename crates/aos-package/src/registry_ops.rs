@@ -11141,7 +11141,8 @@ pub async fn run_web(config: &ApmConfig, command: &WebCommand, printer: &Printer
 
 /// `apr origin` subcommands for the static dumb-HTTP git origin.
 ///
-/// `upload` refreshes the static object store indexes and uploads the
+/// `prepare-index-bundles` backfills the bounded index transport in an already
+/// materialized surface. `upload` refreshes the static object store indexes and uploads the
 /// registry's git origin files (objects, packs, refs, channel payloads)
 /// to each destination — the `--upload-url` flags, or the persisted
 /// `upload_urls` defaults when no flag is given — so consumers can sync
@@ -11151,7 +11152,7 @@ pub async fn run_web(config: &ApmConfig, command: &WebCommand, printer: &Printer
 ///
 /// # Errors
 ///
-/// Fails when `upload` has no destination (neither `--upload-url` flags
+/// Fails when a bundle surface is incomplete, when `upload` has no destination (neither `--upload-url` flags
 /// nor persisted defaults), when the object-store refresh or any upload
 /// fails, when `config` both sets and unsets the same field, or when
 /// `config` cannot read, parse, or rewrite the registry config file.
@@ -11161,6 +11162,21 @@ pub async fn run_origin(
     printer: &Printer,
 ) -> Result<()> {
     match command {
+        OriginCommand::PrepareIndexBundles { surface_dir } => {
+            objectstore::write_index_bundles_for_surface(surface_dir)?;
+            printer.success(&format!(
+                "Prepared 256 bounded index bundles in {}.",
+                surface_dir.display()
+            ));
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "origin_prepare_index_bundles",
+                    "surface_dir": surface_dir.to_string_lossy(),
+                    "bundles": 256,
+                }));
+            }
+            Ok(())
+        }
         OriginCommand::Upload {
             upload_urls,
             cache_dir,
