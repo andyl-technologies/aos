@@ -247,3 +247,39 @@ fn continuation_rejects_runtime_state_before_freeze_and_stale_pending_sequence()
     ));
     Ok(())
 }
+
+#[test]
+fn host_mirror_transitions_round_trip_one_completed_request()
+-> Result<(), Box<dyn std::error::Error>> {
+    let declaration = declaration("network.policy", SelectablePlanPresence::Required)?;
+    let mut plan = SelectableCatalogPlan::new(
+        limits()?,
+        vec![declaration],
+        SelectablePlanContinuation::cold(),
+    )?;
+    let registration = SelectableRegister::new(
+        4,
+        "network.policy",
+        vec![1, 2],
+        vec![1],
+        vec!["network".to_owned()],
+    )?;
+    plan.apply_registration(&registration)?;
+    plan.apply_freeze()?;
+    let request = SelectionRequest::new(9, "network.policy", "epoch/1", None, 128)?;
+    let pending = SelectablePlanPendingRequest::new(request, 700, 2, 0x8000);
+    plan.apply_pending_request(pending)?;
+    let reply = crate::SelectionReply::selected(9, [1; 32], [2; 32], vec![1])?;
+    plan.apply_completed_reply(&reply)?;
+
+    assert_eq!(plan.continuation().phase(), SelectablePlanPhase::Frozen);
+    assert_eq!(plan.continuation().last_registration_sequence(), Some(4));
+    assert_eq!(
+        plan.continuation().last_completed_request_sequence(),
+        Some(9)
+    );
+    assert_eq!(plan.continuation().total_completed_requests(), 1);
+    assert!(plan.continuation().pending().is_none());
+    assert_eq!(SelectableCatalogPlan::decode(&plan.encode()?)?, plan);
+    Ok(())
+}

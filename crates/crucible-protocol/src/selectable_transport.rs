@@ -1,4 +1,4 @@
-//! Plugin-to-host transport for one deferred selectable request.
+//! Process-neutral selectable catalog delta transport.
 //!
 //! This is not the guest ABI. The guest sends a standalone
 //! [`SelectionRequest`]; after retaining it and requesting VMStop, the plugin
@@ -21,6 +21,12 @@
 //! and vCPU index. The nested request retains its complete zero-filled reply
 //! reservation. Consequently this transport admits request bodies up to 4,576
 //! bytes, slightly below the standalone guest ABI's 4,608-byte ceiling.
+//!
+//! Two additional internal marker kinds carry an already-canonical
+//! [`crate::SelectableRegister`] after plugin admission and the exact
+//! [`crate::SelectionReply`] after same-icount guest delivery. Together with
+//! the pending record and ordinary setup-complete marker, these deltas maintain
+//! the host-owned checkpoint mirror without defining another aggregate codec.
 
 use thiserror::Error;
 
@@ -37,6 +43,18 @@ pub const WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING: u16 = 0xff06;
 /// The reply travels through the directionally separate ABI-v18 ring and its
 /// payload is one canonical [`crate::SelectionReply`].
 pub const WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY: u16 = 0xff07;
+
+/// Internal SPSC entry kind for one catalog registration admitted by the plugin.
+///
+/// The payload is one canonical [`crate::SelectableRegister`]. The host uses
+/// it to mirror the exact plugin catalog before checkpointing.
+pub const WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED: u16 = 0xff08;
+
+/// Internal SPSC entry kind for one selectable reply consumed by the plugin.
+///
+/// The payload is the canonical [`crate::SelectionReply`] that was written to
+/// guest memory and charged to the plugin catalog.
+pub const WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED: u16 = 0xff09;
 
 /// Magic prefix for the deferred selectable request transport.
 pub const SELECTABLE_PENDING_TRANSPORT_MAGIC: [u8; 8] = *b"CRUCSPQ1";

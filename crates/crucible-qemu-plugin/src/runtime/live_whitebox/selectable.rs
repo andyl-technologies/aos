@@ -8,7 +8,8 @@
 use crucible_protocol::SelectionReply;
 use crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan;
 use crucible_protocol::selectable_transport::{
-    SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING,
+    SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
+    WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING, WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED,
     WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
 };
 use crucible_shmem::{RingHeader, WhiteboxMarkerEntry};
@@ -35,6 +36,7 @@ pub(super) struct LiveSelectableState {
     restore_catalog: Option<SelectableCatalog>,
     request_vmstop: crate::QemuRequestVmstopFn,
     reply_input: LiveSelectableReplyShmemConsumer,
+    catalog_events_enabled: bool,
 }
 
 /// Pinned raw consumer view of the VM-local host-to-plugin reply ring.
@@ -155,6 +157,8 @@ impl LiveSelectableState {
             restore_catalog: Some(restore_catalog),
             request_vmstop,
             reply_input,
+            catalog_events_enabled: plan.continuation().phase()
+                == crucible_protocol::selectable_catalog_plan::SelectablePlanPhase::Registering,
         })
     }
 
@@ -164,12 +168,12 @@ impl LiveSelectableState {
         current_icount: u64,
         vcpu_index: u32,
         writer: &mut W,
-    ) -> Result<(), LiveWhiteboxError>
+    ) -> Result<Option<SelectionReply>, LiveWhiteboxError>
     where
         W: WhiteboxGuestInputWriter + ?Sized,
     {
         let Some(entry) = self.reply_input.peek()? else {
-            return Ok(());
+            return Ok(None);
         };
         let entry = entry.validate().map_err(callback_error)?;
         if entry.kind() != WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY {
@@ -195,7 +199,7 @@ impl LiveSelectableState {
             )));
         }
         if vcpu_index != coordinate.vcpu_index() {
-            return Ok(());
+            return Ok(None);
         }
         if current_icount != coordinate.icount() {
             return Err(callback_error(format!(
@@ -233,7 +237,8 @@ impl LiveSelectableState {
             .map_err(callback_error)?;
         self.catalog
             .complete_request(&pending, &reply)
-            .map_err(callback_error)
+            .map_err(callback_error)?;
+        Ok(Some(reply))
     }
 
     /// Dispatches one selectable message through the shared safe callback core.
@@ -265,7 +270,26 @@ impl LiveSelectableState {
             .take()
             .ok_or(LiveWhiteboxError::SelectableRestoreAlreadyApplied)?;
         self.catalog = restored;
+        self.catalog_events_enabled = true;
         Ok(())
+    }
+
+    /// Returns whether catalog deltas belong to the authoritative generation.
+    #[must_use]
+    pub(super) const fn catalog_events_enabled(&self) -> bool {
+        self.catalog_events_enabled
+    }
+
+    /// Requests a deterministic pause after publishing one catalog delta.
+    pub(super) fn request_catalog_event_stop(&self) -> Result<(), LiveWhiteboxError> {
+        let status = (self.request_vmstop)();
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(callback_error(format!(
+                "QEMU rejected selectable catalog-event VMStop request with status {status}"
+            )))
+        }
     }
 
     /// Projects the retained request into the bounded plugin-to-host record.
@@ -329,6 +353,22 @@ impl SelectableReplyService for LiveSelectableState {
 }
 
 impl LiveWhiteboxMarkerShmemProducer {
+    pub(super) fn record_selectable_registration(
+        &mut self,
+        current_icount: u64,
+        vcpu_index: u32,
+        registration: &crucible_protocol::SelectableRegister,
+    ) -> Result<(), LiveWhiteboxError> {
+        let payload = registration.encode().map_err(callback_error)?;
+        self.record(
+            current_icount,
+            vcpu_index,
+            WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED,
+            &payload,
+        )
+        .map_err(callback_error)
+    }
+
     pub(super) fn record_selectable_pending(
         &mut self,
         current_icount: u64,
@@ -340,6 +380,22 @@ impl LiveWhiteboxMarkerShmemProducer {
             current_icount,
             vcpu_index,
             WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING,
+            &payload,
+        )
+        .map_err(callback_error)
+    }
+
+    pub(super) fn record_selectable_completed(
+        &mut self,
+        current_icount: u64,
+        vcpu_index: u32,
+        reply: &SelectionReply,
+    ) -> Result<(), LiveWhiteboxError> {
+        let payload = reply.encode().map_err(callback_error)?;
+        self.record(
+            current_icount,
+            vcpu_index,
+            WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
             &payload,
         )
         .map_err(callback_error)

@@ -470,12 +470,23 @@ the same pending catalog incarnation, sequence, vCPU, and icount, writes the
 canonical reply plus a zero tail to the retained guest virtual range, and only
 then charges completion and clears the pending request. The single entry makes
 duplicate or pipelined replies bounded backpressure and a loud protocol error.
-Semantic narrowed-domain authority and durable checkpoint composition remain
-host/coordinator responsibilities. The daemon's current semantic boundary
+After delivery and accounting, the plugin publishes the same canonical reply
+under internal marker kind `0xff09`; the host clears its mirrored pending state
+only when that delta matches the exact queued reply. A queued but unconsumed
+reply is therefore not checkpoint-ready. Admitted registrations similarly use
+internal kind `0xff08`, and each fresh-launch registration requests VMStop after
+publication so a 4,096-declaration catalog cannot overflow the 1,024-entry ring.
+
+The host initializes its mirror from the launch-authenticated plan and applies
+`0xff08`, `setup_complete`, `0xff06`, and `0xff09` in ring order. Version five
+of the production exact-checkpoint closure persists each frozen node plan in the
+lifecycle continuation. Warm restore launches from that exact plan, suppresses
+throwaway priming deltas until the logical-restore swap, and resumes a retained
+pending request with its request bytes, icount, vCPU, guest virtual reply
+address, registered set, counters, and sequence watermarks intact. Semantic
+narrowed-domain authority remains host/coordinator-owned. The daemon's semantic boundary
 implements scenario lookup, narrowed-domain validation, opportunity derivation,
 `NextChoice` discovery, default continuation, and exact campaign-branch replay.
-Pending-request checkpoint composition remains required before exact restore is
-enabled for selectable-bearing scenarios.
 
 The wire protocol contains no Rust-native layouts, pointers, callbacks, or
 QEMU-private objects. The version-1 codec is owned by

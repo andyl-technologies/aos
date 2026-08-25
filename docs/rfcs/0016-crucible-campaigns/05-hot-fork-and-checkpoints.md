@@ -334,15 +334,23 @@ all been observed. The first implementation streams the complete qcow2 object;
 extent manifests and changed-state capture remain the required hot-path
 optimization rather than a correctness precondition.
 
-The complete multi-node production continuation uses version four of the same
+The complete multi-node production continuation uses version five of the same
 typed root rather than flattening a potentially large object set into one
 generic envelope. The registered leaves are the canonical
-`crucible.production-exact-closure@device-state.4` manifest and exact opaque
+`crucible.production-exact-closure@device-state.5` manifest and exact opaque
 production objects under
 `crucible.executor.production-checkpoint-object@device-state.5`. Every object
 retains its production BLAKE3 identity and declared length in a registered
 `crucible.executor.production-checkpoint-index@exact-manifest.1` page. A page
 contains at most 4,096 objects and has this canonical body and child mapping:
+
+Version five adds the strictly node-ordered selectable catalog plans to the
+bounded lifecycle-continuation object. Each plan remains the canonical
+`CRUCSCP2` process-neutral body, is at most 32 MiB, and must be frozen and bound
+to a live checkpoint target. The closure reader continues to accept a canonical
+version-four manifest as an exact legacy identity; such a closure has no
+selectable catalog plans and therefore cannot restore a selectable-bearing
+scenario.
 
 ```text
 "CRUCPIDX" || object_count:u32be
@@ -352,7 +360,7 @@ object-<production_content_hash_hex>
     -> device-state.5 CAS identity of those exact bytes
 ```
 
-Non-final pages are full. The version-four root has one
+Non-final pages are full. The version-five root has one
 `production-manifest` child and consecutive
 `production-object-index-<eight-lowercase-hex-ordinal>` children. Its fixed
 124-byte body is:

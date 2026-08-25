@@ -67,9 +67,13 @@ pub(super) fn decode_manifest_with_limits(
     bytes: &[u8],
     limits: FaultResourceLimits,
 ) -> Result<ClosureManifest, LifecycleApiError> {
-    let payload = bytes
-        .strip_prefix(MANIFEST_MAGIC)
-        .ok_or_else(|| loop_factory_error("unsupported closure manifest version"))?;
+    let (format_version, payload) = if let Some(payload) = bytes.strip_prefix(MANIFEST_MAGIC) {
+        (MANIFEST_VERSION, payload)
+    } else if let Some(payload) = bytes.strip_prefix(LEGACY_MANIFEST_MAGIC) {
+        (LEGACY_MANIFEST_VERSION, payload)
+    } else {
+        return Err(loop_factory_error("unsupported closure manifest version"));
+    };
     if payload.len() > MAX_MANIFEST_BYTES {
         return Err(loop_factory_error(
             "closure manifest exceeds its size limit",
@@ -77,10 +81,11 @@ pub(super) fn decode_manifest_with_limits(
     }
 
     let _budget = DecodeBudgetGuard::enter(limits);
-    let manifest: ClosureManifest = ciborium::de::from_reader(payload).map_err(|error| {
+    let mut manifest: ClosureManifest = ciborium::de::from_reader(payload).map_err(|error| {
         map_decode_resource_error(&error)
             .unwrap_or_else(|| loop_factory_error("malformed closure manifest"))
     })?;
+    manifest.format_version = format_version;
     let canonical =
         encode_manifest(&manifest).map_err(|error| loop_factory_error(error.to_string()))?;
     if canonical != bytes {
@@ -145,6 +150,74 @@ where
     }
 
     deserializer.deserialize_seq(VecVisitor(PhantomData))
+}
+
+/// Deserializes one catalog plan without allocating beyond its protocol cap.
+pub(super) fn deserialize_selectable_catalog_plan<'de, D>(
+    deserializer: D,
+) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct PlanVisitor;
+
+    impl<'de> Visitor<'de> for PlanVisitor {
+        type Value = Vec<u8>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a bounded selectable catalog plan byte string")
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
+            let Some(count) = sequence.size_hint() else {
+                return Err(serde::de::Error::custom(
+                    "indefinite selectable catalog plan",
+                ));
+            };
+            let maximum =
+                crucible_protocol::selectable_catalog_plan::SELECTABLE_CATALOG_PLAN_MAX_BYTES;
+            if count > maximum {
+                return Err(serde::de::Error::custom(
+                    "selectable catalog plan exceeds its byte limit",
+                ));
+            }
+            let requested = u64::try_from(count).unwrap_or(u64::MAX);
+            let current = admit_owned(requested).map_err(serde::de::Error::custom)?;
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(count)
+                .map_err(|_| serde::de::Error::custom(resource_message(current, requested)))?;
+            for _ in 0..count {
+                bytes.push(sequence.next_element()?.ok_or_else(|| {
+                    serde::de::Error::custom("truncated selectable catalog plan")
+                })?);
+            }
+            if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                return Err(serde::de::Error::custom(
+                    "selectable catalog plan exceeds its declared length",
+                ));
+            }
+            Ok(bytes)
+        }
+
+        fn visit_bytes<E: serde::de::Error>(self, bytes: &[u8]) -> Result<Self::Value, E> {
+            let maximum =
+                crucible_protocol::selectable_catalog_plan::SELECTABLE_CATALOG_PLAN_MAX_BYTES;
+            if bytes.len() > maximum {
+                return Err(E::custom("selectable catalog plan exceeds its byte limit"));
+            }
+            let requested = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+            let current = admit_owned(requested).map_err(E::custom)?;
+            let mut owned = Vec::new();
+            owned
+                .try_reserve_exact(bytes.len())
+                .map_err(|_| E::custom(resource_message(current, requested)))?;
+            owned.extend_from_slice(bytes);
+            Ok(owned)
+        }
+    }
+
+    deserializer.deserialize_bytes(PlanVisitor)
 }
 
 /// Converts a semantic decoder resource marker into the public LIMIT-2 type.
@@ -256,6 +329,7 @@ mod tests {
     #[test]
     fn production_manifest_decode_rejects_hostile_target_length_before_elements() {
         let manifest = ClosureManifest {
+            format_version: MANIFEST_VERSION,
             scenario: ContentHash::default(),
             configuration: ContentHash::default(),
             schedule: ContentHash::default(),

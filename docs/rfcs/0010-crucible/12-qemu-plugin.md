@@ -700,7 +700,11 @@ The nested request is capped at 4,576 bytes so the transport remains within one
 4,608-byte marker payload. The
 logical-restore boundary swaps the preallocated exact continuation once, before
 the restore acknowledgement, so priming registrations or requests cannot leak
-into restored execution. Control-protocol v2 has no selectable plan and fails
+into restored execution. Registration and consumed-reply deltas use internal
+marker kinds `0xff08` and `0xff09`; together with the pending kind `0xff06` and
+the ordinary `setup_complete` marker, they maintain the host-owned exact
+checkpoint mirror without placing Rust or QEMU-private state across the process
+boundary. Control-protocol v2 has no selectable plan and fails
 closed on a selectable message.
 
 - **[PLUG-51]** **App-controlled randomness (white-box, optional).** When and

@@ -617,6 +617,20 @@ pub trait QemuShmemHotPathChannel: Send {
         ))
     }
 
+    /// Returns the exact host-mirrored selectable catalog plan, when enabled.
+    #[must_use]
+    fn selectable_catalog_plan(
+        &self,
+    ) -> Option<&crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan> {
+        None
+    }
+
+    /// Reports whether no host-authorized reply awaits plugin consumption.
+    #[must_use]
+    fn selectable_reply_is_checkpoint_quiescent(&self) -> bool {
+        true
+    }
+
     /// Delivers a deterministic frame through the shared-memory input ring.
     ///
     /// # Errors
@@ -1875,6 +1889,25 @@ impl QemuNode {
             .map_err(|source| {
                 QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
             })
+    }
+
+    /// Returns a copy of the exact host-mirrored selectable catalog plan.
+    #[must_use]
+    pub fn selectable_catalog_plan(
+        &self,
+    ) -> Option<crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan> {
+        self.channels
+            .shmem_hot_path
+            .selectable_catalog_plan()
+            .cloned()
+    }
+
+    /// Reports whether no selectable reply awaits plugin consumption.
+    #[must_use]
+    pub fn selectable_reply_is_checkpoint_quiescent(&self) -> bool {
+        self.channels
+            .shmem_hot_path
+            .selectable_reply_is_checkpoint_quiescent()
     }
 
     /// Prepares the paused node's observable stream for authoritative execution.

@@ -605,6 +605,209 @@ impl SelectableCatalogPlan {
         &self.continuation
     }
 
+    /// Applies one exact plugin-admitted setup registration to this plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelectableCatalogPlanError`] when registration has already
+    /// frozen, exceeds the declaration ceiling, does not advance the sequence,
+    /// is duplicate or unexpected, or differs from the authenticated contract.
+    pub fn apply_registration(
+        &mut self,
+        registration: &SelectableRegister,
+    ) -> Result<(), SelectableCatalogPlanError> {
+        if self.continuation.phase != SelectablePlanPhase::Registering {
+            return Err(SelectableCatalogPlanError::InvalidTransition {
+                reason: "registration followed catalog freeze",
+            });
+        }
+        if self.continuation.registered.len() >= self.limits.declarations {
+            return Err(SelectableCatalogPlanError::CountTooLarge {
+                field: "registered",
+                actual: self.continuation.registered.len().saturating_add(1),
+                maximum: self.limits.declarations,
+            });
+        }
+        if self
+            .continuation
+            .last_registration_sequence
+            .is_some_and(|prior| registration.sequence() <= prior)
+        {
+            return Err(SelectableCatalogPlanError::SequenceDidNotAdvance {
+                field: "registration",
+            });
+        }
+        if self
+            .continuation
+            .registered
+            .contains(registration.selectable_id())
+        {
+            return Err(SelectableCatalogPlanError::DuplicateIdentifier {
+                field: "registered",
+                identifier: registration.selectable_id().to_owned(),
+            });
+        }
+        let expected = self
+            .declarations
+            .get(registration.selectable_id())
+            .ok_or_else(|| SelectableCatalogPlanError::UnknownIdentifier {
+                field: "registration",
+                identifier: registration.selectable_id().to_owned(),
+            })?;
+        let expected = expected.registration();
+        if registration.domain() != expected.domain()
+            || registration.default_value() != expected.default_value()
+            || registration.semantic_tags() != expected.semantic_tags()
+        {
+            return Err(SelectableCatalogPlanError::InvalidTransition {
+                reason: "registration differs from its authenticated declaration",
+            });
+        }
+
+        self.continuation
+            .registered
+            .insert(registration.selectable_id().to_owned());
+        self.continuation.last_registration_sequence = Some(registration.sequence());
+        Ok(())
+    }
+
+    /// Freezes this plan after proving every required declaration was registered.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelectableCatalogPlanError`] when the catalog is already
+    /// frozen or a required declaration is absent.
+    pub fn apply_freeze(&mut self) -> Result<(), SelectableCatalogPlanError> {
+        if self.continuation.phase == SelectablePlanPhase::Frozen {
+            return Err(SelectableCatalogPlanError::InvalidTransition {
+                reason: "catalog was frozen more than once",
+            });
+        }
+        if self.declarations.values().any(|declaration| {
+            declaration.presence == SelectablePlanPresence::Required
+                && !self
+                    .continuation
+                    .registered
+                    .contains(declaration.registration.selectable_id())
+        }) {
+            return Err(SelectableCatalogPlanError::InvalidTransition {
+                reason: "catalog freeze omitted a required declaration",
+            });
+        }
+        self.continuation.phase = SelectablePlanPhase::Frozen;
+        Ok(())
+    }
+
+    /// Retains one exact plugin-published pending request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelectableCatalogPlanError`] when the catalog is not frozen,
+    /// another request is pending, the sequence does not advance, the
+    /// selectable is unregistered, or a request ceiling is exhausted.
+    pub fn apply_pending_request(
+        &mut self,
+        pending: SelectablePlanPendingRequest,
+    ) -> Result<(), SelectableCatalogPlanError> {
+        if self.continuation.phase != SelectablePlanPhase::Frozen {
+            return Err(SelectableCatalogPlanError::InvalidTransition {
+                reason: "runtime request preceded catalog freeze",
+            });
+        }
+        if self.continuation.pending.is_some() {
+            return Err(SelectableCatalogPlanError::InvalidTransition {
+                reason: "catalog already retains a pending request",
+            });
+        }
+        if self
+            .continuation
+            .last_completed_request_sequence
+            .is_some_and(|prior| pending.request.sequence() <= prior)
+        {
+            return Err(SelectableCatalogPlanError::SequenceDidNotAdvance { field: "request" });
+        }
+        let selectable_id = pending.request.selectable_id();
+        if !self.continuation.registered.contains(selectable_id) {
+            return Err(SelectableCatalogPlanError::UnknownIdentifier {
+                field: "pending",
+                identifier: selectable_id.to_owned(),
+            });
+        }
+        if self.continuation.total_completed_requests >= self.limits.total_requests {
+            return Err(SelectableCatalogPlanError::RequestLimitExceeded {
+                field: "total_requests",
+                actual: self.continuation.total_completed_requests.saturating_add(1),
+                maximum: self.limits.total_requests,
+            });
+        }
+        let completed = self
+            .continuation
+            .completed_requests
+            .get(selectable_id)
+            .copied()
+            .unwrap_or(0);
+        if completed >= self.limits.requests_per_selectable {
+            return Err(SelectableCatalogPlanError::RequestLimitExceeded {
+                field: "requests_per_selectable",
+                actual: completed.saturating_add(1),
+                maximum: self.limits.requests_per_selectable,
+            });
+        }
+        self.continuation.pending = Some(pending);
+        Ok(())
+    }
+
+    /// Completes the retained request after the plugin consumed an exact reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelectableCatalogPlanError`] when no request is pending, the
+    /// reply sequence differs, or checked request accounting overflows.
+    pub fn apply_completed_reply(
+        &mut self,
+        reply: &crate::SelectionReply,
+    ) -> Result<(), SelectableCatalogPlanError> {
+        let pending = self.continuation.pending.as_ref().ok_or(
+            SelectableCatalogPlanError::InvalidTransition {
+                reason: "completed reply has no pending request",
+            },
+        )?;
+        if reply.sequence() != pending.request.sequence() {
+            return Err(SelectableCatalogPlanError::InvalidTransition {
+                reason: "completed reply sequence differs from the pending request",
+            });
+        }
+        let selectable_id = pending.request.selectable_id().to_owned();
+        let next_total = self
+            .continuation
+            .total_completed_requests
+            .checked_add(1)
+            .ok_or(SelectableCatalogPlanError::CountOverflow)?;
+        let next_selectable = self
+            .continuation
+            .completed_requests
+            .get(&selectable_id)
+            .copied()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(SelectableCatalogPlanError::CountOverflow)?;
+        if next_total > self.limits.total_requests
+            || next_selectable > self.limits.requests_per_selectable
+        {
+            return Err(SelectableCatalogPlanError::InvalidTransition {
+                reason: "completed reply exceeds request accounting limits",
+            });
+        }
+
+        self.continuation.total_completed_requests = next_total;
+        self.continuation
+            .completed_requests
+            .insert(selectable_id, next_selectable);
+        self.continuation.last_completed_request_sequence = Some(reply.sequence());
+        self.continuation.pending = None;
+        Ok(())
+    }
+
     /// Encodes this plan into its canonical descriptor body.
     ///
     /// # Errors
@@ -1077,6 +1280,18 @@ pub enum SelectableCatalogPlanError {
     /// A nested standalone registration or request is invalid.
     #[error("selectable catalog plan contains an invalid standalone message: {0}")]
     Protocol(#[from] SelectableProtocolError),
+    /// One observed catalog mutation contradicts the retained lifecycle.
+    #[error("selectable catalog transition is invalid: {reason}")]
+    InvalidTransition {
+        /// Stable transition diagnostic.
+        reason: &'static str,
+    },
+    /// A mutation sequence did not strictly increase.
+    #[error("selectable catalog {field} sequence did not advance")]
+    SequenceDidNotAdvance {
+        /// Sequence family.
+        field: &'static str,
+    },
     /// The body is too short for its header or declared entries.
     #[error("selectable catalog plan is truncated")]
     Truncated,

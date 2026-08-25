@@ -1101,11 +1101,17 @@ where
     let ready_markers = setup.ready_markers().clone();
     let exact_fault_manifests = setup.exact_fault_manifests();
     let next_fault_command_sequence = setup.next_fault_command_sequence();
+    let selectable_catalog_plan = setup.selectable_catalog_plan().clone();
 
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| QemuNodeFactoryError::SetupRegionMap { source })?;
-    let shmem_hot_path = QemuMappedQuantumShmemHotPath::new(shmem_config, region, send_authorizer)
-        .map_err(|source| QemuNodeFactoryError::MappedHotPath { source })?;
+    let shmem_hot_path = QemuMappedQuantumShmemHotPath::new_with_selectable_catalog_plan(
+        shmem_config,
+        region,
+        send_authorizer,
+        selectable_catalog_plan,
+    )
+    .map_err(|source| QemuNodeFactoryError::MappedHotPath { source })?;
 
     Ok(PreparedQemuNodeSetup {
         plugin_control: setup,
