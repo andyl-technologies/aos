@@ -70,6 +70,27 @@ fn reply(sequence: u64) -> Result<SelectionReply, SelectableProtocolError> {
     )
 }
 
+struct FlakyAuthority {
+    attempts: usize,
+}
+
+impl SelectableDecisionAuthority for FlakyAuthority {
+    fn decide_selection(
+        &mut self,
+        pending: &SelectablePendingRequest,
+    ) -> Result<SelectionReply, SelectableDoorbellServiceError> {
+        self.attempts += 1;
+        if self.attempts == 1 {
+            Err(SelectableDoorbellServiceError::new(
+                "semantic resolver temporarily unavailable",
+            ))
+        } else {
+            reply(pending.request().sequence())
+                .map_err(|error| SelectableDoorbellServiceError::new(error.to_string()))
+        }
+    }
+}
+
 #[test]
 fn catalog_limits_are_nonzero_ordered_and_hard_bounded() {
     assert!(matches!(
@@ -291,6 +312,48 @@ fn pending_token_is_bound_to_one_catalog_incarnation() -> Result<(), Box<dyn std
     );
     assert_eq!(first.pending_request(), Some(&first_pending));
     first.complete_request(&first_pending, &reply(7)?)?;
+    Ok(())
+}
+
+#[test]
+fn combined_service_retains_failed_decision_and_retries_without_readmission()
+-> Result<(), Box<dyn std::error::Error>> {
+    let limits = limits(1, 1, 1)?;
+    let catalog = catalog(
+        vec![expected(
+            "network.policy",
+            &[1],
+            SelectableExpectedPresence::Required,
+        )?],
+        limits,
+    )?;
+    let mut service = CatalogedSelectableService::new(catalog, FlakyAuthority { attempts: 0 });
+    service.register_selectable(&registration(1, "network.policy", &[1])?, coordinate(1))?;
+    service.freeze()?;
+    let request = request(7, "network.policy")?;
+
+    assert_eq!(
+        service
+            .serve_selection(&request, coordinate(100))
+            .map(|_reply| ()),
+        Err(SelectableDoorbellServiceError::new(
+            "semantic resolver temporarily unavailable",
+        ))
+    );
+    assert_eq!(
+        service
+            .catalog()
+            .pending_request()
+            .map(SelectablePendingRequest::request),
+        Some(&request)
+    );
+    assert_eq!(service.catalog().total_completed_requests(), 0);
+
+    let resolved = service.resolve_pending()?;
+    assert_eq!(resolved.sequence(), 7);
+    assert_eq!(service.catalog().pending_request(), None);
+    assert_eq!(service.catalog().total_completed_requests(), 1);
+    assert_eq!(service.authority.attempts, 2);
     Ok(())
 }
 

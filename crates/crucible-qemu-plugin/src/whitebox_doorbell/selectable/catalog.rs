@@ -16,7 +16,10 @@ use crucible_protocol::{
 };
 use thiserror::Error;
 
-use super::SelectableCallbackCoordinate;
+use super::{
+    SelectableCallbackCoordinate, SelectableDoorbellServiceError, SelectableRegistrationService,
+    SelectableReplyService,
+};
 
 /// Absolute implementation ceiling for declarations in one node catalog.
 pub const SELECTABLE_CATALOG_HARD_MAX_DECLARATIONS: usize = 4_096;
@@ -634,6 +637,111 @@ impl SelectableCatalog {
             .copied()
             .unwrap_or(0)
     }
+}
+
+/// Host authority that resolves one catalog-admitted pending request.
+pub trait SelectableDecisionAuthority {
+    /// Returns the exact reply for one retained frozen-catalog request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelectableDoorbellServiceError`] when semantic narrowed-domain
+    /// validation, opportunity construction, selection, or continuation
+    /// authority cannot produce a reply. The caller retains `pending` so the
+    /// failure can be checkpointed or retried without admitting another request.
+    fn decide_selection(
+        &mut self,
+        pending: &SelectablePendingRequest,
+    ) -> Result<SelectionReply, SelectableDoorbellServiceError>;
+}
+
+/// Combined catalog and decision service used by the safe doorbell callback.
+pub struct CatalogedSelectableService<A> {
+    catalog: SelectableCatalog,
+    authority: A,
+}
+
+impl<A> CatalogedSelectableService<A> {
+    /// Binds one catalog incarnation to its semantic decision authority.
+    #[must_use]
+    pub const fn new(catalog: SelectableCatalog, authority: A) -> Self {
+        Self { catalog, authority }
+    }
+
+    /// Returns the catalog and its continuation state.
+    #[must_use]
+    pub const fn catalog(&self) -> &SelectableCatalog {
+        &self.catalog
+    }
+
+    /// Freezes the exact setup catalog before runtime requests are admitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelectableCatalogError`] when required registrations are
+    /// missing or this service was already frozen.
+    pub fn freeze(&mut self) -> Result<SelectableCatalogFreeze, SelectableCatalogError> {
+        self.catalog.freeze()
+    }
+
+    /// Retries semantic resolution of the exact retained request.
+    ///
+    /// The catalog clears its pending token and charges request counts only
+    /// after the authority returns an exact-sequence reply. Every failure leaves
+    /// the same request retained.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelectableDoorbellServiceError`] when there is no pending
+    /// request, decision authority fails, or reply completion violates catalog
+    /// ownership or sequence invariants.
+    pub fn resolve_pending(&mut self) -> Result<SelectionReply, SelectableDoorbellServiceError>
+    where
+        A: SelectableDecisionAuthority,
+    {
+        let pending = self.catalog.pending_request().cloned().ok_or_else(|| {
+            SelectableDoorbellServiceError::new(
+                SelectableCatalogError::NoPendingRequest.to_string(),
+            )
+        })?;
+        let reply = self.authority.decide_selection(&pending)?;
+        self.catalog
+            .complete_request(&pending, &reply)
+            .map_err(catalog_service_error)?;
+        Ok(reply)
+    }
+}
+
+impl<A> SelectableRegistrationService for CatalogedSelectableService<A> {
+    fn register_selectable(
+        &mut self,
+        registration: &SelectableRegister,
+        _coordinate: SelectableCallbackCoordinate,
+    ) -> Result<(), SelectableDoorbellServiceError> {
+        self.catalog
+            .register(registration)
+            .map_err(catalog_service_error)
+    }
+}
+
+impl<A> SelectableReplyService for CatalogedSelectableService<A>
+where
+    A: SelectableDecisionAuthority,
+{
+    fn serve_selection(
+        &mut self,
+        request: &SelectionRequest,
+        coordinate: SelectableCallbackCoordinate,
+    ) -> Result<SelectionReply, SelectableDoorbellServiceError> {
+        self.catalog
+            .begin_request(request, coordinate)
+            .map_err(catalog_service_error)?;
+        self.resolve_pending()
+    }
+}
+
+fn catalog_service_error(error: SelectableCatalogError) -> SelectableDoorbellServiceError {
+    SelectableDoorbellServiceError::new(error.to_string())
 }
 
 fn require_increasing_sequence(
