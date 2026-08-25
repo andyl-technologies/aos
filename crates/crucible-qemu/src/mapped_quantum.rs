@@ -28,7 +28,8 @@ use crucible_protocol::{
 };
 use crucible_shmem::{
     FingerprintSample, FrameDeliveryKey, GuestIntrospectionEntry, MappedDirectedRingMut,
-    MappedNodeRingPairMut, MappedSetupRegion, SLOT_NET_ROUTER, STATUS_DONE, WhiteboxMarkerEntry,
+    MappedNodeRingPairMut, MappedSetupRegion, NodeSlotSnapshot, SLOT_NET_ROUTER, STATUS_DONE,
+    STATUS_IDLE, WhiteboxMarkerEntry,
 };
 
 use crate::{
@@ -388,8 +389,9 @@ impl QemuMappedQuantumShmemHotPath {
 
     fn drain_markers_at_quantum_boundary(
         &mut self,
-        boundary_icount: u64,
+        boundary: NodeSlotSnapshot,
     ) -> Result<(), QemuNodeChannelError> {
+        let boundary_icount = boundary.current_icount;
         let node = self.config.node.clone();
         let ring = self
             .region
@@ -473,6 +475,17 @@ impl QemuMappedQuantumShmemHotPath {
                     })?;
                 }
             } else if entry.kind() == WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING {
+                if boundary.status != STATUS_IDLE
+                    || boundary.idle_wake_icount != boundary.current_icount
+                {
+                    return Err(QemuNodeChannelError::new(
+                        "drain selectable pending requests",
+                        format!(
+                            "pending selectable requires an exact quiesced boundary, observed status {} current icount {} idle wake icount {}",
+                            boundary.status, boundary.current_icount, boundary.idle_wake_icount,
+                        ),
+                    ));
+                }
                 let record =
                     SelectablePendingTransportRecord::decode(entry.payload()).map_err(|error| {
                         QemuNodeChannelError::new(
@@ -482,7 +495,7 @@ impl QemuMappedQuantumShmemHotPath {
                     })?;
                 let pending = SelectablePlanPendingRequest::new(
                     record.request().clone(),
-                    entry.current_icount(),
+                    boundary_icount,
                     entry.vcpu_index(),
                     record.guest_virtual_address(),
                 );
@@ -909,11 +922,11 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
     }
 
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
-        let boundary_icount = self.with_hot_path("observation boundary", |hot_path| {
-            Ok(hot_path.node_snapshot().current_icount)
+        let boundary = self.with_hot_path("observation boundary", |hot_path| {
+            Ok(hot_path.node_snapshot())
         })?;
-        let mut events = self.drain_coverage_at_quantum_boundary(boundary_icount)?;
-        self.drain_markers_at_quantum_boundary(boundary_icount)?;
+        let mut events = self.drain_coverage_at_quantum_boundary(boundary.current_icount)?;
+        self.drain_markers_at_quantum_boundary(boundary)?;
         events.append(&mut self.pending_marker_events);
         events.sort_by_key(ObservableEvent::at);
         Ok(events)
@@ -921,20 +934,19 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
 
     // crucible-lint: allow host-nondeterminism-state -- callers must validate this untrusted causal batch before another quantum.
     fn drain_causal_decisions(&mut self) -> Result<Vec<Decision>, QemuNodeChannelError> {
-        let boundary_icount = self.with_hot_path("causal boundary", |hot_path| {
-            Ok(hot_path.node_snapshot().current_icount)
-        })?;
-        self.drain_markers_at_quantum_boundary(boundary_icount)?;
+        let boundary =
+            self.with_hot_path("causal boundary", |hot_path| Ok(hot_path.node_snapshot()))?;
+        self.drain_markers_at_quantum_boundary(boundary)?;
         Ok(std::mem::take(&mut self.pending_app_random_decisions))
     }
 
     fn drain_pending_selectable_requests(
         &mut self,
     ) -> Result<Vec<SelectablePlanPendingRequest>, QemuNodeChannelError> {
-        let boundary_icount = self.with_hot_path("selectable boundary", |hot_path| {
-            Ok(hot_path.node_snapshot().current_icount)
+        let boundary = self.with_hot_path("selectable boundary", |hot_path| {
+            Ok(hot_path.node_snapshot())
         })?;
-        self.drain_markers_at_quantum_boundary(boundary_icount)?;
+        self.drain_markers_at_quantum_boundary(boundary)?;
         Ok(std::mem::take(&mut self.pending_selectable_requests))
     }
 

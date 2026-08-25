@@ -580,6 +580,18 @@ let delay = choose_integer("network.retry-delay-ms", routing_epoch)?;
 
 Black-box guests remain supported and expose no guest selectables.
 
+The checked-in network-product flight uses the public static guest executable,
+not a test-only protocol injector. Its PID 1 registers
+`network.recovery-policy` as the stable `fast`/`safe` discrete domain and
+`network.retry-quanta` as the unsigned range `1..=9` with step two and unit
+`quanta`, freezes through `setup-complete`, then issues both requests for
+instance `routing/boot`. A fresh-process restore at the first pending request
+selects `fast` and `7`; the guest proves that those typed values reached product
+logic by emitting the application frame `crucible-selected-fast-q7` through its
+ordinary virtio-net device. The certifying gate persists the plan using the same
+version-2 canonical body embedded by production checkpoint manifest version 5;
+the gate-local sidecar is evidence plumbing, not a second plan format.
+
 - **[SEL-16]** Guest choice handling MUST be side-effect-free except for the
   recorded request and returned value until the guest resumes.
 - **[SEL-17]** Checkpoints at a pending guest choice MUST preserve the complete

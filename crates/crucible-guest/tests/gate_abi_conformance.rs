@@ -254,6 +254,7 @@ fn guest_static_build_contract_is_declared_for_aos_package() {
     let cargo_toml = manifest_file("Cargo.toml");
     assert!(cargo_toml.contains("name = \"crucible-guest\""));
     assert!(cargo_toml.contains("path = \"src/main.rs\""));
+    assert!(cargo_toml.contains("crucible-campaign = { path = \"../crucible-campaign\" }"));
     assert!(!cargo_toml.contains("clap"));
 
     // The standalone `pkgs.aos` package intentionally copies only `crates/`
@@ -266,6 +267,8 @@ fn guest_static_build_contract_is_declared_for_aos_package() {
         assert!(package.contains("patchelf --print-interpreter"));
         assert!(package.contains("packaged_guest_system=${lib.system}"));
         assert!(package.contains("instruction_abi_architectures=x86_64,aarch64"));
+        assert!(package.contains("licenseScope = \"Apache-2.0\""));
+        assert!(package.contains("license = \"Apache-2.0\""));
     }
 }
 

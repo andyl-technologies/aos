@@ -383,11 +383,22 @@ impl OwnedCallbackRuntimeState {
         target_architecture: crate::abi::QemuPluginTargetArchitecture,
         vcpu_count: u32,
         request_shutdown: QemuRequestShutdownFn,
-        request_vmstop: crate::QemuRequestVmstopFn,
+        force_vcpu_exit: crate::QemuForceVcpuExitFn,
     ) -> Result<&mut live_whitebox::LiveWhiteboxState, live_whitebox::LiveWhiteboxError> {
         // SAFETY: assigning an independently heap-owned callback runtime does
         // not move the pinned parent or its setup mapping.
         let state = unsafe { self.get_unchecked_mut() };
+        let live_vcpu_time = state.live_vcpu_time.as_ref().ok_or_else(|| {
+            live_whitebox::LiveWhiteboxError::RegistrationPlan {
+                message: "live selectable handoff requires installed vCPU callback state"
+                    .to_owned(),
+            }
+        })?;
+        let selectable_vmstop = live_vcpu_time
+            .as_ref()
+            .get_ref()
+            .selectable_vmstop_handoff();
+        let logical_icount_offset = live_vcpu_time.as_ref().get_ref().logical_icount_offset();
         let selectable_catalog_plan = state.setup.take_selectable_catalog_plan();
         let marker_ring = state
             .setup
@@ -438,7 +449,12 @@ impl OwnedCallbackRuntimeState {
             apis,
             live_whitebox::LiveWhiteboxTarget::new(target_architecture, args.whitebox_setup()),
             vcpu_count,
-            live_whitebox::LiveWhiteboxProcessControl::new(request_shutdown, request_vmstop),
+            live_whitebox::LiveWhiteboxProcessControl::new(
+                request_shutdown,
+                force_vcpu_exit,
+                selectable_vmstop,
+                logical_icount_offset,
+            ),
             live_whitebox::LiveWhiteboxShmem::new(
                 marker_output,
                 selectable_reply_input,

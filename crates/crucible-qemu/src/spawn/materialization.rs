@@ -157,7 +157,7 @@ impl QemuPreparedRunDirectory {
     ///
     /// # Errors
     ///
-    /// Returns [`super::QemuGuardedImagePreparationError`] when admission or
+    /// Returns `QemuGuardedImagePreparationError` when admission or
     /// pinned-directory authentication fails, the root image has an invalid
     /// size, either helper cannot be spawned, contained, completed, or reaped,
     /// or the resulting artifacts violate the aggregate writable ceiling.

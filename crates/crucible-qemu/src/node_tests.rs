@@ -58,6 +58,7 @@ enum ChannelCall {
     ShmemEmit,
     ShmemIdle,
     ShmemFingerprint,
+    ShmemSelectableReply(u64),
     HostFingerprintBoundary,
     HostCheckpointClearWhileStopped,
     HostCheckpointAbort,
@@ -223,6 +224,18 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
             .lock()
             .unwrap()
             .push(ChannelCall::ShmemPreemption(command));
+        Ok(())
+    }
+
+    fn enqueue_selectable_reply(
+        &mut self,
+        _pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+        reply: &crucible_protocol::SelectionReply,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::ShmemSelectableReply(reply.sequence()));
         Ok(())
     }
 
@@ -719,6 +732,40 @@ fn qemu_node_routes_scheduler_operations_over_strict_channels() -> Result<(), Bo
         ]
     );
 
+    Ok(())
+}
+
+#[test]
+fn selectable_reply_is_published_before_qemu_resumes() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+    let request = crucible_protocol::SelectionRequest::new(
+        7,
+        "product.test.selectable",
+        "instance-a",
+        None,
+        128,
+    )?;
+    let pending = crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest::new(
+        request, 41, 0, 0x1000,
+    );
+    let reply = crucible_protocol::SelectionReply::rejected(
+        7,
+        crucible_protocol::SelectionReplyStatus::Unavailable,
+        [0; 32],
+        [0; 32],
+    )?;
+
+    node.enqueue_selectable_reply(&pending, &reply)?;
+
+    assert_eq!(
+        recorded(&log),
+        vec![
+            ChannelCall::ShmemSelectableReply(7),
+            ChannelCall::QmpContinue,
+        ]
+    );
+    node.shutdown_child()?;
     Ok(())
 }
 

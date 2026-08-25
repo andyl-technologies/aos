@@ -13,6 +13,7 @@ use crucible_protocol::selectable_transport::{
     WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
 };
 use crucible_shmem::{RingHeader, WhiteboxMarkerEntry};
+use std::sync::Arc;
 
 use super::*;
 use crate::{
@@ -34,7 +35,8 @@ pub(super) struct LiveSelectableState {
     capability: WhiteboxGuestInputCapability,
     catalog: SelectableCatalog,
     restore_catalog: Option<SelectableCatalog>,
-    request_vmstop: crate::QemuRequestVmstopFn,
+    force_vcpu_exit: crate::QemuForceVcpuExitFn,
+    vmstop_handoff: Arc<super::super::live_callbacks::SelectableVmstopHandoff>,
     reply_input: LiveSelectableReplyShmemConsumer,
     catalog_events_enabled: bool,
 }
@@ -147,7 +149,8 @@ impl LiveSelectableState {
     pub(super) fn new(
         plan: &SelectableCatalogPlan,
         capability: WhiteboxGuestInputCapability,
-        request_vmstop: crate::QemuRequestVmstopFn,
+        force_vcpu_exit: crate::QemuForceVcpuExitFn,
+        vmstop_handoff: Arc<super::super::live_callbacks::SelectableVmstopHandoff>,
         reply_input: LiveSelectableReplyShmemConsumer,
     ) -> Result<Self, SelectableCatalogError> {
         let (catalog, restore_catalog) = SelectableCatalog::launch_pair_from_plan(plan)?;
@@ -155,7 +158,8 @@ impl LiveSelectableState {
             capability,
             catalog,
             restore_catalog: Some(restore_catalog),
-            request_vmstop,
+            force_vcpu_exit,
+            vmstop_handoff,
             reply_input,
             catalog_events_enabled: plan.continuation().phase()
                 == crucible_protocol::selectable_catalog_plan::SelectablePlanPhase::Registering,
@@ -186,6 +190,15 @@ impl LiveSelectableState {
             self.catalog.pending_request().cloned().ok_or_else(|| {
                 callback_error("selectable reply arrived without a pending request")
             })?;
+        let trap_coordinate = pending.coordinate();
+        if vcpu_index != trap_coordinate.vcpu_index() {
+            return Ok(None);
+        }
+        let coordinate = SelectableCallbackCoordinate::new(current_icount, vcpu_index);
+        let pending = self
+            .catalog
+            .rebind_pending_boundary(coordinate)
+            .map_err(callback_error)?;
         let coordinate = pending.coordinate();
         if entry.current_icount() != coordinate.icount()
             || entry.vcpu_index() != coordinate.vcpu_index()
@@ -280,18 +293,6 @@ impl LiveSelectableState {
         self.catalog_events_enabled
     }
 
-    /// Requests a deterministic pause after publishing one catalog delta.
-    pub(super) fn request_catalog_event_stop(&self) -> Result<(), LiveWhiteboxError> {
-        let status = (self.request_vmstop)();
-        if status == 0 {
-            Ok(())
-        } else {
-            Err(callback_error(format!(
-                "QEMU rejected selectable catalog-event VMStop request with status {status}"
-            )))
-        }
-    }
-
     /// Projects the retained request into the bounded plugin-to-host record.
     pub(super) fn pending_transport_record(
         &self,
@@ -342,11 +343,10 @@ impl SelectableReplyService for LiveSelectableState {
         self.catalog
             .begin_request(request, coordinate, reply_range)
             .map_err(service_error)?;
-        let status = (self.request_vmstop)();
-        if status != 0 {
-            return Err(SelectableDoorbellServiceError::new(format!(
-                "QEMU rejected selectable VMStop request with status {status}"
-            )));
+        if !self.vmstop_handoff.defer(self.force_vcpu_exit) {
+            return Err(SelectableDoorbellServiceError::new(
+                "another selectable VMStop handoff is already pending".to_owned(),
+            ));
         }
         Ok(SelectableReplyDisposition::Pending)
     }

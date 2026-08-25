@@ -9,6 +9,7 @@ publish = false
 workspace = true
 
 [dependencies]
+crucible-campaign = { path = "../crucible-campaign" }
 crucible-protocol = { path = "../crucible-protocol" }
 libc = { workspace = true }
 thiserror = { workspace = true }

@@ -77,6 +77,7 @@ fn mapped_catalog_retains_pending_until_exact_reply_completion()
                 &record.encode()?,
             )?,
         )?;
+        producer.node_slot(0)?.publish_pause_quiesced(10, 10, 0)?;
     }
 
     let region = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
@@ -93,6 +94,7 @@ fn mapped_catalog_retains_pending_until_exact_reply_completion()
         plan,
     )?;
     let pending = hot_path.drain_pending_selectable_requests()?.remove(0);
+    assert_eq!(pending.icount(), 10);
     let reply = SelectionReply::selected(2, [1; 32], [2; 32], vec![1])?;
     hot_path.enqueue_selectable_reply(&pending, &reply)?;
     assert!(!hot_path.selectable_reply_is_checkpoint_quiescent());
@@ -169,5 +171,46 @@ fn mapped_marker_yields_one_exact_pending_request() -> Result<(), Box<dyn std::e
     assert_eq!(pending[0].vcpu_index(), 3);
     assert_eq!(pending[0].guest_virtual_address(), 0xfeed_4000);
     assert!(hot_path.drain_pending_selectable_requests()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn mapped_pending_rejects_a_nonquiesced_boundary() -> Result<(), Box<dyn std::error::Error>> {
+    let request = SelectionRequest::new(19, "network.policy", "epoch/4", Some(vec![2]), 192)?;
+    let record = SelectablePendingTransportRecord::new(request, 0xfeed_4000)?;
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+    let layout = allocation.layout();
+    let mut shmem = tempfile::tempfile()?;
+    shmem.set_len(layout.region_size)?;
+    shmem.write_all(&allocation.setup_region_bytes()?)?;
+    {
+        let mut producer = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+        producer.node_slot(0)?.publish_reached_icount(0, 0)?;
+        let ring = producer.whitebox_marker_ring_mut(0)?;
+        ring.header.enqueue_whitebox_marker(
+            ring.entries,
+            WhiteboxMarkerEntry::new(
+                0,
+                3,
+                WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING,
+                &record.encode()?,
+            )?,
+        )?;
+    }
+
+    let region = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+    let config = QemuQuantumShmemConfig::new(
+        NodeId {
+            name: String::from("vm-a"),
+        },
+        0,
+    );
+    let mut hot_path = QemuMappedQuantumShmemHotPath::new(config, region, AllowMappedTestSends)?;
+
+    let error = match hot_path.drain_pending_selectable_requests() {
+        Ok(_) => panic!("a running boundary authenticated a pending selectable"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("exact quiesced boundary"));
     Ok(())
 }

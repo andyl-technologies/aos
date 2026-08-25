@@ -11,7 +11,8 @@
 use std::ffi::CStr;
 use std::os::raw::{c_int, c_uint, c_void};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 use crucible_shmem::MAX_FRAME_DATA;
 
@@ -36,6 +37,7 @@ mod marker;
 mod selectable;
 #[cfg(test)]
 mod test_restore;
+use super::live_callbacks::SelectableVmstopHandoff;
 pub(crate) use api::LiveWhiteboxApis;
 use api::{QemuPluginRegDescriptor, QemuPluginRegister};
 use app_random::LiveAppRandomState;
@@ -134,6 +136,7 @@ pub(crate) struct LiveWhiteboxState {
     tb_entries: [LiveWhiteboxTbEntry; MAX_LIVE_WHITEBOX_VCPUS],
     vcpu_count: usize,
     request_shutdown: QemuRequestShutdownFn,
+    logical_icount_offset: Arc<AtomicU64>,
     marker_sink: LiveMarkerSink,
     app_random: Option<LiveAppRandomState>,
     selectable: Option<selectable::LiveSelectableState>,
@@ -147,20 +150,26 @@ pub(crate) struct LiveWhiteboxShmem {
 }
 
 /// Process-control callbacks owned by the joined live runtime.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct LiveWhiteboxProcessControl {
     request_shutdown: QemuRequestShutdownFn,
-    request_vmstop: crate::QemuRequestVmstopFn,
+    force_vcpu_exit: crate::QemuForceVcpuExitFn,
+    selectable_vmstop: Arc<SelectableVmstopHandoff>,
+    logical_icount_offset: Arc<AtomicU64>,
 }
 
 impl LiveWhiteboxProcessControl {
     pub(crate) const fn new(
         request_shutdown: QemuRequestShutdownFn,
-        request_vmstop: crate::QemuRequestVmstopFn,
+        force_vcpu_exit: crate::QemuForceVcpuExitFn,
+        selectable_vmstop: Arc<SelectableVmstopHandoff>,
+        logical_icount_offset: Arc<AtomicU64>,
     ) -> Self {
         Self {
             request_shutdown,
-            request_vmstop,
+            force_vcpu_exit,
+            selectable_vmstop,
+            logical_icount_offset,
         }
     }
 }
@@ -330,7 +339,8 @@ impl LiveWhiteboxState {
                 selectable::LiveSelectableState::new(
                     plan,
                     guest_input_capability,
-                    process_control.request_vmstop,
+                    process_control.force_vcpu_exit,
+                    Arc::clone(&process_control.selectable_vmstop),
                     shmem.selectable_reply_input,
                 )
             })
@@ -347,6 +357,7 @@ impl LiveWhiteboxState {
             tb_entries: [LiveWhiteboxTbEntry::default(); MAX_LIVE_WHITEBOX_VCPUS],
             vcpu_count,
             request_shutdown: process_control.request_shutdown,
+            logical_icount_offset: process_control.logical_icount_offset,
             marker_sink: LiveMarkerSink::new(shmem.marker_output),
             app_random,
             selectable,
@@ -462,9 +473,14 @@ impl LiveWhiteboxState {
                 maximum: MAX_FRAME_DATA,
             });
         }
-        // The preceding callback at this TB's entry captured QEMU's exact,
-        // non-mutating coordinate in the API context where it is valid.
-        let current_icount = location.current_icount(self.tb_entries[vcpu_index])?;
+        // The preceding callback at this TB's entry captured QEMU's exact raw,
+        // non-mutating coordinate in the API context where it is valid. Apply
+        // the same release-published restore calibration as the simulation
+        // callbacks before the coordinate enters canonical marker state.
+        let raw_icount = location.current_icount(self.tb_entries[vcpu_index])?;
+        let current_icount = raw_icount
+            .checked_add(self.logical_icount_offset.load(Ordering::Acquire))
+            .ok_or(LiveWhiteboxError::IcountObservation)?;
         let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(
             vcpu_index as u32,
             current_icount,
@@ -499,7 +515,6 @@ impl LiveWhiteboxState {
                         vcpu_index as u32,
                         &registration,
                     )?;
-                    selectable.request_catalog_event_stop()?;
                 }
                 crate::SelectableDoorbellOutcome::Pending { .. } => {
                     let record = selectable.pending_transport_record()?;

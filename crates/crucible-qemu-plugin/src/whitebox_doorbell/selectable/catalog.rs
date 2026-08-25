@@ -382,6 +382,7 @@ pub struct SelectableCatalog {
     total_completed_requests: u64,
     last_completed_request_sequence: Option<u64>,
     pending: Option<SelectablePendingRequest>,
+    pending_boundary_sealed: bool,
 }
 
 impl SelectableCatalog {
@@ -413,6 +414,7 @@ impl SelectableCatalog {
             total_completed_requests: 0,
             last_completed_request_sequence: None,
             pending: None,
+            pending_boundary_sealed: false,
         })
     }
 
@@ -491,6 +493,7 @@ impl SelectableCatalog {
                 ),
                 declaration,
             });
+            catalog.pending_boundary_sealed = true;
         }
         Ok(catalog)
     }
@@ -762,7 +765,58 @@ impl SelectableCatalog {
             declaration,
         };
         self.pending = Some(pending.clone());
+        self.pending_boundary_sealed = false;
         Ok(pending)
+    }
+
+    /// Rebinds the retained trap to the exact boundary where QEMU stopped.
+    ///
+    /// QEMU observes an instruction callback inside a translated block but
+    /// admits the requested vCPU exit only at the following exact simulation
+    /// boundary. The pending request remains the same catalog-owned token; only
+    /// its resume coordinate advances to that authenticated boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelectableCatalogError::NoPendingRequest`] when no request is
+    /// retained, [`SelectableCatalogError::PendingBoundaryVcpuMismatch`] when
+    /// another vCPU is named, or
+    /// [`SelectableCatalogError::PendingBoundaryRegressed`] when the exact
+    /// boundary precedes the instrumented trap, or
+    /// [`SelectableCatalogError::PendingBoundaryAlreadySealed`] when a restored
+    /// or previously rebound token names another coordinate.
+    pub fn rebind_pending_boundary(
+        &mut self,
+        coordinate: SelectableCallbackCoordinate,
+    ) -> Result<SelectablePendingRequest, SelectableCatalogError> {
+        let pending = self
+            .pending
+            .as_mut()
+            .ok_or(SelectableCatalogError::NoPendingRequest)?;
+        if coordinate.vcpu_index() != pending.coordinate.vcpu_index() {
+            return Err(SelectableCatalogError::PendingBoundaryVcpuMismatch {
+                expected: pending.coordinate.vcpu_index(),
+                actual: coordinate.vcpu_index(),
+            });
+        }
+        if self.pending_boundary_sealed {
+            if coordinate != pending.coordinate {
+                return Err(SelectableCatalogError::PendingBoundaryAlreadySealed {
+                    expected_icount: pending.coordinate.icount(),
+                    actual_icount: coordinate.icount(),
+                });
+            }
+            return Ok(pending.clone());
+        }
+        if coordinate.icount() < pending.coordinate.icount() {
+            return Err(SelectableCatalogError::PendingBoundaryRegressed {
+                trap_icount: pending.coordinate.icount(),
+                boundary_icount: coordinate.icount(),
+            });
+        }
+        pending.coordinate = coordinate;
+        self.pending_boundary_sealed = true;
+        Ok(pending.clone())
     }
 
     /// Completes the exact retained request with one sequence-bound reply.
@@ -808,6 +862,7 @@ impl SelectableCatalog {
             .insert(selectable_id, next_selectable);
         self.last_completed_request_sequence = Some(reply.sequence());
         self.pending = None;
+        self.pending_boundary_sealed = false;
         Ok(())
     }
 
@@ -1059,6 +1114,32 @@ pub enum SelectableCatalogError {
         pending_sequence: u64,
         /// New request sequence.
         actual_sequence: u64,
+    },
+    /// The exact stop boundary named another vCPU.
+    #[error("selectable stop vCPU {actual} differs from pending vCPU {expected}")]
+    PendingBoundaryVcpuMismatch {
+        /// Retained trap vCPU.
+        expected: u32,
+        /// Exact stop vCPU.
+        actual: u32,
+    },
+    /// The exact stop boundary preceded the instrumented trap.
+    #[error("selectable stop icount {boundary_icount} precedes pending trap icount {trap_icount}")]
+    PendingBoundaryRegressed {
+        /// Instrumented trap coordinate.
+        trap_icount: u64,
+        /// Rejected exact stop coordinate.
+        boundary_icount: u64,
+    },
+    /// A restored or already-rebound request named another stop coordinate.
+    #[error(
+        "selectable stop icount {actual_icount} differs from sealed pending boundary {expected_icount}"
+    )]
+    PendingBoundaryAlreadySealed {
+        /// Authenticated retained boundary.
+        expected_icount: u64,
+        /// Conflicting resume boundary.
+        actual_icount: u64,
     },
     /// A request names no registered declaration.
     #[error("selectable request names unknown catalog entry `{selectable_id}`")]

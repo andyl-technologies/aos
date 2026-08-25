@@ -90,6 +90,50 @@ pub(crate) struct LiveVcpuTimeCallbackCapabilities {
     pub(crate) request_shutdown: crate::QemuRequestShutdownFn,
 }
 
+/// One exact handoff from a selectable doorbell to the sim-publication scope.
+///
+/// The guest doorbell runs in an instruction callback, where QEMU deliberately
+/// rejects native VMStop requests. It may force the current vCPU out of its TB,
+/// then this shared handoff lets the exact post-TCG callback admit the stop only
+/// after the pending request and current instruction count are published.
+pub(crate) struct SelectableVmstopHandoff {
+    pending: AtomicBool,
+}
+
+impl SelectableVmstopHandoff {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending: AtomicBool::new(false),
+        }
+    }
+
+    /// Reserves the sole deferred stop and forces the current TB to finish.
+    pub(crate) fn defer(&self, force_vcpu_exit: QemuForceVcpuExitFn) -> bool {
+        if self
+            .pending
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        force_vcpu_exit();
+        true
+    }
+
+    fn claim(&self) -> bool {
+        self.pending.swap(false, Ordering::AcqRel)
+    }
+
+    fn restore(&self) {
+        self.pending.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire)
+    }
+}
+
 /// Registrar for the joined live vCPU, time, network, block, and 9p callbacks.
 pub(crate) struct LiveVcpuTimeCallbackRegistrar {
     plugin_id: QemuPluginId,
@@ -359,7 +403,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                     self.target_architecture,
                     self.execution_model.smp_vcpus(),
                     capabilities.request_shutdown,
-                    capabilities.request_vmstop,
+                    capabilities.force_vcpu_exit,
                 )
                 .map_err(|source| {
                     live_callback_registration_error(LiveVcpuTimeCallbackError::WhiteboxCallback {
@@ -624,6 +668,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     icount_raw: QemuIcountRawFn,
     force_vcpu_exit: QemuForceVcpuExitFn,
     request_vmstop: crate::QemuRequestVmstopFn,
+    selectable_vmstop: Arc<SelectableVmstopHandoff>,
     preemption_injector: PluginPreemptionInjector,
     vcpu_count: u32,
     icount_shift: u8,
@@ -635,7 +680,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     halted_vcpus: Mutex<VcpuHaltTracker>,
     all_halted_idle_handled: AtomicBool,
     last_raw_icount: AtomicU64,
-    logical_icount_offset: AtomicU64,
+    logical_icount_offset: Arc<AtomicU64>,
     preemption_enqueue_active: AtomicBool,
     fault_command_pump_active: AtomicBool,
     idle_advance_completion_active: AtomicBool,
@@ -746,6 +791,7 @@ impl LiveVcpuTimeCallbackState {
             icount_raw,
             force_vcpu_exit,
             request_vmstop,
+            selectable_vmstop: Arc::new(SelectableVmstopHandoff::new()),
             preemption_injector,
             vcpu_count,
             icount_shift,
@@ -760,7 +806,7 @@ impl LiveVcpuTimeCallbackState {
             ),
             all_halted_idle_handled: AtomicBool::new(false),
             last_raw_icount: AtomicU64::new(initial_raw_icount),
-            logical_icount_offset: AtomicU64::new(logical_icount_offset),
+            logical_icount_offset: Arc::new(AtomicU64::new(logical_icount_offset)),
             preemption_enqueue_active: AtomicBool::new(false),
             fault_command_pump_active: AtomicBool::new(false),
             idle_advance_completion_active: AtomicBool::new(false),
@@ -1444,6 +1490,52 @@ impl LiveVcpuTimeCallbackState {
         } else {
             Err(LiveVcpuTimeCallbackError::CheckpointVmStopRejected { boundary, status })
         }
+    }
+
+    /// Publishes and admits a doorbell-deferred stop from this exact callback.
+    fn request_selectable_vmstop_if_pending(
+        &self,
+        raw_icount: u64,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        if !self.selectable_vmstop.claim() {
+            return Ok(());
+        }
+
+        let result = (|| {
+            let current_icount = self.logical_icount_for_raw(raw_icount)?;
+            let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
+            if current_icount > ceiling_icount {
+                return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
+                    current_icount,
+                    ceiling_icount,
+                });
+            }
+            PluginShmemOrdering::publish_pause_quiesced(
+                self.slot.get(),
+                current_icount,
+                raw_icount,
+                self.icount_shift,
+            )
+            .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
+            self.last_raw_icount.store(raw_icount, Ordering::Release);
+            self.last_icount.store(current_icount, Ordering::Release);
+            self.request_checkpoint_vmstop("selectable-sim-publication")
+        })();
+        if let Err(error) = result {
+            self.selectable_vmstop.restore();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Shares the process-local handoff with the sibling white-box callback.
+    pub(crate) fn selectable_vmstop_handoff(&self) -> Arc<SelectableVmstopHandoff> {
+        Arc::clone(&self.selectable_vmstop)
+    }
+
+    /// Shares the restore-adjusted raw-to-logical icount calibration.
+    pub(crate) fn logical_icount_offset(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.logical_icount_offset)
     }
 
     fn arm_idle_advance(
@@ -2239,9 +2331,10 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_publish_icount_cb(
     let Some(_in_flight) = state.callback_guard() else {
         return;
     };
-    if let Err(error) =
-        state.publish_current_icount_for_boundary(current_icount, true, true, "sim-publication")
-    {
+    let result = state
+        .publish_current_icount_for_boundary(current_icount, true, true, "sim-publication")
+        .and_then(|()| state.request_selectable_vmstop_if_pending(current_icount));
+    if let Err(error) = result {
         abort_live_callback(error);
     }
 }

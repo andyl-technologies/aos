@@ -7,6 +7,11 @@ mod retained_network;
 pub use retained_network::{
     QemuLiveRetainedNetworkSnapshotReport, run_qemu_live_retained_network_snapshot_gate,
 };
+#[path = "exact_snapshot/selectable_product.rs"]
+mod selectable_product;
+pub use selectable_product::{
+    QemuLiveSelectableProductSnapshotReport, run_qemu_live_selectable_product_snapshot_gate,
+};
 
 /// Runs an exact live snapshot through save, crash, load, and continued execution.
 ///

@@ -1,18 +1,21 @@
 //! `crucible-guest` owns the optional in-guest white-box emitter.
 //!
-//! Spec index: RFC-0010 files 16.
+//! Spec index: RFC-0010 file 16 and RFC-0016 file 02.
 //!
-//! This L2 crate is the thin library wrapped by the `crucible-guest` static
+//! This guest-side library is wrapped by the `crucible-guest` static
 //! command-line emitter. It builds marker payloads from the shared
-//! `crucible-protocol` vocabulary, encodes the same architecture-independent
-//! doorbell frame consumed by the QEMU plugin, and rings the per-architecture
-//! trap instruction selected by the single-source ABI table.
+//! `crucible-protocol` vocabulary, uses `crucible-campaign`'s canonical typed
+//! choice domains and values for product-facing selectables, encodes the same
+//! architecture-independent doorbell frame consumed by the QEMU plugin, and
+//! rings the per-architecture trap instruction selected by the single-source
+//! ABI table.
 //!
 //! Module map: the crate root owns CLI argument parsing, marker construction,
 //! and the Linux doorbell instruction transport; [`guest_introspection_agent`]
 //! owns the argv exec, PTY, resize, and optional SSH-compatible guest service;
 //! [`selectable`] owns typed guest choice registration and request helpers.
-//! `crucible-protocol` remains the owner of every wire format.
+//! `crucible-campaign` owns semantic domain/value bytes, while
+//! `crucible-protocol` remains the owner of every process wire format.
 //!
 //! Unsafe boundary discipline: public callers use safe doorbell and marker accessors; private inline
 //! assembly owns the guest/register and shared-region invariants plus reply-bearing mutable frames.
@@ -25,8 +28,14 @@ pub mod guest_introspection_agent;
 pub mod selectable;
 
 pub use selectable::{
-    GuestSelectableError, GuestSelectableRegistration, GuestSelection,
-    emit_selectable_registration, request_selection,
+    GuestSelectableError, GuestSelectableRegistration, GuestSelection, GuestTypedSelection,
+    build_selectable_registration, emit_selectable_registration, request_selection,
+    request_typed_selection,
+};
+
+pub use crucible_campaign::{
+    AlternativeId, ChoiceDomain, ChoiceValue, DiscreteAlternative, DiscreteDomain, ExactRational,
+    IntegerDomain, IntegerRepresentation, IntegerValue,
 };
 
 pub use crucible_protocol::{
@@ -88,7 +97,7 @@ pub const CRUCIBLE_GUEST_DEFAULT_RANDOM_REQUEST_ID: u32 = 0;
 /// Usage text for the `crucible-guest` command-line emitter.
 #[must_use]
 pub const fn usage() -> &'static str {
-    "usage: crucible-guest <verb> [args]\n\nverbs:\n  always <id> <message> <0|1>\n  sometimes <id> <message> <0|1>\n  reachable <id> <message>\n  unreachable <id> <message>\n  setup-complete\n  test-done\n  event <name> [k=v ...]\n  coverage <point>\n  measurement-begin <measurement> <instance>\n  metric-sample <measurement> <instance> <metric> <type> <value>\n  measurement-end <measurement> <instance>\n  semantic-marker <marker> <instance> [key:type=value ...]\n  get-random <width> [tag]\n  agent [--max-channels N] [--ssh-program PATH] [--ssh-arg ARG ...]"
+    "usage: crucible-guest <verb> [args]\n\nverbs:\n  always <id> <message> <0|1>\n  sometimes <id> <message> <0|1>\n  reachable <id> <message>\n  unreachable <id> <message>\n  setup-complete\n  test-done\n  event <name> [k=v ...]\n  coverage <point>\n  measurement-begin <measurement> <instance>\n  metric-sample <measurement> <instance> <metric> <type> <value>\n  measurement-end <measurement> <instance>\n  semantic-marker <marker> <instance> [key:type=value ...]\n  get-random <width> [tag]\n  selectable register-discrete <sequence> <id> <default-id> <alternative-id>=<label>...\n  selectable register-u64 <sequence> <id> <minimum> <maximum> <step> <default> <unit|->\n  selectable choose-discrete <sequence> <id> <instance> <alternative-id>...\n  selectable choose-u64 <sequence> <id> <instance> <minimum> <maximum> <step>\n  agent [--max-channels N] [--ssh-program PATH] [--ssh-arg ARG ...]"
 }
 
 /// Error returned while parsing, encoding, or emitting a guest marker command.
