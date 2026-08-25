@@ -23,6 +23,11 @@ pub(super) fn emit_constants(out: &mut String) {
     );
     emit_define_u32(
         out,
+        "CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY",
+        SELECTABLE_REPLY_QUEUE_CAPACITY,
+    );
+    emit_define_u32(
+        out,
         "CRUCIBLE_SHMEM_GUEST_INTROSPECTION_QUEUE_CAPACITY",
         GUEST_INTROSPECTION_QUEUE_CAPACITY,
     );

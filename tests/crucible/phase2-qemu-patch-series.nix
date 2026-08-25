@@ -305,7 +305,7 @@
       catalogName = "crucible-whitebox-guest-write";
       class = "F";
       enforces = "PLUG-14,GHC-12,GHC-16";
-      capability = "synchronous plugin callbacks can write typed white-box replies through the current vCPU guest-memory mapping";
+      capability = "synchronous plugin callbacks can write typed white-box replies through the current or exact resume-vCPU guest-memory mapping";
     }
     {
       file = "0042-crucible-aarch64-det-ipi-adapter.patch";

@@ -38,7 +38,7 @@ index 178851578..afc442b02 100644
  };
  
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 23b398a2e..f3c4cbd44 100644
+index a891f2403..46767953a 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -222,9 +222,9 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata

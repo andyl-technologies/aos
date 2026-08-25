@@ -45,6 +45,12 @@ pub enum LiveWhiteboxError {
         /// Underlying mapped-region access error.
         source: crucible_shmem::MappedSetupRegionAccessError,
     },
+    /// The mapped setup region could not expose this VM's reply queue.
+    #[error("mapped live selectable reply queue is unavailable")]
+    MappedSelectableReplyQueue {
+        /// Underlying mapped-region access error.
+        source: crucible_shmem::MappedSetupRegionAccessError,
+    },
     /// The mapped setup region could not expose this VM's introspection rings.
     #[error("mapped guest-introspection rings are unavailable")]
     MappedGuestIntrospectionRings {

@@ -47,6 +47,7 @@ use error::write_stderr;
 use location::{LiveWhiteboxInstructionLocation, LiveWhiteboxTbEntry};
 use marker::LiveMarkerSink;
 pub(crate) use marker::LiveWhiteboxMarkerShmemProducer;
+pub(crate) use selectable::LiveSelectableReplyShmemConsumer;
 #[cfg(test)]
 pub(super) use test_restore::install_app_random_restore_state_for_test;
 
@@ -83,6 +84,28 @@ pub(super) fn restore_selectable_continuation() -> Result<(), LiveWhiteboxError>
     )
 }
 
+/// Delivers one queued host reply at the exact vCPU resume boundary.
+pub(super) fn deliver_selectable_reply_on_vcpu_resume(
+    vcpu_index: u32,
+    current_icount: u64,
+) -> Result<(), LiveWhiteboxError> {
+    let Some(mut state) = NonNull::new(LIVE_WHITEBOX_STATE.load(Ordering::Acquire)) else {
+        return Ok(());
+    };
+    // SAFETY: publication retains this state for QEMU's process lifetime. The
+    // deterministic RR model serializes the resume callback with doorbell
+    // execution callbacks that mutate the same catalog.
+    let state = unsafe { state.as_mut() };
+    state.selectable.as_mut().map_or(Ok(()), |selectable| {
+        let mut writer = selectable::LiveSelectableGuestMemoryWriter::new(
+            state.apis,
+            vcpu_index,
+            current_icount,
+        );
+        selectable.deliver_reply(current_icount, vcpu_index, &mut writer)
+    })
+}
+
 #[derive(Clone, Copy, Default)]
 struct LiveWhiteboxRegisters {
     pointer: Option<NonNull<QemuPluginRegister>>,
@@ -112,6 +135,7 @@ pub(crate) struct LiveWhiteboxState {
 
 pub(crate) struct LiveWhiteboxShmem {
     marker_output: LiveWhiteboxMarkerShmemProducer,
+    selectable_reply_input: selectable::LiveSelectableReplyShmemConsumer,
     guest_introspection_rings: crucible_shmem::DetachedPluginGuestIntrospectionRings,
 }
 
@@ -158,10 +182,12 @@ impl<'a> LiveWhiteboxLaunchPlans<'a> {
 impl LiveWhiteboxShmem {
     pub(crate) const fn new(
         marker_output: LiveWhiteboxMarkerShmemProducer,
+        selectable_reply_input: selectable::LiveSelectableReplyShmemConsumer,
         guest_introspection_rings: crucible_shmem::DetachedPluginGuestIntrospectionRings,
     ) -> Self {
         Self {
             marker_output,
+            selectable_reply_input,
             guest_introspection_rings,
         }
     }
@@ -298,6 +324,7 @@ impl LiveWhiteboxState {
                     plan,
                     guest_input_capability,
                     process_control.request_vmstop,
+                    shmem.selectable_reply_input,
                 )
             })
             .transpose()

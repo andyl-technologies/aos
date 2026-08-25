@@ -281,4 +281,54 @@ impl MappedSetupRegion {
             entries,
         })
     }
+
+    /// Borrows one VM's dedicated host-to-plugin selectable-reply ring.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedSetupRegionAccessError`] when the mapped header is
+    /// invalid, `vm_slot` does not name a logical VM, or the reply segment is
+    /// out of bounds or misaligned.
+    pub fn selectable_reply_ring_mut(
+        &mut self,
+        vm_slot: u32,
+    ) -> Result<MappedSelectableReplyRingMut<'_>, MappedSetupRegionAccessError> {
+        let layout = self
+            .layout()
+            .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
+        if vm_slot >= layout.selectable_reply_ring_count {
+            return Err(MappedSetupRegionAccessError::UnknownWhiteboxMarkerRing {
+                vm_slot,
+                vm_node_count: layout.vm_node_count,
+            });
+        }
+        let header_offset = mapped_selectable_reply_ring_header_offset(layout, self.len, vm_slot)?;
+        let entries_offset =
+            mapped_selectable_reply_ring_entries_offset(layout, self.len, vm_slot)?;
+        let entry_count =
+            usize::try_from(layout.selectable_reply_queue_capacity).map_err(|_error| {
+                MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                    segment: "selectable reply entry",
+                    index: vm_slot,
+                }
+            })?;
+        let base = self.base_ptr();
+        // SAFETY: the selectable-reply offset helpers validate the complete
+        // typed ranges and alignment inside this owned mapping. Each VM owns a
+        // disjoint single-entry ring and the mapping borrow prevents aliasing.
+        let (header, entries) = unsafe {
+            (
+                &*base.add(header_offset).cast::<RingHeader>(),
+                core::slice::from_raw_parts_mut(
+                    base.add(entries_offset).cast::<WhiteboxMarkerEntry>(),
+                    entry_count,
+                ),
+            )
+        };
+        Ok(MappedSelectableReplyRingMut {
+            vm_slot,
+            header,
+            entries,
+        })
+    }
 }

@@ -144,9 +144,13 @@ lossless marker ring after retention and VMStop request; the mapped host adapter
 reconstructs the exact request, trap coordinate, and guest virtual reply target
 without granting it semantic authority. Deferred requests use a 4,576-byte
 nested-request profile so the 32-byte transport header cannot overflow the
-4,608-byte marker entry. Daemon-side scenario conversion, semantic
-narrowed-domain validation, selected-reply delivery, completion accounting, and
-durable checkpoint composition remain required to complete T-CAM-2.5.
+4,608-byte marker entry. ABI v18 now appends a VM-local one-entry reply ring: the
+host publishes only an exact-sequence reply that fits the retained reservation
+at the current paused icount, and the plugin revalidates sequence/vCPU/icount,
+zero-pads the guest reservation, writes it before resume, and charges completion
+only afterward. Daemon-side scenario conversion, semantic narrowed-domain
+validation and selection, plus durable checkpoint composition remain required
+to complete T-CAM-2.5.
 The process-neutral `CRUCSCP2` catalog-plan codec now freezes the future sealed
 descriptor body, including exact expectations, limits, registered identifiers,
 sequence watermarks, completed counters, and a complete pending request/trap

@@ -431,8 +431,20 @@ The complete body remains within the marker ring's 4,608-byte payload, so a
 deferred request is limited to 4,576 nested bytes. A larger standalone request
 fails before catalog mutation or VMStop. The host drain reconstructs the exact
 process-neutral pending-plan coordinate but does not grant semantic choice
-authority. Host-to-plugin reply delivery, completion accounting, and durable
-checkpoint composition remain separate required boundaries.
+authority.
+
+The host returns one authorized canonical `SelectionReplyV1` through the
+ABI-v18 VM-local, single-entry host-to-plugin ring. Its public envelope reuses
+`WhiteboxMarkerEntry` with internal kind `0xff07`; the entry header repeats the
+pending trap icount and vCPU. Before publication, the host requires the exact
+request sequence, current paused icount, and a reply no larger than the guest's
+retained reservation. Before authorizing resumed execution, the plugin requires
+the same pending catalog incarnation, sequence, vCPU, and icount, writes the
+canonical reply plus a zero tail to the retained guest virtual range, and only
+then charges completion and clears the pending request. The single entry makes
+duplicate or pipelined replies bounded backpressure and a loud protocol error.
+Semantic narrowed-domain authority and durable checkpoint composition remain
+host/coordinator responsibilities.
 
 The wire protocol contains no Rust-native layouts, pointers, callbacks, or
 QEMU-private objects. The version-1 codec is owned by

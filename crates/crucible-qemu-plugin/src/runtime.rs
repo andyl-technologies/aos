@@ -404,6 +404,23 @@ impl OwnedCallbackRuntimeState {
                 marker_ring.entries.len(),
             )
         };
+        let selectable_reply_ring = state
+            .setup
+            .mapped_region_mut()
+            .selectable_reply_ring_mut(args.slot())
+            .map_err(
+                |source| live_whitebox::LiveWhiteboxError::MappedSelectableReplyQueue { source },
+            )?;
+        // SAFETY: the setup mapping is retained beside the pinned live
+        // white-box owner. The host is the sole SPSC producer and this plugin
+        // state is the sole consumer for the VM-local ring.
+        let selectable_reply_input = unsafe {
+            live_whitebox::LiveSelectableReplyShmemConsumer::from_raw_parts(
+                std::ptr::from_ref(selectable_reply_ring.header),
+                selectable_reply_ring.entries.as_mut_ptr(),
+                selectable_reply_ring.entries.len(),
+            )
+        };
         let guest_introspection_rings = state
             .setup
             .mapped_region_mut()
@@ -422,7 +439,11 @@ impl OwnedCallbackRuntimeState {
             live_whitebox::LiveWhiteboxTarget::new(target_architecture, args.whitebox_setup()),
             vcpu_count,
             live_whitebox::LiveWhiteboxProcessControl::new(request_shutdown, request_vmstop),
-            live_whitebox::LiveWhiteboxShmem::new(marker_output, guest_introspection_rings),
+            live_whitebox::LiveWhiteboxShmem::new(
+                marker_output,
+                selectable_reply_input,
+                guest_introspection_rings,
+            ),
             live_whitebox::LiveWhiteboxLaunchPlans::new(
                 args.app_random(),
                 state.setup.app_random_branch_plan(),

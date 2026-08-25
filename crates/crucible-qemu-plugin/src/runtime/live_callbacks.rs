@@ -45,7 +45,10 @@ use super::{
     LiveRuntimeTeardownTrigger, OwnedCallbackRegistrar, OwnedCallbackRegistrationError,
     OwnedCallbackRegistrationMask, OwnedCallbackRuntimeState,
     callback_quiescence::{LiveCallbackInFlight, LiveCallbackQuiescence},
-    live_whitebox::{LiveWhiteboxApis, crucible_qemu_plugin_live_whitebox_vcpu_init_cb},
+    live_whitebox::{
+        LiveWhiteboxApis, crucible_qemu_plugin_live_whitebox_vcpu_init_cb,
+        deliver_selectable_reply_on_vcpu_resume,
+    },
 };
 
 mod devices;
@@ -1171,6 +1174,12 @@ impl LiveVcpuTimeCallbackState {
         if self.idle_advance_is_pending() {
             return Err(LiveVcpuTimeCallbackError::ResumeWhileIdleAdvancePending);
         }
+        let current_icount = self.logical_icount_for_raw(raw_icount)?;
+        deliver_selectable_reply_on_vcpu_resume(vcpu_index, current_icount).map_err(|source| {
+            LiveVcpuTimeCallbackError::WhiteboxCallback {
+                message: source.to_string(),
+            }
+        })?;
         let was_halted = {
             let mut halted_vcpus = self.try_halted_vcpus()?;
             let was_halted = halted_vcpus

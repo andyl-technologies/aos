@@ -1,8 +1,8 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 64276e786..2c9a0825d 100644
+index 3c2eee36f..54933de79 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -2131,10 +2131,10 @@ int qemu_plugin_crucible_fault_register_bindings_seal(void);
+@@ -2149,10 +2149,10 @@ int qemu_plugin_crucible_fault_register_bindings_seal(void);
   * Returns 0 on success and nonzero on failure. The byte stream is a stable
   * canonicalization of each named architectural register descriptor and value
   * for @vcpu_index. The read is admitted either while a deterministic
@@ -17,7 +17,7 @@ index 64276e786..2c9a0825d 100644
   */
  QEMU_PLUGIN_API
  int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
-@@ -2159,8 +2159,10 @@ struct qemu_plugin_rr_cursor {
+@@ -2177,8 +2177,10 @@ struct qemu_plugin_rr_cursor {
   * qemu_plugin_rr_cursor() - read the current round-robin cursor
   * @out: plugin-owned cursor output
   *
@@ -31,10 +31,10 @@ index 64276e786..2c9a0825d 100644
   * side-effect-free with respect to guest state.
   */
 diff --git a/plugins/api.c b/plugins/api.c
-index 592d85f46..70e40aed3 100644
+index 424bcb8d5..49d0827a0 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -511,14 +511,18 @@ static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
+@@ -523,14 +523,18 @@ static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
      uint64_t owner = qemu_plugin_crucible_rr_current_vcpu();
  
      /*
@@ -59,7 +59,7 @@ index 592d85f46..70e40aed3 100644
          (bql_locked() && !runstate_is_running());
  }
  
-@@ -690,14 +694,17 @@ int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
+@@ -702,14 +706,17 @@ int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
  int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
  {
      CPUState *cpu = current_cpu;

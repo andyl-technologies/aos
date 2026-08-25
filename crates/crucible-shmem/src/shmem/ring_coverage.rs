@@ -330,6 +330,26 @@ impl RingHeader {
         Ok(Some(entry))
     }
 
+    /// Peeks at the next white-box envelope without releasing its slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the entry slice has invalid capacity or
+    /// the shared indices describe more live entries than the queue can hold.
+    pub fn peek_whitebox_marker(
+        &self,
+        entries: &[WhiteboxMarkerEntry],
+    ) -> Result<Option<WhiteboxMarkerEntry>, SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let head = self.read_idx.load(Ordering::Relaxed);
+        let tail = self.write_idx.load(Ordering::Acquire);
+        if live_count(head, tail, capacity)? == 0 {
+            return Ok(None);
+        }
+
+        Ok(Some(entries[(head & (capacity - 1)) as usize]))
+    }
+
     /// Dequeues the next guest-introspection record entry.
     ///
     /// # Errors

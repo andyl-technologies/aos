@@ -595,6 +595,28 @@ pub trait QemuShmemHotPathChannel: Send {
         Ok(Vec::new())
     }
 
+    /// Publishes one host-authorized reply for an exact paused selectable request.
+    ///
+    /// The plugin remains the sole owner of guest-memory mutation and verifies
+    /// the request sequence and trap coordinate again before resuming guest
+    /// execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the request is not at the current
+    /// boundary, the reply sequence or reservation is incompatible, or the
+    /// single-entry host-to-plugin ring is unavailable, corrupt, or full.
+    fn enqueue_selectable_reply(
+        &mut self,
+        _pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+        _reply: &crucible_protocol::SelectionReply,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "enqueue selectable reply",
+            "selectable replies are unavailable on this channel",
+        ))
+    }
+
     /// Delivers a deterministic frame through the shared-memory input ring.
     ///
     /// # Errors
@@ -1830,6 +1852,26 @@ impl QemuNode {
         self.channels
             .shmem_hot_path
             .drain_pending_selectable_requests()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })
+    }
+
+    /// Enqueues one exact host-authorized selectable reply before QEMU resumes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the pending token is stale or malformed,
+    /// the reply does not fit its guest reservation, or shared-memory
+    /// publication fails.
+    pub fn enqueue_selectable_reply(
+        &mut self,
+        pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+        reply: &crucible_protocol::SelectionReply,
+    ) -> Result<(), QemuNodeError> {
+        self.channels
+            .shmem_hot_path
+            .enqueue_selectable_reply(pending, reply)
             .map_err(|source| {
                 QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
             })

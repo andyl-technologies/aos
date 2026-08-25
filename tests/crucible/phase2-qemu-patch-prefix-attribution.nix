@@ -233,7 +233,10 @@
     };
     "0041-crucible-whitebox-guest-write.patch" = {
       kind = "interface";
-      symbols = ["qemu_plugin_crucible_write_memory_vaddr"];
+      symbols = [
+        "qemu_plugin_crucible_write_memory_vaddr"
+        "qemu_plugin_crucible_write_memory_vaddr_for_vcpu"
+      ];
     };
     "0042-crucible-aarch64-det-ipi-adapter.patch" = {
       kind = "recorded";

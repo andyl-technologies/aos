@@ -12,6 +12,29 @@ use crucible_protocol::{
 };
 
 use super::*;
+use crate::WhiteboxGuestInputWriteError;
+
+#[derive(Default)]
+struct RecordingWriter {
+    delivery_icount: Option<u64>,
+    range: Option<crate::GuestMemoryRange>,
+    payload: Vec<u8>,
+}
+
+impl WhiteboxGuestInputWriter for RecordingWriter {
+    fn write_whitebox_input(
+        &mut self,
+        delivery_icount: u64,
+        range: crate::GuestMemoryRange,
+        payload: &[u8],
+    ) -> Result<(), WhiteboxGuestInputWriteError> {
+        self.delivery_icount = Some(delivery_icount);
+        self.range = Some(range);
+        self.payload.clear();
+        self.payload.extend_from_slice(payload);
+        Ok(())
+    }
+}
 
 thread_local! {
     static VMSTOP_STATUS: Cell<i32> = const { Cell::new(0) };
@@ -96,13 +119,27 @@ fn capability() -> WhiteboxGuestInputCapability {
     .unwrap_or_else(|error| panic!("bidirectional test capability should validate: {error}"))
 }
 
+fn reply_input() -> LiveSelectableReplyShmemConsumer {
+    let header = Box::leak(Box::new(RingHeader::new()));
+    let entries = Box::leak(vec![WhiteboxMarkerEntry::default()].into_boxed_slice());
+    // SAFETY: test-owned leaked storage remains live and uniquely consumed for
+    // the duration of the process.
+    unsafe {
+        LiveSelectableReplyShmemConsumer::from_raw_parts(
+            std::ptr::from_ref(header),
+            entries.as_mut_ptr(),
+            entries.len(),
+        )
+    }
+}
+
 #[test]
 fn live_catalog_freezes_and_retains_a_request_before_vmstop()
 -> Result<(), Box<dyn std::error::Error>> {
     VMSTOP_STATUS.set(0);
     VMSTOP_CALLS.set(0);
     let plan = cold_plan()?;
-    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop)?;
+    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop, reply_input())?;
     state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
     state.freeze()?;
 
@@ -144,7 +181,7 @@ fn deferred_transport_bound_rejects_before_catalog_mutation_or_vmstop()
     VMSTOP_STATUS.set(0);
     VMSTOP_CALLS.set(0);
     let plan = cold_plan()?;
-    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop)?;
+    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop, reply_input())?;
     state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
     state.freeze()?;
     let request = SelectionRequest::new(
@@ -177,7 +214,7 @@ fn deferred_transport_bound_rejects_before_catalog_mutation_or_vmstop()
 fn logical_restore_discards_priming_catalog_and_recovers_exact_continuation()
 -> Result<(), Box<dyn std::error::Error>> {
     let plan = restored_plan()?;
-    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop)?;
+    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop, reply_input())?;
     state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
     state.freeze()?;
     assert_eq!(state.catalog().total_completed_requests(), 0);
@@ -192,11 +229,94 @@ fn logical_restore_discards_priming_catalog_and_recovers_exact_continuation()
 }
 
 #[test]
+fn resume_delivery_binds_reply_to_pending_coordinate_and_zero_fills_reservation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let header = RingHeader::new();
+    let mut entries = vec![WhiteboxMarkerEntry::default()];
+    // SAFETY: the stack-owned header and entry remain live and uniquely
+    // consumer-owned until `state` is dropped at the end of this test.
+    let reply_input = unsafe {
+        LiveSelectableReplyShmemConsumer::from_raw_parts(
+            std::ptr::from_ref(&header),
+            entries.as_mut_ptr(),
+            entries.len(),
+        )
+    };
+    let reply = SelectionReply::selected(9, [0x11; 32], [0x22; 32], vec![2])?;
+    let payload = reply.encode()?;
+    let entry = WhiteboxMarkerEntry::new(700, 2, WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY, &payload)?;
+    header.enqueue_whitebox_marker(&mut entries, entry)?;
+
+    let plan = restored_plan()?;
+    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop, reply_input)?;
+    state.restore_continuation()?;
+    let mut writer = RecordingWriter::default();
+    state.deliver_reply(700, 1, &mut writer)?;
+    assert!(writer.payload.is_empty());
+    assert!(state.catalog().pending_request().is_some());
+    state.deliver_reply(700, 2, &mut writer)?;
+
+    assert_eq!(writer.delivery_icount, Some(700));
+    assert_eq!(
+        writer.range,
+        Some(crate::GuestMemoryRange::new(
+            crate::GuestMemoryAddressSpace::Virtual,
+            0x4000,
+            160,
+        ))
+    );
+    assert_eq!(&writer.payload[..payload.len()], payload);
+    assert!(
+        writer.payload[payload.len()..]
+            .iter()
+            .all(|byte| *byte == 0)
+    );
+    assert!(state.catalog().pending_request().is_none());
+    assert_eq!(state.catalog().total_completed_requests(), 2);
+    Ok(())
+}
+
+#[test]
+fn stale_reply_coordinate_fails_before_guest_write_or_catalog_completion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let header = RingHeader::new();
+    let mut entries = vec![WhiteboxMarkerEntry::default()];
+    // SAFETY: the stack-owned ring storage outlives the state and has one
+    // consumer in this test.
+    let reply_input = unsafe {
+        LiveSelectableReplyShmemConsumer::from_raw_parts(
+            std::ptr::from_ref(&header),
+            entries.as_mut_ptr(),
+            entries.len(),
+        )
+    };
+    let reply = SelectionReply::selected(9, [0x11; 32], [0x22; 32], vec![2])?;
+    let entry = WhiteboxMarkerEntry::new(
+        701,
+        2,
+        WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
+        &reply.encode()?,
+    )?;
+    header.enqueue_whitebox_marker(&mut entries, entry)?;
+
+    let plan = restored_plan()?;
+    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop, reply_input)?;
+    state.restore_continuation()?;
+    let mut writer = RecordingWriter::default();
+
+    assert!(state.deliver_reply(700, 2, &mut writer).is_err());
+    assert!(writer.payload.is_empty());
+    assert!(state.catalog().pending_request().is_some());
+    assert_eq!(state.catalog().total_completed_requests(), 1);
+    Ok(())
+}
+
+#[test]
 fn vmstop_rejection_keeps_the_exact_request_pending() -> Result<(), Box<dyn std::error::Error>> {
     VMSTOP_STATUS.set(-1);
     VMSTOP_CALLS.set(0);
     let plan = cold_plan()?;
-    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop)?;
+    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop, reply_input())?;
     state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
     state.freeze()?;
     let request = request(2)?;

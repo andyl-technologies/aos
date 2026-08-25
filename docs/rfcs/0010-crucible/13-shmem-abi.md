@@ -163,8 +163,10 @@ fixture, catching any disagreement the compile-time checks miss.
 The region is laid out as a fixed-size header followed by a fixed-size array of
 per-node slots, followed by the directed-frame SPSC rings and their frame-entry
 storage, one fixed-capacity plugin-to-host coverage ring per VM, one fingerprint
-sample slot per VM, one bounded plugin-to-host white-box marker ring per VM, and
-one bounded guest-introspection ring in each direction per VM.
+sample slot per VM, one bounded plugin-to-host white-box marker ring per VM, one
+bounded guest-introspection ring in each direction per VM, the later device and
+fault transports, and one single-entry host-to-plugin selectable-reply ring per
+VM at the ABI-v18 tail.
 The header and slots are fixed-size so their offsets are compile-time constants.
 Frame-ring geometry is recorded in the header; ABI v6 derives every trailing
 section from that frame extent, the VM count, and ABI-fixed constants, so no
@@ -201,6 +203,12 @@ process-local pointer or host-layout fact crosses the ABI.
   +--------------------------------------------------+
   | GuestIntrospectionEntry[vm_node_count][2][64]    |   = complete CRGI records
   | ...                                              |
+  +--------------------------------------------------+
+  | ... ABI-v7 through ABI-v17 tail sections ...    |
+  +--------------------------------------------------+  align_up(v17 data end, 128)
+  | Selectable Reply RingHeader[vm_node_count]      |   = host -> plugin
+  +--------------------------------------------------+
+  | WhiteboxMarkerEntry[vm_node_count][1]           |   = SelectionReplyV1
   +--------------------------------------------------+  header.region_size
 ```
 
@@ -209,7 +217,7 @@ process-local pointer or host-layout fact crosses the ABI.
 The region header carries the identity and shape of the region: a magic number,
 the ABI version, the configured node count and queue capacity, the computed
 frame sub-region offsets, the global control flags, and the per-direction fault
-payload-arena size. ABI v15 mappers derive the coverage, fingerprint-sample,
+payload-arena size. ABI v18 mappers derive the coverage, fingerprint-sample,
 white-box marker, device-I/O, guest-introspection, and fault transport tail
 sections from that validated frame extent, the VM count, and fixed ABI
 constants. The header is the first thing a mapper reads and the thing
@@ -222,7 +230,7 @@ touches a slot.
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 
 /// Current ABI version. Bumped on any layout or semantics change (§13.6).
-pub const ABI_VERSION: u32 = 17;
+pub const ABI_VERSION: u32 = 18;
 
 /// Compile-time maximum number of node slots in the region.
 /// An ABI detail (§13.5); the engine's topology model MUST NOT depend on it.
@@ -757,6 +765,37 @@ obeys [SHM-47] and [SHM-48].
   backpressure without overwrite, eviction, or control-socket fallback. *Gate:*
   `gate:abi-conformance`. *Spec:* §13.3.9.
 
+### 13.3.10 Host-to-plugin selectable-reply rings
+
+ABI v18 appends exactly one single-entry SPSC ring per logical VM after every
+ABI-v17 section. The host is the sole producer and the QEMU plugin is the sole
+consumer. The entry reuses the public `WhiteboxMarkerEntry` layout only as a
+fixed process-protocol envelope; kind `0xff07` and a canonical
+`SelectionReplyV1` payload distinguish it from the directionally separate
+observational marker ring. Its header carries the exact pending trap icount and
+vCPU index.
+
+The host MUST validate the reply sequence, reply-reservation capacity, and
+current paused icount before release-publishing the entry. The plugin MUST
+acquire-consume at vCPU resume, compare the entry with its incarnation-bound
+pending catalog request, zero-fill the entire retained guest reservation, write
+through the current vCPU's virtual-memory helper, and only then charge catalog
+completion. Any mismatch, malformed reply, full queue, or guest-memory failure
+fails loudly. Capacity is one because the catalog permits only one pending
+request; a second entry is invalid pipelining rather than useful buffering.
+
+- **[SHM-53]** Each logical VM MUST own one ABI-v18, single-entry selectable
+  reply ring with fixed host-producer/plugin-consumer roles. Publication and
+  reclamation use the common release/acquire SPSC ordering, and no control
+  socket, observational ring, native pointer, or QEMU-private object may carry
+  the reply. *Gate:* `gate:abi-conformance`, `gate:typed-choice`,
+  `gate:license-boundary`. *Spec:* §13.3.10, §13.6.
+
+- **[SHM-54]** The plugin MUST deliver a reply only at the exact retained
+  `(icount, vCPU, sequence)` before resumed guest execution and MUST complete
+  catalog accounting only after the complete zero-padded guest write succeeds.
+  *Gate:* `gate:typed-choice`, `gate:e2e-determinism`. *Spec:* §13.3.10.
+
 ## 13.4 Normative offset and size table
 
 The following constants are the binding ABI for `ABI_VERSION = 6` on
@@ -1191,10 +1230,10 @@ alter the clamped guest coordinate or deadline.
 
 ## 13.8 Versioning and conformance
 
-The region carries an ABI version in its header. ABI v15 assigns byte 18 of
-`FrameEntry` to consumer-owned delivery state while preserving the payload
-offset and total entry size; v14 peers are rejected rather than inferred or
-supported through a compatibility path. The handshake
+The region carries an ABI version in its header. ABI v18 appends the VM-local
+single-entry selectable-reply rings after the complete v17 region; v17 peers are
+rejected rather than inferred or supported through a compatibility path. The
+handshake
 ([`14-protocol.md`](14-protocol.md)) validates it before any node trusts a byte of
 the region. ABI v2 is intentionally incompatible with v1 because v2 adds the
 coverage tail: a v2 host rejects a v1 plugin/region, and a v2 plugin rejects a
@@ -1378,3 +1417,7 @@ by when the producer's store landed in shared memory.
   Completed by `checks.crucible.phase2.shmemAbiConformance`: the ABI-v5 C/Rust
   layouts and golden vector freeze the mailbox, while the Rust mailbox gate
   covers publication, exact round-trip, acknowledgement, and negative cases.
+- [x] **T-SHM-20** Append the ABI-v18 single-entry host-to-plugin selectable
+  reply ring per logical VM, freeze its C/Rust geometry and golden vector, and
+  enforce exact sequence/icount/vCPU/reservation checks before resume-time guest
+  delivery. — satisfies [SHM-53], [SHM-54]; spec §13.3.10, §13.6.

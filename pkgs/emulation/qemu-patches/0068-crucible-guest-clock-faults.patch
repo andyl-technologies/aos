@@ -2960,7 +2960,7 @@ index a706e822e..0f0fee953 100644
  int qemu_crucible_fault_vcpu_service_validate(
      const QemuCrucibleFaultRule *rule);
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 29eb2e39c..fe47a6861 100644
+index cc70bc5d5..8ee6450c3 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -69,7 +69,7 @@ typedef uint64_t qemu_plugin_id_t;
@@ -2972,7 +2972,7 @@ index 29eb2e39c..fe47a6861 100644
  
  /**
   * struct qemu_info_t - system information for plugins
-@@ -1892,6 +1892,40 @@ size_t qemu_plugin_crucible_fault_hardware_error_manifest(
+@@ -1910,6 +1910,40 @@ size_t qemu_plugin_crucible_fault_hardware_error_manifest(
      struct qemu_plugin_crucible_fault_hardware_error_capability *out,
      size_t capacity, uint16_t *architecture);
  

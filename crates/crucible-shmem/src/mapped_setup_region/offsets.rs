@@ -212,6 +212,48 @@ pub(super) fn mapped_whitebox_marker_ring_entries_offset(
     )
 }
 
+pub(super) fn mapped_selectable_reply_ring_header_offset(
+    layout: RegionLayout,
+    region_len: usize,
+    vm_slot: u32,
+) -> Result<usize, MappedSetupRegionAccessError> {
+    mapped_segment_offset(
+        "selectable reply ring header",
+        vm_slot,
+        layout.selectable_reply_ring_hdr_off,
+        RING_HEADER_SIZE,
+        RING_HEADER_ALIGN,
+        region_len,
+    )
+}
+
+pub(super) fn mapped_selectable_reply_ring_entries_offset(
+    layout: RegionLayout,
+    region_len: usize,
+    vm_slot: u32,
+) -> Result<usize, MappedSetupRegionAccessError> {
+    let capacity = usize::try_from(layout.selectable_reply_queue_capacity).map_err(|_error| {
+        MappedSetupRegionAccessError::SegmentOffsetOverflow {
+            segment: "selectable reply entry",
+            index: vm_slot,
+        }
+    })?;
+    let byte_len = capacity.checked_mul(WHITEBOX_MARKER_ENTRY_SIZE).ok_or(
+        MappedSetupRegionAccessError::SegmentOffsetOverflow {
+            segment: "selectable reply entry",
+            index: vm_slot,
+        },
+    )?;
+    mapped_segment_offset(
+        "selectable reply entry",
+        vm_slot,
+        layout.selectable_reply_ring_data_off,
+        byte_len,
+        WHITEBOX_MARKER_ENTRY_ALIGN,
+        region_len,
+    )
+}
+
 pub(super) fn validate_fault_vm_slot(
     layout: RegionLayout,
     vm_slot: u32,
