@@ -8,12 +8,30 @@ use super::*;
 /// sorted immutable-object inventory, and authenticated streaming reads. The
 /// installer independently verifies every byte and never grants the source
 /// destination-store authority.
-pub trait ProductionExactCheckpointSource {
+pub trait ProductionExactCheckpointSource: Send + Sync {
+    /// Returns the production closure identity claimed by this source.
+    fn identity(&self) -> ContentHash;
+
+    /// Returns the exact scenario claimed by this source.
+    fn scenario(&self) -> ContentHash;
+
+    /// Returns the exact modeled configuration claimed by this source.
+    fn configuration(&self) -> ContentHash;
+
     /// Returns the canonical `crucible.production-exact-closure.v4` manifest.
     fn manifest(&self) -> &[u8];
 
     /// Returns the exact strictly sorted immutable-object inventory.
     fn objects(&self) -> &[ProductionExactCheckpointObject];
+
+    /// Opens one named object at its first byte.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the object is unavailable, does not
+    /// belong to the source, or cannot be opened for streaming.
+    fn open_object(&self, identity: ContentHash)
+    -> Result<Box<dyn Read + Send>, LifecycleApiError>;
 
     /// Streams one named object into `destination`.
     ///
@@ -26,16 +44,55 @@ pub trait ProductionExactCheckpointSource {
         &self,
         identity: ContentHash,
         destination: &mut dyn Write,
-    ) -> Result<u64, LifecycleApiError>;
+    ) -> Result<u64, LifecycleApiError> {
+        let mut source = self.open_object(identity)?;
+        let mut copied = 0_u64;
+        let mut buffer = [0_u8; CLOSURE_EXPORT_COPY_BUFFER_BYTES];
+        loop {
+            let count = source.read(&mut buffer).map_err(|error| {
+                loop_factory_error(format!("read portable checkpoint object: {error}"))
+            })?;
+            if count == 0 {
+                return Ok(copied);
+            }
+            destination.write_all(&buffer[..count]).map_err(|error| {
+                loop_factory_error(format!("write portable checkpoint object: {error}"))
+            })?;
+            copied = copied
+                .checked_add(u64::try_from(count).map_err(|_| {
+                    loop_factory_error("portable checkpoint copy length is not representable")
+                })?)
+                .ok_or_else(|| loop_factory_error("portable checkpoint copy length overflow"))?;
+        }
+    }
 }
 
 impl ProductionExactCheckpointSource for ProductionExactCheckpointClosure {
+    fn identity(&self) -> ContentHash {
+        ProductionExactCheckpointClosure::identity(self)
+    }
+
+    fn scenario(&self) -> ContentHash {
+        ProductionExactCheckpointClosure::scenario(self)
+    }
+
+    fn configuration(&self) -> ContentHash {
+        ProductionExactCheckpointClosure::configuration(self)
+    }
+
     fn manifest(&self) -> &[u8] {
         ProductionExactCheckpointClosure::manifest(self)
     }
 
     fn objects(&self) -> &[ProductionExactCheckpointObject] {
         ProductionExactCheckpointClosure::objects(self)
+    }
+
+    fn open_object(
+        &self,
+        identity: ContentHash,
+    ) -> Result<Box<dyn Read + Send>, LifecycleApiError> {
+        ProductionExactCheckpointClosure::open_object(self, identity)
     }
 
     fn copy_object_to(
@@ -103,9 +160,14 @@ fn preflight_portable_source(
     let limits = source.plan().fault_signals().resource_limits();
     let decoded = decode::decode_manifest_with_limits(&manifest, limits)?;
     let identity = closure_identity(&decoded).map_err(scheduler_api_error)?;
-    if decoded.identity != identity || decoded.scenario != source.scenario_def().id() {
+    if decoded.identity != identity
+        || decoded.scenario != source.scenario_def().id()
+        || portable.identity() != identity
+        || portable.scenario() != decoded.scenario
+        || portable.configuration() != decoded.configuration
+    {
         return Err(loop_factory_error(
-            "portable exact checkpoint failed identity or scenario authentication",
+            "portable exact checkpoint failed identity, scenario, or configuration authentication",
         ));
     }
 
@@ -494,6 +556,7 @@ mod tests {
 
     struct TamperedPortableSource<'a> {
         original: &'a ProductionExactCheckpointClosure,
+        identity: ContentHash,
         manifest: Vec<u8>,
         objects: Vec<ProductionExactCheckpointObject>,
         replacement_identity: ContentHash,
@@ -501,12 +564,34 @@ mod tests {
     }
 
     impl ProductionExactCheckpointSource for TamperedPortableSource<'_> {
+        fn identity(&self) -> ContentHash {
+            self.identity
+        }
+
+        fn scenario(&self) -> ContentHash {
+            self.original.scenario()
+        }
+
+        fn configuration(&self) -> ContentHash {
+            self.original.configuration()
+        }
+
         fn manifest(&self) -> &[u8] {
             &self.manifest
         }
 
         fn objects(&self) -> &[ProductionExactCheckpointObject] {
             &self.objects
+        }
+
+        fn open_object(
+            &self,
+            identity: ContentHash,
+        ) -> Result<Box<dyn Read + Send>, LifecycleApiError> {
+            if identity == self.replacement_identity {
+                return Ok(Box::new(std::io::Cursor::new(self.replacement.clone())));
+            }
+            self.original.open_object(identity)
         }
 
         fn copy_object_to(
@@ -526,12 +611,51 @@ mod tests {
         }
     }
 
+    struct ClaimedBasisSource<'a> {
+        original: &'a ProductionExactCheckpointClosure,
+        identity: ContentHash,
+        scenario: ContentHash,
+        configuration: ContentHash,
+    }
+
+    impl ProductionExactCheckpointSource for ClaimedBasisSource<'_> {
+        fn identity(&self) -> ContentHash {
+            self.identity
+        }
+
+        fn scenario(&self) -> ContentHash {
+            self.scenario
+        }
+
+        fn configuration(&self) -> ContentHash {
+            self.configuration
+        }
+
+        fn manifest(&self) -> &[u8] {
+            self.original.manifest()
+        }
+
+        fn objects(&self) -> &[ProductionExactCheckpointObject] {
+            self.original.objects()
+        }
+
+        fn open_object(
+            &self,
+            identity: ContentHash,
+        ) -> Result<Box<dyn Read + Send>, LifecycleApiError> {
+            self.original.open_object(identity)
+        }
+    }
+
     #[test]
     fn portable_install_round_trips_complete_checkpoint_and_is_idempotent() {
         let source_store = tempfile::tempdir().expect("create source checkpoint store");
         let source = publish_empty_world_checkpoint(source_store.path());
         let closure = open_exact_checkpoint_closure(source_store.path(), &source.0, source.1)
             .expect("open source portable checkpoint");
+        closure
+            .validate_complete()
+            .expect("authenticate complete source checkpoint");
         let destination = tempfile::tempdir().expect("create destination checkpoint store");
 
         let installed = install_exact_checkpoint_closure(destination.path(), &source.0, &closure)
@@ -589,6 +713,7 @@ mod tests {
             .collect();
         let tampered = TamperedPortableSource {
             original: &closure,
+            identity: manifest.identity,
             manifest: manifest_bytes,
             objects,
             replacement_identity,
@@ -603,6 +728,32 @@ mod tests {
         };
 
         assert!(error.to_string().contains("schedule"));
+        let scenario = source.0.scenario_def().id();
+        assert!(!closure_parent(destination.path(), scenario).exists());
+        assert!(!object_parent(destination.path(), scenario).exists());
+    }
+
+    #[test]
+    fn portable_install_rejects_a_transplanted_claimed_basis_before_writes() {
+        let source_store = tempfile::tempdir().expect("create source checkpoint store");
+        let source = publish_empty_world_checkpoint(source_store.path());
+        let closure = open_exact_checkpoint_closure(source_store.path(), &source.0, source.1)
+            .expect("open source portable checkpoint");
+        let transplanted = ClaimedBasisSource {
+            original: &closure,
+            identity: ContentHash::from_bytes(b"foreign production closure"),
+            scenario: closure.scenario(),
+            configuration: closure.configuration(),
+        };
+        let destination = tempfile::tempdir().expect("create rejected checkpoint store");
+
+        let error =
+            match install_exact_checkpoint_closure(destination.path(), &source.0, &transplanted) {
+                Ok(_) => panic!("a transplanted portable basis must fail before publication"),
+                Err(error) => error,
+            };
+
+        assert!(error.to_string().contains("identity"));
         let scenario = source.0.scenario_def().id();
         assert!(!closure_parent(destination.path(), scenario).exists());
         assert!(!object_parent(destination.path(), scenario).exists());

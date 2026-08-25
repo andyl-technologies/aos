@@ -2399,13 +2399,25 @@ reader as a reopenable CAS source with an independent positional cursor per
 open. The guarded live session now performs that conversion itself, records the
 successful capture as the backend reap attestation, and releases only the host
 resource guard during `finish`; it cannot accidentally issue a second shutdown
-or hand modeled code the opaque source. The exact-resume modeled driver and
-worker/factory selection remain open. The daemon then prepares a no-write,
-content-addressed version-three root over canonical snapshot metadata, the
-complete scheduler continuation, and the streamed opaque VMState child; stages
-that exact root in the assignment ledger before the first immutable write;
-publishes all three children before the root; and requires exact durable
-placement receipts. Version-two roots remain readable for legacy
+or hand modeled code the opaque source. That compatibility path prepares a
+no-write, content-addressed version-three single-node root over canonical
+snapshot metadata, the scheduler continuation, and streamed opaque VMState;
+stages that exact root in the assignment ledger before the first immutable
+write; publishes all three children before the root; and requires exact durable
+placement receipts.
+
+The complete production lifecycle separately exports its version-four
+multi-node manifest and exact object inventory through a bounded read-only
+streaming capability. The daemon's version-four exact store authenticates the
+complete production continuation, maps every native object identity to a typed
+CAS object through bounded 4,096-entry child-index pages, binds exact scenario,
+configuration, production identity, counts, and aggregate bytes in the root,
+and publishes manifest, objects, and indexes before that root. Loading yields a
+lazy portable source; the production installer then runs the complete
+scenario-aware semantic restore in private storage before launch. Concrete
+worker/factory selection, ledger handoff of the version-four prepared root, and
+production-loop reconstruction remain open, so the packaged executor does not
+yet advertise exact resume. Version-two roots remain readable for legacy
 authentication but are incomplete campaign continuations and MUST be rejected
 by attempt resume before VMState materialization. The
 ledger preserves requested, publishing, and paused phases across restart; the
@@ -2415,38 +2427,42 @@ rerunning QEMU or repeating a completed capture.
 The campaign supervisor issues the exact checkpoint request and retains its
 reservation until the executor reports durable pause. Attempt resume takes the
 exact root retained in that execution's durable paused origin, authenticates
-the complete immutable root, requires the scheduler child to reconstruct the
-same exact configuration, and requires that configuration to equal either the
-attempt's pre-selection boundary or its post-selection boundary before any
-destination write. Before modeled work, the runner also exact-checks the
-scheduler frontier, scheduler-state projection, future decision-RNG cursors,
-event-log offset, and retained event-log segment set against the restored
-checkpoint/runtime. The modeled driver receives this authenticated
-continuation separately from the QEMU live capability; it cannot silently
-restart scheduler state from the reduced runtime projection. Exact-pin
+the complete immutable root, and requires its configuration to equal either
+the attempt's pre-selection boundary or its post-selection boundary before any
+destination write. The legacy version-three path exact-checks the scheduler
+frontier, scheduler-state projection, future decision-RNG cursors, event-log
+offset, and retained event-log segment set. The version-four path instead
+installs and restores the complete production scheduler, trigger/assertion,
+fault/network, lifecycle, overlay, VMState, generation, and service-state
+closure. In either case the modeled driver receives authenticated continuation
+separately from the QEMU live capability; it cannot silently restart scheduler
+state from a reduced runtime projection. Exact-pin
 hibernation instead loads the selected root under
 the exact-pin inventory fence, releases that fence, and reauthenticates the
 recorded pin fact against the current semantic projection. Both operations
-stream the VMState child through the same pinned run-directory transaction. The
+use the same pinned run-directory transaction: the compatibility path streams
+its single VMState child, while version four installs every target's exact
+overlay and VMState artifacts from the validated production closure. A
 destination becomes unlaunchable before its first truncate, accepts no more
 than the declared/admitted bytes, and becomes
 eligible for exact restore only after authenticated EOF, exact length, file
-sync, retained-inode validation, and binding to the aggregate snapshot
-metadata, scheduler continuation, and VMState child through the selected
-`ExactCheckpointId` root.
+sync, retained-inode validation, and binding to the selected
+`ExactCheckpointId` root, which covers either the legacy single-node triple or
+the complete version-four production closure.
 Cancellation, corruption, a short copy, or a dropped writer leaves
 the authority unready; a later exact retry must replace it completely. Guarded
 spawn separately requires the same launch-resource ceiling and exact snapshot
 basis. The exact-root launcher is not an unguarded realization launcher: it can
 enter production resume only with the attempt guard's sealed child-process
 contract, and production replay admission rejects missing or mismatched oracle
-evidence before invoking it. The durable owner now authenticates the exact
-selected raw root, runs the fat/thin comparison, promotes only a source-bound
-match into a new root that reuses the VMState child, and durably replaces the
-selection. A freshly paused attempt root likewise remains ineligible for
-production resume while its replay-oracle state is `NotRun`; the concrete
-attempt-resume owner must source-bind equivalent validation or reject it rather
-than falling back. The comparison session owns one process/resource guard, uses
+evidence before invoking it. The compatibility v2/v3 owner authenticates the
+exact selected raw root, runs the fat/thin comparison, promotes only a
+source-bound match into a new root that reuses the single VMState child, and
+durably replaces the selection. Equivalent source-bound replay-oracle evidence
+for the complete version-four production closure remains part of the open
+packaged resume wiring. No version-four root may become resume-eligible merely
+because its CAS closure is complete. The comparison session owns one
+process/resource guard, uses
 disjoint launch capabilities for target and thin base, reaps each generation
 before replacement, and finishes before promotion writes. Any realization or
 cleanup failure quarantines the guard and leaves the raw root selected. The

@@ -1,6 +1,21 @@
 //! Durable content-addressed publication of exact QEMU checkpoints.
 //!
-//! A current exact checkpoint is one small child-bearing root plus three
+//! A complete production checkpoint is a version-four child-bearing root over
+//! one canonical production manifest and bounded index pages:
+//!
+//! ```text
+//! ExactCheckpointRootV4
+//!   production-manifest -> ProductionExactClosureV4
+//!   production-object-index-* -> ProductionCheckpointIndexV1
+//!     object-<native-hash> -> opaque typed production object
+//! ```
+//!
+//! Index pages expose every immutable child to generic closure walkers without
+//! depending on one flat envelope's child ceiling. Native production hashes,
+//! CAS identities, lengths, exact scenario/configuration, and aggregate bounds
+//! are all authenticated before the root is published last.
+//!
+//! The compatibility single-node representation is one small root plus three
 //! immutable children:
 //!
 //! ```text
@@ -42,9 +57,10 @@ use thiserror::Error;
 
 /// Canonical schema name of the child-bearing exact-checkpoint root.
 pub const EXACT_CHECKPOINT_ROOT_SCHEMA: &str = "crucible.executor.exact-checkpoint-root";
-/// Content-ID and envelope version of the exact-checkpoint root.
-pub const EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION: u32 = 3;
+/// Content-ID and envelope version of the complete production exact-checkpoint root.
+pub const EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION: u32 = 4;
 const LEGACY_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION: u32 = 2;
+const SINGLE_NODE_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION: u32 = 3;
 /// Content-ID version of canonical [`QemuVmSnapshot`] metadata bytes.
 ///
 /// Version 1 of the `DeviceState` namespace is reserved for opaque QEMU
@@ -62,6 +78,12 @@ const SCHEDULER_CONTINUATION_ROLE: &str = "scheduler-continuation";
 const LEGACY_ROOT_BODY_BYTES: usize = 80;
 const ROOT_BODY_BYTES: usize = 88;
 const MAX_ROOT_BYTES: u64 = 4 * 1024;
+
+mod production;
+pub use production::{
+    LoadedProductionExactCheckpoint, PreparedProductionExactCheckpoint,
+    ProductionExactCheckpointPublication,
+};
 
 /// A fully authenticated exact-checkpoint publication prepared without writes.
 pub struct PreparedExactCheckpoint {
@@ -412,22 +434,22 @@ impl LoadedExactCheckpoint {
 /// Durable immutable store for exact QEMU checkpoint closures.
 pub struct ExactCheckpointStore {
     backend: Arc<dyn ImmutableBlobBackend>,
-    maximum_vmstate_bytes: u64,
+    maximum_checkpoint_bytes: u64,
 }
 
 impl ExactCheckpointStore {
-    /// Admits a durable streaming immutable backend and VMState byte ceiling.
+    /// Admits a durable streaming immutable backend and checkpoint byte ceiling.
     ///
     /// # Errors
     ///
     /// Returns [`ExactCheckpointStoreError::UnsupportedBackend`] unless the
     /// backend is durable and supports streaming reads, streaming puts, and
-    /// conditional creation. A zero VMState ceiling is rejected.
+    /// conditional creation. A zero checkpoint ceiling is rejected.
     pub fn new(
         backend: Arc<dyn ImmutableBlobBackend>,
-        maximum_vmstate_bytes: u64,
+        maximum_checkpoint_bytes: u64,
     ) -> Result<Self, ExactCheckpointStoreError> {
-        if maximum_vmstate_bytes == 0 {
+        if maximum_checkpoint_bytes == 0 {
             return Err(ExactCheckpointStoreError::InvalidLimit);
         }
         let capabilities = backend.capabilities();
@@ -443,14 +465,24 @@ impl ExactCheckpointStore {
         }
         Ok(Self {
             backend,
-            maximum_vmstate_bytes,
+            maximum_checkpoint_bytes,
         })
     }
 
-    /// Returns the configured per-checkpoint VMState byte ceiling.
+    /// Returns the configured aggregate per-checkpoint byte ceiling.
+    #[must_use]
+    pub const fn maximum_checkpoint_bytes(&self) -> u64 {
+        self.maximum_checkpoint_bytes
+    }
+
+    /// Returns the legacy single-node VMState byte ceiling.
+    ///
+    /// For legacy v2/v3 roots this is the complete large-artifact ceiling. New
+    /// production v4 roots apply the same configured value to their canonical
+    /// manifest plus deduplicated production-object bytes.
     #[must_use]
     pub const fn maximum_vmstate_bytes(&self) -> u64 {
-        self.maximum_vmstate_bytes
+        self.maximum_checkpoint_bytes
     }
 
     /// Authenticates and prepares one legacy exact checkpoint without writes.
@@ -480,7 +512,7 @@ impl ExactCheckpointStore {
         scheduler: Option<&SingleSchedulerCheckpoint>,
         vmstate: BlobHandle,
     ) -> Result<PreparedExactCheckpoint, ExactCheckpointStoreError> {
-        validate_vmstate_length(vmstate.logical_length(), self.maximum_vmstate_bytes)?;
+        validate_vmstate_length(vmstate.logical_length(), self.maximum_checkpoint_bytes)?;
 
         let metadata_bytes = snapshot.to_canonical_bytes()?;
         if metadata_bytes.len() as u64 > MAX_QEMU_VM_SNAPSHOT_CANONICAL_BYTES {
@@ -543,7 +575,7 @@ impl ExactCheckpointStore {
             )?);
         }
         let schema_version = if scheduler_id.is_some() {
-            EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
+            SINGLE_NODE_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
         } else {
             LEGACY_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
         };
@@ -666,7 +698,7 @@ impl ExactCheckpointStore {
     ) -> Result<ExactCheckpointPublication, ExactCheckpointStoreError> {
         validate_vmstate_length(
             prepared.vmstate_source.logical_length(),
-            self.maximum_vmstate_bytes,
+            self.maximum_checkpoint_bytes,
         )?;
         require_durable_receipt(
             self.backend
@@ -733,7 +765,8 @@ impl ExactCheckpointStore {
         if envelope.schema_name() != EXACT_CHECKPOINT_ROOT_SCHEMA
             || !matches!(
                 envelope.schema_version(),
-                LEGACY_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION | EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
+                LEGACY_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
+                    | SINGLE_NODE_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
             )
         {
             return Err(invalid_root("incompatible root schema"));
@@ -778,7 +811,7 @@ impl ExactCheckpointStore {
         };
 
         let vmstate = self.backend.read(vmstate_id, None)?;
-        validate_vmstate_length(vmstate.logical_length(), self.maximum_vmstate_bytes)?;
+        validate_vmstate_length(vmstate.logical_length(), self.maximum_checkpoint_bytes)?;
         if vmstate.logical_length() != body.vmstate_bytes {
             return Err(invalid_root("VMState length mismatch"));
         }
@@ -808,8 +841,8 @@ pub enum PrepareReplayOraclePromotionError {
 /// Failure while preparing, publishing, or loading an exact QEMU checkpoint.
 #[derive(Debug, Error)]
 pub enum ExactCheckpointStoreError {
-    /// The configured per-checkpoint VMState ceiling was zero.
-    #[error("exact-checkpoint VMState limit must be nonzero")]
+    /// The configured per-checkpoint byte ceiling was zero.
+    #[error("exact-checkpoint byte limit must be nonzero")]
     InvalidLimit,
     /// The immutable backend lacks a required safety capability.
     #[error("exact-checkpoint store lacks required backend capability {capability}")]
@@ -853,6 +886,9 @@ pub enum ExactCheckpointStoreError {
     /// The complete modeled scheduler continuation failed authentication.
     #[error(transparent)]
     Scheduler(#[from] SingleSchedulerCheckpointError),
+    /// The complete production continuation failed scenario-aware authentication.
+    #[error(transparent)]
+    Production(#[from] crucible_api::LifecycleApiError),
 }
 
 impl ExactCheckpointStoreError {
@@ -909,7 +945,7 @@ fn decode_root_body(
 ) -> Result<RootBody, ExactCheckpointStoreError> {
     let expected = match schema_version {
         LEGACY_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION => LEGACY_ROOT_BODY_BYTES,
-        EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION => ROOT_BODY_BYTES,
+        SINGLE_NODE_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION => ROOT_BODY_BYTES,
         _ => return Err(invalid_root("root schema version is unsupported")),
     };
     if bytes.len() != expected {
@@ -925,7 +961,7 @@ fn decode_root_body(
             .map_err(|_| invalid_root("metadata length encoding is invalid"))?,
     );
     let (scheduler_bytes, vmstate_offset) =
-        if schema_version == EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION {
+        if schema_version == SINGLE_NODE_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION {
             (
                 Some(u64::from_be_bytes(bytes[72..80].try_into().map_err(
                     |_| invalid_root("scheduler length encoding is invalid"),
@@ -956,7 +992,8 @@ fn decode_root_body(
 fn decode_children(
     envelope: &ContentEnvelope,
 ) -> Result<(ContentId, Option<ContentId>, ContentId), ExactCheckpointStoreError> {
-    let expected = if envelope.schema_version() == EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION {
+    let expected = if envelope.schema_version() == SINGLE_NODE_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
+    {
         3
     } else {
         2

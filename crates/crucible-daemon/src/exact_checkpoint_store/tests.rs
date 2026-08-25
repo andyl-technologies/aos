@@ -194,7 +194,7 @@ fn complete_scheduler_continuation_round_trips_in_v3_root() {
     assert_eq!(backend.object_count(), 0);
     assert_eq!(
         prepared.root().content_id().schema_version(),
-        EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
+        SINGLE_NODE_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
     );
     assert_eq!(
         prepared
@@ -802,7 +802,7 @@ fn load_rejects_extraneous_root_children_before_child_reads() {
     children.insert(ContentChild::new("extra", extra_id).expect("extra child"));
     let malformed = ContentEnvelope::new(
         EXACT_CHECKPOINT_ROOT_SCHEMA,
-        EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
+        SINGLE_NODE_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
         children,
         root.body().to_vec(),
     )

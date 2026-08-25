@@ -331,6 +331,58 @@ all been observed. The first implementation streams the complete qcow2 object;
 extent manifests and changed-state capture remain the required hot-path
 optimization rather than a correctness precondition.
 
+The complete multi-node production continuation uses version four of the same
+typed root rather than flattening a potentially large object set into one
+generic envelope. The registered leaves are the canonical
+`crucible.production-exact-closure@device-state.4` manifest and exact opaque
+production objects under
+`crucible.executor.production-checkpoint-object@device-state.5`. Every object
+retains its production BLAKE3 identity and declared length in a registered
+`crucible.executor.production-checkpoint-index@exact-manifest.1` page. A page
+contains at most 4,096 objects and has this canonical body and child mapping:
+
+```text
+"CRUCPIDX" || object_count:u32be
+|| (production_content_hash:32 || logical_length:u64be)*
+
+object-<production_content_hash_hex>
+    -> device-state.5 CAS identity of those exact bytes
+```
+
+Non-final pages are full. The version-four root has one
+`production-manifest` child and consecutive
+`production-object-index-<eight-lowercase-hex-ordinal>` children. Its fixed
+124-byte body is:
+
+```text
+production_closure_identity:32
+|| scenario_identity:32
+|| configuration_identity:32
+|| manifest_bytes:u64be
+|| object_count:u64be
+|| aggregate_object_bytes:u64be
+|| index_count:u32be
+```
+
+The page hierarchy preserves generic closure walking beyond the 65,536-child
+envelope ceiling while the root still fits the common 64 MiB envelope bound.
+Preparation streams every object through both its native production hash and
+typed CAS hash without writes. Publication places the manifest, all objects,
+and every index page before the root and requires exact durable receipts.
+Loading authenticates the root, exact page sequence, global object order,
+counts, lengths, and CAS mappings while leaving bodies lazy. Before QEMU launch,
+the production-store installer reconstructs the canonical manifest/object
+closure in private storage and applies the complete scenario-aware semantic
+restore validator. It independently derives the manifest's closure identity,
+scenario, and modeled configuration and requires all three to equal the claims
+bound by the version-four root. The local configured checkpoint-byte ceiling applies to the
+manifest plus deduplicated production-object bytes in addition to the authored
+production resource bound. Before inventory allocation, the loader also
+requires `object_count * 32 <= manifest_bytes`; every deduplicated object must
+occur as at least one 32-byte identity in the canonical manifest, so this
+conservative relation bounds hostile zero-length inventories by the 64 MiB
+manifest ceiling.
+
 The single-host restore transaction accepts either a current exact-pin
 selection or the exact root retained by a paused execution origin. The latter
 must name the attempt's pre-selection or post-selection configuration; a
@@ -356,14 +408,16 @@ metadata. After daemon restart, reopening the same pinned inode treats it as
 unbound and repeats authenticated materialization from the retained root before
 exact restore.
 
-Version-two roots with only snapshot metadata and VMState remain readable for
-legacy authentication and source-bound promotion. They are not complete
-campaign continuations. Attempt resume MUST reject them before destination
-materialization or guarded launch. A version-three attempt resume reconstructs
-the scheduler configuration against the authenticated attempt scenario and
-requires exact configuration, virtual-time frontier, scheduler projection,
-future decision-RNG cursor, event-log-offset, and retained event-log segment
-equality before modeled guest work.
+Version-two roots with only snapshot metadata and VMState and version-three
+single-node roots remain readable for legacy authentication, migration, and
+source-bound promotion. Version two is never resumable. Version three retains
+the complete single scheduler continuation and remains useful for the existing
+single-node oracle path, but it cannot represent the complete production
+multi-node trigger/assertion/fault/network closure and MUST NOT be advertised as
+packaged production resume. A version-four attempt resume must install and
+validate the complete production closure described above before modeled guest
+work; the concrete packaged capture/resume composition remains gated in the
+implementation plan until that wiring is complete.
 
 A newly captured exact root records replay-oracle state `NotRun` and is not
 eligible for resume. The single-host owner authenticates the selected root and

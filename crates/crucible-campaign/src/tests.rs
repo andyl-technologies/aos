@@ -381,8 +381,26 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             "device-state",
         ),
         (
+            "crucible.production-exact-closure",
+            "4",
+            "crucible-api::vm_lifecycle",
+            "device-state",
+        ),
+        (
+            "crucible.executor.production-checkpoint-object",
+            "5",
+            "crucible-daemon::exact_checkpoint_store",
+            "device-state",
+        ),
+        (
+            "crucible.executor.production-checkpoint-index",
+            "1",
+            "crucible-daemon::exact_checkpoint_store",
+            "exact-manifest",
+        ),
+        (
             "crucible.executor.exact-checkpoint-root",
-            "3",
+            "4",
             "crucible-daemon::exact_checkpoint_store",
             "exact-manifest",
         ),

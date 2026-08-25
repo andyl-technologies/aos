@@ -217,8 +217,9 @@ pub use exact_checkpoint_restore::{
 pub use exact_checkpoint_store::{
     CapturedExactCheckpoint, EXACT_CHECKPOINT_ROOT_SCHEMA, EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
     ExactCheckpointId, ExactCheckpointPublication, ExactCheckpointStore, ExactCheckpointStoreError,
-    LoadedExactCheckpoint, PrepareReplayOraclePromotionError, PreparedExactCheckpoint,
-    PreparedReplayOraclePromotion, QEMU_VM_SNAPSHOT_METADATA_SCHEMA_VERSION,
+    LoadedExactCheckpoint, LoadedProductionExactCheckpoint, PrepareReplayOraclePromotionError,
+    PreparedExactCheckpoint, PreparedProductionExactCheckpoint, PreparedReplayOraclePromotion,
+    ProductionExactCheckpointPublication, QEMU_VM_SNAPSHOT_METADATA_SCHEMA_VERSION,
     QEMU_VMSTATE_SCHEMA_VERSION,
 };
 pub use exact_pin_retention::{
