@@ -26,9 +26,9 @@ use crucible::{
     HostAssertionOutcomeKind, Icount, NodeId, NodeLifecycle, ObservableEvent, QuantumLoop,
     QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RuntimeState, ScenarioDef,
     ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
-    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerState, SearchFrontierChoices, Seed,
-    Shift, SimDuration, SimInstant, SimulationBackend, SingleScheduler, SingleSchedulerCheckpoint,
-    VirtualTime, VmArchitecture, World,
+    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerQuiescence, SchedulerState,
+    SearchFrontierChoices, Seed, Shift, SimDuration, SimInstant, SimulationBackend,
+    SingleScheduler, SingleSchedulerCheckpoint, VirtualTime, VmArchitecture, World,
 };
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
@@ -496,6 +496,57 @@ pub struct ProductionVmLifecycleLoop {
     node_launcher: Box<dyn ProductionVmNodeLauncher>,
     _run_directory: ProductionRunDirectory,
 }
+
+/// Exact scheduler/evidence boundary exposed after production checkpoint restore.
+#[derive(Clone, Debug)]
+pub struct ProductionVmLifecycleResumeState {
+    event_log: Vec<SchedulerEventLogEntry>,
+    event_log_base_events: u64,
+    scheduler_quiescence: SchedulerQuiescence,
+    terminal_verdict: Option<QuantumTerminalVerdict>,
+}
+
+impl ProductionVmLifecycleResumeState {
+    /// Binds one complete retained event history to its exact restored boundary.
+    ///
+    /// `event_log_base_events` records how many earlier events are absent from
+    /// `event_log`. Callers that require cumulative attempt evidence must reject
+    /// a nonzero value rather than silently treating the retained suffix as the
+    /// whole run.
+    #[must_use]
+    pub fn new(
+        event_log: Vec<SchedulerEventLogEntry>,
+        event_log_base_events: u64,
+        scheduler_quiescence: SchedulerQuiescence,
+        terminal_verdict: Option<QuantumTerminalVerdict>,
+    ) -> Self {
+        Self {
+            event_log,
+            event_log_base_events,
+            scheduler_quiescence,
+            terminal_verdict,
+        }
+    }
+
+    /// Consumes the state into its exact retained evidence and stop boundary.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<SchedulerEventLogEntry>,
+        u64,
+        SchedulerQuiescence,
+        Option<QuantumTerminalVerdict>,
+    ) {
+        (
+            self.event_log,
+            self.event_log_base_events,
+            self.scheduler_quiescence,
+            self.terminal_verdict,
+        )
+    }
+}
+
 /// Process materialization requested by the authoritative production lifecycle.
 #[derive(Clone, Copy, Debug)]
 pub enum ProductionVmNodeLaunchKind<'a> {
@@ -1459,6 +1510,73 @@ where
     {
         return Err(loop_factory_error(
             "durable production continuation does not match checkpoint model state",
+        ));
+    }
+    build_production_vm_lifecycle_loop_with_restore(
+        scenario,
+        source,
+        config,
+        Some(restored),
+        Box::new(launcher),
+    )
+}
+
+/// Builds a production lifecycle directly from one installed exact closure.
+///
+/// The closure identity must already name a complete native version-four
+/// continuation below `config.run_state_root`. This boundary reauthenticates
+/// the full scenario-aware closure and never substitutes fresh construction or
+/// replay when it is absent.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError::LoopFactory`] when the closure is unavailable,
+/// corrupt, belongs to another scenario, or cannot restore a complete guarded
+/// production lifecycle.
+pub fn build_production_vm_lifecycle_loop_from_exact_closure(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    config: &ProductionVmLifecycleConfig,
+    closure: ContentHash,
+) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
+    build_production_vm_lifecycle_loop_from_exact_closure_with_launcher(
+        scenario,
+        source,
+        config,
+        closure,
+        PackagedProductionVmNodeLauncher,
+    )
+}
+
+/// Builds a production lifecycle from one installed closure and launch authority.
+///
+/// The supplied authority owns every restored and later modeled replacement
+/// generation. Closure loading and complete semantic validation finish before
+/// any generation is offered to it.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError::LoopFactory`] when closure authentication,
+/// restore admission, or guarded node construction fails.
+pub fn build_production_vm_lifecycle_loop_from_exact_closure_with_launcher<L>(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    config: &ProductionVmLifecycleConfig,
+    closure: ContentHash,
+    launcher: L,
+) -> Result<ProductionVmLifecycleLoop, LifecycleApiError>
+where
+    L: ProductionVmNodeLauncher + 'static,
+{
+    if source.scenario_def() != *scenario {
+        return Err(loop_factory_error(
+            "production exact closure source does not reconstruct the requested scenario",
+        ));
+    }
+    let restored = load_exact_checkpoint_set(&config.run_state_root, scenario, source, closure)?;
+    if restored.identity != closure {
+        return Err(loop_factory_error(
+            "production exact closure restored a different identity",
         ));
     }
     build_production_vm_lifecycle_loop_with_restore(

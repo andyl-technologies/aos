@@ -98,6 +98,7 @@ pub mod planner_loopback;
 pub mod planner_process;
 pub mod qemu_campaign_driver;
 pub mod qemu_campaign_lifecycle;
+pub mod qemu_campaign_resume;
 #[cfg(target_os = "linux")]
 pub mod qemu_exact_resume_executor;
 pub mod qemu_lifecycle_launcher;
@@ -214,8 +215,9 @@ pub use exact_checkpoint_restore::{
     PreparedProductionAttemptReplayOraclePromotion, ProductionAttemptCheckpointRestoreError,
     QemuGuardedReplayOracleSession,
     authenticate_production_exact_checkpoint_replay_oracle_promotion, captured_qemu_vmstate_blob,
-    install_attempt_production_exact_checkpoint, materialize_attempt_exact_checkpoint,
-    materialize_selected_exact_checkpoint, prepare_attempt_production_replay_oracle_promotion,
+    install_attempt_production_exact_checkpoint, install_attempt_production_resume_checkpoint,
+    materialize_attempt_exact_checkpoint, materialize_selected_exact_checkpoint,
+    prepare_attempt_production_replay_oracle_promotion,
     realize_materialized_attempt_checkpoint_guarded, realize_materialized_exact_checkpoint_guarded,
 };
 pub use exact_checkpoint_store::{
@@ -323,6 +325,10 @@ pub use qemu_campaign_lifecycle::{
     QemuFreshAttemptDriver, QemuFreshAttemptLifecycle, QemuFreshAttemptLifecycleFactory,
     QemuFreshAttemptLifecycleOwner, QemuFreshDriveOutcome, QemuFreshExecutionRunner,
     QemuFreshExecutionRunnerError, QemuFreshStartMaterialization, QemuFreshStartReplayError,
+};
+pub use qemu_campaign_resume::{
+    QemuProductionExactResumeExecutionRunner, QemuProductionExactResumeExecutionRunnerError,
+    QemuProductionExactResumeLifecycleFactory, QemuProductionExactResumeLifecycleOwner,
 };
 #[cfg(target_os = "linux")]
 pub use qemu_exact_resume_executor::QemuExactResumeLiveRealizationExecutor;

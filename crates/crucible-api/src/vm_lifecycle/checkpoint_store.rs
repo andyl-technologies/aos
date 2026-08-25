@@ -97,6 +97,7 @@ pub struct ProductionExactCheckpointResumeBasis {
     identity: ContentHash,
     configuration: Configuration,
     scheduler: SingleSchedulerCheckpoint,
+    replay_oracle_ready: bool,
 }
 
 /// No-write portable replacement carrying matching per-node replay evidence.
@@ -168,6 +169,12 @@ impl ProductionExactCheckpointResumeBasis {
     #[must_use]
     pub const fn scheduler(&self) -> &SingleSchedulerCheckpoint {
         &self.scheduler
+    }
+
+    /// Returns whether every live snapshot carries source-bound matching evidence.
+    #[must_use]
+    pub const fn replay_oracle_ready(&self) -> bool {
+        self.replay_oracle_ready
     }
 
     /// Consumes the basis into its modeled continuation.
@@ -342,6 +349,12 @@ impl ProductionExactCheckpointClosure {
             identity: restored.identity,
             configuration: restored.configuration,
             scheduler: restored.scheduler,
+            replay_oracle_ready: restored.targets.values().all(|target| {
+                matches!(
+                    target.snapshot.replay_oracle_validation(),
+                    QemuReplayOracleValidation::Match { .. }
+                )
+            }),
         };
         boundary()?;
         Ok(basis)
@@ -4037,6 +4050,38 @@ mod tests {
             .expect("open raw production closure");
         raw.validate_complete()
             .expect("raw production closure should authenticate");
+        assert!(
+            !raw.authenticate_resume_basis()
+                .expect("raw production resume basis")
+                .replay_oracle_ready(),
+            "a newly captured NotRun root must not be resume eligible",
+        );
+        let rejected_destination = tempfile::tempdir().expect("create rejected resume store");
+        let scenario = source.scenario_def().id();
+        let rejected_objects = object_parent(rejected_destination.path(), scenario);
+        let rejected_publication =
+            closure_parent(rejected_destination.path(), scenario).join(raw_identity.to_hex());
+        let error = match install_exact_checkpoint_closure_with_boundary_and_admission(
+            rejected_destination.path(),
+            &source,
+            &raw,
+            &mut || Ok(()),
+            &mut |basis| {
+                if basis.replay_oracle_ready() {
+                    Ok(())
+                } else {
+                    Err(LifecycleApiError::LoopFactory {
+                        message: String::from("raw replay-oracle root is not resume ready"),
+                    })
+                }
+            },
+        ) {
+            Ok(_) => panic!("raw root admission must reject before native publication"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, LifecycleApiError::LoopFactory { .. }));
+        assert!(!rejected_objects.exists());
+        assert!(!rejected_publication.exists());
         let files_before = regular_file_count(source_store.path());
         let checks = BTreeMap::from([(
             node.clone(),
@@ -4062,6 +4107,13 @@ mod tests {
         let promoted =
             open_exact_checkpoint_closure(promoted_store.path(), &source, promoted_identity)
                 .expect("open promoted production closure");
+        assert!(
+            promoted
+                .authenticate_resume_basis()
+                .expect("promoted production resume basis")
+                .replay_oracle_ready(),
+            "the exact source-bound Match replacement must be resume eligible",
+        );
         raw.authenticate_replay_oracle_promotion(&promoted)
             .expect("restart validation should authenticate the exact root pair");
         authenticate_portable_exact_checkpoint_replay_oracle_promotion(&source, &raw, &promoted)

@@ -2,9 +2,12 @@
 //!
 //! This module joins the durable assignment ledger, repository-backed
 //! admission, fixed semantic worker pool, guarded fresh-QEMU runner, and
-//! managed executor endpoint behind one owner. The advertised materialization
-//! set is deliberately limited to thin replay until the concrete live
-//! exact-resume driver is composed; unsupported roots therefore fail closed.
+//! managed executor endpoint behind one owner. Each worker routes a durable
+//! version-four root exclusively through the guarded production-resume path;
+//! fresh execution never substitutes for an invalid root. The advertised
+//! materialization set remains deliberately limited to thin replay until the
+//! concrete multi-node replay-oracle promotion flight can produce resumable
+//! roots automatically.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -28,8 +31,9 @@ use crate::{
     ExecutorLoopbackListenerError, ExecutorLoopbackServerConfig,
     LinuxQemuAttemptHostResourceFactory, LocalExecutorCapabilityService,
     LocalExecutorPoolConfigError, LocalExecutorSupervisor, LocalExecutorWorkerPool,
-    QemuAttemptHostResourceFactory, QemuAttemptHostResourceOwner, QemuAttemptProcessResourceGuard,
-    QemuAttemptProductionVmLifecycleFactory, QemuFreshExecutionRunner, QemuFreshModeledDriver,
+    QemuAttemptExecutionRouter, QemuAttemptHostResourceFactory, QemuAttemptHostResourceOwner,
+    QemuAttemptProcessResourceGuard, QemuAttemptProductionVmLifecycleFactory,
+    QemuFreshExecutionRunner, QemuFreshModeledDriver, QemuProductionExactResumeExecutionRunner,
     RepositoryAttemptAdmission, RepositoryAttemptWorker, SharedQemuAttemptHostResourceFactory,
     UnixPeerExecutorIdentity,
 };
@@ -394,13 +398,25 @@ where
     let worker_state_root = config.lifecycle.run_state_root().join("campaign-workers");
     let workers = (0..config.worker_count)
         .map(|slot| {
-            let resources = ComposedQemuAttemptResourceGuardFactory::new(shared.clone());
             let lifecycle = config
                 .lifecycle
                 .clone()
                 .with_run_state_root(worker_state_root.join(format!("worker-{slot:03}")));
-            let lifecycles = QemuAttemptProductionVmLifecycleFactory::new(lifecycle, resources);
-            let runner = QemuFreshExecutionRunner::new(lifecycles, QemuFreshModeledDriver);
+            let fresh_lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
+                lifecycle.clone(),
+                ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
+            );
+            let resume_lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
+                lifecycle,
+                ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
+            );
+            let fresh = QemuFreshExecutionRunner::new(fresh_lifecycles, QemuFreshModeledDriver);
+            let resume = QemuProductionExactResumeExecutionRunner::new(
+                Arc::clone(&checkpoints),
+                resume_lifecycles,
+                QemuFreshModeledDriver,
+            );
+            let runner = QemuAttemptExecutionRouter::new(fresh, resume);
             let model = CrucibleExecutionModel::new(store.clone(), runner);
             RepositoryAttemptWorker::new(store.clone(), model)
         })
