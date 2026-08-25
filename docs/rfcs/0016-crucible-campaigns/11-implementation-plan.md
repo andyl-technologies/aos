@@ -670,8 +670,12 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   It deliberately emits no undeclared measurements; measurement definitions,
   raw event-log evidence, and objective aggregation remain T-CAM-3 work.
   The packaged daemon selects this fresh concrete driver and fixed-worker
-  composition, while fresh exact-cache and a concrete exact-resume modeled
-  driver remain open. The driver now observes a sticky checkpoint request at
+  composition. It also routes a retained version-four root exclusively through
+  the concrete exact-resume driver, which restores the complete scheduler and
+  evidence continuation, rejects a retained-log suffix, performs final drain,
+  and reports `ExactRestore` only after sealing. Fresh exact-cache remains a
+  separate optimization, and replay-oracle promotion is not yet advertised.
+  The driver now observes a sticky checkpoint request at
   each operational boundary, lets a terminal verdict win a coincident request,
   and transfers a nonterminal request only after the lifecycle reports an exact
   capture-ready boundary. Real-node exact-checkpoint capture is now an
@@ -686,8 +690,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   capture as its backend reap attestation, and releases only the still-installed
   host guard during finalization. The compatibility session invokes the
   pool-owned root handoff before returning its opaque prepared result.
-  Exact-resume modeled driver and worker/factory selection remain open. The
-  daemon now prepares and durably publishes a
+  The daemon now prepares and durably publishes a
   registered version-three exact-checkpoint root over canonical snapshot
   metadata, the complete scheduler continuation, and a bounded, streamed
   opaque VMState child, with no writes during preparation and
@@ -751,10 +754,12 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   replacement without writes, routes it through the linear source/replacement
   staging and publication phases, and reauthenticates both complete roots after
   restart before the final paused-root CAS. Assignment-root-aware cleanup of
-  abandoned native entries, production-loop process reconstruction, the
-  concrete multi-node comparison flight, exact-resume driver selection, and
+  abandoned native entries, the automatic multi-node comparison flight, and
   capability advertisement remain open before the executor may claim exact
-  resume. A guarded-only
+  resume. Production-loop process reconstruction and exact-resume driver
+  selection are implemented: `NotRun` is rejected during no-write admission,
+  the exact closure is restored under the attempt guard, and the packaged
+  worker uses a disjoint exact-origin runner. A guarded-only
   exact-root launcher now consumes that
   pinned authority, rechecks the selected snapshot and checkpoint identities,
   and uses the sealed child-process contract for pre-`exec` containment. The
@@ -769,8 +774,8 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   disjoint launch capabilities, serializes their process generations, and
   reaps the final generation before promotion; failure quarantines the guard
   without writes. The nondroppable direct-child/cgroup/watcher worker now
-  exists crate-internally; concrete failure handoff into it, warm-restore
-  lifecycle composition, and lifecycle resume remain open.
+  exists crate-internally; concrete failure handoff into it and automatic
+  comparison-flight orchestration remain open.
   The authority remains crate-internal until those security boundaries are
   composed. Validated launch commands now
   expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable
@@ -819,9 +824,12 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   admitted descriptor-pinned generation directories and exact-VMState
   destinations through the daemon guard under one aggregate quota.
   The guarded exact-resume adapter now invokes the real-node launcher only after
-  root materialization through the attempt-owned directory. Fresh exact-cache,
-  baked/thin image provisioning, the full executor flight, and production
-  configuration remain open; `NotRun` is still fail-closed. The fixed worker
+  root materialization through the attempt-owned directory. The packaged worker
+  selects that resume adapter without fresh fallback, restores the complete
+  event prefix and quiescence boundary, and retains runner-owned shutdown and
+  result sealing. Fresh exact-cache, baked/thin image provisioning, automatic
+  replay-oracle promotion, and production tuning remain open; `NotRun` is still
+  fail-closed and `ExactRestore` remains unadvertised. The fixed worker
   pool and its
   linear observation/checkpoint
   publication/reconciliation paths are implemented.

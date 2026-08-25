@@ -444,7 +444,10 @@ complete portable closure. It validates one exact raw-snapshot check per live
 node, derives only matching snapshot and dependent manifest/root identities,
 reuses unchanged chunked artifacts, and reauthenticates the exact raw/promoted
 pair after restart before the paused-root CAS. Production-loop process
-reconstruction, the concrete comparison flight, resume-driver selection,
+reconstruction and resume-driver selection are now composed in the packaged
+worker: the resume-only admission rejects `NotRun` before native publication or
+resource installation, restores the complete scheduler/evidence continuation,
+and never falls back to fresh replay. The automatic concrete comparison flight,
 capability advertisement, and native-catalog cleanup remain gated in the
 implementation plan.
 

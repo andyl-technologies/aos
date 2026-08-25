@@ -540,6 +540,66 @@ pub fn install_attempt_production_exact_checkpoint(
     run_state_root: &Path,
     cancellation: &ExecutionCancellation,
 ) -> Result<InstalledProductionAttemptCheckpoint, ProductionAttemptCheckpointRestoreError> {
+    install_attempt_production_exact_checkpoint_inner(
+        checkpoints,
+        checkpoint,
+        source,
+        initial,
+        post_selection,
+        run_state_root,
+        cancellation,
+        false,
+    )
+}
+
+/// Installs one resume-eligible version-four production checkpoint.
+///
+/// This applies the complete attempt-prefix and scenario checks from
+/// [`install_attempt_production_exact_checkpoint`] and additionally requires
+/// every live-node snapshot to carry source-bound `Match` replay-oracle
+/// evidence. A raw `NotRun` closure is rejected during no-write native
+/// admission and can never reach guarded process launch.
+///
+/// # Errors
+///
+/// Returns [`ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady`]
+/// for a raw or partially promoted closure, or any error documented by
+/// [`install_attempt_production_exact_checkpoint`].
+pub fn install_attempt_production_resume_checkpoint(
+    checkpoints: &ExactCheckpointStore,
+    checkpoint: ExactCheckpointId,
+    source: &ScenarioDefForm,
+    initial: &Configuration,
+    post_selection: Option<&Configuration>,
+    run_state_root: &Path,
+    cancellation: &ExecutionCancellation,
+) -> Result<InstalledProductionAttemptCheckpoint, ProductionAttemptCheckpointRestoreError> {
+    install_attempt_production_exact_checkpoint_inner(
+        checkpoints,
+        checkpoint,
+        source,
+        initial,
+        post_selection,
+        run_state_root,
+        cancellation,
+        true,
+    )
+}
+
+// The final boolean is deliberately private type state: public callers choose
+// either raw promotion installation or replay-validated resume installation.
+// crucible-lint: allow rust-allow -- the private helper keeps one validation and publication implementation for both public type-state entry points.
+#[allow(clippy::too_many_arguments)]
+fn install_attempt_production_exact_checkpoint_inner(
+    checkpoints: &ExactCheckpointStore,
+    checkpoint: ExactCheckpointId,
+    source: &ScenarioDefForm,
+    initial: &Configuration,
+    post_selection: Option<&Configuration>,
+    run_state_root: &Path,
+    cancellation: &ExecutionCancellation,
+    require_replay_oracle: bool,
+) -> Result<InstalledProductionAttemptCheckpoint, ProductionAttemptCheckpointRestoreError> {
     check_production_cancellation(cancellation)?;
     let effective_start = post_selection.unwrap_or(initial);
     let scenario = source.scenario_def();
@@ -574,7 +634,18 @@ pub fn install_attempt_production_exact_checkpoint(
                 loaded.configuration(),
                 effective_start,
                 checkpoint,
-            );
+            )
+            .and_then(|()| {
+                if require_replay_oracle && !basis.replay_oracle_ready() {
+                    Err(
+                        ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
+                            checkpoint,
+                        },
+                    )
+                } else {
+                    Ok(())
+                }
+            });
             match result {
                 Ok(()) => {
                     admitted_basis = Some(basis.clone());
@@ -1048,6 +1119,12 @@ pub enum ProductionAttemptCheckpointRestoreError {
     #[error("production exact checkpoint {checkpoint} crosses another campaign branch edge")]
     NestedCampaignBranch {
         /// Exact campaign-CAS root being installed.
+        checkpoint: ExactCheckpointId,
+    },
+    /// At least one live snapshot lacks source-bound matching replay evidence.
+    #[error("production exact checkpoint {checkpoint} is not replay-oracle ready")]
+    ReplayOracleNotReady {
+        /// Exact raw or partially promoted campaign-CAS root.
         checkpoint: ExactCheckpointId,
     },
     /// Immutable version-four root authentication failed.

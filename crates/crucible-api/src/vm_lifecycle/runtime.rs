@@ -40,6 +40,27 @@ fn classify_recorded_control_boundary(
 }
 
 impl ProductionVmLifecycleLoop {
+    /// Captures the exact modeled evidence boundary restored with this lifecycle.
+    ///
+    /// The returned entries are read-only copies of the scheduler-owned retained
+    /// log. Callers that require complete run evidence must reject a nonzero
+    /// base event count rather than silently treating a suffix as the whole
+    /// attempt history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the restored scheduler cannot project a
+    /// coherent quiescence boundary.
+    pub fn resume_state(&self) -> Result<ProductionVmLifecycleResumeState, SchedulerError> {
+        let scheduler = self.inner.loop_impl();
+        Ok(ProductionVmLifecycleResumeState::new(
+            scheduler.event_log().retained_entries().to_vec(),
+            scheduler.event_log().retained_base_events(),
+            scheduler.quiescence()?,
+            self.terminal_verdict.clone(),
+        ))
+    }
+
     /// Reports whether every live node can enter an exact checkpoint now.
     ///
     /// A false result means an already-admitted device coroutine crosses the

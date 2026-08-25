@@ -1547,6 +1547,23 @@ impl EventLog {
         &self.condition_prefix
     }
 
+    /// Returns the exact event entries retained for condition and evidence replay.
+    ///
+    /// A scheduler created at run genesis retains a zero-based complete prefix.
+    /// An offset-only continuation may retain only a suffix; callers must pair
+    /// this slice with [`Self::retained_base_events`] before treating it as a
+    /// complete run history.
+    #[must_use]
+    pub fn retained_entries(&self) -> &[SchedulerEventLogEntry] {
+        &self.condition_entries
+    }
+
+    /// Returns the dense event count preceding [`Self::retained_entries`].
+    #[must_use]
+    pub const fn retained_base_events(&self) -> u64 {
+        self.condition_base_events
+    }
+
     /// Returns the next dense sequence number after `offset` pending entries.
     ///
     /// # Errors

@@ -16,9 +16,11 @@ use crucible::{
 };
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
-    ProductionVmLifecycleLoop, build_production_vm_lifecycle_loop_with_launcher,
+    ProductionVmLifecycleLoop, build_production_vm_lifecycle_loop_from_exact_closure_with_launcher,
+    build_production_vm_lifecycle_loop_with_launcher,
 };
 use crucible_campaign::ExactCheckpointId;
+use crucible_cas::content_store::StoreError;
 use crucible_qemu::QemuVmRealizationError;
 use thiserror::Error;
 
@@ -26,11 +28,12 @@ use crate::{
     AttemptCheckpointResult, AttemptExecutionContext, AttemptExecutionProduct,
     AttemptWorkerFailure, CapturedAttemptCheckpoint, CheckpointHandoffFailure,
     CrucibleAttemptExecution, CrucibleExecutionOutcome, CrucibleExecutionRunner,
-    CrucibleMaterializationTier, MAX_QEMU_ATTEMPT_GENERATION_NODES,
-    MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES, MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
+    CrucibleMaterializationTier, ExactCheckpointStore, ExactCheckpointStoreError,
+    MAX_QEMU_ATTEMPT_GENERATION_NODES, MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
+    MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, ProductionAttemptCheckpointRestoreError,
     QemuAttemptGenerationResourceOwner, QemuAttemptOperationalBoundary,
     QemuAttemptProcessResourceGuard, QemuAttemptProductionVmNodeLauncher, QemuAttemptResourceGuard,
-    QemuAttemptResourceGuardFactory,
+    QemuAttemptResourceGuardFactory, install_attempt_production_resume_checkpoint,
 };
 
 mod app_random_branch_replay;
@@ -64,6 +67,9 @@ pub enum QemuAttemptProductionVmLifecycleError {
     /// The production lifecycle rejected construction under the installed guard.
     #[error("build guarded production VM lifecycle: {0}")]
     Lifecycle(#[source] LifecycleApiError),
+    /// The durable version-four root failed exact attempt resume admission.
+    #[error("install production VM attempt checkpoint: {0}")]
+    CheckpointRestore(#[source] ProductionAttemptCheckpointRestoreError),
     /// The resolved start configuration does not form an executable branch plan.
     #[error("derive exact app-random branch replay: {0}")]
     InvalidAppRandomBranchReplay(String),
@@ -470,6 +476,20 @@ impl QemuFreshStartMaterialization {
         )
     }
 
+    pub(crate) fn from_resume_parts(
+        event_log: Vec<SchedulerEventLogEntry>,
+        event_log_bytes: usize,
+        terminal_quiescence: SchedulerQuiescence,
+        terminal_verdict: Option<QuantumTerminalVerdict>,
+    ) -> Self {
+        Self {
+            event_log,
+            event_log_bytes,
+            terminal_quiescence: Some(terminal_quiescence),
+            terminal_verdict,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn from_test_parts(
         event_log: Vec<SchedulerEventLogEntry>,
@@ -581,6 +601,66 @@ where
         self.begin_fresh_with_config(scenario, source, context, self.config.clone())
     }
 
+    /// Builds one resumed lifecycle from an exact promoted version-four root.
+    ///
+    /// The campaign root is installed and completely authenticated before the
+    /// attempt process guard exists. Only a closure whose every live snapshot
+    /// carries source-bound matching replay evidence reaches the guarded
+    /// multi-node launcher. Missing or invalid roots never fall back to fresh
+    /// construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAttemptProductionVmLifecycleError`] when the context/root
+    /// basis, scenario, branch prefix, replay evidence, resource contract, or
+    /// guarded lifecycle construction is invalid or unavailable.
+    // crucible-lint: allow rust-allow -- exact resume binds the store root, semantic start, scenario source, and operational context independently.
+    #[allow(clippy::too_many_arguments)]
+    pub fn begin_resume(
+        &mut self,
+        checkpoints: &ExactCheckpointStore,
+        checkpoint: ExactCheckpointId,
+        scenario: &ScenarioDef,
+        source: &ScenarioDefForm,
+        initial: &Configuration,
+        post_selection: Option<&Configuration>,
+        context: &AttemptExecutionContext,
+    ) -> Result<ProductionVmLifecycleLoop, QemuAttemptProductionVmLifecycleError> {
+        if context.resume_checkpoint() != Some(checkpoint) {
+            return Err(
+                QemuAttemptProductionVmLifecycleError::ResumeCheckpointUnsupported(checkpoint),
+            );
+        }
+        if source.scenario_def() != *scenario {
+            return Err(QemuAttemptProductionVmLifecycleError::ScenarioIdentityMismatch);
+        }
+        let maximum_nodes = source.world().vm_nodes().len();
+        if maximum_nodes == 0 || maximum_nodes > MAX_QEMU_ATTEMPT_GENERATION_NODES {
+            return Err(QemuAttemptProductionVmLifecycleError::InvalidNodeCount(
+                maximum_nodes,
+            ));
+        }
+
+        let installed = install_attempt_production_resume_checkpoint(
+            checkpoints,
+            checkpoint,
+            source,
+            initial,
+            post_selection,
+            self.config.run_state_root(),
+            context.cancellation(),
+        )
+        .map_err(QemuAttemptProductionVmLifecycleError::CheckpointRestore)?;
+        let config =
+            production_lifecycle_config_for_start(&self.config, source, installed.configuration())?;
+        let closure = installed.closure().identity();
+        self.with_attempt_launcher(context, maximum_nodes, |launcher| {
+            build_production_vm_lifecycle_loop_from_exact_closure_with_launcher(
+                scenario, source, &config, closure, launcher,
+            )
+        })
+    }
+
     fn begin_fresh_with_config(
         &mut self,
         scenario: &ScenarioDef,
@@ -653,31 +733,36 @@ where
         start: &Configuration,
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
-        let (selections, plans) = app_random_branch_replay(start).map_err(|message| {
-            AttemptWorkerFailure::Terminal(
-                QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay(message),
-            )
-        })?;
-        if plans.keys().any(|node| {
-            !source
-                .world()
-                .vm_nodes()
-                .iter()
-                .any(|vm| vm.id == *node && vm.white_box == crucible::WhiteBoxPolicy::Enabled)
-        }) {
-            return Err(AttemptWorkerFailure::Terminal(
-                QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay(String::from(
-                    "app-random branch plan names a missing or white-box-disabled VM",
-                )),
-            ));
-        }
-        let config = self
-            .config
-            .clone()
-            .with_app_random_branch_replay(selections, plans);
+        let config = production_lifecycle_config_for_start(&self.config, source, start)
+            .map_err(AttemptWorkerFailure::Terminal)?;
         self.begin_fresh_with_config(scenario, source, context, config)
             .map_err(classify_production_lifecycle_failure)
     }
+}
+
+fn production_lifecycle_config_for_start(
+    config: &ProductionVmLifecycleConfig,
+    source: &ScenarioDefForm,
+    start: &Configuration,
+) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
+    let (selections, plans) = app_random_branch_replay(start)
+        .map_err(QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay)?;
+    if plans.keys().any(|node| {
+        !source
+            .world()
+            .vm_nodes()
+            .iter()
+            .any(|vm| vm.id == *node && vm.white_box == crucible::WhiteBoxPolicy::Enabled)
+    }) {
+        return Err(
+            QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay(String::from(
+                "app-random branch plan names a missing or white-box-disabled VM",
+            )),
+        );
+    }
+    Ok(config
+        .clone()
+        .with_app_random_branch_replay(selections, plans))
 }
 
 impl<F, D> CrucibleExecutionRunner for QemuFreshExecutionRunner<F, D>
@@ -957,7 +1042,7 @@ fn map_checkpoint_handoff_failure<F, D>(
     }
 }
 
-fn classify_production_lifecycle_failure(
+pub(crate) fn classify_production_lifecycle_failure(
     error: QemuAttemptProductionVmLifecycleError,
 ) -> AttemptWorkerFailure<QemuAttemptProductionVmLifecycleError> {
     match &error {
@@ -967,7 +1052,18 @@ fn classify_production_lifecycle_failure(
         ) => AttemptWorkerFailure::Retryable(error),
         QemuAttemptProductionVmLifecycleError::ResourceInstallation(
             QemuVmRealizationError::Canceled { .. },
+        )
+        | QemuAttemptProductionVmLifecycleError::CheckpointRestore(
+            ProductionAttemptCheckpointRestoreError::Canceled,
         ) => AttemptWorkerFailure::Canceled(error),
+        QemuAttemptProductionVmLifecycleError::CheckpointRestore(
+            ProductionAttemptCheckpointRestoreError::Checkpoint(ExactCheckpointStoreError::Store(
+                StoreError::NotFound { .. }
+                | StoreError::Unavailable
+                | StoreError::Io { .. }
+                | StoreError::StreamIo { .. },
+            )),
+        ) => AttemptWorkerFailure::Retryable(error),
         QemuAttemptProductionVmLifecycleError::ResumeCheckpointUnsupported(_)
         | QemuAttemptProductionVmLifecycleError::ScenarioIdentityMismatch
         | QemuAttemptProductionVmLifecycleError::InvalidNodeCount(_)
@@ -975,7 +1071,8 @@ fn classify_production_lifecycle_failure(
         | QemuAttemptProductionVmLifecycleError::ResourceInstallation(_)
         | QemuAttemptProductionVmLifecycleError::ResourceContractMismatch
         | QemuAttemptProductionVmLifecycleError::ResourceContractCleanup(_)
-        | QemuAttemptProductionVmLifecycleError::Lifecycle(_) => {
+        | QemuAttemptProductionVmLifecycleError::Lifecycle(_)
+        | QemuAttemptProductionVmLifecycleError::CheckpointRestore(_) => {
             AttemptWorkerFailure::Terminal(error)
         }
     }

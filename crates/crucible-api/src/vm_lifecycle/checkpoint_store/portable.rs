@@ -469,10 +469,17 @@ fn stage_and_validate_portable_source(
         preflight.identity,
         boundary,
     )?;
+    let replay_oracle_ready = restored.targets.values().all(|target| {
+        matches!(
+            target.snapshot.replay_oracle_validation(),
+            QemuReplayOracleValidation::Match { .. }
+        )
+    });
     let basis = ProductionExactCheckpointResumeBasis {
         identity: restored.identity,
         configuration: restored.configuration,
         scheduler: restored.scheduler,
+        replay_oracle_ready,
     };
     Ok((staging_parent, basis))
 }
