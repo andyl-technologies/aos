@@ -187,6 +187,7 @@ pub fn write_index_bundles_for_surface(surface: &Path) -> Result<()> {
     fs::create_dir_all(&bundle_dir)
         .with_context(|| format!("creating {}", bundle_dir.display()))?;
 
+    let mut aggregate_entries = Vec::new();
     for value in 0_u16..=255 {
         let shard = format!("{value:02x}");
         let loose_dir = objects_dir.join(&shard);
@@ -226,6 +227,22 @@ pub fn write_index_bundles_for_surface(surface: &Path) -> Result<()> {
             .with_context(|| format!("writing {}", temporary.display()))?;
         fs::rename(&temporary, &destination)
             .with_context(|| format!("installing {}", destination.display()))?;
+        aggregate_entries.extend(entries);
+    }
+
+    let aggregate_destination = bundle_dir.join("all");
+    let aggregate_temporary = bundle_dir.join(".all.tmp");
+    if let Ok(encoded) = aos_registry_surface::object_bundle::encode_aggregate(&aggregate_entries) {
+        fs::write(&aggregate_temporary, encoded)
+            .with_context(|| format!("writing {}", aggregate_temporary.display()))?;
+        fs::rename(&aggregate_temporary, &aggregate_destination)
+            .with_context(|| format!("installing {}", aggregate_destination.display()))?;
+    } else if aggregate_destination.exists() {
+        // Shards remain the bounded compatibility path when a very large
+        // surface exceeds the optional aggregate caps. Do not retain a stale
+        // aggregate from an earlier, smaller generation.
+        fs::remove_file(&aggregate_destination)
+            .with_context(|| format!("removing {}", aggregate_destination.display()))?;
     }
     Ok(())
 }
@@ -776,6 +793,10 @@ mod tests {
         }
 
         write_index_bundles(&repo).unwrap();
+        let aggregate = fs::read(repo.join("objects/aos-index-v1/all")).unwrap();
+        let aggregate_entries =
+            aos_registry_surface::object_bundle::decode_aggregate(&aggregate).unwrap();
+        assert_eq!(aggregate_entries.len(), oids.len());
         for oid in oids {
             let shard = &oid[..2];
             let bundle = fs::read(repo.join("objects/aos-index-v1").join(shard)).unwrap();
