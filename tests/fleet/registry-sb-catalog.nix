@@ -51,6 +51,20 @@
   sbImage = systems.server-measured-boot.config.system.build.image.raw;
   sbImageDisk = systems.server-measured-boot.config.system.build.imageArtifacts.raw.disk;
   sbImageInfo = systems.server-measured-boot.config.system.build.imageArtifacts.raw.info;
+  publicationClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
+    rootPaths = [
+      sbTop
+      sbUki
+      sbImage
+      sbImageDisk
+      sbImageInfo
+      pkgs.secure-boot-test-keys
+      pkgs.sbsigntools
+      pkgs.binutils
+      pkgs.systemd
+    ];
+    pname = "registry-sb-publication-closure-info";
+  };
 
   # server-test bundles the guest agent and the CLI tools the producer needs
   # (it hand-seeds + pushes the registry with git) that image slimming dropped
@@ -76,22 +90,20 @@ in {
     registry = {
       system = serverWithRegistry;
       packages = ["aos-registry-server" "test-static-cache-server"];
-      # The producer owns the signed toplevel, disk image, and exact UKI
-      # associated by image-info.json; all must resolve in its store.
-      extraClosures = [
-        sbTop
-        sbUki
-        sbImage
-        pkgs.secure-boot-test-keys
-        pkgs.sbsigntools
-        pkgs.binutils
-        pkgs.systemd
+      # Match a release workstation: host-built publication inputs enter over
+      # a read-only 9p store mount and are registered in-guest below.
+      hostStoreMount = true;
+      extraModules = [
+        {
+          aos.kernel.modules = ["9pnet_virtio" "9p"];
+        }
       ];
       # `apr cache generate` writes a zstd static cache of the full
       # measured-boot closure PLUS the standalone signed UKI image
       # (~300 MiB nar of its own) under /var/lib/sysreg-cache — larger than the plain
       # server-2 fixture, so size /var generously.
-      varSizeMiB = 4096;
+      varSizeMiB = 8192;
+      memoryMiB = 8192;
     };
 
     target = {
@@ -170,17 +182,47 @@ in {
       # are cataloged on the sysroot entry.
       registry.succeed(textwrap.dedent("""
           set -eu
-          export HOME=/tmp
+          export HOME=/var/lib/apr-operator
           export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test
           export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test
           export NIX_REMOTE=""
           export NIX_CONF_DIR=/tmp/nix-conf
           export PATH="${pkgs.sbsigntools}/bin:${pkgs.binutils}/bin:${pkgs.systemd}/lib/systemd:$PATH"
-          mkdir -p "$NIX_CONF_DIR"
+          mkdir -p "$HOME" "$NIX_CONF_DIR"
           printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' \\
             > "$NIX_CONF_DIR/nix.conf"
 
+          mkdir -p /run/aos-host-store
+          ${pkgs.util-linux}/bin/mount -t 9p \
+            -o trans=virtio,version=9p2000.L,msize=1048576,ro \
+            aos-host-store /run/aos-host-store
+          CLOSURE_INFO='${publicationClosureInfo}'
+          test -r "/run/aos-host-store/$(basename "$CLOSURE_INFO")/registration"
+          while IFS= read -r store_path; do
+            if [ ! -e "$store_path" ]; then
+              source_path="/run/aos-host-store/$(basename "$store_path")"
+              if [ -L "$source_path" ]; then
+                ln -s "$(readlink "$source_path")" "$store_path"
+              elif [ -d "$source_path" ]; then
+                mkdir "$store_path"
+                ${pkgs.util-linux}/bin/mount --bind "$source_path" "$store_path"
+              elif [ -f "$source_path" ]; then
+                touch "$store_path"
+                ${pkgs.util-linux}/bin/mount --bind "$source_path" "$store_path"
+              else
+                printf 'unsupported store object: %s\n' "$source_path" >&2
+                exit 1
+              fi
+            fi
+          done < "/run/aos-host-store/$(basename "$CLOSURE_INFO")/store-paths"
+          ${pkgs.nix}/bin/nix-store --load-db \
+            < "/run/aos-host-store/$(basename "$CLOSURE_INFO")/registration"
           ${pkgs.nix}/bin/nix-store --check-validity '${sbTop}'
+          ${pkgs.nix}/bin/nix-store --check-validity '${sbImageDisk}'
+          ${pkgs.nix}/bin/nix-store --check-validity '${sbImageInfo}'
+          ${pkgs.util-linux}/bin/findmnt -rn -t 9p -o OPTIONS \
+            /run/aos-host-store | grep -qw ro
+          ! touch '${sbImageDisk}'/host-store-write-must-fail
 
           ${pkgs.aos}/bin/apr create sysreg
           REG_DIR=$HOME/.local/share/apm/registries/sysreg
@@ -197,7 +239,7 @@ in {
           # Publish the signed toplevel with its raw disk image. Its canonical
           # image-info.json binds the exact UKI used to derive SB facts.
           # Capture --json: it carries the derived facts verbatim.
-          ${pkgs.aos}/bin/apr --json publish '${sbTop}' \\
+          if ! ${pkgs.aos}/bin/apr --json publish '${sbTop}' \\
             --name aos \\
             --version 0.1.0 \\
             --description 'secure-boot catalog fixture' \\
@@ -210,7 +252,10 @@ in {
             --image-uki "$SB_UKI" \\
             --no-ca \\
             --registry sysreg \\
-            --no-commit > /tmp/publish.json
+            --no-commit > "$HOME/publish.json"; then
+            cat "$HOME/publish.json" >&2
+            exit 1
+          fi
           ${pkgs.aos}/bin/apr verify --registry sysreg
 
           ${pkgs.aos}/bin/apr cache generate \\
@@ -237,13 +282,25 @@ in {
       """), timeout=1200)
 
       branch = registry.succeed("cat /tmp/sysreg-branch").strip()
-      initial_catalog = registry.succeed(
-          "HOME=/tmp ${pkgs.aos}/bin/apr sb-certs list --registry sysreg"
+      initial_catalog = json.loads(
+          registry.succeed(
+              "HOME=/var/lib/apr-operator ${pkgs.aos}/bin/apr "
+              "sb-certs list --registry sysreg --json"
+          )
       )
-      assert "decoy" in initial_catalog, initial_catalog
+      assert initial_catalog["active"] == [
+          {
+              "cert_sha256": "0" * 64,
+              "id": "decoy",
+          }
+      ], initial_catalog
+      assert initial_catalog["revoked"] == [], initial_catalog
+      assert initial_catalog["sbat_floor"] == [], initial_catalog
 
       # The derived Secure Boot facts, straight from `apr publish --json`.
-      pub = json.loads(registry.succeed("cat /tmp/publish.json"))
+      pub = json.loads(
+          registry.succeed("cat /var/lib/apr-operator/publish.json")
+      )
       images = pub.get("images", [])
       assert len(images) == 1, f"expected one published image, got: {images!r}"
       img = images[0]
@@ -323,7 +380,7 @@ in {
       # once (above); each state only rewrites sb-certs.toml + retags.
       def push_catalog(tag, *sb_cert_cmds):
           script = "set -eu\n"
-          script += "export HOME=/tmp\n"
+          script += "export HOME=/var/lib/apr-operator\n"
           script += "export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test\n"
           script += "export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test\n"
           # The origin was chown'd to aos-gitd (so gitd can serve it); root
@@ -376,12 +433,26 @@ in {
           f"{APR} sb-certs set-floor --component {sbat_component} "
           f"--generation {sbat_generation + 1} --registry sysreg --no-commit",
       )
-      rotated_catalog = registry.succeed(
-          f"HOME=/tmp {APR} sb-certs list --registry sysreg"
+      rotated_catalog = json.loads(
+          registry.succeed(
+              f"HOME=/var/lib/apr-operator {APR} "
+              "sb-certs list --registry sysreg --json"
+          )
       )
-      assert "aos-db" in rotated_catalog, rotated_catalog
-      assert "decoy" in rotated_catalog, rotated_catalog
-      assert "replaced-by-production-cert" in rotated_catalog, rotated_catalog
+      active_ids = {entry["id"] for entry in rotated_catalog["active"]}
+      assert active_ids == {"aos-db", "decoy"}, rotated_catalog
+      assert rotated_catalog["revoked"] == [
+          {
+              "id": "decoy",
+              "reason": "replaced-by-production-cert",
+          }
+      ], rotated_catalog
+      assert rotated_catalog["sbat_floor"] == [
+          {
+              "component": sbat_component,
+              "generation": sbat_generation + 1,
+          }
+      ], rotated_catalog
       out = target.fail(
           "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH "
           "${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
