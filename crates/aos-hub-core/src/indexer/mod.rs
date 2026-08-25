@@ -64,7 +64,7 @@ use crate::db::{
 };
 use crate::fetch::SurfaceFetch;
 
-use self::load::{load_registry_tree_with_reader, ObjectReader};
+use self::load::{load_registry_tree_with_reader, load_release_tree_with_reader, ObjectReader};
 
 /// Maximum branches (channels) processed per index run.
 ///
@@ -481,7 +481,7 @@ async fn index_registry_inner(
                     bail!("release tag '{tag_name}' does not target a commit");
                 }
                 let source_commit = lenient.tag.object.clone();
-                let release_tree = load_registry_tree_with_reader(
+                let release_tree = load_release_tree_with_reader(
                     reader,
                     aos_registry_surface::object::Oid::from_hex(&source_commit)?,
                 )

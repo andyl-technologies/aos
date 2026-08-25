@@ -361,6 +361,32 @@ pub(crate) async fn load_registry_tree_with_reader(
     reader: &ObjectReader<'_>,
     commit_oid: Oid,
 ) -> Result<LoadedTree> {
+    load_registry_tree_inner(reader, commit_oid, true).await
+}
+
+/// Loads the package-bearing subset needed for one retained release snapshot.
+///
+/// Retained release indexing consumes registry identity, packages, and signed
+/// store records. It does not consume the historical key roster or closure
+/// adjacency map, both of which can be large and otherwise get reparsed once
+/// per retained tag.
+///
+/// # Errors
+///
+/// Returns the same package, store, and object validation errors as
+/// [`load_registry_tree_with_reader`].
+pub(crate) async fn load_release_tree_with_reader(
+    reader: &ObjectReader<'_>,
+    commit_oid: Oid,
+) -> Result<LoadedTree> {
+    load_registry_tree_inner(reader, commit_oid, false).await
+}
+
+async fn load_registry_tree_inner(
+    reader: &ObjectReader<'_>,
+    commit_oid: Oid,
+    include_governance: bool,
+) -> Result<LoadedTree> {
     let commit = reader.read_commit(commit_oid).await?;
     let root_tree = object::tree_map(&reader.read_kind(commit.tree, ObjectKind::Tree).await?)?;
 
@@ -371,7 +397,7 @@ pub(crate) async fn load_registry_tree_with_reader(
     let root: RegistryRootConfig =
         toml::from_str(&root_toml).context("parsing committed registry.toml")?;
 
-    let keys = match root_tree.get("keys.toml") {
+    let keys = match root_tree.get("keys.toml").filter(|_| include_governance) {
         Some(entry) => {
             let content = read_utf8_blob(&reader, entry.oid, "keys.toml").await?;
             Some(toml::from_str::<KeysToml>(&content).context("parsing committed keys.toml")?)
@@ -421,7 +447,7 @@ pub(crate) async fn load_registry_tree_with_reader(
     }
 
     let mut closures = BTreeMap::new();
-    if let Some(closures_entry) = root_tree.get("closures") {
+    if let Some(closures_entry) = root_tree.get("closures").filter(|_| include_governance) {
         let files = object::tree_map(
             &reader
                 .read_kind(closures_entry.oid, ObjectKind::Tree)
