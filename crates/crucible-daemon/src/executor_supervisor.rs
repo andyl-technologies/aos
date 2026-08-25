@@ -36,7 +36,8 @@ mod checkpoint_promotion;
 
 pub use checkpoint_promotion::{
     CheckpointPromotionCompletionOutcome, CheckpointPromotionRecovery,
-    CheckpointPromotionStageOutcome,
+    CheckpointPromotionRestartWork, CheckpointPromotionStageOutcome,
+    PausedCheckpointPromotionRecovery,
 };
 
 const MAX_CANCELLATION_WAIT_SLICE: Duration = Duration::from_secs(60 * 60);
@@ -1212,6 +1213,10 @@ where
                     daemon_epoch,
                     execution,
                     checkpoint,
+                    promotion_basis: Some(crate::CheckpointPromotionExecutionBasis::new(
+                        queued.request.resources(),
+                        queued.request.retention(),
+                    )),
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
                 self.mark_worker_finished(execution);

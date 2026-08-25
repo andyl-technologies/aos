@@ -1381,6 +1381,16 @@ impl AssignmentLedger for FailingCasLedger {
         }
     }
 
+    fn visit_attempt_states(
+        &self,
+        visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
+    ) -> Result<(), Self::Error> {
+        match self.inner.visit_attempt_states(visitor) {
+            Ok(()) => Ok(()),
+            Err(never) => match never {},
+        }
+    }
+
     fn visit_observation_roots(
         &self,
         visitor: &mut dyn FnMut(ObservationId),
@@ -1458,6 +1468,16 @@ impl AssignmentLedger for FailingPublishLedger {
     ) -> Result<AttemptStateCas, Self::Error> {
         match self.inner.compare_exchange_attempt(key, expected, next) {
             Ok(outcome) => Ok(outcome),
+            Err(never) => match never {},
+        }
+    }
+
+    fn visit_attempt_states(
+        &self,
+        visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
+    ) -> Result<(), Self::Error> {
+        match self.inner.visit_attempt_states(visitor) {
+            Ok(()) => Ok(()),
             Err(never) => match never {},
         }
     }

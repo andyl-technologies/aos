@@ -49,6 +49,29 @@ const EXECUTOR_MESSAGE_SCHEMA_VERSION: u32 = 2;
 /// Maximum canonical bytes in one executor component message.
 pub const MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES: usize = 4 * 1024;
 
+/// Derives the assignment-neutral digest of one local execution contract.
+///
+/// The digest binds the exact lineage, semantic attempt, resource ceilings,
+/// and retention intent. Assignment and daemon-incarnation identities are
+/// deliberately excluded so exact retries can share one execution.
+#[must_use]
+pub fn attempt_execution_basis_digest(
+    lineage: CampaignLineageId,
+    attempt: AttemptId,
+    resources: AttemptResourceLimits,
+    retention: ExecutionRetentionIntent,
+) -> CampaignHash {
+    let mut encoder = Encoder::new();
+    lineage.encode(&mut encoder);
+    attempt.encode(&mut encoder);
+    resources.encode(&mut encoder);
+    retention.encode(&mut encoder);
+    CampaignHash::derive(
+        "crucible.campaign.submit-attempt-execution-basis.v1",
+        &encoder.finish(),
+    )
+}
+
 /// Exact local compatibility profile admitted by one executor incarnation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecutorCompatibilityProfile {
@@ -458,15 +481,7 @@ impl SubmitAttemptRequest {
     /// share one running or completed execution only when this digest matches.
     #[must_use]
     pub fn execution_basis_digest(&self) -> CampaignHash {
-        let mut encoder = Encoder::new();
-        self.lineage.encode(&mut encoder);
-        self.attempt.encode(&mut encoder);
-        self.resources.encode(&mut encoder);
-        self.retention.encode(&mut encoder);
-        CampaignHash::derive(
-            "crucible.campaign.submit-attempt-execution-basis.v1",
-            &encoder.finish(),
-        )
+        attempt_execution_basis_digest(self.lineage, self.attempt, self.resources, self.retention)
     }
 
     /// Returns strict canonical component-message bytes.
@@ -1279,15 +1294,7 @@ impl ResumeAttemptExecutionRequest {
     /// Returns the assignment-neutral execution-contract digest.
     #[must_use]
     pub fn execution_basis_digest(&self) -> CampaignHash {
-        let mut encoder = Encoder::new();
-        self.lineage.encode(&mut encoder);
-        self.attempt.encode(&mut encoder);
-        self.resources.encode(&mut encoder);
-        self.retention.encode(&mut encoder);
-        CampaignHash::derive(
-            "crucible.campaign.submit-attempt-execution-basis.v1",
-            &encoder.finish(),
-        )
+        attempt_execution_basis_digest(self.lineage, self.attempt, self.resources, self.retention)
     }
 
     /// Returns the domain-separated digest of every canonical request field.

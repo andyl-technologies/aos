@@ -110,7 +110,8 @@ pub use assignment_ledger::{
     AssignmentRetentionAdmin, AssignmentRetentionFence, AssignmentRetentionGeneration,
     AssignmentRetentionInventoryError, AssignmentRetentionRoot, AssignmentRetentionSummary,
     AssignmentRetentionVisitorError, AttemptExecutionKey, AttemptExecutionOrigin,
-    AttemptRuntimeState, AttemptStateCas, DirectoryAssignmentLedger, MemoryAssignmentLedger,
+    AttemptRuntimeState, AttemptStateCas, CheckpointPromotionExecutionBasis,
+    DirectoryAssignmentLedger, MemoryAssignmentLedger,
 };
 pub use campaign_attachment::{
     AttachedCanonicalCampaignRuntime, CanonicalCampaignRuntimeConfig,
@@ -264,11 +265,12 @@ pub use executor_service::{
 pub use executor_supervisor::{
     AllowAllAttemptAdmission, AttemptAdmissionValidator, CancellationOutcome,
     CheckpointCompletionOutcome, CheckpointHandoffFailure, CheckpointPromotionCompletionOutcome,
-    CheckpointPromotionRecovery, CheckpointPromotionStageOutcome, CheckpointPublicationOutcome,
-    CheckpointRequestOutcome, CompletionOutcome, CompletionValidationFailure,
-    ExecutionCancellation, ExecutionCheckpointRequest, ExecutorAvailability, ExecutorCapacity,
-    ExecutorCapacityError, LocalExecutorError, LocalExecutorSupervisor,
-    ObservationPublicationOutcome, QueuedAttempt,
+    CheckpointPromotionRecovery, CheckpointPromotionRestartWork, CheckpointPromotionStageOutcome,
+    CheckpointPublicationOutcome, CheckpointRequestOutcome, CompletionOutcome,
+    CompletionValidationFailure, ExecutionCancellation, ExecutionCheckpointRequest,
+    ExecutorAvailability, ExecutorCapacity, ExecutorCapacityError, LocalExecutorError,
+    LocalExecutorSupervisor, ObservationPublicationOutcome, PausedCheckpointPromotionRecovery,
+    QueuedAttempt,
 };
 pub use executor_worker::{
     AttemptExecutionContext, AttemptExecutionInput, AttemptExecutionModel, AttemptExecutionProduct,

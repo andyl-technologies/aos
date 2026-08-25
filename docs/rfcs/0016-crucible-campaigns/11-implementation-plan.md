@@ -819,8 +819,9 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   attempt materializer and session trait handoff are implemented. Guarded
   raw-root replay-oracle validation,
   source-bound no-write preparation, linear source/replacement root staging
-  and publication, version-5 ledger persistence, restart reauthentication,
-  explicit incomplete-promotion revert, and the final paused-root CAS are
+  and publication, version-6 ledger persistence of the exact
+  resource/retention promotion basis, streaming restart discovery, restart
+  reauthentication, explicit incomplete-promotion revert, and the final paused-root CAS are
   implemented without holding the supervisor actor across QEMU or store work.
   The crate-internal quota/run-directory owner and its public sealed composition
   with the process owner are implemented, including reap-before-storage release

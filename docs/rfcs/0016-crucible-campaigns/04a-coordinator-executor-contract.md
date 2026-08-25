@@ -1659,7 +1659,7 @@ The single-host daemon persists two bounded operational record families:
 ```text
 AssignmentRecordV1 = magic | request_bytes | response_bytes | checksum
 
-AttemptStateRecordV5 = magic | lineage_id | attempt_id |
+AttemptStateRecordV6 = magic | lineage_id | attempt_id |
                        execution_basis_digest |
                        execution_origin(initial |
                          exact-checkpoint(assignment_id, request_digest,
@@ -1671,6 +1671,7 @@ AttemptStateRecordV5 = magic | lineage_id | attempt_id |
                        daemon_epoch | execution_id |
                        observation_id? | output_exact_checkpoint_id? |
                        source_exact_checkpoint_id? |
+                       promotion_basis?(resource_limits, retention_intent) |
                        checksum
 ```
 
@@ -1685,8 +1686,13 @@ limits and retention intent, but excludes assignment and daemon-epoch
 identities. Restart therefore reads only requested and active IDs; it does not
 load assignment history into memory. The in-memory ledger implements the
 identical trait only for fake components and tests.
-The version-5 attempt-state reader retains strict read compatibility for
-versions 1 through 4; only version 5 may encode `checkpoint-promoting`.
+The version-6 attempt-state reader retains strict read compatibility for
+versions 1 through 5. Only versions 5 and 6 may encode
+`checkpoint-promoting`; version 6 additionally retains the exact resource and
+retention basis in `paused` and `checkpoint-promoting` records. A legacy pause
+without that basis remains a durable GC root but cannot launch a new guarded
+comparison after restart. A legacy staged pair remains discoverable because a
+complete replacement can be authenticated and reconciled without QEMU.
 
 `checkpoint-publishing` and `paused` records are durable GC roots for their
 exact output checkpoint IDs. `checkpoint-promoting` retains both its raw source
@@ -1699,6 +1705,11 @@ checkpoint publication; a regenerated candidate MUST have that ID and cannot
 silently substitute a different checkpoint. An already-paused exact basis is
 replayed without starting guest work. The executor never releases the active
 reservation merely because capture was requested or a root was staged.
+Restart discovery streams lineage-qualified attempt records and emits only raw
+pauses with a complete version-6 promotion basis plus every staged pair; it
+does not materialize the operational ledger in memory. Immutable checkpoint
+authentication and guarded replay happen after supervisor ownership is
+released.
 
 The bounded local supervisor persists `running` before publishing `accepted`.
 If response publication is indeterminate, it retains and queues the prepared

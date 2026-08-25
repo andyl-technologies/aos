@@ -59,6 +59,13 @@ impl AssignmentLedger for RootLedger {
         unreachable!("retention discovery is read-only")
     }
 
+    fn visit_attempt_states(
+        &self,
+        _visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     fn visit_observation_roots(
         &self,
         visitor: &mut dyn FnMut(ObservationId),
