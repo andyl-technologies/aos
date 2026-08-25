@@ -20,7 +20,14 @@
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  qemuSeries = import ../../pkgs/emulation/qemu-patches/_series.nix;
+  requiredQemuTaskIds = map (patch: "T-QEMU-${builtins.substring 0 4 patch.file}") (
+    builtins.filter
+    (patch: !(builtins.lessThan (builtins.substring 0 4 patch.file) "0047"))
+    qemuSeries.patches
+  );
   taskList = builtins.concatStringsSep "," taskIds;
+  requiredQemuTaskList = builtins.concatStringsSep "," requiredQemuTaskIds;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase7-signal-fault-system";
@@ -236,6 +243,22 @@ in
             comm -13 \
               "$TMPDIR/rfc-signal-fault-tasks" \
               "$TMPDIR/declared-signal-fault-tasks" >&2
+            exit 1
+          fi
+
+          printf '%s\n' '${requiredQemuTaskList}' \
+            | tr ',' '\n' \
+            | sed '/^$/d' \
+            | sort -u \
+            > "$TMPDIR/carried-qemu-patch-tasks"
+          grep -E '^T-QEMU-[0-9]{4}$' \
+            "$TMPDIR/declared-signal-fault-tasks" \
+            > "$TMPDIR/declared-qemu-patch-tasks"
+          if ! cmp -s \
+            "$TMPDIR/carried-qemu-patch-tasks" \
+            "$TMPDIR/declared-qemu-patch-tasks"
+          then
+            echo 'FAIL: final gate QEMU tasks differ from the carried patch series' >&2
             exit 1
           fi
 
@@ -629,6 +652,10 @@ in
           grep -Fxq 'corrupt_event_rejected_with_valid_result=true' "$node_result"
           grep -Fxq 'lifecycle_impulse_committed=true' "$node_result"
           grep -Fxq 'cross_adapter_rejection_rolled_back=true' "$node_result"
+          grep -Fxq 'patch=0109-crucible-control-boundary-node-faults.patch' \
+            "${patchMicrotests}/per-patch/0109-crucible-control-boundary-node-faults.patch.result"
+          grep -Fxq 'patched_fixture_exercised=true' \
+            "${patchMicrotests}/per-patch/0109-crucible-control-boundary-node-faults.patch.result"
 
           hardware_result=${liveFaultHardware}/result
           grep -Fxq PASS "$hardware_result"
@@ -660,6 +687,10 @@ in
           grep -Fxq 'every_carried_patch_has_microtest=true' "$patch_result"
           grep -Fxq 'every_microtest_has_stock_negative_control=true' "$patch_result"
           grep -Fxq 'diagnostic_only_patches_excluded_from_shipped_qemu=true' "$patch_result"
+          grep -Fxq 'patch=0110-crucible-release-halted-rr-turn.patch' \
+            "${patchMicrotests}/per-patch/0110-crucible-release-halted-rr-turn.patch.result"
+          grep -Fxq 'guest_pause_early_yield_negative=critical-arm-branch-trap-observed-after-AAAB' \
+            "${patchMicrotests}/per-patch/0110-crucible-release-halted-rr-turn.patch.result"
 
           checkpoint_result=${checkpointMaterialization}/result
           grep -Fxq PASS "$checkpoint_result"

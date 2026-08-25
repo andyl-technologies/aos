@@ -1168,6 +1168,7 @@
     }
     {
       patch = "0109-crucible-control-boundary-node-faults.patch";
+      gateField = "patch_microtest_gate";
       check = qemuLiveNodeLifecycleFault;
     }
     {
