@@ -22,7 +22,8 @@ use crucible_api::{
 };
 use crucible_campaign::ExactCheckpointId;
 use crucible_cas::content_store::StoreError;
-use crucible_qemu::QemuVmRealizationError;
+use crucible_protocol::SelectionReply;
+use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuVmRealizationError};
 use thiserror::Error;
 
 use crate::{
@@ -109,6 +110,28 @@ pub trait QemuFreshAttemptLifecycleOwner {
     /// inspected consistently.
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError>;
 
+    /// Drains node-qualified guest selectable requests at the paused boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when a live node's request stream is malformed
+    /// or violates its single-pending-request contract.
+    fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError>;
+
+    /// Enqueues one exact semantic reply before the owning guest resumes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the request is stale, names another node
+    /// generation, or the reply violates the retained reservation.
+    fn enqueue_selectable_reply(
+        &mut self,
+        pending: &QemuNodeSelectablePendingRequest,
+        reply: &SelectionReply,
+    ) -> Result<(), SchedulerError>;
+
     /// Captures the exact current attempt continuation without CAS publication.
     ///
     /// # Errors
@@ -174,6 +197,20 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         ProductionVmLifecycleLoop::exact_checkpoint_ready(self)
+    }
+
+    fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError> {
+        ProductionVmLifecycleLoop::drain_pending_selectable_requests(self)
+    }
+
+    fn enqueue_selectable_reply(
+        &mut self,
+        pending: &QemuNodeSelectablePendingRequest,
+        reply: &SelectionReply,
+    ) -> Result<(), SchedulerError> {
+        ProductionVmLifecycleLoop::enqueue_selectable_reply(self, pending, reply)
     }
 
     fn capture_attempt_checkpoint(
@@ -258,6 +295,33 @@ impl QemuFreshAttemptLifecycle<'_> {
     /// inspected consistently.
     pub fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         self.owner.exact_checkpoint_ready()
+    }
+
+    /// Drains node-qualified guest selectable requests at the paused boundary.
+    ///
+    /// The result remains untrusted guest input until the modeled driver binds
+    /// it to the scenario declaration and selects a legal value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the live request stream is malformed.
+    pub fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError> {
+        self.owner.drain_pending_selectable_requests()
+    }
+
+    /// Enqueues one exact semantic reply before the owning guest resumes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the live request/reply binding fails.
+    pub fn enqueue_selectable_reply(
+        &mut self,
+        pending: &QemuNodeSelectablePendingRequest,
+        reply: &SelectionReply,
+    ) -> Result<(), SchedulerError> {
+        self.owner.enqueue_selectable_reply(pending, reply)
     }
 
     /// Captures read-only production fault evidence at the current boundary.

@@ -40,6 +40,42 @@ fn classify_recorded_control_boundary(
 }
 
 impl ProductionVmLifecycleLoop {
+    /// Drains node-qualified guest selectable requests at the paused boundary.
+    ///
+    /// The returned requests remain untrusted guest input. Callers must bind
+    /// each one to the authenticated scenario declaration and choose a legal
+    /// value before enqueueing a reply or advancing another quantum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when any node's shared-memory request stream
+    /// is malformed or violates the one-pending-request contract.
+    pub fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<crucible_qemu::QemuNodeSelectablePendingRequest>, SchedulerError> {
+        self.inner
+            .backend_mut()
+            .drain_pending_selectable_requests()
+            .map_err(SchedulerError::Backend)
+    }
+
+    /// Enqueues one exact host-authorized selectable reply before guest resume.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the node generation is absent or its
+    /// shared-memory transport rejects the request/reply binding.
+    pub fn enqueue_selectable_reply(
+        &mut self,
+        pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
+        reply: &crucible_protocol::SelectionReply,
+    ) -> Result<(), SchedulerError> {
+        self.inner
+            .backend_mut()
+            .enqueue_selectable_reply(pending, reply)
+            .map_err(SchedulerError::Backend)
+    }
+
     /// Copies the exact scenario-aware live-node profiles for background replay.
     ///
     /// The returned values contain immutable launch inputs only. They retain no

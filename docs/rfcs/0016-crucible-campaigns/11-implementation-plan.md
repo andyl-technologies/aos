@@ -148,9 +148,12 @@ nested-request profile so the 32-byte transport header cannot overflow the
 host publishes only an exact-sequence reply that fits the retained reservation
 at the current paused icount, and the plugin revalidates sequence/vCPU/icount,
 zero-pads the guest reservation, writes it before resume, and charges completion
-only afterward. Daemon-side scenario conversion, semantic narrowed-domain
-validation and selection, plus durable checkpoint composition remain required
-to complete T-CAM-2.5.
+only afterward. The production node set now retains each drained request under
+its exact `NodeId` until reply publication succeeds, preserving ownership across
+multi-node drain failures, and exposes that node-qualified token through the
+production lifecycle and daemon modeled-driver facade. Daemon-side scenario
+conversion, semantic narrowed-domain validation and selection, plus durable
+checkpoint composition remain required to complete T-CAM-2.5.
 The process-neutral `CRUCSCP2` catalog-plan codec now freezes the future sealed
 descriptor body, including exact expectations, limits, registered identifiers,
 sequence watermarks, completed counters, and a complete pending request/trap
