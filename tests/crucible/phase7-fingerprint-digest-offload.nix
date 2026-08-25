@@ -8,6 +8,7 @@
   fingerprintHelpers,
 }: let
   taskList = lib.concatStringsSep "," taskIds;
+  fingerprintWorkerSource = ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/fingerprint_worker.rs;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase7-fingerprint-digest-offload";
@@ -27,10 +28,10 @@ in
         name = "verify-offload-evidence";
         script = ''
           set -eu
-          grep -Fq 'mpsc::sync_channel::<CapturedFingerprintSample>(1)' ${../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs}
-          grep -Fq '.name("crucible-fingerprint-digest".to_owned())' ${../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs}
-          grep -Fq 'let sample = captured.digest();' ${../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs}
-          grep -Fq 'slot.get().publish(&sample)' ${../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs}
+          grep -Fq 'mpsc::sync_channel::<LiveFingerprintDigestWork>(1)' ${fingerprintWorkerSource}
+          grep -Fq '.name("crucible-fingerprint-digest".to_owned())' ${fingerprintWorkerSource}
+          grep -Fq 'let sample = captured.digest();' ${fingerprintWorkerSource}
+          grep -Fq '.publish(&sample)' ${fingerprintWorkerSource}
           grep -Fq 'last_capture_icount' ${../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs}
           grep -Fq 'fingerprint.worker.submit(captured)?;' ${../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs}
           grep -Fq 'struct CapturedFingerprintMaterial' ${../../crates/crucible-qemu-plugin/src/fingerprint_sampler.rs}

@@ -106,6 +106,56 @@ fn node_set_arms_one_node_from_one_aggregate_fault_event_budget() -> Result<(), 
 }
 
 #[test]
+fn selected_node_step_rearms_the_retained_aggregate_fault_event_budget() {
+    let log = shared_log();
+    let mut nodes = QemuNodeSet::new();
+    let node = node_id("vm-a");
+    let _prior = nodes.insert(
+        node.clone(),
+        scripted_node(Arc::clone(&log), false, false, false)
+            .unwrap_or_else(|error| panic!("construct scripted node: {error}")),
+    );
+
+    nodes
+        .set_fault_event_staging_limit(4, 10)
+        .unwrap_or_else(|error| panic!("install aggregate event budget: {error}"));
+    assert_eq!(
+        recorded(&log).last(),
+        Some(&ChannelCall::HostFaultEventLimit {
+            maximum_local_records: 0,
+            canonical_current_offset: 6,
+            configured_event_records: 10,
+        })
+    );
+
+    let observation = SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 19 })
+        .unwrap_or_else(|error| panic!("step selected node: {error}"));
+    assert_eq!(observation.reached, VirtualTime { ticks: 19 });
+    let calls = recorded(&log);
+    let allowance = calls
+        .iter()
+        .position(|call| {
+            call == &ChannelCall::HostFaultEventLimit {
+                maximum_local_records: 4,
+                canonical_current_offset: 6,
+                configured_event_records: 10,
+            }
+        })
+        .unwrap_or_else(|| panic!("selected node was not armed from the aggregate budget"));
+    let start = calls
+        .iter()
+        .position(|call| call == &ChannelCall::ShmemStart(19))
+        .unwrap_or_else(|| panic!("selected node did not start its quantum"));
+    assert!(allowance < start);
+
+    nodes
+        .take(&node)
+        .unwrap_or_else(|| panic!("scripted node should remain present"))
+        .shutdown_child()
+        .unwrap_or_else(|error| panic!("shut down scripted node: {error}"));
+}
+
+#[test]
 fn fault_event_limit_rejects_before_consuming_staged_ownership() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
     let mut node =

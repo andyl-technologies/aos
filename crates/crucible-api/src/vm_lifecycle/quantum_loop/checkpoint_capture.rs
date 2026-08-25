@@ -10,7 +10,7 @@ pub(in crate::vm_lifecycle) enum ExactCheckpointPublicationState {
     Preparing,
     /// The authenticated closure is durably published under this identity.
     Published(ContentHash),
-    /// Snapshot deletions that must succeed before this configuration retries.
+    /// Snapshot deletions that must succeed before another capture attempt.
     CleanupPending(Vec<CapturedExactCheckpointTarget>),
     /// A named closure exists but its parent-directory durability is uncertain.
     PublicationIndeterminate(ContentHash),
@@ -41,7 +41,7 @@ pub(in crate::vm_lifecycle) struct CapturedExactCheckpointTarget {
     /// Scheduler time paired with the physical counter.
     pub(super) scheduler_time: VirtualTime,
     /// Live QEMU snapshot deleted before durable publication.
-    pub(super) snapshot: QemuVmSnapshot,
+    pub(super) snapshot: ExactSnapshotHandle,
     /// Staged overlay metadata once its copy authenticates.
     pub(super) overlay_artifact: Option<ProductionCheckpointArtifact>,
     /// Staged VMState metadata once its copy authenticates.
@@ -98,8 +98,8 @@ impl ProductionVmLifecycleLoop {
         configuration: &Configuration,
     ) -> Result<ContentHash, SchedulerError> {
         let configuration_id = configuration.id();
-        let mut retry_cleanup = None;
-        let mut retry_publication = None;
+        let mut pending_cleanup = None;
+        let mut uncertain_publication = None;
         match self.checkpoint_targets.entry(configuration_id) {
             std::collections::btree_map::Entry::Vacant(entry) => {
                 entry.insert(ExactCheckpointPublicationState::Preparing);
@@ -113,7 +113,7 @@ impl ProductionVmLifecycleLoop {
                         return Ok(identity);
                     }
                     ExactCheckpointPublicationState::CleanupPending(captures) => {
-                        retry_cleanup = Some(captures);
+                        pending_cleanup = Some(captures);
                     }
                     ExactCheckpointPublicationState::Preparing => {
                         return Err(SchedulerError::BoundaryViolation {
@@ -124,12 +124,12 @@ impl ProductionVmLifecycleLoop {
                         });
                     }
                     ExactCheckpointPublicationState::PublicationIndeterminate(identity) => {
-                        retry_publication = Some(identity);
+                        uncertain_publication = Some(identity);
                     }
                 }
             }
         }
-        if let Some(mut captures) = retry_cleanup
+        if let Some(mut captures) = pending_cleanup
             && let Err(error) = self.rollback_exact_captures(&mut captures)
         {
             let state = self
@@ -139,7 +139,7 @@ impl ProductionVmLifecycleLoop {
             *state = ExactCheckpointPublicationState::CleanupPending(captures);
             return Err(error);
         }
-        if let Some(identity) = retry_publication {
+        if let Some(identity) = uncertain_publication {
             match checkpoint_store::reconcile_indeterminate_publication(
                 &self.config.run_state_root,
                 &self.scenario,

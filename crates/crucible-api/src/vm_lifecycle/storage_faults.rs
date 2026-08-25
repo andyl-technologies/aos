@@ -48,10 +48,10 @@ use crucible_qemu::{
 const HARD_STORAGE_SETTLE_STEPS: usize = 4_096;
 /// Maximum undrained signal observations across one backend quantum.
 const HARD_STORAGE_FAULT_OBSERVATIONS: usize = 262_144;
-
 type StorageArrayDestinations = Vec<(ContentHash, QemuSharedBlockDevice, Vec<BlockRequest>)>;
 type StorageArrayDirtyRanges = Vec<crucible_device::block::BlockArrayDirtyRange>;
 type StorageArrayWriteDestinations = (StorageArrayDestinations, StorageArrayDirtyRanges);
+type DeviceRuntimeError = QemuAsyncDriverRuntimeError;
 
 /// Authenticated World material retained for launch and coordinator binding.
 #[derive(Clone)]

@@ -331,7 +331,6 @@ qemu-token|crucible|crates/crucible/src/model/temporal_graph/core.rs|qemu
 qemu-token|crucible|crates/crucible/src/scheduler/tests.rs|qemu
 qemu-manifest|crucible-api|crates/crucible-api/Cargo.toml|crucible-qemu|dependencies
 qemu-manifest|crucible-api|crates/crucible-api/Cargo.toml|crucible-qemu|dev-dependencies
-qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/network_faults/lifecycle.rs|qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/network_faults/lifecycle.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/network_faults/lifecycle.rs|crucible_qemu

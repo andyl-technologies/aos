@@ -24,7 +24,7 @@ pub(in crate::vm_lifecycle::quantum_loop) use staging::*;
 impl ProductionVmLifecycleLoop {
     pub(super) fn begin_terminal_lifecycle_intent(
         &mut self,
-        intents: &[QemuNodeLifecycleIntent],
+        intents: &[LifecycleMutationIntent],
         scheduler_checkpoint: &SingleSchedulerCheckpoint,
         limits: FaultResourceLimits,
         runtime_event_records: u64,
@@ -486,7 +486,7 @@ impl ProductionVmLifecycleLoop {
 
     pub(super) fn quarantine_precommit_lifecycle_intent(
         &mut self,
-        intents: &[QemuNodeLifecycleIntent],
+        intents: &[LifecycleMutationIntent],
         primary: impl std::fmt::Display,
     ) -> SchedulerError {
         let quarantine = self
