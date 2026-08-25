@@ -306,7 +306,7 @@ use sha2::Digest as _;
 use crate::backend::{Backend, CheckedStatement, Statement};
 use crate::dialect::Dialect;
 use crate::domain::Permission;
-use crate::value::Row;
+use crate::value::{Row, Value};
 
 // SqlxBackend is the native driver (sqlx does not build for wasm32); the
 // constructors that build one are native-only. The Worker constructs a
@@ -324,6 +324,100 @@ macro_rules! vals {
     ($($v:expr),* $(,)?) => {
         vec![$( crate::value::ToValue::to_value(&$v) ),*]
     };
+}
+
+// Durable Object SQLite crosses the Wasm/JavaScript boundary once per SQL
+// statement, even when all statements belong to one storage transaction. A
+// complete registry generation can contain thousands of catalog rows, so
+// issuing one INSERT per row exhausts a queue activation before the atomic
+// snapshot becomes visible. Keep each statement comfortably below SQLite's
+// binding limit while collapsing the hot path to a few dozen calls.
+const SNAPSHOT_ROWS_PER_INSERT: usize = 50;
+
+fn extend_multirow_insert(
+    statements: &mut Vec<Statement>,
+    insert: &str,
+    rows: &[Vec<Value>],
+    suffix: &str,
+) -> Result<()> {
+    for chunk in rows.chunks(SNAPSHOT_ROWS_PER_INSERT) {
+        let Some(first) = chunk.first() else {
+            continue;
+        };
+        anyhow::ensure!(!first.is_empty(), "multi-row insert has no columns");
+        anyhow::ensure!(
+            chunk.iter().all(|row| row.len() == first.len()),
+            "multi-row insert has inconsistent row widths"
+        );
+
+        let mut parameter = 1;
+        let mut tuples = Vec::with_capacity(chunk.len());
+        let mut params = Vec::with_capacity(chunk.len() * first.len());
+        for row in chunk {
+            let placeholders = (0..row.len())
+                .map(|_| {
+                    let placeholder = format!("?{parameter}");
+                    parameter += 1;
+                    placeholder
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            tuples.push(format!("({placeholders})"));
+            params.extend(row.iter().cloned());
+        }
+        statements.push(Statement::new(
+            format!("{insert} VALUES {}{suffix}", tuples.join(", ")),
+            params,
+        ));
+    }
+    Ok(())
+}
+
+fn extend_release_artifact_inserts(
+    statements: &mut Vec<Statement>,
+    snapshot_id: &str,
+    rows: &[Vec<Value>],
+) -> Result<()> {
+    for chunk in rows.chunks(SNAPSHOT_ROWS_PER_INSERT) {
+        anyhow::ensure!(
+            chunk.iter().all(|row| row.len() == 7),
+            "release artifact insert has an inconsistent row width"
+        );
+        let mut parameter = 2;
+        let mut tuples = Vec::with_capacity(chunk.len());
+        let mut params = vals![snapshot_id];
+        for row in chunk {
+            let placeholders = (0..row.len())
+                .map(|_| {
+                    let placeholder = format!("?{parameter}");
+                    parameter += 1;
+                    placeholder
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            tuples.push(format!("({placeholders})"));
+            params.extend(row.iter().cloned());
+        }
+        statements.push(Statement::new(
+            format!(
+                "WITH input(package_name, package_version, platform, artifact_kind,
+                            store_path, store_hash, metadata_digest) AS
+                   (VALUES {})
+                 INSERT INTO release_artifacts
+                   (snapshot_id, release_id, registry_id, package_name,
+                    package_version, platform, artifact_kind, store_path,
+                    store_hash, metadata_digest)
+                 SELECT ?1, ras.release_id, ras.registry_id, input.package_name,
+                        input.package_version, input.platform, input.artifact_kind,
+                        input.store_path, input.store_hash, input.metadata_digest
+                   FROM release_artifact_snapshots ras CROSS JOIN input
+                  WHERE ras.snapshot_id = ?1 AND ras.state = 'building'",
+                tuples.join(", ")
+            ),
+            params,
+        ));
+    }
+    Ok(())
 }
 
 mod cache_write_admission;
@@ -3839,33 +3933,32 @@ impl Database {
             vals![registry_id, snapshot.commit].to_vec(),
         ));
 
+        let mut package_rows = Vec::new();
+        let mut version_rows = Vec::new();
+        let mut platform_rows = Vec::new();
+        let mut catalog_rows = Vec::new();
         for package in &snapshot.packages {
             next_package += 1;
             let package_id = next_package;
-            stmts.push(Statement::new(
-                "INSERT INTO packages
-                 (id, registry_id, name, description, homepage, license, maintainer, sysroot)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                vals![
-                    package_id,
-                    registry_id,
-                    package.package.name,
-                    package.package.description,
-                    package.package.homepage,
-                    package.package.license,
-                    package.package.maintainer,
-                    package.package.sysroot,
-                ]
-                .to_vec(),
-            ));
+            package_rows.push(vals![
+                package_id,
+                registry_id,
+                package.package.name,
+                package.package.description,
+                package.package.homepage,
+                package.package.license,
+                package.package.maintainer,
+                package.package.sysroot,
+            ]);
             for version in &package.versions {
                 next_version += 1;
                 let version_id = next_version;
-                stmts.push(Statement::new(
-                    "INSERT INTO package_versions (id, package_id, version, previous)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    vals![version_id, package_id, version.version, version.previous].to_vec(),
-                ));
+                version_rows.push(vals![
+                    version_id,
+                    package_id,
+                    version.version,
+                    version.previous
+                ]);
                 for (platform, entry) in &version.platforms {
                     let images = entry
                         .images
@@ -3880,24 +3973,17 @@ impl Database {
                             })
                         })
                         .collect::<Vec<_>>();
-                    stmts.push(Statement::new(
-                        "INSERT INTO version_platforms
-                         (version_id, platform, store_path, nar_hash, nar_size,
-                          closure_size, refs, images, source_drv)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                        vals![
-                            version_id,
-                            platform,
-                            entry.store_path,
-                            entry.nar_hash,
-                            entry.nar_size,
-                            entry.closure_size,
-                            serde_json::to_string(&entry.references)?,
-                            serde_json::Value::Array(images).to_string(),
-                            entry.source_drv,
-                        ]
-                        .to_vec(),
-                    ));
+                    platform_rows.push(vals![
+                        version_id,
+                        platform,
+                        entry.store_path,
+                        entry.nar_hash,
+                        entry.nar_size,
+                        entry.closure_size,
+                        serde_json::to_string(&entry.references)?,
+                        serde_json::Value::Array(images).to_string(),
+                        entry.source_drv,
+                    ]);
                     let mut catalog_artifacts = vec![("output", entry.store_path.as_str())];
                     if !entry.source_drv.is_empty() {
                         catalog_artifacts.push(("source_derivation", entry.source_drv.as_str()));
@@ -3924,29 +4010,50 @@ impl Database {
                                 "store_hash": store_hash,
                             }))?,
                         ));
-                        stmts.push(Statement::new(
-                            "INSERT INTO registry_catalog_artifacts
-                             (registry_id, source_revision, package_name,
-                              package_version, platform, artifact_kind,
-                              store_path, store_hash, metadata_digest)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                            vals![
-                                registry_id,
-                                snapshot.commit,
-                                package.package.name,
-                                version.version,
-                                platform,
-                                artifact_kind,
-                                store_path,
-                                store_hash,
-                                metadata_digest
-                            ]
-                            .to_vec(),
-                        ));
+                        catalog_rows.push(vals![
+                            registry_id,
+                            snapshot.commit,
+                            package.package.name,
+                            version.version,
+                            platform,
+                            artifact_kind,
+                            store_path,
+                            store_hash,
+                            metadata_digest
+                        ]);
                     }
                 }
             }
         }
+        extend_multirow_insert(
+            &mut stmts,
+            "INSERT INTO packages
+             (id, registry_id, name, description, homepage, license, maintainer, sysroot)",
+            &package_rows,
+            "",
+        )?;
+        extend_multirow_insert(
+            &mut stmts,
+            "INSERT INTO package_versions (id, package_id, version, previous)",
+            &version_rows,
+            "",
+        )?;
+        extend_multirow_insert(
+            &mut stmts,
+            "INSERT INTO version_platforms
+             (version_id, platform, store_path, nar_hash, nar_size,
+              closure_size, refs, images, source_drv)",
+            &platform_rows,
+            "",
+        )?;
+        extend_multirow_insert(
+            &mut stmts,
+            "INSERT INTO registry_catalog_artifacts
+             (registry_id, source_revision, package_name, package_version,
+              platform, artifact_kind, store_path, store_hash, metadata_digest)",
+            &catalog_rows,
+            "",
+        )?;
 
         for release in &snapshot.releases {
             if let Some(existing) = self
@@ -4252,31 +4359,21 @@ impl Database {
                 ]
                 .to_vec(),
             ));
+            let mut artifact_rows = Vec::with_capacity(release_snapshot.artifacts.len());
             for artifact in &release_snapshot.artifacts {
                 let metadata_digest =
                     hex::encode(sha2::Sha256::digest(serde_json::to_vec(artifact)?));
-                stmts.push(Statement::new(
-                    "INSERT INTO release_artifacts
-                     (snapshot_id, release_id, registry_id, package_name,
-                      package_version, platform, artifact_kind, store_path,
-                      store_hash, metadata_digest)
-                     SELECT ?1, ras.release_id, ras.registry_id,
-                            ?2, ?3, ?4, ?5, ?6, ?7, ?8
-                     FROM release_artifact_snapshots ras
-                     WHERE ras.snapshot_id = ?1 AND ras.state = 'building'",
-                    vals![
-                        snapshot_id,
-                        artifact.package_name,
-                        artifact.package_version,
-                        artifact.platform,
-                        artifact.artifact_kind,
-                        artifact.store_path,
-                        artifact.store_hash,
-                        metadata_digest,
-                    ]
-                    .to_vec(),
-                ));
+                artifact_rows.push(vals![
+                    artifact.package_name,
+                    artifact.package_version,
+                    artifact.platform,
+                    artifact.artifact_kind,
+                    artifact.store_path,
+                    artifact.store_hash,
+                    metadata_digest,
+                ]);
             }
+            extend_release_artifact_inserts(&mut stmts, &snapshot_id, &artifact_rows)?;
             stmts.push(Statement::new(
                 "UPDATE release_artifact_snapshots
                  SET actual_artifact_count = (SELECT COUNT(*)
@@ -24788,6 +24885,29 @@ mod tests {
         let maximum_source = portable_relational_id(Uuid::from_u128(u128::MAX));
         assert!((1..=PORTABLE_RELATIONAL_ID_MAX).contains(&maximum_source));
         assert_eq!(maximum_source as f64 as i64, maximum_source);
+    }
+
+    #[test]
+    fn snapshot_rows_are_bounded_into_multirow_statements() {
+        let rows = (0..121)
+            .map(|index| vals![index, format!("row-{index}")])
+            .collect::<Vec<_>>();
+        let mut statements = Vec::new();
+
+        extend_multirow_insert(
+            &mut statements,
+            "INSERT INTO example (id, name)",
+            &rows,
+            " ON CONFLICT(id) DO NOTHING",
+        )
+        .unwrap();
+
+        assert_eq!(statements.len(), 3);
+        assert_eq!(statements[0].params.len(), 100);
+        assert_eq!(statements[1].params.len(), 100);
+        assert_eq!(statements[2].params.len(), 42);
+        assert!(statements[0].sql.contains("(?1, ?2), (?3, ?4)"));
+        assert!(statements[0].sql.ends_with("ON CONFLICT(id) DO NOTHING"));
     }
 
     #[test]
