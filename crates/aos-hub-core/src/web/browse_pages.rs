@@ -504,11 +504,14 @@ pub fn registry_home(
         );
     };
     let url = external_url.trim_end_matches('/');
+    let mut add_command = format!("apr add {url}/ --name {slug}");
+    for key in &registry.trust_keys {
+        let _ = write!(add_command, " --trust-key {key}");
+    }
     let _ = write!(
         body,
-        "<p class=\"dim\">apm:</p>\n<pre>apr add {url}/ --name {slug}</pre>\n",
-        url = escape(url),
-        slug = escape(slug),
+        "<p class=\"dim\">apm:</p>\n<pre>{}</pre>\n",
+        escape(&add_command),
     );
     let mut stanza =
         format!("aos.apm.registries.{slug} = {{\n  url = \"{url}/\";\n  trustKeys = [\n");
@@ -2787,7 +2790,9 @@ mod tests {
             &anon(),
         );
         assert!(html.contains("&lt;k&gt;"));
-        assert!(html.contains("apr add http://127.0.0.1:8420/demo/"));
+        assert!(html.contains(
+            "apr add http://127.0.0.1:8420/demo/ --name demo --trust-key demo:Ed25519:AAAA"
+        ));
         assert!(!html.contains("<k>"));
         // Fingerprints, the module stanza, and the plain-Nix snippet.
         assert!(html.contains("SHA256:"));
