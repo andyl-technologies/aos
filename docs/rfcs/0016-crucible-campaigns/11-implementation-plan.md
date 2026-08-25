@@ -213,7 +213,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 
 - [x] **T-CAM-4.1** Implement bounded finite and versioned generated
   `CandidateSource` forms plus generator specs for all/discrete, boundary,
-  stratified, logarithmic, permuted, progressive integer, and corpus mutation.
+  stratified, logarithmic, permuted, progressive integer, corpus mutation, and
+  model-bound uniform integer permutation through the full unsigned 64-bit
+  app-random domain.
 - [x] **T-CAM-4.2** Implement branch request/cause, branch-edge deduplication,
   discovery-versus-branch attempt starts, immutable attempt execution basis,
   global admission ordinal, authenticated branch path, additional-cause
@@ -278,8 +280,13 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   endpoint PUCT-score difference, interval size, and lower offset. It uses the
   exact active policy and planning view, batches branch-point projections under
   the established guidance bounds, preserves the already-proposed value set,
-  and revalidates identically after restart/import. Opaque non-finite
-  model-prior resolution remains open. Implementation version 12 adds the
+  and revalidates identically after restart/import. Branch-request schema v4
+  and generator implementation version 17 now resolve standardized uniform
+  app-random models into a request-keyed, budget-bounded power-of-two integer
+  permutation. Exact model/generator/domain validation, zero-write mismatch
+  rejection, `2^64` closed-versus-exhausted semantics, and restart replay are
+  covered. Additional opaque non-finite model families remain open.
+  Implementation version 12 adds the
   producer-landmark term: it prioritizes landmark count before version 11's
   endpoint PUCT difference, interval size, and lower offset, then emits the
   winning interval's landmark nearest its lower midpoint. Implementation
@@ -818,8 +825,8 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   daemon-owned long-lived coordinator runtime is implemented. Process startup
   can now attach that runtime to one explicitly named existing campaign with
   the packaged planner and one authenticated local executor; automatic
-  campaign discovery, dynamic/multiple attachment, and opaque non-finite
-  model-prior ranking remain open. The first `CampaignService`
+  campaign discovery, dynamic/multiple attachment, and additional opaque
+  non-finite model-prior adapters remain open. The first `CampaignService`
   checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
   bounded by-value creation, authenticated current-head reads,

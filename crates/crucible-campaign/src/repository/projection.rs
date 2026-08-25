@@ -181,6 +181,7 @@ impl CandidateViewRoots {
 pub(super) enum CandidateSourceProfile {
     Static {
         count: u64,
+        exhausts_domain: bool,
     },
     ProgressiveInteger {
         count: u64,
@@ -195,14 +196,14 @@ pub(super) enum CandidateSourceProfile {
 impl CandidateSourceProfile {
     const fn count(self) -> Option<u64> {
         match self {
-            Self::Static { count } | Self::ProgressiveInteger { count, .. } => Some(count),
+            Self::Static { count, .. } | Self::ProgressiveInteger { count, .. } => Some(count),
             Self::CorpusMutation => None,
         }
     }
 
     fn available_count(self, completed_visits: u64) -> Result<u64, CampaignRepositoryError> {
         match self {
-            Self::Static { count } => Ok(count),
+            Self::Static { count, .. } => Ok(count),
             Self::ProgressiveInteger {
                 count,
                 initial_count,
@@ -240,7 +241,9 @@ impl CandidateSourceProfile {
 
     const fn exhausts_at_count(self) -> bool {
         match self {
-            Self::Static { .. } => true,
+            Self::Static {
+                exhausts_domain, ..
+            } => exhausts_domain,
             Self::ProgressiveInteger {
                 exhausts_domain, ..
             } => exhausts_domain,
@@ -458,7 +461,12 @@ impl CampaignRepository {
         domain: &ChoiceDomain,
     ) -> Result<Option<CandidateSourceProfile>, CampaignRepositoryError> {
         if let Some(count) = self.static_candidate_count(request, domain)? {
-            return Ok(Some(CandidateSourceProfile::Static { count }));
+            let exhausts_domain = !matches!(request.source(), CandidateSource::ModeledGenerated(_))
+                || domain.cardinality() <= u128::from(request.budget().maximum_proposals());
+            return Ok(Some(CandidateSourceProfile::Static {
+                count,
+                exhausts_domain,
+            }));
         }
         let Some(generator) = request.source().generator() else {
             return Ok(None);
@@ -645,6 +653,13 @@ impl CampaignRepository {
                 crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Integer(integer),
             ) => permuted_integer_candidate_count(integer).map(Some),
+            (
+                CandidateGeneratorAlgorithm::PermutedInteger,
+                crate::MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) if matches!(request.source(), CandidateSource::ModeledGenerated(_)) => {
+                modeled_uniform_integer_candidate_count(request, integer).map(Some)
+            }
             _ => Ok(None),
         }
     }
@@ -782,6 +797,15 @@ impl CampaignRepository {
             ) => permuted_integer_candidate(request, integer, ordinal)
                 .map(ChoiceValue::Integer)
                 .map(Some),
+            (
+                CandidateGeneratorAlgorithm::PermutedInteger,
+                crate::MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) if matches!(request.source(), CandidateSource::ModeledGenerated(_)) => {
+                modeled_uniform_integer_candidate(request, integer, ordinal)
+                    .map(ChoiceValue::Integer)
+                    .map(Some)
+            }
             _ => Ok(None),
         }
     }
@@ -4415,6 +4439,57 @@ fn permuted_integer_candidate(
         if candidate < cardinality {
             offset = candidate;
         }
+    }
+    integer_candidate_at_offset(domain, u128::from(offset))
+}
+
+fn modeled_uniform_integer_candidate_count(
+    request: &BranchRequest,
+    domain: &IntegerDomain,
+) -> Result<u64, CampaignRepositoryError> {
+    let cardinality = domain.cardinality();
+    if cardinality == 0
+        || !cardinality.is_power_of_two()
+        || cardinality > (u128::from(u64::MAX) + 1)
+    {
+        return Err(integrity("modeled-uniform-integer-domain-is-not-supported"));
+    }
+    u64::try_from(cardinality.min(u128::from(request.budget().maximum_proposals())))
+        .map_err(|_| integrity("candidate-source-cardinality-overflow"))
+}
+
+fn modeled_uniform_integer_candidate(
+    request: &BranchRequest,
+    domain: &IntegerDomain,
+    ordinal: u64,
+) -> Result<IntegerValue, CampaignRepositoryError> {
+    let count = modeled_uniform_integer_candidate_count(request, domain)?;
+    if ordinal == 0 || ordinal > count {
+        return Err(integrity("proposal-ordinal-exceeds-source-cardinality"));
+    }
+
+    let cardinality = domain.cardinality();
+    let request_digest = request.id()?.content_id().digest();
+    let key = CampaignHash::derive(
+        "crucible.campaign.generator.modeled-uniform-integer.v17",
+        &request_digest,
+    );
+    let envelope_mask = if cardinality == u128::from(u64::MAX) + 1 {
+        u64::MAX
+    } else {
+        u64::try_from(cardinality - 1)
+            .map_err(|_| integrity("modeled-uniform-integer-cardinality-limit"))?
+    };
+    let mut offset = ordinal - 1;
+    for (round, chunk) in key.as_bytes().chunks_exact(8).enumerate() {
+        let mut bytes = [0_u8; 8];
+        bytes.copy_from_slice(chunk);
+        let word = u64::from_be_bytes(bytes);
+        offset = if round % 2 == 0 {
+            offset ^ (word & envelope_mask)
+        } else {
+            word.wrapping_sub(offset) & envelope_mask
+        };
     }
     integer_candidate_at_offset(domain, u128::from(offset))
 }

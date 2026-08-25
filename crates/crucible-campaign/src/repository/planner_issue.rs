@@ -1,6 +1,7 @@
 //! Atomic owner projection for planner-issued requests, proposals, and admissions.
 
 use super::*;
+use crate::ProbabilityModelId;
 
 #[derive(Clone, Debug)]
 pub(super) struct PlannerIssueProjection {
@@ -33,7 +34,11 @@ impl IssueProjectionMode {
 }
 
 struct IssueGeneratorValidation {
-    validated: BTreeSet<(CandidateGeneratorSpecId, ChoiceDomainId)>,
+    validated: BTreeSet<(
+        CandidateGeneratorSpecId,
+        ChoiceDomainId,
+        Option<ProbabilityModelId>,
+    )>,
     remaining: usize,
 }
 
@@ -517,14 +522,16 @@ impl CampaignRepository {
             return Err(integrity("planner-issue-request-invocation-mismatch"));
         }
         self.validate_branch_request_references_shallow(request)?;
-        if let CandidateSource::Generated(generator) = request.source()
-            && generator_validation
-                .validated
-                .insert((*generator, request.domain()))
+        if let Some(generator) = request.source().generator()
+            && generator_validation.validated.insert((
+                generator,
+                request.domain(),
+                request.source().model_prior(),
+            ))
         {
             let domain = self.read_choice_domain(request.domain().content_id())?;
-            self.validate_generator_for_domain_with_budget(
-                *generator,
+            self.validate_candidate_source_generator_with_budget(
+                request.source(),
                 &domain,
                 &mut generator_validation.remaining,
             )?;

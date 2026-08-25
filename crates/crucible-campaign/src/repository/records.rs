@@ -1491,12 +1491,12 @@ impl CampaignRepository {
         let opportunity = self.read_opportunity(request.opportunity().content_id())?;
         let domain = self.read_choice_domain(request.domain().content_id())?;
         request.validate_resolved(&parent, &opportunity, &domain)?;
-        match request.source() {
-            CandidateSource::Finite(_) | CandidateSource::ModeledFinite(_) => {}
-            CandidateSource::Generated(generator) => {
-                self.validate_generator_for_domain(*generator, &domain)?;
-            }
-        }
+        let mut remaining = MAX_CAMPAIGN_CLOSURE_OBJECTS;
+        self.validate_candidate_source_generator_with_budget(
+            request.source(),
+            &domain,
+            &mut remaining,
+        )?;
         match request.cause() {
             BranchRequestCause::Planner(invocation) => {
                 self.load_planner_invocation(invocation)?;
@@ -1517,7 +1517,7 @@ impl CampaignRepository {
         let opportunity = self.read_opportunity(request.opportunity().content_id())?;
         let domain = self.read_choice_domain(request.domain().content_id())?;
         request.validate_resolved(&parent, &opportunity, &domain)?;
-        if let CandidateSource::Generated(generator) = request.source() {
+        if let Some(generator) = request.source().generator() {
             self.require_record_kind(
                 generator.content_id(),
                 crate::CampaignRecordKind::CandidateGeneratorSpec,
@@ -1538,6 +1538,7 @@ impl CampaignRepository {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn validate_generator_for_domain(
         &self,
         root: CandidateGeneratorSpecId,
@@ -1545,6 +1546,34 @@ impl CampaignRepository {
     ) -> Result<(), CampaignRepositoryError> {
         let mut remaining = MAX_CAMPAIGN_CLOSURE_OBJECTS;
         self.validate_generator_for_domain_with_budget(root, domain, &mut remaining)
+    }
+
+    pub(super) fn validate_candidate_source_generator_with_budget(
+        &self,
+        source: &CandidateSource,
+        domain: &ChoiceDomain,
+        remaining: &mut usize,
+    ) -> Result<(), CampaignRepositoryError> {
+        let Some(generator_id) = source.generator() else {
+            return Ok(());
+        };
+        if let CandidateSource::ModeledGenerated(_) = source {
+            let generator = self.read_generator(generator_id.content_id())?;
+            let ChoiceDomain::Integer(integer) = domain else {
+                return Err(integrity("modeled-uniform-integer-domain-family-mismatch"));
+            };
+            let cardinality = integer.cardinality();
+            if generator.algorithm() != &CandidateGeneratorAlgorithm::PermutedInteger
+                || generator.implementation_version()
+                    != crate::MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                || cardinality == 0
+                || !cardinality.is_power_of_two()
+                || cardinality > u128::from(u64::MAX) + 1
+            {
+                return Err(integrity("modeled-generated-source-contract-mismatch"));
+            }
+        }
+        self.validate_generator_for_domain_with_budget(generator_id, domain, remaining)
     }
 
     pub(super) fn validate_generator_for_domain_with_budget(
@@ -1636,6 +1665,14 @@ impl CampaignRepository {
                         && integer.cardinality() > crate::PERMUTED_INTEGER_GENERATOR_MAX_CARDINALITY
                     {
                         return Err(integrity("permuted-generator-cardinality-limit"));
+                    }
+                    if generator.implementation_version()
+                        == crate::MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                        && (integer.cardinality() == 0
+                            || !integer.cardinality().is_power_of_two()
+                            || integer.cardinality() > u128::from(u64::MAX) + 1)
+                    {
+                        return Err(integrity("modeled-uniform-integer-cardinality-limit"));
                     }
                 }
                 CandidateGeneratorAlgorithm::ProgressiveInteger { initial_strata, .. }

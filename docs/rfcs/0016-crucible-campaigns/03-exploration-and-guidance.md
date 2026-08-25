@@ -58,7 +58,7 @@ closure before policy or campaign-ref publication.
 
 ### Candidate sources and explicit branches
 
-Every `BranchRequest` supplies one of three source forms:
+Every `BranchRequest` supplies one of four source forms:
 
 ```rust,illustrative
 pub enum CandidateSource {
@@ -69,6 +69,10 @@ pub enum CandidateSource {
     ModeledFinite {
         model: ProbabilityModelId,
         prior_weights: CanonicalMap<ChoiceValue, u64>,
+    },
+    ModeledGenerated {
+        model: ProbabilityModelId,
+        generator: CandidateGeneratorSpecId,
     },
     Generated { generator: CandidateGeneratorSpecId },
 }
@@ -93,17 +97,20 @@ weights mean the uniform raw weight one. A modeled finite source instead
 retains the exact positive masses resolved by the execution-model adapter and
 the `ProbabilityModelId` from which they came. Repository acceptance requires
 that ID to equal the exact opportunity's `model_prior`; the retained map is the
-portable restart/import and PUCT basis. Generated sources continue to use raw
-weight one until their model adapter supplies a finite resolved source or a
-later bounded non-finite model vocabulary. Weights guide proposal ranking only.
+portable restart/import and PUCT basis. A modeled generated source retains the
+same exact model identity plus the deterministic generator produced by that
+model's concrete adapter. The current closed adapter is uniform app randomness,
+so each prospective or completed value has raw weight one. Unmodeled generated
+sources also use raw weight one. Weights guide proposal ranking only.
 The request's source form is authoritative: an explicitly weighted finite
 source remains an auditable operator/planner override even when the opportunity
 names a model, and the model is used only when the request selects
-`ModeledFinite`.
+`ModeledFinite` or `ModeledGenerated`.
 They do not change canonical value order, legality, request budgets,
 deduplication, or attempt identity. Branch-request schema v2 adds the explicit
-weighted finite encoding and v3 adds the modeled finite encoding; schema-v1
-uniform/generated and schema-v2 explicit requests retain their exact identity.
+weighted finite encoding, v3 adds the modeled finite encoding, and v4 adds the
+model-ID plus generator-ID encoding; schema-v1 uniform/generated, schema-v2
+explicit, and schema-v3 modeled-finite requests retain their exact identity.
 Generator draws are keyed by `BranchRequestId`, so a newly authored v2
 generated request intentionally owns a distinct stream from an otherwise equal
 v1 request; replay of the retained v1 body continues to use its original ID and
@@ -121,6 +128,7 @@ The closed specification vocabulary provides:
 | `boundary_integer` | Integer | Prioritizes min, max, default, landmarks, adjacent values, and powers of two. |
 | `log_integer` | Positive integer | Samples integral base powers with exact upward step rounding. |
 | `permuted_integer` | Finite integer | Walks a keyed permutation without materializing the domain. |
+| `permuted_integer` v17 | Modeled power-of-two integer | Resolves a uniform model into a request-budget-bounded keyed permutation through cardinality `2^64`. |
 | `progressive_integer` | Integer | Starts with landmarks/strata and refines intervals from feedback. |
 | `mutate_near_corpus` | Integer | Deterministically mutates completed selections whose children remain in the retained corpus. |
 
@@ -174,6 +182,29 @@ involution of `[0, C)`, so their composition is a bijection. The candidate is
 `minimum + x * step`. This walks every legal value exactly once with four
 bounded rounds and no domain materialization. Cardinality `2^64` fails closed
 because its last value has no one-based `u64` proposal ordinal.
+
+Generator implementation-version 17 resolves a uniform integer probability
+model into a bounded `ModeledGenerated` source. The exact generator algorithm
+is `permuted_integer`; any other algorithm/version pairing fails closed. The
+stepped-domain cardinality `C` MUST be a positive power of two no greater than
+`2^64`. For request proposal budget `B`, the source count is `min(C, B)` and
+the source is exhausted at that count only when `C <= B`; otherwise it is
+closed by its explicit budget. This distinction permits a full unsigned
+64-bit app-random domain to emit a bounded request of candidates without
+claiming that all `2^64` values were named by one-based `u64` ordinals.
+
+The version-17 key is
+`H("crucible.campaign.generator.modeled-uniform-integer.v17",
+BranchRequestId.digest)`. Split it into four big-endian `u64` words. Because
+`C` is a power of two, let `M = C - 1`, represented as `u64::MAX` when
+`C = 2^64`. Starting from zero-based ordinal `x`, each even round replaces
+`x` with `x XOR (word & M)` and each odd round replaces it with
+`(word - x) mod C`. The four-round composition is a permutation of the exact
+domain offsets, and the candidate is `minimum + x * step`. Owner validation
+requires the retained model ID to equal the opportunity's `model_prior`,
+authenticates the exact generator envelope/closure, and replays the same count,
+value, and closed-versus-exhausted result on local acceptance, restart, and
+import.
 
 Generator implementation-version 7 defines `weighted_categorical` over at
 most 256 alternatives named by a discrete domain. The weight map is nonempty,
@@ -616,7 +647,8 @@ The repository also derives a policy-bound PUCT projection from that partition.
 Each completed edge receives the raw source weight of the proposal belonging
 to the lowest global `AdmissionOrdinal` among canonical credited observations
 for that edge. Later convergent attempts or additional causes cannot rewrite
-that basis. Uniform finite and generated sources contribute raw weight one.
+that basis. Uniform finite, generated, and modeled uniform generated sources
+contribute raw weight one.
 Explicit and modeled finite sources contribute their retained positive raw
 weight; for the modeled form the request's model ID must equal the opportunity
 model. The owner fails closed if the execution-basis proposal, request, value,
@@ -731,10 +763,12 @@ rerun the complete pure transition. Version 1 remains replay-compatible and
 keeps its original least-position ordering. Guidance schema v1 remains
 identity-preserving for retained history; all newly projected guidance is
 schema v2. Engine version 2 consumes the owner-normalized explicit,
-modeled-finite, or uniform prospective/completed priors, exact owner-published
-objective reward, global coverage novelty, configured closed finding rewards,
-and fairness. Resolving opaque non-finite scenario-model distributions into
-proposal priors remains open.
+modeled-finite, modeled-uniform-generated, or uniform prospective/completed
+priors, exact owner-published objective reward, global coverage novelty,
+configured closed finding rewards,
+and fairness. Additional opaque non-finite scenario-model distributions remain
+open until a concrete adapter and versioned portable generator contract are
+defined for each model family.
 
 ## 03.5 Guidance signals and objectives
 
