@@ -63,7 +63,7 @@ impl ProductionVmLifecycleLoop {
     /// # Errors
     ///
     /// Returns a scheduler error when capture, cleanup, or publication fails.
-    pub(super) fn capture_exact_checkpoint_set(
+    pub(in crate::vm_lifecycle) fn capture_exact_checkpoint_set(
         &mut self,
         configuration: &Configuration,
     ) -> Result<ContentHash, SchedulerError> {

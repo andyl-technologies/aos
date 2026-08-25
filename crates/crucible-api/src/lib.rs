@@ -99,15 +99,17 @@ pub use rpc_abi::{
     negotiate_rpc_protocol, rpc_status_code_from_wire_name, rpc_status_code_wire_name,
 };
 pub use vm_lifecycle::{
-    ProductionBlockFaultEvidence, ProductionFaultEvidenceSnapshot, ProductionNetworkOutageEvidence,
-    ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence, ProductionVmLifecycleConfig,
-    ProductionVmLifecycleLoop, ProductionVmNodeCheckpointArtifact, ProductionVmNodeGeneration,
-    ProductionVmNodeLaunch, ProductionVmNodeLaunchKind, ProductionVmNodeLaunchRequest,
-    ProductionVmNodeLauncher, ProductionVmNodeLease, ProductionVmNodePreparationKind,
-    build_production_vm_lifecycle_loop, build_production_vm_lifecycle_loop_from_checkpoint,
+    ProductionBlockFaultEvidence, ProductionExactCheckpointClosure,
+    ProductionExactCheckpointObject, ProductionFaultEvidenceSnapshot,
+    ProductionNetworkOutageEvidence, ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence,
+    ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmNodeCheckpointArtifact,
+    ProductionVmNodeGeneration, ProductionVmNodeLaunch, ProductionVmNodeLaunchKind,
+    ProductionVmNodeLaunchRequest, ProductionVmNodeLauncher, ProductionVmNodeLease,
+    ProductionVmNodePreparationKind, build_production_vm_lifecycle_loop,
+    build_production_vm_lifecycle_loop_from_checkpoint,
     build_production_vm_lifecycle_loop_from_checkpoint_with_launcher,
     build_production_vm_lifecycle_loop_with_launcher, collect_signal_artifact_objects,
-    production_vm_search_frontier,
+    open_exact_checkpoint_closure, production_vm_search_frontier,
 };
 // Re-exported so control-plane clients (e.g. the CLI) record the *shared*
 // guest-host protocol version in a reproduction artifact's provenance triple

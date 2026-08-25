@@ -28,8 +28,163 @@ const MAX_MANIFEST_BYTES_U64: u64 = 64 * 1024 * 1024;
 const ARTIFACT_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 const ARTIFACT_CHUNK_BYTES_U64: u64 = 4 * 1024 * 1024;
 const SPARSE_COPY_BUFFER_BYTES: usize = 1024 * 1024;
+const CLOSURE_EXPORT_COPY_BUFFER_BYTES: usize = 1024 * 1024;
 const SMALL_CONTINUATION_MAX_BYTES: u64 = 268_435_456;
 const LARGE_CONTINUATION_MAX_BYTES: u64 = 1_610_612_800;
+
+/// One immutable object in a portable production exact-checkpoint closure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProductionExactCheckpointObject {
+    identity: ContentHash,
+    length: u64,
+}
+
+impl ProductionExactCheckpointObject {
+    /// Returns the BLAKE3 content identity used by the production closure manifest.
+    #[must_use]
+    pub const fn identity(self) -> ContentHash {
+        self.identity
+    }
+
+    /// Returns the exact logical byte length of this stored object.
+    #[must_use]
+    pub const fn length(self) -> u64 {
+        self.length
+    }
+}
+
+/// Read-only portable view of one complete production exact-checkpoint closure.
+///
+/// The value exposes no directory or mutation authority. Its manifest is the
+/// canonical `crucible.production-exact-closure.v4` body, and its object list
+/// is the exact deduplicated set named by that manifest. Large overlay and
+/// VMState artifacts remain represented by their bounded content-addressed
+/// chunks rather than by RAM-sized buffers.
+pub struct ProductionExactCheckpointClosure {
+    identity: ContentHash,
+    scenario: ContentHash,
+    configuration: ContentHash,
+    manifest: Vec<u8>,
+    object_directory: PathBuf,
+    objects: Vec<ProductionExactCheckpointObject>,
+}
+
+impl ProductionExactCheckpointClosure {
+    /// Returns the authenticated production closure identity.
+    #[must_use]
+    pub const fn identity(&self) -> ContentHash {
+        self.identity
+    }
+
+    /// Returns the exact scenario named by the closure manifest.
+    #[must_use]
+    pub const fn scenario(&self) -> ContentHash {
+        self.scenario
+    }
+
+    /// Returns the exact modeled configuration named by the closure manifest.
+    #[must_use]
+    pub const fn configuration(&self) -> ContentHash {
+        self.configuration
+    }
+
+    /// Returns the canonical version-four production closure manifest bytes.
+    #[must_use]
+    pub fn manifest(&self) -> &[u8] {
+        &self.manifest
+    }
+
+    /// Returns the exact sorted and deduplicated immutable object inventory.
+    #[must_use]
+    pub fn objects(&self) -> &[ProductionExactCheckpointObject] {
+        &self.objects
+    }
+
+    /// Streams and authenticates one exact object into `destination`.
+    ///
+    /// No bytes from an unlisted object can be read through this capability.
+    /// The complete source length and BLAKE3 identity are checked after EOF;
+    /// callers must treat a partially written destination as untrusted on
+    /// failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when `identity` is not in this closure,
+    /// the retained object is unavailable or changed, destination I/O fails,
+    /// or the final length or identity differs.
+    pub fn copy_object_to(
+        &self,
+        identity: ContentHash,
+        destination: &mut dyn Write,
+    ) -> Result<u64, LifecycleApiError> {
+        let object = self
+            .objects
+            .binary_search_by_key(&identity, |object| object.identity)
+            .ok()
+            .and_then(|index| self.objects.get(index))
+            .ok_or_else(|| loop_factory_error("exact checkpoint object is not in the manifest"))?;
+        let path = object_path(&self.object_directory, identity);
+        let mut source = File::open(&path).map_err(|error| {
+            loop_factory_error(format!(
+                "open exact checkpoint object {}: {error}",
+                identity.to_hex()
+            ))
+        })?;
+        let observed_length = source
+            .metadata()
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "inspect exact checkpoint object {}: {error}",
+                    identity.to_hex()
+                ))
+            })?
+            .len();
+        if observed_length != object.length {
+            return Err(loop_factory_error(format!(
+                "exact checkpoint object {} length changed from {} to {observed_length}",
+                identity.to_hex(),
+                object.length
+            )));
+        }
+
+        let mut hasher = blake3::Hasher::new();
+        let mut copied = 0_u64;
+        let mut buffer = [0_u8; CLOSURE_EXPORT_COPY_BUFFER_BYTES];
+        loop {
+            let count = source.read(&mut buffer).map_err(|error| {
+                loop_factory_error(format!(
+                    "read exact checkpoint object {}: {error}",
+                    identity.to_hex()
+                ))
+            })?;
+            if count == 0 {
+                break;
+            }
+            destination.write_all(&buffer[..count]).map_err(|error| {
+                loop_factory_error(format!(
+                    "write exact checkpoint object {}: {error}",
+                    identity.to_hex()
+                ))
+            })?;
+            hasher.update(&buffer[..count]);
+            copied = copied
+                .checked_add(u64::try_from(count).map_err(|_| {
+                    loop_factory_error("exact checkpoint copy length is not representable")
+                })?)
+                .ok_or_else(|| loop_factory_error("exact checkpoint copy length overflow"))?;
+        }
+        let observed = ContentHash {
+            bytes: *hasher.finalize().as_bytes(),
+        };
+        if copied != object.length || observed != identity {
+            return Err(loop_factory_error(format!(
+                "exact checkpoint object {} failed streaming authentication",
+                identity.to_hex()
+            )));
+        }
+        Ok(copied)
+    }
+}
 
 #[derive(PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -530,6 +685,131 @@ pub(super) fn load_exact_checkpoint_set(
     validate_checkpoint_set(scenario.id(), &restored)
         .map_err(|error| loop_factory_error(error.to_string()))?;
     Ok(restored)
+}
+
+/// Opens one published production checkpoint as a portable read-only closure.
+///
+/// This operation authenticates the canonical manifest, its closure identity,
+/// scenario binding, exact object names, object types, and aggregate retained
+/// bytes without loading large objects into memory. Each object is
+/// independently reauthenticated when streamed through
+/// [`ProductionExactCheckpointClosure::copy_object_to`].
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError`] when the closure manifest is unavailable,
+/// malformed, noncanonical, over its scenario-authored bounds, names another
+/// scenario or identity, or any required object is absent or not a regular
+/// file.
+pub fn open_exact_checkpoint_closure(
+    run_state_root: &Path,
+    source: &ScenarioDefForm,
+    identity: ContentHash,
+) -> Result<ProductionExactCheckpointClosure, LifecycleApiError> {
+    let scenario = source.scenario_def().id();
+    let limits = source.plan().fault_signals().resource_limits();
+    let root = closure_parent(run_state_root, scenario).join(identity.to_hex());
+    let manifest_path = root.join(MANIFEST_FILE);
+    let manifest = read_bounded_file(&manifest_path, MAX_MANIFEST_BYTES_U64).map_err(|error| {
+        loop_factory_error(format!(
+            "read portable exact checkpoint manifest {}: {error}",
+            identity.to_hex()
+        ))
+    })?;
+    let decoded = decode::decode_manifest_with_limits(&manifest, limits)?;
+    if decoded.identity != identity
+        || closure_identity(&decoded).map_err(|error| loop_factory_error(error.to_string()))?
+            != identity
+        || decoded.scenario != scenario
+    {
+        return Err(loop_factory_error(
+            "portable exact checkpoint manifest failed identity or scenario authentication",
+        ));
+    }
+
+    let object_directory = object_parent(run_state_root, scenario);
+    let identities = manifest_object_identities(&decoded);
+    let mut total = u64::try_from(manifest.len())
+        .map_err(|_| loop_factory_error("checkpoint manifest length is not representable"))?;
+    let mut objects = Vec::new();
+    objects
+        .try_reserve_exact(identities.len())
+        .map_err(|_| loop_factory_error("reserve portable checkpoint object inventory"))?;
+    for object_identity in identities {
+        let path = object_path(&object_directory, object_identity);
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            loop_factory_error(format!(
+                "inspect portable checkpoint object {}: {error}",
+                object_identity.to_hex()
+            ))
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(loop_factory_error(format!(
+                "portable checkpoint object {} is not a regular file",
+                object_identity.to_hex()
+            )));
+        }
+        let length = metadata.len();
+        total = add_checkpoint_bytes(total, length)
+            .map_err(|error| loop_factory_error(error.to_string()))?;
+        objects.push(ProductionExactCheckpointObject {
+            identity: object_identity,
+            length,
+        });
+    }
+    limits
+        .reserve("fat_checkpoint_bytes", 0, total)
+        .map_err(|error| match error {
+            crucible::model::FaultResourceLimitError::Exceeded {
+                field,
+                current,
+                requested,
+                configured,
+                hard,
+            }
+            | crucible::model::FaultResourceLimitError::UsageOverflow {
+                field,
+                current,
+                requested,
+                configured,
+                hard,
+            } => LifecycleApiError::ResourceLimit(crate::LifecycleResourceLimit {
+                field,
+                current,
+                requested,
+                configured,
+                hard,
+            }),
+            error => loop_factory_error(error.to_string()),
+        })?;
+
+    Ok(ProductionExactCheckpointClosure {
+        identity,
+        scenario,
+        configuration: decoded.configuration,
+        manifest,
+        object_directory,
+        objects,
+    })
+}
+
+fn manifest_object_identities(manifest: &ClosureManifest) -> BTreeSet<ContentHash> {
+    let mut identities = BTreeSet::from([
+        manifest.schedule,
+        manifest.scheduler,
+        manifest.trigger_state,
+        manifest.assertion_state,
+        manifest.lifecycle_state,
+        manifest.fault_checkpoint,
+    ]);
+    identities.extend(manifest.event_log_segments.iter().copied());
+    identities.extend(manifest.signal_artifacts.iter().copied());
+    for target in &manifest.targets {
+        identities.insert(target.snapshot);
+        identities.extend(target.overlay.chunks.iter().copied());
+        identities.extend(target.vmstate.chunks.iter().copied());
+    }
+    identities
 }
 
 fn validate_checkpoint_set(
@@ -2133,6 +2413,69 @@ mod tests {
         assert_ne!(
             closure_identity(&original).expect("derive changed closure identity"),
             identity
+        );
+    }
+
+    #[test]
+    fn portable_closure_inventory_streams_only_authenticated_manifest_objects() {
+        let root = tempfile::tempdir().expect("create portable closure root");
+        let source = crucible::happy_path_scenario()
+            .expect("build portable closure scenario")
+            .scenario;
+        let scenario = source.scenario_def().id();
+        let bytes = b"deduplicated portable checkpoint object";
+        let object_identity = ContentHash::from_bytes(bytes);
+        let mut manifest = manifest();
+        manifest.scenario = scenario;
+        manifest.configuration = ContentHash::from_bytes(b"portable configuration");
+        manifest.schedule = object_identity;
+        manifest.scheduler = object_identity;
+        manifest.trigger_state = object_identity;
+        manifest.assertion_state = object_identity;
+        manifest.lifecycle_state = object_identity;
+        manifest.fault_checkpoint = object_identity;
+        manifest.identity = closure_identity(&manifest).expect("derive portable closure identity");
+
+        let object_directory = object_parent(root.path(), scenario);
+        fs::create_dir_all(&object_directory).expect("create portable object directory");
+        persist_object(&object_directory, object_identity, bytes).expect("persist portable object");
+        let publication = closure_parent(root.path(), scenario).join(manifest.identity.to_hex());
+        fs::create_dir_all(&publication).expect("create portable publication directory");
+        fs::write(
+            publication.join(MANIFEST_FILE),
+            encode_manifest(&manifest).expect("encode portable manifest"),
+        )
+        .expect("write portable manifest");
+
+        let closure = open_exact_checkpoint_closure(root.path(), &source, manifest.identity)
+            .expect("open portable checkpoint closure");
+        assert_eq!(closure.identity(), manifest.identity);
+        assert_eq!(closure.scenario(), scenario);
+        assert_eq!(closure.configuration(), manifest.configuration);
+        assert_eq!(closure.objects().len(), 1);
+        assert_eq!(closure.objects()[0].identity(), object_identity);
+        let object_length = u64::try_from(bytes.len()).expect("fixture length fits");
+        assert_eq!(closure.objects()[0].length(), object_length);
+        let mut copied = Vec::new();
+        assert_eq!(
+            closure
+                .copy_object_to(object_identity, &mut copied)
+                .expect("stream portable object"),
+            object_length
+        );
+        assert_eq!(copied, bytes);
+        assert!(
+            closure
+                .copy_object_to(ContentHash::from_bytes(b"unlisted"), &mut Vec::new())
+                .is_err()
+        );
+
+        fs::write(object_path(&object_directory, object_identity), b"changed")
+            .expect("replace portable object fixture");
+        assert!(
+            closure
+                .copy_object_to(object_identity, &mut Vec::new())
+                .is_err()
         );
     }
 

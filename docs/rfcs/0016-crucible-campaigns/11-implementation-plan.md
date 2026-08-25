@@ -704,7 +704,14 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   binding over metadata, scheduler continuation, and VMState only after
   authenticated EOF and file sync; interruption leaves guarded launch
   fail-closed. Legacy version-two roots remain readable but cannot resume a
-  campaign attempt. A guarded-only
+  campaign attempt. The complete production lifecycle checkpoint store now
+  also lends a read-only portable closure capability: it authenticates the
+  version-four production manifest and exact sorted object inventory under the
+  scenario's aggregate checkpoint bound, keeps overlay and VMState artifacts
+  chunked, and reauthenticates each object while streaming without exposing its
+  directory. Campaign exact-root versioning and CAS import of that complete
+  multi-node trigger/assertion/fault/network continuation remain open before
+  the packaged executor may advertise exact resume. A guarded-only
   exact-root launcher now consumes that
   pinned authority, rechecks the selected snapshot and checkpoint identities,
   and uses the sealed child-process contract for pre-`exec` containment. The
