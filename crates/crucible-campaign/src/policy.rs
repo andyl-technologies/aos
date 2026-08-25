@@ -115,13 +115,24 @@ pub const ORDERED_MIXTURE_GENERATOR_MAX_DEPTH: usize = 64;
 /// This version emits an initial exact stratification, then repeatedly bisects
 /// the largest remaining legal-offset interval. Refinement `r` requires the
 /// branch point's cumulative completed-visit count to reach `r` times the
-/// declared interval. Earlier and unknown versions remain suspended.
+/// declared interval. Version 11 retains these gates with a distinct
+/// feedback-scored interval order; earlier and unknown versions remain
+/// suspended.
 pub const PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 9;
 
-/// Maximum initial strata admitted by progressive-integer version 9.
+/// Generator implementation version for feedback-scored integer refinement.
+///
+/// This version retains version 9's exact stratified prefix and visit gates,
+/// then scores every remaining interval by the absolute difference between its
+/// owner-derived endpoint PUCT scores. Equal scores prefer the largest interval
+/// and then its lowest legal offset. Earlier, version 9, and unknown versions
+/// retain their own behavior or remain suspended.
+pub const FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 11;
+
+/// Maximum initial strata admitted by progressive-integer versions 9 and 11.
 pub const PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA: u32 = 4_096;
 
-/// Maximum proposals admitted by one progressive-integer branch request.
+/// Maximum proposals admitted by one executable progressive-integer request.
 ///
 /// Owner recomputation retains a bounded interval heap through proposal,
 /// observation, import, and restart validation.

@@ -2289,7 +2289,7 @@ impl CampaignRepository {
             let use_puct = engine
                 .capabilities()
                 .contains(crate::CANONICAL_FRONTIER_PUCT_CAPABILITY);
-            let mut ready_offers = Vec::new();
+            let mut ready_positions = Vec::new();
             let mut candidate_cache = PlannerCandidateProjectionCache::default();
             for position in invocation.scan_page().positions() {
                 let projection = self.planner_continuation_projection(&snapshot, *position)?;
@@ -2299,29 +2299,49 @@ impl CampaignRepository {
                     self.read_envelope(projection.id()?.content_id())?,
                 )?;
                 if projection.state() != crate::ContinuationState::Ready
-                    || (!use_puct && !ready_offers.is_empty())
+                    || (!use_puct && !ready_positions.is_empty())
                 {
                     continue;
                 }
+                ready_positions.push(*position);
+            }
+            let mut projection_points = if use_puct {
+                ready_positions
+                    .iter()
+                    .map(|position| position.branch_point())
+                    .collect::<BTreeSet<_>>()
+            } else {
+                BTreeSet::new()
+            };
+            for position in &ready_positions {
+                let request = self.read_branch_request(position.source().content_id())?;
+                let domain = self.read_choice_domain(request.domain().content_id())?;
+                if self.next_candidate_scores_intervals(
+                    super::projection::CandidateViewRoots::from_roots(snapshot.snapshot.roots()),
+                    position.source(),
+                    &request,
+                    &domain,
+                )? {
+                    projection_points.insert(position.branch_point());
+                }
+            }
+            let puct_projections = if projection_points.is_empty() {
+                BTreeMap::new()
+            } else {
+                self.project_branch_puct_batch_loaded(&snapshot, projection_points)?
+            };
+            let mut ready_offers = Vec::new();
+            for position in ready_positions {
                 let (_, offer) = self.planner_candidate_input(
                     &snapshot,
                     invocation_id,
-                    *position,
+                    position,
                     &mut candidate_cache,
+                    puct_projections.get(&position.branch_point()),
                 )?;
                 let offer = offer.ok_or_else(|| integrity("planner-ready-candidate-is-missing"))?;
-                ready_offers.push((*position, offer));
+                ready_offers.push((position, offer));
             }
-            let puct_projections = if use_puct {
-                self.project_branch_puct_batch_loaded(
-                    &snapshot,
-                    ready_offers
-                        .iter()
-                        .map(|(position, _)| position.branch_point()),
-                )?
-            } else {
-                BTreeMap::new()
-            };
             for (position, offer) in ready_offers {
                 push_retained_planner_input(
                     &mut retained,

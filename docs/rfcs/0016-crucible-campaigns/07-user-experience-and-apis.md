@@ -388,10 +388,15 @@ bounds. Implementation-version 9 `progressive_integer` additionally reports
 `WaitingForFeedback(completed_visits, required_visits)` between its bounded
 initial strata and each exact visit-gated largest-gap refinement; it reports
 `Closed`, rather than `Exhausted`, when the request budget truncates the domain.
+Implementation-version 10 `mutate_near_corpus` reports `Ready` only while the
+exact retained completed-selection basis yields an unproposed bounded mutation,
+and otherwise waits for another credit. Implementation-version 11
+`progressive_integer` reports the same thresholds as version 9 while its next
+midpoint is selected by exact owner-derived endpoint PUCT feedback.
 A mixture containing any suspended child remains conservatively `Open`. Other
 generated sources remain `Open` until their deterministic enumerator and
-feedback owner land. Rich admitted-value, reward, interval, and
-explanation views and CLI rendering remain open.
+feedback owner land. Rich admitted-value, raw measurement/landmark interval,
+and explanation views and CLI rendering remain open.
 
 The local repository API exposes the same validation boundary at object scale.
 Typed loads authenticate scenario/configuration artifacts, opportunities,

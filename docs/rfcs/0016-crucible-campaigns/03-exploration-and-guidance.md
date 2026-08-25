@@ -260,10 +260,38 @@ selection resolver's existing 4,096-ID and 128-MiB unique-record budget. Every
 limit and the exact proposal-set continuation are recomputed during local
 acceptance, import, and restart.
 
+Generator implementation-version 11 gives `progressive_integer` an exact
+feedback-sensitive interval order while retaining version 9's stratified
+prefix, visit thresholds, midpoint rule, exhaustion semantics, and 4,096-value
+bounds. After the initial prefix, reconstruct the exact set of values already
+proposed by this request and every maximal interval of unselected legal offsets.
+For each interval, take the nearest selected offset immediately below and above
+it. A missing exterior endpoint has score zero. Each present endpoint maps to
+the semantic `BranchEdgeId` derived from this request's branch point, domain
+semantic ID, and value. Score that edge with the active policy's owner-derived
+fixed-point PUCT projection at the proposal's exact planning view. A completed
+edge uses its authenticated statistics; an admitted but unobserved endpoint is
+scored as the sole prospective weight-one generated edge, using the same exact
+normalization as planner guidance.
+
+The interval score is the unsigned absolute difference between the two signed
+endpoint `total_micros` scores. Select the greatest score, then the greatest
+interval cardinality, then the lowest interval offset; emit its lower midpoint.
+This folds exact completed visits, objective reward, verified finding reward,
+globally unique coverage novelty, exploration uncertainty, and fairness into
+interval choice without trusting arrival-order telemetry. Previously issued
+values remain the portable continuation, so later observations or a policy
+change can select a different *next* interval but cannot reinterpret an earlier
+proposal. Candidate construction fails closed when the active policy does not
+provide the required tree-search PUCT owner for a feedback refinement.
+Planner-page construction batches
+all needed branch-point projections under the existing aggregate credit,
+record, identity, and byte ceilings before deriving offers.
+
 Other algorithms remain valid suspended specifications but fail closed at
 proposal issuance and expansion projection until their versioned cursor and
 feedback owners are implemented. Earlier and unknown implementation versions
-remain suspended rather than being reinterpreted as versions 2 through 10; this
+remain suspended rather than being reinterpreted as versions 2 through 11; this
 preserves owner validation of histories created before executable enumeration
 landed.
 
@@ -344,9 +372,10 @@ The partition is derived from proposals and observations and can be rebuilt.
 Splits use exact integer midpoint and rounding rules. Empty or duplicate splits
 are discarded. Version 9 is the bounded feedback-gated interval owner described
 in §03.2: its visit count gates refinement, while its largest-gap choice does
-not yet consume reward, novelty, finding, or measurement scores. A later
-implementation version is required before those signals may change interval
-selection.
+not consume guidance scores. Version 11 consumes the exact owner-derived PUCT
+endpoint score described there. Dedicated raw measurement-discontinuity and
+producer-landmark interval terms require a later implementation version; they
+MUST NOT be inferred from unauthenticated telemetry in the meantime.
 
 - **[GUIDE-5]** Progressive widening MUST feed descendant observations back to
   the expansion state at every branch point on the recorded branch-edge path.
@@ -371,6 +400,14 @@ selection.
   4,096-proposal, 65,536-work-unit, and two 128-MiB input-resolution bounds
   during local acceptance, import, and restart. Earlier and unknown corpus-
   mutation versions MUST remain suspended.
+- **[GUIDE-27]** Feedback-progressive implementation-version 11 MUST retain
+  version 9's exact prefix, visit gates, midpoint, exhaustion, and owner bounds;
+  reconstruct the portable proposed-value set; rank every remaining interval by
+  absolute exact endpoint PUCT-score difference, then interval cardinality and
+  lower offset; and derive completed or prospective endpoint scores only from
+  the exact active policy and planning view. Version 9 histories MUST retain
+  their largest-gap order, and earlier or unknown progressive versions MUST
+  remain suspended.
 
 ## 03.4 Tree policy: deterministic MCTS/PUCT
 

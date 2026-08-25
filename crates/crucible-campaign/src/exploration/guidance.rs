@@ -350,6 +350,12 @@ impl BranchPuctProjection {
         self.policy
     }
 
+    /// Returns the exact PUCT policy used for every retained endpoint score.
+    #[must_use]
+    pub(crate) const fn puct(&self) -> PuctPolicy {
+        self.puct
+    }
+
     /// Returns the number of completed observations credited to the parent.
     #[must_use]
     pub const fn parent_visits(&self) -> u64 {

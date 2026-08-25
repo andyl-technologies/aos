@@ -499,7 +499,12 @@ weighted virtual-finish schedule, duplicate suppression, and work/depth/output
 bounds in §03.2. Implementation-version 9 `progressive_integer` uses the exact
 stratified-prefix and largest-gap order in §03.2, but an ordinal after the
 initial prefix is valid only when the source snapshot contains its exact
-authenticated completed-visit threshold. Proposals from every other generated
+authenticated completed-visit threshold. Implementation-version 10
+`mutate_near_corpus` uses the exact completed-selection/proposed-value
+continuation in §03.2. Implementation-version 11 `progressive_integer` uses
+version 9's exact prefix and visit gates, then requires the exact source
+snapshot's owner-derived endpoint PUCT projection to reproduce each refinement.
+Proposals from every other generated
 source require the selected deterministic generator owner to reproduce the same
 value and remain fail-closed until that owner is implemented.
 
@@ -535,7 +540,10 @@ budget, create a graph child, or count as an admitted continuation value.
   implementation-version 8 `ordered_mixture` within its exact recursive work
   profile. Implementation-version 9 `progressive_integer` also has a
   deterministic ordinal order, but its refinement ordinals MUST additionally
-  satisfy the exact source-snapshot feedback threshold in §03.2. Other
+  satisfy the exact source-snapshot feedback threshold in §03.2.
+  Implementation-version 10 `mutate_near_corpus` and implementation-version 11
+  `progressive_integer` have view-dependent next values whose exact portable
+  continuations and owner-derived feedback bases MUST reproduce §03.2. Other
   generated proposal issuance MUST fail closed unless the named
   deterministic generator owner reproduces the value from authenticated
   campaign facts.
@@ -562,6 +570,17 @@ budget, create a graph child, or count as an admitted continuation value.
   history remains projectable by one bounded observation transition. A legacy
   campaign without the canonical frontier anchor MUST reject version-9 request
   admission rather than create a partial index over only its newer history.
+- **[LAZY-48]** Corpus-mutation implementation-version 10 MUST reconstruct its
+  next value from the exact completed branch selection/corpus basis and the
+  immutable request's complete prior proposal set, enforce every §03.2 bound,
+  wait for new authenticated credit when no candidate exists, and reproduce the
+  same owner result during imported proposal validation and restart.
+- **[LAZY-49]** Feedback-progressive implementation-version 11 MUST use the
+  version-9 request/credit index and thresholds, reconstruct the complete prior
+  proposal set, batch exact active-policy PUCT projections for planner pages,
+  and reproduce the endpoint-score/length/lower-offset interval order in §03.2
+  during local issue, import, and restart. A substituted largest-gap value or a
+  missing/foreign feedback projection MUST fail before publication.
 
 ## 04.13 Atomic attempt admission
 
@@ -684,6 +703,12 @@ is `WaitingForFeedback` with the exact current and required counts. Completing
 the bounded stream is `Exhausted` only when the request budget covers the exact
 domain; a truncated stream is `Closed`.
 
+Implementation-version 11 has the same continuation states and thresholds as
+version 9. Feedback changes only which exact legal midpoint owns the next
+available ordinal. Implementation-version 10 is `Ready` when its current exact
+view yields an unproposed corpus mutation, `WaitingForFeedback` when it does
+not, and `Closed` only when proposal budget is exhausted.
+
 `admitted_children` counts only distinct `ExecutionBasis` admissions rooted
 at the branch point. A pending proposal contributes zero, and an
 `AdditionalCause` contributes an admission record but no new child. This
@@ -735,7 +760,10 @@ admission is rejected.
   values or implementation-version 7 `weighted_categorical` over at most 256
   exact discrete alternatives or implementation-version 8 `ordered_mixture`
   within its exact recursive work profile, or implementation-version 9
-  `progressive_integer` within its exact bounds and feedback thresholds. Static
+  `progressive_integer` within its exact bounds and feedback thresholds, or
+  implementation-version 10 `mutate_near_corpus` within its portable
+  proposal-set/corpus bounds, or implementation-version 11
+  `progressive_integer` within its exact PUCT-feedback bounds. Static
   continuation state MAY bind a nonempty observation root because its state is
   independent of feedback. Every completed-visit statistic and progressive
   wakeup MUST equal the exact nested credit-set count. The compact expansion
