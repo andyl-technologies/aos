@@ -38,7 +38,7 @@ use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, MemoryBlobBackend,
     MemoryRefBackend, PlacementReceipt, PutReceipt, StoreError,
 };
-use crucible_qemu::{QemuReplayOracleValidation, QemuVmSnapshot};
+use crucible_qemu::{QemuReplayOracleCheck, QemuReplayOracleValidation, QemuVmSnapshot};
 
 use super::*;
 use crate::{
@@ -49,9 +49,12 @@ use crate::{
     ExactCheckpointStore, ExecutionCancellation, ExecutorCapacity, ExecutorLocalService,
     ExecutorLocalServiceError, ExecutorLoopbackEndpointConfig, ExecutorLoopbackServerConfig,
     LoopbackExecutorService, MemoryAssignmentLedger,
-    PausedCheckpointPromotionRecoveryResolutionError, RepositoryAttemptAdmission,
-    RepositoryAttemptWorker, RepositoryAttemptWorkerError, UnixPeerExecutorIdentity,
+    PausedCheckpointPromotionRecoveryResolutionError, PausedCheckpointPromotionStageOutcome,
+    PreparedPausedCheckpointPromotion, PreparedPausedCheckpointPromotionRestart,
+    RepositoryAttemptAdmission, RepositoryAttemptWorker, RepositoryAttemptWorkerError,
+    UnixPeerExecutorIdentity, recover_published_paused_checkpoint_promotion,
     resolve_production_paused_checkpoint_promotion_recovery,
+    stage_prepared_paused_checkpoint_promotion,
 };
 
 struct TestDurableBackend {
@@ -126,6 +129,82 @@ impl AttemptAdmissionValidator for BlockingAdmission {
 
 struct SequencedFailureWorker {
     calls: Arc<AtomicUsize>,
+}
+
+struct ExactStorePromotionWorker {
+    checkpoints: Arc<ExactCheckpointStore>,
+    calls: Arc<AtomicUsize>,
+}
+
+struct BlockingCheckpointPromotionWorker {
+    entered: Arc<AtomicUsize>,
+    canceled: Arc<AtomicUsize>,
+}
+
+impl LocalCheckpointPromotionWorker for ExactStorePromotionWorker {
+    type Error = &'static str;
+
+    fn prepare(
+        &mut self,
+        work: CheckpointPromotionRestartWork,
+        _cancellation: ExecutionCancellation,
+    ) -> Result<PreparedPausedCheckpointPromotionRestart, AttemptWorkerFailure<Self::Error>> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        match work {
+            CheckpointPromotionRestartWork::Paused(recovery) => {
+                let source = self.checkpoints.load(recovery.source()).map_err(|_| {
+                    AttemptWorkerFailure::Terminal("load raw checkpoint promotion source")
+                })?;
+                let runtime_hash = source.snapshot().checkpoint().configuration;
+                let check = QemuReplayOracleCheck::from_unvalidated_test_result(
+                    source.snapshot().id(),
+                    QemuReplayOracleValidation::Match { runtime_hash },
+                );
+                let promotion = self
+                    .checkpoints
+                    .prepare_replay_oracle_promotion(recovery.source(), check)
+                    .map_err(|_| {
+                        AttemptWorkerFailure::Terminal("prepare raw checkpoint promotion")
+                    })?;
+                Ok(PreparedPausedCheckpointPromotionRestart::Stage(Box::new(
+                    PreparedPausedCheckpointPromotion::new(
+                        recovery.key(),
+                        recovery.execution(),
+                        promotion,
+                    ),
+                )))
+            }
+            CheckpointPromotionRestartWork::Staged(recovery) => {
+                let published =
+                    recover_published_paused_checkpoint_promotion(&self.checkpoints, recovery)
+                        .map_err(|_| {
+                            AttemptWorkerFailure::Terminal(
+                                "authenticate staged checkpoint promotion",
+                            )
+                        })?;
+                Ok(PreparedPausedCheckpointPromotionRestart::Reconcile(
+                    Box::new(published),
+                ))
+            }
+        }
+    }
+}
+
+impl LocalCheckpointPromotionWorker for BlockingCheckpointPromotionWorker {
+    type Error = &'static str;
+
+    fn prepare(
+        &mut self,
+        _work: CheckpointPromotionRestartWork,
+        cancellation: ExecutionCancellation,
+    ) -> Result<PreparedPausedCheckpointPromotionRestart, AttemptWorkerFailure<Self::Error>> {
+        self.entered.store(1, Ordering::Release);
+        while !cancellation.is_canceled() {
+            thread::sleep(Duration::from_millis(1));
+        }
+        self.canceled.store(1, Ordering::Release);
+        Err(AttemptWorkerFailure::Canceled("promotion shutdown"))
+    }
 }
 
 impl LocalAttemptWorker for SequencedFailureWorker {
@@ -537,6 +616,75 @@ fn checkpoint_capture_publishes_once_and_reconciles_paused_without_rerun() {
     assert_eq!(report.checkpoints_discarded(), 0);
     assert_eq!(report.active(), 0);
     assert_eq!(pool.shutdown_and_join().expect("clean shutdown"), report);
+}
+
+#[test]
+fn newly_paused_checkpoint_is_enqueued_and_promoted_without_rerunning_attempt() {
+    let epoch = DaemonEpoch::from_bytes([0x3a; 16]).expect("epoch");
+    let entered = Arc::new(AtomicUsize::new(0));
+    let promotion_calls = Arc::new(AtomicUsize::new(0));
+    let checkpoints = checkpoint_store();
+    let pool = LocalExecutorWorkerPool::start_with_checkpoint_promotions(
+        capability(epoch),
+        store(),
+        Arc::clone(&checkpoints),
+        vec![CheckpointWorker {
+            entered: Arc::clone(&entered),
+        }],
+        vec![ExactStorePromotionWorker {
+            checkpoints,
+            calls: Arc::clone(&promotion_calls),
+        }],
+    )
+    .expect("promotion-enabled checkpoint pool");
+    let assignment = request(epoch, 0x4c);
+    let mut service = pool.service();
+    let accepted = service
+        .submit_attempt(&assignment)
+        .expect("accept checkpointable execution");
+    let SubmitAttemptDisposition::Accepted { execution } = accepted.disposition() else {
+        panic!("checkpointable execution should be newly accepted")
+    };
+    wait_until(Duration::from_secs(2), || {
+        entered.load(Ordering::Acquire) == 1
+    });
+
+    let checkpoint_request =
+        CheckpointAttemptExecutionRequest::new(&assignment, execution).expect("checkpoint request");
+    service
+        .checkpoint_attempt_execution(&checkpoint_request)
+        .expect("request exact checkpoint");
+    wait_until(Duration::from_secs(2), || {
+        service
+            .report()
+            .is_ok_and(|report| report.promotions_reconciled() == 1)
+    });
+
+    let status_request =
+        GetAttemptExecutionRequest::new(&assignment, execution).expect("status request");
+    let status = service
+        .get_attempt_execution(&status_request)
+        .expect("promoted paused status");
+    let GetAttemptExecutionDisposition::Paused { checkpoint } = status.disposition() else {
+        panic!("execution should remain paused after promotion")
+    };
+    let loaded = pool
+        .service
+        .shared
+        .checkpoints
+        .load(checkpoint)
+        .expect("load promoted exact checkpoint");
+    assert!(matches!(
+        loaded.snapshot().replay_oracle_validation(),
+        QemuReplayOracleValidation::Match { .. }
+    ));
+    assert_eq!(promotion_calls.load(Ordering::Acquire), 1);
+    let report = service.report().expect("promoted checkpoint report");
+    assert_eq!(report.executions(), 1);
+    assert_eq!(report.checkpoints_paused(), 1);
+    assert_eq!(report.promotions_reconciled(), 1);
+    assert_eq!(report.active(), 0);
+    pool.shutdown_and_join().expect("promotion pool shutdown");
 }
 
 #[test]
@@ -1116,6 +1264,291 @@ fn raw_pause_restart_rejects_an_inconsistent_execution_basis_before_repository_r
         ),
         Err(PausedCheckpointPromotionRecoveryResolutionError::ExecutionBasisMismatch)
     ));
+}
+
+#[test]
+fn fixed_promotion_worker_promotes_raw_restart_work_without_semantic_execution() {
+    let checkpoints = checkpoint_store();
+    let raw = checkpoints
+        .prepare(
+            &checkpoint_snapshot("promotion-worker-restart"),
+            BlobHandle::from_bytes(vec![0x41; 512]),
+        )
+        .and_then(|prepared| checkpoints.publish(&prepared))
+        .expect("publish raw restart checkpoint")
+        .root();
+    let source = checkpoints.load(raw).expect("load raw restart checkpoint");
+    let runtime_hash = source.snapshot().checkpoint().configuration;
+    let expected = checkpoints
+        .prepare_replay_oracle_promotion(
+            raw,
+            QemuReplayOracleCheck::from_unvalidated_test_result(
+                source.snapshot().id(),
+                QemuReplayOracleValidation::Match { runtime_hash },
+            ),
+        )
+        .expect("prepare expected promotion")
+        .promoted();
+
+    let epoch = DaemonEpoch::from_bytes([0xb1; 16]).expect("daemon epoch");
+    let request = request(epoch, 0xb2);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let execution = ExecutionId::from_bytes([0xb3; 16]).expect("execution");
+    let paused = AttemptRuntimeState::Paused {
+        execution_basis: request.execution_basis_digest(),
+        origin: crate::AttemptExecutionOrigin::Initial,
+        daemon_epoch: epoch,
+        execution,
+        checkpoint: raw,
+        promotion_basis: Some(CheckpointPromotionExecutionBasis::new(
+            request.resources(),
+            request.retention(),
+        )),
+    };
+    let mut ledger = MemoryAssignmentLedger::default();
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(key, None, Some(paused))
+            .expect("seed paused restart"),
+        AttemptStateCas::Advanced
+    );
+    let supervisor =
+        LocalExecutorSupervisor::new(ledger, AllowAllAttemptAdmission, epoch, capacity());
+    let executor = LocalExecutorCapabilityService::new(supervisor, description(epoch))
+        .expect("promotion executor capability");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let pool = LocalExecutorWorkerPool::start_with_checkpoint_promotions(
+        executor,
+        store(),
+        Arc::clone(&checkpoints),
+        vec![SequencedFailureWorker {
+            calls: Arc::new(AtomicUsize::new(0)),
+        }],
+        vec![ExactStorePromotionWorker {
+            checkpoints,
+            calls: Arc::clone(&calls),
+        }],
+    )
+    .expect("start promotion-enabled pool");
+    let service = pool.service();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let report = service.report().expect("promotion report");
+        if report.promotions_reconciled() == 1 {
+            assert_eq!(report.promotion_workers(), 1);
+            assert_eq!(report.promotions_active(), 0);
+            assert_eq!(report.promotions_queued(), 0);
+            assert_eq!(report.executions(), 0);
+            break;
+        }
+        assert!(Instant::now() < deadline, "promotion worker timed out");
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    let executor = service
+        .shared
+        .executor
+        .lock()
+        .expect("promotion supervisor");
+    assert_eq!(
+        executor
+            .supervisor()
+            .ledger()
+            .load_attempt(key)
+            .expect("load promoted attempt"),
+        Some(AttemptRuntimeState::Paused {
+            execution_basis: request.execution_basis_digest(),
+            origin: crate::AttemptExecutionOrigin::Initial,
+            daemon_epoch: epoch,
+            execution,
+            checkpoint: expected,
+            promotion_basis: Some(CheckpointPromotionExecutionBasis::new(
+                request.resources(),
+                request.retention(),
+            )),
+        })
+    );
+    drop(executor);
+    pool.shutdown_and_join().expect("promotion pool shutdown");
+}
+
+#[test]
+fn shutdown_cancels_in_flight_promotion_and_retains_raw_restart_root() {
+    let checkpoints = checkpoint_store();
+    let raw = checkpoints
+        .prepare(
+            &checkpoint_snapshot("promotion-worker-cancel"),
+            BlobHandle::from_bytes(vec![0x61; 512]),
+        )
+        .and_then(|prepared| checkpoints.publish(&prepared))
+        .expect("publish cancelable promotion source")
+        .root();
+    let epoch = DaemonEpoch::from_bytes([0xd1; 16]).expect("daemon epoch");
+    let request = request(epoch, 0xd2);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let execution = ExecutionId::from_bytes([0xd3; 16]).expect("execution");
+    let paused = AttemptRuntimeState::Paused {
+        execution_basis: request.execution_basis_digest(),
+        origin: crate::AttemptExecutionOrigin::Initial,
+        daemon_epoch: epoch,
+        execution,
+        checkpoint: raw,
+        promotion_basis: Some(CheckpointPromotionExecutionBasis::new(
+            request.resources(),
+            request.retention(),
+        )),
+    };
+    let mut ledger = MemoryAssignmentLedger::default();
+    ledger
+        .compare_exchange_attempt(key, None, Some(paused))
+        .expect("seed cancelable promotion");
+    let supervisor =
+        LocalExecutorSupervisor::new(ledger, AllowAllAttemptAdmission, epoch, capacity());
+    let executor = LocalExecutorCapabilityService::new(supervisor, description(epoch))
+        .expect("cancelable promotion executor");
+    let entered = Arc::new(AtomicUsize::new(0));
+    let canceled = Arc::new(AtomicUsize::new(0));
+    let pool = LocalExecutorWorkerPool::start_with_checkpoint_promotions(
+        executor,
+        store(),
+        checkpoints,
+        vec![SequencedFailureWorker {
+            calls: Arc::new(AtomicUsize::new(0)),
+        }],
+        vec![BlockingCheckpointPromotionWorker {
+            entered: Arc::clone(&entered),
+            canceled: Arc::clone(&canceled),
+        }],
+    )
+    .expect("start cancelable promotion pool");
+    let service = pool.service();
+    wait_until(Duration::from_secs(2), || {
+        entered.load(Ordering::Acquire) == 1
+    });
+
+    pool.request_shutdown();
+    let report = pool.shutdown_and_join().expect("join canceled promotion");
+    assert_eq!(canceled.load(Ordering::Acquire), 1);
+    assert_eq!(report.promotions_active(), 0);
+    assert_eq!(report.promotions_reconciled(), 0);
+    let executor = service
+        .shared
+        .executor
+        .lock()
+        .expect("canceled promotion supervisor");
+    assert_eq!(
+        executor
+            .supervisor()
+            .ledger()
+            .load_attempt(key)
+            .expect("load retained raw pause"),
+        Some(paused)
+    );
+}
+
+#[test]
+fn incomplete_staged_restart_reverts_and_regenerates_without_attempt_execution() {
+    let checkpoints = checkpoint_store();
+    let raw = checkpoints
+        .prepare(
+            &checkpoint_snapshot("promotion-worker-incomplete"),
+            BlobHandle::from_bytes(vec![0x51; 512]),
+        )
+        .and_then(|prepared| checkpoints.publish(&prepared))
+        .expect("publish incomplete-promotion source")
+        .root();
+    let source = checkpoints
+        .load(raw)
+        .expect("load incomplete-promotion source");
+    let runtime_hash = source.snapshot().checkpoint().configuration;
+    let promotion = checkpoints
+        .prepare_replay_oracle_promotion(
+            raw,
+            QemuReplayOracleCheck::from_unvalidated_test_result(
+                source.snapshot().id(),
+                QemuReplayOracleValidation::Match { runtime_hash },
+            ),
+        )
+        .expect("prepare incomplete replacement");
+    let expected = promotion.promoted();
+
+    let epoch = DaemonEpoch::from_bytes([0xc1; 16]).expect("daemon epoch");
+    let request = request(epoch, 0xc2);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let execution = ExecutionId::from_bytes([0xc3; 16]).expect("execution");
+    let paused = AttemptRuntimeState::Paused {
+        execution_basis: request.execution_basis_digest(),
+        origin: crate::AttemptExecutionOrigin::Initial,
+        daemon_epoch: epoch,
+        execution,
+        checkpoint: raw,
+        promotion_basis: Some(CheckpointPromotionExecutionBasis::new(
+            request.resources(),
+            request.retention(),
+        )),
+    };
+    let mut ledger = MemoryAssignmentLedger::default();
+    ledger
+        .compare_exchange_attempt(key, None, Some(paused))
+        .expect("seed incomplete promotion");
+    let mut supervisor =
+        LocalExecutorSupervisor::new(ledger, AllowAllAttemptAdmission, epoch, capacity());
+    let staged = match stage_prepared_paused_checkpoint_promotion(
+        &mut supervisor,
+        PreparedPausedCheckpointPromotion::new(key, execution, promotion),
+    )
+    .expect("stage incomplete replacement")
+    {
+        PausedCheckpointPromotionStageOutcome::Publish(staged) => staged,
+        other => panic!("expected staged incomplete replacement, got {other:?}"),
+    };
+    drop(staged);
+
+    let executor = LocalExecutorCapabilityService::new(supervisor, description(epoch))
+        .expect("incomplete promotion executor");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let pool = LocalExecutorWorkerPool::start_with_checkpoint_promotions(
+        executor,
+        store(),
+        Arc::clone(&checkpoints),
+        vec![SequencedFailureWorker {
+            calls: Arc::new(AtomicUsize::new(0)),
+        }],
+        vec![ExactStorePromotionWorker {
+            checkpoints,
+            calls: Arc::clone(&calls),
+        }],
+    )
+    .expect("restart incomplete promotion pool");
+    let service = pool.service();
+    wait_until(Duration::from_secs(2), || {
+        service
+            .report()
+            .is_ok_and(|report| report.promotions_reconciled() == 1)
+    });
+
+    assert_eq!(calls.load(Ordering::Acquire), 2);
+    let report = service.report().expect("regenerated promotion report");
+    assert_eq!(report.promotions_discarded(), 1);
+    assert_eq!(report.promotions_reconciled(), 1);
+    assert_eq!(report.executions(), 0);
+    let executor = service
+        .shared
+        .executor
+        .lock()
+        .expect("regenerated promotion supervisor");
+    assert!(matches!(
+        executor
+            .supervisor()
+            .ledger()
+            .load_attempt(key)
+            .expect("load regenerated promotion"),
+        Some(AttemptRuntimeState::Paused { checkpoint, .. }) if checkpoint == expected
+    ));
+    drop(executor);
+    pool.shutdown_and_join()
+        .expect("regenerated promotion shutdown");
 }
 
 #[test]

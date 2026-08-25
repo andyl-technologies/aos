@@ -248,9 +248,11 @@ pub use executor_loopback::{
     serve_loopback_executor_once_with_timeouts,
 };
 pub use executor_pool::{
-    LocalExecutorPoolCompletion, LocalExecutorPoolConfigError, LocalExecutorPoolReport,
-    LocalExecutorPoolService, LocalExecutorPoolServiceError, LocalExecutorPoolShutdown,
-    LocalExecutorPoolShutdownError, LocalExecutorWorkerPool, MAX_LOCAL_EXECUTOR_WORKERS,
+    LocalCheckpointPromotionWorker, LocalExecutorPoolCompletion, LocalExecutorPoolConfigError,
+    LocalExecutorPoolReport, LocalExecutorPoolService, LocalExecutorPoolServiceError,
+    LocalExecutorPoolShutdown, LocalExecutorPoolShutdownError, LocalExecutorWorkerPool,
+    MAX_LOCAL_CHECKPOINT_PROMOTION_QUEUE, MAX_LOCAL_CHECKPOINT_PROMOTION_WORKERS,
+    MAX_LOCAL_EXECUTOR_WORKERS, ProductionCheckpointPromotionWorker,
 };
 pub use executor_server::{
     ExecutorLoopbackListenerError, ExecutorLoopbackServer, ExecutorLoopbackServerConfig,

@@ -1519,6 +1519,20 @@ validation/publication or is explicitly reverted only after stable failure.
 Resume is `not-current` while promotion is staged and can begin only from the
 final `paused(promoted)` root.
 
+The local executor owns a fixed promotion-worker set distinct from semantic
+attempt workers. Startup streams durable raw/staged work into a deduplicated
+compact queue of at most 65,536 attempt keys before returning a service handle;
+larger inventories fail closed. Every newly committed raw pause is enqueued
+after releasing supervisor ownership. A fixed promotion worker owns at most one
+key and one cancellation incarnation at a time. Repository authentication,
+guarded replay comparison, and immutable publication occur outside the actor;
+only stage, reconcile, and revert borrow it. Retryable phases retain their
+linear token and never rerun the semantic attempt. Shutdown cancels in-flight
+comparison, and an interrupted or stably failed incomplete publication restores
+the retained raw root before releasing its token. The shared host resource
+owner, not the process-local queue, remains authoritative for aggregate QEMU
+capacity when semantic and promotion workers overlap.
+
 `ResumeAttemptExecution` is the idempotent admission request for a fresh local
 execution incarnation from one exact durable `paused(root)` state. Its request
 digest is
@@ -2318,8 +2332,8 @@ The daemon-packaged executor now selects the concrete fresh driver and the
 version-four exact-resume driver in a fixed worker pool with a shared aggregate
 resource owner and disjoint stable worker recovery roots. The exact-origin
 router never sends a retained root through fresh reconstruction. An
-independently admitted debugger world and automatic replay-oracle promotion
-remain open; no unsupported mode falls back to the packaged authority. The
+independently admitted debugger world and the concrete packaged replay-oracle
+factory remain open; no unsupported mode falls back to the packaged authority. The
 concrete modeled driver accepts an already-materialized authenticated discovery
 child or selected branch child and advances only empty-control scheduler quanta. It
 checks cancellation and the exact-checkpoint request before and after each
@@ -2374,8 +2388,8 @@ scheduler/evidence continuation, and exposes only the guarded live facade to
 the modeled driver. The runner rejects retained log suffixes, performs final
 drain and teardown itself, and reports `ExactRestore` only after sealing. Fresh
 exact-cache, baked-genesis, and thin image provisioning remain separate future
-optimizations; replay-oracle promotion remains mandatory before the packaged
-service may advertise exact restore. A
+optimizations; concrete packaged replay-oracle comparison remains mandatory
+before the packaged service may advertise exact restore. A
 process-only Linux facade
 now validates a daemon-incarnation
 namespace, non-root child IDs, task and finish bounds before acquiring the
@@ -2491,17 +2505,21 @@ The production preparation boundary authenticates the raw attempt root, retains
 only compact live-node descriptors, streams one raw snapshot at a time, and
 requires a node-specific oracle owner to finish or quarantine each guarded
 fat/thin comparison before minting the complete no-write replacement.
-Automatically scheduling that
-comparison phase from every newly paused packaged execution, including its
-retry owner after restart, remains open.
+A fixed bounded worker set now schedules that comparison from every newly
+paused execution and from the durable raw/staged inventory after restart. The
+generic production adapter retains one node-specific replay factory per worker,
+retries only classified availability failures, restores incomplete staged work
+to its raw root, and never holds supervisor ownership across repository,
+comparison, or publication work. Constructing that adapter with the packaged
+executor's concrete thin-source and real-node replay factory remains open.
 
 Concrete production-loop process reconstruction and exact-resume modeled-driver
 selection are implemented: a resume-only installer rejects `NotRun` before
 native publication or resource installation, the guarded lifecycle restores the
 complete version-four loop, and the packaged worker routes retained roots only
-to the exact-resume runner. Native-catalog cleanup, automatic packaged
-comparison scheduling and recovery, and capability advertisement remain open,
-so the packaged executor does not yet advertise exact resume. Version-two roots
+to the exact-resume runner. Native-catalog cleanup, concrete packaged replay
+factory construction, and capability advertisement remain open, so the
+packaged executor does not yet advertise exact resume. Version-two roots
 remain readable for legacy authentication but are incomplete campaign continuations and MUST be
 rejected by attempt resume before VMState materialization. The
 ledger preserves requested, publishing, and paused phases across restart; the
@@ -2554,9 +2572,9 @@ cleanup failure quarantines the guard and leaves the raw root selected. The
 nondroppable child/cgroup/watcher worker now exists crate-internally, and the
 exact-resume adapter transfers both failed-launch and active-node child
 authority into the attempt guard before returning a failed realization. The
-automatic concrete comparison flight and its pause-to-promotion orchestration
-remain mandatory before the packaged executor may advertise exact restore and
-before the full campaign/QEMU gate may claim completion.
+concrete packaged comparison factory and its full real-node flight remain
+mandatory before the packaged executor may advertise exact restore and before
+the full campaign/QEMU gate may claim completion.
 
 Coverage-enabled warm restore remains fail-closed in this implementation slice.
 Boot-barrier priming occurs before `loadvm`, while the current QEMU plugin emits

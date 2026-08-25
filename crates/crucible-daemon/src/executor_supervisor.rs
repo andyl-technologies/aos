@@ -421,7 +421,7 @@ impl ExecutionCancellation {
         Arc::ptr_eq(&self.state, &other.state)
     }
 
-    fn cancel(&self) {
+    pub(crate) fn cancel(&self) {
         self.state.canceled.store(true, Ordering::Release);
         self.state.changed.notify_all();
         let hook = match self.state.hook.lock() {
