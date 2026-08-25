@@ -466,6 +466,14 @@ without using the interpreter does not override a generated script's shebang.
 Keep the focused hostile-shebang/noglob fixture so this shared builder contract
 cannot regress independently of a multi-hour compiler realization.
 
+Apply the same interpreter authority to every native glibc configure, build,
+and install invocation. Glibc 2.28 additionally maps dynamic-loader archive
+members through generated `stamp.os` files; enumerate those files with the
+declared `findutils` rather than a recipe-shell wildcard. Assert the patch at
+source preparation so a changed upstream rule fails before the compiler runs.
+This keeps generated build-tree discovery valid when the surrounding sandbox
+shell has hostile glob state without hard-coding glibc's configured subdirs.
+
 ## Expected outcome
 
 The ~22,400 toolchain LOC should drop by well over half: the POSIX-tools
