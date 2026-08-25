@@ -35,5 +35,5 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 crucible = { path = "../crucible", features = ["test-double", "test-support"] }
-crucible-qemu = { path = "../crucible-qemu" }
+crucible-qemu = { path = "../crucible-qemu", features = ["test-support"] }
 crucible-session = { path = "../crucible-session", features = ["test-support"] }

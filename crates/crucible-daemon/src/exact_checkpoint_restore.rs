@@ -7,20 +7,24 @@
 //! run-directory transaction; only a complete authenticated copy becomes
 //! eligible for guarded launch.
 
+use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 
-use crucible::{Configuration, ContentHash, Decision, ScenarioDefForm, SingleSchedulerCheckpoint};
+use crucible::{
+    Configuration, ContentHash, Decision, NodeId, ScenarioDefForm, SingleSchedulerCheckpoint,
+};
 use crucible_api::{
     LifecycleApiError, ProductionExactCheckpointClosure, ProductionExactCheckpointResumeBasis,
+    authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary,
     install_exact_checkpoint_closure_with_boundary_and_admission,
 };
 use crucible_cas::content_store::{BlobHandle, BlobSource, StoreError};
 use crucible_qemu::{
     QemuBakedGenesisRestoreAdmission, QemuCapturedVmState, QemuFailedLaunchChildSource,
     QemuGuardedNodeRealizationLauncher, QemuGuardedThinNodeRealizationLauncher,
-    QemuNodeRealizationExecutor, QemuPreparedRunDirectory, QemuSpawnError,
+    QemuNodeRealizationExecutor, QemuPreparedRunDirectory, QemuReplayOracleCheck, QemuSpawnError,
     QemuVmLiveRealizationExecutor, QemuVmRealization, QemuVmRealizationError,
     QemuVmRealizationExecutor, QemuVmRealizationKind, QemuVmRealizationOperation,
     QemuVmReplayRequest, QemuVmSnapshot, QemuVmStateBinding,
@@ -34,8 +38,8 @@ use crucible_campaign::{
 use crate::{
     ExactCheckpointStore, ExactCheckpointStoreError, ExactPinRetentionAdmin,
     ExactPinRetentionError, ExecutionCancellation, LoadedExactCheckpoint,
-    QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard,
-    QemuExactCheckpointRealization,
+    PreparedProductionExactCheckpoint, QemuAttemptOperationalBoundary,
+    QemuAttemptProcessResourceGuard, QemuExactCheckpointRealization,
 };
 
 /// Converts a post-reap QEMU VMState capability into a reopenable CAS source.
@@ -136,6 +140,31 @@ pub struct InstalledProductionAttemptCheckpoint {
     closure: ProductionExactCheckpointClosure,
     configuration: Configuration,
     scheduler: SingleSchedulerCheckpoint,
+}
+
+/// No-write campaign-root replacement for one installed production attempt.
+#[derive(Debug)]
+pub struct PreparedProductionAttemptReplayOraclePromotion {
+    source: ExactCheckpointId,
+    replacement: PreparedProductionExactCheckpoint,
+}
+
+impl PreparedProductionAttemptReplayOraclePromotion {
+    /// Returns the raw attempt root retained throughout promotion.
+    #[must_use]
+    pub const fn source(&self) -> ExactCheckpointId {
+        self.source
+    }
+
+    /// Returns the derived promoted root that must be staged before writes.
+    #[must_use]
+    pub const fn promoted(&self) -> ExactCheckpointId {
+        self.replacement.root()
+    }
+
+    pub(crate) const fn replacement(&self) -> &PreparedProductionExactCheckpoint {
+        &self.replacement
+    }
 }
 
 impl InstalledProductionAttemptCheckpoint {
@@ -595,6 +624,124 @@ pub fn install_attempt_production_exact_checkpoint(
         closure,
         configuration,
         scheduler,
+    })
+}
+
+/// Reauthenticates one durable version-four replay-oracle root replacement.
+///
+/// The raw and promoted campaign-CAS roots are loaded independently and must
+/// name the submitted scenario. Both complete portable closures then pass the
+/// no-write production validator, which proves an exact `NotRun` to `Match`
+/// transition for every live-node snapshot and forbids every other modeled or
+/// artifact change. This is the restart boundary used before a staged ledger
+/// pair can advance to its promoted resume root.
+///
+/// # Errors
+///
+/// Returns [`ProductionAttemptCheckpointRestoreError::Canceled`] when
+/// cancellation wins, or an exact-store, scenario, semantic-closure, or
+/// replay-oracle relationship error otherwise.
+pub fn authenticate_production_exact_checkpoint_replay_oracle_promotion(
+    checkpoints: &ExactCheckpointStore,
+    raw: ExactCheckpointId,
+    promoted: ExactCheckpointId,
+    source: &ScenarioDefForm,
+    cancellation: &ExecutionCancellation,
+) -> Result<(), ProductionAttemptCheckpointRestoreError> {
+    check_production_cancellation(cancellation)?;
+    let raw_closure = checkpoints
+        .load_production_closure_with_cancellation(raw, cancellation)
+        .map_err(map_production_store_error)?;
+    if raw_closure.scenario() != source.scenario_def().id() {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::CheckpointScenarioMismatch {
+                checkpoint: raw,
+                scenario: raw_closure.scenario(),
+            },
+        );
+    }
+    let promoted_closure = checkpoints
+        .load_production_closure_with_cancellation(promoted, cancellation)
+        .map_err(map_production_store_error)?;
+    if promoted_closure.scenario() != source.scenario_def().id() {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::CheckpointScenarioMismatch {
+                checkpoint: promoted,
+                scenario: promoted_closure.scenario(),
+            },
+        );
+    }
+
+    let mut boundary = || production_restore_boundary(cancellation);
+    authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary(
+        source,
+        &raw_closure,
+        &promoted_closure,
+        &mut boundary,
+    )
+    .map_err(map_production_lifecycle_error)
+}
+
+/// Prepares one attempt-bound production replay-oracle root without writes.
+///
+/// The installed closure must come from `raw`. `checks` must contain exactly
+/// one source-bound matching result for every live production node. The native
+/// validator derives the promoted closure lazily, and the campaign store then
+/// prepares its complete root/index/object graph without publishing it. The
+/// returned root is therefore safe to stage in the operational ledger before
+/// the first immutable write.
+///
+/// # Errors
+///
+/// Returns [`ProductionAttemptCheckpointRestoreError::Canceled`] when
+/// cancellation wins, or an installed-root mismatch, native promotion,
+/// immutable-store, identity, scenario, or configuration error otherwise.
+pub fn prepare_attempt_production_replay_oracle_promotion(
+    checkpoints: &ExactCheckpointStore,
+    raw: ExactCheckpointId,
+    installed: &InstalledProductionAttemptCheckpoint,
+    checks: &BTreeMap<NodeId, QemuReplayOracleCheck>,
+    cancellation: &ExecutionCancellation,
+) -> Result<PreparedProductionAttemptReplayOraclePromotion, ProductionAttemptCheckpointRestoreError>
+{
+    check_production_cancellation(cancellation)?;
+    if installed.checkpoint() != raw {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::ClosureIdentityMismatch { checkpoint: raw },
+        );
+    }
+    let mut boundary = || production_restore_boundary(cancellation);
+    let promotion = installed
+        .closure()
+        .prepare_replay_oracle_promotion_with_boundary(checks, &mut boundary)
+        .map_err(map_production_lifecycle_error)?;
+    if promotion.source() != installed.closure().identity() {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::ClosureIdentityMismatch { checkpoint: raw },
+        );
+    }
+    let replacement = checkpoints
+        .prepare_production_replay_oracle_promotion_with_cancellation(promotion, cancellation)
+        .map_err(map_production_store_error)?;
+    if replacement.scenario() != installed.configuration().def.id() {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::CheckpointScenarioMismatch {
+                checkpoint: replacement.root(),
+                scenario: replacement.scenario(),
+            },
+        );
+    }
+    if replacement.configuration() != installed.configuration().id() {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::CheckpointConfigurationMismatch {
+                checkpoint: replacement.root(),
+                configuration: replacement.configuration(),
+            },
+        );
+    }
+    Ok(PreparedProductionAttemptReplayOraclePromotion {
+        source: raw,
+        replacement,
     })
 }
 

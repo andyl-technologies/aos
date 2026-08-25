@@ -6,7 +6,7 @@
 //! then uses linear phase tokens to establish the promoted root as a durable GC
 //! root before its first write.
 
-use crucible::{Configuration, World};
+use crucible::{Configuration, ScenarioDefForm, World};
 use crucible_campaign::{ExactCheckpointId, ExecutionId};
 use crucible_qemu::{
     QemuFailedLaunchChildSource, QemuGuardedNodeRealizationLauncher,
@@ -19,9 +19,12 @@ use crate::{
     AssignmentLedger, AttemptAdmissionValidator, AttemptExecutionKey,
     CheckpointPromotionCompletionOutcome, CheckpointPromotionRecovery,
     CheckpointPromotionStageOutcome, ExactCheckpointStore, ExactCheckpointStoreError,
-    LocalExecutorError, LocalExecutorSupervisor, MaterializedAttemptCheckpoint,
-    PrepareReplayOraclePromotionError, PreparedReplayOraclePromotion,
-    QemuAttemptProcessResourceGuard, QemuGuardedReplayOracleSession,
+    ExecutionCancellation, LocalExecutorError, LocalExecutorSupervisor,
+    MaterializedAttemptCheckpoint, PrepareReplayOraclePromotionError,
+    PreparedProductionAttemptReplayOraclePromotion, PreparedReplayOraclePromotion,
+    ProductionAttemptCheckpointRestoreError, QemuAttemptProcessResourceGuard,
+    QemuGuardedReplayOracleSession,
+    authenticate_production_exact_checkpoint_replay_oracle_promotion,
 };
 
 /// Replay-validated replacement bound to one paused attempt execution.
@@ -29,7 +32,13 @@ use crate::{
 pub struct PreparedPausedCheckpointPromotion {
     key: AttemptExecutionKey,
     execution: ExecutionId,
-    promotion: PreparedReplayOraclePromotion,
+    promotion: PreparedPausedCheckpointReplacement,
+}
+
+#[derive(Debug)]
+enum PreparedPausedCheckpointReplacement {
+    SingleNode(Box<PreparedReplayOraclePromotion>),
+    Production(Box<PreparedProductionAttemptReplayOraclePromotion>),
 }
 
 /// Exact semantic and operational target for one paused-root validation.
@@ -68,7 +77,7 @@ impl PreparedPausedCheckpointPromotion {
     /// The supervisor staging phase reauthenticates `key`, `execution`, and the
     /// exact source root before granting immutable publication authority.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         key: AttemptExecutionKey,
         execution: ExecutionId,
         promotion: PreparedReplayOraclePromotion,
@@ -76,7 +85,25 @@ impl PreparedPausedCheckpointPromotion {
         Self {
             key,
             execution,
-            promotion,
+            promotion: PreparedPausedCheckpointReplacement::SingleNode(Box::new(promotion)),
+        }
+    }
+
+    /// Binds one complete multi-node production replacement to its owner.
+    ///
+    /// The production token already proves that the installed raw root and
+    /// every source-bound live-node replay result derive this exact no-write
+    /// campaign replacement.
+    #[must_use]
+    pub fn new_production(
+        key: AttemptExecutionKey,
+        execution: ExecutionId,
+        promotion: PreparedProductionAttemptReplayOraclePromotion,
+    ) -> Self {
+        Self {
+            key,
+            execution,
+            promotion: PreparedPausedCheckpointReplacement::Production(Box::new(promotion)),
         }
     }
 
@@ -95,13 +122,19 @@ impl PreparedPausedCheckpointPromotion {
     /// Returns the raw exact root compared by the replay oracle.
     #[must_use]
     pub const fn source(&self) -> ExactCheckpointId {
-        self.promotion.source()
+        match &self.promotion {
+            PreparedPausedCheckpointReplacement::SingleNode(promotion) => promotion.source(),
+            PreparedPausedCheckpointReplacement::Production(promotion) => promotion.source(),
+        }
     }
 
     /// Returns the expected replacement root containing matching evidence.
     #[must_use]
     pub const fn promoted(&self) -> ExactCheckpointId {
-        self.promotion.promoted()
+        match &self.promotion {
+            PreparedPausedCheckpointReplacement::SingleNode(promotion) => promotion.promoted(),
+            PreparedPausedCheckpointReplacement::Production(promotion) => promotion.promoted(),
+        }
     }
 }
 
@@ -297,7 +330,15 @@ pub fn publish_staged_paused_checkpoint_promotion(
     checkpoints: &ExactCheckpointStore,
     staged: StagedPausedCheckpointPromotion,
 ) -> Result<PublishedPausedCheckpointPromotion, PausedCheckpointPromotionPublicationError> {
-    if let Err(source) = checkpoints.publish(staged.prepared.promotion.replacement()) {
+    let publication = match &staged.prepared.promotion {
+        PreparedPausedCheckpointReplacement::SingleNode(promotion) => {
+            checkpoints.publish(promotion.replacement()).map(|_| ())
+        }
+        PreparedPausedCheckpointReplacement::Production(promotion) => checkpoints
+            .publish_production_closure(promotion.replacement())
+            .map(|_| ()),
+    };
+    if let Err(source) = publication {
         return Err(PausedCheckpointPromotionPublicationError {
             staged: Box::new(staged),
             source,
@@ -326,6 +367,38 @@ pub fn recover_published_paused_checkpoint_promotion(
     recovery: CheckpointPromotionRecovery,
 ) -> Result<PublishedPausedCheckpointPromotion, PrepareReplayOraclePromotionError> {
     checkpoints.authenticate_replay_oracle_promotion(recovery.source(), recovery.promoted())?;
+    Ok(PublishedPausedCheckpointPromotion {
+        key: recovery.key(),
+        execution: recovery.execution(),
+        source: recovery.source(),
+        promoted: recovery.promoted(),
+    })
+}
+
+/// Reconstructs a published production token from one durable staged pair.
+///
+/// Both version-four roots pass complete portable scenario validation without
+/// writes, and every live-node snapshot must form the exact raw-to-matching
+/// promotion relationship before the final supervisor CAS is allowed.
+///
+/// # Errors
+///
+/// Returns [`ProductionAttemptCheckpointRestoreError`] when cancellation wins,
+/// either root is unavailable or invalid, the scenario differs, or any modeled,
+/// artifact, lifecycle, or replay-oracle field changed unexpectedly.
+pub fn recover_published_production_paused_checkpoint_promotion(
+    checkpoints: &ExactCheckpointStore,
+    source: &ScenarioDefForm,
+    cancellation: &ExecutionCancellation,
+    recovery: CheckpointPromotionRecovery,
+) -> Result<PublishedPausedCheckpointPromotion, ProductionAttemptCheckpointRestoreError> {
+    authenticate_production_exact_checkpoint_replay_oracle_promotion(
+        checkpoints,
+        recovery.source(),
+        recovery.promoted(),
+        source,
+        cancellation,
+    )?;
     Ok(PublishedPausedCheckpointPromotion {
         key: recovery.key(),
         execution: recovery.execution(),

@@ -3,6 +3,17 @@
 use super::*;
 use std::io::Read;
 
+pub(super) struct ExactCheckpointTargetManifestBasis<'a> {
+    pub(super) configuration: ContentHash,
+    pub(super) node: &'a NodeId,
+    pub(super) counter: u64,
+    pub(super) scheduler_time: VirtualTime,
+    pub(super) snapshot: ContentHash,
+    pub(super) fault_identity: ContentHash,
+    pub(super) overlay: ContentHash,
+    pub(super) vmstate: ContentHash,
+}
+
 pub(super) fn validate_exact_checkpoint_target(
     node: &NodeId,
     target: &ProductionVmExactCheckpointTarget,
@@ -10,20 +21,16 @@ pub(super) fn validate_exact_checkpoint_target(
 ) -> Result<(), LifecycleApiError> {
     validate_exact_checkpoint_artifact(&target.overlay_artifact, "root overlay")?;
     validate_exact_checkpoint_artifact(&target.vmstate_artifact, "VMState")?;
-    let observed = ContentHash::from_canonical_material(
-        "crucible.production-vm-exact-checkpoint.v1",
-        &format!(
-            "configuration={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\nvmstate={}",
-            target.configuration.id().to_hex(),
-            node.name,
-            target.counter,
-            target.scheduler_time.ticks,
-            target.snapshot.id().to_hex(),
-            fault_identity.to_hex(),
-            target.overlay_artifact.identity.to_hex(),
-            target.vmstate_artifact.identity.to_hex(),
-        ),
-    );
+    let observed = exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
+        configuration: target.configuration.id(),
+        node,
+        counter: target.counter,
+        scheduler_time: target.scheduler_time,
+        snapshot: target.snapshot.id(),
+        fault_identity,
+        overlay: target.overlay_artifact.identity,
+        vmstate: target.vmstate_artifact.identity,
+    });
     if observed != target.manifest_identity {
         return Err(loop_factory_error(format!(
             "exact checkpoint target for `{}` failed manifest authentication",
@@ -31,6 +38,35 @@ pub(super) fn validate_exact_checkpoint_target(
         )));
     }
     Ok(())
+}
+
+pub(super) fn exact_checkpoint_target_manifest_identity(
+    basis: ExactCheckpointTargetManifestBasis<'_>,
+) -> ContentHash {
+    let ExactCheckpointTargetManifestBasis {
+        configuration,
+        node,
+        counter,
+        scheduler_time,
+        snapshot,
+        fault_identity,
+        overlay,
+        vmstate,
+    } = basis;
+    ContentHash::from_canonical_material(
+        "crucible.production-vm-exact-checkpoint.v1",
+        &format!(
+            "configuration={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\nvmstate={}",
+            configuration.to_hex(),
+            node.name,
+            counter,
+            scheduler_time.ticks,
+            snapshot.to_hex(),
+            fault_identity.to_hex(),
+            overlay.to_hex(),
+            vmstate.to_hex(),
+        ),
+    )
 }
 
 pub(super) const fn production_guest_architecture(

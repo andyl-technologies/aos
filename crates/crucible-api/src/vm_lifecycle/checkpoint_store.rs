@@ -13,8 +13,10 @@ mod paths;
 use paths::{closure_parent, object_parent};
 mod portable;
 pub use portable::{
-    ProductionExactCheckpointSource, install_exact_checkpoint_closure,
-    install_exact_checkpoint_closure_with_boundary,
+    ProductionExactCheckpointSource,
+    authenticate_portable_exact_checkpoint_replay_oracle_promotion,
+    authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary,
+    install_exact_checkpoint_closure, install_exact_checkpoint_closure_with_boundary,
     install_exact_checkpoint_closure_with_boundary_and_admission,
 };
 mod publication;
@@ -95,6 +97,58 @@ pub struct ProductionExactCheckpointResumeBasis {
     identity: ContentHash,
     configuration: Configuration,
     scheduler: SingleSchedulerCheckpoint,
+}
+
+/// No-write portable replacement carrying matching per-node replay evidence.
+///
+/// The value borrows no process, run-directory, or destination-store authority.
+/// It implements [`ProductionExactCheckpointSource`] by delegating unchanged
+/// objects to the authenticated raw closure and regenerating each promoted
+/// snapshot object from its exact source-bound [`QemuReplayOracleCheck`] on
+/// demand. Large snapshot continuations are therefore processed one node at a
+/// time rather than retained for the complete World.
+pub struct PreparedProductionReplayOraclePromotion {
+    source: ContentHash,
+    promoted: ContentHash,
+    scenario: ContentHash,
+    configuration: ContentHash,
+    manifest: Vec<u8>,
+    objects: Vec<ProductionExactCheckpointObject>,
+    raw: ProductionExactCheckpointClosure,
+    promoted_snapshots: BTreeMap<ContentHash, PreparedPromotedSnapshot>,
+    fat_checkpoint_bytes: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PreparedPromotedSnapshot {
+    raw_object: ContentHash,
+    check: QemuReplayOracleCheck,
+    length: u64,
+}
+
+impl std::fmt::Debug for PreparedProductionReplayOraclePromotion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedProductionReplayOraclePromotion")
+            .field("source", &self.source)
+            .field("promoted", &self.promoted)
+            .field("target_count", &self.promoted_snapshots.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PreparedProductionReplayOraclePromotion {
+    /// Returns the exact raw version-four closure that was compared.
+    #[must_use]
+    pub const fn source(&self) -> ContentHash {
+        self.source
+    }
+
+    /// Returns the derived replacement closure identity.
+    #[must_use]
+    pub const fn promoted(&self) -> ContentHash {
+        self.promoted
+    }
 }
 
 impl ProductionExactCheckpointResumeBasis {
@@ -293,6 +347,134 @@ impl ProductionExactCheckpointClosure {
         Ok(basis)
     }
 
+    /// Prepares a source-bound replay-oracle replacement without writes.
+    ///
+    /// `checks` must contain exactly one result for every live target in this
+    /// closure and no result for a permanently failed node. The raw closure is
+    /// completely reauthenticated before each check promotes its exact
+    /// snapshot. The returned portable source changes only per-node oracle
+    /// evidence and the identities derived from those bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when this closure is invalid or already
+    /// promoted, the check set is incomplete or contains a foreign node, a
+    /// check belongs to another snapshot, a comparison was not a match, or the
+    /// replacement cannot be encoded within the authored checkpoint bounds.
+    pub fn prepare_replay_oracle_promotion(
+        &self,
+        checks: &BTreeMap<NodeId, QemuReplayOracleCheck>,
+    ) -> Result<PreparedProductionReplayOraclePromotion, LifecycleApiError> {
+        self.prepare_replay_oracle_promotion_with_boundary(checks, &mut || Ok(()))
+    }
+
+    /// Prepares a no-write promotion under an operational boundary callback.
+    ///
+    /// The callback runs throughout complete source validation and between
+    /// every bounded snapshot decode, promotion, and canonical encode.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::prepare_replay_oracle_promotion`],
+    /// including the exact [`LifecycleApiError`] returned by `boundary`.
+    pub fn prepare_replay_oracle_promotion_with_boundary(
+        &self,
+        checks: &BTreeMap<NodeId, QemuReplayOracleCheck>,
+        boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+    ) -> Result<PreparedProductionReplayOraclePromotion, LifecycleApiError> {
+        self.validate_complete_with_boundary(boundary)?;
+        prepare_production_replay_oracle_promotion_source(self, checks, boundary)
+    }
+
+    /// Authenticates an exact source-bound replay-oracle promotion.
+    ///
+    /// Both closures first pass the complete scenario-aware production
+    /// validator. Their manifests must then be identical except for closure
+    /// identity and one QEMU snapshot object per live node. Every source
+    /// snapshot must carry `NotRun`, every replacement must carry `Match`, and
+    /// the replacement must derive the exact raw snapshot identity of its
+    /// paired source. No scheduler, host-I/O, node-continuation, artifact,
+    /// lifecycle, fault, event-log, generation, or service-state field may
+    /// change.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when either closure is incomplete or
+    /// invalid, the roots do not share one exact production basis, a target is
+    /// missing or reordered, or any snapshot pair is not an exact raw-to-match
+    /// replay-oracle promotion.
+    pub fn authenticate_replay_oracle_promotion(
+        &self,
+        promoted: &Self,
+    ) -> Result<(), LifecycleApiError> {
+        self.authenticate_replay_oracle_promotion_with_boundary(promoted, &mut || Ok(()))
+    }
+
+    /// Authenticates a replay-oracle promotion under an operational boundary.
+    ///
+    /// The callback runs throughout both complete closure validations and
+    /// between bounded snapshot reads. Snapshot pairs are reduced to compact
+    /// source identities one at a time, so retained memory does not grow with
+    /// the number of production nodes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as
+    /// [`Self::authenticate_replay_oracle_promotion`], including the exact
+    /// [`LifecycleApiError`] returned by `boundary`.
+    pub fn authenticate_replay_oracle_promotion_with_boundary(
+        &self,
+        promoted: &Self,
+        boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+    ) -> Result<(), LifecycleApiError> {
+        boundary()?;
+        if self.identity == promoted.identity {
+            return Err(loop_factory_error(
+                "production replay-oracle promotion did not change the closure identity",
+            ));
+        }
+        if self.scenario != promoted.scenario
+            || self.source.scenario_def() != promoted.source.scenario_def()
+        {
+            return Err(loop_factory_error(
+                "production replay-oracle promotion belongs to a different scenario",
+            ));
+        }
+
+        self.validate_complete_with_boundary(boundary)?;
+        promoted.validate_complete_with_boundary(boundary)?;
+        boundary()?;
+
+        let limits = self.source.plan().fault_signals().resource_limits();
+        let source_manifest = decode::decode_manifest_with_limits(self.manifest(), limits)?;
+        let promoted_manifest = decode::decode_manifest_with_limits(promoted.manifest(), limits)?;
+        let source_fault_identity = read_portable_fault_checkpoint_identity(
+            self,
+            source_manifest.fault_checkpoint,
+            &self.source,
+            boundary,
+        )?;
+        let promoted_fault_identity = read_portable_fault_checkpoint_identity(
+            promoted,
+            promoted_manifest.fault_checkpoint,
+            &self.source,
+            boundary,
+        )?;
+        if source_fault_identity != promoted_fault_identity {
+            return Err(loop_factory_error(
+                "production replay-oracle promotion changed the fault-runtime identity",
+            ));
+        }
+
+        authenticate_replay_oracle_source_pair(
+            self,
+            promoted,
+            limits,
+            source_fault_identity,
+            boundary,
+        )
+    }
+
     /// Streams and authenticates one exact object into `destination`.
     ///
     /// No bytes from an unlisted object can be read through this capability.
@@ -357,7 +539,402 @@ impl ProductionExactCheckpointClosure {
     }
 }
 
-#[derive(PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+fn validate_replay_oracle_manifest_basis(
+    source: &ClosureManifest,
+    promoted: &ClosureManifest,
+) -> Result<(), LifecycleApiError> {
+    let common_basis_matches = source.scenario == promoted.scenario
+        && source.configuration == promoted.configuration
+        && source.schedule == promoted.schedule
+        && source.frontier == promoted.frontier
+        && source.scheduler == promoted.scheduler
+        && source.event_log_segments == promoted.event_log_segments
+        && source.signal_artifacts == promoted.signal_artifacts
+        && source.trigger_state == promoted.trigger_state
+        && source.assertion_state == promoted.assertion_state
+        && source.lifecycle_state == promoted.lifecycle_state
+        && source.fault_checkpoint == promoted.fault_checkpoint
+        && source.node_generations == promoted.node_generations
+        && source.node_service_states == promoted.node_service_states
+        && source.targets.len() == promoted.targets.len();
+    if !common_basis_matches {
+        return Err(loop_factory_error(
+            "production replay-oracle promotion changed non-snapshot closure state",
+        ));
+    }
+
+    let mut changed = false;
+    for (source_target, promoted_target) in source.targets.iter().zip(&promoted.targets) {
+        if source_target.node != promoted_target.node
+            || source_target.counter != promoted_target.counter
+            || source_target.scheduler_time != promoted_target.scheduler_time
+            || source_target.overlay != promoted_target.overlay
+            || source_target.vmstate != promoted_target.vmstate
+        {
+            return Err(loop_factory_error(
+                "production replay-oracle promotion changed a target basis",
+            ));
+        }
+        changed |= source_target.snapshot != promoted_target.snapshot;
+    }
+    if !changed {
+        return Err(loop_factory_error(
+            "production replay-oracle promotion changed no target snapshot",
+        ));
+    }
+    Ok(())
+}
+
+fn prepare_production_replay_oracle_promotion_source(
+    raw: &ProductionExactCheckpointClosure,
+    checks: &BTreeMap<NodeId, QemuReplayOracleCheck>,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+) -> Result<PreparedProductionReplayOraclePromotion, LifecycleApiError> {
+    boundary()?;
+    let limits = raw.source.plan().fault_signals().resource_limits();
+    let mut manifest = decode::decode_manifest_with_limits(raw.manifest(), limits)?;
+    if checks.len() != manifest.targets.len() {
+        return Err(loop_factory_error(
+            "production replay-oracle check set does not match the live target set",
+        ));
+    }
+
+    let configuration = manifest.configuration;
+    let fault_checkpoint = manifest.fault_checkpoint;
+    let fault_identity =
+        read_portable_fault_checkpoint_identity(raw, fault_checkpoint, &raw.source, boundary)?;
+    let mut promoted_snapshots = BTreeMap::new();
+    for target in &mut manifest.targets {
+        boundary()?;
+        let node = NodeId {
+            name: target.node.clone(),
+        };
+        let check = checks.get(&node).copied().ok_or_else(|| {
+            loop_factory_error(format!(
+                "production replay-oracle check is absent for `{}`",
+                target.node
+            ))
+        })?;
+        let snapshot =
+            read_portable_snapshot(raw, target.snapshot, limits.fat_checkpoint_bytes, boundary)?;
+        if snapshot.replay_oracle_validation() != QemuReplayOracleValidation::NotRun {
+            return Err(loop_factory_error(format!(
+                "production replay-oracle source for `{}` is not raw",
+                target.node
+            )));
+        }
+        let promoted = check.promote(&snapshot).map_err(|error| {
+            loop_factory_error(format!(
+                "promote production replay-oracle snapshot for `{}`: {error}",
+                target.node
+            ))
+        })?;
+        let promoted_semantic_identity = promoted.id();
+        drop(snapshot);
+        let bytes = promoted
+            .to_canonical_bytes_with_limit(limits.fat_checkpoint_bytes)
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "encode promoted production snapshot for `{}`: {error}",
+                    target.node
+                ))
+            })?;
+        let identity = ContentHash::from_bytes(&bytes);
+        let length = u64::try_from(bytes.len()).map_err(|_| {
+            loop_factory_error("promoted production snapshot length is not representable")
+        })?;
+        let descriptor = PreparedPromotedSnapshot {
+            raw_object: target.snapshot,
+            check,
+            length,
+        };
+        if promoted_snapshots
+            .insert(identity, descriptor)
+            .is_some_and(|prior| prior != descriptor)
+        {
+            return Err(loop_factory_error(
+                "distinct production snapshots collided after replay-oracle promotion",
+            ));
+        }
+        target.snapshot = identity;
+        target.manifest_identity =
+            exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
+                configuration,
+                node: &node,
+                counter: target.counter,
+                scheduler_time: VirtualTime {
+                    ticks: target.scheduler_time,
+                },
+                snapshot: promoted_semantic_identity,
+                fault_identity,
+                overlay: target.overlay.identity,
+                vmstate: target.vmstate.identity,
+            });
+    }
+
+    manifest.identity =
+        closure_identity(&manifest).map_err(|error| loop_factory_error(error.to_string()))?;
+    if manifest.identity == raw.identity {
+        return Err(loop_factory_error(
+            "production replay-oracle checks changed no closure identity",
+        ));
+    }
+    let manifest_bytes =
+        encode_manifest(&manifest).map_err(|error| loop_factory_error(error.to_string()))?;
+    let raw_lengths = raw
+        .objects
+        .iter()
+        .map(|object| (object.identity(), object.length()))
+        .collect::<BTreeMap<_, _>>();
+    let mut objects = Vec::new();
+    let identities = manifest_object_identities(&manifest);
+    objects
+        .try_reserve_exact(identities.len())
+        .map_err(|error| loop_factory_error(format!("reserve promoted inventory: {error}")))?;
+    for identity in identities {
+        let length = promoted_snapshots
+            .get(&identity)
+            .map(|snapshot| snapshot.length)
+            .or_else(|| raw_lengths.get(&identity).copied())
+            .ok_or_else(|| {
+                loop_factory_error("promoted production closure lost an immutable object")
+            })?;
+        objects.push(ProductionExactCheckpointObject::new(identity, length));
+    }
+
+    let prepared = PreparedProductionReplayOraclePromotion {
+        source: raw.identity,
+        promoted: manifest.identity,
+        scenario: manifest.scenario,
+        configuration: manifest.configuration,
+        manifest: manifest_bytes,
+        objects,
+        raw: raw.clone(),
+        promoted_snapshots,
+        fat_checkpoint_bytes: limits.fat_checkpoint_bytes,
+    };
+    authenticate_replay_oracle_source_pair(raw, &prepared, limits, fault_identity, boundary)?;
+    Ok(prepared)
+}
+
+fn authenticate_replay_oracle_source_pair(
+    source: &dyn ProductionExactCheckpointSource,
+    promoted: &dyn ProductionExactCheckpointSource,
+    limits: FaultResourceLimits,
+    fault_identity: ContentHash,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+) -> Result<(), LifecycleApiError> {
+    let source_manifest = decode::decode_manifest_with_limits(source.manifest(), limits)?;
+    let promoted_manifest = decode::decode_manifest_with_limits(promoted.manifest(), limits)?;
+    validate_replay_oracle_manifest_basis(&source_manifest, &promoted_manifest)?;
+
+    for (source_target, promoted_target) in source_manifest
+        .targets
+        .iter()
+        .zip(&promoted_manifest.targets)
+    {
+        boundary()?;
+        let source_snapshot = read_portable_snapshot(
+            source,
+            source_target.snapshot,
+            limits.fat_checkpoint_bytes,
+            boundary,
+        )?;
+        if source_snapshot.replay_oracle_validation() != QemuReplayOracleValidation::NotRun {
+            return Err(loop_factory_error(format!(
+                "production replay-oracle source for `{}` is not raw",
+                source_target.node
+            )));
+        }
+        let source_identity = source_snapshot.id();
+        let node = NodeId {
+            name: source_target.node.clone(),
+        };
+        let expected_source_manifest =
+            exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
+                configuration: source_manifest.configuration,
+                node: &node,
+                counter: source_target.counter,
+                scheduler_time: VirtualTime {
+                    ticks: source_target.scheduler_time,
+                },
+                snapshot: source_identity,
+                fault_identity,
+                overlay: source_target.overlay.identity,
+                vmstate: source_target.vmstate.identity,
+            });
+        if source_target.manifest_identity != expected_source_manifest {
+            return Err(loop_factory_error(format!(
+                "production replay-oracle source target `{}` failed manifest authentication",
+                source_target.node
+            )));
+        }
+        drop(source_snapshot);
+
+        let promoted_snapshot = read_portable_snapshot(
+            promoted,
+            promoted_target.snapshot,
+            limits.fat_checkpoint_bytes,
+            boundary,
+        )?;
+        let promoted_identity = promoted_snapshot.id();
+        let expected_promoted_manifest =
+            exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
+                configuration: promoted_manifest.configuration,
+                node: &node,
+                counter: promoted_target.counter,
+                scheduler_time: VirtualTime {
+                    ticks: promoted_target.scheduler_time,
+                },
+                snapshot: promoted_identity,
+                fault_identity,
+                overlay: promoted_target.overlay.identity,
+                vmstate: promoted_target.vmstate.identity,
+            });
+        if promoted_target.manifest_identity != expected_promoted_manifest
+            || !matches!(
+                promoted_snapshot.replay_oracle_validation(),
+                QemuReplayOracleValidation::Match { .. }
+            )
+            || promoted_snapshot
+                .replay_oracle_source_identity()
+                .map_err(|error| {
+                    loop_factory_error(format!(
+                        "derive production replay-oracle source for `{}`: {error}",
+                        promoted_target.node
+                    ))
+                })?
+                != source_identity
+        {
+            return Err(loop_factory_error(format!(
+                "production target `{}` is not an exact replay-oracle promotion",
+                source_target.node
+            )));
+        }
+    }
+    boundary()?;
+    Ok(())
+}
+
+fn read_portable_snapshot(
+    closure: &dyn ProductionExactCheckpointSource,
+    identity: ContentHash,
+    limit: u64,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+) -> Result<QemuVmSnapshot, LifecycleApiError> {
+    let bytes = read_portable_object(closure, identity, limit, "target snapshot", boundary)?;
+    boundary()?;
+    QemuVmSnapshot::from_canonical_bytes_with_limit(&bytes, limit).map_err(|error| {
+        loop_factory_error(format!(
+            "decode production replay-oracle snapshot {}: {error}",
+            identity.to_hex()
+        ))
+    })
+}
+
+fn read_portable_fault_checkpoint_identity(
+    closure: &dyn ProductionExactCheckpointSource,
+    identity: ContentHash,
+    source: &ScenarioDefForm,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+) -> Result<ContentHash, LifecycleApiError> {
+    let limit = source
+        .plan()
+        .fault_signals()
+        .resource_limits()
+        .fat_checkpoint_bytes;
+    let bytes = read_portable_object(closure, identity, limit, "fault checkpoint", boundary)?;
+    boundary()?;
+    ProductionFaultRuntimeCheckpoint::from_canonical_bytes(
+        &bytes,
+        source.plan().fault_signals(),
+        source.scenario_def().id(),
+    )
+    .map(|checkpoint| checkpoint.id())
+    .map_err(|error| {
+        loop_factory_error(format!(
+            "decode production fault checkpoint {}: {error}",
+            identity.to_hex()
+        ))
+    })
+}
+
+fn read_portable_object(
+    closure: &dyn ProductionExactCheckpointSource,
+    identity: ContentHash,
+    limit: u64,
+    role: &str,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+) -> Result<Vec<u8>, LifecycleApiError> {
+    boundary()?;
+    let object = closure
+        .objects()
+        .binary_search_by_key(&identity, |object| object.identity())
+        .ok()
+        .and_then(|index| closure.objects().get(index))
+        .ok_or_else(|| loop_factory_error("production target snapshot is absent from closure"))?;
+    if object.length() > limit {
+        return Err(loop_factory_error(format!(
+            "production {role} exceeds its authored byte limit {limit}"
+        )));
+    }
+    let length = usize::try_from(object.length()).map_err(|_| {
+        loop_factory_error("production target snapshot length is not representable")
+    })?;
+    let mut destination = ExactObjectBuffer::new(length)?;
+    let copied = closure.copy_object_to(identity, &mut destination)?;
+    if copied != object.length()
+        || destination.bytes().len() != length
+        || ContentHash::from_bytes(destination.bytes()) != identity
+    {
+        return Err(loop_factory_error(
+            "production target snapshot failed streaming authentication",
+        ));
+    }
+    Ok(destination.bytes)
+}
+
+struct ExactObjectBuffer {
+    bytes: Vec<u8>,
+    expected: usize,
+}
+
+impl ExactObjectBuffer {
+    fn new(expected: usize) -> Result<Self, LifecycleApiError> {
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(expected)
+            .map_err(|error| loop_factory_error(format!("reserve snapshot object: {error}")))?;
+        Ok(Self { bytes, expected })
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl Write for ExactObjectBuffer {
+    fn write(&mut self, buffer: &[u8]) -> Result<usize, std::io::Error> {
+        let next = self
+            .bytes
+            .len()
+            .checked_add(buffer.len())
+            .ok_or_else(|| std::io::Error::other("snapshot object length overflow"))?;
+        if next > self.expected {
+            return Err(std::io::Error::other(
+                "snapshot object grew beyond its authenticated length",
+            ));
+        }
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> Result<(), std::io::Error> {
+        Ok(())
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ClosureManifest {
     scenario: ContentHash,
@@ -382,7 +959,7 @@ struct ClosureManifest {
     identity: ContentHash,
 }
 
-#[derive(PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetManifest {
     node: String,
@@ -1196,8 +1773,19 @@ fn validate_checkpoint_set(
                     node.name
                 )));
             }
+            if fault_checkpoint.qemu_fingerprint(node).is_none() {
+                return Err(store_error(format!(
+                    "exact checkpoint target for `{}` has no paired fault-runtime fingerprint",
+                    node.name
+                )));
+            }
             validate_exact_checkpoint_target(node, target, fault_checkpoint.id())
                 .map_err(|error| store_error(error.to_string()))?;
+        } else if fault_checkpoint.qemu_fingerprint(node).is_some() {
+            return Err(store_error(format!(
+                "permanently failed exact-checkpoint node `{}` retains a live fault-runtime fingerprint",
+                node.name
+            )));
         }
     }
     validate_recorded_controls(checkpoint)?;
@@ -2997,6 +3585,293 @@ mod tests {
         }
     }
 
+    struct MemoryPortable {
+        identity: ContentHash,
+        scenario: ContentHash,
+        configuration: ContentHash,
+        manifest: Vec<u8>,
+        objects: Vec<ProductionExactCheckpointObject>,
+        bodies: BTreeMap<ContentHash, Vec<u8>>,
+    }
+
+    impl ProductionExactCheckpointSource for MemoryPortable {
+        fn identity(&self) -> ContentHash {
+            self.identity
+        }
+
+        fn scenario(&self) -> ContentHash {
+            self.scenario
+        }
+
+        fn configuration(&self) -> ContentHash {
+            self.configuration
+        }
+
+        fn manifest(&self) -> &[u8] {
+            &self.manifest
+        }
+
+        fn objects(&self) -> &[ProductionExactCheckpointObject] {
+            &self.objects
+        }
+
+        fn open_object(
+            &self,
+            identity: ContentHash,
+        ) -> Result<Box<dyn Read + Send>, LifecycleApiError> {
+            let bytes = self
+                .bodies
+                .get(&identity)
+                .ok_or_else(|| loop_factory_error("memory portable object is absent"))?
+                .clone();
+            Ok(Box::new(std::io::Cursor::new(bytes)))
+        }
+    }
+
+    fn snapshot_portable(
+        mut manifest: ClosureManifest,
+        snapshot: &QemuVmSnapshot,
+    ) -> MemoryPortable {
+        let bytes = snapshot
+            .to_canonical_bytes()
+            .expect("encode production snapshot fixture");
+        let object = ContentHash::from_bytes(&bytes);
+        manifest.targets[0].snapshot = object;
+        let configuration = manifest.configuration;
+        let fault_checkpoint = manifest.fault_checkpoint;
+        let target = &mut manifest.targets[0];
+        let node = NodeId {
+            name: target.node.clone(),
+        };
+        target.manifest_identity =
+            exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
+                configuration,
+                node: &node,
+                counter: target.counter,
+                scheduler_time: VirtualTime {
+                    ticks: target.scheduler_time,
+                },
+                snapshot: snapshot.id(),
+                fault_identity: fault_checkpoint,
+                overlay: target.overlay.identity,
+                vmstate: target.vmstate.identity,
+            });
+        manifest.identity = closure_identity(&manifest).expect("derive snapshot closure identity");
+        MemoryPortable {
+            identity: manifest.identity,
+            scenario: manifest.scenario,
+            configuration: manifest.configuration,
+            manifest: encode_manifest(&manifest).expect("encode snapshot closure fixture"),
+            objects: vec![ProductionExactCheckpointObject::new(
+                object,
+                u64::try_from(bytes.len()).expect("snapshot fixture length fits"),
+            )],
+            bodies: BTreeMap::from([(object, bytes)]),
+        }
+    }
+
+    fn refresh_target_manifest_identities(manifest: &mut ClosureManifest) {
+        let configuration = manifest.configuration;
+        let fault_checkpoint = manifest.fault_checkpoint;
+        for target in &mut manifest.targets {
+            let node = NodeId {
+                name: target.node.clone(),
+            };
+            target.manifest_identity =
+                exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
+                    configuration,
+                    node: &node,
+                    counter: target.counter,
+                    scheduler_time: VirtualTime {
+                        ticks: target.scheduler_time,
+                    },
+                    snapshot: target.snapshot,
+                    fault_identity: fault_checkpoint,
+                    overlay: target.overlay.identity,
+                    vmstate: target.vmstate.identity,
+                });
+        }
+    }
+
+    fn publish_one_node_raw_checkpoint(
+        run_state_root: &Path,
+    ) -> (ScenarioDefForm, ContentHash, NodeId, ContentHash) {
+        let node = NodeId {
+            name: String::from("vm-a"),
+        };
+        let world = World::from_nodes(vec![crucible::WorldNode {
+            id: node.clone(),
+            arch: VmArchitecture::X86_64,
+            memory_mib: 128,
+            cmdline: String::new(),
+            ready_point: crucible::ReadyPoint::FixedIcount {
+                icount: Icount { retired: 0 },
+            },
+            white_box: crucible::WhiteBoxPolicy::Disabled,
+            smp_vcpus: 1,
+            icount_shift: 0,
+            kernel: None,
+            root_image: None,
+            initrd: None,
+        }])
+        .expect("build one-node checkpoint world");
+        let source = ScenarioDefForm::from_components_with_app_random_draw_cap(
+            &world,
+            &crucible::Plan::empty(),
+            &crucible::Properties::empty(),
+            Seed::from_u64(0x4f52_4143),
+            0,
+        )
+        .expect("build one-node checkpoint scenario");
+        let scenario = source.scenario_def();
+        let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
+            &scenario.id().to_hex(),
+            Shift::new(0).expect("zero shift validates"),
+            4,
+            SimInstant { nanos: 4 },
+            0,
+            source.world(),
+        )
+        .with_scenario_def(scenario.clone());
+        let scheduler = SingleScheduler::new(runtime_scenario).expect("build one-node scheduler");
+        let scheduler_checkpoint = scheduler
+            .checkpoint()
+            .expect("checkpoint one-node scheduler");
+
+        let nodes = ProductionNodeSet::new();
+        let fault_runtime = ProductionFaultRuntime::new(
+            source.plan().fault_signals().clone(),
+            None,
+            SignalBoundarySnapshot::default(),
+            scenario.id(),
+            super::super::fault_implementation::test_host_manifests(),
+            &nodes,
+        )
+        .expect("build inert one-node fault runtime");
+        let fault_checkpoint = fault_runtime
+            .checkpoint(&mut ProductionNodeSet::new())
+            .expect("checkpoint inert fault runtime")
+            .with_unvalidated_test_node(
+                source.plan().fault_signals(),
+                node.clone(),
+                ContentHash::from_bytes(b"one-node execution fingerprint"),
+            )
+            .expect("bind synthetic node fingerprint");
+
+        let configuration = Configuration {
+            def: scenario.clone(),
+            schedule: Schedule::empty(),
+        };
+        let modeled_checkpoint = Checkpoint::from_recorded_configuration(
+            &configuration,
+            None,
+            VirtualTime { ticks: 0 },
+            BTreeMap::from([(node.clone(), Icount { retired: 0 })]),
+            CheckpointKind::Fat,
+            BTreeMap::new(),
+        )
+        .expect("build one-node modeled checkpoint");
+        let snapshot =
+            QemuVmSnapshot::diskless(modeled_checkpoint, QemuReplayOracleValidation::NotRun)
+                .expect("build raw one-node QEMU snapshot");
+        let snapshot_identity = snapshot.id();
+
+        let overlay = run_state_root.join("raw-overlay.qcow2");
+        let vmstate = run_state_root.join("raw-vmstate.bin");
+        fs::write(&overlay, b"overlay fixture").expect("write overlay fixture");
+        fs::write(&vmstate, b"vmstate fixture").expect("write VMState fixture");
+        let overlay_artifact = ProductionCheckpointArtifact {
+            source: ProductionCheckpointArtifactSource::File(overlay.clone()),
+            identity: hash_file(&overlay).expect("hash overlay fixture"),
+            length: fs::metadata(&overlay)
+                .expect("inspect overlay fixture")
+                .len(),
+            chunks: Vec::new(),
+        };
+        let vmstate_artifact = ProductionCheckpointArtifact {
+            source: ProductionCheckpointArtifactSource::File(vmstate.clone()),
+            identity: hash_file(&vmstate).expect("hash VMState fixture"),
+            length: fs::metadata(&vmstate)
+                .expect("inspect VMState fixture")
+                .len(),
+            chunks: Vec::new(),
+        };
+        let manifest_identity =
+            exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
+                configuration: configuration.id(),
+                node: &node,
+                counter: 0,
+                scheduler_time: VirtualTime { ticks: 0 },
+                snapshot: snapshot_identity,
+                fault_identity: fault_checkpoint.id(),
+                overlay: overlay_artifact.identity,
+                vmstate: vmstate_artifact.identity,
+            });
+        let mut checkpoint = ProductionVmExactCheckpointSet {
+            identity: ContentHash::default(),
+            configuration,
+            scheduler: scheduler_checkpoint,
+            event_log_objects: BTreeMap::new(),
+            signal_artifact_objects: BTreeMap::new(),
+            trigger_state: EventGraphState::default(),
+            assertion_state: HostAssertionEvaluator::new(source.properties()).checkpoint(),
+            terminal_verdict: None,
+            terminal_cause: None,
+            initial_lifecycle_observations_pending: true,
+            branch: None,
+            recorded_controls: Vec::new(),
+            fault_checkpoint: Some(fault_checkpoint),
+            targets: BTreeMap::from([(
+                node.clone(),
+                ProductionVmExactCheckpointTarget {
+                    configuration: Configuration {
+                        def: scenario,
+                        schedule: Schedule::empty(),
+                    },
+                    counter: 0,
+                    scheduler_time: VirtualTime { ticks: 0 },
+                    snapshot,
+                    overlay_artifact,
+                    vmstate_artifact,
+                    manifest_identity,
+                },
+            )]),
+            node_generations: BTreeMap::from([(node.clone(), 1)]),
+            node_service_states: BTreeMap::from([(
+                node.clone(),
+                ProductionNodeServiceState::Running,
+            )]),
+        };
+        let prepared = prepare_exact_checkpoint_set(
+            run_state_root,
+            source.scenario_def().id(),
+            source.plan().fault_signals().resource_limits(),
+            &mut checkpoint,
+        )
+        .expect("prepare one-node production checkpoint");
+        let identity = prepared.identity();
+        prepared
+            .publish()
+            .expect("publish one-node production checkpoint");
+        (source, identity, node, snapshot_identity)
+    }
+
+    fn regular_file_count(path: &Path) -> usize {
+        let Ok(entries) = fs::read_dir(path) else {
+            return 0;
+        };
+        entries
+            .filter_map(Result::ok)
+            .map(|entry| {
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    regular_file_count(&entry.path())
+                } else {
+                    usize::from(entry.file_type().is_ok_and(|kind| kind.is_file()))
+                }
+            })
+            .sum()
+    }
+
     #[test]
     fn closure_manifest_round_trip_is_canonical() {
         let mut original = manifest();
@@ -3039,6 +3914,170 @@ mod tests {
             closure_identity(&original).expect("derive changed closure identity"),
             identity
         );
+    }
+
+    #[test]
+    fn replay_oracle_manifest_promotion_changes_only_target_snapshots() {
+        let mut source = manifest();
+        source.targets = vec![target("a"), target("b")];
+        refresh_target_manifest_identities(&mut source);
+        source.identity = closure_identity(&source).expect("derive raw closure identity");
+        let mut promoted = source.clone();
+        promoted.targets[0].snapshot = ContentHash::from_bytes(b"promoted-a");
+        promoted.targets[1].snapshot = ContentHash::from_bytes(b"promoted-b");
+        refresh_target_manifest_identities(&mut promoted);
+        promoted.identity = closure_identity(&promoted).expect("derive promoted closure identity");
+
+        validate_replay_oracle_manifest_basis(&source, &promoted)
+            .expect("snapshot-only promotion should preserve the production basis");
+
+        let mut changed_artifact = promoted.clone();
+        changed_artifact.targets[0].overlay.length += 1;
+        assert!(validate_replay_oracle_manifest_basis(&source, &changed_artifact).is_err());
+
+        let unchanged = source.clone();
+        assert!(validate_replay_oracle_manifest_basis(&source, &unchanged).is_err());
+
+        let mut missing_target = promoted;
+        missing_target.targets.pop();
+        assert!(validate_replay_oracle_manifest_basis(&source, &missing_target).is_err());
+    }
+
+    #[test]
+    fn replay_oracle_source_pair_is_bound_to_every_exact_snapshot() {
+        let scenario = ScenarioDef::from_canonical_material(
+            "crucible.test.production-replay-oracle-pair",
+            "scenario",
+        );
+        let configuration = Configuration::genesis(scenario.clone());
+        let checkpoint = Checkpoint::from_recorded_configuration(
+            &configuration,
+            None,
+            VirtualTime::default(),
+            BTreeMap::new(),
+            CheckpointKind::Fat,
+            BTreeMap::new(),
+        )
+        .expect("build replay-oracle checkpoint fixture");
+        let raw = QemuVmSnapshot::diskless(checkpoint.clone(), QemuReplayOracleValidation::NotRun)
+            .expect("build raw production snapshot");
+        let runtime_hash = ContentHash::from_bytes(b"matching production runtime");
+        let promoted = QemuVmSnapshot::diskless(
+            checkpoint,
+            QemuReplayOracleValidation::Match { runtime_hash },
+        )
+        .expect("build promoted production snapshot");
+        let mut basis = manifest();
+        basis.scenario = scenario.id();
+        basis.configuration = configuration.id();
+        basis.targets = vec![target("vm-a")];
+        let source = snapshot_portable(basis.clone(), &raw);
+        let promoted = snapshot_portable(basis, &promoted);
+
+        authenticate_replay_oracle_source_pair(
+            &source,
+            &promoted,
+            FaultResourceLimits::default(),
+            ContentHash::default(),
+            &mut || Ok(()),
+        )
+        .expect("exact raw-to-match source pair should authenticate");
+
+        let foreign_configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
+            "crucible.test.production-replay-oracle-pair",
+            "foreign",
+        ));
+        let foreign_checkpoint = Checkpoint::from_recorded_configuration(
+            &foreign_configuration,
+            None,
+            VirtualTime::default(),
+            BTreeMap::new(),
+            CheckpointKind::Fat,
+            BTreeMap::new(),
+        )
+        .expect("build foreign checkpoint fixture");
+        let foreign = QemuVmSnapshot::diskless(
+            foreign_checkpoint,
+            QemuReplayOracleValidation::Match { runtime_hash },
+        )
+        .expect("build foreign promoted snapshot");
+        let foreign = snapshot_portable(
+            decode::decode_manifest_with_limits(source.manifest(), FaultResourceLimits::default())
+                .expect("decode source manifest fixture"),
+            &foreign,
+        );
+        assert!(
+            authenticate_replay_oracle_source_pair(
+                &source,
+                &foreign,
+                FaultResourceLimits::default(),
+                ContentHash::default(),
+                &mut || Ok(()),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn production_replay_oracle_promotion_is_no_write_and_restart_authenticatable() {
+        std::thread::Builder::new()
+            .name(String::from("production-replay-oracle-promotion"))
+            .stack_size(32 * 1024 * 1024)
+            .spawn(run_production_replay_oracle_promotion_test)
+            .expect("spawn large-stack production promotion test")
+            .join()
+            .expect("production promotion test should not panic");
+    }
+
+    fn run_production_replay_oracle_promotion_test() {
+        let source_store = tempfile::tempdir().expect("create raw production store");
+        let (source, raw_identity, node, raw_snapshot) =
+            publish_one_node_raw_checkpoint(source_store.path());
+        let raw = open_exact_checkpoint_closure(source_store.path(), &source, raw_identity)
+            .expect("open raw production closure");
+        raw.validate_complete()
+            .expect("raw production closure should authenticate");
+        let files_before = regular_file_count(source_store.path());
+        let checks = BTreeMap::from([(
+            node.clone(),
+            QemuReplayOracleCheck::from_unvalidated_test_result(
+                raw_snapshot,
+                QemuReplayOracleValidation::Match {
+                    runtime_hash: ContentHash::from_bytes(b"matching production runtime"),
+                },
+            ),
+        )]);
+
+        let promotion = raw
+            .prepare_replay_oracle_promotion(&checks)
+            .expect("prepare source-bound production promotion");
+        assert_eq!(promotion.source(), raw_identity);
+        assert_ne!(promotion.promoted(), raw_identity);
+        assert_eq!(regular_file_count(source_store.path()), files_before);
+
+        let promoted_store = tempfile::tempdir().expect("create promoted production store");
+        let promoted_identity = promotion.promoted();
+        install_exact_checkpoint_closure(promoted_store.path(), &source, &promotion)
+            .expect("install promoted production closure");
+        let promoted =
+            open_exact_checkpoint_closure(promoted_store.path(), &source, promoted_identity)
+                .expect("open promoted production closure");
+        raw.authenticate_replay_oracle_promotion(&promoted)
+            .expect("restart validation should authenticate the exact root pair");
+        authenticate_portable_exact_checkpoint_replay_oracle_promotion(&source, &raw, &promoted)
+            .expect("portable restart validator should authenticate the exact root pair");
+
+        let foreign_check = BTreeMap::from([(
+            node,
+            QemuReplayOracleCheck::from_unvalidated_test_result(
+                ContentHash::from_bytes(b"foreign source snapshot"),
+                QemuReplayOracleValidation::Match {
+                    runtime_hash: ContentHash::from_bytes(b"matching production runtime"),
+                },
+            ),
+        )]);
+        assert!(raw.prepare_replay_oracle_promotion(&foreign_check).is_err());
+        assert_eq!(regular_file_count(source_store.path()), files_before);
     }
 
     #[test]

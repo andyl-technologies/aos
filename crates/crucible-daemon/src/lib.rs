@@ -211,9 +211,11 @@ pub use crucible_qemu_session::{
 pub use exact_checkpoint_restore::{
     ExactCheckpointRestoreError, ExactCheckpointResumeError, InstalledProductionAttemptCheckpoint,
     MaterializedAttemptCheckpoint, MaterializedExactCheckpoint,
-    ProductionAttemptCheckpointRestoreError, QemuGuardedReplayOracleSession,
-    captured_qemu_vmstate_blob, install_attempt_production_exact_checkpoint,
-    materialize_attempt_exact_checkpoint, materialize_selected_exact_checkpoint,
+    PreparedProductionAttemptReplayOraclePromotion, ProductionAttemptCheckpointRestoreError,
+    QemuGuardedReplayOracleSession,
+    authenticate_production_exact_checkpoint_replay_oracle_promotion, captured_qemu_vmstate_blob,
+    install_attempt_production_exact_checkpoint, materialize_attempt_exact_checkpoint,
+    materialize_selected_exact_checkpoint, prepare_attempt_production_replay_oracle_promotion,
     realize_materialized_attempt_checkpoint_guarded, realize_materialized_exact_checkpoint_guarded,
 };
 pub use exact_checkpoint_store::{
@@ -297,6 +299,7 @@ pub use paused_checkpoint_promotion::{
     PreparedPausedCheckpointPromotion, PublishedPausedCheckpointPromotion,
     StagedPausedCheckpointPromotion, publish_staged_paused_checkpoint_promotion,
     reconcile_published_paused_checkpoint_promotion, recover_published_paused_checkpoint_promotion,
+    recover_published_production_paused_checkpoint_promotion,
     revert_recovered_paused_checkpoint_promotion, revert_staged_paused_checkpoint_promotion,
     stage_prepared_paused_checkpoint_promotion,
     validate_and_prepare_paused_checkpoint_promotion_guarded,

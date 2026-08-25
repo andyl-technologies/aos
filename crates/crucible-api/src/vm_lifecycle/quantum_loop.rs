@@ -1738,20 +1738,17 @@ impl ProductionVmLifecycleLoop {
                     "VMState",
                     boundary,
                 )?;
-                let manifest_identity = crucible::ContentHash::from_canonical_material(
-                    "crucible.production-vm-exact-checkpoint.v1",
-                    &format!(
-                        "configuration={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\nvmstate={}",
-                        configuration.id().to_hex(),
-                        capture.node.name,
-                        capture.counter,
-                        capture.scheduler_time.ticks,
-                        capture.snapshot.id().to_hex(),
-                        fault_checkpoint.id().to_hex(),
-                        overlay_artifact.identity.to_hex(),
-                        vmstate_artifact.identity.to_hex(),
-                    ),
-                );
+                let manifest_identity =
+                    exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
+                        configuration: configuration.id(),
+                        node: &capture.node,
+                        counter: capture.counter,
+                        scheduler_time: capture.scheduler_time,
+                        snapshot: capture.snapshot.id(),
+                        fault_identity: fault_checkpoint.id(),
+                        overlay: overlay_artifact.identity,
+                        vmstate: vmstate_artifact.identity,
+                    });
                 targets.insert(
                     capture.node.clone(),
                     ProductionVmExactCheckpointTarget {
