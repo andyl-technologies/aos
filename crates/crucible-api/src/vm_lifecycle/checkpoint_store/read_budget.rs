@@ -117,12 +117,13 @@ mod tests {
     fn checkpoint_read_budget_rejects_manifest_before_file_allocation() {
         let invoked = Cell::new(false);
         let mut budget = CheckpointReadBudget::new(7);
-        let error = budget
-            .read_admitted(8, || {
-                invoked.set(true);
-                Ok(vec![0; 8])
-            })
-            .expect_err("over-limit manifest must fail before its read closure");
+        let error = match budget.read_admitted(8, || {
+            invoked.set(true);
+            Ok(vec![0; 8])
+        }) {
+            Ok(_) => panic!("over-limit manifest must fail before its read closure"),
+            Err(error) => error,
+        };
 
         assert!(!invoked.get());
         assert!(matches!(
@@ -140,9 +141,11 @@ mod tests {
     #[test]
     fn checkpoint_read_allocation_failure_keeps_pre_reservation_coordinates() {
         let mut budget = CheckpointReadBudget::new(32);
-        let error = budget
-            .read_admitted(8, || Err(BoundedReadError::Allocation { requested: 8 }))
-            .expect_err("allocation refusal must remain typed");
+        let error =
+            match budget.read_admitted(8, || Err(BoundedReadError::Allocation { requested: 8 })) {
+                Ok(_) => panic!("allocation refusal must remain typed"),
+                Err(error) => error,
+            };
 
         assert!(matches!(
             error,

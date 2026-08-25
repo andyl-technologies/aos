@@ -125,23 +125,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn published_checkpoint_count_ignores_transaction_staging_directories() {
-        let root = tempfile::tempdir().expect("create checkpoint count fixture");
-        fs::create_dir(root.path().join(".closure-incomplete"))
-            .expect("create transaction staging directory");
-        fs::create_dir(root.path().join("not-a-checkpoint")).expect("create unrelated directory");
-        fs::create_dir(root.path().join("0".repeat(64)))
-            .expect("create one published checkpoint directory");
+    fn published_checkpoint_count_ignores_transaction_staging_directories()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        fs::create_dir(root.path().join(".closure-incomplete"))?;
+        fs::create_dir(root.path().join("not-a-checkpoint"))?;
+        fs::create_dir(root.path().join("0".repeat(64)))?;
         let limits = FaultResourceLimits {
             checkpoint_count: 1,
             ..FaultResourceLimits::default()
         };
 
-        enforce_published_checkpoint_count(root.path(), limits)
-            .expect("only the published identity counts against the limit");
+        enforce_published_checkpoint_count(root.path(), limits)?;
 
-        fs::create_dir(root.path().join("1".repeat(64)))
-            .expect("create a second published checkpoint directory");
+        fs::create_dir(root.path().join("1".repeat(64)))?;
         assert!(matches!(
             enforce_published_checkpoint_count(root.path(), limits),
             Err(SchedulerError::ResourceLimit {
@@ -152,6 +149,7 @@ mod tests {
                 hard,
             }) if hard == FaultResourceLimits::compiled_maximum().checkpoint_count
         ));
+        Ok(())
     }
 
     #[test]
