@@ -398,48 +398,48 @@ mod entry {
         }))
     }
 
-    async fn anonymous_browse_cache_key(
-        req: &Request,
-        env: &Env,
-        target: &AnonymousBrowseTarget,
-    ) -> Result<Option<String>> {
+    fn anonymous_browse_cache_key(req: &Request, env: &Env) -> Result<Option<String>> {
         if req.method() != Method::Get {
             return Ok(None);
         }
         if req.url()?.query().is_some() {
             return Ok(None);
         }
-        let kv = crate::workerkv::WorkerKv::new(env.kv(crate::handlers::bindings::KV_SESSIONS)?);
-        let Some(entries) = aos_hub_core::directory::read(&kv)
-            .await
-            .map_err(|error| worker::Error::RustError(format!("browse directory: {error:#}")))?
-        else {
-            return Ok(None);
-        };
-        let generation = match target {
-            AnonymousBrowseTarget::Instance => {
-                use sha2::{Digest as _, Sha256};
-                hex::encode(Sha256::digest(serde_json::to_vec(&entries).map_err(
-                    |error| worker::Error::RustError(format!("browse directory JSON: {error}")),
-                )?))
-            }
-            AnonymousBrowseTarget::Registry(slug) => {
-                let Some(entry) = entries.iter().find(|entry| entry.slug == *slug) else {
-                    return Ok(None);
-                };
-                entry.cache_generation()
-            }
-        };
+        browse_cache_key_url(req.url()?, env).map(Some)
+    }
+
+    fn browse_cache_key_url(mut url: url::Url, env: &Env) -> Result<String> {
         let deployment = env
             .var(HUB_DEPLOYMENT_ID)
             .map(|value| value.to_string())
             .unwrap_or_else(|_| "unknown".to_string());
-        let mut url = req.url()?;
-        url.query_pairs_mut().append_pair(
-            "__aos_browse_generation",
-            &format!("{deployment}-{generation}"),
-        );
-        Ok(Some(url.to_string()))
+        url.query_pairs_mut()
+            .append_pair("__aos_browse_deployment", &deployment);
+        Ok(url.to_string())
+    }
+
+    async fn purge_registry_browse_cache(env: &Env, slug: &str) -> Result<()> {
+        let origin = env
+            .var(HUB_EXTERNAL_URL)
+            .map_err(|_| worker::Error::RustError(format!("{HUB_EXTERNAL_URL} is required")))?;
+        let mut url = url::Url::parse(&origin.to_string())
+            .map_err(|error| worker::Error::RustError(format!("browse cache origin: {error}")))?;
+        let cache = Cache::default();
+        for path in [
+            "/".to_string(),
+            format!("/{slug}/"),
+            format!("/{slug}/-/packages"),
+            format!("/{slug}/-/images"),
+            format!("/{slug}/-/channels"),
+            format!("/{slug}/-/releases"),
+            format!("/{slug}/-/health"),
+        ] {
+            url.set_path(&path);
+            url.set_query(None);
+            let key = browse_cache_key_url(url.clone(), env)?;
+            let _ = cache.delete(key, false).await?;
+        }
+        Ok(())
     }
 
     async fn request_execution_route(
@@ -1029,7 +1029,7 @@ mod entry {
 
         let browse_target = anonymous_browse_target(&req)?;
         let browse_cache_key = match browse_target.as_ref() {
-            Some(target) => anonymous_browse_cache_key(&req, &env, target).await?,
+            Some(_) => anonymous_browse_cache_key(&req, &env)?,
             None => None,
         };
         if let Some(cache_key) = browse_cache_key.as_ref() {
@@ -1101,7 +1101,7 @@ mod entry {
             if resp.status_code() == 200 && content_is_html && !resp.headers().has("set-cookie")? {
                 let cached = resp.cloned()?;
                 let cached_headers = cached.headers().clone();
-                cached_headers.set("cache-control", "public, max-age=60")?;
+                cached_headers.set("cache-control", "public, max-age=10")?;
                 cached_headers.set("x-aos-browse-cache", "stored")?;
                 let cached = cached.with_headers(cached_headers);
                 ctx.wait_until(async move {
@@ -1118,9 +1118,23 @@ mod entry {
         if invalidates_browse && (200..300).contains(&resp.status_code()) {
             let kv =
                 crate::workerkv::WorkerKv::new(env.kv(crate::handlers::bindings::KV_SESSIONS)?);
+            let root_cache_key = env
+                .var(HUB_EXTERNAL_URL)
+                .ok()
+                .and_then(|origin| url::Url::parse(&origin.to_string()).ok())
+                .and_then(|mut url| {
+                    url.set_path("/");
+                    url.set_query(None);
+                    browse_cache_key_url(url, &env).ok()
+                });
             ctx.wait_until(async move {
                 if let Err(error) = kv.delete(aos_hub_core::directory::DIRECTORY_KEY).await {
                     worker::console_error!("browse directory invalidation: {error:#}");
+                }
+                if let Some(cache_key) = root_cache_key {
+                    if let Err(error) = Cache::default().delete(cache_key, false).await {
+                        worker::console_error!("browse root cache invalidation: {error}");
+                    }
                 }
             });
         }
@@ -1724,6 +1738,7 @@ mod entry {
                                     "job reindex {registry_id}: generation already finished"
                                 );
                                 rebuild_worker_directory(db.as_ref(), env).await?;
+                                purge_registry_browse_cache(env, &registry.slug).await?;
                                 return Ok(());
                             }
                         };
@@ -1777,6 +1792,7 @@ mod entry {
                             ))
                         })?;
                         rebuild_worker_directory(db.as_ref(), env).await?;
+                        purge_registry_browse_cache(env, &registry.slug).await?;
                     }
                     Ok(None) => worker::console_log!("job reindex {registry_id}: registry gone"),
                     Err(err) => {
