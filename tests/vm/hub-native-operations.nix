@@ -181,6 +181,45 @@ in
         ${pkgs.coreutils}/bin/cat "$apply_file"
       }
 
+      hub_cli() {
+        ${pkgs.aos}/bin/aos --json hub "$@" \
+          --hub "$hub_url" --token "$token"
+      }
+
+      retained_plan() {
+        label=$1
+        shift
+        plan_file="/tmp/$label-retained-plan.json"
+        if ! hub_cli "$@" >"$plan_file"; then
+          ${pkgs.coreutils}/bin/cat "$plan_file" >&2
+          return 1
+        fi
+        ${pkgs.jq}/bin/jq -e \
+          '.data.plan.plan_id != "" and .data.plan.confirmation_hash != ""' \
+          "$plan_file" >/dev/null
+      }
+
+      retained_apply() {
+        label=$1
+        shift
+        plan_file="/tmp/$label-retained-plan.json"
+        plan_id=$(${pkgs.jq}/bin/jq -er .data.plan.plan_id "$plan_file")
+        confirm_hash=$(${pkgs.jq}/bin/jq -er .data.plan.confirmation_hash "$plan_file")
+        apply_file="/tmp/$label-retained-apply.json"
+        if ! hub_cli "$@" apply \
+          --plan-id "$plan_id" --confirm-hash "$confirm_hash" \
+          --idempotency-key "$label-apply" --yes >"$apply_file"; then
+          ${pkgs.coreutils}/bin/cat "$apply_file" >&2
+          return 1
+        fi
+        ${pkgs.coreutils}/bin/cat "$apply_file"
+      }
+
+      resource_version() {
+        ${pkgs.jq}/bin/jq -er \
+          '[.. | objects | .resource_version? // empty][0]' "$1"
+      }
+
       echo '==> Exercise the installed aos client against the native service'
       ${pkgs.aos}/bin/aos --json hub whoami --hub "$hub_url" --token "$token" \
         >/tmp/whoami.json
@@ -241,12 +280,151 @@ in
       ${pkgs.coreutils}/bin/cat /tmp/org-show.json
       org_version=$(${pkgs.jq}/bin/jq -er .data.organization.resource_version \
         /tmp/org-show.json)
+      org_scope=$(${pkgs.jq}/bin/jq -er .data.organization.stable_id \
+        /tmp/org-show.json)
       reviewed org-update org update operations --display-name 'Operations production' \
         --if-version "$org_version" \
         >/tmp/org-update.json
       ${pkgs.aos}/bin/aos --json hub org show operations \
         --hub "$hub_url" --token "$token" \
         | ${pkgs.jq}/bin/jq -e '.data.organization.display_name == "Operations production"' >/dev/null
+
+      echo '==> Exercise retained instance-setting plan/apply contracts'
+      hub_cli instance identity show >/tmp/instance-identity.json
+      identity_version=$(resource_version /tmp/instance-identity.json)
+      retained_plan identity-update instance identity update plan \
+        signup_policy=invite_only --if-version "$identity_version" \
+        --idempotency-key identity-update-plan
+      retained_apply identity-update instance identity update \
+        >/tmp/identity-update.json
+      hub_cli instance identity show >/tmp/instance-identity-updated.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data | tostring | contains("invite_only")' \
+        /tmp/instance-identity-updated.json >/dev/null
+
+      hub_cli instance branding show >/tmp/instance-branding.json
+      branding_version=$(resource_version /tmp/instance-branding.json)
+      retained_plan branding-update instance branding update plan \
+        site_title='Operations Hub' --if-version "$branding_version" \
+        --idempotency-key branding-update-plan
+      retained_apply branding-update instance branding update \
+        >/tmp/branding-update.json
+      hub_cli instance branding show \
+        | ${pkgs.jq}/bin/jq -e '.data | tostring | contains("Operations Hub")' >/dev/null
+
+      hub_cli instance resource-defaults show >/tmp/instance-resource-defaults.json
+      defaults_version=$(resource_version /tmp/instance-resource-defaults.json)
+      retained_plan resource-defaults-update instance resource-defaults update plan \
+        max_upload_bytes=1048576 --if-version "$defaults_version" \
+        --idempotency-key resource-defaults-update-plan
+      retained_apply resource-defaults-update instance resource-defaults update \
+        >/tmp/resource-defaults-update.json
+
+      echo '==> Exercise service-account and membership lifecycle'
+      retained_plan service-account-create org service-account create plan \
+        operations release-bot --idempotency-key service-account-create-plan
+      retained_apply service-account-create org service-account create \
+        >/tmp/service-account-create.json
+      hub_cli org service-account list operations --page-size 1 \
+        >/tmp/service-account-list.json
+      ${pkgs.jq}/bin/jq -e '.data | tostring | contains("release-bot")' \
+        /tmp/service-account-list.json >/dev/null
+      hub_cli org service-account show operations release-bot \
+        >/tmp/service-account-show.json
+      service_account_version=$(resource_version /tmp/service-account-show.json)
+
+      retained_plan service-account-update org service-account update plan \
+        operations release-bot --new-name publisher-bot \
+        --if-version "$service_account_version" \
+        --idempotency-key service-account-update-plan
+      retained_apply service-account-update org service-account update \
+        >/tmp/service-account-update.json
+      hub_cli org service-account show operations publisher-bot \
+        >/tmp/service-account-renamed.json
+      service_account_ref=operations/publisher-bot
+
+      retained_plan member-set-role org member set-role plan \
+        --principal-kind service_account --principal "$service_account_ref" \
+        --scope "$org_scope" --role viewer --if-version absent \
+        --idempotency-key member-set-role-plan
+      retained_apply member-set-role org member set-role >/tmp/member-set-role.json
+      hub_cli org member show --principal-kind service_account \
+        --principal "$service_account_ref" --scope "$org_scope" \
+        >/tmp/member-show.json
+      member_version=$(resource_version /tmp/member-show.json)
+      retained_plan member-remove org member remove plan \
+        --principal-kind service_account --principal "$service_account_ref" \
+        --scope "$org_scope" --if-version "$member_version" \
+        --idempotency-key member-remove-plan
+      retained_apply member-remove org member remove >/tmp/member-remove.json
+
+      publisher_version=$(resource_version /tmp/service-account-renamed.json)
+      retained_plan service-account-delete org service-account delete plan \
+        operations publisher-bot --if-version "$publisher_version" \
+        --idempotency-key service-account-delete-plan
+      retained_apply service-account-delete org service-account delete \
+        >/tmp/service-account-delete.json
+
+      echo '==> Exercise invitation create/read/cancel and rejected acceptance'
+      retained_plan invitation-create org invitation create plan \
+        operations new-user@example.test --scope "$org_scope" --role viewer \
+        --ttl 3600 --idempotency-key invitation-create-plan
+      retained_apply invitation-create org invitation create \
+        >/tmp/invitation-create.json
+      hub_cli org invitation list operations --page-size 1 >/tmp/invitation-list.json
+      invitation_id=$(${pkgs.jq}/bin/jq -er \
+        '[.. | objects | .invitation_id? // empty][0]' /tmp/invitation-list.json)
+      hub_cli org invitation show operations "$invitation_id" >/tmp/invitation-show.json
+      invitation_version=$(resource_version /tmp/invitation-show.json)
+      if hub_cli org invitation accept operations --secret invalid-secret \
+        >/tmp/invitation-accept-invalid.json 2>&1; then
+        echo 'invalid invitation secret unexpectedly succeeded' >&2
+        exit 1
+      fi
+      ${pkgs.grep}/bin/grep -Eiq 'invalid|secret|invitation' \
+        /tmp/invitation-accept-invalid.json
+      retained_plan invitation-cancel org invitation cancel plan \
+        operations "$invitation_id" --if-version "$invitation_version" \
+        --idempotency-key invitation-cancel-plan
+      retained_apply invitation-cancel org invitation cancel \
+        >/tmp/invitation-cancel.json
+
+      echo '==> Exercise OIDC configuration lifecycle'
+      retained_plan oidc-set org identity-provider set plan operations \
+        --issuer https://idp.example.test \
+        --authorization-endpoint https://idp.example.test/authorize \
+        --token-endpoint https://idp.example.test/token \
+        --jwks-uri https://idp.example.test/keys \
+        --client-id operations-hub --client-secret test-client-secret \
+        --groups-claim groups --role-map-json '{"operators":"admin"}' \
+        --allow-jit --default-role viewer --if-version absent \
+        --idempotency-key oidc-set-plan
+      retained_apply oidc-set org identity-provider set >/tmp/oidc-set.json
+      hub_cli org identity-provider show operations >/tmp/oidc-show.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data | tostring | contains("idp.example.test") and (contains("test-client-secret") | not)' \
+        /tmp/oidc-show.json >/dev/null
+      oidc_version=$(resource_version /tmp/oidc-show.json)
+      retained_plan oidc-remove org identity-provider remove plan operations \
+        --if-version "$oidc_version" --idempotency-key oidc-remove-plan
+      retained_apply oidc-remove org identity-provider remove >/tmp/oidc-remove.json
+
+      echo '==> Exercise scoped access-token issuance and retirement'
+      retained_plan access-token-issue access-token issue plan "$org_scope" \
+        --owner user:operator@example.test --permission read \
+        --ttl-secs 3600 --comment 'VM production qualification' \
+        --idempotency-key access-token-issue-plan
+      retained_apply access-token-issue access-token issue \
+        >/tmp/access-token-issue.json
+      hub_cli access-token list "$org_scope" --page-size 10 >/tmp/access-token-list.json
+      token_id=$(${pkgs.jq}/bin/jq -er \
+        '[.. | objects | .token_id? // empty][0]' \
+        /tmp/access-token-list.json)
+      token_version=$(resource_version /tmp/access-token-list.json)
+      retained_plan access-token-retire access-token retire plan "$token_id" \
+        --if-version "$token_version" --idempotency-key access-token-retire-plan
+      retained_apply access-token-retire access-token retire \
+        >/tmp/access-token-retire.json
       reviewed project-create org project create operations --path platform --name Platform \
         >/tmp/project-create.json
       ${pkgs.aos}/bin/aos --json hub org project list operations \
