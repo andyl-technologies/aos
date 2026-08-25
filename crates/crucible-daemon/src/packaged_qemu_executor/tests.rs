@@ -80,6 +80,21 @@ impl QemuAttemptHostResourceOwner for UnusedHostOwner {
     fn quarantine(&mut self) {}
 }
 
+struct UnusedPromotionWorker;
+
+impl LocalCheckpointPromotionWorker for UnusedPromotionWorker {
+    type Error = ();
+
+    fn prepare(
+        &mut self,
+        _work: crate::CheckpointPromotionRestartWork,
+        _cancellation: crate::ExecutionCancellation,
+    ) -> Result<crate::PreparedPausedCheckpointPromotionRestart, crate::AttemptWorkerFailure<()>>
+    {
+        Err(crate::AttemptWorkerFailure::Terminal(()))
+    }
+}
+
 fn unused_host_error() -> QemuVmRealizationError {
     QemuVmRealizationError::Executor {
         operation: "use unused packaged test host",
@@ -180,6 +195,49 @@ fn packaged_executor_serves_the_exact_composed_description_and_joins() {
         .expect("join packaged executor");
     assert_eq!(report.pool().executions(), 0);
     assert_eq!(report.pool().active(), 0);
+}
+
+#[test]
+fn packaged_executor_advertises_exact_restore_only_with_a_promotion_owner() {
+    let directory = tempfile::tempdir().expect("packaged executor directory");
+    let config = config(&directory, 1);
+    let socket = config.endpoint().path().to_owned();
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(crucible_cas::content_store::MemoryBlobBackend::new(
+            "packaged-executor-exact",
+            1024 * 1024,
+        )),
+        Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
+    ));
+    let service = compose_packaged_qemu_executor_with_checkpoint_promotions(
+        repository,
+        profile(),
+        config,
+        UnusedHostFactory,
+        vec![UnusedPromotionWorker],
+    )
+    .expect("compose promotion-enabled packaged executor");
+    let executor = AttachedPackagedQemuExecutor::start(service).expect("start packaged executor");
+
+    let stream = UnixStream::connect(socket).expect("connect packaged executor");
+    let service = LoopbackExecutorService::new(stream).expect("executor protocol");
+    let mut client = ExecutorClient::new(service);
+    let description = client.describe_executor().expect("describe executor");
+    assert_eq!(
+        description.capabilities().materialization(),
+        &BTreeSet::from([
+            ExecutorMaterializationCapability::ExactRestore,
+            ExecutorMaterializationCapability::ThinReplay,
+        ])
+    );
+
+    drop(client);
+    let report = executor
+        .shutdown_and_join()
+        .expect("join promotion-enabled executor");
+    assert_eq!(report.pool().promotion_workers(), 1);
+    assert_eq!(report.pool().promotions_active(), 0);
+    assert_eq!(report.pool().promotions_queued(), 0);
 }
 
 #[test]
