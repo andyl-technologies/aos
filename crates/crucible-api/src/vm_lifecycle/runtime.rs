@@ -76,6 +76,39 @@ impl ProductionVmLifecycleLoop {
         Ok(true)
     }
 
+    /// Captures the current complete production state as a portable closure.
+    ///
+    /// The transaction snapshots every live World node at the same
+    /// authenticated scheduler boundary, retains trigger, assertion, fault,
+    /// network, event-log, lifecycle, overlay, and VMState continuation, then
+    /// resumes the formerly running nodes before returning a read-only closure
+    /// capability. Large artifacts remain chunked and streamable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the current boundary is not checkpoint
+    /// ready, any node or continuation cannot be captured, publication or
+    /// cleanup is indeterminate, or the published portable closure cannot be
+    /// reopened under the exact scenario bounds.
+    pub fn capture_portable_exact_checkpoint(
+        &mut self,
+    ) -> Result<ProductionExactCheckpointClosure, SchedulerError> {
+        if !self.exact_checkpoint_ready()? {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "production lifecycle is not at an exact checkpoint-ready boundary",
+                ),
+            });
+        }
+        let configuration = self.inner.loop_impl().configuration().clone();
+        let identity = self.capture_exact_checkpoint_set(&configuration)?;
+        open_exact_checkpoint_closure(&self.config.run_state_root, &self.source, identity).map_err(
+            |error| SchedulerError::BoundaryViolation {
+                message: format!("open captured portable exact checkpoint: {error}"),
+            },
+        )
+    }
+
     /// Captures read-only evidence from every production fault adapter.
     ///
     /// The snapshot is intended for gates, diagnostics, and artifact capture.

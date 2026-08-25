@@ -55,6 +55,10 @@ mod assets;
 use assets::*;
 mod checkpoint_store;
 use checkpoint_store::load_exact_checkpoint_set;
+pub use checkpoint_store::{
+    ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
+    open_exact_checkpoint_closure,
+};
 mod checkpoint_dependencies;
 pub use checkpoint_dependencies::collect_signal_artifact_objects;
 mod fault_implementation;
