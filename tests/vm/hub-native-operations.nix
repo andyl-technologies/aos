@@ -315,6 +315,22 @@ in
         registry:operations/maintenance primary \
         --if-version "$placement_version" >/tmp/placement-promote.json
 
+      echo '==> Exercise surface inventory, topology, and resolution explanation'
+      hub_cli surface show registry:operations/maintenance \
+        >/tmp/surface-show.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data | tostring | contains("operations/maintenance")' \
+        /tmp/surface-show.json >/dev/null
+      hub_cli surface topology registry:operations/maintenance \
+        >/tmp/surface-topology.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data | tostring | contains("primary")' /tmp/surface-topology.json >/dev/null
+      hub_cli surface explain registry:operations/maintenance \
+        --url "$hub_url/operations/maintenance" --access-class web \
+        >/tmp/surface-explain.json
+      ${pkgs.jq}/bin/jq -e '.data | type == "object"' \
+        /tmp/surface-explain.json >/dev/null
+
       echo '==> Exercise tenant inventory and ordinary reviewed CRUD'
       ${pkgs.aos}/bin/aos --json hub org show operations \
         --hub "$hub_url" --token "$token" >/tmp/org-show.json
@@ -375,6 +391,49 @@ in
         --binding instance-default >/tmp/org-topology-set.json
       reviewed org-topology-clear org topology-defaults clear operations --binding \
         >/tmp/org-topology-clear.json
+
+      echo '==> Exercise immutable serving-domain configuration lifecycle'
+      reviewed domain-add domain add packages.operations.example.test \
+        --org operations >/tmp/domain-add.json
+      hub_cli domain list --org operations --page-size 1 >/tmp/domain-list.json
+      hub_cli domain show packages.operations.example.test >/tmp/domain-show.json
+      domain_id=$(${pkgs.jq}/bin/jq -er '.data.domain.stable_id' \
+        /tmp/domain-show.json)
+      domain_version=$(resource_version /tmp/domain-show.json)
+      reviewed domain-dns domain dns configure "$domain_id" \
+        --mode external --expected-target packages-origin.example.test \
+        --if-version "$domain_version" >/tmp/domain-dns.json
+      hub_cli domain show "$domain_id" >/tmp/domain-after-dns.json
+      domain_version=$(resource_version /tmp/domain-after-dns.json)
+      reviewed domain-certificate domain certificate configure \
+        "$domain_id" --mode external \
+        --certificate-ref native://operations/certificate/v1 \
+        --if-version "$domain_version" >/tmp/domain-certificate.json
+      hub_cli domain status "$domain_id" >/tmp/domain-status.json
+      hub_cli domain show "$domain_id" >/tmp/domain-before-remove.json
+      domain_version=$(resource_version /tmp/domain-before-remove.json)
+      reviewed domain-remove domain remove "$domain_id" \
+        --if-version "$domain_version" >/tmp/domain-remove.json
+      reviewed domain-verify-add domain add verify.operations.example.test \
+        --org operations >/tmp/domain-verify-add.json
+      hub_cli domain show verify.operations.example.test \
+        >/tmp/domain-before-verify.json
+      verify_domain_id=$(${pkgs.jq}/bin/jq -er '.data.domain.stable_id' \
+        /tmp/domain-before-verify.json)
+      domain_version=$(resource_version /tmp/domain-before-verify.json)
+      reviewed domain-verify domain verify "$verify_domain_id" \
+        --if-version "$domain_version" >/tmp/domain-verify.json
+      domain_verify_operation_id=$(${pkgs.jq}/bin/jq -er \
+        '.data.operation.operation_id' /tmp/domain-verify.json)
+      if hub_cli operation watch "$domain_verify_operation_id" --timeout 10s \
+        >/tmp/domain-verify-watch.json 2>&1; then
+        ${pkgs.jq}/bin/jq -e \
+          '.data.operation.operation.state == "failed" and .data.terminal == true' \
+          /tmp/domain-verify-watch.json >/dev/null
+      else
+        ${pkgs.grep}/bin/grep -Eiq 'not_found|unavailable|DNS' \
+          /tmp/domain-verify-watch.json
+      fi
 
       echo '==> Exercise organization binding, credentials, grants, and revisions'
       reviewed consumer-org-create org create --slug analytics \
