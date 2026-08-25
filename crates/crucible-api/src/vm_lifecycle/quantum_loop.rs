@@ -1776,6 +1776,7 @@ impl ProductionVmLifecycleLoop {
                 initial_lifecycle_observations_pending: self.initial_lifecycle_observations_pending,
                 branch,
                 recorded_controls,
+                selectable_catalog_plans: self.inner.backend_mut().selectable_catalog_plans(),
                 fault_checkpoint: Some(fault_checkpoint),
                 targets,
                 node_generations,

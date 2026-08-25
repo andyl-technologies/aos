@@ -96,14 +96,21 @@ pub(super) fn deliver_selectable_reply_on_vcpu_resume(
     // deterministic RR model serializes the resume callback with doorbell
     // execution callbacks that mutate the same catalog.
     let state = unsafe { state.as_mut() };
-    state.selectable.as_mut().map_or(Ok(()), |selectable| {
+    let completed = state.selectable.as_mut().map_or(Ok(None), |selectable| {
         let mut writer = selectable::LiveSelectableGuestMemoryWriter::new(
             state.apis,
             vcpu_index,
             current_icount,
         );
         selectable.deliver_reply(current_icount, vcpu_index, &mut writer)
-    })
+    })?;
+    if let Some(reply) = completed {
+        state
+            .marker_sink
+            .output
+            .record_selectable_completed(current_icount, vcpu_index, &reply)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Default)]
@@ -483,13 +490,26 @@ impl LiveWhiteboxState {
                 .as_mut()
                 .ok_or(LiveWhiteboxError::SelectableNotConfigured)?;
             let outcome = selectable.handle(&self.doorbell, self.apis, &mut reader, event)?;
-            if matches!(outcome, crate::SelectableDoorbellOutcome::Pending { .. }) {
-                let record = selectable.pending_transport_record()?;
-                self.marker_sink.output.record_selectable_pending(
-                    current_icount,
-                    vcpu_index as u32,
-                    &record,
-                )?;
+            match outcome {
+                crate::SelectableDoorbellOutcome::Registered { registration, .. }
+                    if selectable.catalog_events_enabled() =>
+                {
+                    self.marker_sink.output.record_selectable_registration(
+                        current_icount,
+                        vcpu_index as u32,
+                        &registration,
+                    )?;
+                    selectable.request_catalog_event_stop()?;
+                }
+                crate::SelectableDoorbellOutcome::Pending { .. } => {
+                    let record = selectable.pending_transport_record()?;
+                    self.marker_sink.output.record_selectable_pending(
+                        current_icount,
+                        vcpu_index as u32,
+                        &record,
+                    )?;
+                }
+                _ => {}
             }
             Ok(())
         } else {

@@ -32,7 +32,7 @@ impl ProductionExactCheckpointObject {
 /// Read-only portable view of one complete production exact-checkpoint closure.
 ///
 /// The value exposes no directory or mutation authority. Its manifest is the
-/// canonical `crucible.production-exact-closure.v4` body, and its object list
+/// canonical `crucible.production-exact-closure.v5` body, and its object list
 /// is the exact deduplicated set named by that manifest. Large overlay and
 /// VMState artifacts remain represented by their bounded content-addressed
 /// chunks rather than by RAM-sized buffers.

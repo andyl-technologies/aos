@@ -42,7 +42,7 @@ use quantum_loop::{
     DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
     decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::net::SocketAddr;
@@ -269,6 +269,8 @@ struct ProductionVmExactCheckpointSet {
     initial_lifecycle_observations_pending: bool,
     branch: Option<ProductionVmBranchConfig>,
     recorded_controls: Vec<ProductionVmRecordedControl>,
+    selectable_catalog_plans:
+        BTreeMap<NodeId, crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
     fault_checkpoint: Option<ProductionFaultRuntimeCheckpoint>,
     targets: BTreeMap<NodeId, ProductionVmExactCheckpointTarget>,
     node_generations: BTreeMap<NodeId, u64>,
@@ -1742,21 +1744,31 @@ fn build_production_vm_lifecycle_loop_with_restore(
     }
     let nodes = source.world().vm_nodes();
     validate_app_random_branch_replay_config(nodes, config)?;
-    if restore_checkpoint.is_some()
-        && source
-            .selectables()
-            .declarations()
-            .values()
-            .any(|declaration| {
-                matches!(
-                    declaration.source(),
-                    crucible::campaign::ChoiceSource::Guest { .. }
-                )
+    if let Some(checkpoint) = restore_checkpoint.as_ref() {
+        let expected_selectable_nodes = nodes
+            .iter()
+            .filter(|node| {
+                checkpoint.node_service_states.get(&node.id)
+                    != Some(&ProductionNodeServiceState::PermanentlyFailed)
+                    && source
+                        .selectables()
+                        .guest_declarations(&node.id)
+                        .next()
+                        .is_some()
             })
-    {
-        return Err(loop_factory_error(
-            "exact restore for a selectable-enabled scenario requires retained catalog continuations",
-        ));
+            .map(|node| node.id.clone())
+            .collect::<BTreeSet<_>>();
+        if checkpoint
+            .selectable_catalog_plans
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            != expected_selectable_nodes
+        {
+            return Err(loop_factory_error(
+                "production exact checkpoint selectable catalog node set differs from the scenario",
+            ));
+        }
     }
     let first = nodes
         .first()
@@ -1951,7 +1963,8 @@ fn build_production_vm_lifecycle_loop_with_restore(
                         vm.id.name
                     ))
                 })?;
-                let plan = crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::new(
+                let cold_plan =
+                    crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::new(
                     limits,
                     declarations,
                     crucible_protocol::selectable_catalog_plan::SelectablePlanContinuation::cold(),
@@ -1962,6 +1975,31 @@ fn build_production_vm_lifecycle_loop_with_restore(
                         vm.id.name
                     ))
                 })?;
+                let plan = if let Some(checkpoint) = restore_checkpoint.as_ref()
+                    && restored_service_state != Some(ProductionNodeServiceState::PermanentlyFailed)
+                {
+                    let restored = checkpoint.selectable_catalog_plans.get(&vm.id).ok_or_else(
+                        || {
+                            loop_factory_error(format!(
+                                "exact checkpoint has no selectable catalog continuation for `{}`",
+                                vm.id.name
+                            ))
+                        },
+                    )?;
+                    if restored.limits() != cold_plan.limits()
+                        || restored.declarations() != cold_plan.declarations()
+                        || restored.continuation().phase()
+                            != crucible_protocol::selectable_catalog_plan::SelectablePlanPhase::Frozen
+                    {
+                        return Err(loop_factory_error(format!(
+                            "exact checkpoint selectable catalog basis differs for `{}`",
+                            vm.id.name
+                        )));
+                    }
+                    restored.clone()
+                } else {
+                    cold_plan
+                };
                 launch = launch.with_selectable_catalog_plan(plan);
             }
             let app_random = if let Some(checkpoint) = &restore_checkpoint {

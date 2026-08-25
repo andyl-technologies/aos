@@ -256,6 +256,40 @@ impl QemuNodeSet {
         Ok(())
     }
 
+    /// Copies every live node's exact host-mirrored selectable catalog plan.
+    #[must_use]
+    pub fn selectable_catalog_plans(
+        &self,
+    ) -> BTreeMap<NodeId, crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan> {
+        self.nodes
+            .iter()
+            .filter_map(|(node, backend)| {
+                backend
+                    .selectable_catalog_plan()
+                    .filter(|plan| !plan.declarations().is_empty())
+                    .map(|plan| (node.clone(), plan))
+            })
+            .collect()
+    }
+
+    /// Reports whether one node has no selectable reply awaiting consumption.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent.
+    pub fn selectable_reply_is_checkpoint_quiescent(
+        &self,
+        node: &NodeId,
+    ) -> Result<bool, BackendError> {
+        Ok(self
+            .nodes
+            .get(node)
+            .ok_or_else(|| BackendError::Rejected {
+                message: format!("QEMU backend set has no live node `{}`", node.name),
+            })?
+            .selectable_reply_is_checkpoint_quiescent())
+    }
+
     /// Returns one node's authoritative live block-device handle.
     ///
     /// # Errors

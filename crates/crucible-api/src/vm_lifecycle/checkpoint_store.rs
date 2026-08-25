@@ -30,7 +30,10 @@ pub(super) use recovery::{
     reconcile_indeterminate_publication, recover_published_checkpoint_catalog,
 };
 
-const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v4\0";
+const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v5\0";
+const LEGACY_MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v4\0";
+const MANIFEST_VERSION: u8 = 5;
+const LEGACY_MANIFEST_VERSION: u8 = 4;
 const MANIFEST_FILE: &str = "manifest.cbor";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MANIFEST_BYTES_U64: u64 = 64 * 1024 * 1024;
@@ -58,6 +61,8 @@ use replay::{
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ClosureManifest {
+    #[serde(skip)]
+    format_version: u8,
     scenario: ContentHash,
     configuration: ContentHash,
     schedule: ContentHash,
@@ -122,6 +127,12 @@ struct LifecycleWire {
     branch: Option<BranchWire>,
     #[serde(deserialize_with = "decode::deserialize_vec")]
     recorded_controls: Vec<RecordedControlWire>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "decode::deserialize_vec"
+    )]
+    selectable_catalog_plans: Vec<SelectableCatalogWire>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -161,6 +172,14 @@ struct RecordedControlWire {
     node_times: Vec<(String, u64)>,
     #[serde(deserialize_with = "decode::deserialize_vec")]
     control: Vec<ControlOperation>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SelectableCatalogWire {
+    node: String,
+    #[serde(deserialize_with = "decode::deserialize_selectable_catalog_plan")]
+    plan: Vec<u8>,
 }
 
 #[cfg(test)]
@@ -618,6 +637,32 @@ fn load_exact_checkpoint_set_with_boundary(
     boundary()?;
     let node_service_states = decode_service_states(&manifest.node_service_states)?;
     validate_restored_node_sets(source, &targets, &node_generations, &node_service_states)?;
+    let expected_selectable_nodes = source
+        .world()
+        .vm_nodes()
+        .iter()
+        .filter(|node| {
+            node_service_states.get(&node.id)
+                != Some(&ProductionNodeServiceState::PermanentlyFailed)
+                && source
+                    .selectables()
+                    .guest_declarations(&node.id)
+                    .next()
+                    .is_some()
+        })
+        .map(|node| node.id.clone())
+        .collect::<BTreeSet<_>>();
+    if lifecycle
+        .selectable_catalog_plans
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        != expected_selectable_nodes
+    {
+        return Err(loop_factory_error(
+            "exact checkpoint selectable catalog node set differs from the live scenario",
+        ));
+    }
     let restored = ProductionVmExactCheckpointSet {
         identity,
         configuration,
@@ -631,6 +676,7 @@ fn load_exact_checkpoint_set_with_boundary(
         initial_lifecycle_observations_pending: lifecycle.initial_lifecycle_observations_pending,
         branch: lifecycle.branch,
         recorded_controls: lifecycle.recorded_controls,
+        selectable_catalog_plans: lifecycle.selectable_catalog_plans,
         fault_checkpoint: Some(fault_checkpoint),
         targets,
         node_generations,
@@ -877,6 +923,20 @@ fn validate_checkpoint_set(
     {
         return Err(store_error(
             "exact checkpoint node generations and service states are incomplete",
+        ));
+    }
+    if checkpoint
+        .selectable_catalog_plans
+        .iter()
+        .any(|(node, plan)| {
+            !checkpoint.targets.contains_key(node)
+                || plan.declarations().is_empty()
+                || plan.continuation().phase()
+                    != crucible_protocol::selectable_catalog_plan::SelectablePlanPhase::Frozen
+        })
+    {
+        return Err(store_error(
+            "exact checkpoint selectable catalogs are not frozen live-node continuations",
         ));
     }
     for (node, state) in &checkpoint.node_service_states {
@@ -1307,6 +1367,23 @@ fn encode_lifecycle(
                 control: record.control.clone(),
             })
             .collect(),
+        selectable_catalog_plans: checkpoint
+            .selectable_catalog_plans
+            .iter()
+            .map(|(node, plan)| {
+                plan.encode()
+                    .map(|bytes| SelectableCatalogWire {
+                        node: node.name.clone(),
+                        plan: bytes,
+                    })
+                    .map_err(|error| {
+                        store_error(format!(
+                            "encode selectable catalog continuation for `{}`: {error}",
+                            node.name
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
     };
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&wire, &mut bytes)
@@ -1320,6 +1397,8 @@ struct DecodedLifecycle {
     initial_lifecycle_observations_pending: bool,
     branch: Option<ProductionVmBranchConfig>,
     recorded_controls: Vec<ProductionVmRecordedControl>,
+    selectable_catalog_plans:
+        BTreeMap<NodeId, crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
 }
 
 fn decode_lifecycle(
@@ -1409,12 +1488,34 @@ fn decode_lifecycle(
             control: record.control,
         });
     }
+    if !wire
+        .selectable_catalog_plans
+        .windows(2)
+        .all(|pair| pair[0].node < pair[1].node)
+    {
+        return Err(loop_factory_error(
+            "checkpoint selectable catalog nodes are not strictly sorted",
+        ));
+    }
+    let mut selectable_catalog_plans = BTreeMap::new();
+    for entry in wire.selectable_catalog_plans {
+        let name = entry.node;
+        let plan =
+            crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::decode(&entry.plan)
+                .map_err(|error| {
+                    loop_factory_error(format!(
+                        "decode selectable catalog continuation for `{name}`: {error}"
+                    ))
+                })?;
+        selectable_catalog_plans.insert(NodeId { name }, plan);
+    }
     Ok(DecodedLifecycle {
         terminal,
         terminal_cause,
         initial_lifecycle_observations_pending: wire.initial_lifecycle_observations_pending,
         branch,
         recorded_controls,
+        selectable_catalog_plans,
     })
 }
 
@@ -1490,6 +1591,7 @@ fn manifest_and_objects_with_boundary(
         });
     }
     let manifest = ClosureManifest {
+        format_version: MANIFEST_VERSION,
         scenario,
         configuration: checkpoint.configuration.id(),
         schedule: hash_bytes_with_boundary(&schedule, boundary)?,
@@ -1535,6 +1637,7 @@ fn manifest_and_objects_with_boundary(
 
 fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, SchedulerError> {
     let material = ClosureManifest {
+        format_version: manifest.format_version,
         scenario: manifest.scenario,
         configuration: manifest.configuration,
         schedule: manifest.schedule,
@@ -1564,8 +1667,13 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
         identity: ContentHash::default(),
     };
     let bytes = encode_manifest(&material)?;
+    let domain = match manifest.format_version {
+        LEGACY_MANIFEST_VERSION => "crucible.production-exact-closure.v4",
+        MANIFEST_VERSION => "crucible.production-exact-closure.v5",
+        _ => return Err(store_error("unsupported exact checkpoint manifest version")),
+    };
     Ok(ContentHash::from_canonical_material(
-        "crucible.production-exact-closure.v4",
+        domain,
         &hex_bytes(&bytes),
     ))
 }
@@ -1579,22 +1687,32 @@ fn encode_manifest(manifest: &ClosureManifest) -> Result<Vec<u8>, SchedulerError
             "exact checkpoint closure manifest exceeds its size limit",
         ));
     }
-    let mut bytes = Vec::with_capacity(MANIFEST_MAGIC.len() + payload.len());
-    bytes.extend_from_slice(MANIFEST_MAGIC);
+    let magic = match manifest.format_version {
+        LEGACY_MANIFEST_VERSION => LEGACY_MANIFEST_MAGIC,
+        MANIFEST_VERSION => MANIFEST_MAGIC,
+        _ => return Err(store_error("unsupported exact checkpoint manifest version")),
+    };
+    let mut bytes = Vec::with_capacity(magic.len() + payload.len());
+    bytes.extend_from_slice(magic);
     bytes.extend_from_slice(&payload);
     Ok(bytes)
 }
 
 // crucible-lint: allow stringly-error -- the private canonical decoder returns bounded diagnostics that the store boundary immediately wraps in CheckpointStoreError.
 fn decode_manifest(bytes: &[u8]) -> Result<ClosureManifest, String> {
-    let payload = bytes
-        .strip_prefix(MANIFEST_MAGIC)
-        .ok_or_else(|| String::from("unsupported closure manifest version"))?;
+    let (format_version, payload) = if let Some(payload) = bytes.strip_prefix(MANIFEST_MAGIC) {
+        (MANIFEST_VERSION, payload)
+    } else if let Some(payload) = bytes.strip_prefix(LEGACY_MANIFEST_MAGIC) {
+        (LEGACY_MANIFEST_VERSION, payload)
+    } else {
+        return Err(String::from("unsupported closure manifest version"));
+    };
     if payload.len() > MAX_MANIFEST_BYTES {
         return Err(String::from("closure manifest exceeds its size limit"));
     }
-    let manifest: ClosureManifest = ciborium::de::from_reader(payload)
+    let mut manifest: ClosureManifest = ciborium::de::from_reader(payload)
         .map_err(|_| String::from("malformed closure manifest"))?;
+    manifest.format_version = format_version;
     let canonical = encode_manifest(&manifest).map_err(|error| error.to_string())?;
     if canonical != bytes {
         return Err(String::from("noncanonical closure manifest"));

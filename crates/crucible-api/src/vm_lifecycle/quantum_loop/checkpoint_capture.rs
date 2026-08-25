@@ -76,6 +76,13 @@ impl ProductionVmLifecycleLoop {
         boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
     ) -> Result<ContentHash, SchedulerError> {
         boundary()?;
+        // Drain every selectable delta before snapshotting scheduler and QEMU
+        // state. Pending requests remain retained by the node set, while
+        // registration, freeze, and completion markers update the exact plan.
+        let _pending = self
+            .inner
+            .backend_mut()
+            .drain_pending_selectable_requests()?;
         let configuration_id = configuration.id();
         let mut retry_cleanup = None;
         let mut retry_publication = None;

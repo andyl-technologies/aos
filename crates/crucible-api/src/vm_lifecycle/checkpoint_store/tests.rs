@@ -10,6 +10,7 @@ use std::os::unix::fs::MetadataExt as _;
 
 fn manifest() -> ClosureManifest {
     ClosureManifest {
+        format_version: MANIFEST_VERSION,
         scenario: ContentHash::default(),
         configuration: ContentHash::default(),
         schedule: ContentHash::default(),
@@ -276,6 +277,7 @@ fn publish_one_node_raw_checkpoint(
         initial_lifecycle_observations_pending: true,
         branch: None,
         recorded_controls: Vec::new(),
+        selectable_catalog_plans: BTreeMap::new(),
         fault_checkpoint: Some(fault_checkpoint),
         targets: BTreeMap::from([(
             node.clone(),
@@ -337,6 +339,26 @@ fn closure_manifest_round_trip_is_canonical() {
 
     assert_eq!(
         encode_manifest(&decoded).expect("re-encode canonical closure manifest"),
+        bytes
+    );
+}
+
+#[test]
+fn legacy_v4_closure_manifest_retains_its_identity_and_canonical_bytes() {
+    let mut legacy = manifest();
+    legacy.format_version = LEGACY_MANIFEST_VERSION;
+    legacy.identity = closure_identity(&legacy).expect("derive legacy identity");
+    let bytes = encode_manifest(&legacy).expect("encode legacy manifest");
+    assert!(bytes.starts_with(LEGACY_MANIFEST_MAGIC));
+
+    let decoded = decode_manifest(&bytes).expect("decode legacy manifest");
+    assert!(decoded == legacy);
+    assert_eq!(
+        closure_identity(&decoded).expect("derive decoded identity"),
+        legacy.identity
+    );
+    assert_eq!(
+        encode_manifest(&decoded).expect("re-encode legacy manifest"),
         bytes
     );
 }
@@ -950,6 +972,43 @@ fn lifecycle_wire_restores_terminal_branch_and_controls() {
         .scenario
         .scenario_def();
     let schedule = Schedule::empty().to_compact_binary();
+    let selectable_plan = {
+        use crucible_protocol::selectable_catalog_plan::{
+            SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
+            SelectablePlanLimits, SelectablePlanPendingRequest, SelectablePlanPhase,
+            SelectablePlanPresence,
+        };
+        let declaration = SelectablePlanDeclaration::new(
+            "network.policy",
+            vec![1, 2],
+            vec![1],
+            vec!["network".to_owned()],
+            SelectablePlanPresence::Required,
+        )
+        .expect("build selectable declaration");
+        let pending = SelectablePlanPendingRequest::new(
+            crucible_protocol::SelectionRequest::new(9, "network.policy", "epoch/1", None, 128)
+                .expect("build pending request"),
+            700,
+            2,
+            0x8000,
+        );
+        let continuation = SelectablePlanContinuation::new(
+            SelectablePlanPhase::Frozen,
+            BTreeSet::from(["network.policy".to_owned()]),
+            Some(4),
+            BTreeMap::new(),
+            None,
+            Some(pending),
+        )
+        .expect("build selectable continuation");
+        SelectableCatalogPlan::new(
+            SelectablePlanLimits::new(1, 8, 8).expect("build selectable limits"),
+            vec![declaration],
+            continuation,
+        )
+        .expect("build selectable plan")
+    };
     let wire = LifecycleWire {
         terminal: Some(TerminalWire::Failed(vec![String::from("failed")])),
         terminal_cause: Some(TerminalCauseWire::Failed(vec![String::from("failed")])),
@@ -967,6 +1026,10 @@ fn lifecycle_wire_restores_terminal_branch_and_controls() {
                 sequence: 1,
                 kind: crucible::ControlOperationKind::Snapshot,
             }],
+        }],
+        selectable_catalog_plans: vec![SelectableCatalogWire {
+            node: String::from("vm-0"),
+            plan: selectable_plan.encode().expect("encode selectable plan"),
         }],
     };
     let mut bytes = Vec::new();
@@ -990,5 +1053,11 @@ fn lifecycle_wire_restores_terminal_branch_and_controls() {
     assert_eq!(branch.frontier, VirtualTime { ticks: 7 });
     assert_eq!(branch.seed, Some(Seed::from_u64(9)));
     assert_eq!(decoded.recorded_controls.len(), 1);
+    assert_eq!(
+        decoded.selectable_catalog_plans.get(&NodeId {
+            name: String::from("vm-0")
+        }),
+        Some(&selectable_plan)
+    );
     assert_eq!(decoded.recorded_controls[0].control[0].sequence, 1);
 }

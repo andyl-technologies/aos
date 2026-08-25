@@ -14,14 +14,17 @@ use crucible_protocol::app_random_transport::{
     app_random_stream_name,
 };
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
-use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
+use crucible_protocol::selectable_catalog_plan::{
+    SelectableCatalogPlan, SelectablePlanPendingRequest,
+};
 use crucible_protocol::selectable_transport::{
-    SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING,
+    SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
+    WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING, WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED,
     WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
 };
 use crucible_protocol::{
-    PluginBasicBlockCoverageObservation, SelectionReply, WhiteboxDoorbellFrame,
-    decode_whitebox_marker_payload,
+    PluginBasicBlockCoverageObservation, SelectableRegister, SelectionReply, WhiteboxDoorbellFrame,
+    WhiteboxLifecycleMarkerEvent, WhiteboxMarkerPayload, decode_whitebox_marker_payload,
 };
 use crucible_shmem::{
     FingerprintSample, FrameDeliveryKey, GuestIntrospectionEntry, MappedDirectedRingMut,
@@ -67,6 +70,8 @@ pub struct QemuMappedQuantumShmemHotPath {
     // crucible-lint: allow host-nondeterminism-state -- pending values cross only to the authoritative scheduler validator.
     pending_app_random_decisions: Vec<Decision>,
     pending_selectable_requests: Vec<SelectablePlanPendingRequest>,
+    selectable_catalog_plan: Option<SelectableCatalogPlan>,
+    queued_selectable_reply: Option<SelectionReply>,
     send_authorizer: Box<dyn SchedulerSendAuthorizer>,
 }
 
@@ -134,8 +139,36 @@ impl QemuMappedQuantumShmemHotPath {
     /// hot-path adapter.
     pub fn new(
         config: QemuQuantumShmemConfig,
+        region: MappedSetupRegion,
+        send_authorizer: impl SchedulerSendAuthorizer + 'static,
+    ) -> Result<Self, QemuMappedQuantumShmemHotPathError> {
+        Self::new_with_optional_selectable_catalog_plan(config, region, send_authorizer, None)
+    }
+
+    /// Binds one mapped channel to the exact selectable catalog launch plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::new`].
+    pub fn new_with_selectable_catalog_plan(
+        config: QemuQuantumShmemConfig,
+        region: MappedSetupRegion,
+        send_authorizer: impl SchedulerSendAuthorizer + 'static,
+        selectable_catalog_plan: SelectableCatalogPlan,
+    ) -> Result<Self, QemuMappedQuantumShmemHotPathError> {
+        Self::new_with_optional_selectable_catalog_plan(
+            config,
+            region,
+            send_authorizer,
+            Some(selectable_catalog_plan),
+        )
+    }
+
+    fn new_with_optional_selectable_catalog_plan(
+        config: QemuQuantumShmemConfig,
         mut region: MappedSetupRegion,
         send_authorizer: impl SchedulerSendAuthorizer + 'static,
+        selectable_catalog_plan: Option<SelectableCatalogPlan>,
     ) -> Result<Self, QemuMappedQuantumShmemHotPathError> {
         validate_config(&config)?;
         {
@@ -183,6 +216,11 @@ impl QemuMappedQuantumShmemHotPath {
             .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?
             .header
             .read_index();
+        let pending_selectable_requests = selectable_catalog_plan
+            .as_ref()
+            .and_then(|plan| plan.continuation().pending().cloned())
+            .into_iter()
+            .collect();
         Ok(Self {
             config,
             region,
@@ -198,7 +236,9 @@ impl QemuMappedQuantumShmemHotPath {
             last_marker_icount: None,
             pending_marker_events: Vec::new(),
             pending_app_random_decisions: Vec::new(),
-            pending_selectable_requests: Vec::new(),
+            pending_selectable_requests,
+            selectable_catalog_plan,
+            queued_selectable_reply: None,
             send_authorizer: Box::new(send_authorizer),
         })
     }
@@ -416,6 +456,22 @@ impl QemuMappedQuantumShmemHotPath {
                         width: record.width_bytes().saturating_mul(8),
                         value: record.value(),
                     }));
+            } else if entry.kind() == WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED {
+                let registration =
+                    SelectableRegister::decode(entry.payload()).map_err(|error| {
+                        QemuNodeChannelError::new(
+                            "mirror selectable registration",
+                            error.to_string(),
+                        )
+                    })?;
+                if let Some(plan) = self.selectable_catalog_plan.as_mut() {
+                    plan.apply_registration(&registration).map_err(|error| {
+                        QemuNodeChannelError::new(
+                            "mirror selectable registration",
+                            error.to_string(),
+                        )
+                    })?;
+                }
             } else if entry.kind() == WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING {
                 let record =
                     SelectablePendingTransportRecord::decode(entry.payload()).map_err(|error| {
@@ -424,14 +480,40 @@ impl QemuMappedQuantumShmemHotPath {
                             error.to_string(),
                         )
                     })?;
+                let pending = SelectablePlanPendingRequest::new(
+                    record.request().clone(),
+                    entry.current_icount(),
+                    entry.vcpu_index(),
+                    record.guest_virtual_address(),
+                );
+                if let Some(plan) = self.selectable_catalog_plan.as_mut() {
+                    plan.apply_pending_request(pending.clone())
+                        .map_err(|error| {
+                            QemuNodeChannelError::new(
+                                "mirror selectable request",
+                                error.to_string(),
+                            )
+                        })?;
+                }
                 self.pending_selectable_requests
                     // crucible-lint: allow host-nondeterminism-state -- the host validates this untrusted request before selection authority admits it.
-                    .push(SelectablePlanPendingRequest::new(
-                        record.request().clone(),
-                        entry.current_icount(),
-                        entry.vcpu_index(),
-                        record.guest_virtual_address(),
+                    .push(pending);
+            } else if entry.kind() == WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED {
+                let reply = SelectionReply::decode(entry.payload()).map_err(|error| {
+                    QemuNodeChannelError::new("mirror selectable completion", error.to_string())
+                })?;
+                if self.queued_selectable_reply.as_ref() != Some(&reply) {
+                    return Err(QemuNodeChannelError::new(
+                        "mirror selectable completion",
+                        "plugin completion differs from the exact queued reply",
                     ));
+                }
+                if let Some(plan) = self.selectable_catalog_plan.as_mut() {
+                    plan.apply_completed_reply(&reply).map_err(|error| {
+                        QemuNodeChannelError::new("mirror selectable completion", error.to_string())
+                    })?;
+                }
+                self.queued_selectable_reply = None;
             } else {
                 let frame =
                     WhiteboxDoorbellFrame::new(entry.kind(), entry.payload()).map_err(|error| {
@@ -440,6 +522,18 @@ impl QemuMappedQuantumShmemHotPath {
                 let payload = decode_whitebox_marker_payload(&frame).map_err(|error| {
                     QemuNodeChannelError::new("drain white-box markers", error.to_string())
                 })?;
+                if payload
+                    == WhiteboxMarkerPayload::Lifecycle(
+                        WhiteboxLifecycleMarkerEvent::SetupComplete,
+                    )
+                    && let Some(plan) = self.selectable_catalog_plan.as_mut()
+                    && plan.continuation().phase()
+                        == crucible_protocol::selectable_catalog_plan::SelectablePlanPhase::Registering
+                {
+                    plan.apply_freeze().map_err(|error| {
+                        QemuNodeChannelError::new("mirror selectable freeze", error.to_string())
+                    })?;
+                }
                 let event = observable_event_from_whitebox_marker_payload(
                     Icount {
                         retired: entry.current_icount(),
@@ -849,6 +943,22 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
         pending: &SelectablePlanPendingRequest,
         reply: &SelectionReply,
     ) -> Result<(), QemuNodeChannelError> {
+        if self.queued_selectable_reply.is_some() {
+            return Err(QemuNodeChannelError::new(
+                "enqueue selectable reply",
+                "one selectable reply is already queued",
+            ));
+        }
+        if self
+            .selectable_catalog_plan
+            .as_ref()
+            .is_some_and(|plan| plan.continuation().pending() != Some(pending))
+        {
+            return Err(QemuNodeChannelError::new(
+                "enqueue selectable reply",
+                "pending request differs from the mirrored selectable catalog",
+            ));
+        }
         if reply.sequence() != pending.request().sequence() {
             return Err(QemuNodeChannelError::new(
                 "enqueue selectable reply",
@@ -903,7 +1013,17 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             .enqueue_whitebox_marker(ring.entries, entry)
             .map_err(|error| {
                 QemuNodeChannelError::new("enqueue selectable reply ring", error.to_string())
-            })
+            })?;
+        self.queued_selectable_reply = Some(reply.clone());
+        Ok(())
+    }
+
+    fn selectable_catalog_plan(&self) -> Option<&SelectableCatalogPlan> {
+        self.selectable_catalog_plan.as_ref()
+    }
+
+    fn selectable_reply_is_checkpoint_quiescent(&self) -> bool {
+        self.queued_selectable_reply.is_none()
     }
 
     fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError> {

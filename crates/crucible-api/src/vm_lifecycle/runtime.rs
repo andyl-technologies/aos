@@ -91,6 +91,7 @@ impl ProductionVmLifecycleLoop {
     pub fn replay_launch_profiles(
         &self,
     ) -> Result<Vec<ProductionVmNodeReplayLaunchProfile>, LifecycleApiError> {
+        let selectable_catalog_plans = self.inner.backend().selectable_catalog_plans();
         let mut profiles = Vec::new();
         profiles
             .try_reserve_exact(self.source.world().vm_nodes().len())
@@ -107,9 +108,13 @@ impl ProductionVmLifecycleLoop {
                     node.id.name
                 ))
             })?;
+            let mut launch = launch.clone();
+            if let Some(plan) = selectable_catalog_plans.get(&node.id) {
+                launch = launch.with_selectable_catalog_plan(plan.clone());
+            }
             profiles.push(ProductionVmNodeReplayLaunchProfile::new(
                 node.id.clone(),
-                launch.clone(),
+                launch,
             ));
         }
         Ok(profiles)
@@ -151,6 +156,10 @@ impl ProductionVmLifecycleLoop {
         if self.inner.loop_impl().pending_branch_effect_choice_count() != 0 {
             return Ok(false);
         }
+        let _pending = self
+            .inner
+            .backend_mut()
+            .drain_pending_selectable_requests()?;
         let live_nodes = self
             .source
             .world()
@@ -166,6 +175,13 @@ impl ProductionVmLifecycleLoop {
                 .inner
                 .backend_mut()
                 .checkpoint_device_io_is_quiescent(&node)?
+            {
+                return Ok(false);
+            }
+            if !self
+                .inner
+                .backend_mut()
+                .selectable_reply_is_checkpoint_quiescent(&node)?
             {
                 return Ok(false);
             }

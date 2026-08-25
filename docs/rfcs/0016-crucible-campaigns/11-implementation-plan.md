@@ -94,7 +94,7 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
   schedule artifacts.
 - [x] **T-CAM-2.4** Implement versioned register/request/reply guest messages and
   typed Rust guest helpers with complete negative decode and allocation tests.
-- [ ] **T-CAM-2.5** Freeze guest selectable catalogs at setup, validate scenario
+- [x] **T-CAM-2.5** Freeze guest selectable catalogs at setup, validate scenario
   expectations, support bounded narrowed runtime offers, and checkpoint pending
   requests exactly.
 - [ ] **T-CAM-2.6** Adapt RFC-0014 Boolean outcome, transition, and parameter
@@ -784,7 +784,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   fail-closed. Legacy version-two roots remain readable but cannot resume a
   campaign attempt. The complete production lifecycle checkpoint store now
   also lends a read-only portable closure capability: it authenticates the
-  version-four production manifest and exact sorted object inventory under the
+  version-five production manifest and exact sorted object inventory under the
   scenario's aggregate checkpoint bound, keeps overlay and VMState artifacts
   chunked, and reauthenticates each object while streaming without exposing its
   directory. A matching production-store installer accepts that narrow source

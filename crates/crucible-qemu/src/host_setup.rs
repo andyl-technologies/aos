@@ -60,6 +60,7 @@ pub struct QemuHostPluginSetup {
     accelerator_manifest: Option<FaultAcceleratorCapabilityManifestV1>,
     system_manifest: FaultSystemCapabilityManifestV1,
     ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
+    selectable_catalog_plan: SelectableCatalogPlan,
 }
 
 impl QemuHostPluginSetup {
@@ -85,6 +86,12 @@ impl QemuHostPluginSetup {
     #[must_use]
     pub const fn region(&self) -> ValidatedSetupRegion {
         self.region
+    }
+
+    /// Returns the exact selectable plan transferred to this plugin process.
+    #[must_use]
+    pub const fn selectable_catalog_plan(&self) -> &SelectableCatalogPlan {
+        &self.selectable_catalog_plan
     }
 
     /// Returns the first command sequence not consumed by setup admission.
@@ -591,6 +598,7 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
         accelerator_manifest,
         system_manifest,
         ready_markers: required_capabilities.ready_markers().clone(),
+        selectable_catalog_plan: plugin_setup_plan.selectable_catalog_plan().clone(),
     })
 }
 
