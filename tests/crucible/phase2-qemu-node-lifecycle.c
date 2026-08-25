@@ -15,6 +15,7 @@ static uint16_t architecture;
 static uint32_t volatile_policy;
 static uint32_t device_policy;
 static bool require_ready;
+static bool ready_exhaustion;
 static bool terminal_crash;
 static bool ready_observed;
 static bool finished;
@@ -186,13 +187,26 @@ static void validate_event(void)
         fail("reset event or lifecycle evidence was absent or malformed");
     }
     if (get_u32(evidence + 192) != (require_ready ? 2U : 1U) ||
-        get_u32(evidence + 196) != 1 ||
+        get_u32(evidence + 196) != (ready_exhaustion ? 2U : 1U) ||
         get_u32(evidence + 200) != (require_ready ? 2U : 1U) ||
         get_u64(evidence + 208) != (require_ready ? 4096U : 0U) ||
         (require_ready && get_u64(evidence + 216) == UINT64_MAX)) {
+        g_printerr("boot evidence: policy=%u attempt=%u maximum=%u exhausted=%u retry=%" G_GUINT64_FORMAT " deadline=%" G_GUINT64_FORMAT "\n",
+                   get_u32(evidence + 192), get_u32(evidence + 196),
+                   get_u32(evidence + 200), get_u32(evidence + 204),
+                   get_u64(evidence + 208), get_u64(evidence + 216));
         fail("boot policy evidence was absent or malformed");
     }
-    if (!terminal_crash &&
+    if (ready_exhaustion &&
+        (get_u32(evidence + 288) != 6 ||
+         get_u32(evidence + 292) != 2 ||
+         get_u32(evidence + 296) != 3 ||
+         get_u32(evidence + 300) != 0 ||
+         memcmp(evidence + 256, (uint8_t[32]) { 0 }, 32) == 0 ||
+         memcmp(evidence + 160, (uint8_t[32]) { 0 }, 32) == 0)) {
+        fail("ready exhaustion omitted its permanent-failure evidence");
+    }
+    if (!terminal_crash && !ready_exhaustion &&
         (get_u32(evidence + 288) != 3 ||
          get_u32(evidence + 292) != 0 ||
          get_u32(evidence + 296) != 0 ||
@@ -206,7 +220,7 @@ static void validate_event(void)
          get_u32(evidence + 300) != 0)) {
         fail("terminal crash omitted its pre-exit decision fields");
     }
-    if (terminal_crash) {
+    if (terminal_crash || ready_exhaustion) {
         uint8_t authorization_evidence[LIFECYCLE_EVIDENCE_BYTES];
         g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
         gsize digest_length = sizeof(terminal_evidence_hash);
@@ -263,7 +277,7 @@ static void completion(void *opaque)
     if (result.status != CRUCIBLE_FAULT_STATUS_APPLIED ||
         result.command_sequence != 2 ||
         result.applied_icount < result.observed_icount ||
-        (require_ready && !ready_observed)) {
+        (require_ready && !ready_exhaustion && !ready_observed)) {
         g_printerr("lifecycle result: status=%u sequence=%" G_GUINT64_FORMAT
                    " observed=%" G_GUINT64_FORMAT
                    " applied=%" G_GUINT64_FORMAT
@@ -275,6 +289,23 @@ static void completion(void *opaque)
     }
     validate_event();
     finished = true;
+    if (ready_exhaustion) {
+        if (qemu_plugin_crucible_lifecycle_set_process_generation(2) !=
+            -EALREADY) {
+            fail("QEMU allowed generation mutation after ready exhaustion");
+        }
+        g_printerr("CRUCIBLE_NODE_READY_EXHAUSTION_LIVE_PASS architecture=%u attempts=2 effective_transition=6 exit_code=72 action_sha256=",
+                   architecture);
+        for (size_t index = 0; index < 32; index++) {
+            g_printerr("41");
+        }
+        g_printerr(" evidence_sha256=");
+        for (size_t index = 0; index < sizeof(terminal_evidence_hash); index++) {
+            g_printerr("%02x", terminal_evidence_hash[index]);
+        }
+        g_printerr(" process_generation=1\n");
+        return;
+    }
     if (terminal_crash) {
         if (qemu_plugin_crucible_lifecycle_set_process_generation(2) !=
             -EALREADY) {
@@ -381,6 +412,9 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
         if (strcmp(argv[3], "boot_policy=require_ready") == 0) {
             require_ready = true;
             qemu_plugin_register_vcpu_tb_trans_cb(id, ready_tb_translate);
+        } else if (strcmp(argv[3], "boot_policy=exhaust") == 0) {
+            require_ready = true;
+            ready_exhaustion = true;
         } else if (strcmp(argv[3], "terminal=crash") == 0) {
             terminal_crash = true;
         } else {
