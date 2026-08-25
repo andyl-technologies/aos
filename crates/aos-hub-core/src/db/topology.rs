@@ -1814,11 +1814,14 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "DELETE FROM gateways WHERE id = ?1 AND resource_version = ?2
+                    "UPDATE gateways SET updated_at = updated_at
+                 WHERE id = ?1 AND resource_version = ?2
                  AND enabled = 0
                  AND NOT EXISTS (SELECT 1 FROM routes
                    WHERE gateway_id = ?1)
                  AND NOT EXISTS (SELECT 1 FROM topology_defaults
+                   WHERE gateway_id = ?1)
+                 AND NOT EXISTS (SELECT 1 FROM gateway_scope_grant_pins
                    WHERE gateway_id = ?1)
                  AND NOT EXISTS (SELECT 1 FROM topology_operations o
                    WHERE o.state IN ('pending', 'running') AND (
@@ -1827,6 +1830,31 @@ impl Database {
                      OR EXISTS (SELECT 1 FROM operation_secondary_targets t
                        WHERE t.operation_id = o.operation_id
                          AND t.target_kind = 'gateway' AND t.stable_id = ?1)))",
+                    vals![id, expected_resource_version],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM gateway_revision_route_scopes WHERE gateway_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM gateway_revision_events WHERE gateway_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM gateway_revisions WHERE gateway_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM gateway_path_reservations WHERE gateway_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM gateways WHERE id = ?1 AND resource_version = ?2",
                     vals![id, expected_resource_version],
                 )
                 .expecting(1),
@@ -4758,6 +4786,17 @@ mod tests {
                 .origin_prefix,
             "/objects-v2"
         );
+        assert!(db
+            .delete_gateway(
+                &gateway.id,
+                revised.resource_version,
+                "user",
+                Some(1),
+                "test",
+            )
+            .await
+            .unwrap());
+        assert!(db.gateway(&gateway.id).await.unwrap().is_none());
     }
 
     #[tokio::test]
