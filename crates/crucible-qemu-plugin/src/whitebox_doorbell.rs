@@ -42,6 +42,13 @@ use thiserror::Error;
 
 use crate::{PluginDeviceCallbackKind, PluginSwitch};
 
+mod selectable;
+pub use selectable::{
+    SelectableCallbackCoordinate, SelectableDoorbellError, SelectableDoorbellOutcome,
+    SelectableDoorbellService, SelectableDoorbellServiceError, SelectableRegistrationService,
+    SelectableReplyService, handle_whitebox_selectable_callback,
+};
+
 /// QEMU plugin API label for translation-block instrumentation.
 pub const QEMU_PLUGIN_DOORBELL_TRANSLATION_SYMBOL: &str = "qemu_plugin_register_vcpu_tb_trans_cb";
 /// QEMU plugin API label for installing callbacks on translated instructions.

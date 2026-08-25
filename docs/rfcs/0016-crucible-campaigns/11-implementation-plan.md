@@ -123,6 +123,16 @@ reserved-field cases, and allocation-before-bound regressions run under
 scenario/declaration reconciliation, host doorbell dispatch, narrowed-domain
 authority, and pending-request checkpoint ownership remain T-CAM-2.5.
 
+The GPL-side plugin now also exposes a policy-free selectable callback core. It
+decodes register/request messages at the exact trap coordinate, delegates them
+to a typed catalog/decision authority, rejects guest-owned replies and stale
+service replies, and writes one zero-padded reply through the existing
+same-icount guest-input capability. This does not complete T-CAM-2.5: the live
+runtime still needs a launch-authenticated catalog service, `setup_complete`
+freeze/reconciliation, semantic narrowed-domain validation, and durable
+pending-request checkpoint state before the callback may be wired into the
+production dispatcher.
+
 The application-random path now implements the pure normalization and
 application contract, executor-side verification of uniform model samples, live
 producer routing, and lazy typed branch generation. The scheduler treats the
