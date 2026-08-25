@@ -14,6 +14,10 @@ use crucible_protocol::app_random_transport::{
     app_random_stream_name,
 };
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
+use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
+use crucible_protocol::selectable_transport::{
+    SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING,
+};
 use crucible_protocol::{
     PluginBasicBlockCoverageObservation, WhiteboxDoorbellFrame, decode_whitebox_marker_payload,
 };
@@ -60,6 +64,7 @@ pub struct QemuMappedQuantumShmemHotPath {
     pending_marker_events: Vec<ObservableEvent>,
     // crucible-lint: allow host-nondeterminism-state -- pending values cross only to the authoritative scheduler validator.
     pending_app_random_decisions: Vec<Decision>,
+    pending_selectable_requests: Vec<SelectablePlanPendingRequest>,
     send_authorizer: Box<dyn SchedulerSendAuthorizer>,
 }
 
@@ -191,6 +196,7 @@ impl QemuMappedQuantumShmemHotPath {
             last_marker_icount: None,
             pending_marker_events: Vec::new(),
             pending_app_random_decisions: Vec::new(),
+            pending_selectable_requests: Vec::new(),
             send_authorizer: Box::new(send_authorizer),
         })
     }
@@ -408,6 +414,22 @@ impl QemuMappedQuantumShmemHotPath {
                         width: record.width_bytes().saturating_mul(8),
                         value: record.value(),
                     }));
+            } else if entry.kind() == WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING {
+                let record =
+                    SelectablePendingTransportRecord::decode(entry.payload()).map_err(|error| {
+                        QemuNodeChannelError::new(
+                            "drain selectable pending requests",
+                            error.to_string(),
+                        )
+                    })?;
+                self.pending_selectable_requests
+                    // crucible-lint: allow host-nondeterminism-state -- the host validates this untrusted request before selection authority admits it.
+                    .push(SelectablePlanPendingRequest::new(
+                        record.request().clone(),
+                        entry.current_icount(),
+                        entry.vcpu_index(),
+                        record.guest_virtual_address(),
+                    ));
             } else {
                 let frame =
                     WhiteboxDoorbellFrame::new(entry.kind(), entry.payload()).map_err(|error| {
@@ -810,6 +832,16 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
         Ok(std::mem::take(&mut self.pending_app_random_decisions))
     }
 
+    fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<SelectablePlanPendingRequest>, QemuNodeChannelError> {
+        let boundary_icount = self.with_hot_path("selectable boundary", |hot_path| {
+            Ok(hot_path.node_snapshot().current_icount)
+        })?;
+        self.drain_markers_at_quantum_boundary(boundary_icount)?;
+        Ok(std::mem::take(&mut self.pending_selectable_requests))
+    }
+
     fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError> {
         let delivery_icount = self.with_hot_path("delivery icount", |hot_path| {
             Ok(Icount {
@@ -917,3 +949,7 @@ mod fault_event_tests;
 #[cfg(test)]
 #[path = "mapped_quantum/fingerprint_tests.rs"]
 mod fingerprint_tests;
+
+#[cfg(test)]
+#[path = "mapped_quantum/selectable_tests.rs"]
+mod selectable_tests;

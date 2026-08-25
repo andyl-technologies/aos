@@ -17,7 +17,8 @@
 //! `doorbell_frame` owns the shared white-box doorbell marker frame ABI; `doorbell_marker`
 //! owns the marker-kind vocabulary and body codecs; `selectable` owns the
 //! guest choice register/request/reply ABI; `selectable_catalog_plan` owns the
-//! sealed catalog and continuation launch body; `plugin_setup_plan` owns the
+//! sealed catalog and continuation launch body; `selectable_transport` owns the
+//! deferred-request plugin-to-host record; `plugin_setup_plan` owns the
 //! composite setup descriptor body; `preemption` owns deterministic IPI
 //! arithmetic; `golden_vectors` owns the frozen ABI corpus; `codec_fuzz` owns
 //! its fuzz target and corpus.
@@ -53,6 +54,7 @@ pub mod plugin_setup_plan;
 mod preemption;
 mod selectable;
 pub mod selectable_catalog_plan;
+pub mod selectable_transport;
 
 use std::io::{ErrorKind, Read, Write};
 #[cfg(unix)]

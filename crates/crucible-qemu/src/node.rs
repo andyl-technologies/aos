@@ -576,6 +576,25 @@ pub trait QemuShmemHotPathChannel: Send {
         Ok(Vec::new())
     }
 
+    /// Drains selectable requests retained at a plugin-requested VMStop.
+    ///
+    /// Implementations without the selectable transport return an empty batch.
+    /// Every returned request retains its exact trap coordinate and guest
+    /// virtual reply reservation; semantic choice authority remains host-side.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the marker transport is corrupt or
+    /// contains an entry after the completed boundary.
+    fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<
+        Vec<crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest>,
+        QemuNodeChannelError,
+    > {
+        Ok(Vec::new())
+    }
+
     /// Delivers a deterministic frame through the shared-memory input ring.
     ///
     /// # Errors
@@ -1789,6 +1808,30 @@ impl QemuNode {
             .append_observable_events(events)
             .map_err(|source| QemuNodeError::CoverageEventLog {
                 message: source.to_string(),
+            })
+    }
+
+    /// Drains selectable requests retained at the current paused boundary.
+    ///
+    /// The result is still untrusted plugin output. A campaign driver must bind
+    /// each request to its scenario declaration and make the semantic choice
+    /// before any reply is delivered or another guest quantum begins.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the shared-memory marker transport is
+    /// malformed or carries a request after the completed boundary.
+    pub fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<
+        Vec<crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest>,
+        QemuNodeError,
+    > {
+        self.channels
+            .shmem_hot_path
+            .drain_pending_selectable_requests()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
             })
     }
 

@@ -17,6 +17,11 @@ use crucible_protocol::selectable_catalog_plan::{
     SELECTABLE_CATALOG_PLAN_VERSION, SelectableCatalogPlan, SelectablePlanContinuation,
     SelectablePlanLimits,
 };
+use crucible_protocol::selectable_transport::{
+    SELECTABLE_PENDING_TRANSPORT_HEADER_BYTES, SELECTABLE_PENDING_TRANSPORT_MAGIC,
+    SELECTABLE_PENDING_TRANSPORT_REGENERATION_RULE, SELECTABLE_PENDING_TRANSPORT_VERSION,
+    SelectablePendingTransportRecord,
+};
 use crucible_protocol::{
     CODEC_FUZZ_REGRESSION_CORPUS, CONTROL_PROTOCOL_VERSION, ControlCodecFuzzCase,
     ControlCodecFuzzOutcome, ControlDirection, ControlGoldenVector, ControlGoldenVectorMessage,
@@ -53,10 +58,55 @@ fn protocol_abi_conformance_runs_named_checks() {
     assert_doorbell_marker_subvocabularies();
     assert_selectable_v1_golden_vectors();
     assert_selectable_catalog_plan_v2_golden_vector();
+    assert_selectable_pending_transport_v1_golden_vector();
     assert_plugin_setup_plan_v2_golden_vector();
     assert_doorbell_decoder_fuzz_corpus();
     assert_structure_aware_fuzz_corpus();
     assert_protocol_codec_fuzz_corpus();
+}
+
+#[test]
+fn guest_selectable_pending_transport_v1_golden_vector_matches_live_codec() {
+    assert_selectable_pending_transport_v1_golden_vector();
+}
+
+fn assert_selectable_pending_transport_v1_golden_vector() {
+    assert!(
+        SELECTABLE_PENDING_TRANSPORT_REGENERATION_RULE
+            .contains("SELECTABLE_PENDING_TRANSPORT_VERSION")
+    );
+    let request = SelectionRequest::new(9, "net", "epoch/1", Some(vec![0xaa]), 104)
+        .unwrap_or_else(|error| panic!("selection request vector must build: {error}"));
+    let request_bytes = request
+        .encode()
+        .unwrap_or_else(|error| panic!("selection request vector must encode: {error}"));
+    let record = SelectablePendingTransportRecord::new(request, 0x1122_3344_5566_7788)
+        .unwrap_or_else(|error| panic!("pending request vector must build: {error}"));
+    let bytes = record
+        .encode()
+        .unwrap_or_else(|error| panic!("pending request vector must encode: {error}"));
+
+    assert_eq!(
+        &bytes[..SELECTABLE_PENDING_TRANSPORT_HEADER_BYTES],
+        &[
+            b'C', b'R', b'U', b'C', b'S', b'P', b'Q', b'1', 1, 0, 32, 0, 136, 0, 0, 0, 0x88, 0x77,
+            0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 104, 0, 0, 0, 0, 0, 0, 0,
+        ]
+    );
+    assert_eq!(
+        &bytes[..8],
+        &SELECTABLE_PENDING_TRANSPORT_MAGIC,
+        "literal header must retain the exported magic"
+    );
+    assert_eq!(
+        u16::from_le_bytes([bytes[8], bytes[9]]),
+        SELECTABLE_PENDING_TRANSPORT_VERSION
+    );
+    assert_eq!(
+        &bytes[SELECTABLE_PENDING_TRANSPORT_HEADER_BYTES..],
+        request_bytes
+    );
+    assert_eq!(SelectablePendingTransportRecord::decode(&bytes), Ok(record));
 }
 
 #[test]
@@ -225,6 +275,11 @@ fn guest_selectable_v1_schemas_are_registered_exactly() {
     assert!(
         registry.lines().any(|line| line == catalog_plan),
         "missing exact selectable catalog-plan schema row"
+    );
+    let pending_request = "crucible.guest-selectable.pending-request\t1\tcrucible-protocol::selectable_transport\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
+    assert!(
+        registry.lines().any(|line| line == pending_request),
+        "missing exact selectable pending-request schema row"
     );
     let setup_plan = "crucible.qemu-plugin.setup-plan\t2\tcrucible-protocol::plugin_setup_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
     assert!(
