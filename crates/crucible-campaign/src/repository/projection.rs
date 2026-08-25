@@ -32,6 +32,12 @@ struct BranchEdgeVisitEvidence {
     observations: Vec<BranchCreditedObservation>,
 }
 
+#[derive(Default)]
+struct BranchCoverageGuidance {
+    novelty_events: BTreeMap<crate::BranchEdgeId, u64>,
+    rarity_weights: BTreeMap<crate::BranchEdgeId, u64>,
+}
+
 #[derive(Clone, Copy)]
 struct AttemptProposalPrior {
     admission_ordinal: AdmissionOrdinal,
@@ -313,6 +319,7 @@ struct FeedbackIntervalTerms {
     objective_discontinuity: bool,
     novelty_discontinuity: bool,
     finding_discontinuity: bool,
+    rarity_discontinuity: bool,
 }
 
 impl FeedbackIntervalTerms {
@@ -324,20 +331,28 @@ impl FeedbackIntervalTerms {
                     | crate::MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
                     | crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
                     | crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                    | crate::RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
             ),
             objective_discontinuity: matches!(
                 version,
                 crate::MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
                     | crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
                     | crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                    | crate::RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
             ),
             novelty_discontinuity: matches!(
                 version,
                 crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
                     | crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                    | crate::RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
             ),
-            finding_discontinuity: version
-                == crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+            finding_discontinuity: matches!(
+                version,
+                crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                    | crate::RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+            ),
+            rarity_discontinuity: version
+                == crate::RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
         }
     }
 }
@@ -368,6 +383,7 @@ impl PartialOrd for ExactMeanDiscontinuity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FeedbackRefinementGap {
     gap: RefinementGap,
+    rarity_discontinuity: ExactMeanDiscontinuity,
     finding_discontinuity: ExactMeanDiscontinuity,
     novelty_discontinuity: ExactMeanDiscontinuity,
     objective_discontinuity: ExactMeanDiscontinuity,
@@ -377,8 +393,9 @@ struct FeedbackRefinementGap {
 
 impl Ord for FeedbackRefinementGap {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.finding_discontinuity
-            .cmp(&other.finding_discontinuity)
+        self.rarity_discontinuity
+            .cmp(&other.rarity_discontinuity)
+            .then_with(|| self.finding_discontinuity.cmp(&other.finding_discontinuity))
             .then_with(|| self.novelty_discontinuity.cmp(&other.novelty_discontinuity))
             .then_with(|| {
                 self.objective_discontinuity
@@ -490,7 +507,8 @@ impl CampaignRepository {
             | crate::LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
             | crate::MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
             | crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-            | crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION => true,
+            | crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+            | crate::RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION => true,
             _ => return Ok(None),
         };
         if *initial_strata > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA {
@@ -1975,10 +1993,10 @@ impl CampaignRepository {
     ///
     /// The projection authenticates the exact snapshot once, derives its
     /// completed edge-visit partition, assigns canonical proposal priors,
-    /// projects globally unique coverage identities onto credited edges, folds
-    /// policy-weighted verified finding occurrences into reward, and reserves
-    /// fairness for the least-visited edge. The active policy must select tree
-    /// search.
+    /// projects globally unique coverage identities and inverse-frequency
+    /// rarity onto credited edges, folds policy-weighted verified finding
+    /// occurrences into reward, and reserves fairness for the least-visited
+    /// edge. The active policy must select tree search.
     ///
     /// # Errors
     ///
@@ -2007,7 +2025,7 @@ impl CampaignRepository {
             ));
         };
         let evidence = self.project_branch_edge_visit_evidence(loaded, branch_point)?;
-        let novelty = self.project_branch_novelty_events(loaded, &evidence)?;
+        let coverage = self.project_branch_coverage_guidance(loaded, &evidence)?;
         let finding_weights = [
             crate::FindingKind::PropertyViolation,
             crate::FindingKind::Divergence,
@@ -2034,7 +2052,8 @@ impl CampaignRepository {
             evidence.statistics,
             crate::exploration::BranchPuctProjectedEvidence {
                 prior_weights: evidence.prior_weights,
-                novelty_events: novelty,
+                novelty_events: coverage.novelty_events,
+                rarity_weights: coverage.rarity_weights,
                 finding_weights,
                 finding_events,
                 objective_reward_micros: objective_rewards
@@ -2059,7 +2078,7 @@ impl CampaignRepository {
         };
         let branch_points = branch_points.into_iter().collect::<BTreeSet<_>>();
         let evidence = self.project_branch_edge_visit_evidence_batch(loaded, &branch_points)?;
-        let mut novelty = self.project_branch_novelty_events_batch(loaded, &evidence)?;
+        let mut coverage = self.project_branch_coverage_guidance_batch(loaded, &evidence)?;
         let finding_weights = [
             crate::FindingKind::PropertyViolation,
             crate::FindingKind::Divergence,
@@ -2085,13 +2104,15 @@ impl CampaignRepository {
         evidence
             .into_iter()
             .map(|(branch_point, evidence)| {
+                let coverage = coverage.remove(&branch_point).unwrap_or_default();
                 crate::BranchPuctProjection::new_with_evidence(
                     loaded.snapshot.active_policy(),
                     *puct,
                     evidence.statistics,
                     crate::exploration::BranchPuctProjectedEvidence {
                         prior_weights: evidence.prior_weights,
-                        novelty_events: novelty.remove(&branch_point).unwrap_or_default(),
+                        novelty_events: coverage.novelty_events,
+                        rarity_weights: coverage.rarity_weights,
                         finding_weights: finding_weights.clone(),
                         finding_events: finding_events.remove(&branch_point).unwrap_or_default(),
                         objective_reward_micros: objective_rewards
@@ -2422,13 +2443,13 @@ impl CampaignRepository {
         Ok(prior)
     }
 
-    fn project_branch_novelty_events(
+    fn project_branch_coverage_guidance(
         &self,
         loaded: &LoadedSnapshot,
         evidence: &BranchEdgeVisitEvidence,
-    ) -> Result<BTreeMap<crate::BranchEdgeId, u64>, CampaignRepositoryError> {
+    ) -> Result<BranchCoverageGuidance, CampaignRepositoryError> {
         if evidence.observations.is_empty() {
-            return Ok(BTreeMap::new());
+            return Ok(BranchCoverageGuidance::default());
         }
 
         let mut work_bytes = 0_usize;
@@ -2456,7 +2477,7 @@ impl CampaignRepository {
             );
         }
         if targets.is_empty() {
-            return Ok(BTreeMap::new());
+            return Ok(BranchCoverageGuidance::default());
         }
 
         let observation_root = loaded.snapshot.roots().observations;
@@ -2531,32 +2552,37 @@ impl CampaignRepository {
         }
 
         let mut edge_events = BTreeMap::<crate::BranchEdgeId, u64>::new();
+        let mut edge_rarity = BTreeMap::<crate::BranchEdgeId, u64>::new();
         for credited in &evidence.observations {
-            let events = coverage_targets[&credited.coverage]
-                .iter()
-                .filter(|identity| frequencies.get(identity) == Some(&1))
-                .count();
-            if events == 0 {
-                continue;
+            let (events, rarity) = coverage_guidance_for_identities(
+                &coverage_targets[&credited.coverage],
+                &frequencies,
+            )?;
+            if events != 0 {
+                let total = edge_events.entry(credited.edge).or_default();
+                *total = total
+                    .checked_add(events)
+                    .ok_or_else(|| integrity("branch-novelty-event-count-overflow"))?;
             }
-            let events = u64::try_from(events)
-                .map_err(|_| integrity("branch-novelty-event-count-overflow"))?;
-            let total = edge_events.entry(credited.edge).or_default();
-            *total = total
-                .checked_add(events)
-                .ok_or_else(|| integrity("branch-novelty-event-count-overflow"))?;
+            if rarity != 0 {
+                let total = edge_rarity.entry(credited.edge).or_default();
+                *total = total
+                    .checked_add(rarity)
+                    .ok_or_else(|| integrity("branch-rarity-weight-overflow"))?;
+            }
         }
-        Ok(edge_events)
+        Ok(BranchCoverageGuidance {
+            novelty_events: edge_events,
+            rarity_weights: edge_rarity,
+        })
     }
 
-    fn project_branch_novelty_events_batch(
+    fn project_branch_coverage_guidance_batch(
         &self,
         loaded: &LoadedSnapshot,
         evidence: &BTreeMap<crate::BranchPointId, BranchEdgeVisitEvidence>,
-    ) -> Result<
-        BTreeMap<crate::BranchPointId, BTreeMap<crate::BranchEdgeId, u64>>,
-        CampaignRepositoryError,
-    > {
+    ) -> Result<BTreeMap<crate::BranchPointId, BranchCoverageGuidance>, CampaignRepositoryError>
+    {
         if evidence
             .values()
             .all(|branch| branch.observations.is_empty())
@@ -2668,28 +2694,53 @@ impl CampaignRepository {
 
         let mut branch_events =
             BTreeMap::<crate::BranchPointId, BTreeMap<crate::BranchEdgeId, u64>>::new();
+        let mut branch_rarity =
+            BTreeMap::<crate::BranchPointId, BTreeMap<crate::BranchEdgeId, u64>>::new();
         for (branch_point, branch) in evidence {
             for credited in &branch.observations {
-                let events = coverage_targets[&credited.coverage]
-                    .iter()
-                    .filter(|identity| frequencies.get(identity) == Some(&1))
-                    .count();
-                if events == 0 {
-                    continue;
+                let (events, rarity) = coverage_guidance_for_identities(
+                    &coverage_targets[&credited.coverage],
+                    &frequencies,
+                )?;
+                if events != 0 {
+                    let total = branch_events
+                        .entry(*branch_point)
+                        .or_default()
+                        .entry(credited.edge)
+                        .or_default();
+                    *total = total
+                        .checked_add(events)
+                        .ok_or_else(|| integrity("branch-novelty-event-count-overflow"))?;
                 }
-                let events = u64::try_from(events)
-                    .map_err(|_| integrity("branch-novelty-event-count-overflow"))?;
-                let total = branch_events
-                    .entry(*branch_point)
-                    .or_default()
-                    .entry(credited.edge)
-                    .or_default();
-                *total = total
-                    .checked_add(events)
-                    .ok_or_else(|| integrity("branch-novelty-event-count-overflow"))?;
+                if rarity != 0 {
+                    let total = branch_rarity
+                        .entry(*branch_point)
+                        .or_default()
+                        .entry(credited.edge)
+                        .or_default();
+                    *total = total
+                        .checked_add(rarity)
+                        .ok_or_else(|| integrity("branch-rarity-weight-overflow"))?;
+                }
             }
         }
-        Ok(branch_events)
+        let branch_points = branch_events
+            .keys()
+            .chain(branch_rarity.keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        Ok(branch_points
+            .into_iter()
+            .map(|branch_point| {
+                (
+                    branch_point,
+                    BranchCoverageGuidance {
+                        novelty_events: branch_events.remove(&branch_point).unwrap_or_default(),
+                        rarity_weights: branch_rarity.remove(&branch_point).unwrap_or_default(),
+                    },
+                )
+            })
+            .collect())
     }
 
     fn project_branch_finding_events(
@@ -3624,6 +3675,32 @@ pub(super) fn charge_branch_prior_normalization_visits(
     Ok(total)
 }
 
+fn coverage_guidance_for_identities(
+    identities: &[crate::CampaignHash],
+    frequencies: &BTreeMap<crate::CampaignHash, u64>,
+) -> Result<(u64, u64), CampaignRepositoryError> {
+    identities
+        .iter()
+        .try_fold((0_u64, 0_u64), |(events, rarity), identity| {
+            let frequency = frequencies
+                .get(identity)
+                .copied()
+                .filter(|frequency| *frequency != 0)
+                .ok_or_else(|| integrity("branch-novelty-target-cache-mismatch"))?;
+            let events = if frequency == 1 {
+                events
+                    .checked_add(1)
+                    .ok_or_else(|| integrity("branch-novelty-event-count-overflow"))?
+            } else {
+                events
+            };
+            let rarity = rarity
+                .checked_add(crate::MAX_BRANCH_NOVELTY_OBSERVATIONS / frequency)
+                .ok_or_else(|| integrity("branch-rarity-weight-overflow"))?;
+            Ok((events, rarity))
+        })
+}
+
 pub(super) fn charge_branch_novelty_work(
     prior: usize,
     bytes: usize,
@@ -3951,6 +4028,11 @@ fn feedback_progressive_integer_candidate(
         )?;
         scored.push(FeedbackRefinementGap {
             gap,
+            rarity_discontinuity: if terms.rarity_discontinuity {
+                rarity_discontinuity(projection, lower.edge, upper.edge)?
+            } else {
+                ExactMeanDiscontinuity::ZERO
+            },
             finding_discontinuity: if terms.finding_discontinuity {
                 finding_discontinuity(projection, lower.edge, upper.edge)?
             } else {
@@ -4106,6 +4188,49 @@ fn finding_discontinuity(
         numerator,
         denominator,
     })
+}
+
+fn rarity_discontinuity(
+    projection: &crate::BranchPuctProjection,
+    lower: Option<crate::BranchEdgeId>,
+    upper: Option<crate::BranchEdgeId>,
+) -> Result<ExactMeanDiscontinuity, CampaignRepositoryError> {
+    let (lower_weight, lower_visits) = rarity_endpoint_mean_basis(projection, lower);
+    let (upper_weight, upper_visits) = rarity_endpoint_mean_basis(projection, upper);
+    let lower_scaled = u128::from(lower_weight)
+        .checked_mul(u128::from(upper_visits))
+        .ok_or_else(|| integrity("progressive-generator-rarity-discontinuity-overflow"))?;
+    let upper_scaled = u128::from(upper_weight)
+        .checked_mul(u128::from(lower_visits))
+        .ok_or_else(|| integrity("progressive-generator-rarity-discontinuity-overflow"))?;
+    let numerator = lower_scaled.abs_diff(upper_scaled);
+    let denominator = u128::from(lower_visits)
+        .checked_mul(u128::from(upper_visits))
+        .ok_or_else(|| integrity("progressive-generator-rarity-discontinuity-overflow"))?;
+    Ok(ExactMeanDiscontinuity {
+        numerator,
+        denominator,
+    })
+}
+
+fn rarity_endpoint_mean_basis(
+    projection: &crate::BranchPuctProjection,
+    edge: Option<crate::BranchEdgeId>,
+) -> (u64, u64) {
+    let Some(edge) = edge else {
+        return (0, 1);
+    };
+    let Some(statistics) = projection.edge_statistics().get(&edge) else {
+        return (0, 1);
+    };
+    (
+        projection
+            .edge_rarity_weights()
+            .get(&edge)
+            .copied()
+            .unwrap_or(0),
+        statistics.edge_visits(),
+    )
 }
 
 fn finding_endpoint_mean_basis(
