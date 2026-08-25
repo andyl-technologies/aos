@@ -279,9 +279,13 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   exact active policy and planning view, batches branch-point projections under
   the established guidance bounds, preserves the already-proposed value set,
   and revalidates identically after restart/import. Opaque non-finite
-  model-prior resolution, dedicated raw measurement/landmark interval terms,
-  and the generator integrations that consume those remaining owners remain
-  open.
+  model-prior resolution and dedicated raw measurement-discontinuity interval
+  terms remain open. Implementation version 12 now adds the producer-landmark
+  term: it prioritizes landmark count before version 11's endpoint PUCT
+  difference, interval size, and lower offset, then emits the winning interval's
+  landmark nearest its lower midpoint. Version 11 remains landmark-neutral, and
+  local issue plus restart/import replay reject a substituted value before
+  writes.
 - [x] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.
@@ -329,17 +333,18 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   by absolute exact endpoint PUCT-score difference, then interval size and lower
   offset. Planner input construction batches those snapshot-bound projections,
   and owner validation rejects a largest-gap substitution before writes and
-  replays the selected value after restart. Static continuation projection
-  remains valid after modeled observations exist: it binds the exact
-  observation root and projects exact
-  completed visits from canonical branch-point credit sets. The independent
-  exact PUCT arithmetic and guidance projection are consumed only by canonical
-  frontier engine version 2; version 1 retains its original least-position
-  ordering. Other
-  generated requests remain conservatively `Open` and
-  fail closed when proposal or expansion semantics are requested. Legacy
-  snapshots remain unindexed and queries fail closed rather than constructing a
-  partial index.
+  replays the selected value after restart. Implementation-version 12 retains
+  that exact feedback basis while adding authenticated producer-landmark count
+  as the primary interval term and nearest-lower-midpoint landmark selection;
+  version 11 histories continue to ignore landmarks. Static continuation
+  projection remains valid after modeled observations exist: it binds the exact
+  observation root and projects exact completed visits from canonical
+  branch-point credit sets. The independent exact PUCT arithmetic and guidance
+  projection are consumed only by canonical frontier engine version 2; version
+  1 retains its original least-position ordering. Other generated requests
+  remain conservatively `Open` and fail closed when proposal or expansion
+  semantics are requested. Legacy snapshots remain unindexed and queries fail
+  closed rather than constructing a partial index.
 - [ ] **T-CAM-4.5** Implement `CampaignSupervisor`, `CampaignProjector`,
   `ProposalPlanner`, `AttemptQueue`, and a bounded local `WorkerPool`.
   A coordinator-owned `CampaignPlannerDriver` now reconstructs the exact
@@ -1373,8 +1378,8 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `CAM-1..14` | 1–9 | campaign model, replay, continuity, ABI, license boundary, manual acceptance |
 | `CMOD-1..30` | 1, 2, 4 | campaign model, content address, attempt idempotence, continuity |
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
-| `GUIDE-1..27` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
-| `LAZY-1..49` | 4 | lazy frontier, attempt idempotence, campaign replay |
+| `GUIDE-1..28` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
+| `LAZY-1..50` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
 | `CSTORE-1..22` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |

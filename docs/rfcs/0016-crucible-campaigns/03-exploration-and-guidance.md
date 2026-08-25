@@ -288,10 +288,25 @@ Planner-page construction batches
 all needed branch-point projections under the existing aggregate credit,
 record, identity, and byte ceilings before deriving offers.
 
+Generator implementation-version 12 adds the exact producer-landmark interval
+term while retaining version 11's prefix, visit thresholds, endpoint PUCT
+scores, exhaustion semantics, and bounds. For every remaining interval, count
+the exact domain landmarks whose legal offsets lie inside it. Select the
+greatest tuple `(landmark_count, endpoint_score_delta, interval_cardinality)`,
+then the lowest interval offset. When the winning interval contains landmarks,
+emit the contained landmark with least absolute distance from that interval's
+lower midpoint, breaking equal distance by lower landmark offset. Otherwise
+emit the lower midpoint exactly as version 11 does. A landmark already proposed
+is no longer inside a remaining interval and therefore cannot receive another
+allocation. The exact `ChoiceDomainId` authenticates the landmark set even
+though presentation-only landmark edits deliberately preserve the domain's
+semantic ID and branch-edge identity. The existing 4,096-landmark domain bound
+keeps the interval fold and selected-interval search bounded.
+
 Other algorithms remain valid suspended specifications but fail closed at
 proposal issuance and expansion projection until their versioned cursor and
 feedback owners are implemented. Earlier and unknown implementation versions
-remain suspended rather than being reinterpreted as versions 2 through 11; this
+remain suspended rather than being reinterpreted as versions 2 through 12; this
 preserves owner validation of histories created before executable enumeration
 landed.
 
@@ -408,6 +423,13 @@ MUST NOT be inferred from unauthenticated telemetry in the meantime.
   the exact active policy and planning view. Version 9 histories MUST retain
   their largest-gap order, and earlier or unknown progressive versions MUST
   remain suspended.
+- **[GUIDE-28]** Landmark-progressive implementation-version 12 MUST retain
+  version 11's exact owner basis and rank intervals by landmark count, endpoint
+  score difference, cardinality, and lower offset in that order. A selected
+  landmark interval MUST emit the landmark nearest its lower midpoint with a
+  lower-offset tie-break. Local issue, import, and restart MUST authenticate the
+  exact domain body and reproduce the same choice without mutating version 9 or
+  version 11 histories.
 
 ## 03.4 Tree policy: deterministic MCTS/PUCT
 

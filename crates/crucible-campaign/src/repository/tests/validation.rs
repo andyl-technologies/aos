@@ -2362,7 +2362,7 @@ fn feedback_progressive_integer_refines_the_highest_owner_scored_interval() {
             1,
             None,
             ExactRational::new(1, 1).expect("scale"),
-            Vec::new(),
+            vec![IntegerValue::Unsigned(2), IntegerValue::Unsigned(6)],
         )
         .expect("feedback-progressive domain"),
     );
@@ -2540,6 +2540,172 @@ fn feedback_progressive_integer_refines_the_highest_owner_scored_interval() {
     CampaignRepository::new(repository.blobs.clone(), repository.refs.clone())
         .validate_complete_head(refined.new_snapshot.content_id())
         .expect("restart validates owner-scored feedback refinement");
+}
+
+#[test]
+fn landmark_progressive_integer_prioritizes_an_authenticated_producer_landmark() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let genesis = repository
+        .create(
+            "generated-landmark-progressive",
+            &lineage,
+            &policy,
+            &BTreeMap::new(),
+        )
+        .expect("create landmark-progressive campaign");
+    let domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(16),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("scale"),
+            vec![IntegerValue::Unsigned(2), IntegerValue::Unsigned(6)],
+        )
+        .expect("landmark-progressive domain"),
+    );
+    let generator = CandidateGeneratorSpec::new(
+        crate::LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::ProgressiveInteger {
+            initial_strata: 3,
+            feedback_interval: 2,
+        },
+    )
+    .expect("landmark-progressive generator");
+    let generator_id = repository
+        .publish_generator(&generator)
+        .expect("publish landmark-progressive generator");
+    let (_, request) = generated_integer_request(
+        &repository,
+        &lineage,
+        domain,
+        IntegerValue::Unsigned(8),
+        generator_id,
+        "landmark-progressive",
+        9,
+    );
+    let requested = repository
+        .submit_known_branch_request(
+            "generated-landmark-progressive",
+            genesis.snapshot_id(),
+            &request,
+        )
+        .expect("submit landmark-progressive request");
+
+    let mut current = requested.new_snapshot;
+    let mut observations = Vec::new();
+    for (index, value) in [0_u64, 8, 16].into_iter().enumerate() {
+        let head = repository
+            .head("generated-landmark-progressive")
+            .expect("landmark-progressive proposal head");
+        let proposal = finite_proposal(
+            &request,
+            &policy,
+            &head,
+            ChoiceValue::Integer(IntegerValue::Unsigned(value)),
+            index as u64 + 1,
+        );
+        let proposed = repository
+            .issue_proposal("generated-landmark-progressive", current, &proposal)
+            .expect("issue landmark-progressive initial proposal");
+        let (selection, path, attempt) = branch_attempt(&repository, &request, &proposal);
+        let admitted = repository
+            .admit_proposal(
+                "generated-landmark-progressive",
+                proposed.new_snapshot,
+                proposed.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("admit landmark-progressive initial proposal");
+        current = admitted.new_snapshot;
+        observations.push(generated_observation(
+            &repository,
+            &lineage,
+            &admitted,
+            &path,
+            request.opportunity(),
+            &format!("landmark-progressive-{index}"),
+        ));
+    }
+    for observation in observations.iter().take(2) {
+        current = repository
+            .publish_observation("generated-landmark-progressive", current, observation)
+            .expect("publish landmark-progressive observation")
+            .new_snapshot;
+    }
+
+    let ready = repository
+        .head("generated-landmark-progressive")
+        .expect("landmark-progressive ready head");
+    let planner_state = CanonicalFrontierPlanner::initial_state().expect("planner state");
+    let (_, _, invocation) = canonical_planner_basis_with_page(
+        &repository,
+        "generated-landmark-progressive",
+        current,
+        &planner_state,
+        None,
+        16,
+    );
+    let planner_request = repository
+        .build_planner_request(current, invocation.id().expect("planner invocation id"))
+        .expect("build landmark-progressive planner request");
+    let planner_output = CanonicalFrontierPlanner
+        .plan(&planner_request)
+        .expect("plan landmark-progressive frontier");
+    let PlannerProposalDisposition::Issue { proposals, .. } =
+        planner_output.proposal().disposition()
+    else {
+        panic!("ready landmark-progressive request did not issue");
+    };
+    assert_eq!(
+        proposals.first().map(Proposal::value),
+        Some(&ChoiceValue::Integer(IntegerValue::Unsigned(2)))
+    );
+
+    let puct_only_candidate = finite_proposal(
+        &request,
+        &policy,
+        &ready,
+        ChoiceValue::Integer(IntegerValue::Unsigned(12)),
+        4,
+    );
+    let before_rejection = blobs
+        .object_count()
+        .expect("objects before non-landmark refinement");
+    assert!(matches!(
+        repository.issue_proposal(
+            "generated-landmark-progressive",
+            current,
+            &puct_only_candidate,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-value-does-not-match-source-order"
+        })
+    ));
+    assert_eq!(
+        blobs
+            .object_count()
+            .expect("objects after non-landmark refinement"),
+        before_rejection
+    );
+
+    let landmark = finite_proposal(
+        &request,
+        &policy,
+        &ready,
+        ChoiceValue::Integer(IntegerValue::Unsigned(2)),
+        4,
+    );
+    let refined = repository
+        .issue_proposal("generated-landmark-progressive", current, &landmark)
+        .expect("issue landmark-progressive refinement");
+    CampaignRepository::new(repository.blobs.clone(), repository.refs.clone())
+        .validate_complete_head(refined.new_snapshot.content_id())
+        .expect("restart validates landmark-progressive refinement");
 }
 
 #[test]

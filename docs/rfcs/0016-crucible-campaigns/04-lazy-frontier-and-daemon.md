@@ -504,9 +504,13 @@ authenticated completed-visit threshold. Implementation-version 10
 continuation in §03.2. Implementation-version 11 `progressive_integer` uses
 version 9's exact prefix and visit gates, then requires the exact source
 snapshot's owner-derived endpoint PUCT projection to reproduce each refinement.
-Proposals from every other generated
-source require the selected deterministic generator owner to reproduce the same
-value and remain fail-closed until that owner is implemented.
+Implementation-version 12 retains that basis, prioritizes intervals by their
+exact producer-landmark count before endpoint PUCT difference, and emits the
+winning interval's nearest lower-midpoint landmark before ordinary midpoint
+refinement.
+Proposals from every other generated source require the selected deterministic
+generator owner to reproduce the same value and remain fail-closed until that
+owner is implemented.
 
 The transition publishes the immutable `Proposal` and `ProposalIssued` fact,
 then makes an exact three-key delta to the exploration root:
@@ -541,10 +545,10 @@ budget, create a graph child, or count as an admitted continuation value.
   profile. Implementation-version 9 `progressive_integer` also has a
   deterministic ordinal order, but its refinement ordinals MUST additionally
   satisfy the exact source-snapshot feedback threshold in §03.2.
-  Implementation-version 10 `mutate_near_corpus` and implementation-version 11
-  `progressive_integer` have view-dependent next values whose exact portable
-  continuations and owner-derived feedback bases MUST reproduce §03.2. Other
-  generated proposal issuance MUST fail closed unless the named
+  Implementation-version 10 `mutate_near_corpus` and implementation-versions
+  11 and 12 `progressive_integer` have view-dependent next values whose exact
+  portable continuations and owner-derived feedback bases MUST reproduce
+  §03.2. Other generated proposal issuance MUST fail closed unless the named
   deterministic generator owner reproduces the value from authenticated
   campaign facts.
 - **[LAZY-45]** Weighted-categorical implementation-version 7 MUST derive every
@@ -581,6 +585,12 @@ budget, create a graph child, or count as an admitted continuation value.
   and reproduce the endpoint-score/length/lower-offset interval order in §03.2
   during local issue, import, and restart. A substituted largest-gap value or a
   missing/foreign feedback projection MUST fail before publication.
+- **[LAZY-50]** Landmark-progressive implementation-version 12 MUST use the
+  exact version-11 feedback projection plus the request's authenticated domain
+  body, reproduce the landmark-count/endpoint-score/length/lower-offset order
+  and nearest-lower-midpoint landmark selection in §03.2, and reject a
+  substituted PUCT-only midpoint before publication. Version 11 MUST continue
+  to ignore producer landmarks.
 
 ## 04.13 Atomic attempt admission
 
@@ -703,11 +713,11 @@ is `WaitingForFeedback` with the exact current and required counts. Completing
 the bounded stream is `Exhausted` only when the request budget covers the exact
 domain; a truncated stream is `Closed`.
 
-Implementation-version 11 has the same continuation states and thresholds as
-version 9. Feedback changes only which exact legal midpoint owns the next
-available ordinal. Implementation-version 10 is `Ready` when its current exact
-view yields an unproposed corpus mutation, `WaitingForFeedback` when it does
-not, and `Closed` only when proposal budget is exhausted.
+Implementation-versions 11 and 12 have the same continuation states and
+thresholds as version 9. Feedback changes only which exact legal value owns the
+next available ordinal. Implementation-version 10 is `Ready` when its current
+exact view yields an unproposed corpus mutation, `WaitingForFeedback` when it
+does not, and `Closed` only when proposal budget is exhausted.
 
 `admitted_children` counts only distinct `ExecutionBasis` admissions rooted
 at the branch point. A pending proposal contributes zero, and an
@@ -762,8 +772,9 @@ admission is rejected.
   within its exact recursive work profile, or implementation-version 9
   `progressive_integer` within its exact bounds and feedback thresholds, or
   implementation-version 10 `mutate_near_corpus` within its portable
-  proposal-set/corpus bounds, or implementation-version 11
-  `progressive_integer` within its exact PUCT-feedback bounds. Static
+  proposal-set/corpus bounds, implementation-version 11 `progressive_integer`
+  within its exact PUCT-feedback bounds, or implementation-version 12 within
+  its exact PUCT-plus-landmark bounds. Static
   continuation state MAY bind a nonempty observation root because its state is
   independent of feedback. Every completed-visit statistic and progressive
   wakeup MUST equal the exact nested credit-set count. The compact expansion

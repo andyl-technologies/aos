@@ -129,7 +129,15 @@ pub const PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 9;
 /// retain their own behavior or remain suspended.
 pub const FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 11;
 
-/// Maximum initial strata admitted by progressive-integer versions 9 and 11.
+/// Generator implementation version for landmark-aware integer refinement.
+///
+/// This version retains version 11's exact prefix, visit gates, and endpoint
+/// PUCT-score basis. Intervals sort by the count of unproposed producer
+/// landmarks before the version-11 terms; the selected interval emits the
+/// landmark nearest to its lower midpoint before ordinary refinement resumes.
+pub const LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 12;
+
+/// Maximum initial strata admitted by executable progressive-integer versions.
 pub const PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA: u32 = 4_096;
 
 /// Maximum proposals admitted by one executable progressive-integer request.
