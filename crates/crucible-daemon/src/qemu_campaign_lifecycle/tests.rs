@@ -537,6 +537,114 @@ impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
     }
 }
 
+struct FakeGenesisCheckpointLifecycle {
+    order: Arc<Mutex<Vec<&'static str>>>,
+    capture: Option<CapturedAttemptCheckpoint>,
+    checkpoint_ready: bool,
+    cleanup_error: bool,
+}
+
+impl QemuFreshAttemptLifecycleOwner for FakeGenesisCheckpointLifecycle {
+    fn drive_quantum(
+        &mut self,
+        _request: crucible::QuantumRequest,
+    ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
+        unreachable!("fresh genesis capture performs no modeled quantum")
+    }
+
+    fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
+        None
+    }
+
+    fn exact_checkpoint_ready(&mut self) -> Result<bool, crucible::SchedulerError> {
+        self.order
+            .lock()
+            .expect("genesis capture order")
+            .push("ready");
+        Ok(self.checkpoint_ready)
+    }
+
+    fn capture_attempt_checkpoint(
+        &mut self,
+        _context: &AttemptExecutionContext,
+    ) -> Result<CapturedAttemptCheckpoint, crucible::SchedulerError> {
+        self.order
+            .lock()
+            .expect("genesis capture order")
+            .push("capture");
+        self.capture
+            .take()
+            .ok_or_else(|| crucible::SchedulerError::BoundaryViolation {
+                message: String::from("genesis checkpoint fixture was already consumed"),
+            })
+    }
+
+    fn fault_evidence_snapshot(
+        &self,
+    ) -> Result<ProductionFaultEvidenceSnapshot, crucible::SchedulerError> {
+        Err(crucible::SchedulerError::BoundaryViolation {
+            message: String::from("genesis capture fixture has no fault evidence"),
+        })
+    }
+
+    fn pending_network_output_count(&self) -> usize {
+        0
+    }
+
+    fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, crucible::SchedulerError> {
+        self.order
+            .lock()
+            .expect("genesis capture order")
+            .push("shutdown");
+        if self.cleanup_error {
+            Err(crucible::SchedulerError::BoundaryViolation {
+                message: String::from("injected genesis capture cleanup failure"),
+            })
+        } else {
+            Ok(Vec::new())
+        }
+    }
+}
+
+struct FakeGenesisCheckpointLifecycleFactory {
+    order: Arc<Mutex<Vec<&'static str>>>,
+    foreign_capture: bool,
+    checkpoint_ready: bool,
+    cleanup_error: bool,
+}
+
+impl QemuFreshAttemptLifecycleFactory for FakeGenesisCheckpointLifecycleFactory {
+    type Lifecycle = FakeGenesisCheckpointLifecycle;
+    type Error = &'static str;
+
+    fn start_fresh_lifecycle(
+        &mut self,
+        _scenario: &ScenarioDef,
+        _source: &crucible::ScenarioDefForm,
+        start: &Configuration,
+        _context: &AttemptExecutionContext,
+    ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
+        self.order
+            .lock()
+            .expect("genesis capture order")
+            .push("begin");
+        let configuration = if self.foreign_capture {
+            Configuration::genesis(ScenarioDef::from_canonical_material(
+                "crucible.test.foreign-genesis-capture",
+                "foreign",
+            ))
+        } else {
+            start.clone()
+        };
+        Ok(FakeGenesisCheckpointLifecycle {
+            order: Arc::clone(&self.order),
+            capture: Some(test_checkpoint_capture_for_configuration(&configuration).into()),
+            checkpoint_ready: self.checkpoint_ready,
+            cleanup_error: self.cleanup_error,
+        })
+    }
+}
+
 #[derive(Clone, Copy)]
 enum FakeFreshDriverFailure {
     Retryable,
@@ -699,6 +807,128 @@ fn fresh_runner_captures_a_sticky_checkpoint_before_shutdown_and_seal() {
         outcome.product(),
         AttemptExecutionProduct::ExactCheckpoint(_)
     ));
+}
+
+#[test]
+fn fresh_genesis_checkpoint_capture_uses_no_modeled_quantum_and_tears_down() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let input = fresh_runner_input();
+    let mut factory = FakeGenesisCheckpointLifecycleFactory {
+        order: Arc::clone(&order),
+        foreign_capture: false,
+        checkpoint_ready: true,
+        cleanup_error: false,
+    };
+
+    let capture = capture_fresh_genesis_checkpoint_candidate(
+        &mut factory,
+        input.scenario(),
+        &fresh_runner_context(),
+    )
+    .expect("fresh genesis capture should succeed");
+
+    assert_eq!(
+        capture.configuration(),
+        Configuration::genesis(input.scenario().scenario_def()).id()
+    );
+    assert_eq!(
+        order.lock().expect("genesis capture order").as_slice(),
+        ["begin", "ready", "capture", "shutdown"]
+    );
+}
+
+#[test]
+fn fresh_genesis_checkpoint_capture_rejects_foreign_basis_after_teardown() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let input = fresh_runner_input();
+    let mut factory = FakeGenesisCheckpointLifecycleFactory {
+        order: Arc::clone(&order),
+        foreign_capture: true,
+        checkpoint_ready: true,
+        cleanup_error: false,
+    };
+
+    let error = capture_fresh_genesis_checkpoint_candidate(
+        &mut factory,
+        input.scenario(),
+        &fresh_runner_context(),
+    )
+    .expect_err("foreign genesis capture must fail closed");
+
+    assert!(matches!(
+        error,
+        QemuFreshGenesisCheckpointError::Capture(
+            QemuFreshGenesisCheckpointCaptureFailure::BasisMismatch
+        )
+    ));
+    assert_eq!(
+        order.lock().expect("genesis capture order").as_slice(),
+        ["begin", "ready", "capture", "shutdown"]
+    );
+}
+
+#[test]
+fn fresh_genesis_checkpoint_capture_preserves_cleanup_precedence() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let input = fresh_runner_input();
+    let mut factory = FakeGenesisCheckpointLifecycleFactory {
+        order: Arc::clone(&order),
+        foreign_capture: true,
+        checkpoint_ready: true,
+        cleanup_error: true,
+    };
+
+    let error = capture_fresh_genesis_checkpoint_candidate(
+        &mut factory,
+        input.scenario(),
+        &fresh_runner_context(),
+    )
+    .expect_err("cleanup failure must retain precedence");
+
+    assert!(matches!(
+        error,
+        QemuFreshGenesisCheckpointError::Cleanup {
+            prior: Some(prior),
+            ..
+        } if matches!(
+            prior.as_ref(),
+            QemuFreshGenesisCheckpointCaptureFailure::BasisMismatch
+        )
+    ));
+    assert_eq!(
+        order.lock().expect("genesis capture order").as_slice(),
+        ["begin", "ready", "capture", "shutdown"]
+    );
+}
+
+#[test]
+fn production_baked_genesis_rejects_legacy_capture_after_guarded_teardown() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let input = fresh_runner_input();
+    let mut factory = FakeGenesisCheckpointLifecycleFactory {
+        order: Arc::clone(&order),
+        foreign_capture: false,
+        checkpoint_ready: true,
+        cleanup_error: false,
+    };
+
+    let error = crate::capture_production_baked_genesis(
+        &mut factory,
+        input.scenario(),
+        &fresh_runner_context(),
+    )
+    .expect_err("production baked genesis must require a version-four closure");
+
+    assert!(matches!(
+        error,
+        crate::ProductionBakedGenesisCaptureError::Admission(
+            crate::ProductionBakedGenesisCheckpointError::CompatibilityCapture
+        )
+    ));
+    assert_eq!(
+        order.lock().expect("genesis capture order").as_slice(),
+        ["begin", "ready", "capture", "shutdown"]
+    );
 }
 
 #[test]
@@ -1175,8 +1405,14 @@ fn test_checkpoint_capture() -> crate::CapturedExactCheckpoint {
         "crucible.test.fresh-campaign-runner",
         "sealed-product",
     ));
+    test_checkpoint_capture_for_configuration(&configuration)
+}
+
+fn test_checkpoint_capture_for_configuration(
+    configuration: &Configuration,
+) -> crate::CapturedExactCheckpoint {
     let checkpoint = Checkpoint::from_recorded_configuration(
-        &configuration,
+        configuration,
         None,
         VirtualTime::default(),
         BTreeMap::new(),

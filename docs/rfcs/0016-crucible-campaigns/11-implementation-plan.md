@@ -781,10 +781,14 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   owner: its default path has no promotion worker and remains `ThinReplay`
   only, while a promotion-enabled composition advertises `ExactRestore` and
   exposes the fixed promotion-worker count in its bounded report.
-  Assignment-root-aware cleanup of abandoned
-  native entries, construction of the packaged thin-source/real-node replay
-  factory, and enabling that concrete owner remain open before the
-  executor may claim exact resume. Production-loop process reconstruction and
+  The guarded fresh lifecycle now supplies the bootstrap half of the concrete
+  thin source: it captures exact scenario genesis without a modeled quantum,
+  performs mandatory teardown, and admits only a completely authenticated
+  version-four native closure whose live-node set exactly equals the World.
+  Assignment-root-aware cleanup of abandoned native entries, node-specific
+  materialization from that baked source, construction of the packaged
+  real-node replay factory, and enabling that concrete owner remain open before
+  the executor may claim exact resume. Production-loop process reconstruction and
   exact-resume driver selection are implemented: `NotRun` is rejected during no-write admission,
   the exact closure is restored under the attempt guard, and the packaged
   worker uses a disjoint exact-origin runner. A guarded-only
@@ -863,8 +867,9 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   root materialization through the attempt-owned directory. The packaged worker
   selects that resume adapter without fresh fallback, restores the complete
   event prefix and quiescence boundary, and retains runner-owned shutdown and
-  result sealing. Fresh exact-cache, baked/thin image provisioning, concrete
-  packaged replay-oracle factory wiring, and production tuning remain open;
+  result sealing. Fresh exact-cache, node-specific baked/thin artifact
+  materialization, concrete packaged replay-oracle factory wiring, and
+  production tuning remain open;
   `NotRun` is still
   fail-closed and `ExactRestore` remains unadvertised. The fixed worker
   pool and its
