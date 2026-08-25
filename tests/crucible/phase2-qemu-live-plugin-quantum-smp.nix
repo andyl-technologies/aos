@@ -258,8 +258,11 @@ in
       src = null;
 
       buildDeps = [
+        pkgs.binutils
         pkgs.coreutils
         pkgs.grep
+        pkgs.qemu
+        pkgs.crucible-qemu-plugin
         earlyPauseYieldNegative
         liveQuantumSmp
       ];
@@ -288,11 +291,32 @@ in
               'observed_qemu_failure_evidence=guest evidence [65, 65, 65, 66]' \
               ${earlyPauseYieldNegative}/result
 
+            set +e
+            timeout --kill-after=5 15 \
+              ${pkgs.qemu}/bin/qemu-system-x86_64 \
+              -machine none -accel tcg -display none -nodefaults -S \
+              -plugin ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+              > "$TMPDIR/stock-qemu.log" 2>&1
+            stock_status=$?
+            set -e
+            test "$stock_status" -ne 0
+            test "$stock_status" -ne 124
+            ! grep -Fxq PASS "$TMPDIR/stock-qemu.log"
+            ! nm -D --defined-only ${pkgs.qemu}/bin/qemu-system-x86_64 \
+              | grep -q qemu_plugin_crucible_fault_submit
+
             mkdir -p "$out"
+            cp "$TMPDIR/stock-qemu.log" "$out/stock-qemu.log"
             cat > "$out/result" <<'RESULT'
             PASS
+            gate=gate:patch-microtests
             check=${attrPath}
             tasks=${taskList}
+            patch=0110-crucible-release-halted-rr-turn.patch
+            patched_fixture_exercised=true
+            stock_negative_control=true
+            qemu_package=${pkgs.qemu-crucible}
+            qemu_package_version=${pkgs.qemu-crucible.version}
             live_backend=qemu-system-x86_64
             smp_vcpus=4
             memory_mib=64

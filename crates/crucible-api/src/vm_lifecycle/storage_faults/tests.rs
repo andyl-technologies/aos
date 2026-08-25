@@ -56,6 +56,38 @@ fn observation_at(nanos: u64, evidence: &'static [u8]) -> FaultObservation {
     }
 }
 
+#[derive(Default)]
+struct RecordingAmbiguousNinepRuntime {
+    poison_calls: usize,
+}
+
+impl AmbiguousNinepCommitRuntime for RecordingAmbiguousNinepRuntime {
+    fn poison_ambiguous_ninep_commit(&mut self) {
+        self.poison_calls += 1;
+    }
+}
+
+#[test]
+fn ambiguous_shared_ninep_commit_poisons_runtime_before_return() {
+    let runtime = Arc::new(Mutex::new(RecordingAmbiguousNinepRuntime::default()));
+    let error = storage_error(
+        "commit coordinated 9p request",
+        "response publication became ambiguous",
+    );
+
+    let returned = fail_after_shared_ninep_commit(&runtime, error);
+
+    assert!(
+        returned
+            .to_string()
+            .contains("response publication became ambiguous")
+    );
+    let runtime = runtime
+        .lock()
+        .unwrap_or_else(|error| panic!("recording runtime lock should remain usable: {error}"));
+    assert_eq!(runtime.poison_calls, 1);
+}
+
 #[test]
 fn ninep_result_evidence_excludes_locked_replay_authorization() {
     let action = storage_evidence_action();

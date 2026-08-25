@@ -20,7 +20,14 @@
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  qemuSeries = import ../../pkgs/emulation/qemu-patches/_series.nix;
+  requiredQemuTaskIds = map (patch: "T-QEMU-${builtins.substring 0 4 patch.file}") (
+    builtins.filter
+    (patch: !(builtins.lessThan (builtins.substring 0 4 patch.file) "0047"))
+    qemuSeries.patches
+  );
   taskList = builtins.concatStringsSep "," taskIds;
+  requiredQemuTaskList = builtins.concatStringsSep "," requiredQemuTaskIds;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase7-signal-fault-system";
@@ -239,6 +246,22 @@ in
             exit 1
           fi
 
+          printf '%s\n' '${requiredQemuTaskList}' \
+            | tr ',' '\n' \
+            | sed '/^$/d' \
+            | sort -u \
+            > "$TMPDIR/carried-qemu-patch-tasks"
+          grep -E '^T-QEMU-[0-9]{4}$' \
+            "$TMPDIR/declared-signal-fault-tasks" \
+            > "$TMPDIR/declared-qemu-patch-tasks"
+          if ! cmp -s \
+            "$TMPDIR/carried-qemu-patch-tasks" \
+            "$TMPDIR/declared-qemu-patch-tasks"
+          then
+            echo 'FAIL: final gate QEMU tasks differ from the carried patch series' >&2
+            exit 1
+          fi
+
           cargo test \
             --frozen \
             --offline \
@@ -316,6 +339,8 @@ in
             production_fault_runtime::runtime_tests::external_event_reservation_is_charged_before_boundary_apply
           run_exact_qemu_test \
             production_fault_runtime::lifecycle_tests::boot_ready_exhaustion_preserves_requested_intent_and_effective_terminal_decision
+          run_exact_qemu_test \
+            production_fault_runtime::lifecycle_tests::outer_poison_latch_rejects_an_inert_plan_after_ambiguous_visibility
           run_exact_shmem_test \
             fault_event::tests::event_snapshot_authenticates_without_consuming_transport_ownership
           run_exact_shmem_test \
@@ -350,6 +375,8 @@ in
             vm_lifecycle::quantum_loop::lifecycle::restart_ownership::tests::terminal_generation_selection_moves_preowned_storage
           run_exact_api_test \
             vm_lifecycle::quantum_loop::lifecycle::restart_ownership::tests::terminal_successor_launch_owns_exact_app_random_continuation
+          run_exact_api_test \
+            vm_lifecycle::storage_faults::tests::ambiguous_shared_ninep_commit_poisons_runtime_before_return
           test "$(grep -Fc '    fn prepare_terminal_replacements(' \
             crates/crucible-api/src/vm_lifecycle/quantum_loop.rs)" -eq 1
           test "$(grep -Fc '    fn abort_staged_terminal_replacements(' \
@@ -629,6 +656,10 @@ in
           grep -Fxq 'corrupt_event_rejected_with_valid_result=true' "$node_result"
           grep -Fxq 'lifecycle_impulse_committed=true' "$node_result"
           grep -Fxq 'cross_adapter_rejection_rolled_back=true' "$node_result"
+          grep -Fxq 'patch=0109-crucible-control-boundary-node-faults.patch' \
+            "${patchMicrotests}/per-patch/0109-crucible-control-boundary-node-faults.patch.result"
+          grep -Fxq 'patched_fixture_exercised=true' \
+            "${patchMicrotests}/per-patch/0109-crucible-control-boundary-node-faults.patch.result"
 
           hardware_result=${liveFaultHardware}/result
           grep -Fxq PASS "$hardware_result"
@@ -660,6 +691,10 @@ in
           grep -Fxq 'every_carried_patch_has_microtest=true' "$patch_result"
           grep -Fxq 'every_microtest_has_stock_negative_control=true' "$patch_result"
           grep -Fxq 'diagnostic_only_patches_excluded_from_shipped_qemu=true' "$patch_result"
+          grep -Fxq 'patch=0110-crucible-release-halted-rr-turn.patch' \
+            "${patchMicrotests}/per-patch/0110-crucible-release-halted-rr-turn.patch.result"
+          grep -Fxq 'guest_pause_early_yield_negative=critical-arm-branch-trap-observed-after-AAAB' \
+            "${patchMicrotests}/per-patch/0110-crucible-release-halted-rr-turn.patch.result"
 
           checkpoint_result=${checkpointMaterialization}/result
           grep -Fxq PASS "$checkpoint_result"
