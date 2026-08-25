@@ -743,7 +743,7 @@ not an alternate untyped implementation.
 | conduit cut | fault-domain `network.availability` fan-out |
 | rack/chassis power loss | common signal into `network.forwarder_lifecycle` + node/storage bindings |
 
-### Radio, mobile, IoT-radio, satellite, and contact rows
+### Radio, mobile, and IoT-radio rows
 
 | Taxonomy fault/degradation | Required effect program |
 | --- | --- |
@@ -799,6 +799,11 @@ not an alternate untyped implementation.
 | partition/merge | `network.association` membership + `network.route_transition` |
 | gateway outage | `network.forwarder_lifecycle` + `network.availability` |
 | uplink degradation | `network.profile_delta` + `network.service_curve` |
+
+### Satellite, aerospace, and contact rows
+
+| Taxonomy fault/degradation | Required effect program |
+| --- | --- |
 | visibility-window closure | `network.contact` availability transition |
 | acquisition delay/failure | `network.contact` acquisition state |
 | antenna pointing loss | `network.rf_channel` + `network.contact` |
@@ -892,7 +897,7 @@ not an alternate untyped implementation.
 | lost write | `storage.write_disposition(lost)` |
 | torn/partial write | `storage.write_disposition(torn)` |
 | reordered persistence | `storage.persistence_order` |
-| ordinary or protection-defeating volatile-cache loss | `storage.volatile_cache_loss(power_loss/protection_failure)` |
+| volatile-cache loss | ordinary or protection-defeating `storage.volatile_cache_loss(power_loss/protection_failure)` |
 | lying flush | `storage.flush_disposition(lie)` |
 | bad sector/range | `storage.media_range(bad)` |
 | latent sector error | `storage.media_range(latent)` with threshold state |
