@@ -91,7 +91,7 @@ use crate::{
     QemuVmLaunchConfig, QemuVmSnapshot, QemuVmStateBinding, QemuWhiteboxSetupError, QmpError,
     build_qemu_node_from_completed_setup, build_qemu_node_from_restored_checkpoint,
     build_qemu_node_from_restored_checkpoint_paused,
-    complete_qemu_host_plugin_setup_with_app_random_branch_plan,
+    complete_qemu_host_plugin_setup_with_plugin_setup_plan,
     spawn_prepared_qemu_child_with_fds_in_directory_guarded,
     spawn_qemu_child_with_fds_in_directory,
 };
@@ -2133,12 +2133,12 @@ fn build_live_node_with_authority(
     }
 
     let setup = launch_try!(
-        complete_qemu_host_plugin_setup_with_app_random_branch_plan(
+        complete_qemu_host_plugin_setup_with_plugin_setup_plan(
             resources.into_setup_resources(),
             region_config,
             GATE_SLOT,
             command.fault_capability_requirement(),
-            command.app_random_branch_plan(),
+            command.plugin_setup_plan(),
         )
         .map_err(|source| QemuLiveNodeStepGateError::HostSetup { source })
     );

@@ -457,6 +457,20 @@ pub struct SelectableCatalogPlan {
     continuation: SelectablePlanContinuation,
 }
 
+impl Default for SelectableCatalogPlan {
+    fn default() -> Self {
+        Self {
+            limits: SelectablePlanLimits {
+                declarations: 1,
+                requests_per_selectable: 1,
+                total_requests: 1,
+            },
+            declarations: BTreeMap::new(),
+            continuation: SelectablePlanContinuation::cold(),
+        }
+    }
+}
+
 impl SelectableCatalogPlan {
     /// Builds and cross-validates one complete plan.
     ///

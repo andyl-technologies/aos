@@ -1276,6 +1276,54 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
 }
 
 #[test]
+fn selectable_catalog_enters_the_v3_launch_identity_without_changing_empty_v2()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_protocol::selectable_catalog_plan::{
+        SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
+        SelectablePlanLimits, SelectablePlanPresence,
+    };
+
+    assert!(
+        default_launch_command()
+            .command_line_hash_material()
+            .starts_with("crucible.qemu-launch-command.v2\n")
+    );
+
+    let declaration = SelectablePlanDeclaration::new(
+        "network.policy",
+        vec![1, 2],
+        vec![1],
+        vec!["recovery".to_owned()],
+        SelectablePlanPresence::Required,
+    )?;
+    let selectable = SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(1, 3, 3)?,
+        vec![declaration],
+        SelectablePlanContinuation::cold(),
+    )?;
+    let plugin = default_plugin_config()
+        .with_whitebox(QemuLaunchPluginSwitch::On)
+        .with_whitebox_setup(validated_whitebox_setup())
+        .with_selectable_catalog_plan(selectable.clone());
+    let command = default_profile().qemu_launch_command(
+        default_vm_config(),
+        default_qemu_binary(),
+        plugin,
+        &default_fault_node(),
+    )?;
+    let material = command.command_line_hash_material();
+
+    assert!(material.starts_with("crucible.qemu-launch-command.v3\n"));
+    assert!(material.contains("plugin_setup_plan_v1="));
+    assert!(!material.contains("app_random_branch_plan_v1="));
+    assert_eq!(
+        command.plugin_setup_plan().selectable_catalog_plan(),
+        &selectable
+    );
+    Ok(())
+}
+
+#[test]
 fn firmware_boot_omits_direct_kernel_and_has_explicit_identity() {
     let command = default_profile()
         .qemu_launch_command(

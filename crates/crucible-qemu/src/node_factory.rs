@@ -27,7 +27,8 @@ use crate::{
     QemuNodeChild, QemuPreparedRunDirectory, QemuQmpMachineControlChannel,
     QemuQmpVmStateControlChannel, QemuQuantumShmemConfig, QemuShmemHotPathChannel,
     QemuShutdownPolicy, QemuSpawnError, QemuVmStateBinding, QmpError, QmpTimeoutStream,
-    complete_qemu_host_plugin_setup, spawn_prepared_qemu_child_with_fds_in_directory_guarded,
+    complete_qemu_host_plugin_setup_with_plugin_setup_plan,
+    spawn_prepared_qemu_child_with_fds_in_directory_guarded,
     spawn_qemu_child_with_fds_in_directory,
 };
 
@@ -605,11 +606,12 @@ where
     )
     .map_err(|source| QemuWarmRestoreLaunchError::Spawn { source })?;
     let (child, resources) = spawned.into_parts();
-    let setup = match complete_qemu_host_plugin_setup(
+    let setup = match complete_qemu_host_plugin_setup_with_plugin_setup_plan(
         resources.into_setup_resources(),
         region_config,
         slot_index,
         command.fault_capability_requirement(),
+        command.plugin_setup_plan(),
     ) {
         Ok(setup) => setup,
         Err(source) => {
@@ -726,11 +728,12 @@ where
     )
     .map_err(|source| QemuWarmRestoreLaunchError::Spawn { source })?;
     let (child, resources) = spawned.into_parts();
-    let setup = match complete_qemu_host_plugin_setup(
+    let setup = match complete_qemu_host_plugin_setup_with_plugin_setup_plan(
         resources.into_setup_resources(),
         launch.region_config,
         launch.slot_index,
         launch.command.fault_capability_requirement(),
+        launch.command.plugin_setup_plan(),
     ) {
         Ok(setup) => setup,
         Err(source) => {

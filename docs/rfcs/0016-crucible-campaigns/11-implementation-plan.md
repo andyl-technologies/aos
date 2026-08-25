@@ -132,8 +132,8 @@ runtime still needs to supply and persist the launch-authenticated inputs. The
 plugin-side catalog state now enforces nonzero scenario ceilings under hard
 4,096-declaration/1,000,000-request caps, exact required/optional declaration
 matching, strictly advancing sequences, no late registration, and one
-incarnation-bound pending request retained until an exact-sequence reply. Live
-The live dispatcher now consumes that launch-authenticated plan, reconciles raw
+incarnation-bound pending request retained until an exact-sequence reply. The
+live dispatcher now consumes that launch-authenticated plan, reconciles raw
 guest registrations, freezes before publishing `setup_complete`, retains an
 exact request without touching its zero-filled reply reservation, and requests
 native VMStop. It preallocates cold-priming and restored catalog incarnations
@@ -152,7 +152,11 @@ length-frames the independently versioned app-random and selectable plans for
 the negotiated setup profile. The existing control-protocol v2 third descriptor
 remains the raw app-random plan, while v3 now hands off the complete composite;
 the plugin decodes only the exact negotiated profile and transfers the
-selectable continuation into the pinned live catalog owner.
+selectable continuation into the pinned live catalog owner. The host launch
+profile retains and hashes the exact composite for any selectable-enabled node,
+uses it in fresh and exact node setup, and rejects a v2 negotiation instead of
+discarding selectable state. Empty-selectable launches preserve the existing
+version-two launch identity and raw-v2 fallback.
 
 The application-random path now implements the pure normalization and
 application contract, executor-side verification of uniform model samples, live

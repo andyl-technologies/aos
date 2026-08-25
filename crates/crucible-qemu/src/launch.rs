@@ -452,7 +452,8 @@ pub struct QemuLaunchCommand {
     plugin_fault_node_hash: [u8; 32],
     fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
     resource_requirements: QemuLaunchResourceRequirements,
-    app_random_branch_plan: crucible_protocol::app_random_branch_plan::AppRandomBranchPlan,
+    plugin_setup_plan: crucible_protocol::plugin_setup_plan::PluginSetupPlan,
+    plugin_setup_plan_digest: [u8; 32],
 }
 
 /// Static host-resource baseline derived from one validated launch command.
@@ -604,7 +605,15 @@ impl QemuLaunchCommand {
     pub const fn app_random_branch_plan(
         &self,
     ) -> &crucible_protocol::app_random_branch_plan::AppRandomBranchPlan {
-        &self.app_random_branch_plan
+        self.plugin_setup_plan.app_random_branch_plan()
+    }
+
+    /// Returns the complete version-negotiated plugin setup plan.
+    #[must_use]
+    pub const fn plugin_setup_plan(
+        &self,
+    ) -> &crucible_protocol::plugin_setup_plan::PluginSetupPlan {
+        &self.plugin_setup_plan
     }
 
     /// Appends one content-addressed observation-only QEMU plugin.
@@ -638,8 +647,14 @@ impl QemuLaunchCommand {
     /// Returns canonical material for hashing the complete QEMU command line.
     #[must_use]
     pub fn command_line_hash_material(&self) -> String {
-        let mut lines = Vec::with_capacity(self.args.len() + 3);
-        lines.push("crucible.qemu-launch-command.v2".to_owned());
+        let selectable_is_empty = self.plugin_setup_plan.selectable_catalog_plan()
+            == &crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::default();
+        let mut lines = Vec::with_capacity(self.args.len() + 6);
+        lines.push(if selectable_is_empty {
+            "crucible.qemu-launch-command.v2".to_owned()
+        } else {
+            "crucible.qemu-launch-command.v3".to_owned()
+        });
         lines.push("command_line_in_hash=executable-and-argv".to_owned());
         lines.push(format!("executable={}", self.executable));
         lines.push(format!(
@@ -650,10 +665,20 @@ impl QemuLaunchCommand {
             "ready_marker_manifest_v1={}",
             lower_hex(self.fault_capability_requirement.ready_marker_digest())
         ));
-        lines.push(format!(
-            "app_random_branch_plan_v1={}",
-            lower_hex(*blake3::hash(&self.app_random_branch_plan.encode()).as_bytes())
-        ));
+        if selectable_is_empty {
+            lines.push(format!(
+                "app_random_branch_plan_v1={}",
+                lower_hex(
+                    *blake3::hash(&self.plugin_setup_plan.app_random_branch_plan().encode())
+                        .as_bytes(),
+                )
+            ));
+        } else {
+            lines.push(format!(
+                "plugin_setup_plan_v1={}",
+                lower_hex(self.plugin_setup_plan_digest)
+            ));
+        }
         for (index, argument) in self.args.iter().enumerate() {
             lines.push(format!("argv[{index}]={argument}"));
         }
@@ -941,7 +966,11 @@ impl QemuLaunchCommandBuilder {
         validate_pre_spawn_qemu_launch_args(&args)
             .map_err(|source| QemuLaunchCommandError::PreSpawnValidation { source })?;
 
-        let app_random_branch_plan = self.plugin.app_random_branch_plan().clone();
+        let plugin_setup_plan = self.plugin.plugin_setup_plan();
+        let plugin_setup_plan_bytes = plugin_setup_plan
+            .encode()
+            .map_err(|_source| QemuLaunchCommandError::InvalidPluginSetupPlan)?;
+        let plugin_setup_plan_digest = *blake3::hash(&plugin_setup_plan_bytes).as_bytes();
         Ok(QemuLaunchCommand {
             executable: self.executable,
             args,
@@ -953,7 +982,8 @@ impl QemuLaunchCommandBuilder {
             plugin_fault_node_hash: self.plugin.fault_node_hash(),
             fault_capability_requirement,
             resource_requirements,
-            app_random_branch_plan,
+            plugin_setup_plan,
+            plugin_setup_plan_digest,
         })
     }
 }
