@@ -35,14 +35,7 @@ in
         || pathString == "${repoRootString}/default.nix"
         || pathString == "${repoRootString}/flake.nix"
         || pathString == "${repoRootString}/justfile"
-        || pathString == "${repoRootString}/tests"
-        || pathString == "${repoRootString}/tests/fleet"
-        || lib.hasPrefix "${repoRootString}/tests/fleet/" pathString
-        || pathString == "${repoRootString}/tests/vm"
-        || lib.hasPrefix "${repoRootString}/tests/vm/" pathString
         || pathString == "${repoRootString}/docs"
-        || pathString == "${repoRootString}/docs/quality"
-        || lib.hasPrefix "${repoRootString}/docs/quality/" pathString
         || pathString == "${repoRootString}/docs/rfcs"
         || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
       );

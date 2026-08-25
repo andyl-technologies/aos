@@ -28,9 +28,6 @@ use aos_hub::db::{Database, RegistryRecord};
 use aos_hub::server::{router, AppState};
 use aos_hub::validation::validate_presence;
 
-#[cfg(test)]
-mod feature_coverage;
-
 #[derive(Parser)]
 #[command(name = "aos-hub", version, about = "AOS registry hub server")]
 struct Cli {
