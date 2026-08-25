@@ -69,6 +69,12 @@ pub struct ObjectReader<'a> {
     // verified decoded form for this index pass so concurrent retained-release
     // walks do not repeatedly pay object-store and inflate latency.
     cache: Mutex<BTreeMap<Oid, (ObjectKind, Vec<u8>)>>,
+    // Parsing large package manifests and store records dominates retained
+    // release walks after object I/O is bundled. Their Git OIDs are immutable,
+    // and successive release commits normally share nearly every blob, so the
+    // verified head parse can safely serve historical walks in this index pass.
+    package_cache: Mutex<BTreeMap<Oid, PackageToml>>,
+    store_entry_cache: Mutex<BTreeMap<Oid, StoreEntry>>,
     // Bundle framing is cheap to validate, but inflating and hash-checking every
     // entry eagerly makes preload CPU scale with all published objects rather
     // than the objects reached by this generation. Retain canonical loose bytes
@@ -87,6 +93,8 @@ impl<'a> ObjectReader<'a> {
         Self {
             fetch,
             cache: Mutex::new(BTreeMap::new()),
+            package_cache: Mutex::new(BTreeMap::new()),
+            store_entry_cache: Mutex::new(BTreeMap::new()),
             bundled_loose: Mutex::new(BTreeMap::new()),
             attempted_bundles: Mutex::new(BTreeSet::new()),
             bundle_gates: Mutex::new(BTreeMap::new()),
@@ -157,6 +165,47 @@ impl<'a> ObjectReader<'a> {
             .map_err(|_| anyhow::anyhow!("registry bundled-object lock is poisoned"))?
             .get(&oid)
             .cloned())
+    }
+
+    async fn read_package(&self, oid: Oid, name: &str) -> Result<PackageToml> {
+        if let Some(package) = self
+            .package_cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry package cache lock is poisoned"))?
+            .get(&oid)
+            .cloned()
+        {
+            return Ok(package);
+        }
+
+        let content = read_utf8_blob(self, oid, name).await?;
+        let package = parse_committed_package(name, &content)?;
+        self.package_cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry package cache lock is poisoned"))?
+            .insert(oid, package.clone());
+        Ok(package)
+    }
+
+    async fn read_store_entry(&self, oid: Oid, name: &str) -> Result<StoreEntry> {
+        if let Some(entry) = self
+            .store_entry_cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry store-entry cache lock is poisoned"))?
+            .get(&oid)
+            .cloned()
+        {
+            return Ok(entry);
+        }
+
+        let content = read_utf8_blob(self, oid, name).await?;
+        let entry = store::parse_entry(&content)
+            .with_context(|| format!("parsing committed store record '{name}'"))?;
+        self.store_entry_cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry store-entry cache lock is poisoned"))?
+            .insert(oid, entry.clone());
+        Ok(entry)
     }
 
     /// Hydrates every bounded bundle shard before dependency-ordered walking.
@@ -437,10 +486,11 @@ async fn load_registry_tree_inner(
         packages.reserve(files.len());
         for batch in files.chunks(OBJECT_FETCH_CONCURRENCY) {
             packages.extend(
-                try_join_all(batch.iter().map(|file| async {
-                    let content = read_utf8_blob(&reader, file.oid, &file.name).await?;
-                    parse_committed_package(&file.name, &content)
-                }))
+                try_join_all(
+                    batch
+                        .iter()
+                        .map(|file| async { reader.read_package(file.oid, &file.name).await }),
+                )
                 .await?,
             );
         }
@@ -559,9 +609,7 @@ async fn load_package_store_records(
                     "committed store record '{}' is unexpectedly a tree",
                     file.name
                 );
-                let content = read_utf8_blob(reader, file.oid, &file.name).await?;
-                let parsed = store::parse_entry(&content)
-                    .with_context(|| format!("parsing committed store record '{}'", file.name))?;
+                let parsed = reader.read_store_entry(file.oid, &file.name).await?;
                 Ok::<_, anyhow::Error>((hash.clone(), parsed))
             }))
             .await?,
