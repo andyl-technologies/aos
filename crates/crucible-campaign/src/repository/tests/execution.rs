@@ -906,6 +906,7 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
         .project_branch_puct(observed.new_snapshot, segment.branch_point())
         .expect("PUCT before finding publication");
     assert!(before_finding.edge_finding_events().is_empty());
+    assert!(before_finding.edge_finding_reward_micros().is_empty());
     assert_eq!(
         before_finding.edge_statistics()[&segment.edge()].reward_sum_micros(),
         0
@@ -953,6 +954,10 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
             segment.edge(),
             BTreeMap::from([(FindingKind::Divergence, 1)]),
         )])
+    );
+    assert_eq!(
+        finding_puct.edge_finding_reward_micros(),
+        &BTreeMap::from([(segment.edge(), 250_000)])
     );
     assert_eq!(
         finding_puct.edge_statistics()[&segment.edge()].reward_sum_micros(),

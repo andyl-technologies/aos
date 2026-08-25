@@ -412,6 +412,9 @@ owner-verified endpoint mean objective-reward discontinuity before version
 Implementation-version 14 reports the same thresholds while prioritizing exact
 owner-verified endpoint mean globally unique coverage-identity discontinuity
 before version 13's interval terms.
+Implementation-version 15 reports the same thresholds while prioritizing exact
+owner-verified endpoint mean active-policy-weighted finding-reward
+discontinuity before version 14's interval terms.
 A mixture containing any suspended child remains conservatively `Open`. Other
 generated sources remain `Open` until their deterministic enumerator and
 feedback owner land. Rich admitted-value and interval explanation views and CLI

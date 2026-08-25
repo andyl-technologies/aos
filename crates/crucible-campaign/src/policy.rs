@@ -152,6 +152,14 @@ pub const MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 
 /// retain their own interval order.
 pub const COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 14;
 
+/// Generator implementation version for finding-sensitive integer refinement.
+///
+/// This version retains version 14's exact coverage, objective, landmark, and
+/// PUCT terms, preceded by the exact discontinuity between the endpoint edges'
+/// mean active-policy-weighted owner-verified finding rewards. Earlier versions
+/// retain their own interval order.
+pub const FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 15;
+
 /// Maximum initial strata admitted by executable progressive-integer versions.
 pub const PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA: u32 = 4_096;
 

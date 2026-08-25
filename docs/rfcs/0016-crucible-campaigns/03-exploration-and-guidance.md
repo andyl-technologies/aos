@@ -346,10 +346,30 @@ PUCT; executor arrival order and duplicate coverage identities cannot affect
 the term. Existing credit, observation, coverage-identity, evidence-byte, and
 proposal bounds therefore also bound this comparison.
 
+Generator implementation-version 15 adds a direct finding-reward
+discontinuity term before version 14's interval terms. For one completed
+semantic edge `e`, let `F_e` be the saturating sum of owner-verified finding
+occurrence counts multiplied by the active policy's closed positive finding
+weights, and retain `N_e` as its positive completed-visit count. An edge without
+a weighted finding and an exterior or unobserved endpoint use `F_e = 0`, with
+the latter retaining `N_e = 1`. Compare
+
+```text
+F(a, b) = abs(F_a * N_b - F_b * N_a) / (N_a * N_b)
+```
+
+as an exact nonnegative rational, then compare version 14's coverage,
+objective, landmark, PUCT, cardinality, and lower-offset terms. The winning
+interval retains the same landmark-or-midpoint value rule. Finding signatures,
+occurrences, observation paths, weights, and visit counts come from the bounded
+snapshot owner; duplicate or unauthenticated occurrences cannot affect this
+term. Existing finding-root, occurrence, body-byte, credit, and proposal bounds
+also bound every comparison.
+
 Other algorithms remain valid suspended specifications but fail closed at
 proposal issuance and expansion projection until their versioned cursor and
 feedback owners are implemented. Earlier and unknown implementation versions
-remain suspended rather than being reinterpreted as versions 2 through 14; this
+remain suspended rather than being reinterpreted as versions 2 through 15; this
 preserves owner validation of histories created before executable enumeration
 landed.
 
@@ -436,8 +456,9 @@ and producer-landmark interval terms require replay-distinct implementation
 versions. Version 12 consumes the exact landmark term, version 13 additionally
 consumes the direct owner-verified objective discontinuity, and version 14
 precedes it with the exact globally unique coverage-novelty discontinuity.
-No adaptive term may be inferred from unauthenticated telemetry or opaque
-measurement payloads.
+Version 15 precedes those terms with the exact active-policy-weighted finding
+reward discontinuity. No adaptive term may be inferred from unauthenticated
+telemetry or opaque measurement payloads.
 
 - **[GUIDE-5]** Progressive widening MUST feed descendant observations back to
   the expansion state at every branch point on the recorded branch-edge path.
@@ -491,6 +512,14 @@ measurement payloads.
   ownership MUST come from the bounded canonical observation projection. Local
   issue, import, and restart MUST reproduce the comparison, while versions 11
   through 13 MUST ignore the new leading term.
+- **[GUIDE-31]** Finding-progressive implementation-version 15 MUST rank
+  intervals first by exact endpoint mean active-policy-weighted finding-reward
+  discontinuity, then by version 14's coverage, objective, landmark, PUCT,
+  cardinality, and lower-offset terms. Finding occurrences, policy weights,
+  visit denominators, and edge ownership MUST come from the bounded canonical
+  finding and observation projections. Local issue, import, and restart MUST
+  reproduce the comparison, while versions 11 through 14 MUST ignore the new
+  leading term.
 
 ## 03.4 Tree policy: deterministic MCTS/PUCT
 

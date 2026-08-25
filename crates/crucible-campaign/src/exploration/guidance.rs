@@ -151,6 +151,7 @@ pub struct BranchPuctProjection {
     edge_prior_weights: BTreeMap<BranchEdgeId, u64>,
     edge_novelty_events: BTreeMap<BranchEdgeId, u64>,
     edge_finding_events: BTreeMap<BranchEdgeId, BTreeMap<FindingKind, u64>>,
+    edge_finding_reward_micros: BTreeMap<BranchEdgeId, i64>,
     edge_objective_reward_micros: BTreeMap<BranchEdgeId, i64>,
     edge_statistics: BTreeMap<BranchEdgeId, PuctEdgeStatistics>,
     edge_scores: BTreeMap<BranchEdgeId, PuctScore>,
@@ -332,6 +333,7 @@ impl BranchPuctProjection {
             edge_prior_weights,
             edge_novelty_events,
             edge_finding_events,
+            edge_finding_reward_micros: edge_rewards,
             edge_objective_reward_micros,
             edge_statistics,
             edge_scores,
@@ -378,6 +380,12 @@ impl BranchPuctProjection {
     #[must_use]
     pub const fn edge_finding_events(&self) -> &BTreeMap<BranchEdgeId, BTreeMap<FindingKind, u64>> {
         &self.edge_finding_events
+    }
+
+    /// Returns exact active-policy-weighted finding reward sums by completed edge.
+    #[must_use]
+    pub const fn edge_finding_reward_micros(&self) -> &BTreeMap<BranchEdgeId, i64> {
+        &self.edge_finding_reward_micros
     }
 
     /// Returns exact policy-weighted objective reward sums by completed edge.

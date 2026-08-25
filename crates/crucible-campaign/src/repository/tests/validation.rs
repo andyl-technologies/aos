@@ -2,9 +2,10 @@
 
 use super::*;
 use crate::{
-    CampaignCommandId, ExactRational, FeedbackWait, IntegerDomain, IntegerRepresentation,
-    IntegerValue, Objective, ObjectiveGoal, ObjectiveValue, PinChange, PinRetention,
-    RankingCandidate, RankingMethod, SurvivorRule, evaluate_objectives, rank_survivors,
+    CampaignCommandId, ExactRational, FeedbackWait, FindingKind, FindingSignature, FindingTarget,
+    IntegerDomain, IntegerRepresentation, IntegerValue, Objective, ObjectiveGoal, ObjectiveValue,
+    PinChange, PinRetention, RankingCandidate, RankingMethod, SurvivorRule, evaluate_objectives,
+    rank_survivors,
 };
 
 struct PermitExhaustive;
@@ -3098,6 +3099,222 @@ fn coverage_progressive_integer_prioritizes_verified_novelty_discontinuity() {
     CampaignRepository::new(repository.blobs.clone(), repository.refs.clone())
         .validate_complete_head(refined.new_snapshot.content_id())
         .expect("restart validates coverage-progressive refinement");
+}
+
+#[test]
+fn finding_progressive_integer_prioritizes_verified_reward_discontinuity() {
+    let (repository, lineage, base_policy, blobs) = counted_fixture();
+    let finding_signal = FindingKind::Divergence.guidance_signal().to_owned();
+    let policy = CampaignPolicy::new(
+        base_policy.scenario(),
+        base_policy.campaign_seed(),
+        base_policy.mode(),
+        base_policy.explorer().clone(),
+        base_policy.choice_policies().clone(),
+        base_policy.objectives().clone(),
+        BTreeMap::from([(
+            finding_signal.clone(),
+            GuidanceWeight::new(finding_signal, 1_000_000).expect("finding-progressive guidance"),
+        )]),
+        base_policy.stop_conditions().clone(),
+        base_policy.fairness(),
+        base_policy.retention(),
+        base_policy.admits_scenario_defaults(),
+    )
+    .expect("finding-progressive policy");
+    let campaign = "generated-finding-progressive";
+    let genesis = repository
+        .create(campaign, &lineage, &policy, &BTreeMap::new())
+        .expect("create finding-progressive campaign");
+    let domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(16),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("scale"),
+            vec![IntegerValue::Unsigned(2), IntegerValue::Unsigned(6)],
+        )
+        .expect("finding-progressive domain"),
+    );
+    let generator = CandidateGeneratorSpec::new(
+        crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::ProgressiveInteger {
+            initial_strata: 3,
+            feedback_interval: 2,
+        },
+    )
+    .expect("finding-progressive generator");
+    let generator_id = repository
+        .publish_generator(&generator)
+        .expect("publish finding-progressive generator");
+    let (_, request) = generated_integer_request(
+        &repository,
+        &lineage,
+        domain,
+        IntegerValue::Unsigned(8),
+        generator_id,
+        "finding-progressive",
+        9,
+    );
+    let requested = repository
+        .submit_known_branch_request(campaign, genesis.snapshot_id(), &request)
+        .expect("submit finding-progressive request");
+
+    let mut current = requested.new_snapshot;
+    let mut observations = Vec::new();
+    for (index, value) in [0_u64, 8, 16].into_iter().enumerate() {
+        let head = repository
+            .head(campaign)
+            .expect("finding-progressive proposal head");
+        let proposal = finite_proposal(
+            &request,
+            &policy,
+            &head,
+            ChoiceValue::Integer(IntegerValue::Unsigned(value)),
+            index as u64 + 1,
+        );
+        let proposed = repository
+            .issue_proposal(campaign, current, &proposal)
+            .expect("issue finding-progressive initial proposal");
+        let (selection, path, attempt) = branch_attempt(&repository, &request, &proposal);
+        let admitted = repository
+            .admit_proposal(
+                campaign,
+                proposed.new_snapshot,
+                proposed.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("admit finding-progressive initial proposal");
+        current = admitted.new_snapshot;
+        let coverage = if index == 0 {
+            BTreeSet::from([
+                CampaignHash::derive("test.finding-progressive", b"block-a"),
+                CampaignHash::derive("test.finding-progressive", b"block-b"),
+                CampaignHash::derive("test.finding-progressive", b"block-c"),
+            ])
+        } else {
+            BTreeSet::new()
+        };
+        observations.push(generated_observation_with_coverage(
+            &repository,
+            &lineage,
+            &admitted,
+            &path,
+            request.opportunity(),
+            &format!("finding-progressive-{index}"),
+            coverage,
+        ));
+    }
+    for (index, observation) in observations.iter().take(2).enumerate() {
+        let observed = repository
+            .publish_observation(campaign, current, observation)
+            .expect("publish finding-progressive observation");
+        current = observed.new_snapshot;
+        let fingerprint = CampaignHash::derive(
+            "test.finding-progressive",
+            if index == 0 {
+                b"endpoint-zero-replay-divergence"
+            } else {
+                b"endpoint-eight-replay-divergence"
+            },
+        );
+        let reproduction = repository
+            .publish_reproduction_artifact(
+                lineage.scenario(),
+                lineage.scenario_content(),
+                observation.child(),
+                observation.child_content(),
+                fingerprint,
+                1,
+                format!("finding-progressive reproduction {index}").into_bytes(),
+            )
+            .expect("publish finding-progressive reproduction");
+        let signature = FindingSignature::new(
+            FindingKind::Divergence,
+            fingerprint,
+            None,
+            "qemu.replay-divergence".to_owned(),
+            Some(FindingTarget::Configuration(observation.child_content())),
+            BTreeSet::from([observation.properties().content_id()]),
+        )
+        .expect("finding-progressive signature");
+        current = repository
+            .publish_finding(
+                campaign,
+                current,
+                signature,
+                observed.observation,
+                reproduction,
+                None,
+                BTreeSet::new(),
+            )
+            .expect("publish finding-progressive finding")
+            .new_snapshot;
+    }
+
+    let ready = repository
+        .head(campaign)
+        .expect("finding-progressive ready head");
+    let planner_state = CanonicalFrontierPlanner::initial_state().expect("planner state");
+    let (_, _, invocation) =
+        canonical_planner_basis_with_page(&repository, campaign, current, &planner_state, None, 16);
+    let planner_request = repository
+        .build_planner_request(current, invocation.id().expect("planner invocation id"))
+        .expect("build finding-progressive planner request");
+    let planner_output = CanonicalFrontierPlanner
+        .plan(&planner_request)
+        .expect("plan finding-progressive frontier");
+    let PlannerProposalDisposition::Issue { proposals, .. } =
+        planner_output.proposal().disposition()
+    else {
+        panic!("ready finding-progressive request did not issue");
+    };
+    assert_eq!(
+        proposals.first().map(Proposal::value),
+        Some(&ChoiceValue::Integer(IntegerValue::Unsigned(12)))
+    );
+
+    let coverage_only_candidate = finite_proposal(
+        &request,
+        &policy,
+        &ready,
+        ChoiceValue::Integer(IntegerValue::Unsigned(2)),
+        4,
+    );
+    let before_rejection = blobs
+        .object_count()
+        .expect("objects before finding-discontinuity substitution");
+    assert!(matches!(
+        repository.issue_proposal(campaign, current, &coverage_only_candidate),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-value-does-not-match-source-order"
+        })
+    ));
+    assert_eq!(
+        blobs
+            .object_count()
+            .expect("objects after finding-discontinuity substitution"),
+        before_rejection
+    );
+
+    let discontinuity = finite_proposal(
+        &request,
+        &policy,
+        &ready,
+        ChoiceValue::Integer(IntegerValue::Unsigned(12)),
+        4,
+    );
+    let refined = repository
+        .issue_proposal(campaign, current, &discontinuity)
+        .expect("issue finding-progressive refinement");
+    CampaignRepository::new(repository.blobs.clone(), repository.refs.clone())
+        .validate_complete_head(refined.new_snapshot.content_id())
+        .expect("restart validates finding-progressive refinement");
 }
 
 #[test]
