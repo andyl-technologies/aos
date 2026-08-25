@@ -1,4 +1,4 @@
-schema = "crucible.scenario.v5"
+schema = "crucible.scenario.v6"
 
 [scenario]
 id = "blake3:3f1504e2778c548777ccc73f10d6ed15514b51b2c82f8832ccc6dd0235c4da16"
