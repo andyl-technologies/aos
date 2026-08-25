@@ -370,7 +370,7 @@ pub enum HubAuditCmd {
     List {
         #[command(flatten)]
         access: HubAccessArgs,
-        #[arg(long, default_value = "")]
+        #[arg(long, default_value = "instance")]
         scope: String,
         #[command(flatten)]
         pagination: HubPaginationArgs,
