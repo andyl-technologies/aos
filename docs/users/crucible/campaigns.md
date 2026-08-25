@@ -28,7 +28,10 @@ The daemon can either attach `--campaign-runtime` to an independently owned
 socket. Packaged mode composes a fixed worker pool, repository admission,
 durable assignment ledger, checkpoint store, resource owner, and loopback
 listener into the campaign service lifecycle. It advertises only the concrete
-fresh/thin-replay path; exact-resume worker selection still fails closed. Do not
+materialization paths it owns: packaged startup captures and authenticates
+baked genesis, installs one fixed replay-oracle promotion owner per semantic
+worker, and advertises exact restore only after that nonempty owner set exists.
+Raw `NotRun` checkpoints remain ineligible until promotion succeeds. Do not
 interpret this single-host composition as multi-host readiness.
 
 ## Build and validate inputs

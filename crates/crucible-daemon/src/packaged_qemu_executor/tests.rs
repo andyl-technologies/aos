@@ -198,9 +198,9 @@ fn packaged_executor_serves_the_exact_composed_description_and_joins() {
 }
 
 #[test]
-fn packaged_executor_advertises_exact_restore_only_with_a_promotion_owner() {
+fn packaged_executor_advertises_exact_restore_with_one_owner_per_worker() {
     let directory = tempfile::tempdir().expect("packaged executor directory");
-    let config = config(&directory, 1);
+    let config = config(&directory, 2);
     let socket = config.endpoint().path().to_owned();
     let repository = Arc::new(CampaignRepository::new(
         Arc::new(crucible_cas::content_store::MemoryBlobBackend::new(
@@ -214,7 +214,7 @@ fn packaged_executor_advertises_exact_restore_only_with_a_promotion_owner() {
         profile(),
         config,
         UnusedHostFactory,
-        vec![UnusedPromotionWorker],
+        vec![UnusedPromotionWorker, UnusedPromotionWorker],
     )
     .expect("compose promotion-enabled packaged executor");
     let executor = AttachedPackagedQemuExecutor::start(service).expect("start packaged executor");
@@ -235,7 +235,7 @@ fn packaged_executor_advertises_exact_restore_only_with_a_promotion_owner() {
     let report = executor
         .shutdown_and_join()
         .expect("join promotion-enabled executor");
-    assert_eq!(report.pool().promotion_workers(), 1);
+    assert_eq!(report.pool().promotion_workers(), 2);
     assert_eq!(report.pool().promotions_active(), 0);
     assert_eq!(report.pool().promotions_queued(), 0);
 }
