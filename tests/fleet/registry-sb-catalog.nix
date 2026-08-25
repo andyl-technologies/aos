@@ -28,9 +28,9 @@
 #      floor is raised one above the image's generation. `apm upgrade` must
 #      REFUSE on the floor, again without changing either axis.
 #   4. ACCEPT CATALOG — the floor is lowered to the image's generation. The
-#      Secure Boot catalog validation passes, after which the A/B image
-#      gate rejects this legacy UKI-only fixture because it has no authenticated
-#      raw OTA payload. Both generation axes remain unchanged.
+#      Secure Boot catalog validation passes and the consumer reaches the A/B
+#      staging boundary. This kernel-boot policy fixture cannot mutate an A/B
+#      disk, so both generation axes remain unchanged.
 #
 # Machines (lexicographic: registry=192.168.50.10, target=192.168.50.11):
 #   registry: aos-registry-server (gitd :9418) + static-cache package (:8000),
@@ -90,10 +90,10 @@
 in {
   name = "registry-sb-catalog";
   # Two boots + registry/static-cache package activation + full-closure
-  # static cache + one ~270 MiB cross-VM NAR transfer (the first refused
-  # upgrade still downloads) + two further validation passes over the cached
-  # closure + three catalog re-syncs. Budgeted like install-from-image.
-  timeout = 2700;
+  # static cache + one full measured A/B image and closure transfer (the first
+  # refused upgrade still downloads) + two further validation passes over the
+  # cached closure + three catalog re-syncs. Budgeted like install-from-image.
+  timeout = 5400;
 
   machines = {
     registry = {
@@ -108,9 +108,8 @@ in {
         }
       ];
       # `apr cache generate` writes a zstd static cache of the full
-      # measured-boot closure PLUS the standalone signed UKI image
-      # (~300 MiB nar of its own) under /var/lib/sysreg-cache — larger than the plain
-      # server-2 fixture, so size /var generously.
+      # measured-boot closure plus the authenticated A/B image payload under
+      # /var/lib/sysreg-cache, so size /var generously.
       varSizeMiB = 8192;
       memoryMiB = 8192;
     };
@@ -122,7 +121,8 @@ in {
       # The download lands twice on /var: the NAR cache under
       # /var/lib/apm/cache and the imported store paths (the /nix overlay
       # upper lives on the var partition) — the full sysroot closure.
-      varSizeMiB = 4096;
+      varSizeMiB = 8192;
+      memoryMiB = 8192;
     };
   };
 
@@ -423,7 +423,7 @@ in {
       out = target.fail(
           "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH "
           "${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
-          timeout=900,
+          timeout=1800,
       )
       print("=== refuse (unknown signer) ===\n" + out)
       assert "active db-cert set" in out, (
