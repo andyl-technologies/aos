@@ -1647,6 +1647,7 @@ impl CampaignRepository {
                             | crate::FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
                             | crate::LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
                             | crate::MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                            | crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
                     ) && *initial_strata
                         > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA
                     {

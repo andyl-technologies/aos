@@ -286,7 +286,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   version 13 now compares the exact rational difference between owner-verified
   endpoint mean objective rewards before those version-12 terms. Versions 11
   and 12 remain measurement-neutral, and local issue plus restart/import replay
-  reject a substituted value before writes.
+  reject a substituted value before writes. Implementation version 14 now
+  compares exact endpoint mean globally unique coverage-identity discontinuity
+  before version 13's terms, while versions 11 through 13 retain their prior
+  order; local issue and restart/import replay reject an objective-only
+  substitution before writes.
 - [x] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.
@@ -339,7 +343,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   as the primary interval term and nearest-lower-midpoint landmark selection;
   version 11 histories continue to ignore landmarks. Implementation-version 13
   adds exact owner-verified endpoint mean objective-reward discontinuity before
-  version 12's terms, while versions 11 and 12 retain their prior order. Static
+  version 12's terms, while versions 11 and 12 retain their prior order.
+  Implementation-version 14 adds exact globally unique coverage-identity mean
+  discontinuity before version 13's terms, while versions 11 through 13 retain
+  their prior order. Static
   continuation projection remains valid after modeled observations exist: it
   binds the exact observation root and projects exact completed visits from
   canonical branch-point credit sets. The independent exact PUCT arithmetic and

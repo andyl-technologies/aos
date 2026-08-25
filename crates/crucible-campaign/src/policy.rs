@@ -144,6 +144,14 @@ pub const LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 1
 /// objective rewards. Earlier versions retain their own interval order.
 pub const MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 13;
 
+/// Generator implementation version for coverage-sensitive integer refinement.
+///
+/// This version retains version 13's exact objective, landmark, and PUCT terms,
+/// preceded by the exact discontinuity between the endpoint edges' mean counts
+/// of globally unique owner-verified coverage identities. Earlier versions
+/// retain their own interval order.
+pub const COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 14;
+
 /// Maximum initial strata admitted by executable progressive-integer versions.
 pub const PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA: u32 = 4_096;
 
