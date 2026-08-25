@@ -537,7 +537,7 @@ pub struct BranchPoint {
 }
 
 pub struct BranchRequest {
-    pub schema_version: u32, // v2 for new writes; v1 remains readable
+    pub schema_version: u32, // v2 explicit/uniform or v3 modeled finite
     pub branch_point: BranchPointId,
     pub parent: ConfigurationArtifactId,
     pub opportunity: ChoiceOpportunityId,
@@ -550,6 +550,7 @@ pub struct BranchRequest {
 
 pub enum CandidateSource {
     Finite(FiniteCandidateSource),
+    ModeledFinite(ModeledFiniteCandidateSource),
     Generated(CandidateGeneratorSpecId),
 }
 
@@ -558,6 +559,13 @@ pub struct FiniteCandidateSource {
     values: CanonicalSet<ChoiceValue>,
     // None means implicit weight one for every value.
     prior_weights: Option<CanonicalMap<ChoiceValue, u64>>,
+}
+
+pub struct ModeledFiniteCandidateSource {
+    // Must equal the referenced opportunity's model_prior.
+    model: ProbabilityModelId,
+    // Exact positive masses resolved by the execution-model adapter.
+    prior_weights: CanonicalMap<ChoiceValue, u64>,
 }
 
 pub struct BranchBudget {
@@ -646,12 +654,19 @@ pub struct Observation {
 
 `BranchRequest` schema v1 encodes a uniform finite source as candidate-source
 tag 0 and a generated source as tag 1. Schema v2 preserves both encodings and
-adds tag 2 for a weighted finite source encoded as a canonical map from value
-to positive `u64` raw weight. The map is nonempty, contains at most 4,096
-entries, and its keys are exactly the finite value set. Absolute weight scale
-is immaterial; the owner normalizes the weights only when constructing exact
-planner guidance. New requests use v2. V1 request bodies and their original
-content identities remain readable, while a weighted source is invalid in v1.
+adds tag 2 for an explicitly weighted finite source encoded as a canonical map
+from value to positive `u64` raw weight. Schema v3 adds tag 3, followed by one
+`ProbabilityModelId` and a canonical value-to-positive-`u64` map, for finite
+masses resolved by the execution-model adapter. The modeled ID must equal the
+referenced opportunity's `model_prior`; an absent or different model fails
+before request publication or import acceptance. Each map is nonempty,
+contains at most 4,096 entries, and its keys are exactly the finite value set.
+Absolute mass scale is immaterial; the owner normalizes masses only when
+constructing exact planner guidance. New uniform, generated, and explicitly
+weighted requests retain schema v2 and its established keyed generator
+streams; a newly authored modeled finite request uses v3. V1 and v2 request
+bodies retain their original content identities. A weighted source is invalid
+in v1, and a modeled source is invalid before v3.
 
 `BranchPath` schema version 2 retains each `BranchPointId` beside its
 non-invertible `BranchEdgeId`. This lets a restart rebuild observation credit

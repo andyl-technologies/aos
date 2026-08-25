@@ -127,6 +127,8 @@ impl Canonical for StopCondition {
 pub enum CandidateSource {
     /// Explicit low-cardinality values consumed in canonical order.
     Finite(FiniteCandidateSource),
+    /// Finite values carrying exact masses resolved from the opportunity model.
+    ModeledFinite(ModeledFiniteCandidateSource),
     /// Versioned deterministic generator interpreted from campaign facts.
     Generated(CandidateGeneratorSpecId),
 }
@@ -136,6 +138,28 @@ pub enum CandidateSource {
 pub struct FiniteCandidateSource {
     values: BTreeSet<ChoiceValue>,
     prior_weights: Option<BTreeMap<ChoiceValue, u64>>,
+}
+
+/// Bounded finite masses resolved from one exact probability model.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModeledFiniteCandidateSource {
+    model: ProbabilityModelId,
+    values: BTreeSet<ChoiceValue>,
+    prior_weights: BTreeMap<ChoiceValue, u64>,
+}
+
+impl ModeledFiniteCandidateSource {
+    /// Returns the exact modeled distribution whose masses were resolved.
+    #[must_use]
+    pub const fn model(&self) -> ProbabilityModelId {
+        self.model
+    }
+
+    /// Returns every modeled value and its positive raw mass.
+    #[must_use]
+    pub const fn prior_weights(&self) -> &BTreeMap<ChoiceValue, u64> {
+        &self.prior_weights
+    }
 }
 
 impl FiniteCandidateSource {
@@ -201,6 +225,36 @@ impl CandidateSource {
         }))
     }
 
+    /// Builds a bounded finite source resolved from one exact probability model.
+    ///
+    /// The repository later requires `model` to equal the referenced
+    /// opportunity's model prior. The retained positive masses are the portable
+    /// replay basis; their absolute scale is immaterial because guidance
+    /// normalization includes every completed or prospective edge.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for an empty or oversized map or a zero
+    /// mass.
+    pub fn modeled_finite(
+        model: ProbabilityModelId,
+        prior_weights: BTreeMap<ChoiceValue, u64>,
+    ) -> Result<Self, CampaignCodecError> {
+        if prior_weights.is_empty()
+            || prior_weights.len() > MAX_FINITE_VALUES
+            || prior_weights.values().any(|weight| *weight == 0)
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "modeled finite candidate source is empty, oversized, or has zero weight",
+            });
+        }
+        Ok(Self::ModeledFinite(ModeledFiniteCandidateSource {
+            model,
+            values: prior_weights.keys().cloned().collect(),
+            prior_weights,
+        }))
+    }
+
     /// Builds a generated candidate source.
     #[must_use]
     pub const fn generated(generator: CandidateGeneratorSpecId) -> Self {
@@ -212,6 +266,7 @@ impl CandidateSource {
     pub fn finite_values(&self) -> Option<&BTreeSet<ChoiceValue>> {
         match self {
             Self::Finite(source) => Some(source.values()),
+            Self::ModeledFinite(source) => Some(&source.values),
             Self::Generated(_) => None,
         }
     }
@@ -220,7 +275,7 @@ impl CandidateSource {
     #[must_use]
     pub const fn generator(&self) -> Option<CandidateGeneratorSpecId> {
         match self {
-            Self::Finite(_) => None,
+            Self::Finite(_) | Self::ModeledFinite(_) => None,
             Self::Generated(generator) => Some(*generator),
         }
     }
@@ -236,7 +291,17 @@ impl CandidateSource {
                 || source.values.contains(value).then_some(1),
                 |weights| weights.get(value).copied(),
             ),
+            Self::ModeledFinite(source) => source.prior_weights.get(value).copied(),
             Self::Generated(_) => Some(1),
+        }
+    }
+
+    /// Returns the probability-model identity attached to this source.
+    #[must_use]
+    pub const fn model_prior(&self) -> Option<ProbabilityModelId> {
+        match self {
+            Self::ModeledFinite(source) => Some(source.model),
+            Self::Finite(_) | Self::Generated(_) => None,
         }
     }
 }
@@ -258,6 +323,11 @@ impl Canonical for CandidateSource {
                 encoder.u8(1);
                 generator.encode(encoder);
             }
+            Self::ModeledFinite(source) => {
+                encoder.u8(3);
+                source.model.encode(encoder);
+                source.prior_weights.encode(encoder);
+            }
         }
     }
 
@@ -269,6 +339,10 @@ impl Canonical for CandidateSource {
             1 => CandidateGeneratorSpecId::decode(decoder).map(Self::Generated),
             2 => Self::weighted_finite(
                 decoder.map_bounded(MAX_FINITE_VALUES, "weighted-finite-candidate-value-count")?,
+            ),
+            3 => Self::modeled_finite(
+                ProbabilityModelId::decode(decoder)?,
+                decoder.map_bounded(MAX_FINITE_VALUES, "modeled-finite-candidate-value-count")?,
             ),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "candidate-source",
@@ -345,7 +419,9 @@ impl BranchRequest {
     /// Builds a structurally valid branch request.
     ///
     /// Cross-record parent/opportunity/domain bindings are authenticated by the
-    /// repository before publication or use.
+    /// repository before publication or use. A modeled finite source emits
+    /// schema version 3; the established uniform, explicit, and generated
+    /// forms continue to emit version 2 so their keyed identities do not drift.
     ///
     /// # Errors
     ///
@@ -362,8 +438,13 @@ impl BranchRequest {
         budget: BranchBudget,
         stop: StopCondition,
     ) -> Result<Self, CampaignCodecError> {
+        let schema_version = if matches!(&source, CandidateSource::ModeledFinite(_)) {
+            BRANCH_REQUEST_SCHEMA_VERSION
+        } else {
+            2
+        };
         Self::new_for_schema(
-            BRANCH_REQUEST_SCHEMA_VERSION,
+            schema_version,
             branch_point,
             parent,
             opportunity,
@@ -387,17 +468,18 @@ impl BranchRequest {
         budget: BranchBudget,
         stop: StopCondition,
     ) -> Result<Self, CampaignCodecError> {
-        if !matches!(
-            schema_version,
-            RECORD_SCHEMA_VERSION | BRANCH_REQUEST_SCHEMA_VERSION
-        ) || schema_version == RECORD_SCHEMA_VERSION
-            && matches!(
-                &source,
-                CandidateSource::Finite(source) if source.prior_weights().is_some()
-            )
-        {
+        let incompatible_source = match (&source, schema_version) {
+            (CandidateSource::Finite(source), RECORD_SCHEMA_VERSION) => {
+                source.prior_weights().is_some()
+            }
+            (CandidateSource::ModeledFinite(_), version) => {
+                version != BRANCH_REQUEST_SCHEMA_VERSION
+            }
+            (CandidateSource::Finite(_) | CandidateSource::Generated(_), _) => false,
+        };
+        if !matches!(schema_version, 1..=BRANCH_REQUEST_SCHEMA_VERSION) || incompatible_source {
             return Err(CampaignCodecError::InvalidValue {
-                reason: "unsupported branch-request schema or weighted legacy source",
+                reason: "unsupported branch-request schema or source",
             });
         }
         stop.validate()?;
@@ -450,6 +532,15 @@ impl BranchRequest {
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "branch request contains an illegal finite value",
+            });
+        }
+        if self
+            .source
+            .model_prior()
+            .is_some_and(|model| opportunity.model_prior() != Some(model))
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "branch request modeled prior disagrees with its opportunity",
             });
         }
         Ok(())
@@ -555,7 +646,7 @@ impl BranchRequest {
             CandidateSource::Generated(generator) => {
                 children.push(("generator", generator.content_id()));
             }
-            CandidateSource::Finite(_) => {}
+            CandidateSource::Finite(_) | CandidateSource::ModeledFinite(_) => {}
         }
         match self.cause {
             BranchRequestCause::Planner(invocation) => {

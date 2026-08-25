@@ -1476,7 +1476,7 @@ impl CampaignRepository {
         let domain = self.read_choice_domain(request.domain().content_id())?;
         request.validate_resolved(&parent, &opportunity, &domain)?;
         match request.source() {
-            CandidateSource::Finite(_) => {}
+            CandidateSource::Finite(_) | CandidateSource::ModeledFinite(_) => {}
             CandidateSource::Generated(generator) => {
                 self.validate_generator_for_domain(*generator, &domain)?;
             }

@@ -1509,8 +1509,9 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     request
         .validate_resolved(&parent, &opportunity, &domain)
         .expect("resolved request");
-    let request_envelope = ObjectEnvelope::for_record(
+    let request_envelope = ObjectEnvelope::for_record_versioned(
         CampaignRecordKind::BranchRequest,
+        request.schema_version(),
         super::object::content_children(request.content_children()).expect("request children"),
         request.canonical_bytes(),
     )
@@ -1569,7 +1570,125 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     assert!(matches!(
         BranchRequest::from_canonical_bytes(&encode_request_body(1, &weighted_source)),
         Err(CampaignCodecError::InvalidValue {
-            reason: "unsupported branch-request schema or weighted legacy source"
+            reason: "unsupported branch-request schema or source"
+        })
+    ));
+    let weighted_v2_body = encode_request_body(2, &weighted_source);
+    let weighted_v2 = BranchRequest::from_canonical_bytes(&weighted_v2_body)
+        .expect("weighted branch-request v2 remains readable");
+    assert_eq!(weighted_v2.schema_version(), 2);
+    assert_eq!(weighted_v2.canonical_bytes(), weighted_v2_body);
+    let weighted_v2_envelope = ObjectEnvelope::for_record_versioned(
+        CampaignRecordKind::BranchRequest,
+        2,
+        super::object::content_children(weighted_v2.content_children())
+            .expect("weighted v2 request children"),
+        weighted_v2_body,
+    )
+    .expect("weighted v2 request envelope");
+    assert_eq!(
+        weighted_v2
+            .id()
+            .expect("weighted v2 request ID")
+            .content_id(),
+        weighted_v2_envelope.content_id()
+    );
+
+    let model = ProbabilityModelId::from_hash(hash("retry-delay-model"));
+    let modeled_source = CandidateSource::modeled_finite(
+        model,
+        BTreeMap::from([
+            (ChoiceValue::Integer(IntegerValue::Unsigned(0)), 1),
+            (ChoiceValue::Integer(IntegerValue::Unsigned(10)), 9),
+        ]),
+    )
+    .expect("model-resolved finite source");
+    assert_eq!(modeled_source.model_prior(), Some(model));
+    assert_eq!(
+        modeled_source.prior_weight(&ChoiceValue::Integer(IntegerValue::Unsigned(10))),
+        Some(9)
+    );
+    assert!(matches!(
+        CandidateSource::modeled_finite(model, BTreeMap::from([(ChoiceValue::Boolean(true), 0)])),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "modeled finite candidate source is empty, oversized, or has zero weight"
+        })
+    ));
+    assert!(matches!(
+        BranchRequest::from_canonical_bytes(&encode_request_body(2, &modeled_source)),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported branch-request schema or source"
+        })
+    ));
+    let modeled_opportunity = ChoiceOpportunity::new(
+        scenario,
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: hash("scheduler"),
+            producer: hash("producer"),
+        },
+        "retry-1",
+        Some(model),
+    )
+    .expect("modeled opportunity");
+    let explicit_override = BranchRequest::new(
+        modeled_opportunity.branch_point_id(parent_configuration),
+        parent.id().expect("parent id"),
+        modeled_opportunity.id().expect("modeled opportunity id"),
+        domain.id().expect("domain id"),
+        weighted_source,
+        cause,
+        BranchBudget::new(2, 2).expect("explicit override budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("explicitly weighted modeled-opportunity request");
+    explicit_override
+        .validate_resolved(&parent, &modeled_opportunity, &domain)
+        .expect("explicit source takes precedence over an available model");
+    let modeled_request = BranchRequest::new(
+        modeled_opportunity.branch_point_id(parent_configuration),
+        parent.id().expect("parent id"),
+        modeled_opportunity.id().expect("modeled opportunity id"),
+        domain.id().expect("domain id"),
+        modeled_source,
+        cause,
+        BranchBudget::new(2, 2).expect("modeled budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("modeled request");
+    assert_eq!(modeled_request.schema_version(), 3);
+    assert_eq!(
+        BranchRequest::from_canonical_bytes(&modeled_request.canonical_bytes())
+            .expect("modeled branch-request v3 round trip"),
+        modeled_request
+    );
+    modeled_request
+        .validate_resolved(&parent, &modeled_opportunity, &domain)
+        .expect("model-resolved request");
+    let wrong_model = ProbabilityModelId::from_hash(hash("wrong-retry-delay-model"));
+    let mismatched_request = BranchRequest::new(
+        modeled_opportunity.branch_point_id(parent_configuration),
+        parent.id().expect("parent id"),
+        modeled_opportunity.id().expect("modeled opportunity id"),
+        domain.id().expect("domain id"),
+        CandidateSource::modeled_finite(
+            wrong_model,
+            BTreeMap::from([
+                (ChoiceValue::Integer(IntegerValue::Unsigned(0)), 1),
+                (ChoiceValue::Integer(IntegerValue::Unsigned(10)), 9),
+            ]),
+        )
+        .expect("mismatched modeled source"),
+        cause,
+        BranchBudget::new(2, 2).expect("mismatched budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("structurally valid mismatched modeled request");
+    assert!(matches!(
+        mismatched_request.validate_resolved(&parent, &modeled_opportunity, &domain),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "branch request modeled prior disagrees with its opportunity"
         })
     ));
 

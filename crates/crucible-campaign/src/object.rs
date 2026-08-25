@@ -206,7 +206,7 @@ impl CampaignRecordKind {
             Self::PlannerInvocation => 2,
             Self::PlannerStep => 4,
             Self::ExpansionState => 2,
-            Self::BranchRequest => 2,
+            Self::BranchRequest => 3,
             Self::BranchPath => 2,
             Self::MeasurementSet => 2,
             Self::ReproductionArtifact | Self::Finding => 2,
@@ -586,7 +586,8 @@ impl ObjectEnvelope {
             || record_kind == CampaignRecordKind::Fact
                 && matches!(envelope.schema_version(), 2..=5)
             || record_kind == CampaignRecordKind::BranchPath && envelope.schema_version() == 1
-            || record_kind == CampaignRecordKind::BranchRequest && envelope.schema_version() == 1
+            || record_kind == CampaignRecordKind::BranchRequest
+                && matches!(envelope.schema_version(), 1 | 2)
             || matches!(
                 record_kind,
                 CampaignRecordKind::MeasurementSet

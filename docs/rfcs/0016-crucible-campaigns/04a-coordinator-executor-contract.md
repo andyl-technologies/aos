@@ -1192,8 +1192,10 @@ first, then lower `BranchEdgeId`, then lower `PlanningScanPosition`, carries the
 winner across pages in `canonical-frontier-puct-planner` state version 1, and
 issues only at EOF. Acceptance publishes guidance envelopes with offers only
 after complete zero-write preflight and recomputes/reruns the exact transition
-on restart and import. Version 1 remains canonically replayable. Opaque
-scenario-model prior resolution remains an implementation-plan gate; explicit
+on restart and import. Version 1 remains canonically replayable. Bounded
+model-resolved finite masses are retained in branch-request schema v3 and
+exact-checked against the opportunity's model ID; opaque non-finite
+scenario-model prior resolution remains an implementation-plan gate. Explicit
 finite weights and uniform defaults are owner-derived here.
 
 The initial coordinator retention profile is deliberately narrower than the

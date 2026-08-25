@@ -18,11 +18,11 @@ use crate::{
     ConfigurationArtifact, ConfigurationArtifactId, ContinuationProjectionId, CreditId,
     DebugSessionId, ExpansionStateId, FindingKind, ObservationId, PlannerCandidateGuidanceId,
     PlannerEngineId, PlannerInvocationId, PlannerState, PlannerStateId, PlannerStepId,
-    PolicyArtifactId, ProposalId, RetainedPlannerRequestId, SelectionId,
+    PolicyArtifactId, ProbabilityModelId, ProposalId, RetainedPlannerRequestId, SelectionId,
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
-const BRANCH_REQUEST_SCHEMA_VERSION: u32 = 2;
+const BRANCH_REQUEST_SCHEMA_VERSION: u32 = 3;
 const BRANCH_PATH_SCHEMA_VERSION: u32 = 2;
 const PLANNER_STEP_SCHEMA_VERSION: u32 = 4;
 const EXPANSION_STATE_SCHEMA_VERSION: u32 = 2;

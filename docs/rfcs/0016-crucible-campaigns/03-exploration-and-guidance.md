@@ -58,13 +58,17 @@ closure before policy or campaign-ref publication.
 
 ### Candidate sources and explicit branches
 
-Every `BranchRequest` supplies one of two source forms:
+Every `BranchRequest` supplies one of three source forms:
 
 ```rust,illustrative
 pub enum CandidateSource {
     Finite {
         values: CanonicalSet<ChoiceValue>,
         prior_weights: Option<CanonicalMap<ChoiceValue, u64>>,
+    },
+    ModeledFinite {
+        model: ProbabilityModelId,
+        prior_weights: CanonicalMap<ChoiceValue, u64>,
     },
     Generated { generator: CandidateGeneratorSpecId },
 }
@@ -85,11 +89,21 @@ exploration policy requires an explicit policy activation, or deriving a new
 campaign when the operator wants an independent future history.
 
 A finite source may attach a positive raw `u64` weight to every value. Missing
-weights mean the uniform raw weight one; generated sources also use one until a
-model-prior owner is implemented. Weights guide proposal ranking only. They do
-not change canonical value order, legality, request budgets, deduplication, or
-attempt identity. Branch-request schema v2 adds the weighted finite encoding;
-schema-v1 uniform/generated requests retain their exact identity.
+weights mean the uniform raw weight one. A modeled finite source instead
+retains the exact positive masses resolved by the execution-model adapter and
+the `ProbabilityModelId` from which they came. Repository acceptance requires
+that ID to equal the exact opportunity's `model_prior`; the retained map is the
+portable restart/import and PUCT basis. Generated sources continue to use raw
+weight one until their model adapter supplies a finite resolved source or a
+later bounded non-finite model vocabulary. Weights guide proposal ranking only.
+The request's source form is authoritative: an explicitly weighted finite
+source remains an auditable operator/planner override even when the opportunity
+names a model, and the model is used only when the request selects
+`ModeledFinite`.
+They do not change canonical value order, legality, request budgets,
+deduplication, or attempt identity. Branch-request schema v2 adds the explicit
+weighted finite encoding and v3 adds the modeled finite encoding; schema-v1
+uniform/generated and schema-v2 explicit requests retain their exact identity.
 Generator draws are keyed by `BranchRequestId`, so a newly authored v2
 generated request intentionally owns a distinct stream from an otherwise equal
 v1 request; replay of the retained v1 body continues to use its original ID and
@@ -397,10 +411,10 @@ range. The integer square root is the unique greatest integer whose square does
 not exceed its input. These staged divisions and saturation points are part of
 the language-neutral contract.
 
-The implemented prior may come from an explicit weighted finite source or the
-uniform raw weight one. A future version may resolve the scenario's model
-distribution. Using either prior for PUCT does not make the resulting visit
-frequency a statistical estimate; it is still guidance.
+The implemented prior may come from an explicit weighted finite source, a
+finite distribution resolved from the opportunity's exact model, or the
+uniform raw weight one. Using any prior for PUCT does not make the resulting
+visit frequency a statistical estimate; it is still guidance.
 
 Rewards propagate from a completed observation along its recorded branch-edge
 path. Confirmed correctness failures dominate ordinary optimization rewards in
@@ -426,8 +440,10 @@ Each completed edge receives the raw source weight of the proposal belonging
 to the lowest global `AdmissionOrdinal` among canonical credited observations
 for that edge. Later convergent attempts or additional causes cannot rewrite
 that basis. Uniform finite and generated sources contribute raw weight one.
-The owner fails closed if the execution-basis proposal, request, value, or
-positive source weight cannot be authenticated.
+Explicit and modeled finite sources contribute their retained positive raw
+weight; for the modeled form the request's model ID must equal the opportunity
+model. The owner fails closed if the execution-basis proposal, request, value,
+model basis, or positive source weight cannot be authenticated.
 
 For positive weights `w(e)`, let `W = sum(w(e))` in checked `u128`. The owner
 first assigns `floor(S * w(e) / W)` micros to every edge, then distributes the
@@ -528,10 +544,11 @@ restart, and imported-snapshot validation recompute every guidance record and
 rerun the complete pure transition. Version 1 remains replay-compatible and
 keeps its original least-position ordering. Guidance schema v1 remains
 identity-preserving for retained history; all newly projected guidance is
-schema v2. Engine version 2 consumes the owner-normalized explicit or uniform
-prospective/completed priors, exact owner-published objective reward, global
-coverage novelty, configured closed finding rewards, and fairness. Resolving
-opaque scenario-model distributions into proposal priors remains open.
+schema v2. Engine version 2 consumes the owner-normalized explicit,
+modeled-finite, or uniform prospective/completed priors, exact owner-published
+objective reward, global coverage novelty, configured closed finding rewards,
+and fairness. Resolving opaque non-finite scenario-model distributions into
+proposal priors remains open.
 
 ## 03.5 Guidance signals and objectives
 
