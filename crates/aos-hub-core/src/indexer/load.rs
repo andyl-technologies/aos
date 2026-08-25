@@ -172,6 +172,10 @@ impl<'a> ObjectReader<'a> {
     /// Returns an error when a shard transport fails. Missing or invalid
     /// optional bundles retain canonical loose-object fallback.
     pub(crate) async fn preload_bundles(&self) -> Result<()> {
+        if self.load_aggregate_bundle().await? {
+            return Ok(());
+        }
+
         let shards = (0_u16..=255)
             .map(|value| format!("{value:02x}"))
             .collect::<Vec<_>>();
@@ -184,6 +188,41 @@ impl<'a> ObjectReader<'a> {
             .await?;
         }
         Ok(())
+    }
+
+    async fn load_aggregate_bundle(&self) -> Result<bool> {
+        self.bundle_fetches.fetch_add(1, Ordering::Relaxed);
+        let Some(bytes) = self
+            .fetch
+            .fetch_bounded(
+                aos_registry_surface::object_bundle::AGGREGATE_PATH,
+                aos_registry_surface::object_bundle::MAX_AGGREGATE_BUNDLE_BYTES,
+            )
+            .await?
+        else {
+            return Ok(false);
+        };
+        let entries = match aos_registry_surface::object_bundle::decode_aggregate(&bytes) {
+            Ok(entries) => entries,
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "ignoring invalid aggregate object bundle");
+                return Ok(false);
+            }
+        };
+
+        self.bundled_loose
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry bundled-object lock is poisoned"))?
+            .extend(
+                entries
+                    .into_iter()
+                    .map(|(oid, loose)| (oid, Arc::from(loose))),
+            );
+        self.attempted_bundles
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry bundle-attempt lock is poisoned"))?
+            .extend((0_u16..=255).map(|value| format!("{value:02x}")));
+        Ok(true)
     }
 
     async fn load_bundle(&self, oid: Oid) -> Result<()> {
@@ -695,6 +734,11 @@ mod bundle_tests {
         loose_reads: AtomicUsize,
     }
 
+    struct AggregateBundleFetch {
+        bytes: Vec<u8>,
+        reads: AtomicUsize,
+    }
+
     #[async_trait::async_trait]
     impl SurfaceFetch for MissingBundleFetch {
         async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
@@ -744,6 +788,23 @@ mod bundle_tests {
         }
     }
 
+    #[async_trait::async_trait]
+    impl SurfaceFetch for AggregateBundleFetch {
+        async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("unexpected loose-object fetch for {path}")
+        }
+
+        async fn fetch_bounded(&self, path: &str, _max_bytes: usize) -> Result<Option<Vec<u8>>> {
+            assert_eq!(path, aos_registry_surface::object_bundle::AGGREGATE_PATH);
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(self.bytes.clone()))
+        }
+
+        fn describe(&self) -> String {
+            "aggregate-bundle".into()
+        }
+    }
+
     #[tokio::test]
     async fn concurrent_same_shard_reads_share_one_bundle_fetch() {
         let mut by_shard = BTreeMap::<String, Vec<(Oid, Vec<u8>)>>::new();
@@ -786,8 +847,28 @@ mod bundle_tests {
 
         reader.preload_bundles().await.unwrap();
 
-        assert_eq!(fetch.reads.load(Ordering::SeqCst), 256);
-        assert_eq!(reader.stats().unwrap(), (256, 0, 0));
+        assert_eq!(fetch.reads.load(Ordering::SeqCst), 257);
+        assert_eq!(reader.stats().unwrap(), (257, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn aggregate_preload_replaces_all_shard_fetches() {
+        let content = b"aggregate selected object";
+        let oid = object::hash_object(ObjectKind::Blob, content);
+        let loose = object::encode_loose(ObjectKind::Blob, content).unwrap();
+        let fetch = AggregateBundleFetch {
+            bytes: aos_registry_surface::object_bundle::encode_aggregate(&[(oid, loose)]).unwrap(),
+            reads: AtomicUsize::new(0),
+        };
+        let reader = ObjectReader::new(&fetch);
+
+        reader.preload_bundles().await.unwrap();
+        let (kind, decoded) = reader.read(oid).await.unwrap();
+
+        assert_eq!(kind, ObjectKind::Blob);
+        assert_eq!(decoded, content);
+        assert_eq!(fetch.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(reader.stats().unwrap(), (1, 0, 1));
     }
 
     #[tokio::test]

@@ -27,12 +27,18 @@ const ENTRY_HEADER_BYTES: usize = 36;
 
 /// Relative directory containing replaceable bundle shards.
 pub const DIRECTORY: &str = "objects/aos-index-v1";
+/// Relative path of the optional aggregate bundle accelerator.
+pub const AGGREGATE_PATH: &str = "objects/aos-index-v1/all";
 
 /// Maximum encoded size of one bundle shard.
 pub const MAX_BUNDLE_BYTES: usize = 2 * 1024 * 1024;
 
 /// Maximum number of objects admitted in one bundle shard.
 pub const MAX_BUNDLE_OBJECTS: usize = 4096;
+/// Maximum encoded size of the optional aggregate bundle.
+pub const MAX_AGGREGATE_BUNDLE_BYTES: usize = 32 * 1024 * 1024;
+/// Maximum number of objects admitted in the optional aggregate bundle.
+pub const MAX_AGGREGATE_BUNDLE_OBJECTS: usize = 65_536;
 
 /// Returns the canonical bundle path for one lowercase hexadecimal shard.
 ///
@@ -54,16 +60,42 @@ pub fn shard_path(shard: &str) -> Result<String> {
 /// oversized loose object, or a shard exceeding the encoded size/object caps.
 pub fn encode(shard: &str, entries: &[(Oid, Vec<u8>)]) -> Result<Vec<u8>> {
     validate_shard(shard)?;
-    if entries.len() > MAX_BUNDLE_OBJECTS {
-        bail!("object bundle exceeds the {MAX_BUNDLE_OBJECTS}-object cap");
+    encode_inner(Some(shard), entries, MAX_BUNDLE_BYTES, MAX_BUNDLE_OBJECTS)
+}
+
+/// Encodes one aggregate accelerator from globally ordered loose objects.
+///
+/// # Errors
+///
+/// Returns an error for unordered or duplicate OIDs, an oversized loose
+/// object, or an aggregate exceeding its encoded size/object caps.
+pub fn encode_aggregate(entries: &[(Oid, Vec<u8>)]) -> Result<Vec<u8>> {
+    encode_inner(
+        None,
+        entries,
+        MAX_AGGREGATE_BUNDLE_BYTES,
+        MAX_AGGREGATE_BUNDLE_OBJECTS,
+    )
+}
+
+fn encode_inner(
+    shard: Option<&str>,
+    entries: &[(Oid, Vec<u8>)],
+    max_bytes: usize,
+    max_objects: usize,
+) -> Result<Vec<u8>> {
+    if entries.len() > max_objects {
+        bail!("object bundle exceeds the {max_objects}-object cap");
     }
 
     let mut encoded = Vec::from(MAGIC);
     let mut previous = None;
     for (oid, loose) in entries {
         let oid_hex = oid.to_hex();
-        if &oid_hex[..2] != shard {
-            bail!("object {oid} does not belong to bundle shard '{shard}'");
+        if let Some(shard) = shard {
+            if &oid_hex[..2] != shard {
+                bail!("object {oid} does not belong to bundle shard '{shard}'");
+            }
         }
         if previous.is_some_and(|previous| previous >= *oid) {
             bail!("object bundle entries must be strictly ordered by OID");
@@ -76,8 +108,8 @@ pub fn encode(shard: &str, entries: &[(Oid, Vec<u8>)]) -> Result<Vec<u8>> {
         encoded.extend_from_slice(oid.as_bytes());
         encoded.extend_from_slice(&byte_size.to_be_bytes());
         encoded.extend_from_slice(loose);
-        if encoded.len() > MAX_BUNDLE_BYTES {
-            bail!("object bundle exceeds the {MAX_BUNDLE_BYTES}-byte cap");
+        if encoded.len() > max_bytes {
+            bail!("object bundle exceeds the {max_bytes}-byte cap");
         }
         previous = Some(*oid);
     }
@@ -95,8 +127,34 @@ pub fn encode(shard: &str, entries: &[(Oid, Vec<u8>)]) -> Result<Vec<u8>> {
 /// or size/object cap violations.
 pub fn decode(shard: &str, bytes: &[u8]) -> Result<Vec<(Oid, Vec<u8>)>> {
     validate_shard(shard)?;
-    if bytes.len() > MAX_BUNDLE_BYTES {
-        bail!("object bundle exceeds the {MAX_BUNDLE_BYTES}-byte cap");
+    decode_inner(Some(shard), bytes, MAX_BUNDLE_BYTES, MAX_BUNDLE_OBJECTS)
+}
+
+/// Decodes the optional aggregate accelerator into canonical loose bytes.
+///
+/// Consumers must still decode and hash-check every selected loose object.
+///
+/// # Errors
+///
+/// Returns an error for invalid framing, ordering, lengths, or aggregate
+/// size/object cap violations.
+pub fn decode_aggregate(bytes: &[u8]) -> Result<Vec<(Oid, Vec<u8>)>> {
+    decode_inner(
+        None,
+        bytes,
+        MAX_AGGREGATE_BUNDLE_BYTES,
+        MAX_AGGREGATE_BUNDLE_OBJECTS,
+    )
+}
+
+fn decode_inner(
+    shard: Option<&str>,
+    bytes: &[u8],
+    max_bytes: usize,
+    max_objects: usize,
+) -> Result<Vec<(Oid, Vec<u8>)>> {
+    if bytes.len() > max_bytes {
+        bail!("object bundle exceeds the {max_bytes}-byte cap");
     }
     let Some(mut remaining) = bytes.strip_prefix(MAGIC) else {
         bail!("object bundle has an invalid magic header");
@@ -122,8 +180,10 @@ pub fn decode(shard: &str, bytes: &[u8]) -> Result<Vec<(Oid, Vec<u8>)>> {
             bail!("object bundle ends inside object {oid}");
         }
         let oid_hex = oid.to_hex();
-        if &oid_hex[..2] != shard {
-            bail!("object {oid} does not belong to bundle shard '{shard}'");
+        if let Some(shard) = shard {
+            if &oid_hex[..2] != shard {
+                bail!("object {oid} does not belong to bundle shard '{shard}'");
+            }
         }
         if !observed.insert(oid) {
             bail!("object bundle repeats object {oid}");
@@ -133,8 +193,8 @@ pub fn decode(shard: &str, bytes: &[u8]) -> Result<Vec<(Oid, Vec<u8>)>> {
         }
 
         entries.push((oid, remaining[..byte_size].to_vec()));
-        if entries.len() > MAX_BUNDLE_OBJECTS {
-            bail!("object bundle exceeds the {MAX_BUNDLE_OBJECTS}-object cap");
+        if entries.len() > max_objects {
+            bail!("object bundle exceeds the {max_objects}-object cap");
         }
         remaining = &remaining[byte_size..];
     }
@@ -188,5 +248,26 @@ mod tests {
             "00"
         };
         assert!(encode(wrong, &[(oid, loose)]).is_err());
+    }
+
+    #[test]
+    fn aggregate_round_trip_accepts_globally_ordered_cross_shard_objects() {
+        let mut entries = (0..1_000)
+            .map(|value| {
+                let content = format!("aggregate object {value}");
+                let oid = hash_object(ObjectKind::Blob, content.as_bytes());
+                let loose = encode_loose(ObjectKind::Blob, content.as_bytes()).unwrap();
+                (oid, loose)
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|(oid, _)| *oid);
+        assert_ne!(
+            entries.first().unwrap().0.to_hex()[..2],
+            entries.last().unwrap().0.to_hex()[..2]
+        );
+
+        let encoded = encode_aggregate(&entries).unwrap();
+
+        assert_eq!(decode_aggregate(&encoded).unwrap(), entries);
     }
 }
