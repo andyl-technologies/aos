@@ -760,7 +760,10 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   Restart discovery retains the exact resource/retention basis and resolves
   the same repository-authenticated lineage, scenario, attempt, path,
   configuration, and branch selection used by ordinary worker dispatch before
-  constructing a guarded production-comparison target.
+  constructing a guarded production-comparison target. One no-write restart
+  dispatcher now maps a raw pause to that complete guarded comparison and maps
+  a staged pair directly to full production-pair reauthentication, yielding
+  linear stage or reconcile tokens without supervisor ownership.
   Assignment-root-aware cleanup of abandoned
   native entries, automatic packaged scheduling and restart retry of this
   comparison phase, and capability advertisement remain open before the
