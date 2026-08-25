@@ -91,6 +91,21 @@ The default R2 bucket is `<name>-surfaces`, the default KV title is
 `--bucket`, `--kv-title`, and `--queue` when names must fit an existing account
 convention.
 
+When the default R2 bucket has a public custom domain, pass its HTTPS origin as
+`--default-public-delivery-url`. The Worker then advertises every public
+registry's complete reconciled default placement directly through that origin,
+including registries created before or after deployment:
+
+```sh
+./result/bin/aos-hub worker deploy \
+  --name aos-hub \
+  --default-public-delivery-url https://cdn.aos.example.com
+```
+
+Private registries, alternate bindings, and custom access policies use explicit
+delivery topology. An explicit canonical Git advertisement overrides the
+derived public URL.
+
 Rate-limit namespace IDs are account-wide. The installer reserves three
 consecutive IDs above `--rate-limit-namespace-base`; its default base of `1000`
 preserves production IDs `1001` through `1003`. Every independent installation

@@ -202,6 +202,8 @@ pub struct DeployConfig {
     /// relying-party ID, browse links). The `worker` CLI leaves it empty by
     /// default and relies on the request-origin fallback.
     pub external_url: String,
+    /// Public origin exposing the instance-default R2 binding directly.
+    pub default_public_delivery_url: Option<String>,
     /// Immutable source/build identity exposed by the deployed Worker.
     pub deployment_id: Option<String>,
     /// Stable named Durable Object instance containing the Hub database.
@@ -274,6 +276,12 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
         "HUB_EXTERNAL_URL = {}\n",
         toml_string(&cfg.external_url)
     ));
+    if let Some(url) = &cfg.default_public_delivery_url {
+        vars.push_str(&format!(
+            "HUB_DEFAULT_PUBLIC_DELIVERY_URL = {}\n",
+            toml_string(url)
+        ));
+    }
     if let Some(deployment_id) = &cfg.deployment_id {
         vars.push_str(&format!(
             "HUB_DEPLOYMENT_ID = {}\n",
@@ -1074,6 +1082,7 @@ pub async fn provision(
         rate_limit_namespaces,
         egress_gateway_url: egress_gateway_url.map(str::to_string),
         external_url: external_url.to_string(),
+        default_public_delivery_url: None,
         deployment_id: deployment_id.map(str::to_string),
         database_instance: database_instance.to_string(),
         email_relay_url: email_relay_url.map(str::to_string),
@@ -1621,6 +1630,7 @@ mod tests {
             rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
+            default_public_delivery_url: Some("https://cdn.aos.example.com".into()),
             deployment_id: Some("0123456789abcdef".into()),
             database_instance: "hub".into(),
             email_relay_url: None,
@@ -1640,6 +1650,10 @@ mod tests {
         assert_eq!(
             parsed["vars"]["HUB_EXTERNAL_URL"].as_str(),
             Some("https://aos.example.com")
+        );
+        assert_eq!(
+            parsed["vars"]["HUB_DEFAULT_PUBLIC_DELIVERY_URL"].as_str(),
+            Some("https://cdn.aos.example.com")
         );
         assert_eq!(
             parsed["vars"]["HUB_DEPLOYMENT_ID"].as_str(),
@@ -1763,6 +1777,7 @@ mod tests {
             rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
+            default_public_delivery_url: None,
             deployment_id: None,
             database_instance: "hub".into(),
             email_relay_url: None,
@@ -1789,6 +1804,7 @@ mod tests {
             rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
+            default_public_delivery_url: None,
             deployment_id: None,
             database_instance: "hub".into(),
             email_relay_url: None,
@@ -1816,6 +1832,7 @@ mod tests {
             rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
+            default_public_delivery_url: None,
             deployment_id: None,
             database_instance: "hub".into(),
             email_relay_url: None,
@@ -1861,6 +1878,7 @@ mod tests {
             rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
             egress_gateway_url: Some("https://egress.example.com/v1/fetch".into()),
             external_url: "https://aos.example.com".into(),
+            default_public_delivery_url: None,
             deployment_id: None,
             database_instance: "hub".into(),
             email_relay_url: None,
@@ -1964,6 +1982,7 @@ mod tests {
             rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
+            default_public_delivery_url: None,
             deployment_id: None,
             database_instance: "hub".into(),
             email_relay_url: None,

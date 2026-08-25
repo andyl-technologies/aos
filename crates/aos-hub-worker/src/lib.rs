@@ -279,6 +279,8 @@ mod entry {
     const HUB_ROUTE_PUBLICATION_PUBLIC_KEY: &str = "HUB_ROUTE_PUBLICATION_PUBLIC_KEY";
     /// The Wrangler `[vars]` entry holding the hub's externally-reachable URL.
     const HUB_EXTERNAL_URL: &str = "HUB_EXTERNAL_URL";
+    /// Optional public origin exposing the instance-default R2 binding.
+    const HUB_DEFAULT_PUBLIC_DELIVERY_URL: &str = "HUB_DEFAULT_PUBLIC_DELIVERY_URL";
     /// Immutable source/build identity used to attest the active deployment.
     const HUB_DEPLOYMENT_ID: &str = "HUB_DEPLOYMENT_ID";
     /// Staged request-execution cutover: `off`, `read`, or `on`.
@@ -293,6 +295,29 @@ mod entry {
     const HUB_DNS_JSON_ENDPOINT: &str = "HUB_DNS_JSON_ENDPOINT";
     /// Optional repository-owned native egress-router endpoint.
     const HUB_EGRESS_GATEWAY_URL: &str = "HUB_EGRESS_GATEWAY_URL";
+
+    fn default_public_delivery_url(env: &Env) -> Result<Option<String>> {
+        let Ok(value) = env.var(HUB_DEFAULT_PUBLIC_DELIVERY_URL) else {
+            return Ok(None);
+        };
+        let value = value.to_string();
+        let parsed = url::Url::parse(&value).map_err(|error| {
+            worker::Error::RustError(format!(
+                "{HUB_DEFAULT_PUBLIC_DELIVERY_URL} is invalid: {error}"
+            ))
+        })?;
+        if parsed.scheme() != "https"
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err(worker::Error::RustError(format!(
+                "{HUB_DEFAULT_PUBLIC_DELIVERY_URL} must be HTTPS without credentials, query, or fragment"
+            )));
+        }
+        Ok(Some(value))
+    }
     /// Optional shared authentication key for the egress router.
     const HUB_EGRESS_GATEWAY_KEY: &str = "HUB_EGRESS_GATEWAY_KEY";
     /// Scoped Cloudflare API token used by the control-plane observer.
@@ -440,7 +465,7 @@ mod entry {
             crate::e2e_surface::DoE2eSurfaceProvider::new(state.storage().sql())
                 .map_err(|error| worker::Error::RustError(format!("e2e storage: {error:#}")))?,
         );
-        let service = Arc::new(RpcService::new(
+        let mut service = RpcService::new(
             Arc::clone(&db),
             jwt_keys.clone(),
             external_url.clone(),
@@ -453,7 +478,11 @@ mod entry {
                 aos_hub_core::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(&db)),
             ),
             None,
-        ));
+        );
+        if let Some(delivery_url) = default_public_delivery_url(env)? {
+            service = service.with_default_public_delivery_url(delivery_url);
+        }
+        let service = Arc::new(service);
         let egress = worker_egress(env)?;
         let sealer = sealer_from_secret(&env.secret(HUB_SEAL_KEY)?.to_string())
             .map_err(|error| worker::Error::RustError(format!("e2e sealer: {error:#}")))?;
@@ -766,44 +795,44 @@ mod entry {
                 crate::workerqueue::WorkerQueue::from_env(env)?,
             )));
 
-        let service = Arc::new(
-            RpcService::new(
-                Arc::clone(&db),
-                jwt_keys.clone(),
-                external_url.clone(),
-                Arc::clone(&ratelimit),
-                Arc::clone(&surface),
-                Arc::clone(&surface_write),
-                Arc::clone(&lease),
-                Arc::clone(&reindexer),
-                Arc::new(
-                    aos_hub_core::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(
-                        &db,
-                    ))
+        let mut service = RpcService::new(
+            Arc::clone(&db),
+            jwt_keys.clone(),
+            external_url.clone(),
+            Arc::clone(&ratelimit),
+            Arc::clone(&surface),
+            Arc::clone(&surface_write),
+            Arc::clone(&lease),
+            Arc::clone(&reindexer),
+            Arc::new(
+                aos_hub_core::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(&db))
                     .with_wakeup(Arc::new(crate::workerqueue::WorkerQueue::from_env(env)?)),
-                ),
-                Some(Arc::clone(&sealer)),
-            )
-            .with_secret_versions(Arc::clone(&secret_versions))
-            .with_origin_fetch(Arc::new(crate::surface::WorkerOriginFetch::new(
-                Arc::clone(&egress),
-            )))
-            .with_domain_probe_terminator(domain_probe_terminator)
-            .with_identity_domain_verifier(Arc::new(
-                aos_hub_core::topology_probe::DnsJsonIdentityDomainVerifier::new(
-                    Arc::clone(&route_http),
-                    dns_endpoint.to_string(),
-                ),
-            ))
-            .with_route_reservation_keyring(route_reservation_keyring)
-            // RFC-0004 ch.14 Phase C: read-through cache hot point-key state
-            // (sessions/tokens/config/routing) off the relational read path via Workers
-            // KV (the `SESSIONS` namespace). When the binding is absent the
-            // service falls back to the database (the pre-Phase-C path).
-            .with_kv(Arc::new(crate::workerkv::WorkerKv::new(
-                env.kv(crate::handlers::bindings::KV_SESSIONS)?,
-            ))),
-        );
+            ),
+            Some(Arc::clone(&sealer)),
+        )
+        .with_secret_versions(Arc::clone(&secret_versions))
+        .with_origin_fetch(Arc::new(crate::surface::WorkerOriginFetch::new(
+            Arc::clone(&egress),
+        )))
+        .with_domain_probe_terminator(domain_probe_terminator)
+        .with_identity_domain_verifier(Arc::new(
+            aos_hub_core::topology_probe::DnsJsonIdentityDomainVerifier::new(
+                Arc::clone(&route_http),
+                dns_endpoint.to_string(),
+            ),
+        ))
+        .with_route_reservation_keyring(route_reservation_keyring)
+        // RFC-0004 ch.14 Phase C: read-through cache hot point-key state
+        // (sessions/tokens/config/routing) off the relational read path via Workers
+        // KV (the `SESSIONS` namespace). When the binding is absent the
+        // service falls back to the database (the pre-Phase-C path).
+        .with_kv(Arc::new(crate::workerkv::WorkerKv::new(
+            env.kv(crate::handlers::bindings::KV_SESSIONS)?,
+        )));
+        if let Some(delivery_url) = default_public_delivery_url(env)? {
+            service = service.with_default_public_delivery_url(delivery_url);
+        }
+        let service = Arc::new(service);
 
         // Seed the editable site chrome (title/banner/footer) from HubDb once per
         // isolate, so a fresh isolate reflects persisted branding. A branding
@@ -1506,10 +1535,10 @@ mod entry {
                             .registry_publication_state(*registry_id)
                             .await
                             .map_err(|error| {
-                                worker::Error::RustError(format!(
-                                    "job reindex {registry_id} publication state: {error:#}"
-                                ))
-                            })?;
+                            worker::Error::RustError(format!(
+                                "job reindex {registry_id} publication state: {error:#}"
+                            ))
+                        })?;
                         let build_id = crate::registry_index_build_id(
                             *registry_id,
                             registry.resource_version,
