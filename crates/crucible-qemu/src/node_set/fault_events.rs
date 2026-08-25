@@ -84,6 +84,31 @@ impl QemuNodeSet {
             )
             .map_err(BackendError::from)?;
         }
+        self.fault_event_staging_budget = Some(QemuFaultEventStagingBudget {
+            maximum_event_records,
+            configured_event_records,
+        });
+        Ok(())
+    }
+
+    /// Arms the selected node from the retained aggregate occurrence budget.
+    ///
+    /// Boundary evaluation freezes every node at its current ownership so the
+    /// aggregate remainder is not multiplied by the node count. The scheduler
+    /// must transfer that remainder to exactly the node whose QEMU transport it
+    /// is about to pump.
+    pub(crate) fn arm_selected_fault_event_staging(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<(), BackendError> {
+        let Some(budget) = self.fault_event_staging_budget else {
+            return Ok(());
+        };
+        self.fault_event_staging_allowance(
+            node,
+            budget.maximum_event_records,
+            budget.configured_event_records,
+        )?;
         Ok(())
     }
 

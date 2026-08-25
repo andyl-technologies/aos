@@ -11,6 +11,7 @@ use crate::vm_resume::{
     launch_production_live_node, launch_production_live_node_exact_snapshot,
     launch_production_live_node_exact_snapshot_paused,
 };
+use crate::{LifecycleApiError, debug_gateway::DebugGatewayProcess};
 use crucible::model::{
     FaultCoordinate, FaultResourceLimits, HostFaultAdapterManifests,
     OwnedDagSignalArtifactProvider, ResolvedEffectTrace, SignalArtifactProvider,
@@ -32,9 +33,14 @@ use crucible::{
 };
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
-    QemuLaunchResourceRequirements, QemuNode, QemuNodeLifecycleDecision, QemuNodeLifecycleIntent,
-    QemuProcessIdentity, QemuReplayOracleCheck, QemuReplayOracleValidation, QemuSharedBlockDevice,
-    QemuVmSnapshot, linux_process_identity, quarantine_orphaned_qemu_process,
+    QemuLaunchResourceRequirements, QemuNode, QemuNodeLifecycleDecision,
+    QemuNodeLifecycleIntent as LifecycleMutationIntent, QemuProcessIdentity, QemuReplayOracleCheck,
+    QemuReplayOracleValidation, QemuSharedBlockDevice, QemuVmSnapshot as ExactSnapshotHandle,
+    linux_process_identity, quarantine_orphaned_qemu_process,
+};
+use quantum_loop::{
+    DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
+    decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
 };
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -44,12 +50,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
-
-use crate::{LifecycleApiError, debug_gateway::DebugGatewayProcess};
-use quantum_loop::{
-    DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
-    decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
-};
 
 mod assets;
 use assets::*;
@@ -235,7 +235,7 @@ struct ProductionVmExactCheckpointTarget {
     configuration: Configuration,
     counter: u64,
     scheduler_time: VirtualTime,
-    snapshot: QemuVmSnapshot,
+    snapshot: ExactSnapshotHandle,
     overlay_artifact: ProductionCheckpointArtifact,
     vmstate_artifact: ProductionCheckpointArtifact,
     manifest_identity: crucible::ContentHash,
@@ -557,7 +557,7 @@ pub enum ProductionVmNodeLaunchKind<'a> {
     /// Restores one authenticated exact snapshot.
     Exact {
         /// Snapshot paired with the scheduler and host-I/O continuation.
-        snapshot: &'a QemuVmSnapshot,
+        snapshot: &'a ExactSnapshotHandle,
         /// Whether the restored node remains paused after installation.
         paused: bool,
     },
@@ -1976,7 +1976,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
                 loop_factory_error("debug configuration disappeared during QEMU launch")
             })?;
             let backend_path = private_backend_gdbstub_path(&node_directory);
-            let backend_listen = qemu_unix_gdbstub_endpoint(&backend_path)?;
+            let backend_listen = live_unix_gdbstub_endpoint(&backend_path)?;
             let gdbstub =
                 ProductionGdbstubChannelConfig::new(backend_listen, debug.operator_listen.clone())
                     .map_err(|error| {

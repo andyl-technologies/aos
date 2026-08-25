@@ -1371,7 +1371,7 @@ in
             cp "${qemuRrQuantumIcount}/result" "$out/qemu-rr-quantum-icount.result"
             grep -q '^PASS$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^accelerator=sim,thread=single$' "$out/qemu-rr-quantum-icount.result"
-            grep -q '^vcpus=2$' "$out/qemu-rr-quantum-icount.result"
+            grep -q '^vcpus=4$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(canonical-long-horizon)$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^cross_run_switch_icount_trace_match=true$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^cross_run_per_vcpu_delta_trace_match=true$' "$out/qemu-rr-quantum-icount.result"

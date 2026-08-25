@@ -56,7 +56,7 @@ pub struct ProductionExactCheckpointClosure {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductionExactCheckpointReplayTarget {
     node: NodeId,
-    snapshot: QemuVmSnapshot,
+    snapshot: ExactSnapshotHandle,
     overlay: ProductionExactCheckpointReplayArtifact,
     vmstate: ProductionExactCheckpointReplayArtifact,
 }
@@ -280,7 +280,7 @@ impl ProductionExactCheckpointReplayTarget {
 
     /// Returns the authenticated raw snapshot for this node.
     #[must_use]
-    pub const fn snapshot(&self) -> &QemuVmSnapshot {
+    pub const fn snapshot(&self) -> &ExactSnapshotHandle {
         &self.snapshot
     }
 
@@ -298,7 +298,7 @@ impl ProductionExactCheckpointReplayTarget {
 
     /// Consumes the target into its node and snapshot values.
     #[must_use]
-    pub fn into_parts(self) -> (NodeId, QemuVmSnapshot) {
+    pub fn into_parts(self) -> (NodeId, ExactSnapshotHandle) {
         (self.node, self.snapshot)
     }
 
@@ -308,7 +308,7 @@ impl ProductionExactCheckpointReplayTarget {
         self,
     ) -> (
         NodeId,
-        QemuVmSnapshot,
+        ExactSnapshotHandle,
         ProductionExactCheckpointReplayArtifact,
         ProductionExactCheckpointReplayArtifact,
     ) {
@@ -1249,10 +1249,10 @@ pub(super) fn read_portable_snapshot(
     identity: ContentHash,
     limit: u64,
     boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
-) -> Result<QemuVmSnapshot, LifecycleApiError> {
+) -> Result<ExactSnapshotHandle, LifecycleApiError> {
     let bytes = read_portable_object(closure, identity, limit, "target snapshot", boundary)?;
     boundary()?;
-    QemuVmSnapshot::from_canonical_bytes_with_limit(&bytes, limit).map_err(|error| {
+    ExactSnapshotHandle::from_canonical_bytes_with_limit(&bytes, limit).map_err(|error| {
         loop_factory_error(format!(
             "decode production replay-oracle snapshot {}: {error}",
             identity.to_hex()

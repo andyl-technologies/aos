@@ -16,8 +16,8 @@ impl AmbiguousNinepCommitRuntime for ProductionFaultRuntime {
 /// Marks the canonical continuation unusable before returning a post-commit error.
 pub(super) fn fail_after_shared_ninep_commit<R: AmbiguousNinepCommitRuntime>(
     runtime: &Arc<Mutex<R>>,
-    error: QemuAsyncDriverRuntimeError,
-) -> QemuAsyncDriverRuntimeError {
+    error: DeviceRuntimeError,
+) -> DeviceRuntimeError {
     // A poisoned mutex is already fail-closed because every production access
     // maps lock acquisition failure to a terminal coordinator error.
     if let Ok(mut runtime) = runtime.lock() {
