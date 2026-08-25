@@ -57,6 +57,7 @@ mod checkpoint_store;
 use checkpoint_store::load_exact_checkpoint_set;
 pub use checkpoint_store::{
     ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
+    ProductionExactCheckpointSource, install_exact_checkpoint_closure,
     open_exact_checkpoint_closure,
 };
 mod checkpoint_dependencies;

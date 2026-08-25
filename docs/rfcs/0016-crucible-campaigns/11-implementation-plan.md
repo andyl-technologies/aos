@@ -709,9 +709,13 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   version-four production manifest and exact sorted object inventory under the
   scenario's aggregate checkpoint bound, keeps overlay and VMState artifacts
   chunked, and reauthenticates each object while streaming without exposing its
-  directory. Campaign exact-root versioning and CAS import of that complete
-  multi-node trigger/assertion/fault/network continuation remain open before
-  the packaged executor may advertise exact resume. A guarded-only
+  directory. A matching production-store installer accepts that narrow source
+  interface, authenticates and semantically restores the complete closure in a
+  private bounded store before publishing any destination object, then installs
+  immutable objects idempotently and commits the manifest last. Campaign
+  exact-root versioning and CAS retention of that complete multi-node
+  trigger/assertion/fault/network continuation remain open before the packaged
+  executor may advertise exact resume. A guarded-only
   exact-root launcher now consumes that
   pinned authority, rechecks the selected snapshot and checkpoint identities,
   and uses the sealed child-process contract for pre-`exec` containment. The

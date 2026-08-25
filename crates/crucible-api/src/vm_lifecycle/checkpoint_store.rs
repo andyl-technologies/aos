@@ -11,6 +11,8 @@ mod io;
 use io::{BoundedReadError, read_bounded_file};
 mod paths;
 use paths::{closure_parent, object_parent};
+mod portable;
+pub use portable::{ProductionExactCheckpointSource, install_exact_checkpoint_closure};
 mod publication;
 pub(super) use publication::{PersistExactCheckpointError, PreparedExactCheckpointPublication};
 use publication::{enforce_published_checkpoint_count, scheduler_resource_limit};
@@ -40,6 +42,12 @@ pub struct ProductionExactCheckpointObject {
 }
 
 impl ProductionExactCheckpointObject {
+    /// Creates one portable immutable-object inventory entry.
+    #[must_use]
+    pub const fn new(identity: ContentHash, length: u64) -> Self {
+        Self { identity, length }
+    }
+
     /// Returns the BLAKE3 content identity used by the production closure manifest.
     #[must_use]
     pub const fn identity(self) -> ContentHash {
