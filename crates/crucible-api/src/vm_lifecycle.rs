@@ -462,7 +462,7 @@ pub struct ProductionVmLifecycleLoop {
     scenario: ScenarioDef,
     source: ScenarioDefForm,
     config: ProductionVmLifecycleConfig,
-    checkpoint_targets: BTreeMap<ContentHash, ContentHash>,
+    checkpoint_targets: BTreeMap<ContentHash, quantum_loop::ExactCheckpointPublicationState>,
     recorded_controls: Vec<ProductionVmRecordedControl>,
     signal_artifact_objects: BTreeMap<ContentHash, Vec<u8>>,
     debug_backend_paths: BTreeMap<NodeId, PathBuf>,
