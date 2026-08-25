@@ -12,7 +12,7 @@
 # UKI (server-secureboot's), no TPM and no firmware enforcement required —
 # the gate is pure apm policy over downloaded metadata:
 #
-#   1. PUBLISH — the registry publishes the signed server-secureboot
+#   1. PUBLISH — the registry publishes the signed server-measured-boot
 #      toplevel as a sysroot package, attaching its signed UKI as an image.
 #      `apr publish` derives the SB facts from the real binary (sbverify +
 #      in-Rust PKCS#7 for the signer cert, objcopy for `.sbat`,
@@ -34,7 +34,7 @@
 #
 # Machines (lexicographic: registry=192.168.50.10, target=192.168.50.11):
 #   registry: aos-registry-server (gitd :9418) + static-cache package (:8000),
-#             with the signed server-secureboot toplevel + its UKI staged in
+#             with the signed measured-boot toplevel + its UKI staged in
 #             store (extraClosures) and the publish-time SB toolchain
 #             (sbsigntools/binutils/systemd) reachable by store path.
 #   target:   plain server (kernel boot); the closure + catalog travel over
@@ -46,11 +46,11 @@
   pkgs,
   systems,
 }: let
-  sbTop = systems.server-secureboot.config.system.build.toplevel;
-  sbUki = systems.server-secureboot.config.system.build.uki;
-  sbImage = systems.server-secureboot.config.system.build.image.raw;
-  sbImageDisk = systems.server-secureboot.config.system.build.imageArtifacts.raw.disk;
-  sbImageInfo = systems.server-secureboot.config.system.build.imageArtifacts.raw.info;
+  sbTop = systems.server-measured-boot.config.system.build.toplevel;
+  sbUki = systems.server-measured-boot.config.system.build.uki;
+  sbImage = systems.server-measured-boot.config.system.build.image.raw;
+  sbImageDisk = systems.server-measured-boot.config.system.build.imageArtifacts.raw.disk;
+  sbImageInfo = systems.server-measured-boot.config.system.build.imageArtifacts.raw.info;
 
   # server-test bundles the guest agent and the CLI tools the producer needs
   # (it hand-seeds + pushes the registry with git) that image slimming dropped
@@ -78,9 +78,17 @@ in {
       packages = ["aos-registry-server" "test-static-cache-server"];
       # The producer owns the signed toplevel, disk image, and exact UKI
       # associated by image-info.json; all must resolve in its store.
-      extraClosures = [sbTop sbUki sbImage pkgs.sbsigntools pkgs.binutils pkgs.systemd];
+      extraClosures = [
+        sbTop
+        sbUki
+        sbImage
+        pkgs.secure-boot-test-keys
+        pkgs.sbsigntools
+        pkgs.binutils
+        pkgs.systemd
+      ];
       # `apr cache generate` writes a zstd static cache of the full
-      # server-secureboot closure PLUS the standalone signed UKI image
+      # measured-boot closure PLUS the standalone signed UKI image
       # (~300 MiB nar of its own) under /var/lib/sysreg-cache — larger than the plain
       # server-2 fixture, so size /var generously.
       varSizeMiB = 4096;
@@ -176,6 +184,8 @@ in {
 
           ${pkgs.aos}/bin/apr create sysreg
           REG_DIR=$HOME/.local/share/apm/registries/sysreg
+          mkdir -p "$REG_DIR/sb-certs"
+          cp ${pkgs.secure-boot-test-keys}/db.crt "$REG_DIR/sb-certs/db.pem"
           DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
           ORIGIN=/var/lib/aos-registry-server/registries/sysreg
           git init --bare --object-format=sha256 "$ORIGIN"
@@ -227,6 +237,10 @@ in {
       """), timeout=1200)
 
       branch = registry.succeed("cat /tmp/sysreg-branch").strip()
+      initial_catalog = registry.succeed(
+          "HOME=/tmp ${pkgs.aos}/bin/apr sb-certs list --registry sysreg"
+      )
+      assert "decoy" in initial_catalog, initial_catalog
 
       # The derived Secure Boot facts, straight from `apr publish --json`.
       pub = json.loads(registry.succeed("cat /tmp/publish.json"))
@@ -357,9 +371,17 @@ in {
       push_catalog(
           "v0.0.2",
           f"{APR} sb-certs add aos-db --cert-sha256 {signer} --registry sysreg --no-commit",
+          f"{APR} sb-certs retire decoy --reason replaced-by-production-cert "
+          "--registry sysreg --no-commit",
           f"{APR} sb-certs set-floor --component {sbat_component} "
           f"--generation {sbat_generation + 1} --registry sysreg --no-commit",
       )
+      rotated_catalog = registry.succeed(
+          f"HOME=/tmp {APR} sb-certs list --registry sysreg"
+      )
+      assert "aos-db" in rotated_catalog, rotated_catalog
+      assert "decoy" in rotated_catalog, rotated_catalog
+      assert "replaced-by-production-cert" in rotated_catalog, rotated_catalog
       out = target.fail(
           "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH "
           "${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
