@@ -1616,6 +1616,13 @@ fn read_toplevel_meta(toplevel: &Path, name: &str) -> Result<String> {
     Ok(value.trim().to_string())
 }
 
+fn verity_roothash_hex(digest: &str) -> &str {
+    digest
+        .strip_prefix("sha256:")
+        .or_else(|| digest.strip_prefix("sha256-"))
+        .unwrap_or(digest)
+}
+
 fn stage_slot_artifacts(
     layout: &ImageSlotLayout,
     target_slot: ImageSlot,
@@ -1682,7 +1689,7 @@ where
     }
     if let Some(expected) = image.root_hash.as_deref() {
         let actual = std::fs::read_to_string(&root_hash_file)?;
-        if actual.trim() != expected {
+        if actual.trim() != verity_roothash_hex(expected) {
             bail!("image root hash metadata does not match root.roothash");
         }
     }
@@ -2464,11 +2471,16 @@ where
         evaluator_ref: evaluator_ref.clone(),
         module_abi,
         baselib_digest,
-        root_verity_roothash: image.root_hash.clone().or_else(|| {
-            std::fs::read_to_string(image_store.join("root.roothash"))
-                .ok()
-                .map(|value| value.trim().to_string())
-        }),
+        root_verity_roothash: image
+            .root_hash
+            .as_deref()
+            .map(verity_roothash_hex)
+            .map(str::to_string)
+            .or_else(|| {
+                std::fs::read_to_string(image_store.join("root.roothash"))
+                    .ok()
+                    .map(|value| value.trim().to_string())
+            }),
         expected_pcr11: image_uki_for_slot(image, target_slot)?
             .and_then(|uki| uki.expected_pcr11.clone())
             .or_else(|| image.expected_pcr11.clone()),
@@ -5661,7 +5673,7 @@ mod tests {
         ];
         image.root_image = Some("root.img".into());
         image.root_verity = Some("root.verity".into());
-        image.root_hash = Some("deadbeef".into());
+        image.root_hash = Some("sha256:deadbeef".into());
 
         stage_slot_artifacts(
             &layout,
