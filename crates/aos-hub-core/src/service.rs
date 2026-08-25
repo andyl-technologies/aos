@@ -8760,6 +8760,11 @@ impl RpcService {
                 "predecessor route resource version is stale".to_string(),
             ));
         }
+        if !predecessor.enabled {
+            return Err(RpcError::FailedPrecondition(
+                "predecessor route must be enabled before replacement".to_string(),
+            ));
+        }
         if req.spec.as_ref().is_some_and(|spec| spec.enabled) {
             return Err(RpcError::invalid(
                 "replacement routes must be created disabled",
