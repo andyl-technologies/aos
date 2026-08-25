@@ -85,6 +85,65 @@ impl AttemptExecutionInput {
     }
 }
 
+/// Resolves one lineage-qualified attempt into complete immutable model input.
+///
+/// The function authenticates the lineage, scenario, attempt, path,
+/// configuration, and any branch selection through the executor's narrow
+/// repository facade. It performs no writes and is shared by ordinary worker
+/// dispatch and paused-checkpoint restart recovery.
+///
+/// # Errors
+///
+/// Returns [`CampaignRepositoryError`] when any record is unavailable,
+/// malformed, semantically inconsistent, or belongs to another lineage.
+pub fn resolve_attempt_execution_input(
+    store: &CampaignExecutorStore,
+    key: crate::AttemptExecutionKey,
+) -> Result<AttemptExecutionInput, CampaignRepositoryError> {
+    let lineage = store.load_lineage(key.lineage())?;
+    let scenario = store.load_scenario_artifact(lineage.scenario_content())?;
+    let attempt = store.load_attempt(key.attempt())?;
+    let path = store.load_branch_path(attempt.path())?;
+    let start = match attempt.start() {
+        AttemptStart::Discover { configuration } => ResolvedAttemptStart::Discover {
+            configuration: store.load_configuration_artifact(configuration)?,
+        },
+        AttemptStart::Branch {
+            parent, selection, ..
+        } => ResolvedAttemptStart::Branch {
+            parent: store.load_configuration_artifact(parent)?,
+            selection: Box::new(store.resolve_selection(selection)?),
+        },
+    };
+
+    let starting_configuration = match &start {
+        ResolvedAttemptStart::Discover { configuration } => configuration,
+        ResolvedAttemptStart::Branch { parent, .. } => parent,
+    };
+    if starting_configuration.scenario() != lineage.scenario()
+        || starting_configuration.scenario_artifact() != lineage.scenario_content()
+    {
+        return Err(CampaignRepositoryError::Integrity {
+            reason: "attempt-start-lineage-mismatch",
+        });
+    }
+    if let ResolvedAttemptStart::Branch { selection, .. } = &start
+        && selection.opportunity().scenario() != lineage.scenario()
+    {
+        return Err(CampaignRepositoryError::Integrity {
+            reason: "attempt-opportunity-lineage-mismatch",
+        });
+    }
+
+    Ok(AttemptExecutionInput {
+        lineage,
+        scenario,
+        attempt,
+        path,
+        start,
+    })
+}
+
 /// Operational limits, control state, and restore root for one guest execution.
 ///
 /// This context is deliberately separate from [`AttemptExecutionInput`]. It
@@ -465,50 +524,10 @@ where
         &self,
         request: &SubmitAttemptRequest,
     ) -> Result<AttemptExecutionInput, CampaignRepositoryError> {
-        let lineage = self.store.load_lineage(request.lineage())?;
-        let scenario = self
-            .store
-            .load_scenario_artifact(lineage.scenario_content())?;
-        let attempt = self.store.load_attempt(request.attempt())?;
-        let path = self.store.load_branch_path(attempt.path())?;
-        let start = match attempt.start() {
-            AttemptStart::Discover { configuration } => ResolvedAttemptStart::Discover {
-                configuration: self.store.load_configuration_artifact(configuration)?,
-            },
-            AttemptStart::Branch {
-                parent, selection, ..
-            } => ResolvedAttemptStart::Branch {
-                parent: self.store.load_configuration_artifact(parent)?,
-                selection: Box::new(self.store.resolve_selection(selection)?),
-            },
-        };
-
-        let starting_configuration = match &start {
-            ResolvedAttemptStart::Discover { configuration } => configuration,
-            ResolvedAttemptStart::Branch { parent, .. } => parent,
-        };
-        if starting_configuration.scenario() != lineage.scenario()
-            || starting_configuration.scenario_artifact() != lineage.scenario_content()
-        {
-            return Err(CampaignRepositoryError::Integrity {
-                reason: "attempt-start-lineage-mismatch",
-            });
-        }
-        if let ResolvedAttemptStart::Branch { selection, .. } = &start
-            && selection.opportunity().scenario() != lineage.scenario()
-        {
-            return Err(CampaignRepositoryError::Integrity {
-                reason: "attempt-opportunity-lineage-mismatch",
-            });
-        }
-
-        Ok(AttemptExecutionInput {
-            lineage,
-            scenario,
-            attempt,
-            path,
-            start,
-        })
+        resolve_attempt_execution_input(
+            &self.store,
+            crate::AttemptExecutionKey::new(request.lineage(), request.attempt()),
+        )
     }
 }
 

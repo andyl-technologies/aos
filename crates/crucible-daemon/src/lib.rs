@@ -189,7 +189,7 @@ pub use crucible_artifact::{
 pub use crucible_execution::{
     CrucibleAttemptExecution, CrucibleExecutionModel, CrucibleExecutionModelError,
     CrucibleExecutionOutcome, CrucibleExecutionRunner, CrucibleMaterializationTier,
-    CrucibleResolvedAttemptStart,
+    CrucibleResolvedAttemptStart, decode_crucible_attempt_execution,
 };
 pub use crucible_measurement::{
     CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1, CrucibleMeasurementError,
@@ -287,8 +287,8 @@ pub use executor_worker::{
     abort_published_attempt_result, abort_staged_attempt_result, prepare_attempt_result,
     publish_prepared_attempt_result, publish_staged_checkpoint_result, reconcile_attempt_failure,
     reconcile_published_attempt_result, reconcile_published_checkpoint_result,
-    retry_pending_attempt_result, retry_pending_checkpoint_result, stage_prepared_attempt_result,
-    stage_prepared_checkpoint_result,
+    resolve_attempt_execution_input, retry_pending_attempt_result, retry_pending_checkpoint_result,
+    stage_prepared_attempt_result, stage_prepared_checkpoint_result,
 };
 pub use packaged_qemu_executor::{
     AttachedPackagedQemuExecutor, PackagedQemuExecutor, PackagedQemuExecutorCompletion,
@@ -298,14 +298,16 @@ pub use packaged_qemu_executor::{
 #[cfg(target_os = "linux")]
 pub use paused_checkpoint_promotion::{
     PausedCheckpointPromotionPreparationError, PausedCheckpointPromotionPublicationError,
-    PausedCheckpointPromotionReconcileError, PausedCheckpointPromotionStageOutcome,
-    PausedCheckpointPromotionStagingError, PausedCheckpointPromotionTarget,
-    PreparedPausedCheckpointPromotion, ProductionPausedCheckpointPromotionTarget,
-    ProductionPausedCheckpointReplayFactory, ProductionPausedCheckpointReplaySession,
-    PublishedPausedCheckpointPromotion, StagedPausedCheckpointPromotion,
+    PausedCheckpointPromotionReconcileError, PausedCheckpointPromotionRecoveryResolutionError,
+    PausedCheckpointPromotionStageOutcome, PausedCheckpointPromotionStagingError,
+    PausedCheckpointPromotionTarget, PreparedPausedCheckpointPromotion,
+    ProductionPausedCheckpointPromotionTarget, ProductionPausedCheckpointReplayFactory,
+    ProductionPausedCheckpointReplaySession, PublishedPausedCheckpointPromotion,
+    ResolvedProductionPausedCheckpointPromotionRecovery, StagedPausedCheckpointPromotion,
     publish_staged_paused_checkpoint_promotion, reconcile_published_paused_checkpoint_promotion,
     recover_published_paused_checkpoint_promotion,
     recover_published_production_paused_checkpoint_promotion,
+    resolve_production_paused_checkpoint_promotion_recovery,
     revert_recovered_paused_checkpoint_promotion, revert_staged_paused_checkpoint_promotion,
     stage_prepared_paused_checkpoint_promotion,
     validate_and_prepare_paused_checkpoint_promotion_guarded,
