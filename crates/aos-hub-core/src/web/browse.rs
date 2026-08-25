@@ -601,12 +601,7 @@ pub async fn images(
         session_indicator(svc, headers),
     )
     .await;
-    let download_base = svc
-        .db
-        .ready_registry_canonical_url(registry.id)
-        .await
-        .ok()
-        .flatten();
+    let download_base = svc.registry_consumer_url(&registry).await.ok();
     Rendered::Html(pages::images_page(
         &registry,
         status.as_ref(),

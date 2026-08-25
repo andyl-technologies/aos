@@ -120,6 +120,7 @@ Confirm that the shell contains the staging runtime values, then deploy:
   --name aos-hub-staging \
   --domain aos.staging.andyl.org \
   --external-url https://aos.staging.andyl.org \
+  --default-public-delivery-url https://cdn.aos.staging.andyl.org \
   --deployment-id "$deployment_id" \
   --database-instance hub-v2 \
   --rate-limit-namespace-base 2000 \
@@ -136,24 +137,21 @@ retained only as rollback data and is not compatible with this Worker schema.
 
 ### Configure the direct staging CDN
 
-The direct CDN is not a hidden Worker deployment option. Connect
+Connect
 `cdn.aos.staging.andyl.org` to the `aos-hub-staging-surfaces` bucket from the
-Cloudflare R2 custom-domain UI or its provider API. Then model every AOS-visible
-part through the Hub API and Web UI:
+Cloudflare R2 custom-domain UI or its provider API, then pass that origin as
+`--default-public-delivery-url` on every install and deploy. Every public
+registry with a reconciled complete placement on the instance-default binding
+then derives its canonical Git URL from that placement automatically. The
+policy is evaluated continuously, so it covers existing registries, new
+registries, and later placement changes without per-registry bootstrap work.
 
-1. In **Settings -> Domains**, add `cdn.aos.staging.andyl.org`.
-2. In **Settings -> Endpoints**, create an HTTPS external-ingress
-   endpoint for that domain.
-3. In **Settings -> Gateways**, connect the endpoint to the default
-   Worker R2 binding. Use `/` for the client base path and origin prefix.
-4. For each registry or cache that should use the CDN, create a direct-gateway
-   route from its **Settings -> Delivery** page and explicitly select it for the
-   appropriate canonical audiences.
-
-The provider attachment and the Hub topology are intentionally separate and
-both inspectable. Requests to this hostname bypass the Hub Worker and therefore
-cannot enforce Hub authentication; direct routes must expose only content that
-is safe for public object access.
+Use explicit domains, endpoints, gateways, routes, and advertisements for
+private registries, non-default bindings, alternate access policies, or a
+different canonical URL. An explicit Git advertisement is authoritative and
+suppresses derived delivery even while unhealthy, preserving fail-closed custom
+policy. Requests to the default public origin bypass the Hub Worker, so the
+derived policy is deliberately limited to public registries.
 
 The first install provisions the R2 bucket, KV namespace, Durable Object
 migration, custom domain, and Worker secrets. After the first successful install,

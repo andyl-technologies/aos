@@ -2416,6 +2416,13 @@ pub struct RpcService {
     pub jwt_keys: JwtKeys,
     /// Externally reachable base URL, used to build the canonical upload URL.
     pub external_url: String,
+    /// Public base URL exposing the instance-default storage binding directly.
+    ///
+    /// When configured, public registries on a reconciled complete placement
+    /// inherit a canonical Git URL from this origin unless an explicit Git
+    /// route advertisement exists. This is the common object-store CDN path;
+    /// explicit topology remains authoritative for custom deployments.
+    pub default_public_delivery_url: Option<String>,
     /// The abuse-bound rate limiter (the [`RateLimiter`] port), metering
     /// `CreateOrg` per principal.
     pub ratelimit: Arc<dyn RateLimiter>,
@@ -9936,6 +9943,7 @@ impl RpcService {
             db,
             jwt_keys,
             external_url,
+            default_public_delivery_url: None,
             ratelimit,
             surface,
             surface_write,
@@ -9951,6 +9959,16 @@ impl RpcService {
             route_reservation_keyring: None,
             pack_validation: pack_validation_gate(),
         }
+    }
+
+    /// Attaches the public origin for the instance-default storage binding.
+    ///
+    /// Explicit canonical route advertisements always take precedence over
+    /// this derived delivery policy.
+    #[must_use]
+    pub fn with_default_public_delivery_url(mut self, url: String) -> Self {
+        self.default_public_delivery_url = Some(url);
+        self
     }
 
     /// Attaches the runtime DNS verifier for organization-domain challenges.
@@ -11385,10 +11403,8 @@ impl RpcService {
         self.require_read(auth, &registry).await?;
         let control_base = self.control_image_download_base(registry.id)?;
         let download_base = if registry.visibility == "public" {
-            self.db
-                .ready_registry_canonical_url(registry.id)
+            self.registry_consumer_url(&registry)
                 .await
-                .map_err(RpcError::internal)?
                 .unwrap_or(control_base)
         } else {
             control_base
@@ -22239,9 +22255,9 @@ impl RpcService {
 
     /// The consumer-facing base URL for a registry's git surface.
     ///
-    /// This is the URL rendered by the registry's explicit canonical Git
-    /// route. Direct, CDN, and Hub-proxied delivery are all modeled as
-    /// routes; implicit URL inheritance is not consulted.
+    /// An explicit canonical Git route is authoritative. Without one, a public
+    /// registry on a complete reconciled instance-default placement derives
+    /// its URL from the configured public storage origin.
     ///
     /// # Errors
     ///
@@ -22250,13 +22266,58 @@ impl RpcService {
         &self,
         registry: &RegistryRecord,
     ) -> Result<String, RpcError> {
-        self.db
+        if let Some(url) = self
+            .db
             .ready_registry_canonical_url(registry.id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| {
-                RpcError::FailedPrecondition("registry canonical Git route is not ready".to_owned())
-            })
+        {
+            return Ok(url);
+        }
+
+        // An explicit selection is an operator-owned override. Never bypass
+        // its failed readiness evidence with the convenient default path.
+        if self
+            .db
+            .route_advertisement(SurfaceTarget::Registry(registry.id), "git")
+            .await
+            .map_err(RpcError::internal)?
+            .is_some()
+        {
+            return Err(RpcError::FailedPrecondition(
+                "registry canonical Git route is not ready".to_owned(),
+            ));
+        }
+
+        let Some(base) = self.default_public_delivery_url.as_deref() else {
+            return Err(RpcError::FailedPrecondition(
+                "registry canonical Git route is not ready".to_owned(),
+            ));
+        };
+        if registry.visibility != "public" {
+            return Err(RpcError::FailedPrecondition(
+                "non-public registry requires an explicit canonical Git route".to_owned(),
+            ));
+        }
+        let Some(path) = self
+            .db
+            .default_public_delivery_path(SurfaceTarget::Registry(registry.id))
+            .await
+            .map_err(RpcError::internal)?
+        else {
+            return Err(RpcError::FailedPrecondition(
+                "registry has no published complete placement on default storage".to_owned(),
+            ));
+        };
+
+        let mut url = url::Url::parse(base).map_err(RpcError::internal)?;
+        let joined = [url.path().trim_matches('/'), path.trim_matches('/')]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("/");
+        url.set_path(&format!("/{joined}/"));
+        Ok(url.to_string())
     }
 
     /// Resolves the canonical Nix-cache delivery URL for a binary cache.
@@ -35944,6 +36005,88 @@ mod cache_upload_tests {
         )
         .with_identity_domain_verifier(Arc::new(PublishedIdentityDomain));
         (service, db, lease, format!("Bearer {token}"))
+    }
+
+    #[tokio::test]
+    async fn public_registry_derives_git_url_from_default_storage_placement() {
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let binding_id = db
+            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .await
+            .unwrap()
+            .id;
+        let org_id = db.create_org("automatic", "Automatic").await.unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "main", "public", &[], false)
+            .await
+            .unwrap();
+        let placement = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface: SurfaceTarget::Registry(registry_id),
+                name: "primary".into(),
+                binding_id,
+                prefix: "registries/registry-stable-id".into(),
+                kind: "complete".into(),
+                desired_state: "active".into(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+        db.observe_surface_placement(placement.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+
+        let service = service
+            .with_default_public_delivery_url("https://cdn.example.test/storage-root".into());
+        assert_eq!(
+            service.registry_consumer_url(&registry).await.unwrap(),
+            "https://cdn.example.test/storage-root/registries/registry-stable-id/"
+        );
+    }
+
+    #[tokio::test]
+    async fn private_registry_does_not_inherit_public_storage_delivery() {
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let binding_id = db
+            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .await
+            .unwrap()
+            .id;
+        let org_id = db.create_org("private-auto", "Private auto").await.unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "main", "private", &[], false)
+            .await
+            .unwrap();
+        let placement = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface: SurfaceTarget::Registry(registry_id),
+                name: "primary".into(),
+                binding_id,
+                prefix: "registries/private".into(),
+                kind: "complete".into(),
+                desired_state: "active".into(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+        db.observe_surface_placement(placement.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+
+        let service = service.with_default_public_delivery_url("https://cdn.example.test".into());
+        assert!(matches!(
+            service.registry_consumer_url(&registry).await,
+            Err(RpcError::FailedPrecondition(message))
+                if message.contains("explicit canonical Git route")
+        ));
     }
 
     #[tokio::test]

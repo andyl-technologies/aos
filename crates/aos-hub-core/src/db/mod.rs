@@ -3280,6 +3280,44 @@ impl Database {
             .context("surface has no reconciled read placement")
     }
 
+    /// Returns the object path of the complete, reconciled placement on the
+    /// instance-default binding that may use derived public delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn default_public_delivery_path(
+        &self,
+        surface: SurfaceTarget,
+    ) -> Result<Option<String>> {
+        let (registry_id, cache_id) = surface.ids();
+        self.backend
+            .query_opt(
+                "SELECT binding.object_prefix, placement.prefix
+                 FROM surface_placement_effective placement
+                 JOIN bindings binding ON binding.id = placement.binding_id
+                 WHERE (placement.registry_id = ?1 OR placement.cache_id = ?2)
+                   AND placement.kind = 'complete'
+                   AND placement.effective_read_enabled = 1
+                   AND binding.is_instance_default = 1
+                 ORDER BY placement.read_order, placement.name, placement.id
+                 LIMIT 1",
+                &vals![registry_id, cache_id],
+            )
+            .await?
+            .map(|row| {
+                let binding_prefix: Option<String> = row.get(0)?;
+                let placement_prefix: String = row.get(1)?;
+                Ok([binding_prefix.as_deref().unwrap_or(""), &placement_prefix]
+                    .into_iter()
+                    .map(|value| value.trim_matches('/'))
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("/"))
+            })
+            .transpose()
+    }
+
     /// Resolves the sole fully reconciled write-authority placement.
     ///
     /// # Errors
