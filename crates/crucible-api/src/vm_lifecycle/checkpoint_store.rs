@@ -6,13 +6,16 @@ use crucible::model::FaultResourceLimits;
 use std::collections::BTreeSet;
 use std::io::{Read, Seek, SeekFrom, Write};
 
+mod decode;
 mod io;
-use io::read_bounded_file;
+use io::{BoundedReadError, read_bounded_file};
 mod paths;
 use paths::{closure_parent, object_parent};
 mod publication;
 pub(super) use publication::{PersistExactCheckpointError, PreparedExactCheckpointPublication};
 use publication::{enforce_published_checkpoint_count, scheduler_resource_limit};
+mod read_budget;
+use read_budget::CheckpointReadBudget;
 mod recovery;
 pub(super) use recovery::{
     reconcile_indeterminate_publication, recover_published_checkpoint_catalog,
@@ -36,14 +39,19 @@ struct ClosureManifest {
     schedule: ContentHash,
     frontier: u64,
     scheduler: ContentHash,
+    #[serde(deserialize_with = "decode::deserialize_vec")]
     event_log_segments: Vec<ContentHash>,
+    #[serde(deserialize_with = "decode::deserialize_vec")]
     signal_artifacts: Vec<ContentHash>,
     trigger_state: ContentHash,
     assertion_state: ContentHash,
     lifecycle_state: ContentHash,
     fault_checkpoint: ContentHash,
+    #[serde(deserialize_with = "decode::deserialize_vec")]
     targets: Vec<TargetManifest>,
+    #[serde(deserialize_with = "decode::deserialize_vec")]
     node_generations: Vec<(String, u64)>,
+    #[serde(deserialize_with = "decode::deserialize_vec")]
     node_service_states: Vec<(String, u8)>,
     identity: ContentHash,
 }
@@ -65,6 +73,7 @@ struct TargetManifest {
 struct ArtifactManifest {
     identity: ContentHash,
     length: u64,
+    #[serde(deserialize_with = "decode::deserialize_vec")]
     chunks: Vec<ContentHash>,
 }
 
@@ -87,6 +96,7 @@ struct LifecycleWire {
     terminal_cause: Option<TerminalCauseWire>,
     initial_lifecycle_observations_pending: bool,
     branch: Option<BranchWire>,
+    #[serde(deserialize_with = "decode::deserialize_vec")]
     recorded_controls: Vec<RecordedControlWire>,
 }
 
@@ -94,14 +104,14 @@ struct LifecycleWire {
 #[serde(rename_all = "snake_case")]
 enum TerminalWire {
     Passed,
-    Failed(Vec<String>),
+    Failed(#[serde(deserialize_with = "decode::deserialize_vec")] Vec<String>),
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum TerminalCauseWire {
     Passed,
-    Failed(Vec<String>),
+    Failed(#[serde(deserialize_with = "decode::deserialize_vec")] Vec<String>),
     BudgetExhausted,
     BackendCrash(String),
     OperatorStop,
@@ -110,8 +120,10 @@ enum TerminalCauseWire {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BranchWire {
+    #[serde(deserialize_with = "decode::deserialize_vec")]
     base_schedule: Vec<u8>,
     frontier: u64,
+    #[serde(deserialize_with = "decode::deserialize_vec")]
     decisions: Vec<Decision>,
     seed: Option<[u8; 32]>,
 }
@@ -119,8 +131,11 @@ struct BranchWire {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RecordedControlWire {
+    #[serde(deserialize_with = "decode::deserialize_vec")]
     configuration_schedule: Vec<u8>,
+    #[serde(deserialize_with = "decode::deserialize_vec")]
     node_times: Vec<(String, u64)>,
+    #[serde(deserialize_with = "decode::deserialize_vec")]
     control: Vec<ControlOperation>,
 }
 
@@ -284,20 +299,24 @@ pub(super) fn load_exact_checkpoint_set(
     let object_directory = object_parent(run_state_root, scenario.id());
     let limits = source.plan().fault_signals().resource_limits();
     let mut budget = CheckpointReadBudget::new(limits.fat_checkpoint_bytes);
-    let manifest_bytes = read_bounded_file(&root.join(MANIFEST_FILE), MAX_MANIFEST_BYTES_U64)
+    let manifest_path = root.join(MANIFEST_FILE);
+    let manifest_length = fs::metadata(&manifest_path)
         .map_err(|error| {
             loop_factory_error(format!(
-                "read exact checkpoint closure {}: {error}",
+                "inspect exact checkpoint closure {}: {error}",
                 identity.to_hex()
             ))
-        })?;
-    budget.reserve(
-        u64::try_from(manifest_bytes.len())
-            .map_err(|_| loop_factory_error("checkpoint manifest size is not representable"))?,
-    )?;
-    let manifest = decode_manifest(&manifest_bytes).map_err(|message| {
-        loop_factory_error(format!("decode exact checkpoint closure: {message}"))
+        })?
+        .len();
+    if manifest_length > MAX_MANIFEST_BYTES_U64 {
+        return Err(loop_factory_error(format!(
+            "exact checkpoint manifest exceeds its role-specific byte limit {MAX_MANIFEST_BYTES_U64}"
+        )));
+    }
+    let manifest_bytes = budget.read_admitted(manifest_length, || {
+        read_bounded_file(&manifest_path, manifest_length)
     })?;
+    let manifest = decode::decode_manifest_with_limits(&manifest_bytes, limits)?;
     if manifest.identity != identity
         || manifest.identity
             != closure_identity(&manifest).map_err(|error| loop_factory_error(error.to_string()))?
@@ -409,6 +428,7 @@ pub(super) fn load_exact_checkpoint_set(
             SMALL_CONTINUATION_MAX_BYTES,
         )?,
         scenario,
+        limits,
     )?;
     let signal_plan = source.plan().fault_signals();
     let expected_signal_artifacts =
@@ -989,9 +1009,13 @@ struct DecodedLifecycle {
 fn decode_lifecycle(
     bytes: &[u8],
     scenario: &ScenarioDef,
+    limits: FaultResourceLimits,
 ) -> Result<DecodedLifecycle, LifecycleApiError> {
-    let wire: LifecycleWire = ciborium::de::from_reader(bytes)
-        .map_err(|_| loop_factory_error("decode exact lifecycle continuation"))?;
+    let _budget = decode::DecodeBudgetGuard::enter(limits);
+    let wire: LifecycleWire = ciborium::de::from_reader(bytes).map_err(|error| {
+        decode::map_decode_resource_error(&error)
+            .unwrap_or_else(|| loop_factory_error("decode exact lifecycle continuation"))
+    })?;
     let canonical = {
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(&wire, &mut encoded)
@@ -1911,15 +1935,7 @@ fn read_object(
             role_limit
         )));
     }
-    if budget.identities.insert(expected) {
-        budget.reserve(size)?;
-    }
-    let bytes = read_bounded_file(&path, size).map_err(|error| {
-        loop_factory_error(format!(
-            "read checkpoint object {}: {error}",
-            path.display()
-        ))
-    })?;
+    let bytes = budget.read_identity(expected, size, || read_bounded_file(&path, size))?;
     if ContentHash::from_bytes(&bytes) != expected {
         return Err(loop_factory_error(format!(
             "checkpoint object {} failed content authentication",
@@ -1927,47 +1943,6 @@ fn read_object(
         )));
     }
     Ok(bytes)
-}
-
-struct CheckpointReadBudget {
-    limit: u64,
-    used: u64,
-    identities: BTreeSet<ContentHash>,
-}
-
-impl CheckpointReadBudget {
-    const fn new(limit: u64) -> Self {
-        Self {
-            limit,
-            used: 0,
-            identities: BTreeSet::new(),
-        }
-    }
-
-    fn reserve(&mut self, requested: u64) -> Result<(), LifecycleApiError> {
-        self.used = self
-            .used
-            .checked_add(requested)
-            .ok_or_else(|| loop_factory_error("exact checkpoint byte accounting overflow"))?;
-        if self.used > self.limit {
-            return Err(loop_factory_error(format!(
-                "exact checkpoint closure exceeds fat_checkpoint_bytes limit {}",
-                self.limit
-            )));
-        }
-        Ok(())
-    }
-
-    fn reserve_identity_once(
-        &mut self,
-        identity: ContentHash,
-        size: u64,
-    ) -> Result<(), LifecycleApiError> {
-        if !self.identities.insert(identity) {
-            return Ok(());
-        }
-        self.reserve(size)
-    }
 }
 
 fn validate_file_hash(path: &Path, expected: ContentHash) -> Result<(), SchedulerError> {
@@ -2404,7 +2379,8 @@ mod tests {
         let mut bytes = Vec::new();
         ciborium::ser::into_writer(&wire, &mut bytes).expect("encode lifecycle fixture");
 
-        let decoded = decode_lifecycle(&bytes, &scenario).expect("decode lifecycle fixture");
+        let decoded = decode_lifecycle(&bytes, &scenario, FaultResourceLimits::default())
+            .expect("decode lifecycle fixture");
 
         assert_eq!(
             decoded.terminal,
