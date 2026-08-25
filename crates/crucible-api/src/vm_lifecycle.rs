@@ -57,7 +57,8 @@ mod checkpoint_store;
 use checkpoint_store::load_exact_checkpoint_set;
 pub use checkpoint_store::{
     PreparedProductionReplayOraclePromotion, ProductionExactCheckpointClosure,
-    ProductionExactCheckpointObject, ProductionExactCheckpointResumeBasis,
+    ProductionExactCheckpointObject, ProductionExactCheckpointReplayTarget,
+    ProductionExactCheckpointReplayTargets, ProductionExactCheckpointResumeBasis,
     ProductionExactCheckpointSource,
     authenticate_portable_exact_checkpoint_replay_oracle_promotion,
     authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary,

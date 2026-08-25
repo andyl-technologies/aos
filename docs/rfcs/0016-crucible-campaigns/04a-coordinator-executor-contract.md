@@ -2476,15 +2476,22 @@ path, publishes the complete replacement only after staging both roots, and can
 reauthenticate the exact complete root pair after restart before the final
 paused-root CAS. A foreign source check, copied manifest identity, missing
 node, changed artifact, or non-matching oracle transition fails before writes.
+The production preparation boundary authenticates the raw attempt root, retains
+only compact live-node descriptors, streams one raw snapshot at a time, and
+requires a node-specific oracle owner to finish or quarantine each guarded
+fat/thin comparison before minting the complete no-write replacement.
+Automatically scheduling that
+comparison phase from every newly paused packaged execution, including its
+retry owner after restart, remains open.
 
 Concrete production-loop process reconstruction and exact-resume modeled-driver
 selection are implemented: a resume-only installer rejects `NotRun` before
 native publication or resource installation, the guarded lifecycle restores the
 complete version-four loop, and the packaged worker routes retained roots only
-to the exact-resume runner. Native-catalog cleanup, the automatic multi-node
-comparison flight, and capability advertisement remain open, so the packaged
-executor does not yet advertise exact resume. Version-two roots remain readable for
-legacy authentication but are incomplete campaign continuations and MUST be
+to the exact-resume runner. Native-catalog cleanup, automatic packaged
+comparison scheduling and recovery, and capability advertisement remain open,
+so the packaged executor does not yet advertise exact resume. Version-two roots
+remain readable for legacy authentication but are incomplete campaign continuations and MUST be
 rejected by attempt resume before VMState materialization. The
 ledger preserves requested, publishing, and paused phases across restart; the
 worker result and publication APIs use linear captured, opaque-prepared,

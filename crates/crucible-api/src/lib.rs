@@ -101,6 +101,7 @@ pub use rpc_abi::{
 pub use vm_lifecycle::{
     PreparedProductionReplayOraclePromotion, ProductionBlockFaultEvidence,
     ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
+    ProductionExactCheckpointReplayTarget, ProductionExactCheckpointReplayTargets,
     ProductionExactCheckpointResumeBasis, ProductionExactCheckpointSource,
     ProductionFaultEvidenceSnapshot, ProductionNetworkOutageEvidence,
     ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence, ProductionVmLifecycleConfig,

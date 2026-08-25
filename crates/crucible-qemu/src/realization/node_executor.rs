@@ -804,6 +804,12 @@ where
         }
     }
 
+    /// Returns the exact modeled node bound to this realization executor.
+    #[must_use]
+    pub const fn node(&self) -> &NodeId {
+        &self.node
+    }
+
     /// Shuts down the active realized node, when one exists.
     ///
     /// # Errors
