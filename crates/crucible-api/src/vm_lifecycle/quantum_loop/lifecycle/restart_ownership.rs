@@ -48,7 +48,7 @@ fn bind_successor_app_random(
 impl ProductionVmLifecycleLoop {
     pub(in crate::vm_lifecycle::quantum_loop) fn prepare_terminal_lifecycle_ownership(
         &self,
-        intent: &QemuNodeLifecycleIntent,
+        intent: &LifecycleMutationIntent,
         current_generation: u64,
         next_generation: u64,
         scheduler_checkpoint: &SingleSchedulerCheckpoint,
@@ -131,7 +131,7 @@ impl ProductionVmLifecycleLoop {
         })
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "restart ownership binds the authenticated node, generation, launch identity, resource coordinate, and coordinator policy"
     )]
@@ -162,7 +162,7 @@ impl ProductionVmLifecycleLoop {
         });
         if debug_selected {
             let backend_path = private_backend_gdbstub_path(&run_directory);
-            let backend_listen = qemu_unix_gdbstub_endpoint(&backend_path).map_err(|error| {
+            let backend_listen = live_unix_gdbstub_endpoint(&backend_path).map_err(|error| {
                 SchedulerError::BoundaryViolation {
                     message: format!(
                         "derive replacement QEMU gdbstub endpoint for `{}`: {error}",

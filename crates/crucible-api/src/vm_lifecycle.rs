@@ -32,9 +32,9 @@ use crucible::{
 };
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
-    QemuNode, QemuNodeLifecycleDecision, QemuNodeLifecycleIntent, QemuProcessIdentity,
-    QemuSharedBlockDevice, QemuVmSnapshot, linux_process_identity,
-    quarantine_orphaned_qemu_process,
+    QemuNode, QemuNodeLifecycleDecision, QemuNodeLifecycleIntent as LifecycleMutationIntent,
+    QemuProcessIdentity, QemuSharedBlockDevice, QemuVmSnapshot as ExactSnapshotHandle,
+    linux_process_identity, quarantine_orphaned_qemu_process,
 };
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -213,7 +213,7 @@ struct ProductionVmExactCheckpointTarget {
     configuration: Configuration,
     counter: u64,
     scheduler_time: VirtualTime,
-    snapshot: QemuVmSnapshot,
+    snapshot: ExactSnapshotHandle,
     overlay_artifact: ProductionCheckpointArtifact,
     vmstate_artifact: ProductionCheckpointArtifact,
     manifest_identity: crucible::ContentHash,
@@ -1067,7 +1067,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
                 loop_factory_error("debug configuration disappeared during QEMU launch")
             })?;
             let backend_path = private_backend_gdbstub_path(&node_directory);
-            let backend_listen = qemu_unix_gdbstub_endpoint(&backend_path)?;
+            let backend_listen = live_unix_gdbstub_endpoint(&backend_path)?;
             let gdbstub =
                 ProductionGdbstubChannelConfig::new(backend_listen, debug.operator_listen.clone())
                     .map_err(|error| {

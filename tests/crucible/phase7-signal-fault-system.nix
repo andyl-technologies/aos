@@ -358,6 +358,8 @@ in
           run_exact_qemu_test \
             node::tests::fault_event_budget::node_set_arms_one_node_from_one_aggregate_fault_event_budget
           run_exact_qemu_test \
+            node::tests::fault_event_budget::selected_node_step_rearms_the_retained_aggregate_fault_event_budget
+          run_exact_qemu_test \
             node::tests::fault_event_budget::fault_event_limit_rejects_before_consuming_staged_ownership
           run_exact_qemu_test \
             node::tests::fault_event_budget::fault_event_payload_limit_rejects_before_copying_or_consuming_ownership

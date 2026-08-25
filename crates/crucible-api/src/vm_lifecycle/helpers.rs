@@ -157,7 +157,7 @@ pub(super) fn private_backend_gdbstub_path(node_directory: &Path) -> PathBuf {
     node_directory.join("debug-rsp.sock")
 }
 
-pub(super) fn qemu_unix_gdbstub_endpoint(path: &Path) -> Result<String, LifecycleApiError> {
+pub(super) fn live_unix_gdbstub_endpoint(path: &Path) -> Result<String, LifecycleApiError> {
     let path = path.to_str().ok_or_else(|| {
         loop_factory_error(format!(
             "QEMU gdbstub path is not valid UTF-8: {}",
@@ -370,7 +370,7 @@ mod tests {
         let path = private_backend_gdbstub_path(directory);
 
         assert_eq!(path, directory.join("debug-rsp.sock"));
-        let Ok(endpoint) = qemu_unix_gdbstub_endpoint(&path) else {
+        let Ok(endpoint) = live_unix_gdbstub_endpoint(&path) else {
             panic!("ordinary private socket path must be accepted");
         };
         assert_eq!(
@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn private_gdbstub_endpoint_rejects_qemu_option_delimiters() {
-        let Err(error) = qemu_unix_gdbstub_endpoint(Path::new("/tmp/node,server=off")) else {
+        let Err(error) = live_unix_gdbstub_endpoint(Path::new("/tmp/node,server=off")) else {
             panic!("comma must not enter the QEMU character-device syntax");
         };
 

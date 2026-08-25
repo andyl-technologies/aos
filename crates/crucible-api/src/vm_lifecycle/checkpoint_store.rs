@@ -480,7 +480,7 @@ pub(super) fn load_exact_checkpoint_set(
         let node = NodeId {
             name: target.node.clone(),
         };
-        let snapshot = QemuVmSnapshot::from_canonical_bytes_with_limit(
+        let snapshot = ExactSnapshotHandle::from_canonical_bytes_with_limit(
             &read_object(
                 &object_directory,
                 target.snapshot,
