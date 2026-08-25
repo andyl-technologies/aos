@@ -36,10 +36,12 @@ in
       src = crucibleSrc;
 
       buildDeps = [
+        pkgs.binutils
         pkgs.coreutils
         pkgs.crucible-qemu-plugin
         pkgs.grep
         pkgs.qemu-crucible
+        pkgs.qemu
         qemuWithoutTypedResult
         pkgs.rust
         pkgs.sed
@@ -118,6 +120,21 @@ in
             grep -Fxq 'exit_code=70' "$report"
             grep -Fxq 'lifecycle_impulse_committed=true' "$report"
 
+            stock_log="$TMPDIR/stock-qemu.log"
+            set +e
+            timeout -k 5 15 \
+              ${pkgs.qemu}/bin/qemu-system-x86_64 \
+              -machine none -accel tcg -display none -nodefaults -S \
+              -plugin ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+              > "$stock_log" 2>&1
+            stock_status=$?
+            set -e
+            test "$stock_status" -ne 0
+            test "$stock_status" -ne 124
+            ! grep -Fxq PASS "$stock_log"
+            ! nm -D --defined-only ${pkgs.qemu}/bin/qemu-system-x86_64 \
+              | grep -q qemu_plugin_crucible_fault_submit
+
             without_result_dir="$TMPDIR/no-typed-result"
             mkdir -p "$without_result_dir"
             without_result_stdout="$TMPDIR/without-typed-result.stdout"
@@ -142,8 +159,15 @@ in
             mkdir -p "$out"
             cp "$report" "$out/result"
             cp "$without_result_stderr" "$out/without-typed-node-result.stderr"
+            cp "$stock_log" "$out/stock-qemu.log"
             printf 'attr_path=%s\n' "$ATTR_PATH" >> "$out/result"
             printf 'proven=typed-event,binding-evaluation,cross-domain-atomic-commit,exact-capability-replay,shared-command-ring,safe-boundary,changed-state-precondition-rejection,typed-occurrence,authorized-process-exit,patch-0072-required,patch-0109-exact-control-dispatch\n' >> "$out/result"
+            printf 'patch_microtest_gate=gate:patch-microtests\n' >> "$out/result"
+            printf 'patch=0109-crucible-control-boundary-node-faults.patch\n' >> "$out/result"
+            printf 'patched_fixture_exercised=true\n' >> "$out/result"
+            printf 'stock_negative_control=true\n' >> "$out/result"
+            printf 'qemu_package=%s\n' '${pkgs.qemu-crucible}' >> "$out/result"
+            printf 'qemu_package_version=%s\n' '${pkgs.qemu-crucible.version}' >> "$out/result"
           '';
         }
       ];

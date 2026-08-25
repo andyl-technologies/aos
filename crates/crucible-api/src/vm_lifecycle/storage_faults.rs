@@ -1,8 +1,6 @@
-//! Production signal coordination for live World-backed block devices.
+//! Production signal coordination for live World-backed block and 9p devices.
 //!
-//! The coordinator owns the exact seams around the shared-memory block
-//! servicer. It evaluates one authenticated opportunity per authored phase and
-//! never substitutes an implicit fault-free result after scheduler admission.
+//! Coordinators fail closed after admission and evaluate only authenticated opportunities.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -2645,7 +2643,7 @@ impl QemuNinepFaultCoordinator for ProductionNinepFaultCoordinator {
             Err(error) => error,
         };
         if shared_commit_started {
-            return Err(error);
+            return Err(fail_after_shared_ninep_commit(&self.runtime, error));
         }
         let mut rollback_failures = Vec::new();
         if let Err(rollback) = servicer.rollback_transaction(servicer_before) {
@@ -2674,7 +2672,9 @@ impl QemuNinepFaultCoordinator for ProductionNinepFaultCoordinator {
     }
 }
 
+mod ambiguous_commit;
 mod evidence;
+use ambiguous_commit::*;
 use evidence::*;
 #[cfg(test)]
 #[path = "storage_faults/tests.rs"]

@@ -131,7 +131,7 @@ in
             --example crucible-qemu-live-plugin-quantum
 
           if [ "$CRUCIBLE_QUANTUM_REQUIRE_SMP_PAUSE_RENDEZVOUS" = 1 ]; then
-            fingerprint_test='node::tests::stale_execution_fingerprint_requests_production_control_boundary'
+            fingerprint_test='node::tests::fingerprint::stale_execution_fingerprint_requests_production_control_boundary'
             cargo test \
               --frozen \
               --offline \

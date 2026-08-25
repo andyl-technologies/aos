@@ -63,6 +63,7 @@ impl ProductionFaultRuntime {
         &self,
         nodes: &mut QemuNodeSet,
     ) -> Result<ProductionFaultRuntimeCheckpoint, ProductionFaultRuntimeError> {
+        self.require_usable()?;
         if nodes.has_pending_fault_events()?
             || !self.pending_node_lifecycle.is_empty()
             || !self.pending_node_boot.is_empty()
@@ -384,8 +385,18 @@ impl ProductionFaultRuntime {
 
     /// Permanently poisons a continuation after coupled adapter visibility becomes ambiguous.
     pub fn poison(&mut self) {
+        self.poisoned = true;
         if let Some(runtime) = &mut self.runtime {
             runtime.poison();
+        }
+    }
+
+    /// Rejects work after any coupled adapter crossed an ambiguous commit point.
+    pub(super) fn require_usable(&self) -> Result<(), ProductionFaultRuntimeError> {
+        if self.poisoned {
+            Err(ProductionFaultRuntimeError::Poisoned)
+        } else {
+            Ok(())
         }
     }
 

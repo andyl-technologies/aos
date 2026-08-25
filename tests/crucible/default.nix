@@ -421,6 +421,9 @@ in rec {
     qemuLiveWhiteboxDoorbell = import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;};
     qemuLiveBlockRealization = import ./phase2-qemu-live-block-realization.nix {inherit pkgs lib;};
     qemuLiveFaultHardware = import ./phase2-qemu-live-fault-hardware.nix {inherit pkgs lib;};
+    qemuInstructionFaults = import ./phase2-qemu-instruction-faults.nix {inherit pkgs lib;};
+    qemuVcpuService = import ./phase2-qemu-vcpu-service.nix {inherit pkgs lib;};
+    qemuNodeLifecycle = import ./phase2-qemu-node-lifecycle.nix {inherit pkgs lib;};
     qemuLiveNodeStep = import ./phase2-qemu-live-node-step.nix {inherit pkgs lib;};
     qemuLiveNodeLifecycleFault = import ./phase2-qemu-live-node-lifecycle-fault.nix {inherit pkgs lib;};
     qemuLiveBlockIo = import ./phase2-qemu-live-block-io.nix {inherit pkgs lib;};
@@ -2903,6 +2906,8 @@ in rec {
             "T-QEMU-0106"
             "T-QEMU-0107"
             "T-QEMU-0108"
+            "T-QEMU-0109"
+            "T-QEMU-0110"
             "T-QEMU-LICENSE"
             "T-SPEC-1"
             "T-SPEC-2"
