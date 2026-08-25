@@ -473,6 +473,8 @@ pub struct ProductionVmLifecycleLoop {
     debug_runtime_evidence: Vec<ProductionVmDebugRuntimeEvidence>,
     _run_directory: ProductionRunDirectory,
 }
+mod checkpoint_recovery;
+use checkpoint_recovery::durable_run_state_api_error;
 mod config;
 mod helpers;
 mod network_faults;
@@ -604,6 +606,7 @@ fn production_run_directory(
         run_indexes.push((index, entry.path()));
     }
     run_indexes.sort_by_key(|(index, _)| *index);
+    let mut live_prior_run = false;
     for (_, directory) in &run_indexes {
         let (mut manifest, mut journal, runtime_event_records, runtime_event_log_bytes) =
             decode_prior_run_state(directory, &scenario_identity, resource_limits)
@@ -615,6 +618,7 @@ fn production_run_directory(
                     loop_factory_error(format!("validate lifecycle run owner: {error}"))
                 })?;
             if live_owner.as_ref() == Some(&manifest.owner) {
+                live_prior_run = true;
                 continue;
             }
             for identity in manifest
@@ -644,6 +648,13 @@ fn production_run_directory(
             )
             .map_err(durable_run_state_api_error)?;
         }
+        checkpoint_recovery::reconcile_abandoned_run_checkpoint_staging(directory)?;
+    }
+    if !live_prior_run {
+        checkpoint_recovery::reconcile_abandoned_checkpoint_store_staging(
+            &config.run_state_root,
+            scenario.id(),
+        )?;
     }
     let next_index = run_indexes.last().map_or(Ok(0), |(index, _)| {
         index
@@ -699,25 +710,6 @@ use network_faults::{
 };
 pub use search::production_vm_search_frontier;
 use storage_faults::{ProductionBlockFaultCoordinator, block_binding_for_vm, ninep_binding_for_vm};
-
-fn durable_run_state_api_error(error: DurableRunStateError) -> LifecycleApiError {
-    match error {
-        DurableRunStateError::ResourceLimit {
-            field,
-            current,
-            requested,
-            configured,
-            hard,
-        } => LifecycleApiError::ResourceLimit(crate::LifecycleResourceLimit {
-            field,
-            current,
-            requested,
-            configured,
-            hard,
-        }),
-        error => loop_factory_error(error.to_string()),
-    }
-}
 
 /// Builds a production lifecycle by directly restoring a durable fat checkpoint.
 ///
@@ -867,6 +859,11 @@ fn build_production_vm_lifecycle_loop_with_restore(
         scenario,
         config,
         source.plan().fault_signals().resource_limits(),
+    )?;
+    let checkpoint_targets = checkpoint_recovery::recover_published_checkpoint_states(
+        &config.run_state_root,
+        scenario,
+        source,
     )?;
     run_manifest
         .processes
@@ -1526,7 +1523,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
         scenario: scenario.clone(),
         source: source.clone(),
         config: config.clone(),
-        checkpoint_targets: BTreeMap::new(),
+        checkpoint_targets,
         recorded_controls: restore_checkpoint
             .as_ref()
             .map_or_else(Vec::new, |checkpoint| checkpoint.recorded_controls.clone()),
