@@ -86,7 +86,10 @@ fn assert_live_gate_matches_adapter(effect: EffectKind, live_gate: &str) {
         },
         FaultAdapter::Node => assert!(matches!(
             live_gate,
-            "gate:live-node-lifecycle-fault" | "gate:live-fault-hardware" | "gate:patch-microtests"
+            "gate:live-node-lifecycle-fault"
+                | "gate:live-node-lifecycle-matrix"
+                | "gate:live-fault-hardware"
+                | "gate:patch-microtests"
         )),
     }
 }

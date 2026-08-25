@@ -109,8 +109,9 @@ fn executor(effect: EffectKind) -> &'static str {
 
 fn conformance_test(effect: EffectKind) -> &'static str {
     match effect {
-        EffectKind::NodeLifecycle | EffectKind::NodeHang => {
-            "tests/crucible/phase2-qemu-live-node-lifecycle-fault.nix"
+        EffectKind::NodeLifecycle => "tests/crucible/phase2-qemu-live-node-lifecycle-fault.nix",
+        EffectKind::NodeHang => {
+            "tests/crucible/phase2-qemu-node-lifecycle.nix via gate:patch-microtests"
         }
         EffectKind::CpuService | EffectKind::CpuVcpuState => {
             "tests/crucible/phase2-qemu-vcpu-service.nix via gate:patch-microtests"
@@ -150,7 +151,8 @@ fn conformance_test(effect: EffectKind) -> &'static str {
 
 fn production_conformance(effect: EffectKind) -> ProductionConformanceEvidence {
     let live_gate = match effect {
-        EffectKind::NodeLifecycle | EffectKind::NodeHang => "gate:live-node-lifecycle-fault",
+        EffectKind::NodeLifecycle => "gate:live-node-lifecycle-fault",
+        EffectKind::NodeHang => "gate:live-node-lifecycle-matrix",
         EffectKind::ClockTransform
         | EffectKind::ClockSourceState
         | EffectKind::AcceleratorLifecycle
