@@ -20738,7 +20738,14 @@ impl RpcService {
         if !verifier
             .challenge_is_published(&current.domain, &current.txt_challenge)
             .await
-            .map_err(RpcError::internal)?
+            .map_err(|error| {
+                tracing::warn!(
+                    domain = %current.domain,
+                    error = %format!("{error:#}"),
+                    "organization-domain DNS verification unavailable"
+                );
+                RpcError::Unavailable("DNS TXT verification is temporarily unavailable".to_string())
+            })?
         {
             return Err(RpcError::FailedPrecondition(
                 "the exact DNS TXT challenge is not published".into(),
@@ -35642,6 +35649,15 @@ mod cache_upload_tests {
         }
     }
 
+    struct UnavailableIdentityDomain;
+
+    #[async_trait::async_trait]
+    impl crate::topology_probe::IdentityDomainVerifier for UnavailableIdentityDomain {
+        async fn challenge_is_published(&self, _domain: &str, _challenge: &str) -> Result<bool> {
+            bail!("injected DNS transport failure")
+        }
+    }
+
     async fn injected_service(
         fetch_behaviors: Vec<FetchBehavior>,
         write_behaviors: Vec<WriteBehavior>,
@@ -36643,6 +36659,74 @@ mod cache_upload_tests {
             .await
             .unwrap_err();
         assert!(matches!(error, RpcError::FailedPrecondition(_)));
+    }
+
+    #[tokio::test]
+    async fn identity_domain_dns_transport_failure_is_publicly_retryable() {
+        let (mut service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+        service.identity_domain_verifier = Some(Arc::new(UnavailableIdentityDomain));
+        db.create_org("dns-unavailable", "DNS unavailable")
+            .await
+            .unwrap();
+
+        let claim_plan = service
+            .plan_claim_organization_domain(
+                Some(&auth),
+                pb::PlanClaimOrganizationDomainRequest {
+                    org_slug: "dns-unavailable".into(),
+                    domain: "login.example.test".into(),
+                    expected_resource_version: "absent".into(),
+                    idempotency_key: "plan-domain-claim-unavailable".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let claimed = service
+            .apply_claim_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: claim_plan.plan_id,
+                    confirmation_hash: claim_plan.confirmation_hash,
+                    idempotency_key: "apply-domain-claim-unavailable".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .domain
+            .unwrap();
+        let verify_plan = service
+            .plan_verify_organization_domain(
+                Some(&auth),
+                pb::PlanVerifyOrganizationDomainRequest {
+                    org_slug: "dns-unavailable".into(),
+                    domain: claimed.domain,
+                    expected_resource_version: claimed.resource_version,
+                    idempotency_key: "plan-domain-verify-unavailable".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+
+        let error = service
+            .apply_verify_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: verify_plan.plan_id,
+                    confirmation_hash: verify_plan.confirmation_hash,
+                    idempotency_key: "apply-domain-verify-unavailable".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RpcError::Unavailable(message)
+                if message == "DNS TXT verification is temporarily unavailable"
+        ));
     }
 
     #[tokio::test]
