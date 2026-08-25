@@ -46,7 +46,15 @@ impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
     }
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
-        Ok(false)
+        Ok(true)
+    }
+
+    fn capture_attempt_checkpoint(
+        &mut self,
+    ) -> Result<crate::CapturedAttemptCheckpoint, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("modeled driver fixture has no checkpoint authority"),
+        })
     }
 
     fn fault_evidence_snapshot(
@@ -64,6 +72,90 @@ impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         Ok(Vec::new())
     }
+}
+
+fn expect_observation(
+    outcome: QemuFreshDriveOutcome<QemuFreshPendingObservation>,
+) -> QemuFreshPendingObservation {
+    match outcome {
+        QemuFreshDriveOutcome::Observation(pending) => pending,
+        QemuFreshDriveOutcome::CheckpointRequested => {
+            panic!("modeled observation fixture unexpectedly requested a checkpoint")
+        }
+    }
+}
+
+#[test]
+fn sticky_checkpoint_request_stops_at_a_safe_boundary_without_driving() {
+    let input = input(StopCondition::Terminal);
+    let checkpoint_request = ExecutionCheckpointRequest::default();
+    checkpoint_request.request_for_test();
+    let context = AttemptExecutionContext::new(
+        AttemptResourceLimits::new(1, 1, 0, 1).expect("checkpoint resources"),
+        ExecutionRetentionIntent::Discard,
+        ExecutionCancellation::default(),
+        checkpoint_request,
+    );
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::new(),
+        terminal: None,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+    let mut driver = QemuFreshModeledDriver::new();
+
+    let outcome = driver
+        .drive(
+            &mut lifecycle,
+            &input,
+            &context,
+            QemuFreshStartMaterialization::genesis(),
+        )
+        .expect("checkpoint request should reach runner ownership");
+
+    assert!(matches!(
+        outcome,
+        QemuFreshDriveOutcome::CheckpointRequested
+    ));
+    assert_eq!(owner.drives, 0);
+}
+
+#[test]
+fn terminal_verdict_wins_over_a_coincident_checkpoint_request() {
+    let input = input(StopCondition::Terminal);
+    let checkpoint_request = ExecutionCheckpointRequest::default();
+    checkpoint_request.request_for_test();
+    let context = AttemptExecutionContext::new(
+        AttemptResourceLimits::new(1, 1, 0, 1).expect("checkpoint resources"),
+        ExecutionRetentionIntent::Discard,
+        ExecutionCancellation::default(),
+        checkpoint_request,
+    );
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::new(),
+        terminal: Some(QuantumTerminalVerdict::Passed),
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+    let mut driver = QemuFreshModeledDriver::new();
+
+    let pending = expect_observation(
+        driver
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context,
+                QemuFreshStartMaterialization::from_test_parts(
+                    Vec::new(),
+                    None,
+                    Some(QuantumTerminalVerdict::Passed),
+                ),
+            )
+            .expect("terminal verdict should remain authoritative"),
+    );
+
+    assert!(matches!(pending.stop, ModeledStop::TerminalPassed));
+    assert_eq!(owner.drives, 0);
 }
 
 #[test]
@@ -106,14 +198,16 @@ fn event_count_seals_final_drain_coverage_into_exact_candidate() {
     let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
     let mut driver = QemuFreshModeledDriver::new();
 
-    let pending = driver
-        .drive(
-            &mut lifecycle,
-            &input,
-            &context(),
-            QemuFreshStartMaterialization::from_test_parts(prefix.entries.clone(), None, None),
-        )
-        .expect("event-count stop");
+    let pending = expect_observation(
+        driver
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::from_test_parts(prefix.entries.clone(), None, None),
+            )
+            .expect("event-count stop"),
+    );
     let product = driver
         .seal(pending, final_append.entries.clone())
         .expect("final coverage projection");
@@ -167,14 +261,16 @@ fn modeled_scheduler_metrics_are_derived_from_the_canonical_log() {
     let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
     let mut driver = QemuFreshModeledDriver::new();
 
-    let pending = driver
-        .drive(
-            &mut lifecycle,
-            &input,
-            &context(),
-            QemuFreshStartMaterialization::genesis(),
-        )
-        .expect("terminal modeled stop");
+    let pending = expect_observation(
+        driver
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("terminal modeled stop"),
+    );
     let product = driver
         .seal(pending, Vec::new())
         .expect("model-owned measurement projection");
@@ -319,14 +415,16 @@ fn fresh_driver_retains_verified_guest_measurement_evaluation() {
     let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
     let mut driver = QemuFreshModeledDriver::new();
 
-    let pending = driver
-        .drive(
-            &mut lifecycle,
-            &input,
-            &context(),
-            QemuFreshStartMaterialization::genesis(),
-        )
-        .expect("terminal guest-measured stop");
+    let pending = expect_observation(
+        driver
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("terminal guest-measured stop"),
+    );
     let product = driver
         .seal(pending, Vec::new())
         .expect("verified guest measurement projection");
@@ -520,14 +618,16 @@ fn next_choice_retains_the_complete_discovery_bundle() {
     let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
     let mut driver = QemuFreshModeledDriver::new();
 
-    let pending = driver
-        .drive(
-            &mut lifecycle,
-            &input,
-            &context(),
-            QemuFreshStartMaterialization::genesis(),
-        )
-        .expect("next-choice stop");
+    let pending = expect_observation(
+        driver
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("next-choice stop"),
+    );
     let product = driver.seal(pending, Vec::new()).expect("choice candidate");
     let AttemptExecutionProduct::Observation(candidate) = product else {
         panic!("fresh modeled driver must return an observation")
@@ -563,14 +663,16 @@ fn terminal_run_projects_offline_property_verdicts() {
     let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
     let mut driver = QemuFreshModeledDriver::new();
 
-    let pending = driver
-        .drive(
-            &mut lifecycle,
-            &input,
-            &context(),
-            QemuFreshStartMaterialization::genesis(),
-        )
-        .expect("terminal modeled stop");
+    let pending = expect_observation(
+        driver
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("terminal modeled stop"),
+    );
     let product = driver
         .seal(pending, Vec::new())
         .expect("property projection");
@@ -621,14 +723,16 @@ fn non_dense_final_drain_is_rejected_before_candidate_construction() {
     };
     let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
     let mut driver = QemuFreshModeledDriver::new();
-    let pending = driver
-        .drive(
-            &mut lifecycle,
-            &input,
-            &context(),
-            QemuFreshStartMaterialization::genesis(),
-        )
-        .expect("event-count stop");
+    let pending = expect_observation(
+        driver
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("event-count stop"),
+    );
     let invalid = SchedulerEventLogEntry::guest_marker_observation(
         7,
         Icount { retired: 2 },

@@ -383,6 +383,20 @@ occur as at least one 32-byte identity in the canonical manifest, so this
 conservative relation bounds hostile zero-length inventories by the 64 MiB
 manifest ceiling.
 
+For a packaged fresh attempt, the modeled driver yields checkpoint ownership
+only at an exact safe boundary. The production lifecycle first retains the
+complete portable source in its separately bounded native catalog. While that
+lifecycle is still owned by the runner, the fixed pool authenticates the source
+scenario, streams every native object to derive the version-four campaign root,
+and persists `checkpoint-publishing(root)` before the first campaign-CAS put.
+The runner then tears down the lifecycle and returns an opaque prepared token;
+the pool publishes the immutable closure and moves to `paused(root)` without
+repeating guest execution or capture. External models cannot construct the
+opaque prepared phase, and idempotent staging never releases the active
+reservation before teardown. Abandoned native-catalog cleanup must be composed
+with the assignment-root collector before this capture layer is treated as a
+long-term retention store.
+
 The single-host restore transaction accepts either a current exact-pin
 selection or the exact root retained by a paused execution origin. The latter
 must name the attempt's pre-selection or post-selection configuration; a
@@ -416,8 +430,10 @@ single-node oracle path, but it cannot represent the complete production
 multi-node trigger/assertion/fault/network closure and MUST NOT be advertised as
 packaged production resume. A version-four attempt resume must install and
 validate the complete production closure described above before modeled guest
-work; the concrete packaged capture/resume composition remains gated in the
-implementation plan until that wiring is complete.
+work. Packaged version-four capture and ledger handoff are implemented; exact
+production-loop reconstruction, resume-driver selection, capability
+advertisement, and native-catalog cleanup remain gated in the implementation
+plan.
 
 A newly captured exact root records replay-oracle state `NotRun` and is not
 eligible for resume. The single-host owner authenticates the selected root and

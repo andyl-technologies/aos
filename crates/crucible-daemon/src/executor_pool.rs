@@ -9,7 +9,7 @@
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -23,19 +23,21 @@ use crucible_campaign::{
     WatchExecutorCapacityRequest,
 };
 
+use crate::executor_supervisor::{AttemptCheckpointHandoff, ExecutionCheckpointHandoff};
 use crate::{
     AssignmentLedger, AttemptAdmissionValidator, AttemptExecutionKey,
     AttemptResultPreparationError, AttemptResultStageOutcome, AttemptWorkerFailure,
-    AttemptWorkerReconcileError, CheckpointResultAbortToken, CheckpointResultStageOutcome,
+    AttemptWorkerReconcileError, CapturedAttemptCheckpoint, CheckpointHandoffFailure,
+    CheckpointPublicationOutcome, CheckpointResultAbortToken, CheckpointResultStageOutcome,
     CompletionValidationFailure, ExactCheckpointStore, LocalAttemptWorker,
     LocalExecutorCapabilityService, LocalExecutorError, LocalExecutorSupervisor,
-    PreparedAttemptResult, PreparedAttemptWorkResult, PreparedCheckpointResult,
-    PublishedAttemptResult, QueuedAttempt, StagedAttemptResult, abort_checkpoint_result,
-    abort_prepared_attempt_result, abort_published_attempt_result, abort_staged_attempt_result,
-    prepare_attempt_result, publish_prepared_attempt_result, publish_staged_checkpoint_result,
-    reconcile_attempt_failure, reconcile_published_attempt_result,
-    reconcile_published_checkpoint_result, retry_pending_attempt_result,
-    retry_pending_checkpoint_result, stage_prepared_attempt_result,
+    PreparedAttemptCheckpoint, PreparedAttemptResult, PreparedAttemptWorkResult,
+    PreparedCheckpointResult, PublishedAttemptResult, QueuedAttempt, StagedAttemptResult,
+    abort_checkpoint_result, abort_prepared_attempt_result, abort_published_attempt_result,
+    abort_staged_attempt_result, prepare_attempt_result, publish_prepared_attempt_result,
+    publish_staged_checkpoint_result, reconcile_attempt_failure,
+    reconcile_published_attempt_result, reconcile_published_checkpoint_result,
+    retry_pending_attempt_result, retry_pending_checkpoint_result, stage_prepared_attempt_result,
     stage_prepared_checkpoint_result,
 };
 
@@ -706,6 +708,89 @@ impl<L, V> SharedExecutor<L, V> {
     }
 }
 
+struct PoolCheckpointHandoff<L, V> {
+    shared: Weak<SharedExecutor<L, V>>,
+    queued: QueuedAttempt,
+}
+
+impl<L, V> std::fmt::Debug for PoolCheckpointHandoff<L, V> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PoolCheckpointHandoff")
+            .field("execution", &self.queued.execution())
+            .field("attempt", &self.queued.request().attempt())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<L, V> AttemptCheckpointHandoff for PoolCheckpointHandoff<L, V>
+where
+    L: AssignmentLedger + Send + 'static,
+    V: AttemptAdmissionValidator + Send + Sync + 'static,
+{
+    fn prepare_and_stage(
+        &self,
+        capture: &CapturedAttemptCheckpoint,
+    ) -> Result<PreparedAttemptCheckpoint, CheckpointHandoffFailure> {
+        let Some(shared) = self.shared.upgrade() else {
+            return Err(CheckpointHandoffFailure::Terminal);
+        };
+        let prepared = loop {
+            if self.queued.cancellation().is_canceled() {
+                return Err(CheckpointHandoffFailure::Canceled);
+            }
+            match shared
+                .checkpoints
+                .prepare_attempt_checkpoint(capture.reopenable_copy())
+            {
+                Ok(prepared) => break prepared,
+                Err(source) if source.is_retryable() => {
+                    increment(&shared.counters.publication_retries);
+                    thread::sleep(WORKER_RETRY_INTERVAL);
+                }
+                Err(_) => return Err(CheckpointHandoffFailure::Terminal),
+            }
+        };
+
+        loop {
+            if self.queued.cancellation().is_canceled() {
+                return Err(CheckpointHandoffFailure::Canceled);
+            }
+            let root = prepared.root();
+            let mut executor = match shared.executor.lock() {
+                Ok(executor) => executor,
+                Err(poisoned) => {
+                    drop(poisoned.into_inner());
+                    shared.fail_closed();
+                    return Err(CheckpointHandoffFailure::Terminal);
+                }
+            };
+            match executor
+                .supervisor_mut()
+                .stage_checkpoint_publication_before_teardown(&self.queued, root)
+            {
+                Ok(CheckpointPublicationOutcome::Staged)
+                | Ok(CheckpointPublicationOutcome::AlreadyStaged)
+                | Ok(CheckpointPublicationOutcome::AlreadyPaused) => return Ok(prepared),
+                Ok(CheckpointPublicationOutcome::NotCurrent)
+                    if self.queued.cancellation().is_canceled() =>
+                {
+                    return Err(CheckpointHandoffFailure::Canceled);
+                }
+                Ok(CheckpointPublicationOutcome::NotCurrent) => {
+                    return Err(CheckpointHandoffFailure::Terminal);
+                }
+                Err(source) if supervisor_error_is_retryable(&source) => {
+                    increment(&shared.counters.publication_retries);
+                    drop(executor);
+                    thread::sleep(WORKER_RETRY_INTERVAL);
+                }
+                Err(_) => return Err(CheckpointHandoffFailure::Terminal),
+            }
+        }
+    }
+}
+
 struct PoolCompletionState {
     finished_workers: AtomicUsize,
     worker_count: usize,
@@ -808,7 +893,11 @@ fn worker_loop<L, V, W>(
     }
 }
 
-fn take_next_queued<L, V>(shared: &SharedExecutor<L, V>) -> Option<QueuedAttempt> {
+fn take_next_queued<L, V>(shared: &Arc<SharedExecutor<L, V>>) -> Option<QueuedAttempt>
+where
+    L: AssignmentLedger + Send + 'static,
+    V: AttemptAdmissionValidator + Send + Sync + 'static,
+{
     let mut executor = match shared.executor.lock() {
         Ok(executor) => executor,
         Err(poisoned) => {
@@ -818,7 +907,12 @@ fn take_next_queued<L, V>(shared: &SharedExecutor<L, V>) -> Option<QueuedAttempt
         }
     };
     loop {
-        if let Some(queued) = executor.supervisor_mut().next_queued() {
+        if let Some(mut queued) = executor.supervisor_mut().next_queued() {
+            let handoff = PoolCheckpointHandoff {
+                shared: Arc::downgrade(shared),
+                queued: queued.reconciliation_copy(),
+            };
+            queued.install_checkpoint_handoff(ExecutionCheckpointHandoff::new(Arc::new(handoff)));
             return Some(queued);
         }
         if shared.state.load(Ordering::Acquire) != POOL_RUNNING {

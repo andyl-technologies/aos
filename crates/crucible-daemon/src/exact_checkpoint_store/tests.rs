@@ -418,7 +418,10 @@ fn publication_phase_tokens_keep_capacity_and_root_ordering_exact() {
     let root = prepared.root();
     let staged = match stage_prepared_checkpoint_result(
         &mut supervisor,
-        PreparedCheckpointResult::new(queued, prepared),
+        PreparedCheckpointResult::new(
+            queued,
+            PreparedAttemptCheckpoint::SingleNode(Box::new(prepared)),
+        ),
     )
     .expect("stage root")
     {
@@ -485,7 +488,10 @@ fn publication_phase_tokens_keep_capacity_and_root_ordering_exact() {
     let abort_root = abort_prepared.root();
     let abort_staged = match stage_prepared_checkpoint_result(
         &mut supervisor,
-        PreparedCheckpointResult::new(abort_queued, abort_prepared),
+        PreparedCheckpointResult::new(
+            abort_queued,
+            PreparedAttemptCheckpoint::SingleNode(Box::new(abort_prepared)),
+        ),
     )
     .expect("stage abort root")
     {

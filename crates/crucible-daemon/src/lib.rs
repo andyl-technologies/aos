@@ -215,12 +215,13 @@ pub use exact_checkpoint_restore::{
     realize_materialized_attempt_checkpoint_guarded, realize_materialized_exact_checkpoint_guarded,
 };
 pub use exact_checkpoint_store::{
+    AttemptCheckpointPublication, AttemptCheckpointResult, CapturedAttemptCheckpoint,
     CapturedExactCheckpoint, EXACT_CHECKPOINT_ROOT_SCHEMA, EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
     ExactCheckpointId, ExactCheckpointPublication, ExactCheckpointStore, ExactCheckpointStoreError,
     LoadedExactCheckpoint, LoadedProductionExactCheckpoint, PrepareReplayOraclePromotionError,
-    PreparedExactCheckpoint, PreparedProductionExactCheckpoint, PreparedReplayOraclePromotion,
-    ProductionExactCheckpointPublication, QEMU_VM_SNAPSHOT_METADATA_SCHEMA_VERSION,
-    QEMU_VMSTATE_SCHEMA_VERSION,
+    PreparedAttemptCheckpoint, PreparedExactCheckpoint, PreparedProductionExactCheckpoint,
+    PreparedReplayOraclePromotion, ProductionExactCheckpointPublication,
+    QEMU_VM_SNAPSHOT_METADATA_SCHEMA_VERSION, QEMU_VMSTATE_SCHEMA_VERSION,
 };
 pub use exact_pin_retention::{
     DirectoryExactPinMaterializationStore, EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA,
@@ -256,11 +257,12 @@ pub use executor_service::{
 };
 pub use executor_supervisor::{
     AllowAllAttemptAdmission, AttemptAdmissionValidator, CancellationOutcome,
-    CheckpointCompletionOutcome, CheckpointPromotionCompletionOutcome, CheckpointPromotionRecovery,
-    CheckpointPromotionStageOutcome, CheckpointPublicationOutcome, CheckpointRequestOutcome,
-    CompletionOutcome, CompletionValidationFailure, ExecutionCancellation,
-    ExecutionCheckpointRequest, ExecutorAvailability, ExecutorCapacity, ExecutorCapacityError,
-    LocalExecutorError, LocalExecutorSupervisor, ObservationPublicationOutcome, QueuedAttempt,
+    CheckpointCompletionOutcome, CheckpointHandoffFailure, CheckpointPromotionCompletionOutcome,
+    CheckpointPromotionRecovery, CheckpointPromotionStageOutcome, CheckpointPublicationOutcome,
+    CheckpointRequestOutcome, CompletionOutcome, CompletionValidationFailure,
+    ExecutionCancellation, ExecutionCheckpointRequest, ExecutorAvailability, ExecutorCapacity,
+    ExecutorCapacityError, LocalExecutorError, LocalExecutorSupervisor,
+    ObservationPublicationOutcome, QueuedAttempt,
 };
 pub use executor_worker::{
     AttemptExecutionContext, AttemptExecutionInput, AttemptExecutionModel, AttemptExecutionProduct,
@@ -314,8 +316,8 @@ pub use qemu_campaign_driver::{
 pub use qemu_campaign_lifecycle::{
     QemuAttemptProductionVmLifecycleError, QemuAttemptProductionVmLifecycleFactory,
     QemuFreshAttemptDriver, QemuFreshAttemptLifecycle, QemuFreshAttemptLifecycleFactory,
-    QemuFreshAttemptLifecycleOwner, QemuFreshExecutionRunner, QemuFreshExecutionRunnerError,
-    QemuFreshStartMaterialization, QemuFreshStartReplayError,
+    QemuFreshAttemptLifecycleOwner, QemuFreshDriveOutcome, QemuFreshExecutionRunner,
+    QemuFreshExecutionRunnerError, QemuFreshStartMaterialization, QemuFreshStartReplayError,
 };
 #[cfg(target_os = "linux")]
 pub use qemu_exact_resume_executor::QemuExactResumeLiveRealizationExecutor;

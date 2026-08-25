@@ -68,6 +68,7 @@ impl ProductionExactCheckpointObject {
 /// is the exact deduplicated set named by that manifest. Large overlay and
 /// VMState artifacts remain represented by their bounded content-addressed
 /// chunks rather than by RAM-sized buffers.
+#[derive(Clone)]
 pub struct ProductionExactCheckpointClosure {
     identity: ContentHash,
     scenario: ContentHash,

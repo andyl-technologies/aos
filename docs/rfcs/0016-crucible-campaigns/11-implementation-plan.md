@@ -671,8 +671,10 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   raw event-log evidence, and objective aggregation remain T-CAM-3 work.
   The packaged daemon selects this fresh concrete driver and fixed-worker
   composition, while fresh exact-cache and a concrete exact-resume modeled
-  driver remain open. Real-node exact-checkpoint
-  capture is now an
+  driver remain open. The driver now observes a sticky checkpoint request at
+  each operational boundary, lets a terminal verdict win a coincident request,
+  and transfers a nonterminal request only after the lifecycle reports an exact
+  capture-ready boundary. Real-node exact-checkpoint capture is now an
   executor-owned, guard-retaining operation: it
   seals and exact-binds configuration, node icount, and event-log continuation
   before paused VMState/host-I/O capture. The real-node executor now completes
@@ -682,17 +684,20 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   independent positional cursor per open. The guarded session itself now turns
   that source into the linear captured-checkpoint token, records the successful
   capture as its backend reap attestation, and releases only the still-installed
-  host guard during finalization. Exact-resume modeled driver and worker/factory
-  selection remain open. The daemon now prepares and durably publishes a
+  host guard during finalization. The compatibility session invokes the
+  pool-owned root handoff before returning its opaque prepared result.
+  Exact-resume modeled driver and worker/factory selection remain open. The
+  daemon now prepares and durably publishes a
   registered version-three exact-checkpoint root over canonical snapshot
   metadata, the complete scheduler continuation, and a bounded, streamed
   opaque VMState child, with no writes during preparation and
   children-before-root durable receipts. The executor now persists
   checkpoint-requested, checkpoint-publishing, paused, and raw-root
   checkpoint-promoting ledger states, stages
-  the exact root before writes, preserves it as a restart/GC root, recovers the
-  expected root across daemon epochs, and releases capacity only after durable
-  pause. The live driver now returns its same-boundary scheduler checkpoint,
+  the exact root before campaign-CAS writes, preserves it as a restart/GC root,
+  recovers the expected root across daemon epochs, and releases capacity only
+  after durable pause. The live driver now returns its same-boundary scheduler
+  checkpoint,
   the session converts a winning sticky request into a guarded exact capture,
   and the fixed pool carries that linear capture through no-write preparation,
   root staging, immutable publication, and durable pause without rerunning the
@@ -719,9 +724,19 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   configuration, production identity, counts, and aggregate bytes. Preparation
   authenticates native and CAS identities without writes; publication places
   all leaves and indexes before the root; loading reconstructs a lazy portable
-  source for the production semantic installer. Concrete packaged capture,
-  ledger handoff, production-loop reconstruction, and capability advertisement
-  remain open before the executor may claim exact resume. A guarded-only
+  source for the production semantic installer. Concrete packaged capture and
+  ledger handoff are now wired into the fixed pool: the runner captures the
+  complete source, validates its lineage scenario, prepares the version-four
+  root, persists `checkpoint-publishing(root)` through a pool-owned callback
+  while the lifecycle remains live, then shuts down and returns an opaque phase
+  token for campaign-CAS publication and durable pause. The callback never
+  releases the aggregate reservation before teardown, and its phase cannot be
+  forged by an external model. The native lifecycle catalog remains a separate
+  scenario-bounded capture layer; assignment-root-aware cleanup of abandoned
+  native entries, cancellation inside long native capture/authentication
+  passes, production-loop reconstruction, exact-resume driver selection, and
+  capability advertisement remain open before the executor may claim exact
+  resume. A guarded-only
   exact-root launcher now consumes that
   pinned authority, rechecks the selected snapshot and checkpoint identities,
   and uses the sealed child-process contract for pre-`exec` containment. The

@@ -19,17 +19,21 @@ use crucible_campaign::{
     ConfigurationArtifact, ConfigurationId, ExecutionRetentionIntent, ScenarioArtifact,
     ScenarioDefId, StopCondition,
 };
-use crucible_cas::content_store::{BlobHandle, ContentId, ObjectKind};
+use crucible_cas::content_store::{
+    BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, ObjectKind,
+};
 use crucible_qemu::{
     QemuChildProcessContract, QemuLaunchResourceRequirements, QemuNodeChild,
     QemuPreparedRunDirectory, QemuReplayOracleValidation, QemuVmRealizationError, QemuVmSnapshot,
 };
 
 use super::*;
+use crate::executor_supervisor::{AttemptCheckpointHandoff, ExecutionCheckpointHandoff};
 use crate::{
-    AttemptExecutionProduct, CrucibleAttemptExecution, CrucibleMaterializationTier,
-    CrucibleResolvedAttemptStart, ExecutionCancellation, ExecutionCheckpointRequest,
-    QemuAttemptOperationalBoundary, QemuAttemptResourceGuard,
+    AttemptExecutionProduct, CapturedAttemptCheckpoint, CheckpointHandoffFailure,
+    CrucibleAttemptExecution, CrucibleMaterializationTier, CrucibleResolvedAttemptStart,
+    ExactCheckpointStore, ExecutionCancellation, ExecutionCheckpointRequest,
+    PreparedAttemptCheckpoint, QemuAttemptOperationalBoundary, QemuAttemptResourceGuard,
 };
 
 #[test]
@@ -464,6 +468,16 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
         Ok(true)
     }
 
+    fn capture_attempt_checkpoint(
+        &mut self,
+    ) -> Result<crate::CapturedAttemptCheckpoint, crucible::SchedulerError> {
+        self.order
+            .lock()
+            .expect("fresh lifecycle order")
+            .push("capture");
+        Ok(test_checkpoint_capture().into())
+    }
+
     fn fault_evidence_snapshot(
         &self,
     ) -> Result<ProductionFaultEvidenceSnapshot, crucible::SchedulerError> {
@@ -532,6 +546,61 @@ struct FakeFreshDriver {
     failure: Option<FakeFreshDriverFailure>,
 }
 
+struct UnsolicitedCheckpointDriver;
+
+struct OrderingCheckpointHandoff {
+    order: Arc<Mutex<Vec<&'static str>>>,
+    checkpoints: ExactCheckpointStore,
+}
+
+impl std::fmt::Debug for OrderingCheckpointHandoff {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OrderingCheckpointHandoff")
+            .finish_non_exhaustive()
+    }
+}
+
+impl AttemptCheckpointHandoff for OrderingCheckpointHandoff {
+    fn prepare_and_stage(
+        &self,
+        capture: &CapturedAttemptCheckpoint,
+    ) -> Result<PreparedAttemptCheckpoint, CheckpointHandoffFailure> {
+        let prepared = self
+            .checkpoints
+            .prepare_attempt_checkpoint(capture.reopenable_copy())
+            .map_err(|_| CheckpointHandoffFailure::Terminal)?;
+        self.order
+            .lock()
+            .expect("fresh lifecycle order")
+            .push("stage");
+        Ok(prepared)
+    }
+}
+
+impl QemuFreshAttemptDriver for UnsolicitedCheckpointDriver {
+    type Pending = ();
+    type Error = &'static str;
+
+    fn drive(
+        &mut self,
+        _lifecycle: &mut QemuFreshAttemptLifecycle<'_>,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+        _materialization: QemuFreshStartMaterialization,
+    ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
+        Ok(QemuFreshDriveOutcome::CheckpointRequested)
+    }
+
+    fn seal(
+        &mut self,
+        _pending: Self::Pending,
+        _final_events: Vec<SchedulerEventLogEntry>,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
+        unreachable!("an unsolicited checkpoint never reaches result sealing")
+    }
+}
+
 impl QemuFreshAttemptDriver for FakeFreshDriver {
     type Pending = &'static str;
     type Error = &'static str;
@@ -540,9 +609,9 @@ impl QemuFreshAttemptDriver for FakeFreshDriver {
         &mut self,
         lifecycle: &mut QemuFreshAttemptLifecycle<'_>,
         _input: &CrucibleAttemptExecution,
-        _context: &AttemptExecutionContext,
+        context: &AttemptExecutionContext,
         _materialization: QemuFreshStartMaterialization,
-    ) -> Result<Self::Pending, AttemptWorkerFailure<Self::Error>> {
+    ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
         self.order
             .lock()
             .expect("fresh lifecycle order")
@@ -553,8 +622,11 @@ impl QemuFreshAttemptDriver for FakeFreshDriver {
                 .exact_checkpoint_ready()
                 .expect("checkpoint ready")
         );
+        if context.checkpoint_request().is_requested() {
+            return Ok(QemuFreshDriveOutcome::CheckpointRequested);
+        }
         match self.failure {
-            None => Ok("pending modeled result"),
+            None => Ok(QemuFreshDriveOutcome::Observation("pending modeled result")),
             Some(FakeFreshDriverFailure::Retryable) => {
                 Err(AttemptWorkerFailure::Retryable("driver retry"))
             }
@@ -574,6 +646,83 @@ impl QemuFreshAttemptDriver for FakeFreshDriver {
         order.push("seal");
         Ok(test_checkpoint_product())
     }
+}
+
+#[test]
+fn fresh_runner_captures_a_sticky_checkpoint_before_shutdown_and_seal() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let checkpoint_directory = tempfile::tempdir().expect("checkpoint handoff directory");
+    let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
+        "fresh-runner-checkpoint-handoff",
+        checkpoint_directory.path(),
+    ));
+    let checkpoints = ExactCheckpointStore::new(checkpoint_backend, 1024 * 1024)
+        .expect("checkpoint handoff store");
+    let checkpoint_scenario = test_checkpoint_capture()
+        .snapshot()
+        .checkpoint()
+        .scenario_ref;
+    let handoff = ExecutionCheckpointHandoff::new(Arc::new(OrderingCheckpointHandoff {
+        order: Arc::clone(&order),
+        checkpoints,
+    }));
+    let checkpoint_request = ExecutionCheckpointRequest::default();
+    checkpoint_request.request_for_test();
+    let context = AttemptExecutionContext::new(
+        resources(4),
+        ExecutionRetentionIntent::Discard,
+        ExecutionCancellation::default(),
+        checkpoint_request,
+    )
+    .with_checkpoint_handoff(checkpoint_scenario, Some(handoff));
+
+    let outcome = runner
+        .execute(&fresh_runner_input(), &context)
+        .expect("fresh execution should capture the requested checkpoint");
+
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "drive", "capture", "stage", "shutdown"]
+    );
+    assert!(matches!(
+        outcome.product(),
+        AttemptExecutionProduct::ExactCheckpoint(_)
+    ));
+}
+
+#[test]
+fn fresh_runner_rejects_an_unsolicited_checkpoint_before_capture() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+        },
+        UnsolicitedCheckpointDriver,
+    );
+
+    let error = runner
+        .execute(&fresh_runner_input(), &fresh_runner_context())
+        .expect_err("unsolicited checkpoint capture must fail closed");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::UnsolicitedCheckpoint)
+    ));
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "shutdown"]
+    );
 }
 
 #[test]
@@ -1020,7 +1169,7 @@ fn fresh_runner_context() -> AttemptExecutionContext {
     context(resources(4), ExecutionCancellation::default())
 }
 
-fn test_checkpoint_product() -> AttemptExecutionProduct {
+fn test_checkpoint_capture() -> crate::CapturedExactCheckpoint {
     let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
         "crucible.test.fresh-campaign-runner",
         "sealed-product",
@@ -1036,8 +1185,9 @@ fn test_checkpoint_product() -> AttemptExecutionProduct {
     .expect("fresh runner checkpoint boundary");
     let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
         .expect("fresh runner QEMU snapshot");
-    AttemptExecutionProduct::ExactCheckpoint(Box::new(crate::CapturedExactCheckpoint::new(
-        snapshot,
-        BlobHandle::from_bytes(vec![0x5a; 512]),
-    )))
+    crate::CapturedExactCheckpoint::new(snapshot, BlobHandle::from_bytes(vec![0x5a; 512]))
+}
+
+fn test_checkpoint_product() -> AttemptExecutionProduct {
+    AttemptExecutionProduct::exact_checkpoint(test_checkpoint_capture())
 }

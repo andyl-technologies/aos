@@ -23,7 +23,8 @@ use crucible_qemu::QemuVmRealizationError;
 use thiserror::Error;
 
 use crate::{
-    AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
+    AttemptCheckpointResult, AttemptExecutionContext, AttemptExecutionProduct,
+    AttemptWorkerFailure, CapturedAttemptCheckpoint, CheckpointHandoffFailure,
     CrucibleAttemptExecution, CrucibleExecutionOutcome, CrucibleExecutionRunner,
     CrucibleMaterializationTier, MAX_QEMU_ATTEMPT_GENERATION_NODES,
     MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES, MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
@@ -101,6 +102,14 @@ pub trait QemuFreshAttemptLifecycleOwner {
     /// inspected consistently.
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError>;
 
+    /// Captures the exact current attempt continuation without CAS publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the current boundary is unsafe or the
+    /// complete production continuation cannot be durably captured and reopened.
+    fn capture_attempt_checkpoint(&mut self) -> Result<CapturedAttemptCheckpoint, SchedulerError>;
+
     /// Captures read-only production fault evidence at the current boundary.
     ///
     /// # Errors
@@ -137,6 +146,10 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         ProductionVmLifecycleLoop::exact_checkpoint_ready(self)
+    }
+
+    fn capture_attempt_checkpoint(&mut self) -> Result<CapturedAttemptCheckpoint, SchedulerError> {
+        self.capture_portable_exact_checkpoint().map(Into::into)
     }
 
     fn fault_evidence_snapshot(&self) -> Result<ProductionFaultEvidenceSnapshot, SchedulerError> {
@@ -267,7 +280,7 @@ pub trait QemuFreshAttemptDriver {
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
         materialization: QemuFreshStartMaterialization,
-    ) -> Result<Self::Pending, AttemptWorkerFailure<Self::Error>>;
+    ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>>;
 
     /// Seals one product after final lifecycle drain and resource cleanup.
     ///
@@ -284,6 +297,15 @@ pub trait QemuFreshAttemptDriver {
         pending: Self::Pending,
         final_events: Vec<SchedulerEventLogEntry>,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>>;
+}
+
+/// Runner-owned disposition after modeled fresh-attempt driving.
+#[derive(Debug)]
+pub enum QemuFreshDriveOutcome<P> {
+    /// A modeled stop was reached and awaits final-drain sealing.
+    Observation(P),
+    /// The sticky checkpoint request reached an exact capture-ready boundary.
+    CheckpointRequested,
 }
 
 /// Fresh-QEMU campaign runner with exact prefix replay and runner-owned teardown.
@@ -363,6 +385,15 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
     /// Final drain, process reap, or resource release failed.
     #[error("fresh production QEMU lifecycle cleanup failed: {0}")]
     Cleanup(SchedulerError),
+    /// Complete production checkpoint capture failed at a safe boundary.
+    #[error("fresh production QEMU checkpoint capture failed: {0}")]
+    CheckpointCapture(#[source] SchedulerError),
+    /// The prepared exact root could not be handed to the durable supervisor phase.
+    #[error("fresh production QEMU checkpoint handoff failed: {0}")]
+    CheckpointHandoff(#[source] CheckpointHandoffFailure),
+    /// A modeled driver requested capture without the supervisor's sticky signal.
+    #[error("fresh production QEMU driver returned an unsolicited checkpoint request")]
+    UnsolicitedCheckpoint,
     /// Cleanup failed after the driver had already returned a failure.
     #[error("fresh production QEMU lifecycle cleanup failed after driver failure: {cleanup}")]
     CleanupAfterDriver {
@@ -467,6 +498,11 @@ pub enum QemuFreshStartReplayError {
         /// Stable name of the exceeded limit.
         limit: &'static str,
     },
+}
+
+enum QemuFreshRunnerResult<P> {
+    Observation(P),
+    Checkpoint(AttemptCheckpointResult),
 }
 
 impl<R> QemuAttemptProductionVmLifecycleFactory<R> {
@@ -666,9 +702,29 @@ where
         let materialization = materialize_fresh_start(&mut lifecycle, start, context);
         let driven = materialization.and_then(|materialization| {
             let mut facade = QemuFreshAttemptLifecycle::new(&mut lifecycle);
-            self.driver
+            let outcome = self
+                .driver
                 .drive(&mut facade, input, context, materialization)
-                .map_err(map_fresh_driver_failure)
+                .map_err(map_fresh_driver_failure)?;
+            match outcome {
+                QemuFreshDriveOutcome::Observation(pending) => {
+                    Ok(QemuFreshRunnerResult::Observation(pending))
+                }
+                QemuFreshDriveOutcome::CheckpointRequested => {
+                    if !context.checkpoint_request().is_requested() {
+                        return Err(AttemptWorkerFailure::Terminal(
+                            QemuFreshExecutionRunnerError::UnsolicitedCheckpoint,
+                        ));
+                    }
+                    let capture = lifecycle
+                        .capture_attempt_checkpoint()
+                        .map_err(map_checkpoint_capture_failure)?;
+                    context
+                        .prepare_and_stage_checkpoint(capture)
+                        .map(QemuFreshRunnerResult::Checkpoint)
+                        .map_err(map_checkpoint_handoff_failure)
+                }
+            }
         });
         let cleanup = lifecycle.shutdown();
 
@@ -686,10 +742,15 @@ where
                 ));
             }
         };
-        let product = self
-            .driver
-            .seal(pending, final_events)
-            .map_err(map_fresh_driver_failure)?;
+        let product = match pending {
+            QemuFreshRunnerResult::Observation(pending) => self
+                .driver
+                .seal(pending, final_events)
+                .map_err(map_fresh_driver_failure)?,
+            QemuFreshRunnerResult::Checkpoint(checkpoint) => {
+                AttemptExecutionProduct::exact_checkpoint(checkpoint)
+            }
+        };
         Ok(CrucibleExecutionOutcome::new(
             product,
             CrucibleMaterializationTier::ThinReplay,
@@ -839,6 +900,44 @@ fn map_start_replay_scheduler_failure<F, D>(
         Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
         Some(SchedulerOperationalFailureClass::Terminal) | None => {
             AttemptWorkerFailure::Terminal(error)
+        }
+    }
+}
+
+fn map_checkpoint_capture_failure<F, D>(
+    error: SchedulerError,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    let class = match &error {
+        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
+        SchedulerError::NotImplemented { .. }
+        | SchedulerError::Backend(_)
+        | SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::ResourceLimit { .. }
+        | SchedulerError::TimeConversion(_)
+        | SchedulerError::TopologyActivationInPast { .. } => None,
+    };
+    let error = QemuFreshExecutionRunnerError::CheckpointCapture(error);
+    match class {
+        Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
+        Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
+        Some(SchedulerOperationalFailureClass::Terminal) | None => {
+            AttemptWorkerFailure::Terminal(error)
+        }
+    }
+}
+
+fn map_checkpoint_handoff_failure<F, D>(
+    failure: AttemptWorkerFailure<CheckpointHandoffFailure>,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    match failure {
+        AttemptWorkerFailure::Retryable(error) => {
+            AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::CheckpointHandoff(error))
+        }
+        AttemptWorkerFailure::Canceled(error) => {
+            AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::CheckpointHandoff(error))
+        }
+        AttemptWorkerFailure::Terminal(error) => {
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::CheckpointHandoff(error))
         }
     }
 }

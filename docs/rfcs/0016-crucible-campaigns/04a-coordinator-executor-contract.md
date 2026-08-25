@@ -1497,10 +1497,10 @@ paused(exact-checkpoint ID) | already-completed(observation ID) |
 already-canceled | not-current`. The executor MUST persist
 `checkpoint-requested` before signaling the running worker. Once capture has
 produced a complete candidate root, it MUST persist
-`checkpoint-publishing(root)` before the first immutable write. It transitions
-to `paused(root)` only after the complete root closure has durable placement;
-only then may it release the process-local execution reservation. A retry
-returns the exact durable phase and root. A different root for the same
+`checkpoint-publishing(root)` before the first campaign-CAS immutable write. It
+transitions to `paused(root)` only after the complete root closure has durable
+placement; only then may it release the process-local execution reservation. A
+retry returns the exact durable phase and root. A different root for the same
 execution is a stable conflict and MUST NOT replace the staged root.
 
 A newly captured `paused(raw)` root carries `NotRun` replay-oracle evidence and
@@ -2312,12 +2312,14 @@ concrete modeled driver accepts an already-materialized authenticated discovery
 child or selected branch child and advances only empty-control scheduler quanta. It
 checks cancellation and the exact-checkpoint request before and after each
 quantum, preserves the scheduler's typed retry/cancel/terminal failure class,
-and fails closed rather than returning an observation when a checkpoint request
-wins before the fresh runner gains capture authority. It stops on the first
-exact requested choice, named guest marker, virtual-time deadline, modeled
-event-count boundary, or scenario terminal verdict. A terminal verdict takes
-precedence over a coincident requested boundary, and no modeled stop is accepted
-while a network output remains globally uncommitted.
+and transfers a winning request at an exact capture-ready boundary to the
+runner-owned checkpoint capability rather than constructing an observation.
+An unsafe boundary continues under the sticky request until capture becomes
+safe or the attempt reaches a terminal verdict. It stops on the first exact
+requested choice, named guest marker, virtual-time deadline, modeled event-count
+boundary, or scenario terminal verdict. A terminal verdict takes precedence
+over a coincident checkpoint request, and no modeled stop is accepted while a
+network output remains globally uncommitted.
 
 The driver retains at most 1,000,000 dense scheduler entries, at most 64 MiB of
 their aggregate canonical identity material, and admits at most 1,000,000
@@ -2387,8 +2389,9 @@ capture begins. Success leaves QEMU paused. Failure after sealing also closes
 further modeled progress and retains the session for guarded reap or
 quarantine. A successful capture returns authenticated `QemuVmSnapshot`
 metadata, the complete `SingleSchedulerCheckpoint` from that same paused
-boundary, and a reopenable, byte-stable VMState source. The session reaps QEMU
-before handing that linear capture to the worker pool; the supervisor continues
+boundary, and a reopenable, byte-stable VMState source. The compatibility
+session reaps QEMU, invokes the pool-owned no-write preparation and durable-root
+handoff, and returns one opaque prepared result; the supervisor continues
 charging the execution reservation until durable pause. The real-node executor
 now supplies the underlying ordered primitive: after
 paused metadata capture it performs final drain and exact reap, rejects any
@@ -2414,16 +2417,35 @@ CAS object through bounded 4,096-entry child-index pages, binds exact scenario,
 configuration, production identity, counts, and aggregate bytes in the root,
 and publishes manifest, objects, and indexes before that root. Loading yields a
 lazy portable source; the production installer then runs the complete
-scenario-aware semantic restore in private storage before launch. Concrete
-worker/factory selection, ledger handoff of the version-four prepared root, and
-production-loop reconstruction remain open, so the packaged executor does not
-yet advertise exact resume. Version-two roots remain readable for legacy
-authentication but are incomplete campaign continuations and MUST be rejected
-by attempt resume before VMState materialization. The
+scenario-aware semantic restore in private storage before launch. The packaged
+fresh runner now honors the sticky request at a safe boundary, captures this
+complete source closure, exact-checks its scenario against the admitted
+lineage, prepares the version-four campaign root without campaign-CAS writes,
+and uses a pool-owned callback to persist `checkpoint-publishing(root)` while
+the production lifecycle is still live. Only then does it shut down the
+lifecycle, return the opaque prepared token, publish children and root, and
+reconcile durable pause. The handoff callback is absent from modeled input,
+cannot be minted by an external model, and never releases capacity before the
+runner attests teardown.
+
+Production capture itself uses the lifecycle store's independent bounded
+native catalog to retain a reopenable source closure. That private capture
+layer may place its native objects before campaign-root staging, but it grants
+no campaign-CAS reachability and remains subject to the scenario-authored
+checkpoint count and byte ceilings. The assignment-ledger ordering above
+governs every campaign-CAS put. Integrating abandoned native-catalog entries
+with the durable assignment-root collector remains required cleanup work; it
+does not permit an unstaged campaign root to become visible.
+
+Concrete production-loop reconstruction, exact-resume modeled-driver
+selection, and capability advertisement remain open, so the packaged executor
+does not yet advertise exact resume. Version-two roots remain readable for
+legacy authentication but are incomplete campaign continuations and MUST be
+rejected by attempt resume before VMState materialization. The
 ledger preserves requested, publishing, and paused phases across restart; the
-worker result and publication APIs use linear captured, prepared, staged, and
-published tokens, so a storage or compare-exchange error never requires
-rerunning QEMU or repeating a completed capture.
+worker result and publication APIs use linear captured, opaque-prepared,
+staged, and published tokens. A campaign-CAS storage or compare-exchange error
+therefore never requires rerunning QEMU or repeating a completed capture.
 The campaign supervisor issues the exact checkpoint request and retains its
 reservation until the executor reports durable pause. Attempt resume takes the
 exact root retained in that execution's durable paused origin, authenticates

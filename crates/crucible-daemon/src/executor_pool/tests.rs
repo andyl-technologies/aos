@@ -43,11 +43,12 @@ use crucible_qemu::{QemuReplayOracleValidation, QemuVmSnapshot};
 use super::*;
 use crate::{
     AllowAllAttemptAdmission, AttemptAdmissionValidator, AttemptExecutionContext,
-    AttemptExecutionInput, AttemptExecutionModel, AttemptExecutionProduct, AttemptWorkResult,
-    AttemptWorkerFailure, ExactCheckpointStore, ExecutorCapacity, ExecutorLocalService,
-    ExecutorLocalServiceError, ExecutorLoopbackEndpointConfig, ExecutorLoopbackServerConfig,
-    LoopbackExecutorService, MemoryAssignmentLedger, RepositoryAttemptAdmission,
-    RepositoryAttemptWorker, UnixPeerExecutorIdentity,
+    AttemptExecutionInput, AttemptExecutionKey, AttemptExecutionModel, AttemptExecutionProduct,
+    AttemptWorkResult, AttemptWorkerFailure, CheckpointRequestOutcome, ExactCheckpointStore,
+    ExecutorCapacity, ExecutorLocalService, ExecutorLocalServiceError,
+    ExecutorLoopbackEndpointConfig, ExecutorLoopbackServerConfig, LoopbackExecutorService,
+    MemoryAssignmentLedger, RepositoryAttemptAdmission, RepositoryAttemptWorker,
+    RepositoryAttemptWorkerError, UnixPeerExecutorIdentity,
 };
 
 struct TestDurableBackend {
@@ -211,12 +212,12 @@ impl LocalAttemptWorker for UnsolicitedCheckpointWorker {
     fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
         AttemptWorkResult::new(
             queued,
-            Ok(AttemptExecutionProduct::ExactCheckpoint(Box::new(
+            Ok(AttemptExecutionProduct::exact_checkpoint(
                 crate::CapturedExactCheckpoint::new(
                     checkpoint_snapshot("unsolicited-checkpoint"),
                     BlobHandle::from_bytes(vec![0x6b; 512]),
                 ),
-            ))),
+            )),
         )
     }
 }
@@ -238,13 +239,13 @@ impl LocalAttemptWorker for CheckpointWorker {
         let (snapshot, scheduler) = checkpoint_capture("pool-checkpoint");
         AttemptWorkResult::new(
             queued,
-            Ok(AttemptExecutionProduct::ExactCheckpoint(Box::new(
+            Ok(AttemptExecutionProduct::exact_checkpoint(
                 crate::CapturedExactCheckpoint::new_with_scheduler(
                     snapshot,
                     scheduler,
                     BlobHandle::from_bytes(vec![0x5a; 512]),
                 ),
-            ))),
+            )),
         )
     }
 }
@@ -262,6 +263,73 @@ impl LocalAttemptWorker for PanickingWorker {
 struct CandidateModel {
     candidate: ObservationCandidate,
     calls: Arc<AtomicUsize>,
+}
+
+struct ForeignCheckpointModel;
+
+#[derive(Default)]
+struct StagedCheckpointState {
+    staged: bool,
+    release: bool,
+}
+
+struct StagingCheckpointModel {
+    state: Arc<(Mutex<StagedCheckpointState>, Condvar)>,
+}
+
+impl AttemptExecutionModel for ForeignCheckpointModel {
+    type Error = std::convert::Infallible;
+
+    fn execute(
+        &mut self,
+        _input: &AttemptExecutionInput,
+        _context: &AttemptExecutionContext,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
+        Ok(AttemptExecutionProduct::exact_checkpoint(
+            crate::CapturedExactCheckpoint::new(
+                checkpoint_snapshot("foreign-checkpoint-scenario"),
+                BlobHandle::from_bytes(vec![0x73; 512]),
+            ),
+        ))
+    }
+}
+
+impl AttemptExecutionModel for StagingCheckpointModel {
+    type Error = crate::CheckpointHandoffFailure;
+
+    fn execute(
+        &mut self,
+        input: &AttemptExecutionInput,
+        context: &AttemptExecutionContext,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
+        while !context.checkpoint_request().is_requested() {
+            if context.cancellation().is_canceled() {
+                return Err(AttemptWorkerFailure::Canceled(
+                    crate::CheckpointHandoffFailure::Canceled,
+                ));
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        let scenario = crucible::ContentHash {
+            bytes: input.lineage().scenario().as_hash().as_bytes(),
+        };
+        let capture = crate::CapturedExactCheckpoint::new(
+            checkpoint_snapshot_for_scenario("staged-before-return", scenario),
+            BlobHandle::from_bytes(vec![0x75; 512]),
+        );
+        let checkpoint = context.prepare_and_stage_checkpoint(capture.into())?;
+
+        let (state, changed) = self.state.as_ref();
+        let mut state = state.lock().expect("checkpoint stage state");
+        state.staged = true;
+        changed.notify_all();
+        while !state.release {
+            state = changed.wait(state).expect("checkpoint stage wake");
+        }
+        drop(state);
+
+        Ok(AttemptExecutionProduct::exact_checkpoint(checkpoint))
+    }
 }
 
 struct CountingExecutorService<S> {
@@ -914,6 +982,179 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
     assert_eq!(request.stop(), &StopCondition::NextChoice);
 }
 
+#[test]
+fn repository_worker_rejects_a_checkpoint_from_another_scenario() {
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "foreign-checkpoint-scenario",
+            64 * 1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let (lineage, _policy, _branch, admitted, _candidate) =
+        campaign_attempt_fixture(&repository, "foreign-checkpoint-scenario");
+    let epoch = DaemonEpoch::from_bytes([0x91; 16]).expect("daemon epoch");
+    let request = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x92; 16]).expect("assignment"),
+        epoch,
+        lineage.id().expect("lineage id"),
+        admitted.attempt,
+        AttemptResourceLimits::new(1, 64 * 1024 * 1024, 0, 1_000).expect("resources"),
+        ExecutionRetentionIntent::RetainOnFailure,
+    )
+    .expect("submit request");
+    let mut supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        ExecutorCapacity::new(1, 1, 64 * 1024 * 1024, 0, 1_000).expect("capacity"),
+    );
+    let response = supervisor
+        .submit_attempt(&request)
+        .expect("accept execution");
+    let SubmitAttemptDisposition::Accepted { execution } = response.disposition() else {
+        panic!("execution should be accepted")
+    };
+    assert_eq!(
+        supervisor
+            .request_checkpoint(
+                AttemptExecutionKey::new(request.lineage(), request.attempt()),
+                execution,
+            )
+            .expect("request exact checkpoint"),
+        CheckpointRequestOutcome::Requested
+    );
+    let queued = supervisor.next_queued().expect("queued execution");
+    let mut worker = RepositoryAttemptWorker::new(
+        CampaignExecutorStore::new(repository),
+        ForeignCheckpointModel,
+    );
+
+    let (_queued, result) = worker.execute(queued).into_parts();
+
+    assert!(matches!(
+        result,
+        Err(AttemptWorkerFailure::Terminal(
+            RepositoryAttemptWorkerError::IncompatibleResult {
+                reason: "exact checkpoint differs from assignment scenario",
+            }
+        ))
+    ));
+}
+
+#[test]
+fn pool_stages_the_exact_root_before_the_modeled_worker_returns() {
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "checkpoint-handoff",
+            64 * 1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let (lineage, _policy, _branch, admitted, _candidate) =
+        campaign_attempt_fixture(&repository, "checkpoint-handoff");
+    let epoch = DaemonEpoch::from_bytes([0xa1; 16]).expect("daemon epoch");
+    let assignment = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0xa2; 16]).expect("assignment"),
+        epoch,
+        lineage.id().expect("lineage id"),
+        admitted.attempt,
+        AttemptResourceLimits::new(1, 1024, 2048, 32).expect("resources"),
+        ExecutionRetentionIntent::RetainOnFailure,
+    )
+    .expect("submit request");
+    let supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        capacity(),
+    );
+    let capability = LocalExecutorCapabilityService::new(supervisor, description(epoch))
+        .expect("capability service");
+    let state = Arc::new((Mutex::new(StagedCheckpointState::default()), Condvar::new()));
+    let pool = LocalExecutorWorkerPool::start(
+        capability,
+        CampaignExecutorStore::new(Arc::clone(&repository)),
+        checkpoint_store(),
+        vec![RepositoryAttemptWorker::new(
+            CampaignExecutorStore::new(repository),
+            StagingCheckpointModel {
+                state: Arc::clone(&state),
+            },
+        )],
+    )
+    .expect("checkpoint handoff pool");
+    let mut service = pool.service();
+    let accepted = service
+        .submit_attempt(&assignment)
+        .expect("accept checkpointable execution");
+    let SubmitAttemptDisposition::Accepted { execution } = accepted.disposition() else {
+        panic!("checkpointable execution should be accepted")
+    };
+    let checkpoint_request =
+        CheckpointAttemptExecutionRequest::new(&assignment, execution).expect("checkpoint request");
+    assert!(matches!(
+        service
+            .checkpoint_attempt_execution(&checkpoint_request)
+            .expect("request checkpoint")
+            .disposition(),
+        crucible_campaign::CheckpointAttemptExecutionDisposition::Requested
+            | crucible_campaign::CheckpointAttemptExecutionDisposition::AlreadyRequested
+    ));
+
+    let (stage_state, changed) = state.as_ref();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut stage_state = stage_state.lock().expect("checkpoint stage state");
+    while !stage_state.staged {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "checkpoint handoff timed out");
+        let (next, timeout) = changed
+            .wait_timeout(stage_state, remaining)
+            .expect("checkpoint stage wake");
+        stage_state = next;
+        assert!(
+            !timeout.timed_out() || stage_state.staged,
+            "checkpoint handoff timed out"
+        );
+    }
+    let status_request =
+        GetAttemptExecutionRequest::new(&assignment, execution).expect("status request");
+    let status = service
+        .get_attempt_execution(&status_request)
+        .expect("publishing status");
+    let GetAttemptExecutionDisposition::CheckpointPublishing { checkpoint } = status.disposition()
+    else {
+        panic!("exact root must be staged before the worker returns")
+    };
+    let publishing_report = service.report().expect("publishing pool report");
+    assert_eq!(publishing_report.active(), 1);
+    assert_eq!(publishing_report.checkpoints_paused(), 0);
+    stage_state.release = true;
+    changed.notify_all();
+    drop(stage_state);
+
+    wait_until(Duration::from_secs(2), || {
+        service
+            .get_attempt_execution(&status_request)
+            .is_ok_and(|response| {
+                response.disposition() == GetAttemptExecutionDisposition::Paused { checkpoint }
+            })
+    });
+    assert_eq!(
+        pool.service
+            .shared
+            .checkpoints
+            .load(checkpoint)
+            .expect("published checkpoint")
+            .vmstate_bytes(),
+        512
+    );
+    let report = service.report().expect("checkpoint pool report");
+    assert_eq!(report.checkpoints_paused(), 1);
+    assert_eq!(report.active(), 0);
+    assert_eq!(pool.shutdown_and_join().expect("clean shutdown"), report);
+}
+
 fn campaign_attempt_fixture(
     repository: &CampaignRepository,
     name: &str,
@@ -1209,6 +1450,25 @@ fn checkpoint_snapshot(name: &str) -> QemuVmSnapshot {
         BTreeMap::new(),
     )
     .expect("checkpoint boundary");
+    QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
+        .expect("QEMU checkpoint snapshot")
+}
+
+fn checkpoint_snapshot_for_scenario(name: &str, scenario: crucible::ContentHash) -> QemuVmSnapshot {
+    let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.executor-pool-checkpoint",
+        name,
+    ));
+    let mut checkpoint = Checkpoint::from_recorded_configuration(
+        &configuration,
+        None,
+        crucible::VirtualTime::default(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("checkpoint boundary");
+    checkpoint.scenario_ref = scenario;
     QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
         .expect("QEMU checkpoint snapshot")
 }
