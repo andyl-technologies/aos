@@ -18,10 +18,11 @@ use super::{
 
 mod catalog;
 pub use catalog::{
-    SELECTABLE_CATALOG_HARD_MAX_DECLARATIONS, SELECTABLE_CATALOG_HARD_MAX_REQUESTS,
-    SelectableCatalog, SelectableCatalogError, SelectableCatalogExpectation,
-    SelectableCatalogFreeze, SelectableCatalogLimits, SelectableCatalogPhase,
-    SelectableExpectedDeclaration, SelectableExpectedPresence, SelectablePendingRequest,
+    CatalogedSelectableService, SELECTABLE_CATALOG_HARD_MAX_DECLARATIONS,
+    SELECTABLE_CATALOG_HARD_MAX_REQUESTS, SelectableCatalog, SelectableCatalogError,
+    SelectableCatalogExpectation, SelectableCatalogFreeze, SelectableCatalogLimits,
+    SelectableCatalogPhase, SelectableDecisionAuthority, SelectableExpectedDeclaration,
+    SelectableExpectedPresence, SelectablePendingRequest,
 };
 
 /// Exact execution coordinate attached to one selectable callback.

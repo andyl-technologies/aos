@@ -44,13 +44,14 @@ use crate::{PluginDeviceCallbackKind, PluginSwitch};
 
 mod selectable;
 pub use selectable::{
-    SELECTABLE_CATALOG_HARD_MAX_DECLARATIONS, SELECTABLE_CATALOG_HARD_MAX_REQUESTS,
-    SelectableCallbackCoordinate, SelectableCatalog, SelectableCatalogError,
-    SelectableCatalogExpectation, SelectableCatalogFreeze, SelectableCatalogLimits,
-    SelectableCatalogPhase, SelectableDoorbellError, SelectableDoorbellOutcome,
-    SelectableDoorbellService, SelectableDoorbellServiceError, SelectableExpectedDeclaration,
-    SelectableExpectedPresence, SelectablePendingRequest, SelectableRegistrationService,
-    SelectableReplyService, handle_whitebox_selectable_callback,
+    CatalogedSelectableService, SELECTABLE_CATALOG_HARD_MAX_DECLARATIONS,
+    SELECTABLE_CATALOG_HARD_MAX_REQUESTS, SelectableCallbackCoordinate, SelectableCatalog,
+    SelectableCatalogError, SelectableCatalogExpectation, SelectableCatalogFreeze,
+    SelectableCatalogLimits, SelectableCatalogPhase, SelectableDecisionAuthority,
+    SelectableDoorbellError, SelectableDoorbellOutcome, SelectableDoorbellService,
+    SelectableDoorbellServiceError, SelectableExpectedDeclaration, SelectableExpectedPresence,
+    SelectablePendingRequest, SelectableRegistrationService, SelectableReplyService,
+    handle_whitebox_selectable_callback,
 };
 
 /// QEMU plugin API label for translation-block instrumentation.
