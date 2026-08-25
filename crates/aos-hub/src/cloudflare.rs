@@ -451,6 +451,7 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
          queue = {queue}\n\
          max_batch_size = 10\n\
          max_batch_timeout = 5\n\
+         max_concurrency = 4\n\
          {observability}",
         name = toml_string(&cfg.name),
         compat = COMPAT_DATE,
@@ -1719,6 +1720,10 @@ mod tests {
         assert_eq!(
             parsed["queues"]["consumers"][0]["max_batch_timeout"].as_integer(),
             Some(5)
+        );
+        assert_eq!(
+            parsed["queues"]["consumers"][0]["max_concurrency"].as_integer(),
+            Some(4)
         );
         assert_eq!(
             parsed["ratelimits"][0]["namespace_id"].as_str(),

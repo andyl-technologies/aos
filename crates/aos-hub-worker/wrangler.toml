@@ -136,6 +136,8 @@ queue = "aos-hub-jobs"
 queue = "aos-hub-jobs"
 max_batch_size = 10
 max_batch_timeout = 5
+# Keep one CPU-bound index from head-of-line blocking maintenance and uploads.
+max_concurrency = 4
 max_retries = 5
 dead_letter_queue = "aos-hub-jobs-dlq"
 
