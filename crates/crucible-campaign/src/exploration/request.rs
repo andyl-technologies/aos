@@ -135,6 +135,7 @@ pub enum CandidateSource {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FiniteCandidateSource {
     values: BTreeSet<ChoiceValue>,
+    prior_weights: Option<BTreeMap<ChoiceValue, u64>>,
 }
 
 impl FiniteCandidateSource {
@@ -142,6 +143,15 @@ impl FiniteCandidateSource {
     #[must_use]
     pub const fn values(&self) -> &BTreeSet<ChoiceValue> {
         &self.values
+    }
+
+    /// Returns explicit positive proposal weights, when one was authored.
+    ///
+    /// Uniform finite sources return `None`; each of their values has implicit
+    /// weight one.
+    #[must_use]
+    pub const fn prior_weights(&self) -> Option<&BTreeMap<ChoiceValue, u64>> {
+        self.prior_weights.as_ref()
     }
 }
 
@@ -157,7 +167,38 @@ impl CandidateSource {
                 reason: "finite candidate source is empty or oversized",
             });
         }
-        Ok(Self::Finite(FiniteCandidateSource { values }))
+        Ok(Self::Finite(FiniteCandidateSource {
+            values,
+            prior_weights: None,
+        }))
+    }
+
+    /// Builds a nonempty bounded finite source with explicit proposal weights.
+    ///
+    /// Weights are normalized by the repository owner together with already
+    /// admitted edge weights when constructing PUCT guidance. Their absolute
+    /// scale is therefore immaterial, but every retained value must have a
+    /// positive weight.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for an empty or oversized map or a zero
+    /// weight.
+    pub fn weighted_finite(
+        prior_weights: BTreeMap<ChoiceValue, u64>,
+    ) -> Result<Self, CampaignCodecError> {
+        if prior_weights.is_empty()
+            || prior_weights.len() > MAX_FINITE_VALUES
+            || prior_weights.values().any(|weight| *weight == 0)
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "weighted finite candidate source is empty, oversized, or has zero weight",
+            });
+        }
+        Ok(Self::Finite(FiniteCandidateSource {
+            values: prior_weights.keys().cloned().collect(),
+            prior_weights: Some(prior_weights),
+        }))
     }
 
     /// Builds a generated candidate source.
@@ -183,15 +224,36 @@ impl CandidateSource {
             Self::Generated(generator) => Some(*generator),
         }
     }
+
+    /// Returns the positive raw prior weight for one legal source value.
+    ///
+    /// Uniform finite and generated sources use weight one. `None` means the
+    /// value is outside a finite source.
+    #[must_use]
+    pub fn prior_weight(&self, value: &ChoiceValue) -> Option<u64> {
+        match self {
+            Self::Finite(source) => source.prior_weights.as_ref().map_or_else(
+                || source.values.contains(value).then_some(1),
+                |weights| weights.get(value).copied(),
+            ),
+            Self::Generated(_) => Some(1),
+        }
+    }
 }
 
 impl Canonical for CandidateSource {
     fn encode(&self, encoder: &mut Encoder) {
         match self {
-            Self::Finite(source) => {
-                encoder.u8(0);
-                source.values.encode(encoder);
-            }
+            Self::Finite(source) => match &source.prior_weights {
+                None => {
+                    encoder.u8(0);
+                    source.values.encode(encoder);
+                }
+                Some(weights) => {
+                    encoder.u8(2);
+                    weights.encode(encoder);
+                }
+            },
             Self::Generated(generator) => {
                 encoder.u8(1);
                 generator.encode(encoder);
@@ -205,6 +267,9 @@ impl Canonical for CandidateSource {
                 decoder.set_bounded(MAX_FINITE_VALUES, "finite-candidate-value-count")?,
             ),
             1 => CandidateGeneratorSpecId::decode(decoder).map(Self::Generated),
+            2 => Self::weighted_finite(
+                decoder.map_bounded(MAX_FINITE_VALUES, "weighted-finite-candidate-value-count")?,
+            ),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "candidate-source",
                 tag,
@@ -297,9 +362,47 @@ impl BranchRequest {
         budget: BranchBudget,
         stop: StopCondition,
     ) -> Result<Self, CampaignCodecError> {
+        Self::new_for_schema(
+            BRANCH_REQUEST_SCHEMA_VERSION,
+            branch_point,
+            parent,
+            opportunity,
+            domain,
+            source,
+            cause,
+            budget,
+            stop,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_for_schema(
+        schema_version: u32,
+        branch_point: BranchPointId,
+        parent: ConfigurationArtifactId,
+        opportunity: ChoiceOpportunityId,
+        domain: ChoiceDomainId,
+        source: CandidateSource,
+        cause: BranchRequestCause,
+        budget: BranchBudget,
+        stop: StopCondition,
+    ) -> Result<Self, CampaignCodecError> {
+        if !matches!(
+            schema_version,
+            RECORD_SCHEMA_VERSION | BRANCH_REQUEST_SCHEMA_VERSION
+        ) || schema_version == RECORD_SCHEMA_VERSION
+            && matches!(
+                &source,
+                CandidateSource::Finite(source) if source.prior_weights().is_some()
+            )
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported branch-request schema or weighted legacy source",
+            });
+        }
         stop.validate()?;
         let request = Self {
-            schema_version: RECORD_SCHEMA_VERSION,
+            schema_version,
             branch_point,
             parent,
             opportunity,
@@ -400,6 +503,10 @@ impl BranchRequest {
         &self.stop
     }
 
+    pub(crate) const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
     /// Returns strict canonical record-body bytes.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
@@ -428,8 +535,9 @@ impl BranchRequest {
     /// Returns [`CampaignCodecError`] if canonical envelope construction fails.
     pub fn id(&self) -> Result<BranchRequestId, CampaignCodecError> {
         BranchRequestId::from_content_id(
-            crate::ObjectEnvelope::for_record(
+            crate::ObjectEnvelope::for_record_versioned(
                 crate::CampaignRecordKind::BranchRequest,
+                self.schema_version,
                 crate::object::content_children(self.content_children())?,
                 self.canonical_bytes(),
             )?
@@ -476,8 +584,9 @@ impl Canonical for BranchRequest {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_schema(u32::decode(decoder)?)?;
-        Self::new(
+        let schema_version = u32::decode(decoder)?;
+        Self::new_for_schema(
+            schema_version,
             BranchPointId::decode(decoder)?,
             ConfigurationArtifactId::decode(decoder)?,
             ChoiceOpportunityId::decode(decoder)?,

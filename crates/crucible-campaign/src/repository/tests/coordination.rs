@@ -4268,7 +4268,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
             &debugger_bytes,
         )
         .to_hex(),
-        "79a28994f5be3954adab2a1d8092ff036717e840f70a067a26e506167b446630",
+        "9e18172533f107e06e2e81b5379e23a70c021f92188b8e1efc6467a440df95a3",
     );
     let decoded_debugger =
         DebuggerSubmission::from_canonical_bytes(&debugger_bytes).expect("decode debugger");

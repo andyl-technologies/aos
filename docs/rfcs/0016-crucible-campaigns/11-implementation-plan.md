@@ -248,7 +248,7 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   and overflow semantics. The repository now also rebuilds a bounded exact
   `BranchEdgeId` visit partition from idempotent observation credits and scoped
   path segments, with restart equality and duplicate-credit protection. A
-  policy-bound projection divides one-million-micro uniform prior mass exactly,
+  policy-bound projection normalizes one-million-micro proposal prior mass exactly,
   reserves fairness for the least-visited canonical edge, folds globally unique
   coverage identities from the exact canonical observation set under explicit
   root/observation/identity/byte bounds, folds owner-verified finding
@@ -256,17 +256,24 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   finding-root/occurrence/body bounds, folds exact owner-published objective
   evaluations through a 65,536-record/128-MiB shared batch, and
   derives the active policy's exact edge scores with restart equality. Canonical
-  frontier engine version 2 now consumes those completed/prospective uniform-
-  prior, novelty, finding-reward, and fairness terms from exact owner-built
+  frontier engine version 2 now consumes those completed/prospective explicit-
+  or uniform-prior, novelty, finding-reward, and fairness terms from exact owner-built
   guidance for every Ready offer. It carries the best score across pages,
   publishes guidance only after zero-write preflight, and reruns identically on
   restart/import. The request projector batches unique branch points, scans the
   canonical observation/finding roots once, charges 65,536 aggregate credits,
   128 MiB of credit/path bodies, 65,536 unique objective evaluations and 128
-  MiB of their deduplicated evaluation/observation/property basis bodies, and
-  128 MiB of unique choice-domain bodies.
-  Model/explicit prior, interval feedback, and generator integrations that
-  consume those remaining owners remain open.
+  MiB of their deduplicated evaluation/observation/property basis bodies, 128
+  MiB of unique choice-domain bodies, and unique prior-provenance records within
+  the existing visit-projection byte cap. Branch-request schema v2 adds bounded
+  positive explicit finite weights; the owner selects the earliest credited
+  execution basis per semantic edge and normalizes completed plus one
+  prospective offer with exact edge-ordered remainder distribution. Uniform
+  and generated sources remain weight one, and schema-v1 request identities
+  remain readable. Prospective bases are shared by branch point/raw weight and
+  capped at 1,000,000 completed-edge visits per planner page. Opaque
+  model-prior resolution, interval feedback, and the
+  generator integrations that consume those remaining owners remain open.
 - [x] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.
@@ -769,7 +776,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   daemon-owned long-lived coordinator runtime is implemented. Process startup
   can now attach that runtime to one explicitly named existing campaign with
   the packaged planner and one authenticated local executor; automatic
-  campaign discovery, dynamic/multiple attachment, and model/explicit-prior
+  campaign discovery, dynamic/multiple attachment, and opaque model-prior
   ranking remain open. The first `CampaignService`
   checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for

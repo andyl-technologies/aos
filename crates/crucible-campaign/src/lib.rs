@@ -93,11 +93,11 @@ pub use exploration::{
     MAX_BRANCH_NOVELTY_IDENTITIES, MAX_BRANCH_NOVELTY_IDENTITY_VISITS,
     MAX_BRANCH_NOVELTY_OBSERVATIONS, MAX_BRANCH_NOVELTY_PROJECTION_BYTES,
     MAX_BRANCH_NOVELTY_ROOT_ENTRIES, MAX_BRANCH_OBJECTIVE_EVALUATIONS,
-    MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES, MAX_PLANNER_GUIDANCE_DOMAIN_BYTES,
-    PlannerCandidateGuidance, PlannerDisposition, PlannerProposalDisposition, PlannerStep,
-    PlannerStepProposal, PlanningAccounting, PlanningScanCursor, PlanningScanPage,
-    PlanningScanPosition, PlanningUsage, ProgressiveWideningDecision, Proposal, PuctEdgeStatistics,
-    PuctScore, StopCondition,
+    MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES, MAX_BRANCH_PRIOR_NORMALIZATION_VISITS,
+    MAX_PLANNER_GUIDANCE_DOMAIN_BYTES, PlannerCandidateGuidance, PlannerDisposition,
+    PlannerProposalDisposition, PlannerStep, PlannerStepProposal, PlanningAccounting,
+    PlanningScanCursor, PlanningScanPage, PlanningScanPosition, PlanningUsage,
+    ProgressiveWideningDecision, Proposal, PuctEdgeStatistics, PuctScore, StopCondition,
 };
 pub use finding::{
     Finding, FindingExactPins, FindingKind, FindingMinimizationAttempt,

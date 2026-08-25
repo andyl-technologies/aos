@@ -335,7 +335,7 @@ GetCampaignFrontierObjectRequestV1 = version | principal | campaign |
 GetCampaignFrontierObjectResponseV1 = version | request_digest |
                                       CampaignSnapshotV2 |
                                       ContinuationProjectionV1 |
-                                      BranchRequestV1 |
+                                     BranchRequestV1-or-V2 |
                                       MerkleLookupProofV1 |
                                       MerkleLookupProofV1
 
@@ -358,7 +358,7 @@ PinCampaignResponseV1 = version | request_digest | prior_snapshot |
                         new_snapshot | replayed
 
 SubmitCampaignBranchRequestV1 = version | principal | campaign |
-                                expected_snapshot | BranchRequestV1
+                                expected_snapshot | BranchRequestV1-or-V2
 SubmitCampaignBranchResponseV1 = version | request_digest | prior_snapshot |
                                  new_snapshot | branch_request | replayed
 
@@ -758,7 +758,8 @@ before generated work is advertised as executable.
 
 `GetFrontierObject` is the separately authorized body read for one exact
 `BranchRequestId` returned by `QueryFrontier`. The response repeats the
-authenticated projection and returns the strict `BranchRequestV1` body. The
+authenticated projection and returns the strict `BranchRequestV1` or
+`BranchRequestV2` body. The
 first minimal lookup proof authenticates the fixed frontier-index anchor; the
 second authenticates the request-keyed projection ID inside that index. A
 checked client reconstructs both the projection and request content IDs,
@@ -1172,23 +1173,28 @@ the novelty count MUST agree with the Boolean statistic; the objective field
 MUST equal the bounded owner projection in RFC 03; and the reward sum MUST equal
 the saturating addition of that signed field and the by-value policy's
 configured closed finding weights times occurrence counts. Completed edges
-reuse exact authenticated statistics. An unseen offered edge is the sole
-prospective addition to the completed set, with zero visits/reward/novelty/
-objective/findings, a uniform prior over that set plus itself, and fairness
-reserved. Schema-v1 bodies omit `objective_reward_micros`, remain canonical
+reuse exact authenticated statistics and their earliest execution-basis source
+weights. An unseen offered edge is the sole prospective addition to the
+completed set, with zero visits/reward/novelty/objective/findings, exact RFC 03
+normalization over completed weights plus its BranchRequest-v2 explicit weight
+or implicit weight one, and fairness reserved. Schema-v1 bodies omit
+`objective_reward_micros`, remain canonical
 with neutral objective reward, and are accepted through identity-preserving
 historical recomputation; new request construction emits v2.
 
 The owner computes one batch per page. Aggregate credited observations and
 credit/path bodies retain the RFC 03 65,536-record/128-MiB limits; the canonical
 observation and finding roots are each scanned at most once; unique decoded
-choice-domain bodies are capped at 128 MiB. Version 2 ranks higher exact total
+choice-domain bodies are capped at 128 MiB; and distinct prospective raw
+weights charge at most 1,000,000 completed-edge normalization visits. Version
+2 ranks higher exact total
 first, then lower `BranchEdgeId`, then lower `PlanningScanPosition`, carries the
 winner across pages in `canonical-frontier-puct-planner` state version 1, and
 issues only at EOF. Acceptance publishes guidance envelopes with offers only
 after complete zero-write preflight and recomputes/reruns the exact transition
-on restart and import. Version 1 remains canonically replayable. Objective
-reward and model/explicit priors remain implementation-plan gates.
+on restart and import. Version 1 remains canonically replayable. Opaque
+scenario-model prior resolution remains an implementation-plan gate; explicit
+finite weights and uniform defaults are owner-derived here.
 
 The initial coordinator retention profile is deliberately narrower than the
 version-1 wire format: an accepted request body is at most 32 MiB and its bundle

@@ -1,5 +1,6 @@
 //! Campaign creation, mutation, publication, and authoritative-ref transactions.
 
+use super::projection::PlannerCandidateProjectionCache;
 use super::*;
 
 impl CampaignRepository {
@@ -2289,8 +2290,7 @@ impl CampaignRepository {
                 .capabilities()
                 .contains(crate::CANONICAL_FRONTIER_PUCT_CAPABILITY);
             let mut ready_offers = Vec::new();
-            let mut domain_cache = BTreeMap::new();
-            let mut domain_bytes = 0_usize;
+            let mut candidate_cache = PlannerCandidateProjectionCache::default();
             for position in invocation.scan_page().positions() {
                 let projection = self.planner_continuation_projection(&snapshot, *position)?;
                 push_retained_planner_input(
@@ -2307,8 +2307,7 @@ impl CampaignRepository {
                     &snapshot,
                     invocation_id,
                     *position,
-                    &mut domain_cache,
-                    &mut domain_bytes,
+                    &mut candidate_cache,
                 )?;
                 let offer = offer.ok_or_else(|| integrity("planner-ready-candidate-is-missing"))?;
                 ready_offers.push((*position, offer));
@@ -2339,8 +2338,7 @@ impl CampaignRepository {
                         &puct_projections[&position.branch_point()],
                         &offer,
                         crate::PlannerCandidateGuidance::current_schema_version(),
-                        &mut domain_cache,
-                        &mut domain_bytes,
+                        &mut candidate_cache,
                     )?;
                     push_retained_planner_input(
                         &mut retained,

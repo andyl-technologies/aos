@@ -62,7 +62,10 @@ Every `BranchRequest` supplies one of two source forms:
 
 ```rust,illustrative
 pub enum CandidateSource {
-    Finite { values: CanonicalSet<ChoiceValue> },
+    Finite {
+        values: CanonicalSet<ChoiceValue>,
+        prior_weights: Option<CanonicalMap<ChoiceValue, u64>>,
+    },
     Generated { generator: CandidateGeneratorSpecId },
 }
 ```
@@ -80,6 +83,17 @@ machinery. Issuing a finite request is additive; it does not close or replace a
 policy generator already attached to the same branch point. Replacing the
 exploration policy requires an explicit policy activation, or deriving a new
 campaign when the operator wants an independent future history.
+
+A finite source may attach a positive raw `u64` weight to every value. Missing
+weights mean the uniform raw weight one; generated sources also use one until a
+model-prior owner is implemented. Weights guide proposal ranking only. They do
+not change canonical value order, legality, request budgets, deduplication, or
+attempt identity. Branch-request schema v2 adds the weighted finite encoding;
+schema-v1 uniform/generated requests retain their exact identity.
+Generator draws are keyed by `BranchRequestId`, so a newly authored v2
+generated request intentionally owns a distinct stream from an otherwise equal
+v1 request; replay of the retained v1 body continues to use its original ID and
+stream.
 
 ## 03.2 Built-in generators
 
@@ -383,9 +397,10 @@ range. The integer square root is the unique greatest integer whose square does
 not exceed its input. These staged divisions and saturation points are part of
 the language-neutral contract.
 
-The prior may come from the scenario's model distribution, an explicit campaign
-proposal prior, or a uniform default. Using a model prior for PUCT does not make
-the resulting visit frequency a statistical estimate; it is still guidance.
+The implemented prior may come from an explicit weighted finite source or the
+uniform raw weight one. A future version may resolve the scenario's model
+distribution. Using either prior for PUCT does not make the resulting visit
+frequency a statistical estimate; it is still guidance.
 
 Rewards propagate from a completed observation along its recorded branch-edge
 path. Confirmed correctness failures dominate ordinary optimization rewards in
@@ -407,11 +422,22 @@ canonical credit, observation, attempt, and path bodies. It is identical after
 restart and fails closed for legacy unscoped paths.
 
 The repository also derives a policy-bound PUCT projection from that partition.
-For `K > 0` completed edges, it assigns `floor(S / K)` prior
-micros to every edge and assigns the `S mod K` remainder one micro at a time in
-ascending `BranchEdgeId` order. The prior mass therefore sums to exactly `S`.
-Exactly one least-visited edge owns the fairness reservation, with
-`BranchEdgeId` breaking visit-count ties.
+Each completed edge receives the raw source weight of the proposal belonging
+to the lowest global `AdmissionOrdinal` among canonical credited observations
+for that edge. Later convergent attempts or additional causes cannot rewrite
+that basis. Uniform finite and generated sources contribute raw weight one.
+The owner fails closed if the execution-basis proposal, request, value, or
+positive source weight cannot be authenticated.
+
+For positive weights `w(e)`, let `W = sum(w(e))` in checked `u128`. The owner
+first assigns `floor(S * w(e) / W)` micros to every edge, then distributes the
+remaining micros one at a time in ascending `BranchEdgeId` order. The deficit
+is strictly less than the number of edges, so the normalized prior mass sums to
+exactly `S`. This reduces bit-for-bit to the original uniform rule when every
+weight is one. Exactly one least-visited edge owns the fairness reservation,
+with `BranchEdgeId` breaking visit-count ties. The 128-MiB visit-projection work
+bound also charges each unique authenticated attempt-admission, proposal, and
+branch-request body used to establish prior provenance.
 
 Coverage novelty is owner-recomputed from the exact snapshot. The owner takes
 the union of coverage identities named by canonical observations credited to
@@ -460,10 +486,12 @@ positive finding reward and produces the exact decomposed fixed-point score for
 every completed edge. Empty branch points retain no synthetic completed edge.
 For one offered unseen edge, the owner instead evaluates exactly one
 prospective addition: zero visits, reward, novelty, objective reward, and
-finding events; canonical uniform prior over the completed edges plus that
-edge; and the fairness reservation because every completed edge has a positive
-visit count. The hypothetical contains no other offers, so its score is
-independent of planner page shape.
+finding events; canonical normalization over the completed-edge weights plus
+the offered value's authenticated source weight; and the fairness reservation
+because every completed edge has a positive visit count. If the offered edge
+is already completed, its established completed-edge basis wins. The
+hypothetical contains no other offers, so its score is independent of planner
+page shape.
 
 The first executable closed-planner checkpoint established the pure paged
 frontier loop before adaptive scoring. Engine
@@ -485,6 +513,9 @@ Shared branch points, observations, objective evaluations, findings, coverage
 bodies, and domains are not reparsed per offer. Objective work additionally
 admits at most 65,536 unique evaluations and 128 MiB of their deduplicated
 evaluation/observation/property basis bodies.
+Prospective normalization is shared by `(BranchPointId, raw_weight)` and
+charges at most 1,000,000 completed-edge visits per served page, preventing
+many distinct explicit weights from multiplying a large completed-edge set.
 The retained request remains subject to its 32 MiB stored-body and 65,529-child
 profile.
 
@@ -497,10 +528,10 @@ restart, and imported-snapshot validation recompute every guidance record and
 rerun the complete pure transition. Version 1 remains replay-compatible and
 keeps its original least-position ordering. Guidance schema v1 remains
 identity-preserving for retained history; all newly projected guidance is
-schema v2. Model/explicit priors and their corresponding planner versions
-remain open; engine version 2 uses uniform prospective/completed priors, exact
-owner-published objective reward, global coverage novelty, configured closed
-finding rewards, and fairness.
+schema v2. Engine version 2 consumes the owner-normalized explicit or uniform
+prospective/completed priors, exact owner-published objective reward, global
+coverage novelty, configured closed finding rewards, and fairness. Resolving
+opaque scenario-model distributions into proposal priors remains open.
 
 ## 03.5 Guidance signals and objectives
 

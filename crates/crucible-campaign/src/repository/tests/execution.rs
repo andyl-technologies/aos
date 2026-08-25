@@ -2607,13 +2607,28 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
     let genesis = repository
         .create("finite-expansion", &lineage, &policy, &BTreeMap::new())
         .expect("create");
-    let first_request = branch_request(
+    let unweighted_request = branch_request(
         &repository,
         &lineage,
         lineage.genesis_content(),
         lineage.genesis(),
         "finite-expansion",
     );
+    let first_request = BranchRequest::new(
+        unweighted_request.branch_point(),
+        unweighted_request.parent(),
+        unweighted_request.opportunity(),
+        unweighted_request.domain(),
+        CandidateSource::weighted_finite(BTreeMap::from([
+            (ChoiceValue::Boolean(false), 1),
+            (ChoiceValue::Boolean(true), 3),
+        ]))
+        .expect("weighted finite source"),
+        unweighted_request.cause(),
+        unweighted_request.budget(),
+        unweighted_request.stop().clone(),
+    )
+    .expect("weighted first request");
     let first_requested = repository
         .submit_known_branch_request("finite-expansion", genesis.snapshot_id(), &first_request)
         .expect("first request");
@@ -3026,7 +3041,11 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         child_content,
         first_request.opportunity(),
         first_request.domain(),
-        first_request.source().clone(),
+        CandidateSource::weighted_finite(BTreeMap::from([
+            (ChoiceValue::Boolean(false), 9),
+            (ChoiceValue::Boolean(true), 1),
+        ]))
+        .expect("nested weighted finite source"),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test.finite-expansion-nested-request",
             b"nested",
@@ -3243,6 +3262,10 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
     assert_eq!(root_puct.policy(), policy.id().expect("policy id"));
     assert_eq!(root_puct.parent_visits(), 2);
     assert_eq!(root_puct.edge_statistics().len(), 1);
+    assert_eq!(
+        root_puct.edge_prior_weights(),
+        &BTreeMap::from([(first_edge, 1)])
+    );
     let root_edge_statistics = root_puct
         .edge_statistics()
         .get(&first_edge)
@@ -3274,6 +3297,10 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
     let nested_puct = repository
         .project_branch_puct(evaluated.new_snapshot, nested_branch_point)
         .expect("project nested PUCT statistics");
+    assert_eq!(
+        nested_puct.edge_prior_weights(),
+        &BTreeMap::from([(nested_edge, 9)])
+    );
     assert_eq!(
         nested_puct.edge_novelty_events(),
         &BTreeMap::from([(nested_edge, 1)])
@@ -3328,6 +3355,20 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         ChoiceValue::Boolean(true),
         2,
     );
+    let loaded = repository
+        .read_snapshot(admitted_head.snapshot_id().content_id())
+        .expect("weighted-guidance snapshot");
+    let mut candidate_cache = Default::default();
+    let weighted_guidance = repository
+        .planner_candidate_guidance(
+            &loaded,
+            &root_puct,
+            &second_proposal,
+            2,
+            &mut candidate_cache,
+        )
+        .expect("weighted prospective guidance");
+    assert_eq!(weighted_guidance.statistics().prior_micros(), 750_000);
     let second_proposed = repository
         .issue_proposal(
             "finite-expansion",
@@ -3531,6 +3572,23 @@ fn branch_guidance_work_budgets_accept_only_the_exact_boundary() {
         ),
         Err(CampaignRepositoryError::Integrity {
             reason: "branch-edge-visit-projection-count"
+        })
+    ));
+    assert_eq!(
+        super::super::projection::charge_branch_prior_normalization_visits(
+            crate::MAX_BRANCH_PRIOR_NORMALIZATION_VISITS - 1,
+            1,
+        )
+        .expect("exact prior-normalization boundary"),
+        crate::MAX_BRANCH_PRIOR_NORMALIZATION_VISITS
+    );
+    assert!(matches!(
+        super::super::projection::charge_branch_prior_normalization_visits(
+            crate::MAX_BRANCH_PRIOR_NORMALIZATION_VISITS,
+            1,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-prior-normalization-visit-count"
         })
     ));
     assert_eq!(
