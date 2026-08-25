@@ -217,11 +217,13 @@ mod tests {
         };
         let _guard = DecodeBudgetGuard::enter(limits);
         let mut scratch = [0_u8; 1];
-        let error = ciborium::de::from_reader_with_buffer::<FallibleVector, _>(
+        let error = match ciborium::de::from_reader_with_buffer::<FallibleVector, _>(
             [0x9b, 0, 0, 0, 0, 0, 0, 0, 2].as_slice(),
             &mut scratch,
-        )
-        .expect_err("two u64 slots must exceed a seven-byte owned budget");
+        ) {
+            Ok(_) => panic!("two u64 slots must exceed a seven-byte owned budget"),
+            Err(error) => error,
+        };
 
         assert!(matches!(
             map_decode_resource_error(&error),
@@ -254,12 +256,14 @@ mod tests {
             node_service_states: Vec::new(),
             identity: ContentHash::default(),
         };
-        let mut bytes = encode_manifest(&manifest).expect("encode manifest fixture");
+        let mut bytes = match encode_manifest(&manifest) {
+            Ok(bytes) => bytes,
+            Err(error) => panic!("encode manifest fixture: {error}"),
+        };
         let key = b"targets";
-        let key_offset = bytes
-            .windows(key.len())
-            .position(|window| window == key)
-            .expect("locate targets key");
+        let Some(key_offset) = bytes.windows(key.len()).position(|window| window == key) else {
+            panic!("locate targets key");
+        };
         let value_offset = key_offset + key.len();
         assert_eq!(bytes[value_offset], 0x80, "targets must encode as []");
         bytes.splice(value_offset..=value_offset, [0x9b, 0, 0, 0, 0, 0, 0, 4, 0]);
@@ -267,14 +271,19 @@ mod tests {
             fat_checkpoint_bytes: 1_024,
             ..FaultResourceLimits::default()
         };
-        assert!(u64::try_from(bytes.len()).expect("manifest length") < limits.fat_checkpoint_bytes);
+        let Ok(manifest_length) = u64::try_from(bytes.len()) else {
+            panic!("manifest length is not representable");
+        };
+        assert!(manifest_length < limits.fat_checkpoint_bytes);
 
         let error = match decode_manifest_with_limits(&bytes, limits) {
             Ok(_) => panic!("hostile target length must fail before reading target elements"),
             Err(error) => error,
         };
-        let requested =
-            1_024_u64 * u64::try_from(mem::size_of::<TargetManifest>()).expect("target size");
+        let Ok(target_size) = u64::try_from(mem::size_of::<TargetManifest>()) else {
+            panic!("target size is not representable");
+        };
+        let requested = 1_024_u64 * target_size;
         assert!(matches!(
             error,
             LifecycleApiError::ResourceLimit(crate::LifecycleResourceLimit {
