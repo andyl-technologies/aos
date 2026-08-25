@@ -2511,15 +2511,20 @@ generic production adapter retains one node-specific replay factory per worker,
 retries only classified availability failures, restores incomplete staged work
 to its raw root, and never holds supervisor ownership across repository,
 comparison, or publication work. Constructing that adapter with the packaged
-executor's concrete thin-source and real-node replay factory remains open.
+executor's concrete thin-source and real-node replay factory remains open. The
+packaged capability set is derived from this owner: the default composition
+installs no promotion worker and advertises only `ThinReplay`; a composition
+with at least one fixed promotion owner also advertises `ExactRestore` and
+reports the installed owner count.
 
 Concrete production-loop process reconstruction and exact-resume modeled-driver
 selection are implemented: a resume-only installer rejects `NotRun` before
 native publication or resource installation, the guarded lifecycle restores the
 complete version-four loop, and the packaged worker routes retained roots only
 to the exact-resume runner. Native-catalog cleanup, concrete packaged replay
-factory construction, and capability advertisement remain open, so the
-packaged executor does not yet advertise exact resume. Version-two roots
+factory construction, and enabling that owner in the default composition
+remain open, so the packaged executor does not yet advertise exact resume.
+Version-two roots
 remain readable for legacy authentication but are incomplete campaign continuations and MUST be
 rejected by attempt resume before VMState materialization. The
 ledger preserves requested, publishing, and paused phases across restart; the

@@ -772,9 +772,13 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   retained raw root. The production adapter binds one guarded replay factory to
   each fixed worker; repository, QEMU, and immutable-store work remains outside
   supervisor ownership.
+  Packaged composition now derives materialization advertisement from that
+  owner: its default path has no promotion worker and remains `ThinReplay`
+  only, while a promotion-enabled composition advertises `ExactRestore` and
+  exposes the fixed promotion-worker count in its bounded report.
   Assignment-root-aware cleanup of abandoned
   native entries, construction of the packaged thin-source/real-node replay
-  factory, and capability advertisement remain open before the
+  factory, and enabling that concrete owner remain open before the
   executor may claim exact resume. Production-loop process reconstruction and
   exact-resume driver selection are implemented: `NotRun` is rejected during no-write admission,
   the exact closure is restored under the attempt guard, and the packaged

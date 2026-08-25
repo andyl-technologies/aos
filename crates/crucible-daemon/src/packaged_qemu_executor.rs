@@ -29,13 +29,13 @@ use crate::{
     ExecutorLocalService, ExecutorLocalServiceError, ExecutorLocalServiceReport,
     ExecutorLocalServiceShutdown, ExecutorLoopbackEndpointConfig, ExecutorLoopbackEndpointError,
     ExecutorLoopbackListenerError, ExecutorLoopbackServerConfig,
-    LinuxQemuAttemptHostResourceFactory, LocalExecutorCapabilityService,
-    LocalExecutorPoolConfigError, LocalExecutorSupervisor, LocalExecutorWorkerPool,
-    QemuAttemptExecutionRouter, QemuAttemptHostResourceFactory, QemuAttemptHostResourceOwner,
-    QemuAttemptProcessResourceGuard, QemuAttemptProductionVmLifecycleFactory,
-    QemuFreshExecutionRunner, QemuFreshModeledDriver, QemuProductionExactResumeExecutionRunner,
-    RepositoryAttemptAdmission, RepositoryAttemptWorker, SharedQemuAttemptHostResourceFactory,
-    UnixPeerExecutorIdentity,
+    LinuxQemuAttemptHostResourceFactory, LocalCheckpointPromotionWorker,
+    LocalExecutorCapabilityService, LocalExecutorPoolConfigError, LocalExecutorSupervisor,
+    LocalExecutorWorkerPool, QemuAttemptExecutionRouter, QemuAttemptHostResourceFactory,
+    QemuAttemptHostResourceOwner, QemuAttemptProcessResourceGuard,
+    QemuAttemptProductionVmLifecycleFactory, QemuFreshExecutionRunner, QemuFreshModeledDriver,
+    QemuProductionExactResumeExecutionRunner, RepositoryAttemptAdmission, RepositoryAttemptWorker,
+    SharedQemuAttemptHostResourceFactory, UnixPeerExecutorIdentity,
 };
 
 #[cfg(test)]
@@ -360,6 +360,45 @@ where
     crate::ComposedQemuAttemptResourceGuard<H::Owner>:
         QemuAttemptProcessResourceGuard + Send + 'static,
 {
+    compose_packaged_qemu_executor_with_checkpoint_promotions(
+        repository,
+        profile,
+        config,
+        host,
+        Vec::<DisabledPackagedCheckpointPromotionWorker>::new(),
+    )
+}
+
+struct DisabledPackagedCheckpointPromotionWorker;
+
+impl LocalCheckpointPromotionWorker for DisabledPackagedCheckpointPromotionWorker {
+    type Error = ();
+
+    fn prepare(
+        &mut self,
+        _work: crate::CheckpointPromotionRestartWork,
+        _cancellation: crate::ExecutionCancellation,
+    ) -> Result<crate::PreparedPausedCheckpointPromotionRestart, crate::AttemptWorkerFailure<()>>
+    {
+        Err(crate::AttemptWorkerFailure::Terminal(()))
+    }
+}
+
+fn compose_packaged_qemu_executor_with_checkpoint_promotions<H, P>(
+    repository: Arc<CampaignRepository>,
+    profile: ExecutorCompatibilityProfile,
+    config: PackagedQemuExecutorConfig,
+    host: H,
+    promotion_workers: Vec<P>,
+) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
+where
+    H: QemuAttemptHostResourceFactory + Send + 'static,
+    H::Owner: QemuAttemptHostResourceOwner + Send + 'static,
+    crate::ComposedQemuAttemptResourceGuard<H::Owner>:
+        QemuAttemptProcessResourceGuard + Send + 'static,
+    P: LocalCheckpointPromotionWorker + Send + 'static,
+{
+    let promotion_enabled = !promotion_workers.is_empty();
     let ledger = DirectoryAssignmentLedger::open(&config.ledger_root)?;
     let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
         "campaign-exact-checkpoints",
@@ -375,11 +414,15 @@ where
         config.capacity.maximum_disk_bytes(),
         config.capacity.maximum_execution_quanta(),
     )?;
+    let mut materialization = BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]);
+    if promotion_enabled {
+        materialization.insert(ExecutorMaterializationCapability::ExactRestore);
+    }
     let capabilities = ExecutorCapabilitySet::new(
         profile.clone(),
         config.host_architecture,
         BTreeSet::from([config.qemu_profile]),
-        BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]),
+        materialization,
         config.capacity.maximum_concurrent_executions(),
         resource_ceiling,
         BTreeSet::from([config.store_namespace]),
@@ -421,7 +464,17 @@ where
             RepositoryAttemptWorker::new(store.clone(), model)
         })
         .collect();
-    let pool = LocalExecutorWorkerPool::start(executor, store, checkpoints, workers)?;
+    let pool = if promotion_enabled {
+        LocalExecutorWorkerPool::start_with_checkpoint_promotions(
+            executor,
+            store,
+            checkpoints,
+            workers,
+            promotion_workers,
+        )?
+    } else {
+        LocalExecutorWorkerPool::start(executor, store, checkpoints, workers)?
+    };
     let listener = config.endpoint.bind()?;
     let service = ExecutorLocalService::from_managed_listener(
         listener,
