@@ -231,7 +231,7 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   Branch-request, proposal, admission, observation, credit, expansion, and
   continuation transitions are recomputed during import and restart, with
   local/replay/convergence regressions covering each owner boundary.
-- [ ] **T-CAM-4.3** Implement progressive-widening exact rational rules,
+- [x] **T-CAM-4.3** Implement progressive-widening exact rational rules,
   interval refinement, deterministic PUCT, coverage/rarity/assertion/objective
   guidance, and path backpropagation. New branch paths now retain exact
   branch-point/edge segments under schema version 2, while identity-preserving
@@ -285,7 +285,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   app-random models into a request-keyed, budget-bounded power-of-two integer
   permutation. Exact model/generator/domain validation, zero-write mismatch
   rejection, `2^64` closed-versus-exhausted semantics, and restart replay are
-  covered. Additional opaque non-finite model families remain open.
+  covered. The standardized model surface is therefore complete: uniform
+  application randomness is the only currently registered non-finite model
+  family. A future opaque family requires its own concrete adapter and
+  versioned portable generator contract, but does not leave this task open.
   Implementation version 12 adds the
   producer-landmark term: it prioritizes landmark count before version 11's
   endpoint PUCT difference, interval size, and lower offset, then emits the
@@ -315,11 +318,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   through a fresh repository. Its bounded process-local reservation table is
   idempotent per worker slot, rejects stale epoch/generation releases, and
   restarts empty under a fresh daemon epoch. These owner primitives are
-  integrated by the T-CAM-4.5 supervisor; later reward/novelty-sensitive
-  generator versions remain under T-CAM-4.3. The repository also maintains a
-  compact snapshot-authenticated continuation projection for each request and
-  serves bounded proof-bearing frontier pages. Finite request, proposal, and
-  admission transitions are owner-recomputed during import.
+  integrated by the T-CAM-4.5 supervisor. The reward/novelty-sensitive
+  generator versions described below completed under T-CAM-4.3. The repository
+  also maintains a compact snapshot-authenticated continuation projection for
+  each request and serves bounded proof-bearing frontier pages. Finite request,
+  proposal, and admission transitions are owner-recomputed during import.
   Implementation-version 2 `all`
   generators over Boolean and discrete domains use the same exact ordinal and
   continuation fold as finite sources. Implementation-version 3
