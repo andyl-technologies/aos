@@ -62,8 +62,13 @@ all four; the per-patch detail (§11.4–§11.8) states how each one does.
   upstream-equivalent invocations (boot, run, migrate, QMP introspection) against
   both the unpatched pinned QEMU and the AOS-patched QEMU *with sim mode off*, and
   MUST observe byte-identical guest-visible behavior (same instruction streams
-  under plain `-icount`, same device enumeration, same migration streams). A patch
-  that perturbs any of these out of sim mode fails the gate. *Gate:*
+  under plain `-icount`, same device enumeration, same migration streams). The
+  patched QEMU may expose an explicitly enumerated Crucible host-control command
+  when its versioned lifecycle protocol requires one, but the gate MUST prove
+  that command fails closed without sim mode, leaves the VM stopped in its
+  original run state, and is the complete QMP command-set delta. A patch that
+  perturbs any guest-visible or upstream management behavior out of sim mode
+  fails the gate. *Gate:*
   `gate:qemu-inert`. *Spec:* §11.1.1; satisfies [INV-7], [DET-36].
 
 - **[PATCH-3]** Inertness MUST be achieved structurally, by one of three
@@ -2257,8 +2262,9 @@ time-control primitives the whole design rests on.
     configuration, then runs it against patched `qemu-crucible` with no plugin,
     sim accelerator, or sim flags. Its curated upstream-equivalent corpus covers
     raw boot serial and block/9p/virtio-rng output under upstream TCG
-    instruction clocks at the production shift and plain shift zero, QMP
-    capability/state introspection, a migration stream, and
+    instruction clocks at the production shift and plain shift zero, upstream
+    QMP capability/state introspection plus the exact fail-closed terminal
+    lifecycle control extension, a migration stream, and
     snapshot save/load. These surfaces represent guest execution and device I/O,
     management compatibility, live state transfer, and durable state restore.
     The unmodified stock Linux kernel runs without Crucible-specific boot
