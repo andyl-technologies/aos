@@ -1,6 +1,7 @@
 //! Runtime observation and trigger settlement for production VM lifecycles.
 
 use super::*;
+use crucible::SchedulerOperationalFailureClass;
 
 #[path = "runtime/debug_evidence.rs"]
 mod debug_evidence;
@@ -93,6 +94,24 @@ impl ProductionVmLifecycleLoop {
     pub fn capture_portable_exact_checkpoint(
         &mut self,
     ) -> Result<ProductionExactCheckpointClosure, SchedulerError> {
+        self.capture_portable_exact_checkpoint_with_boundary(&mut || Ok(()))
+    }
+
+    /// Captures a portable exact checkpoint under an operational boundary.
+    ///
+    /// The callback is observed between bounded file-hash and persistence
+    /// chunks and between live-node operations. Cleanup of already-paused QEMU
+    /// snapshots remains mandatory even when the boundary stops preparation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::capture_portable_exact_checkpoint`],
+    /// including the exact scheduler error returned by `boundary`.
+    pub fn capture_portable_exact_checkpoint_with_boundary(
+        &mut self,
+        boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
+    ) -> Result<ProductionExactCheckpointClosure, SchedulerError> {
+        boundary()?;
         if !self.exact_checkpoint_ready()? {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -100,13 +119,34 @@ impl ProductionVmLifecycleLoop {
                 ),
             });
         }
+        boundary()?;
         let configuration = self.inner.loop_impl().configuration().clone();
-        let identity = self.capture_exact_checkpoint_set(&configuration)?;
-        open_exact_checkpoint_closure(&self.config.run_state_root, &self.source, identity).map_err(
-            |error| SchedulerError::BoundaryViolation {
-                message: format!("open captured portable exact checkpoint: {error}"),
+        let identity = self.capture_exact_checkpoint_set_with_boundary(&configuration, boundary)?;
+        boundary()?;
+        let mut boundary_error = None;
+        let closure = checkpoint_store::open_exact_checkpoint_closure_with_boundary(
+            &self.config.run_state_root,
+            &self.source,
+            identity,
+            &mut || match boundary() {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    let class = match &error {
+                        SchedulerError::OperationalBoundary { class, .. } => *class,
+                        _ => SchedulerOperationalFailureClass::Terminal,
+                    };
+                    let message = error.to_string();
+                    boundary_error = Some(error);
+                    Err(LifecycleApiError::AttemptOperational { class, message })
+                }
             },
-        )
+        );
+        if let Some(error) = boundary_error {
+            return Err(error);
+        }
+        closure.map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("open captured portable exact checkpoint: {error}"),
+        })
     }
 
     /// Captures read-only evidence from every production fault adapter.

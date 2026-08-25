@@ -67,6 +67,15 @@ impl ProductionVmLifecycleLoop {
         &mut self,
         configuration: &Configuration,
     ) -> Result<ContentHash, SchedulerError> {
+        self.capture_exact_checkpoint_set_with_boundary(configuration, &mut || Ok(()))
+    }
+
+    pub(in crate::vm_lifecycle) fn capture_exact_checkpoint_set_with_boundary(
+        &mut self,
+        configuration: &Configuration,
+        boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
+    ) -> Result<ContentHash, SchedulerError> {
+        boundary()?;
         let configuration_id = configuration.id();
         let mut retry_cleanup = None;
         let mut retry_publication = None;
@@ -116,6 +125,7 @@ impl ProductionVmLifecycleLoop {
             }
             retry_publication = publication;
         }
+        boundary()?;
         if let Some(identity) = retry_publication {
             match checkpoint_store::reconcile_indeterminate_publication(
                 &self.config.run_state_root,
@@ -158,7 +168,8 @@ impl ProductionVmLifecycleLoop {
             }
         }
 
-        let result = self.capture_reserved_exact_checkpoint_set(configuration);
+        boundary()?;
+        let result = self.capture_reserved_exact_checkpoint_set(configuration, boundary);
         finish_exact_checkpoint_transaction(&mut self.checkpoint_targets, configuration_id, result)
     }
 

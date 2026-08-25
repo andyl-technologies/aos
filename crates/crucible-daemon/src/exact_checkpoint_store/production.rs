@@ -3,6 +3,7 @@
 use super::*;
 use std::io::{self, Read};
 
+use crucible::SchedulerOperationalFailureClass;
 use crucible_api::{
     LifecycleApiError, ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
     ProductionExactCheckpointSource,
@@ -43,6 +44,7 @@ pub struct PreparedProductionExactCheckpoint {
     scenario: ContentHash,
     configuration: ContentHash,
     object_bytes: u64,
+    cancellation: Option<ExecutionCancellation>,
 }
 
 impl fmt::Debug for PreparedProductionExactCheckpoint {
@@ -237,17 +239,48 @@ impl ExactCheckpointStore {
         &self,
         closure: ProductionExactCheckpointClosure,
     ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
-        closure.validate_complete()?;
+        self.prepare_production_closure_inner(closure, None)
+    }
+
+    pub(super) fn prepare_production_closure_with_cancellation(
+        &self,
+        closure: ProductionExactCheckpointClosure,
+        cancellation: &ExecutionCancellation,
+    ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
+        self.prepare_production_closure_inner(closure, Some(cancellation.clone()))
+    }
+
+    fn prepare_production_closure_inner(
+        &self,
+        closure: ProductionExactCheckpointClosure,
+        cancellation: Option<ExecutionCancellation>,
+    ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
+        if let Some(cancellation) = cancellation.as_ref() {
+            closure
+                .validate_complete_with_boundary(&mut || {
+                    if cancellation.is_canceled() {
+                        return Err(LifecycleApiError::AttemptOperational {
+                            class: SchedulerOperationalFailureClass::Canceled,
+                            message: String::from("checkpoint authentication canceled"),
+                        });
+                    }
+                    Ok(())
+                })
+                .map_err(map_production_lifecycle_error)?;
+        } else {
+            closure.validate_complete()?;
+        }
         let production_identity = closure.identity();
         let scenario = closure.scenario();
         let configuration = closure.configuration();
         let source: Arc<dyn ProductionExactCheckpointSource> = Arc::new(closure);
-        prepare_production_source(
+        prepare_production_source_with_cancellation(
             source,
             production_identity,
             scenario,
             configuration,
             self.maximum_checkpoint_bytes,
+            cancellation,
         )
     }
 
@@ -265,6 +298,7 @@ impl ExactCheckpointStore {
         &self,
         prepared: &PreparedProductionExactCheckpoint,
     ) -> Result<ProductionExactCheckpointPublication, ExactCheckpointStoreError> {
+        check_cancellation(prepared.cancellation.as_ref())?;
         validate_production_checkpoint_bytes(
             prepared.manifest_source.logical_length(),
             prepared.object_bytes,
@@ -272,12 +306,18 @@ impl ExactCheckpointStore {
         )?;
         require_durable_receipt(
             self.backend
-                .put_if_absent(prepared.manifest_id, &prepared.manifest_source)?,
+                .put_if_absent(prepared.manifest_id, &prepared.manifest_source)
+                .map_err(map_checkpoint_store_error)?,
             prepared.manifest_id,
             prepared.manifest_source.logical_length(),
         )?;
         for placement in &prepared.objects {
-            let source = portable_object_handle(Arc::clone(&prepared.source), placement.object);
+            check_cancellation(prepared.cancellation.as_ref())?;
+            let source = portable_object_handle(
+                Arc::clone(&prepared.source),
+                placement.object,
+                prepared.cancellation.clone(),
+            );
             require_durable_receipt(
                 self.backend
                     .put_if_absent(placement.content, &source)
@@ -287,15 +327,22 @@ impl ExactCheckpointStore {
             )?;
         }
         for (identity, source) in &prepared.indexes {
+            check_cancellation(prepared.cancellation.as_ref())?;
             require_durable_receipt(
-                self.backend.put_if_absent(*identity, source)?,
+                self.backend
+                    .put_if_absent(*identity, source)
+                    .map_err(map_checkpoint_store_error)?,
                 *identity,
                 source.logical_length(),
             )?;
         }
         require_durable_receipt(
-            self.backend
-                .put_if_absent(prepared.root.content_id(), &prepared.root_source)?,
+            {
+                check_cancellation(prepared.cancellation.as_ref())?;
+                self.backend
+                    .put_if_absent(prepared.root.content_id(), &prepared.root_source)
+                    .map_err(map_checkpoint_store_error)?
+            },
             prepared.root.content_id(),
             prepared.root_source.logical_length(),
         )?;
@@ -431,6 +478,7 @@ impl ExactCheckpointStore {
     }
 }
 
+#[cfg(test)]
 fn prepare_production_source(
     source: Arc<dyn ProductionExactCheckpointSource>,
     production_identity: ContentHash,
@@ -438,6 +486,25 @@ fn prepare_production_source(
     configuration: ContentHash,
     maximum_checkpoint_bytes: u64,
 ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
+    prepare_production_source_with_cancellation(
+        source,
+        production_identity,
+        scenario,
+        configuration,
+        maximum_checkpoint_bytes,
+        None,
+    )
+}
+
+fn prepare_production_source_with_cancellation(
+    source: Arc<dyn ProductionExactCheckpointSource>,
+    production_identity: ContentHash,
+    scenario: ContentHash,
+    configuration: ContentHash,
+    maximum_checkpoint_bytes: u64,
+    cancellation: Option<ExecutionCancellation>,
+) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
+    check_cancellation(cancellation.as_ref())?;
     let manifest_bytes = source.manifest();
     if manifest_bytes.len() as u64 > MAX_PRODUCTION_MANIFEST_BYTES {
         return Err(ExactCheckpointStoreError::ArtifactLimit {
@@ -451,12 +518,17 @@ fn prepare_production_source(
         .try_reserve_exact(manifest_bytes.len())
         .map_err(|_| ExactCheckpointStoreError::Store(StoreError::Quota))?;
     owned_manifest.extend_from_slice(manifest_bytes);
-    let manifest_source = BlobHandle::from_bytes(owned_manifest);
-    let manifest_id = ContentId::for_bytes(
+    check_cancellation(cancellation.as_ref())?;
+    let mut manifest_source = BlobHandle::from_bytes(owned_manifest);
+    if let Some(cancellation) = cancellation.as_ref() {
+        manifest_source = cancellation_blob_handle(manifest_source, cancellation.clone());
+    }
+    let manifest_id = ContentId::for_source(
         ObjectKind::DeviceState,
         PRODUCTION_MANIFEST_SCHEMA_VERSION,
-        manifest_bytes,
-    );
+        &manifest_source,
+    )
+    .map_err(map_checkpoint_store_error)?;
 
     let mut objects = Vec::new();
     objects
@@ -464,10 +536,11 @@ fn prepare_production_source(
         .map_err(|_| ExactCheckpointStoreError::Store(StoreError::Quota))?;
     let mut object_bytes = 0_u64;
     for object in source.objects() {
+        check_cancellation(cancellation.as_ref())?;
         object_bytes = object_bytes
             .checked_add(object.length())
             .ok_or_else(|| invalid_root("production object byte count overflow"))?;
-        let handle = portable_object_handle(Arc::clone(&source), *object);
+        let handle = portable_object_handle(Arc::clone(&source), *object, cancellation.clone());
         let content = production_object_content_id(&handle)?;
         objects.push(ProductionObjectPlacement {
             object: *object,
@@ -491,10 +564,15 @@ fn prepare_production_source(
         .try_reserve_exact(index_capacity)
         .map_err(|_| ExactCheckpointStoreError::Store(StoreError::Quota))?;
     for page in objects.chunks(PRODUCTION_INDEX_PAGE_OBJECTS) {
+        check_cancellation(cancellation.as_ref())?;
         let envelope = encode_index_page(page)?;
         let bytes = envelope.canonical_bytes();
         let id = envelope.content_id(ObjectKind::ExactManifest);
-        indexes.push((id, BlobHandle::from_bytes(bytes)));
+        let mut source = BlobHandle::from_bytes(bytes);
+        if let Some(cancellation) = cancellation.as_ref() {
+            source = cancellation_blob_handle(source, cancellation.clone());
+        }
+        indexes.push((id, source));
     }
     let index_count = u32::try_from(indexes.len())
         .map_err(|_| invalid_root("production index count exceeds root representation"))?;
@@ -521,9 +599,13 @@ fn prepare_production_source(
     )?;
     let root = ExactCheckpointId::try_from(root_envelope.content_id(ObjectKind::ExactManifest))
         .map_err(|_| invalid_root("production root identity"))?;
+    let mut root_source = BlobHandle::from_bytes(root_envelope.canonical_bytes());
+    if let Some(cancellation) = cancellation.as_ref() {
+        root_source = cancellation_blob_handle(root_source, cancellation.clone());
+    }
     Ok(PreparedProductionExactCheckpoint {
         root,
-        root_source: BlobHandle::from_bytes(root_envelope.canonical_bytes()),
+        root_source,
         manifest_id,
         manifest_source,
         source,
@@ -533,6 +615,7 @@ fn prepare_production_source(
         scenario,
         configuration,
         object_bytes,
+        cancellation,
     })
 }
 
@@ -820,8 +903,13 @@ fn object_role(identity: ContentHash) -> String {
 fn portable_object_handle(
     source: Arc<dyn ProductionExactCheckpointSource>,
     object: ProductionExactCheckpointObject,
+    cancellation: Option<ExecutionCancellation>,
 ) -> BlobHandle {
-    BlobHandle::new(Arc::new(PortableObjectBlobSource { source, object }))
+    BlobHandle::new(Arc::new(PortableObjectBlobSource {
+        source,
+        object,
+        cancellation,
+    }))
 }
 
 fn production_object_content_id(
@@ -833,6 +921,9 @@ fn production_object_content_id(
         source,
     ) {
         Ok(identity) => Ok(identity),
+        Err(StoreError::StreamIo { source, .. }) if is_checkpoint_cancellation_io(&source) => {
+            Err(ExactCheckpointStoreError::Canceled)
+        }
         Err(StoreError::StreamIo { source, .. }) if source.kind() == io::ErrorKind::InvalidData => {
             Err(invalid_root(
                 "production object failed native identity authentication",
@@ -844,6 +935,9 @@ fn production_object_content_id(
 
 fn production_object_put_error(error: StoreError) -> ExactCheckpointStoreError {
     match error {
+        StoreError::StreamIo { source, .. } if is_checkpoint_cancellation_io(&source) => {
+            ExactCheckpointStoreError::Canceled
+        }
         StoreError::StreamIo { source, .. } if source.kind() == io::ErrorKind::InvalidData => {
             invalid_root("production object changed after preparation")
         }
@@ -854,6 +948,7 @@ fn production_object_put_error(error: StoreError) -> ExactCheckpointStoreError {
 struct PortableObjectBlobSource {
     source: Arc<dyn ProductionExactCheckpointSource>,
     object: ProductionExactCheckpointObject,
+    cancellation: Option<ExecutionCancellation>,
 }
 
 impl BlobSource for PortableObjectBlobSource {
@@ -862,6 +957,7 @@ impl BlobSource for PortableObjectBlobSource {
     }
 
     fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        check_cancellation_store(self.cancellation.as_ref())?;
         let source = self
             .source
             .open_object(self.object.identity())
@@ -876,6 +972,7 @@ impl BlobSource for PortableObjectBlobSource {
             observed: 0,
             hasher: blake3::Hasher::new(),
             finished: false,
+            cancellation: self.cancellation.clone(),
         }))
     }
 }
@@ -887,6 +984,7 @@ struct NativeIdentityReader {
     observed: u64,
     hasher: blake3::Hasher,
     finished: bool,
+    cancellation: Option<ExecutionCancellation>,
 }
 
 impl Read for NativeIdentityReader {
@@ -897,7 +995,22 @@ impl Read for NativeIdentityReader {
         if self.finished {
             return Ok(0);
         }
-        let count = self.source.read(buffer)?;
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(ExecutionCancellation::is_canceled)
+        {
+            return Err(io::Error::other(CheckpointCancellationIo));
+        }
+        let limit = buffer.len().min(CHECKPOINT_CANCELLATION_READ_CHUNK_BYTES);
+        let count = self.source.read(&mut buffer[..limit])?;
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(ExecutionCancellation::is_canceled)
+        {
+            return Err(io::Error::other(CheckpointCancellationIo));
+        }
         if count == 0 {
             self.finished = true;
             let observed = ContentHash {
@@ -928,6 +1041,37 @@ impl Read for NativeIdentityReader {
         }
         self.hasher.update(&buffer[..count]);
         Ok(count)
+    }
+}
+
+fn check_cancellation(
+    cancellation: Option<&ExecutionCancellation>,
+) -> Result<(), ExactCheckpointStoreError> {
+    if cancellation.is_some_and(ExecutionCancellation::is_canceled) {
+        return Err(ExactCheckpointStoreError::Canceled);
+    }
+    Ok(())
+}
+
+fn check_cancellation_store(
+    cancellation: Option<&ExecutionCancellation>,
+) -> Result<(), StoreError> {
+    if cancellation.is_some_and(ExecutionCancellation::is_canceled) {
+        return Err(StoreError::StreamIo {
+            operation: "open-canceled-production-checkpoint-object",
+            source: checkpoint_cancellation_io(),
+        });
+    }
+    Ok(())
+}
+
+fn map_production_lifecycle_error(error: LifecycleApiError) -> ExactCheckpointStoreError {
+    match error {
+        LifecycleApiError::AttemptOperational {
+            class: SchedulerOperationalFailureClass::Canceled,
+            ..
+        } => ExactCheckpointStoreError::Canceled,
+        error => ExactCheckpointStoreError::Production(error),
     }
 }
 

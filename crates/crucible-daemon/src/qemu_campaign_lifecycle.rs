@@ -108,7 +108,10 @@ pub trait QemuFreshAttemptLifecycleOwner {
     ///
     /// Returns [`SchedulerError`] when the current boundary is unsafe or the
     /// complete production continuation cannot be durably captured and reopened.
-    fn capture_attempt_checkpoint(&mut self) -> Result<CapturedAttemptCheckpoint, SchedulerError>;
+    fn capture_attempt_checkpoint(
+        &mut self,
+        context: &AttemptExecutionContext,
+    ) -> Result<CapturedAttemptCheckpoint, SchedulerError>;
 
     /// Captures read-only production fault evidence at the current boundary.
     ///
@@ -148,8 +151,20 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         ProductionVmLifecycleLoop::exact_checkpoint_ready(self)
     }
 
-    fn capture_attempt_checkpoint(&mut self) -> Result<CapturedAttemptCheckpoint, SchedulerError> {
-        self.capture_portable_exact_checkpoint().map(Into::into)
+    fn capture_attempt_checkpoint(
+        &mut self,
+        context: &AttemptExecutionContext,
+    ) -> Result<CapturedAttemptCheckpoint, SchedulerError> {
+        self.capture_portable_exact_checkpoint_with_boundary(&mut || {
+            if context.cancellation().is_canceled() {
+                return Err(SchedulerError::OperationalBoundary {
+                    class: SchedulerOperationalFailureClass::Canceled,
+                    message: String::from("checkpoint capture canceled"),
+                });
+            }
+            Ok(())
+        })
+        .map(Into::into)
     }
 
     fn fault_evidence_snapshot(&self) -> Result<ProductionFaultEvidenceSnapshot, SchedulerError> {
@@ -717,7 +732,7 @@ where
                         ));
                     }
                     let capture = lifecycle
-                        .capture_attempt_checkpoint()
+                        .capture_attempt_checkpoint(context)
                         .map_err(map_checkpoint_capture_failure)?;
                     context
                         .prepare_and_stage_checkpoint(capture)

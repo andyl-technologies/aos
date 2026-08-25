@@ -731,12 +731,16 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   while the lifecycle remains live, then shuts down and returns an opaque phase
   token for campaign-CAS publication and durable pause. The callback never
   releases the aggregate reservation before teardown, and its phase cannot be
-  forged by an external model. The native lifecycle catalog remains a separate
-  scenario-bounded capture layer; assignment-root-aware cleanup of abandoned
-  native entries, cancellation inside long native capture/authentication
-  passes, production-loop reconstruction, exact-resume driver selection, and
-  capability advertisement remain open before the executor may claim exact
-  resume. A guarded-only
+  forged by an external model. Native overlay/VMState hashing and persistence,
+  portable closure opening/validation, and campaign-CAS identity/publication
+  streams now observe the exact execution cancellation between fixed one-MiB
+  I/O chunks and between node/object operations. Cancellation remains typed,
+  never retries as storage availability, and still runs mandatory QMP snapshot
+  deletion/resume cleanup before the lifecycle can release its guard. The
+  native lifecycle catalog remains a separate scenario-bounded capture layer;
+  assignment-root-aware cleanup of abandoned native entries,
+  production-loop reconstruction, exact-resume driver selection, and capability
+  advertisement remain open before the executor may claim exact resume. A guarded-only
   exact-root launcher now consumes that
   pinned authority, rechecks the selected snapshot and checkpoint identities,
   and uses the sealed child-process contract for pre-`exec` containment. The

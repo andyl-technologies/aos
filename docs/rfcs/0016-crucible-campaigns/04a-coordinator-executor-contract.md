@@ -2321,6 +2321,17 @@ boundary, or scenario terminal verdict. A terminal verdict takes precedence
 over a coincident checkpoint request, and no modeled stop is accepted while a
 network output remains globally uncommitted.
 
+Once capture owns paused nodes, the lifecycle checks the same execution
+cancellation between live-node operations and between fixed one-MiB file-hash,
+native-persistence, portable-validation, and campaign-CAS stream chunks. A
+winning cancellation is a typed canceled disposition, not retryable storage
+unavailability. It aborts unpublished preparation but MUST still delete each
+owned QMP snapshot and resume each formerly running node before resource
+authority can be released. A staged native closure may leave only unreachable
+content-addressed objects for bounded GC; the campaign assignment root is not
+published until no-write authentication completes and the exact expected root
+is durably staged.
+
 The driver retains at most 1,000,000 dense scheduler entries, at most 64 MiB of
 their aggregate canonical identity material, and admits at most 1,000,000
 property-by-event evaluation visits. It deduplicates at most 65,530
