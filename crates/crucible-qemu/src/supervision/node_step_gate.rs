@@ -227,6 +227,8 @@ pub struct QemuLiveNodeStepGateConfig {
     network_tx_next_sequence: u32,
     whitebox: QemuLaunchPluginSwitch,
     app_random: Option<QemuLaunchAppRandomConfig>,
+    selectable_catalog_plan:
+        Option<crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
     coverage: QemuLaunchPluginSwitch,
     fingerprint: QemuLaunchPluginSwitch,
     shmem_network_mac: Option<String>,
@@ -354,6 +356,7 @@ impl QemuLiveNodeStepGateConfig {
             network_tx_next_sequence: 0,
             whitebox: QemuLaunchPluginSwitch::Off,
             app_random: None,
+            selectable_catalog_plan: None,
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
             shmem_network_mac: None,
@@ -407,6 +410,7 @@ impl QemuLiveNodeStepGateConfig {
             network_tx_next_sequence: 0,
             whitebox: QemuLaunchPluginSwitch::Off,
             app_random: None,
+            selectable_catalog_plan: None,
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
             shmem_network_mac: None,
@@ -527,6 +531,24 @@ impl QemuLiveNodeStepGateConfig {
     pub fn with_app_random(mut self, app_random: QemuLaunchAppRandomConfig) -> Self {
         self.app_random = Some(app_random);
         self
+    }
+
+    /// Returns this configuration with a node-local guest-selectable catalog plan.
+    #[must_use]
+    pub fn with_selectable_catalog_plan(
+        mut self,
+        plan: crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan,
+    ) -> Self {
+        self.selectable_catalog_plan = Some(plan);
+        self
+    }
+
+    /// Returns the configured guest-selectable catalog plan, if present.
+    #[must_use]
+    pub const fn selectable_catalog_plan(
+        &self,
+    ) -> Option<&crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan> {
+        self.selectable_catalog_plan.as_ref()
     }
 
     /// Returns whether this launch enables the app-random white-box source.
