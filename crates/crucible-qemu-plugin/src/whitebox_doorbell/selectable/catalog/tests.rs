@@ -358,6 +358,59 @@ fn combined_service_retains_failed_decision_and_retries_without_readmission()
 }
 
 #[test]
+fn canonical_plan_round_trip_restores_exact_state_with_fresh_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let limits = limits(1, 3, 3)?;
+    let mut catalog = catalog(
+        vec![expected(
+            "network.policy",
+            &[1],
+            SelectableExpectedPresence::Required,
+        )?],
+        limits,
+    )?;
+    catalog.register(&registration(4, "network.policy", &[1])?)?;
+    catalog.freeze()?;
+    let completed = catalog.begin_request(&request(7, "network.policy")?, coordinate(100))?;
+    catalog.complete_request(&completed, &reply(7)?)?;
+    let old_pending = catalog.begin_request(&request(8, "network.policy")?, coordinate(120))?;
+
+    let encoded = catalog.to_plan()?.encode()?;
+    let decoded =
+        crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::decode(&encoded)?;
+    let mut restored = SelectableCatalog::from_plan(&decoded)?;
+    assert_eq!(restored.phase(), SelectableCatalogPhase::Frozen);
+    assert_eq!(
+        restored.registered_declarations(),
+        &BTreeSet::from(["network.policy".to_owned()])
+    );
+    assert_eq!(restored.last_registration_sequence(), Some(4));
+    assert_eq!(restored.completed_requests_for("network.policy"), 1);
+    assert_eq!(restored.total_completed_requests(), 1);
+    assert_eq!(restored.last_completed_request_sequence(), Some(7));
+    let restored_pending = restored
+        .pending_request()
+        .cloned()
+        .ok_or_else(|| std::io::Error::other("restored pending request is missing"))?;
+    assert_eq!(restored_pending.request().sequence(), 8);
+    assert_eq!(restored_pending.coordinate(), coordinate(120));
+
+    assert_eq!(
+        restored.complete_request(&old_pending, &reply(8)?),
+        Err(SelectableCatalogError::PendingRequestMismatch)
+    );
+    restored.complete_request(&restored_pending, &reply(8)?)?;
+    assert_eq!(restored.total_completed_requests(), 2);
+    let final_plan = restored.to_plan()?;
+    let final_bytes = final_plan.encode()?;
+    assert_eq!(
+        crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::decode(&final_bytes),
+        Ok(final_plan)
+    );
+    Ok(())
+}
+
+#[test]
 fn completed_request_sequences_and_all_request_limits_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let limits = limits(2, 1, 2)?;

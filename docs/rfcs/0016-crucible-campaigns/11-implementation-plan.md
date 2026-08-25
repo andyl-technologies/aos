@@ -134,14 +134,17 @@ plugin-side catalog state now enforces nonzero scenario ceilings under hard
 matching, strictly advancing sequences, no late registration, and one
 incarnation-bound pending request retained until an exact-sequence reply. Live
 `setup_complete` routing, daemon-side scenario conversion, semantic
-narrowed-domain validation, and canonical checkpoint serialization/restoration
+narrowed-domain validation, and durable checkpoint/setup descriptor handoff
 remain required before the callback may be wired into the production dispatcher.
 The process-neutral `CRUCSCP1` catalog-plan codec now freezes the future sealed
 descriptor body, including exact expectations, limits, registered identifiers,
 sequence watermarks, completed counters, and a complete pending request/trap
-coordinate. The existing control-protocol v2 third descriptor remains the raw
-app-random plan; selectable plan handoff will use an explicitly negotiated v3
-setup profile rather than silently redefining that v2 descriptor.
+coordinate. The plugin catalog converts cold/restored plans bidirectionally and
+creates a fresh token incarnation on restore, so prior-process tokens cannot
+complete a restored pending request. The existing control-protocol v2 third
+descriptor remains the raw app-random plan; selectable plan handoff will use an
+explicitly negotiated v3 setup profile rather than silently redefining that v2
+descriptor.
 
 The application-random path now implements the pure normalization and
 application contract, executor-side verification of uniform model samples, live
