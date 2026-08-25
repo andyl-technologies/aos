@@ -46,11 +46,20 @@
   pkgs,
   systems,
 }: let
-  sbTop = systems.server-measured-boot.config.system.build.toplevel;
-  sbUki = systems.server-measured-boot.config.system.build.uki;
-  sbImage = systems.server-measured-boot.config.system.build.image.raw;
-  sbImageDisk = systems.server-measured-boot.config.system.build.imageArtifacts.raw.disk;
-  sbImageInfo = systems.server-measured-boot.config.system.build.imageArtifacts.raw.info;
+  sbSystem = mkSystem [
+    ../../systems/server-measured-boot.nix
+    {
+      # The consumer boots the default 0.1.0 fixture. A distinct release is
+      # required for `apm upgrade --system` to evaluate the candidate policy
+      # instead of correctly reporting that the system is already current.
+      aos.system.version = "test-sb-catalog";
+    }
+  ];
+  sbTop = sbSystem.config.system.build.toplevel;
+  sbUki = sbSystem.config.system.build.uki;
+  sbImage = sbSystem.config.system.build.image.raw;
+  sbImageDisk = sbSystem.config.system.build.imageArtifacts.raw.disk;
+  sbImageInfo = sbSystem.config.system.build.imageArtifacts.raw.info;
   publicationClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
     rootPaths = [
       sbTop
@@ -241,7 +250,7 @@ in {
           # Capture --json: it carries the derived facts verbatim.
           if ! ${pkgs.aos}/bin/apr --json publish '${sbTop}' \\
             --name aos \\
-            --version 0.1.0 \\
+            --version test-sb-catalog \\
             --description 'secure-boot catalog fixture' \\
             --license MIT \\
             --maintainer test \\
