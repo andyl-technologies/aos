@@ -504,8 +504,19 @@ pub fn registry_home(
         );
     };
     let url = external_url.trim_end_matches('/');
-    let mut add_command = format!("apr add {url}/ --name {slug}");
-    for key in &registry.trust_keys {
+    // A hub slug is a routing identifier and can differ from the registry's
+    // signed identity (for example, `andyl/main` versus `andyl-main`). The
+    // client requires the local name to match the bootstrap key's registry
+    // component. One anchor is sufficient for first contact; the signed
+    // roster carries the complete active key set after the initial sync.
+    let client_name = registry
+        .trust_keys
+        .first()
+        .map(|key| key_name_and_blob(key).0)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(display_name);
+    let mut add_command = format!("apr add {url}/ --name {client_name}");
+    if let Some(key) = registry.trust_keys.first() {
         let _ = write!(add_command, " --trust-key {key}");
     }
     let _ = write!(
@@ -513,8 +524,9 @@ pub fn registry_home(
         "<p class=\"dim\">apm:</p>\n<pre>{}</pre>\n",
         escape(&add_command),
     );
-    let mut stanza =
-        format!("aos.apm.registries.{slug} = {{\n  url = \"{url}/\";\n  trustKeys = [\n");
+    let mut stanza = format!(
+        "aos.apm.registries.\"{client_name}\" = {{\n  url = \"{url}/\";\n  trustKeys = [\n"
+    );
     for key in &registry.trust_keys {
         let _ = writeln!(stanza, "    \"{key}\"");
     }
@@ -2796,7 +2808,7 @@ mod tests {
         assert!(!html.contains("<k>"));
         // Fingerprints, the module stanza, and the plain-Nix snippet.
         assert!(html.contains("SHA256:"));
-        assert!(html.contains("aos.apm.registries.demo"));
+        assert!(html.contains("aos.apm.registries.&quot;demo&quot;"));
         assert!(html.contains("trustKeys"));
         // substituters point at the cache's committed delivery URL,
         // not the registry URL — the registry serves the index, the cache serves
@@ -2806,6 +2818,38 @@ mod tests {
         // Unvalidated caches say so; the health page is linked.
         assert!(html.contains("not yet validated"));
         assert!(html.contains("/demo/-/health"));
+    }
+
+    #[tokio::test]
+    async fn registry_home_uses_signed_identity_and_one_bootstrap_key() {
+        let mut registry = registry();
+        registry.slug = "andyl/main".into();
+        registry.trust_keys = vec![
+            "andyl-main:Ed25519:AAAA".into(),
+            "andyl-main:Ed25519:BBBB".into(),
+        ];
+
+        let html = registry_home(
+            &registry,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            Some("https://cdn.example/registries/id"),
+            false,
+            Instant::now(),
+            &anon(),
+        );
+
+        assert!(html.contains(
+            "apr add https://cdn.example/registries/id/ --name andyl-main \
+             --trust-key andyl-main:Ed25519:AAAA"
+        ));
+        assert!(!html.contains("--trust-key andyl-main:Ed25519:BBBB"));
+        assert!(html.contains("aos.apm.registries.&quot;andyl-main&quot;"));
+        assert!(html.contains("andyl-main:Ed25519:BBBB"));
     }
 
     /// A platform artifact fixture with the given refs.
