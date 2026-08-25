@@ -41,7 +41,7 @@ fn prepare_setup_maps_validates_and_arms_wake_fd_before_ready_ack() {
         descriptors: ReceivedSetupDescriptors {
             shmem_fd: valid_region_file(layout).into(),
             wake_fd: wake_fd().into(),
-            app_random_branch_plan_fd: test_app_random_branch_plan_fd(),
+            plugin_setup_plan_fd: test_plugin_setup_plan_fd(),
         },
     };
     let mut io = ScriptedIo::default();
@@ -57,6 +57,7 @@ fn prepare_setup_maps_validates_and_arms_wake_fd_before_ready_ack() {
     assert_nonblocking(completion.wake_fd().as_raw_fd());
     assert_eq!(completion.registered_wake_fd(), None);
     assert!(completion.app_random_branch_plan().entries().is_empty());
+    assert!(completion.selectable_catalog_plan().is_some());
     assert!(io.written().is_empty());
     assert_eq!(io.flush_count(), 0);
 
@@ -83,6 +84,61 @@ fn prepare_setup_maps_validates_and_arms_wake_fd_before_ready_ack() {
 }
 
 #[test]
+fn prepare_setup_accepts_the_raw_v2_plan_without_promoting_it_to_v3() {
+    let layout = valid_layout();
+    let setup = ReceivedSetup {
+        region_len: layout.region_size,
+        descriptors: ReceivedSetupDescriptors {
+            shmem_fd: valid_region_file(layout).into(),
+            wake_fd: wake_fd().into(),
+            plugin_setup_plan_fd: test_legacy_plugin_setup_plan_fd(),
+        },
+    };
+    let mut io = ScriptedIo::default();
+
+    let completion = prepare_setup_completion(
+        &mut io,
+        setup,
+        plugin_handshake_version(2, 0, layout.node_count),
+    )
+    .unwrap_or_else(|error| panic!("legacy v2 setup should complete: {error}"));
+    assert!(completion.app_random_branch_plan().entries().is_empty());
+    assert_eq!(completion.selectable_catalog_plan(), None);
+    assert!(io.written().is_empty());
+}
+
+#[test]
+fn prepare_setup_rejects_a_plan_body_from_the_other_negotiated_profile() {
+    for (proto_version, plugin_setup_plan_fd) in [
+        (CONTROL_PROTOCOL_VERSION, test_legacy_plugin_setup_plan_fd()),
+        (2, test_plugin_setup_plan_fd()),
+    ] {
+        let layout = valid_layout();
+        let setup = ReceivedSetup {
+            region_len: layout.region_size,
+            descriptors: ReceivedSetupDescriptors {
+                shmem_fd: valid_region_file(layout).into(),
+                wake_fd: wake_fd().into(),
+                plugin_setup_plan_fd,
+            },
+        };
+        let mut io = ScriptedIo::default();
+        assert!(matches!(
+            prepare_setup_completion(
+                &mut io,
+                setup,
+                plugin_handshake_version(proto_version, 0, layout.node_count),
+            ),
+            Err(PluginSetupError::ValidatePluginSetupPlan { .. })
+        ));
+        assert_eq!(
+            decode_single_setup_ack(io.written()),
+            SETUP_ACK_STATUS_SETUP_FAILED
+        );
+    }
+}
+
+#[test]
 fn prepare_setup_sends_nonzero_ack_when_region_validation_fails() {
     let region_len = REGION_HEADER_SIZE as u64;
     let setup = ReceivedSetup {
@@ -90,7 +146,7 @@ fn prepare_setup_sends_nonzero_ack_when_region_validation_fails() {
         descriptors: ReceivedSetupDescriptors {
             shmem_fd: zeroed_region_file(region_len).into(),
             wake_fd: wake_fd().into(),
-            app_random_branch_plan_fd: test_app_random_branch_plan_fd(),
+            plugin_setup_plan_fd: test_plugin_setup_plan_fd(),
         },
     };
     let mut io = ScriptedIo::default();
@@ -115,14 +171,14 @@ fn prepare_setup_rejects_a_mutable_or_non_memfd_branch_plan_before_ready() {
         descriptors: ReceivedSetupDescriptors {
             shmem_fd: valid_region_file(layout).into(),
             wake_fd: wake_fd().into(),
-            app_random_branch_plan_fd: temp_region_file().into(),
+            plugin_setup_plan_fd: temp_region_file().into(),
         },
     };
     let mut io = ScriptedIo::default();
 
     assert!(matches!(
         prepare_setup_completion(&mut io, setup, plugin_handshake(0, layout.node_count)),
-        Err(PluginSetupError::ValidateAppRandomBranchPlan { .. })
+        Err(PluginSetupError::ValidatePluginSetupPlan { .. })
     ));
     assert_eq!(
         decode_single_setup_ack(io.written()),
@@ -160,7 +216,7 @@ fn receive_and_prepare_setup_receives_descriptors_and_cross_checks_handshake() {
     let layout = valid_layout();
     let region_file = valid_region_file(layout);
     let wake_file = wake_fd();
-    let branch_plan_file = test_app_random_branch_plan_fd();
+    let branch_plan_file = test_plugin_setup_plan_fd();
     let (mut host, mut plugin) = setup_socket_pair();
     if let Err(error) = send_setup_with_descriptors(
         host.as_raw_fd(),
@@ -168,7 +224,7 @@ fn receive_and_prepare_setup_receives_descriptors_and_cross_checks_handshake() {
         SetupDescriptorFds {
             shmem_fd: region_file.as_raw_fd(),
             wake_fd: wake_file.as_raw_fd(),
-            app_random_branch_plan_fd: branch_plan_file.as_raw_fd(),
+            plugin_setup_plan_fd: branch_plan_file.as_raw_fd(),
         },
     ) {
         panic!("setup descriptor send should succeed: {error}");
@@ -201,7 +257,7 @@ fn prepare_setup_sends_nonzero_ack_when_handshake_node_count_disagrees() {
         descriptors: ReceivedSetupDescriptors {
             shmem_fd: valid_region_file(layout).into(),
             wake_fd: wake_fd().into(),
-            app_random_branch_plan_fd: test_app_random_branch_plan_fd(),
+            plugin_setup_plan_fd: test_plugin_setup_plan_fd(),
         },
     };
     let mut io = ScriptedIo::default();
@@ -231,7 +287,7 @@ fn prepare_setup_sends_nonzero_ack_when_handshake_slot_exceeds_region() {
         descriptors: ReceivedSetupDescriptors {
             shmem_fd: valid_region_file(layout).into(),
             wake_fd: wake_fd().into(),
-            app_random_branch_plan_fd: test_app_random_branch_plan_fd(),
+            plugin_setup_plan_fd: test_plugin_setup_plan_fd(),
         },
     };
     let mut io = ScriptedIo::default();
@@ -312,7 +368,7 @@ fn prepare_setup_sends_nonzero_ack_when_wake_fd_registration_fails() {
         descriptors: ReceivedSetupDescriptors {
             shmem_fd: valid_region_file(layout).into(),
             wake_fd: wake_fd().into(),
-            app_random_branch_plan_fd: test_app_random_branch_plan_fd(),
+            plugin_setup_plan_fd: test_plugin_setup_plan_fd(),
         },
     };
     let mut io = ScriptedIo::default();
@@ -434,10 +490,18 @@ fn valid_region_file(layout: RegionLayout) -> File {
 }
 
 fn plugin_handshake(slot_index: u32, node_count: u32) -> PluginControlHandshake {
+    plugin_handshake_version(CONTROL_PROTOCOL_VERSION, slot_index, node_count)
+}
+
+fn plugin_handshake_version(
+    proto_version: u32,
+    slot_index: u32,
+    node_count: u32,
+) -> PluginControlHandshake {
     let args = PluginArgs::parse(&format!("simfd=3,slot={slot_index},fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0"))
         .unwrap_or_else(|error| panic!("test plugin args should parse: {error}"));
     let negotiated = NegotiatedHandshake {
-        proto_version: CONTROL_PROTOCOL_VERSION,
+        proto_version,
         abi_version: ABI_VERSION,
         slot_index,
         node_count,

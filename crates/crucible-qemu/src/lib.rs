@@ -163,6 +163,7 @@ pub use gdbstub_proxy::{
 pub use host_setup::{
     QemuHostPluginSetup, QemuHostPluginSetupError, complete_qemu_host_plugin_setup,
     complete_qemu_host_plugin_setup_with_app_random_branch_plan,
+    complete_qemu_host_plugin_setup_with_plugin_setup_plan,
 };
 pub use host_worker_pool::{
     QemuHostCompletionOrderKey, QemuHostWorkerOutcome, QemuHostWorkerPool, QemuHostWorkerPoolError,

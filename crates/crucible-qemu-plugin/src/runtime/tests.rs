@@ -323,7 +323,7 @@ fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStre
         SetupDescriptorFds {
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
-            app_random_branch_plan_fd: shmem.as_raw_fd(),
+            plugin_setup_plan_fd: shmem.as_raw_fd(),
         },
     )
     .unwrap_or_else(|error| panic!("setup descriptors should send: {error}"));

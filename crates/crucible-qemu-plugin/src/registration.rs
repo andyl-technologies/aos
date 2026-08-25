@@ -707,7 +707,7 @@ const fn setup_error_registration_step(source: &PluginSetupError) -> PluginRegis
         PluginSetupError::ReceiveSetup { .. } => PluginRegistrationStep::ReceiveSetup,
         PluginSetupError::MapRegion { .. }
         | PluginSetupError::ValidateRegion { .. }
-        | PluginSetupError::ValidateAppRandomBranchPlan { .. }
+        | PluginSetupError::ValidatePluginSetupPlan { .. }
         | PluginSetupError::NodeCountMismatch { .. }
         | PluginSetupError::SlotOutsideRegionNodeCount { .. } => {
             PluginRegistrationStep::MapSharedMemory
@@ -722,7 +722,7 @@ const fn setup_error_registration_step(source: &PluginSetupError) -> PluginRegis
             PluginSetupFailureStage::ReceiveSetup => PluginRegistrationStep::ReceiveSetup,
             PluginSetupFailureStage::MapRegion
             | PluginSetupFailureStage::ValidateRegion
-            | PluginSetupFailureStage::ValidateAppRandomBranchPlan
+            | PluginSetupFailureStage::ValidatePluginSetupPlan
             | PluginSetupFailureStage::CrossCheckSlot => PluginRegistrationStep::MapSharedMemory,
             PluginSetupFailureStage::ArmWakeFd | PluginSetupFailureStage::RegisterWakeFd => {
                 PluginRegistrationStep::ArmWakeFd

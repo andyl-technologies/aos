@@ -765,16 +765,19 @@ section states the plugin's obligations on that channel and at the boot barrier.
 
 ### 12.9.2 Setup and ABI validation
 
-- **[PLUG-40]** On control-protocol v2 `Setup` the plugin MUST receive exactly
-  three descriptors via `SCM_RIGHTS` in fixed order — the shmem fd, the wake fd,
-  then the sealed node-local app-random branch-plan memfd
+- **[PLUG-40]** On control-protocol v2 or v3 `Setup` the plugin MUST receive
+  exactly three descriptors via `SCM_RIGHTS` in fixed order — the shmem fd, the
+  wake fd, then the sealed node-local version-negotiated plugin-plan memfd
   ([`14-protocol.md`](14-protocol.md) [PROTO-8]) — `mmap` the shmem fd for exactly
   the `region_len` the host sent, validate the region header's magic, ABI version,
   and that its `node_count` and the plugin's `slot_index` are consistent
   ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-30]), and only then arm the wake fd
   and register callbacks. Before readiness it MUST also require the plan fd to
   be a regular memfd sealed against write/grow/shrink/seal mutation, read at most
-  4 MiB, and strictly decode the `CRUCABP1` version-1 body. Receiving any other
+  4 MiB and strictly decode the `CRUCABP1` version-1 body under v2, or read at
+  most 36 MiB plus 28 bytes and strictly decode the `CRUCSUP1` version-1
+  composite with canonical app-random and selectable nested plans under v3.
+  A profile/body mismatch, any other
   fd count, a short region, mutable/malformed plan, or a failed header validation
   MUST be a setup failure ([PROTO-21]). *Gate:*
   `gate:abi-conformance`. *Spec:* §12.9.2, forward-ref
