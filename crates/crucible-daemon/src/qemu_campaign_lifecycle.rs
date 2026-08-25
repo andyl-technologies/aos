@@ -10,13 +10,14 @@
 //! substitutes for an exact-checkpoint resume.
 
 use crucible::{
-    Configuration, Decision, QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
-    ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
+    Configuration, ContentHash, Decision, QuantumLoop, QuantumOutcome, QuantumRequest,
+    QuantumTerminalVerdict, ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
     SchedulerOperationalFailureClass, SchedulerQuiescence,
 };
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
-    ProductionVmLifecycleLoop, build_production_vm_lifecycle_loop_from_exact_closure_with_launcher,
+    ProductionVmLifecycleLoop, ProductionVmNodeReplayLaunchProfile,
+    build_production_vm_lifecycle_loop_from_exact_closure_with_launcher,
     build_production_vm_lifecycle_loop_with_launcher,
 };
 use crucible_campaign::ExactCheckpointId;
@@ -119,6 +120,24 @@ pub trait QemuFreshAttemptLifecycleOwner {
         context: &AttemptExecutionContext,
     ) -> Result<CapturedAttemptCheckpoint, SchedulerError>;
 
+    /// Copies immutable node launch profiles for independent background replay.
+    ///
+    /// The default fails closed so a lifecycle implementation cannot
+    /// accidentally claim baked-genesis support without preserving its exact
+    /// scenario-aware QEMU launch basis.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when replay launch profiles are unavailable
+    /// or inconsistent with the live lifecycle.
+    fn replay_launch_profiles(
+        &self,
+    ) -> Result<Vec<ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
+        Err(SchedulerError::NotImplemented {
+            operation: "copy fresh-genesis replay launch profiles",
+        })
+    }
+
     /// Captures read-only production fault evidence at the current boundary.
     ///
     /// # Errors
@@ -171,6 +190,16 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
             Ok(())
         })
         .map(Into::into)
+    }
+
+    fn replay_launch_profiles(
+        &self,
+    ) -> Result<Vec<ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
+        ProductionVmLifecycleLoop::replay_launch_profiles(self).map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!("derive production replay launch profiles: {error}"),
+            }
+        })
     }
 
     fn fault_evidence_snapshot(&self) -> Result<ProductionFaultEvidenceSnapshot, SchedulerError> {
@@ -544,9 +573,50 @@ pub enum QemuFreshGenesisCheckpointCaptureFailure {
     /// Exact checkpoint capture failed at the authenticated genesis boundary.
     #[error("capture fresh genesis checkpoint: {0}")]
     Capture(#[source] SchedulerError),
+    /// Immutable replay launch profiles could not be copied from the lifecycle.
+    #[error("capture fresh genesis replay launch profiles: {0}")]
+    LaunchProfiles(#[source] SchedulerError),
     /// The capture named a scenario or configuration other than exact genesis.
     #[error("fresh genesis checkpoint capture returned a foreign semantic basis")]
     BasisMismatch,
+}
+
+/// Exact native capture and immutable launch basis produced at fresh genesis.
+#[derive(Debug)]
+pub struct QemuFreshGenesisCheckpointCandidate {
+    capture: CapturedAttemptCheckpoint,
+    launch_profiles: Vec<ProductionVmNodeReplayLaunchProfile>,
+}
+
+impl QemuFreshGenesisCheckpointCandidate {
+    /// Returns the exact captured scenario identity.
+    #[must_use]
+    pub fn scenario(&self) -> ContentHash {
+        self.capture.scenario()
+    }
+
+    /// Returns the exact captured genesis configuration identity.
+    #[must_use]
+    pub fn configuration(&self) -> ContentHash {
+        self.capture.configuration()
+    }
+
+    /// Returns immutable replay profiles in World node order.
+    #[must_use]
+    pub fn launch_profiles(&self) -> &[ProductionVmNodeReplayLaunchProfile] {
+        &self.launch_profiles
+    }
+
+    /// Consumes the candidate into its native capture and immutable profiles.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        CapturedAttemptCheckpoint,
+        Vec<ProductionVmNodeReplayLaunchProfile>,
+    ) {
+        (self.capture, self.launch_profiles)
+    }
 }
 
 /// Failure while producing one independently captured genesis checkpoint candidate.
@@ -589,7 +659,7 @@ pub fn capture_fresh_genesis_checkpoint_candidate<F>(
     factory: &mut F,
     source: &ScenarioDefForm,
     context: &AttemptExecutionContext,
-) -> Result<CapturedAttemptCheckpoint, QemuFreshGenesisCheckpointError<F::Error>>
+) -> Result<QemuFreshGenesisCheckpointCandidate, QemuFreshGenesisCheckpointError<F::Error>>
 where
     F: QemuFreshAttemptLifecycleFactory,
 {
@@ -604,11 +674,16 @@ where
             .capture_attempt_checkpoint(context)
             .map_err(QemuFreshGenesisCheckpointCaptureFailure::Capture)
             .and_then(|capture| {
-                if capture.scenario() == scenario.id() && capture.configuration() == genesis.id() {
-                    Ok(capture)
-                } else {
-                    Err(QemuFreshGenesisCheckpointCaptureFailure::BasisMismatch)
+                if capture.scenario() != scenario.id() || capture.configuration() != genesis.id() {
+                    return Err(QemuFreshGenesisCheckpointCaptureFailure::BasisMismatch);
                 }
+                let launch_profiles = lifecycle
+                    .replay_launch_profiles()
+                    .map_err(QemuFreshGenesisCheckpointCaptureFailure::LaunchProfiles)?;
+                Ok(QemuFreshGenesisCheckpointCandidate {
+                    capture,
+                    launch_profiles,
+                })
             }),
         Ok(false) => Err(QemuFreshGenesisCheckpointCaptureFailure::NotCheckpointReady),
         Err(error) => Err(QemuFreshGenesisCheckpointCaptureFailure::Capture(error)),

@@ -23,8 +23,9 @@ use crucible_cas::content_store::{
     BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, ObjectKind,
 };
 use crucible_qemu::{
-    QemuChildProcessContract, QemuLaunchResourceRequirements, QemuNodeChild,
-    QemuPreparedRunDirectory, QemuReplayOracleValidation, QemuVmRealizationError, QemuVmSnapshot,
+    QemuChildProcessContract, QemuLaunchResourceRequirements, QemuLiveNodeStepGateConfig,
+    QemuNodeChild, QemuPreparedRunDirectory, QemuReplayOracleValidation, QemuVmRealizationError,
+    QemuVmSnapshot,
 };
 
 use super::*;
@@ -540,6 +541,7 @@ impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
 struct FakeGenesisCheckpointLifecycle {
     order: Arc<Mutex<Vec<&'static str>>>,
     capture: Option<CapturedAttemptCheckpoint>,
+    launch_profiles: Vec<ProductionVmNodeReplayLaunchProfile>,
     checkpoint_ready: bool,
     cleanup_error: bool,
 }
@@ -577,6 +579,16 @@ impl QemuFreshAttemptLifecycleOwner for FakeGenesisCheckpointLifecycle {
             .ok_or_else(|| crucible::SchedulerError::BoundaryViolation {
                 message: String::from("genesis checkpoint fixture was already consumed"),
             })
+    }
+
+    fn replay_launch_profiles(
+        &self,
+    ) -> Result<Vec<ProductionVmNodeReplayLaunchProfile>, crucible::SchedulerError> {
+        self.order
+            .lock()
+            .expect("genesis capture order")
+            .push("profiles");
+        Ok(self.launch_profiles.clone())
     }
 
     fn fault_evidence_snapshot(
@@ -620,7 +632,7 @@ impl QemuFreshAttemptLifecycleFactory for FakeGenesisCheckpointLifecycleFactory 
     fn start_fresh_lifecycle(
         &mut self,
         _scenario: &ScenarioDef,
-        _source: &crucible::ScenarioDefForm,
+        source: &crucible::ScenarioDefForm,
         start: &Configuration,
         _context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
@@ -636,9 +648,27 @@ impl QemuFreshAttemptLifecycleFactory for FakeGenesisCheckpointLifecycleFactory 
         } else {
             start.clone()
         };
+        let launch_profiles = source
+            .world()
+            .vm_nodes()
+            .iter()
+            .map(|node| {
+                ProductionVmNodeReplayLaunchProfile::new(
+                    node.id.clone(),
+                    QemuLiveNodeStepGateConfig::new(
+                        "qemu",
+                        "plugin",
+                        "kernel",
+                        "firmware",
+                        format!("run-{}", node.id.name),
+                    ),
+                )
+            })
+            .collect();
         Ok(FakeGenesisCheckpointLifecycle {
             order: Arc::clone(&self.order),
             capture: Some(test_checkpoint_capture_for_configuration(&configuration).into()),
+            launch_profiles,
             checkpoint_ready: self.checkpoint_ready,
             cleanup_error: self.cleanup_error,
         })
@@ -833,7 +863,7 @@ fn fresh_genesis_checkpoint_capture_uses_no_modeled_quantum_and_tears_down() {
     );
     assert_eq!(
         order.lock().expect("genesis capture order").as_slice(),
-        ["begin", "ready", "capture", "shutdown"]
+        ["begin", "ready", "capture", "profiles", "shutdown"]
     );
 }
 
@@ -927,7 +957,7 @@ fn production_baked_genesis_rejects_legacy_capture_after_guarded_teardown() {
     ));
     assert_eq!(
         order.lock().expect("genesis capture order").as_slice(),
-        ["begin", "ready", "capture", "shutdown"]
+        ["begin", "ready", "capture", "profiles", "shutdown"]
     );
 }
 

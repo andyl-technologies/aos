@@ -40,6 +40,45 @@ fn classify_recorded_control_boundary(
 }
 
 impl ProductionVmLifecycleLoop {
+    /// Copies the exact scenario-aware live-node profiles for background replay.
+    ///
+    /// The returned values contain immutable launch inputs only. They retain no
+    /// process, run-directory, lease, checkpoint-store, or scheduler authority,
+    /// and a caller must install a new attempt-owned generation before launch.
+    /// Profiles are returned in World node order and omit permanently failed
+    /// nodes, matching the live-target set captured by an exact checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError::LoopFactory`] when one live World node has
+    /// no exact launch profile in the lifecycle.
+    pub fn replay_launch_profiles(
+        &self,
+    ) -> Result<Vec<ProductionVmNodeReplayLaunchProfile>, LifecycleApiError> {
+        let mut profiles = Vec::new();
+        profiles
+            .try_reserve_exact(self.source.world().vm_nodes().len())
+            .map_err(|_error| loop_factory_error("reserve production replay launch profiles"))?;
+        for node in self.source.world().vm_nodes() {
+            if self.node_service_states.get(&node.id)
+                == Some(&ProductionNodeServiceState::PermanentlyFailed)
+            {
+                continue;
+            }
+            let launch = self.launch_configs.get(&node.id).ok_or_else(|| {
+                loop_factory_error(format!(
+                    "production lifecycle has no replay launch profile for `{}`",
+                    node.id.name
+                ))
+            })?;
+            profiles.push(ProductionVmNodeReplayLaunchProfile::new(
+                node.id.clone(),
+                launch.clone(),
+            ));
+        }
+        Ok(profiles)
+    }
+
     /// Captures the exact modeled evidence boundary restored with this lifecycle.
     ///
     /// The returned entries are read-only copies of the scheduler-owned retained

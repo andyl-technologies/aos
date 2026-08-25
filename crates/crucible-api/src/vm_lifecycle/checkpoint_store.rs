@@ -3,8 +3,9 @@
 use super::*;
 use crucible::LocalDagStore;
 use crucible::model::FaultResourceLimits;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::sync::Arc;
 
 mod decode;
 mod io;
@@ -148,11 +149,98 @@ pub struct ProductionExactCheckpointReplayTargets<'a> {
     snapshot_limit: u64,
 }
 
+/// Random-access catalog of compact targets in one authenticated closure.
+///
+/// The catalog shares the immutable closure through an [`Arc`] and retains
+/// only its bounded node/artifact descriptors. Opening one node authenticates
+/// and decodes only that node's snapshot body, so a replay factory neither
+/// rescans the complete closure for every World VM nor retains every fat
+/// snapshot in memory.
+#[derive(Clone)]
+pub struct ProductionExactCheckpointReplayCatalog {
+    closure: Arc<ProductionExactCheckpointClosure>,
+    targets: BTreeMap<NodeId, ProductionExactCheckpointReplayDescriptor>,
+    snapshot_limit: u64,
+}
+
+#[derive(Clone)]
 struct ProductionExactCheckpointReplayDescriptor {
     node: NodeId,
     snapshot: ContentHash,
     overlay: ProductionExactCheckpointReplayArtifact,
     vmstate: ProductionExactCheckpointReplayArtifact,
+}
+
+impl ProductionExactCheckpointReplayCatalog {
+    /// Returns the number of exact node targets in the catalog.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.targets.len()
+    }
+
+    /// Reports whether the catalog contains no live-node targets.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.targets.is_empty()
+    }
+
+    /// Returns the exact ordered node set without opening snapshot bodies.
+    pub fn nodes(&self) -> impl ExactSizeIterator<Item = &NodeId> {
+        self.targets.keys()
+    }
+
+    /// Opens and authenticates one raw live-node target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when `node` is absent or its snapshot is
+    /// unavailable, corrupt, outside the configured byte bound, or no longer a
+    /// raw `NotRun` replay-oracle source.
+    pub fn open_target(
+        &self,
+        node: &NodeId,
+    ) -> Result<ProductionExactCheckpointReplayTarget, LifecycleApiError> {
+        self.open_target_with_boundary(node, &mut || Ok(()))
+    }
+
+    /// Opens one target while observing a bounded operational callback.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::open_target`], including the exact
+    /// [`LifecycleApiError`] returned by `boundary`.
+    pub fn open_target_with_boundary(
+        &self,
+        node: &NodeId,
+        boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+    ) -> Result<ProductionExactCheckpointReplayTarget, LifecycleApiError> {
+        boundary()?;
+        let target = self.targets.get(node).ok_or_else(|| {
+            loop_factory_error(format!(
+                "production replay-oracle catalog has no target for `{}`",
+                node.name
+            ))
+        })?;
+        let snapshot = read_portable_snapshot(
+            self.closure.as_ref(),
+            target.snapshot,
+            self.snapshot_limit,
+            boundary,
+        )?;
+        if snapshot.replay_oracle_validation() != QemuReplayOracleValidation::NotRun {
+            return Err(loop_factory_error(format!(
+                "production replay-oracle source for `{}` is not raw",
+                target.node.name
+            )));
+        }
+        boundary()?;
+        Ok(ProductionExactCheckpointReplayTarget {
+            node: target.node.clone(),
+            snapshot,
+            overlay: target.overlay.clone(),
+            vmstate: target.vmstate.clone(),
+        })
+    }
 }
 
 impl ProductionExactCheckpointReplayArtifact {
@@ -511,6 +599,72 @@ impl ProductionExactCheckpointClosure {
             closure: self,
             targets,
             next: 0,
+            snapshot_limit: limits.fat_checkpoint_bytes,
+        })
+    }
+
+    /// Builds a shared random-access target catalog.
+    ///
+    /// The complete closure is authenticated once. The returned catalog owns a
+    /// shared immutable reference to this exact closure and retains only compact
+    /// descriptors; it opens at most one fat snapshot body per target request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the closure is incomplete, corrupt,
+    /// semantically inconsistent, outside its authored bounds, or repeats one
+    /// live-node identity.
+    pub fn replay_oracle_catalog(
+        self: &Arc<Self>,
+    ) -> Result<ProductionExactCheckpointReplayCatalog, LifecycleApiError> {
+        self.replay_oracle_catalog_with_boundary(&mut || Ok(()))
+    }
+
+    /// Builds a shared target catalog under an operational boundary callback.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::replay_oracle_catalog`], including
+    /// the exact [`LifecycleApiError`] returned by `boundary`.
+    pub fn replay_oracle_catalog_with_boundary(
+        self: &Arc<Self>,
+        boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+    ) -> Result<ProductionExactCheckpointReplayCatalog, LifecycleApiError> {
+        self.validate_complete_with_boundary(boundary)?;
+        let limits = self.source.plan().fault_signals().resource_limits();
+        let manifest = decode::decode_manifest_with_limits(self.manifest(), limits)?;
+        let mut targets = BTreeMap::new();
+        for target in manifest.targets {
+            let node = NodeId { name: target.node };
+            let descriptor = ProductionExactCheckpointReplayDescriptor {
+                node: node.clone(),
+                snapshot: target.snapshot,
+                overlay: ProductionExactCheckpointReplayArtifact {
+                    object_directory: self.object_directory.clone(),
+                    identity: target.overlay.identity,
+                    length: target.overlay.length,
+                    chunks: target.overlay.chunks,
+                    role: "replay-oracle root overlay",
+                },
+                vmstate: ProductionExactCheckpointReplayArtifact {
+                    object_directory: self.object_directory.clone(),
+                    identity: target.vmstate.identity,
+                    length: target.vmstate.length,
+                    chunks: target.vmstate.chunks,
+                    role: "replay-oracle VMState",
+                },
+            };
+            if targets.insert(node.clone(), descriptor).is_some() {
+                return Err(loop_factory_error(format!(
+                    "production replay-oracle catalog repeats node `{}`",
+                    node.name
+                )));
+            }
+        }
+        boundary()?;
+        Ok(ProductionExactCheckpointReplayCatalog {
+            closure: Arc::clone(self),
+            targets,
             snapshot_limit: limits.fat_checkpoint_bytes,
         })
     }
@@ -4420,6 +4574,25 @@ mod tests {
             .expect("open raw production closure");
         raw.validate_complete()
             .expect("raw production closure should authenticate");
+        let catalog_source = Arc::new(raw.clone());
+        let catalog = catalog_source
+            .replay_oracle_catalog()
+            .expect("authenticate random-access replay catalog");
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog.nodes().collect::<Vec<_>>(), vec![&node]);
+        let catalog_target = catalog
+            .open_target(&node)
+            .expect("open exact catalog target");
+        assert_eq!(catalog_target.snapshot().id(), raw_snapshot);
+        assert!(
+            catalog
+                .open_target(&NodeId {
+                    name: String::from("foreign-node"),
+                })
+                .is_err()
+        );
+        drop(catalog);
+        drop(catalog_source);
         let mut replay_targets = raw
             .replay_oracle_targets()
             .expect("authenticate raw production replay targets");

@@ -802,7 +802,10 @@ fn concrete_exact_resume_executor_materializes_the_root_before_replay_admission(
 
     assert!(matches!(
         result,
-        Err(QemuVmRealizationError::SavevmPolicy { .. })
+        Err(QemuVmRealizationError::Executor {
+            operation: "prepare exact-resume QEMU launch",
+            ..
+        })
     ));
     assert_eq!(preparations.load(Ordering::SeqCst), 1);
     assert_eq!(

@@ -5,9 +5,10 @@
 //! managed executor endpoint behind one owner. Each worker routes a durable
 //! version-four root exclusively through the guarded production-resume path;
 //! fresh execution never substitutes for an invalid root. The advertised
-//! materialization set remains deliberately limited to thin replay until the
-//! concrete multi-node replay-oracle promotion flight can produce resumable
-//! roots automatically.
+//! public production preparation captures one authenticated native baked
+//! genesis, installs one concrete replay-oracle promotion owner per fixed
+//! semantic worker, and advertises exact restore only with that complete owner
+//! set. Test-only composition helpers can still omit promotion deliberately.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -17,25 +18,30 @@ use std::thread::{self, JoinHandle};
 use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{
     AttemptResourceLimits, CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignName,
-    CampaignRepository, CampaignRepositoryError, DaemonEpoch, ExecutorCapabilitySet,
-    ExecutorCompatibilityProfile, ExecutorDescription, ExecutorMaterializationCapability,
+    CampaignRepository, CampaignRepositoryError, DaemonEpoch, ExecutionRetentionIntent,
+    ExecutorCapabilitySet, ExecutorCompatibilityProfile, ExecutorDescription,
+    ExecutorMaterializationCapability,
 };
 use crucible_cas::content_store::{DirectoryBlobBackend, ImmutableBlobBackend};
 use crucible_qemu::{LinuxQemuAttemptHostConfig, QemuVmRealizationError};
 
 use crate::{
-    AssignmentLedgerError, ComposedQemuAttemptResourceGuardFactory, CrucibleExecutionModel,
-    DirectoryAssignmentLedger, ExactCheckpointStore, ExactCheckpointStoreError, ExecutorCapacity,
+    AssignmentLedgerError, AttemptExecutionContext, ComposedQemuAttemptResourceGuardFactory,
+    CrucibleArtifactError, CrucibleExecutionModel, DirectoryAssignmentLedger, ExactCheckpointStore,
+    ExactCheckpointStoreError, ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity,
     ExecutorLocalService, ExecutorLocalServiceError, ExecutorLocalServiceReport,
     ExecutorLocalServiceShutdown, ExecutorLoopbackEndpointConfig, ExecutorLoopbackEndpointError,
     ExecutorLoopbackListenerError, ExecutorLoopbackServerConfig,
     LinuxQemuAttemptHostResourceFactory, LocalCheckpointPromotionWorker,
     LocalExecutorCapabilityService, LocalExecutorPoolConfigError, LocalExecutorSupervisor,
-    LocalExecutorWorkerPool, QemuAttemptExecutionRouter, QemuAttemptHostResourceFactory,
-    QemuAttemptHostResourceOwner, QemuAttemptProcessResourceGuard,
+    LocalExecutorWorkerPool, ProductionBakedGenesisCaptureError, ProductionBakedGenesisCheckpoint,
+    ProductionBakedGenesisReplayFactory, ProductionCheckpointPromotionWorker,
+    QemuAttemptExecutionRouter, QemuAttemptHostResourceFactory, QemuAttemptHostResourceOwner,
+    QemuAttemptProcessResourceGuard, QemuAttemptProductionVmLifecycleError,
     QemuAttemptProductionVmLifecycleFactory, QemuFreshExecutionRunner, QemuFreshModeledDriver,
     QemuProductionExactResumeExecutionRunner, RepositoryAttemptAdmission, RepositoryAttemptWorker,
     SharedQemuAttemptHostResourceFactory, UnixPeerExecutorIdentity,
+    capture_production_baked_genesis, decode_crucible_scenario_artifact,
 };
 
 #[cfg(test)]
@@ -344,10 +350,34 @@ pub fn prepare_packaged_qemu_executor(
     let head = repository.head(config.campaign.as_str())?;
     let lineage = repository.load_lineage(head.snapshot().lineage())?;
     let profile = ExecutorCompatibilityProfile::from_lineage(&lineage);
-    let host = LinuxQemuAttemptHostResourceFactory::open(config.host.clone())?;
-    compose_packaged_qemu_executor(repository, profile, config, host)
+    let scenario_artifact = repository.load_scenario_artifact(lineage.scenario_content())?;
+    let scenario = decode_crucible_scenario_artifact(&scenario_artifact)?;
+    let host = SharedQemuAttemptHostResourceFactory::new(
+        LinuxQemuAttemptHostResourceFactory::open(config.host.clone())?,
+    );
+    let resource_ceiling = packaged_resource_ceiling(&config)?;
+    let capture_context = AttemptExecutionContext::new(
+        resource_ceiling,
+        ExecutionRetentionIntent::Discard,
+        ExecutionCancellation::default(),
+        ExecutionCheckpointRequest::default(),
+    );
+    let baked_lifecycle = config.lifecycle.clone().with_run_state_root(
+        config
+            .lifecycle
+            .run_state_root()
+            .join("campaign-baked-genesis"),
+    );
+    let mut baked_factory = QemuAttemptProductionVmLifecycleFactory::new(
+        baked_lifecycle,
+        ComposedQemuAttemptResourceGuardFactory::new(host.clone()),
+    );
+    let baked = capture_production_baked_genesis(&mut baked_factory, &scenario, &capture_context)
+        .map_err(|source| PackagedQemuExecutorError::BakedGenesis(Box::new(source)))?;
+    compose_packaged_qemu_executor_with_baked_genesis(repository, profile, config, host, baked)
 }
 
+#[cfg(test)]
 fn compose_packaged_qemu_executor<H>(
     repository: Arc<CampaignRepository>,
     profile: ExecutorCompatibilityProfile,
@@ -369,8 +399,10 @@ where
     )
 }
 
+#[cfg(test)]
 struct DisabledPackagedCheckpointPromotionWorker;
 
+#[cfg(test)]
 impl LocalCheckpointPromotionWorker for DisabledPackagedCheckpointPromotionWorker {
     type Error = ();
 
@@ -384,6 +416,7 @@ impl LocalCheckpointPromotionWorker for DisabledPackagedCheckpointPromotionWorke
     }
 }
 
+#[cfg(test)]
 fn compose_packaged_qemu_executor_with_checkpoint_promotions<H, P>(
     repository: Arc<CampaignRepository>,
     profile: ExecutorCompatibilityProfile,
@@ -398,7 +431,74 @@ where
         QemuAttemptProcessResourceGuard + Send + 'static,
     P: LocalCheckpointPromotionWorker + Send + 'static,
 {
-    let promotion_enabled = !promotion_workers.is_empty();
+    let shared = SharedQemuAttemptHostResourceFactory::new(host);
+    compose_packaged_qemu_executor_with_promotion_builder(
+        repository,
+        profile,
+        config,
+        shared,
+        move |_store, _checkpoints, _shared, _run_state_root, _worker_count| promotion_workers,
+    )
+}
+
+fn compose_packaged_qemu_executor_with_baked_genesis<H>(
+    repository: Arc<CampaignRepository>,
+    profile: ExecutorCompatibilityProfile,
+    config: PackagedQemuExecutorConfig,
+    shared: SharedQemuAttemptHostResourceFactory<H>,
+    baked: ProductionBakedGenesisCheckpoint,
+) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
+where
+    H: QemuAttemptHostResourceFactory + Send + 'static,
+    H::Owner: QemuAttemptHostResourceOwner + Send + 'static,
+    crate::ComposedQemuAttemptResourceGuard<H::Owner>:
+        QemuAttemptProcessResourceGuard + Send + 'static,
+{
+    compose_packaged_qemu_executor_with_promotion_builder(
+        repository,
+        profile,
+        config,
+        shared,
+        move |store, checkpoints, shared, run_state_root, worker_count| {
+            (0..worker_count)
+                .map(|slot| {
+                    let factory = ProductionBakedGenesisReplayFactory::new(
+                        baked.clone(),
+                        ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
+                    );
+                    ProductionCheckpointPromotionWorker::new(
+                        store.clone(),
+                        Arc::clone(checkpoints),
+                        run_state_root.join(format!("worker-{slot:03}")),
+                        factory,
+                    )
+                })
+                .collect::<Vec<_>>()
+        },
+    )
+}
+
+fn compose_packaged_qemu_executor_with_promotion_builder<H, P, B>(
+    repository: Arc<CampaignRepository>,
+    profile: ExecutorCompatibilityProfile,
+    config: PackagedQemuExecutorConfig,
+    shared: SharedQemuAttemptHostResourceFactory<H>,
+    build_promotions: B,
+) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
+where
+    H: QemuAttemptHostResourceFactory + Send + 'static,
+    H::Owner: QemuAttemptHostResourceOwner + Send + 'static,
+    crate::ComposedQemuAttemptResourceGuard<H::Owner>:
+        QemuAttemptProcessResourceGuard + Send + 'static,
+    P: LocalCheckpointPromotionWorker + Send + 'static,
+    B: FnOnce(
+        &CampaignExecutorStore,
+        &Arc<ExactCheckpointStore>,
+        &SharedQemuAttemptHostResourceFactory<H>,
+        &Path,
+        usize,
+    ) -> Vec<P>,
+{
     let ledger = DirectoryAssignmentLedger::open(&config.ledger_root)?;
     let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
         "campaign-exact-checkpoints",
@@ -408,12 +508,21 @@ where
         checkpoint_backend,
         config.maximum_checkpoint_bytes,
     )?);
-    let resource_ceiling = AttemptResourceLimits::new(
-        config.capacity.maximum_vcpus(),
-        config.capacity.maximum_resident_bytes(),
-        config.capacity.maximum_disk_bytes(),
-        config.capacity.maximum_execution_quanta(),
-    )?;
+    let resource_ceiling = packaged_resource_ceiling(&config)?;
+    let store = CampaignExecutorStore::new(Arc::clone(&repository));
+    let worker_state_root = config.lifecycle.run_state_root().join("campaign-workers");
+    let promotion_state_root = config
+        .lifecycle
+        .run_state_root()
+        .join("campaign-checkpoint-promotions");
+    let promotion_workers = build_promotions(
+        &store,
+        &checkpoints,
+        &shared,
+        &promotion_state_root,
+        config.worker_count,
+    );
+    let promotion_enabled = !promotion_workers.is_empty();
     let mut materialization = BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]);
     if promotion_enabled {
         materialization.insert(ExecutorMaterializationCapability::ExactRestore);
@@ -436,9 +545,6 @@ where
     );
     let executor = LocalExecutorCapabilityService::new(supervisor, description)?;
 
-    let store = CampaignExecutorStore::new(Arc::clone(&repository));
-    let shared = SharedQemuAttemptHostResourceFactory::new(host);
-    let worker_state_root = config.lifecycle.run_state_root().join("campaign-workers");
     let workers = (0..config.worker_count)
         .map(|slot| {
             let lifecycle = config
@@ -491,12 +597,29 @@ where
     })
 }
 
+fn packaged_resource_ceiling(
+    config: &PackagedQemuExecutorConfig,
+) -> Result<AttemptResourceLimits, CampaignCodecError> {
+    AttemptResourceLimits::new(
+        config.capacity.maximum_vcpus(),
+        config.capacity.maximum_resident_bytes(),
+        config.capacity.maximum_disk_bytes(),
+        config.capacity.maximum_execution_quanta(),
+    )
+}
+
 /// Failure to acquire or compose one packaged local QEMU executor.
 #[derive(Debug, thiserror::Error)]
 pub enum PackagedQemuExecutorError {
     /// Campaign or lineage authentication failed.
     #[error(transparent)]
     Repository(#[from] CampaignRepositoryError),
+    /// The retained Crucible scenario artifact failed semantic authentication.
+    #[error(transparent)]
+    Artifact(#[from] CrucibleArtifactError),
+    /// Exact baked-genesis capture or complete native admission failed.
+    #[error(transparent)]
+    BakedGenesis(Box<ProductionBakedGenesisCaptureError<QemuAttemptProductionVmLifecycleError>>),
     /// Durable assignment-ledger acquisition failed.
     #[error(transparent)]
     Ledger(#[from] AssignmentLedgerError),

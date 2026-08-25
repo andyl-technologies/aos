@@ -674,7 +674,9 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   the concrete exact-resume driver, which restores the complete scheduler and
   evidence continuation, rejects a retained-log suffix, performs final drain,
   and reports `ExactRestore` only after sealing. Fresh exact-cache remains a
-  separate optimization, and replay-oracle promotion is not yet advertised.
+  separate optimization. Packaged startup captures the baked source, installs
+  one fixed replay-oracle promotion owner per semantic worker, and advertises
+  exact restore only after that owner set exists.
   The driver now observes a sticky checkpoint request at
   each operational boundary, lets a terminal verdict win a coincident request,
   and transfers a nonterminal request only after the lifecycle reports an exact
@@ -777,18 +779,20 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   retained raw root. The production adapter binds one guarded replay factory to
   each fixed worker; repository, QEMU, and immutable-store work remains outside
   supervisor ownership.
-  Packaged composition now derives materialization advertisement from that
-  owner: its default path has no promotion worker and remains `ThinReplay`
-  only, while a promotion-enabled composition advertises `ExactRestore` and
-  exposes the fixed promotion-worker count in its bounded report.
+  Packaged composition captures the baked source before endpoint binding,
+  installs one promotion owner per semantic worker, derives `ExactRestore`
+  advertisement from that nonempty owner set, and exposes the fixed
+  promotion-worker count in its bounded report.
   The guarded fresh lifecycle now supplies the bootstrap half of the concrete
   thin source: it captures exact scenario genesis without a modeled quantum,
   performs mandatory teardown, and admits only a completely authenticated
   version-four native closure whose live-node set exactly equals the World.
-  Assignment-root-aware cleanup of abandoned native entries, node-specific
-  materialization from that baked source, construction of the packaged
-  real-node replay factory, and enabling that concrete owner remain open before
-  the executor may claim exact resume. Production-loop process reconstruction and
+  A concrete real-node replay factory now opens one node from a shared compact
+  baked catalog, prepares independently bound exact and thin run directories,
+  streams both authenticated artifact pairs under one resource guard, and
+  returns the fixed-node paired launcher/store session. Assignment-root-aware
+  cleanup of abandoned native entries remains open.
+  Production-loop process reconstruction and
   exact-resume driver selection are implemented: `NotRun` is rejected during no-write admission,
   the exact closure is restored under the attempt guard, and the packaged
   worker uses a disjoint exact-origin runner. A guarded-only
@@ -809,9 +813,9 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   contract and resource guard, routes target and thin-base VMState through
   disjoint launch capabilities, serializes their process generations, and
   reaps the final generation before promotion; failure quarantines the guard
-  without writes. The nondroppable direct-child/cgroup/watcher worker now
-  exists crate-internally; concrete failure handoff into it and automatic
-  comparison-flight orchestration remain open.
+  without writes. The packaged fixed worker set now owns and schedules those
+  comparison flights. The nondroppable direct-child/cgroup/watcher worker exists
+  crate-internally; complete production failure handoff into it remains open.
   The authority remains crate-internal until those security boundaries are
   composed. Validated launch commands now
   expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable
@@ -867,11 +871,10 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   root materialization through the attempt-owned directory. The packaged worker
   selects that resume adapter without fresh fallback, restores the complete
   event prefix and quiescence boundary, and retains runner-owned shutdown and
-  result sealing. Fresh exact-cache, node-specific baked/thin artifact
-  materialization, concrete packaged replay-oracle factory wiring, and
-  production tuning remain open;
-  `NotRun` is still
-  fail-closed and `ExactRestore` remains unadvertised. The fixed worker
+  result sealing. Fresh exact-cache, native-catalog cleanup, and production
+  tuning remain open; `NotRun` is still fail-closed. Packaged startup installs
+  the fixed replay-oracle owners and advertises `ExactRestore` only after that
+  owner set exists. The fixed worker
   pool and its
   linear observation/checkpoint
   publication/reconciliation paths are implemented.

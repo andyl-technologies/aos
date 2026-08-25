@@ -32,9 +32,9 @@ use crucible::{
 };
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
-    QemuNode, QemuNodeLifecycleDecision, QemuNodeLifecycleIntent, QemuProcessIdentity,
-    QemuReplayOracleCheck, QemuReplayOracleValidation, QemuSharedBlockDevice, QemuVmSnapshot,
-    linux_process_identity, quarantine_orphaned_qemu_process,
+    QemuLaunchResourceRequirements, QemuNode, QemuNodeLifecycleDecision, QemuNodeLifecycleIntent,
+    QemuProcessIdentity, QemuReplayOracleCheck, QemuReplayOracleValidation, QemuSharedBlockDevice,
+    QemuVmSnapshot, linux_process_identity, quarantine_orphaned_qemu_process,
 };
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -58,8 +58,9 @@ use checkpoint_store::load_exact_checkpoint_set;
 pub use checkpoint_store::{
     PreparedProductionReplayOraclePromotion, ProductionExactCheckpointClosure,
     ProductionExactCheckpointObject, ProductionExactCheckpointReplayArtifact,
-    ProductionExactCheckpointReplayTarget, ProductionExactCheckpointReplayTargets,
-    ProductionExactCheckpointResumeBasis, ProductionExactCheckpointSource,
+    ProductionExactCheckpointReplayCatalog, ProductionExactCheckpointReplayTarget,
+    ProductionExactCheckpointReplayTargets, ProductionExactCheckpointResumeBasis,
+    ProductionExactCheckpointSource,
     authenticate_portable_exact_checkpoint_replay_oracle_promotion,
     authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary,
     install_exact_checkpoint_closure, install_exact_checkpoint_closure_with_boundary,
@@ -824,6 +825,55 @@ pub struct ProductionVmNodeLaunch {
     node: QemuNode,
     lease: Box<dyn ProductionVmNodeLease>,
     run_directory: PathBuf,
+}
+
+/// Immutable scenario-aware launch profile retained for background replay.
+///
+/// The profile is copied from the exact production lifecycle that produced a
+/// checkpoint. It contains no process, run-directory, or resource authority.
+/// A replay owner must install a fresh guarded directory and generation before
+/// using [`Self::for_generation`].
+#[derive(Clone, Debug)]
+pub struct ProductionVmNodeReplayLaunchProfile {
+    node: NodeId,
+    launch: ProductionLiveNodeStepGateConfig,
+}
+
+impl ProductionVmNodeReplayLaunchProfile {
+    /// Binds one immutable launch profile to its exact World node.
+    #[must_use]
+    pub fn new(node: NodeId, launch: ProductionLiveNodeStepGateConfig) -> Self {
+        Self { node, launch }
+    }
+
+    /// Returns the exact World node described by this profile.
+    #[must_use]
+    pub const fn node(&self) -> &NodeId {
+        &self.node
+    }
+
+    /// Installs a fresh replay run directory and process generation.
+    ///
+    /// Any operator gdbstub endpoint from the originating lifecycle is removed
+    /// so a background replay cannot reuse its private socket or listener.
+    #[must_use]
+    pub fn for_generation(
+        &self,
+        run_directory: impl Into<PathBuf>,
+        generation: u64,
+    ) -> ProductionLiveNodeStepGateConfig {
+        self.launch
+            .clone()
+            .with_run_directory(run_directory)
+            .with_process_generation(generation)
+            .without_gdbstub()
+    }
+
+    /// Returns the fixed resource baseline before a replay directory exists.
+    #[must_use]
+    pub const fn resource_requirements(&self) -> QemuLaunchResourceRequirements {
+        self.launch.resource_requirements()
+    }
 }
 
 impl ProductionVmNodeLaunch {

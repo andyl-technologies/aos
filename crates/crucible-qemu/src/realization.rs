@@ -25,11 +25,13 @@ pub use snapshot_codec::{MAX_QEMU_VM_SNAPSHOT_CANONICAL_BYTES, QemuVmSnapshotCod
 mod node_executor;
 #[cfg(target_os = "linux")]
 pub use node_executor::{
-    QemuCapturedVmStateSource, QemuExactRootWarmRestoreNodeLauncher, QemuFailedLaunchChildSource,
+    QemuCapturedVmStateSource, QemuExactProfileWarmRestoreNodeLauncher,
+    QemuExactRootWarmRestoreNodeLauncher, QemuFailedLaunchChildSource,
     QemuGuardedNodeRealizationLauncher, QemuGuardedThinNodeRealizationLauncher,
     QemuLiveAttemptBackend, QemuLiveBackendShutdown, QemuNodeLauncher, QemuNodeRealizationExecutor,
     QemuNodeRealizationLauncher, QemuPreparedThinWarmRestoreNodeLauncher, QemuRealizedNodeBackend,
-    QemuReplayValidationNodeLauncher, QemuVmLiveRealizationExecutor, QemuWarmRestoreNodeLauncher,
+    QemuReplayValidationNodeLauncher, QemuThinProfileWarmRestoreNodeLauncher,
+    QemuVmLiveRealizationExecutor, QemuWarmRestoreNodeLauncher,
 };
 
 /// An exact QEMU VM snapshot cached for one configuration.
