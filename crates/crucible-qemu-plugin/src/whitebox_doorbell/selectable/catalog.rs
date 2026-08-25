@@ -13,6 +13,12 @@ use std::{
 
 use crucible_protocol::{
     SelectableProtocolError, SelectableRegister, SelectionReply, SelectionRequest,
+    selectable_catalog_plan::{
+        SELECTABLE_CATALOG_PLAN_MAX_DECLARATIONS, SELECTABLE_CATALOG_PLAN_MAX_REQUESTS,
+        SelectableCatalogPlan, SelectableCatalogPlanError, SelectablePlanContinuation,
+        SelectablePlanDeclaration, SelectablePlanLimits, SelectablePlanPendingRequest,
+        SelectablePlanPhase, SelectablePlanPresence,
+    },
 };
 use thiserror::Error;
 
@@ -25,6 +31,10 @@ use super::{
 pub const SELECTABLE_CATALOG_HARD_MAX_DECLARATIONS: usize = 4_096;
 /// Absolute implementation ceiling for completed requests in one node run.
 pub const SELECTABLE_CATALOG_HARD_MAX_REQUESTS: u64 = 1_000_000;
+
+const _: () =
+    assert!(SELECTABLE_CATALOG_HARD_MAX_DECLARATIONS == SELECTABLE_CATALOG_PLAN_MAX_DECLARATIONS);
+const _: () = assert!(SELECTABLE_CATALOG_HARD_MAX_REQUESTS == SELECTABLE_CATALOG_PLAN_MAX_REQUESTS);
 
 /// Scenario-owned ceilings applied to one node-local selectable catalog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -368,6 +378,121 @@ impl SelectableCatalog {
             last_completed_request_sequence: None,
             pending: None,
         })
+    }
+
+    /// Restores one catalog from an already decoded launch-authenticated plan.
+    ///
+    /// A fresh private incarnation is always created. Pending request bytes and
+    /// accounting survive restore, but an in-process token from the prior
+    /// plugin cannot complete the restored catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelectableCatalogError`] if plugin and process-protocol bounds
+    /// drift or the plan cannot be represented by the plugin state machine.
+    pub fn from_plan(plan: &SelectableCatalogPlan) -> Result<Self, SelectableCatalogError> {
+        let plan_limits = plan.limits();
+        let limits = SelectableCatalogLimits::new(
+            plan_limits.declarations(),
+            plan_limits.requests_per_selectable(),
+            plan_limits.total_requests(),
+        )?;
+        let declarations = plan
+            .declarations()
+            .values()
+            .map(|declaration| {
+                SelectableExpectedDeclaration::from_registration(
+                    declaration.registration(),
+                    match declaration.presence() {
+                        SelectablePlanPresence::Required => SelectableExpectedPresence::Required,
+                        SelectablePlanPresence::Optional => SelectableExpectedPresence::Optional,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let expectation = SelectableCatalogExpectation::new(declarations, limits)?;
+        let mut catalog = Self::new(limits, expectation)?;
+        let continuation = plan.continuation();
+        catalog.phase = match continuation.phase() {
+            SelectablePlanPhase::Registering => SelectableCatalogPhase::Registering,
+            SelectablePlanPhase::Frozen => SelectableCatalogPhase::Frozen,
+        };
+        catalog.registered = continuation.registered().clone();
+        catalog.last_registration_sequence = continuation.last_registration_sequence();
+        catalog.completed_requests = continuation.completed_requests().clone();
+        catalog.total_completed_requests = continuation.total_completed_requests();
+        catalog.last_completed_request_sequence = continuation.last_completed_request_sequence();
+        if let Some(pending) = continuation.pending() {
+            let declaration = catalog
+                .expectation
+                .declarations
+                .get(pending.request().selectable_id())
+                .cloned()
+                .ok_or_else(|| SelectableCatalogError::UnknownSelectable {
+                    selectable_id: pending.request().selectable_id().to_owned(),
+                })?;
+            catalog.pending = Some(SelectablePendingRequest {
+                incarnation: Arc::clone(&catalog.incarnation),
+                request: pending.request().clone(),
+                coordinate: SelectableCallbackCoordinate::new(
+                    pending.icount(),
+                    pending.vcpu_index(),
+                ),
+                declaration,
+            });
+        }
+        Ok(catalog)
+    }
+
+    /// Serializes this catalog into the process-neutral canonical plan model.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelectableCatalogPlanError`] when nested declarations or the
+    /// retained continuation fail the protocol profile. A catalog constructed
+    /// or restored through safe APIs is expected to serialize successfully.
+    pub fn to_plan(&self) -> Result<SelectableCatalogPlan, SelectableCatalogPlanError> {
+        let limits = SelectablePlanLimits::new(
+            self.limits.declarations(),
+            self.limits.requests_per_selectable(),
+            self.limits.total_requests(),
+        )?;
+        let declarations = self
+            .expectation
+            .declarations
+            .values()
+            .map(|declaration| {
+                SelectablePlanDeclaration::new(
+                    declaration.selectable_id(),
+                    declaration.domain().to_vec(),
+                    declaration.default_value().to_vec(),
+                    declaration.semantic_tags().to_vec(),
+                    match declaration.presence() {
+                        SelectableExpectedPresence::Required => SelectablePlanPresence::Required,
+                        SelectableExpectedPresence::Optional => SelectablePlanPresence::Optional,
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let pending = self.pending.as_ref().map(|pending| {
+            SelectablePlanPendingRequest::new(
+                pending.request.clone(),
+                pending.coordinate.icount(),
+                pending.coordinate.vcpu_index(),
+            )
+        });
+        let continuation = SelectablePlanContinuation::new(
+            match self.phase {
+                SelectableCatalogPhase::Registering => SelectablePlanPhase::Registering,
+                SelectableCatalogPhase::Frozen => SelectablePlanPhase::Frozen,
+            },
+            self.registered.clone(),
+            self.last_registration_sequence,
+            self.completed_requests.clone(),
+            self.last_completed_request_sequence,
+            pending,
+        )?;
+        SelectableCatalogPlan::new(limits, declarations, continuation)
     }
 
     /// Returns the catalog lifecycle phase.
@@ -763,6 +888,9 @@ fn require_increasing_sequence(
 /// Failure while reconciling or using one guest-selectable catalog.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SelectableCatalogError {
+    /// The process-neutral plan cannot be represented by plugin state.
+    #[error(transparent)]
+    CatalogPlan(#[from] SelectableCatalogPlanError),
     /// A configured limit is zero or exceeds its hard maximum.
     #[error("selectable catalog limit {name}={actual} is outside 1..={maximum}")]
     InvalidLimit {
