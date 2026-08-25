@@ -507,8 +507,8 @@ pub fn registry_home(
     // A hub slug is a routing identifier and can differ from the registry's
     // signed identity (for example, `andyl/main` versus `andyl-main`). The
     // client requires the local name to match the bootstrap key's registry
-    // component. One anchor is sufficient for first contact; the signed
-    // roster carries the complete active key set after the initial sync.
+    // component. Pin every configured anchor before first contact so a new
+    // client can verify the current head throughout an overlapping rotation.
     let client_name = registry
         .trust_keys
         .first()
@@ -516,7 +516,7 @@ pub fn registry_home(
         .filter(|name| !name.is_empty())
         .unwrap_or(display_name);
     let mut add_command = format!("apr add {url}/ --name {client_name}");
-    if let Some(key) = registry.trust_keys.first() {
+    for key in &registry.trust_keys {
         let _ = write!(add_command, " --trust-key {key}");
     }
     let _ = write!(
@@ -2821,7 +2821,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registry_home_uses_signed_identity_and_one_bootstrap_key() {
+    async fn registry_home_uses_signed_identity_and_all_bootstrap_keys() {
         let mut registry = registry();
         registry.slug = "andyl/main".into();
         registry.trust_keys = vec![
@@ -2847,7 +2847,7 @@ mod tests {
             "apr add https://cdn.example/registries/id/ --name andyl-main \
              --trust-key andyl-main:Ed25519:AAAA"
         ));
-        assert!(!html.contains("--trust-key andyl-main:Ed25519:BBBB"));
+        assert!(html.contains("--trust-key andyl-main:Ed25519:BBBB"));
         assert!(html.contains("aos.apm.registries.&quot;andyl-main&quot;"));
         assert!(html.contains("andyl-main:Ed25519:BBBB"));
     }

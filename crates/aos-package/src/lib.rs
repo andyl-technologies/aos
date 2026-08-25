@@ -1022,9 +1022,9 @@ pub enum RegistryCommand {
         /// Semver version constraint on tags (mutually exclusive with other tracking flags)
         #[arg(long, group = "tracking")]
         version: Option<String>,
-        /// Trusted registry signing key in `<registry>:Ed25519:<base64>` form
+        /// Trusted registry signing key in `<registry>:Ed25519:<base64>` form; repeat to pin multiple rotation anchors
         #[arg(long = "trust-key", conflicts_with = "no_verify")]
-        trust_key: Option<String>,
+        trust_key: Vec<String>,
         /// Disable signature verification for this registry (writes
         /// `[registry.signing] required = false`; unverified syncs are
         /// intended for local development registries only)
@@ -4084,7 +4084,7 @@ async fn run_registry(
                 channel.as_deref(),
                 tag.as_deref(),
                 version.as_deref(),
-                trust_key.as_deref(),
+                trust_key,
                 *no_verify,
                 !no_clone,
                 printer,
@@ -4684,7 +4684,7 @@ async fn registry_add(
     channel: Option<&str>,
     tag: Option<&str>,
     version: Option<&str>,
-    trust_key: Option<&str>,
+    trust_keys: &[String],
     no_verify: bool,
     clone: bool,
     printer: &Printer,
@@ -4720,7 +4720,8 @@ async fn registry_add(
     if let Some(t) = tag {
         validate_git_ref_name(t)?;
     }
-    let trusted_key = trust_key
+    let trusted_keys = trust_keys
+        .iter()
         .map(|key| {
             let (registry, algorithm, public_key) = security::parse_signing_key(key)?;
             if registry != name {
@@ -4738,7 +4739,7 @@ async fn registry_add(
                 source: security::KeySource::Tofu,
             })
         })
-        .transpose()?;
+        .collect::<Result<Vec<_>>>()?;
 
     printer.header(&format!("Adding registry '{name}'..."));
     printer.kv("URL", url);
@@ -4770,7 +4771,7 @@ async fn registry_add(
     if tracking != "default" {
         printer.kv("Tracking", &tracking);
     }
-    if no_verify && trusted_key.is_none() {
+    if no_verify && trusted_keys.is_empty() {
         // Verification is fail-closed by default; the explicit opt-out is
         // recorded in the config so the choice is visible and auditable.
         printer.kv("Signing", "verification disabled (--no-verify)");
@@ -4785,14 +4786,19 @@ async fn registry_add(
         channel,
         tag,
         version,
-        trusted_key: trusted_key.as_ref(),
+        trusted_key: trusted_keys.first(),
         no_verify,
     })?;
     fs::write(&toml_path, &toml_content)
         .with_context(|| format!("writing {}", toml_path.display()))?;
-    if let Some(key) = &trusted_key {
+    for key in &trusted_keys {
         security::KeyStore::new(config.scope.trusted_keys_dirs()).store(key)?;
-        printer.kv("Signing", "trusted key pinned");
+    }
+    if !trusted_keys.is_empty() {
+        printer.kv(
+            "Signing",
+            &format!("{} trusted key(s) pinned", trusted_keys.len()),
+        );
     }
 
     let pkg_cmd = aos_core::invocation::package_manager_command();
@@ -4813,7 +4819,8 @@ async fn registry_add(
                 "config": toml_path.to_string_lossy(),
                 "signing_required": !no_verify,
                 "verification_disabled": no_verify,
-                "trusted_key_pinned": trusted_key.is_some(),
+                "trusted_key_pinned": !trusted_keys.is_empty(),
+                "trusted_keys_pinned": trusted_keys.len(),
             }));
             return Ok(());
         }
@@ -4860,7 +4867,8 @@ async fn registry_add(
                 "config": toml_path.to_string_lossy(),
                 "signing_required": !no_verify,
                 "verification_disabled": no_verify,
-                "trusted_key_pinned": trusted_key.is_some(),
+                "trusted_key_pinned": !trusted_keys.is_empty(),
+                "trusted_keys_pinned": trusted_keys.len(),
             }));
             return Ok(());
         }
@@ -4894,7 +4902,8 @@ async fn registry_add(
             "config": toml_path.to_string_lossy(),
             "signing_required": !no_verify,
             "verification_disabled": no_verify,
-            "trusted_key_pinned": trusted_key.is_some(),
+            "trusted_key_pinned": !trusted_keys.is_empty(),
+            "trusted_keys_pinned": trusted_keys.len(),
         }));
     }
 
@@ -6561,7 +6570,7 @@ contributable = ["allowedTCPPorts"]
             None,
             None,
             None,
-            None,
+            &[],
             false,
             false,
             &printer,
