@@ -551,11 +551,12 @@ specification = "/absolute/path/generator.bin"
 Unknown fields, zero entries, duplicate configuration pairs, duplicate
 generator paths, relative paths, dot components, symlinks, non-regular files,
 owner mismatch, and group/other-writable files are rejected. Configuration
-entries decode ScenarioDefForm compact binary V5/V6 and Schedule compact binary
-V1/V2. Scenario V5 is accepted only with the implicit empty measurement
-component. New imports normalize to current V6 bytes and publish campaign
-scenario payload V2 plus configuration payload V2 after semantic identity
-re-derivation; retained scenario payload V1 remains readable. Generator entries
+entries decode ScenarioDefForm compact binary V5/V6/V7 and Schedule compact
+binary V1/V2. Scenario V5 is accepted only with implicit empty measurement and
+selectable components; scenario V6 is accepted only with an empty selectable
+component. New imports normalize to current V7 bytes and publish campaign
+scenario payload V3 plus configuration payload V2 after semantic identity
+re-derivation; retained scenario payloads V1 and V2 remain readable. Generator entries
 decode the current strict canonical `CandidateGeneratorSpec` and must appear
 after any child generator records on which they depend. A manifest path and
 every named path are at most 4,095 bytes.
@@ -1760,10 +1761,10 @@ may recover publication under a new execution identity, but the committed
 observation ID remains fixed. Version 2 readers accept legacy version 1
 running/completed/canceled records; new writes use version 2.
 
-The local Crucible execution adapter owns two nested payload schemas. Scenario
-payload version 1 is the strict `ScenarioDefForm` compact-binary V5 encoding;
-configuration payload version 2 is the strict `Schedule` compact-binary V2
-encoding. Before VM launch the adapter decodes both, authenticates the exact
+The local Crucible execution adapter owns nested payload schemas. Scenario
+payload versions 1, 2, and 3 are respectively the strict `ScenarioDefForm`
+compact-binary V5, V6, and V7 encodings; configuration payload version 2 is the
+strict `Schedule` compact-binary V2 encoding. Before VM launch the adapter decodes both, authenticates the exact
 scenario-artifact reference, reconstructs `Configuration`, and requires its
 re-derived `ScenarioDefId` and `ConfigurationId` to equal the campaign record.
 Unsupported nested schemas and identity drift fail before execution.
@@ -1777,6 +1778,16 @@ through the new decision taxonomy. General execution-model readers retain
 selection-free Schedule V1 for legacy reproduction and continuation envelopes.
 Checkpoint V4 carries selection decisions; selection-free Checkpoint V3 remains
 readable, while a selection tag under V3 is rejected.
+
+Scenario V7 owns the complete bounded selectable declaration component. Its
+identity commits to non-default ceilings even when the declaration map is
+empty. Before a fresh white-box node launch, the production lifecycle projects
+only that node's guest declarations into the sealed `CRUCSCP2` catalog plan,
+including exact domain/default/tag bytes, required/optional presence, and the
+scenario request ceilings. Black-box nodes receive no guest-selectable plan.
+Until the exact selectable continuation is composed into the production
+checkpoint, selectable-enabled exact restore fails before process launch rather
+than silently installing a cold catalog.
 
 Before selection resolution, the adapter linearly preflights a maximum of
 4,096 selection decisions and 256 MiB of conservative aggregate prefix-byte

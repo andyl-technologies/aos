@@ -7,8 +7,10 @@
 //! ```text
 //! CrucibleScenarioPayloadV1      = ScenarioDefForm compact binary V5
 //! CrucibleScenarioPayloadV2      = ScenarioDefForm compact binary V6
+//! CrucibleScenarioPayloadV3      = ScenarioDefForm compact binary V7
 //! CrucibleConfigurationPayloadV2 = Schedule compact binary V2
 //! CrucibleReproductionPayloadV2  = ReproductionArtifact compact binary V6
+//! CrucibleReproductionPayloadV3  = ReproductionArtifact compact binary V7
 //! ```
 //!
 //! Decoding re-derives both semantic identities before a live session or QEMU
@@ -33,12 +35,16 @@ use crucible_campaign::{
 pub const CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1: u32 = 1;
 /// Payload schema for a scenario form with measurement-definition identity.
 pub const CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V2: u32 = 2;
+/// Payload schema for a scenario form with typed selectable declarations.
+pub const CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3: u32 = 3;
 /// Payload schema for a compact canonical Crucible configuration schedule.
 pub const CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2: u32 = 2;
 /// Payload schema for a compact canonical Crucible reproduction artifact.
 pub const CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V1: u32 = 1;
 /// Payload schema for a reproduction artifact carrying scenario form v6.
 pub const CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2: u32 = 2;
+/// Payload schema for a reproduction carrying scenario form version seven.
+pub const CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3: u32 = 3;
 /// Maximum bytes accepted from one pre-bind Crucible artifact import file.
 ///
 /// This matches the campaign artifact payload ceiling. Import callers should
@@ -200,7 +206,7 @@ impl CrucibleCampaignArtifactStore {
             configuration_record.configuration(),
             stored_configuration,
             fingerprint,
-            CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2,
+            CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
             finding.artifact.to_compact_binary(),
         )?;
         let expected = artifact.id()?;
@@ -260,7 +266,7 @@ impl CrucibleCampaignArtifactStore {
             run.original.artifact.schedule(),
         )?;
         if decoded_original != run.original.artifact
-            || stored_original.payload_schema() != CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2
+            || stored_original.payload_schema() != CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3
             || stored_original.finding_fingerprint()
                 != CampaignHash::from_bytes(run.target_fingerprint.bytes)
             || stored_original.scenario() != original_scenario_record.scenario()
@@ -330,7 +336,7 @@ impl CrucibleCampaignArtifactStore {
             configuration_record.configuration(),
             stored_configuration,
             fingerprint,
-            CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2,
+            CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
             minimized.artifact.to_compact_binary(),
             minimization.clone(),
         )?;
@@ -457,7 +463,7 @@ pub fn encode_crucible_scenario_artifact(
 ) -> Result<ScenarioArtifact, CrucibleArtifactError> {
     ScenarioArtifact::new(
         campaign_scenario_id(scenario.id()),
-        CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V2,
+        CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3,
         scenario.to_compact_binary(),
     )
     .map_err(Into::into)
@@ -481,11 +487,15 @@ pub fn decode_crucible_scenario_artifact(
             if artifact
                 .payload()
                 .starts_with(b"crucible.scenario-def-form.v6\0") => {}
+        CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3
+            if artifact
+                .payload()
+                .starts_with(b"crucible.scenario-def-form.v7\0") => {}
         actual => {
             return Err(CrucibleArtifactError::UnsupportedPayloadSchema {
                 artifact: "scenario",
                 actual,
-                expected: CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V2,
+                expected: CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3,
             });
         }
     }
@@ -968,7 +978,7 @@ mod tests {
                 stored.configuration(),
                 stored.configuration_artifact(),
                 stored.finding_fingerprint(),
-                CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2 + 1,
+                CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3 + 1,
                 stored.payload().to_vec(),
             )
             .expect("publish structurally valid mislabeled reproduction");
@@ -1002,8 +1012,12 @@ mod tests {
             .expect("happy-path scenario")
             .scenario;
         let valid = encode_crucible_scenario_artifact(&scenario).expect("scenario artifact");
-        let unsupported = ScenarioArtifact::new(valid.scenario(), 3, valid.payload().to_vec())
-            .expect("unsupported artifact remains structurally valid");
+        let unsupported = ScenarioArtifact::new(
+            valid.scenario(),
+            CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3 + 1,
+            valid.payload().to_vec(),
+        )
+        .expect("unsupported artifact remains structurally valid");
         assert!(matches!(
             decode_crucible_scenario_artifact(&unsupported),
             Err(CrucibleArtifactError::UnsupportedPayloadSchema { .. })
@@ -1018,14 +1032,14 @@ mod tests {
             decode_crucible_scenario_artifact(&mislabeled_legacy),
             Err(CrucibleArtifactError::UnsupportedPayloadSchema {
                 actual: CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1,
-                expected: CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V2,
+                expected: CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3,
                 ..
             })
         ));
 
         let drifted = ScenarioArtifact::new(
             ScenarioDefId::from_hash(CampaignHash::from_bytes([0x5a; 32])),
-            CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V2,
+            CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3,
             valid.payload().to_vec(),
         )
         .expect("drifted identity artifact remains structurally valid");

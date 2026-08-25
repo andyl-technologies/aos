@@ -585,14 +585,35 @@ impl World {
         seed: Seed,
         app_random_draw_cap: u64,
     ) -> ScenarioDef {
-        let material = scenario_world_plan_properties_measurements_seed_app_random_cap_material(
-            self,
+        self.scenario_def_from_components_with_measurements_selectables_and_app_random_draw_cap(
             plan,
             properties,
             measurements,
+            &ScenarioSelectables::empty(),
             seed,
             app_random_draw_cap,
-        );
+        )
+    }
+
+    pub(super) fn scenario_def_from_components_with_measurements_selectables_and_app_random_draw_cap(
+        &self,
+        plan: &Plan,
+        properties: &Properties,
+        measurements: &MeasurementDefinitions,
+        selectables: &ScenarioSelectables,
+        seed: Seed,
+        app_random_draw_cap: u64,
+    ) -> ScenarioDef {
+        let material =
+            scenario_world_plan_properties_measurements_selectables_seed_app_random_cap_material(
+                self,
+                plan,
+                properties,
+                measurements,
+                selectables,
+                seed,
+                app_random_draw_cap,
+            );
         ScenarioDef {
             id: ContentHash::from_canonical_material(
                 "crucible.model.world-plan-properties-seed-scenario.v1",

@@ -1,5 +1,9 @@
 //! Production runtime evidence and initial-boundary regression tests.
 
+use std::collections::BTreeSet;
+
+use crucible_protocol::selectable_catalog_plan::{SelectableCatalogPlan, SelectablePlanPresence};
+
 use super::*;
 
 #[path = "tests/durable_run_state.rs"]
@@ -85,6 +89,10 @@ struct PreparationBoundaryLauncher {
     observations: Arc<std::sync::Mutex<Vec<PreparationObservation>>>,
 }
 
+struct SelectablePlanRecordingLauncher {
+    plans: Arc<std::sync::Mutex<Vec<SelectableCatalogPlan>>>,
+}
+
 impl ProductionVmNodeLauncher for RecordingFinishLauncher {
     fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
         Ok(())
@@ -147,6 +155,42 @@ impl ProductionVmNodeLauncher for PreparationBoundaryLauncher {
 
     fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
         Err(loop_factory_error("test launcher does not admit replay"))
+    }
+
+    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+}
+
+impl ProductionVmNodeLauncher for SelectablePlanRecordingLauncher {
+    fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
+    fn launch(
+        &mut self,
+        request: ProductionVmNodeLaunchRequest<'_>,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        let Some(plan) = request.launch().selectable_catalog_plan() else {
+            return Err(loop_factory_error("scenario selectable plan is absent"));
+        };
+        self.plans
+            .lock()
+            .unwrap_or_else(|_| panic!("selectable plan recorder should remain healthy"))
+            .push(plan.clone());
+        Err(loop_factory_error(
+            "selectable plan recorder rejects process spawn",
+        ))
+    }
+
+    fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
+        Err(loop_factory_error(
+            "selectable plan recorder rejects replay authority",
+        ))
     }
 
     fn finish(&mut self) -> Result<(), LifecycleApiError> {
@@ -405,6 +449,81 @@ fn production_lifecycle_lends_generation_preparation_before_path_access() {
             .unwrap_or_else(|_| panic!("preparation observation lock should remain healthy")),
         vec![("fresh", false, 1)]
     );
+}
+
+#[test]
+fn production_lifecycle_derives_node_local_selectable_catalog_from_scenario() {
+    let root =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
+    let source = initially_violated_scenario();
+    let node = source.world().vm_nodes()[0].id.clone();
+    let declaration = crucible::campaign::SelectableDeclaration::new(
+        "product.recovery",
+        crucible::campaign::ChoiceSource::Guest {
+            node: node.name.clone(),
+            protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+        },
+        crucible::campaign::ChoiceDomain::Boolean(
+            crucible::campaign::BooleanDomain::new(1)
+                .unwrap_or_else(|error| panic!("Boolean domain should build: {error}")),
+        ),
+        crucible::campaign::ChoiceValue::Boolean(false),
+        crucible::campaign::ChoiceClassContext::new(BTreeSet::new())
+            .unwrap_or_else(|error| panic!("choice class should build: {error}")),
+        BTreeSet::from([String::from("recovery")]),
+        true,
+    )
+    .unwrap_or_else(|error| panic!("selectable declaration should build: {error}"));
+    let limits = crucible::ScenarioSelectableLimits::new(4, 8, 32, 64)
+        .unwrap_or_else(|error| panic!("selectable limits should build: {error}"));
+    let selectables =
+        crucible::ScenarioSelectables::new(source.world(), limits, vec![declaration.clone()])
+            .unwrap_or_else(|error| panic!("scenario selectables should build: {error}"));
+    let source = source
+        .with_selectables(selectables)
+        .unwrap_or_else(|error| panic!("scenario selectables should attach: {error}"));
+    let scenario = source.scenario_def();
+    let config = ProductionVmLifecycleConfig::new(
+        "missing-qemu",
+        "missing-plugin",
+        "missing-kernel",
+        "missing-root",
+        root.path(),
+    );
+    let plans = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let error = build_production_vm_lifecycle_loop_with_launcher(
+        &scenario,
+        &source,
+        &config,
+        SelectablePlanRecordingLauncher {
+            plans: Arc::clone(&plans),
+        },
+    )
+    .err()
+    .unwrap_or_else(|| panic!("recording launcher should reject construction"));
+
+    assert!(error.to_string().contains("rejects process spawn"));
+    let plans = plans
+        .lock()
+        .unwrap_or_else(|_| panic!("selectable plan recorder should remain healthy"));
+    assert_eq!(plans.len(), 1);
+    let plan = &plans[0];
+    assert_eq!(plan.limits().declarations(), 4);
+    assert_eq!(plan.limits().requests_per_selectable(), 32);
+    assert_eq!(plan.limits().total_requests(), 64);
+    let registered = plan
+        .declarations()
+        .get(declaration.name())
+        .unwrap_or_else(|| panic!("scenario declaration should reach launch"));
+    assert_eq!(
+        registered.registration().domain(),
+        declaration.domain().canonical_bytes()
+    );
+    assert_eq!(
+        registered.registration().default_value(),
+        declaration.default().canonical_bytes()
+    );
+    assert_eq!(registered.presence(), SelectablePlanPresence::Required);
 }
 
 #[test]

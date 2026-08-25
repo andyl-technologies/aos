@@ -206,6 +206,7 @@ pub(super) fn write_scenario_form_binary(
     write_plan_binary(&form.plan, writer);
     write_properties_binary(&form.properties, writer);
     writer.write_binary_blob(form.measurements.canonical_bytes());
+    writer.write_binary_blob(&form.selectables.canonical_bytes());
     writer.write_seed(form.seed);
     writer.write_u64(form.app_random_draw_cap);
 }
@@ -213,6 +214,7 @@ pub(super) fn write_scenario_form_binary(
 pub(super) fn read_scenario_form_binary(
     reader: &mut ScenarioBinaryReader<'_>,
     has_measurements: bool,
+    has_selectables: bool,
 ) -> Result<ScenarioDefForm, EngineError> {
     let expected = reader.read_hash()?;
     let world = read_world_binary(reader)?;
@@ -244,6 +246,15 @@ pub(super) fn read_scenario_form_binary(
     } else {
         MeasurementDefinitions::empty()
     };
+    let selectables = if has_selectables {
+        let bytes = reader.read_binary_blob_bounded(
+            "scenario selectable declarations",
+            MAX_SCENARIO_SELECTABLE_BYTES,
+        )?;
+        ScenarioSelectables::from_canonical_bytes(&world, bytes)?
+    } else {
+        ScenarioSelectables::empty()
+    };
     let seed = reader.read_seed()?;
     let app_random_draw_cap = reader.read_u64()?;
     let form = ScenarioDefForm::from_components_with_measurements_and_app_random_draw_cap(
@@ -253,7 +264,8 @@ pub(super) fn read_scenario_form_binary(
         &measurements,
         seed,
         app_random_draw_cap,
-    )?;
+    )?
+    .with_selectables(selectables)?;
     validate_serialized_id("scenario", expected, form.id())?;
     Ok(form)
 }

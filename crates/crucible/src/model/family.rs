@@ -1125,8 +1125,11 @@ impl ReproductionArtifact {
     /// Returns [`EngineError::ScenarioSerialization`] for malformed artifact,
     /// scenario, or schedule bytes.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
+        let outer_v7 = bytes.starts_with(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V7);
         let outer_v6 = bytes.starts_with(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V6);
-        let mut reader = if outer_v6 {
+        let mut reader = if outer_v7 {
+            ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V7)?
+        } else if outer_v6 {
             ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V6)?
         } else {
             ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V5)?
@@ -1137,7 +1140,9 @@ impl ReproductionArtifact {
         )?;
         let schedule_bytes = reader.read_binary_blob("reproduction-artifact.schedule")?;
         reader.finish()?;
-        let scenario_version_matches = if outer_v6 {
+        let scenario_version_matches = if outer_v7 {
+            scenario_bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V7)
+        } else if outer_v6 {
             scenario_bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V6)
         } else {
             scenario_bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V5)

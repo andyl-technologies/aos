@@ -152,8 +152,12 @@ only afterward. The production node set now retains each drained request under
 its exact `NodeId` until reply publication succeeds, preserving ownership across
 multi-node drain failures, and exposes that node-qualified token through the
 production lifecycle and daemon modeled-driver facade. Daemon-side scenario
-conversion, semantic narrowed-domain validation and selection, plus durable
-checkpoint composition remain required to complete T-CAM-2.5.
+schema V7 now owns canonical typed declarations and nonzero per-node/world
+ceilings. Fresh production launch derives each white-box node's sealed catalog
+plan from that exact scenario component; selectable-enabled exact restore fails
+closed until its continuation exists. Semantic narrowed-domain validation and
+selection, reply application, plus durable checkpoint composition remain
+required to complete T-CAM-2.5.
 The process-neutral `CRUCSCP2` catalog-plan codec now freezes the future sealed
 descriptor body, including exact expectations, limits, registered identifiers,
 sequence watermarks, completed counters, and a complete pending request/trap
