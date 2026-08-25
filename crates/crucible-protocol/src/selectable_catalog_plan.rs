@@ -8,9 +8,9 @@
 //!
 //! ```text
 //! offset  size  field
-//! 0       8     magic = "CRUCSCP1"
-//! 8       4     schema version = 1, big-endian
-//! 12      4     header length = 96
+//! 0       8     magic = "CRUCSCP2"
+//! 8       4     schema version = 2, big-endian
+//! 12      4     header length = 104
 //! 16      4     total byte length
 //! 20      4     flags: frozen, last-registration, last-request, pending
 //! 24      4     declaration limit
@@ -25,7 +25,8 @@
 //! 80      8     pending trap icount or zero
 //! 88      4     pending vCPU index or zero
 //! 92      4     pending SelectionRequestV1 byte length or zero
-//! 96      ...   expected entries, registered IDs, completed counters, pending
+//! 96      8     pending guest virtual reply address or zero
+//! 104     ...   expected entries, registered IDs, completed counters, pending
 //! ```
 //!
 //! Expected entries are `presence:u8`, three zero bytes, `length:u32`, and one
@@ -43,11 +44,11 @@ use crate::{
 };
 
 /// Frozen magic at the start of every selectable catalog plan.
-pub const SELECTABLE_CATALOG_PLAN_MAGIC: [u8; 8] = *b"CRUCSCP1";
+pub const SELECTABLE_CATALOG_PLAN_MAGIC: [u8; 8] = *b"CRUCSCP2";
 /// Canonical selectable catalog plan schema version.
-pub const SELECTABLE_CATALOG_PLAN_VERSION: u32 = 1;
+pub const SELECTABLE_CATALOG_PLAN_VERSION: u32 = 2;
 /// Fixed plan header bytes.
-pub const SELECTABLE_CATALOG_PLAN_HEADER_BYTES: usize = 96;
+pub const SELECTABLE_CATALOG_PLAN_HEADER_BYTES: usize = 104;
 /// Maximum canonical bytes in one node-local plan.
 pub const SELECTABLE_CATALOG_PLAN_MAX_BYTES: usize = 32 * 1024 * 1024;
 /// Maximum expected or registered declarations in one node-local plan.
@@ -61,6 +62,9 @@ const FLAG_LAST_REQUEST: u32 = 1 << 2;
 const FLAG_PENDING: u32 = 1 << 3;
 const KNOWN_FLAGS: u32 = FLAG_FROZEN | FLAG_LAST_REGISTRATION | FLAG_LAST_REQUEST | FLAG_PENDING;
 const EXPECTED_ENTRY_HEADER_BYTES: usize = 8;
+const LEGACY_SELECTABLE_CATALOG_PLAN_MAGIC: [u8; 8] = *b"CRUCSCP1";
+const LEGACY_SELECTABLE_CATALOG_PLAN_VERSION: u32 = 1;
+const LEGACY_SELECTABLE_CATALOG_PLAN_HEADER_BYTES: usize = 96;
 
 /// Whether one expected guest declaration is required at catalog freeze.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -245,16 +249,23 @@ pub struct SelectablePlanPendingRequest {
     request: SelectionRequest,
     icount: u64,
     vcpu_index: u32,
+    guest_virtual_address: u64,
 }
 
 impl SelectablePlanPendingRequest {
     /// Builds one retained request coordinate.
     #[must_use]
-    pub const fn new(request: SelectionRequest, icount: u64, vcpu_index: u32) -> Self {
+    pub const fn new(
+        request: SelectionRequest,
+        icount: u64,
+        vcpu_index: u32,
+        guest_virtual_address: u64,
+    ) -> Self {
         Self {
             request,
             icount,
             vcpu_index,
+            guest_virtual_address,
         }
     }
 
@@ -274,6 +285,12 @@ impl SelectablePlanPendingRequest {
     #[must_use]
     pub const fn vcpu_index(&self) -> u32 {
         self.vcpu_index
+    }
+
+    /// Returns the process-neutral guest virtual address of the reply reservation.
+    #[must_use]
+    pub const fn guest_virtual_address(&self) -> u64 {
+        self.guest_virtual_address
     }
 }
 
@@ -667,6 +684,14 @@ impl SelectableCatalogPlan {
                 .map_or(0, SelectablePlanPendingRequest::vcpu_index),
         )?;
         write_u32(&mut bytes, 92, u32_len(pending_len)?)?;
+        write_u64(
+            &mut bytes,
+            96,
+            self.continuation
+                .pending
+                .as_ref()
+                .map_or(0, SelectablePlanPendingRequest::guest_virtual_address),
+        )?;
 
         for declaration in self.declarations.values() {
             let registration = declaration.registration.encode()?;
@@ -702,18 +727,30 @@ impl SelectableCatalogPlan {
                 maximum: SELECTABLE_CATALOG_PLAN_MAX_BYTES,
             });
         }
-        if bytes.len() < SELECTABLE_CATALOG_PLAN_HEADER_BYTES {
+        if bytes.len() < LEGACY_SELECTABLE_CATALOG_PLAN_HEADER_BYTES {
             return Err(SelectableCatalogPlanError::Truncated);
         }
-        if bytes[..8] != SELECTABLE_CATALOG_PLAN_MAGIC {
-            return Err(SelectableCatalogPlanError::InvalidMagic);
-        }
         let version = read_u32(bytes, 8)?;
-        if version != SELECTABLE_CATALOG_PLAN_VERSION {
-            return Err(SelectableCatalogPlanError::UnsupportedVersion { version });
-        }
+        let legacy = if bytes[..8] == SELECTABLE_CATALOG_PLAN_MAGIC {
+            if version != SELECTABLE_CATALOG_PLAN_VERSION {
+                return Err(SelectableCatalogPlanError::UnsupportedVersion { version });
+            }
+            false
+        } else if bytes[..8] == LEGACY_SELECTABLE_CATALOG_PLAN_MAGIC {
+            if version != LEGACY_SELECTABLE_CATALOG_PLAN_VERSION {
+                return Err(SelectableCatalogPlanError::UnsupportedVersion { version });
+            }
+            true
+        } else {
+            return Err(SelectableCatalogPlanError::InvalidMagic);
+        };
+        let expected_header_len = if legacy {
+            LEGACY_SELECTABLE_CATALOG_PLAN_HEADER_BYTES
+        } else {
+            SELECTABLE_CATALOG_PLAN_HEADER_BYTES
+        };
         let header_len = usize_from_u32(read_u32(bytes, 12)?)?;
-        if header_len != SELECTABLE_CATALOG_PLAN_HEADER_BYTES {
+        if header_len != expected_header_len {
             return Err(SelectableCatalogPlanError::InvalidHeaderLength { header_len });
         }
         let total_len = usize_from_u32(read_u32(bytes, 16)?)?;
@@ -758,8 +795,12 @@ impl SelectableCatalogPlan {
         let pending_icount = read_u64(bytes, 80)?;
         let pending_vcpu = read_u32(bytes, 88)?;
         let pending_len = usize_from_u32(read_u32(bytes, 92)?)?;
+        let pending_guest_virtual_address = if legacy { 0 } else { read_u64(bytes, 96)? };
         if flags & FLAG_PENDING == 0
-            && (pending_icount != 0 || pending_vcpu != 0 || pending_len != 0)
+            && (pending_icount != 0
+                || pending_vcpu != 0
+                || pending_len != 0
+                || pending_guest_virtual_address != 0)
         {
             return Err(SelectableCatalogPlanError::InvalidContinuation {
                 reason: "absent pending request has nonzero header fields",
@@ -770,8 +811,11 @@ impl SelectableCatalogPlan {
                 reason: "present pending request has zero byte length",
             });
         }
+        if legacy && flags & FLAG_PENDING != 0 {
+            return Err(SelectableCatalogPlanError::LegacyPendingReplyTargetMissing);
+        }
 
-        let mut cursor = SELECTABLE_CATALOG_PLAN_HEADER_BYTES;
+        let mut cursor = expected_header_len;
         let mut declarations = Vec::with_capacity(expected_count);
         let mut previous_identifier: Option<String> = None;
         for _ in 0..expected_count {
@@ -828,6 +872,7 @@ impl SelectableCatalogPlan {
                 request,
                 pending_icount,
                 pending_vcpu,
+                pending_guest_virtual_address,
             ))
         } else {
             None
@@ -856,7 +901,7 @@ impl SelectableCatalogPlan {
             });
         }
         let value = Self::new(limits, declarations, continuation)?;
-        if value.encode()?.as_slice() != bytes {
+        if !legacy && value.encode()?.as_slice() != bytes {
             return Err(SelectableCatalogPlanError::NonCanonicalEncoding);
         }
         Ok(value)
@@ -1044,6 +1089,9 @@ pub enum SelectableCatalogPlanError {
         /// Unsupported version.
         version: u32,
     },
+    /// A version-1 continuation retained a request without its guest reply address.
+    #[error("selectable catalog plan v1 pending request lacks a guest reply target")]
+    LegacyPendingReplyTargetMissing,
     /// The fixed header length differs.
     #[error("selectable catalog plan header length {header_len} is invalid")]
     InvalidHeaderLength {

@@ -11,9 +11,10 @@ use crucible_protocol::{
 use thiserror::Error;
 
 use super::{
-    GuestMemoryReader, PluginWhiteboxDoorbell, WhiteboxDoorbellError, WhiteboxDoorbellTrapEvent,
-    WhiteboxGuestInput, WhiteboxGuestInputCapability, WhiteboxGuestInputInjection,
-    WhiteboxGuestInputOutcome, WhiteboxGuestInputWriter, read_doorbell_payload,
+    GuestMemoryRange, GuestMemoryReader, PluginWhiteboxDoorbell, WhiteboxDoorbellError,
+    WhiteboxDoorbellTrapEvent, WhiteboxGuestInput, WhiteboxGuestInputCapability,
+    WhiteboxGuestInputInjection, WhiteboxGuestInputOutcome, WhiteboxGuestInputWriter,
+    read_doorbell_payload,
 };
 
 mod catalog;
@@ -86,6 +87,7 @@ pub trait SelectableReplyService {
         &mut self,
         request: &SelectionRequest,
         coordinate: SelectableCallbackCoordinate,
+        reply_range: GuestMemoryRange,
     ) -> Result<SelectableReplyDisposition, SelectableDoorbellServiceError>;
 }
 
@@ -155,7 +157,8 @@ where
         }
         SelectableMessageKind::Request => {
             let request = SelectionRequest::decode(&payload)?;
-            let disposition = service.serve_selection(&request, coordinate)?;
+            let disposition =
+                service.serve_selection(&request, coordinate, event.payload_range())?;
             let SelectableReplyDisposition::Reply(reply) = disposition else {
                 return Ok(SelectableDoorbellOutcome::Pending {
                     request,

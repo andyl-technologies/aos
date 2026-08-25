@@ -142,12 +142,14 @@ at the logical-restore boundary before acknowledgement. Daemon-side scenario
 conversion, host-visible pending-plan capture, semantic narrowed-domain
 validation, selected-reply delivery, and durable checkpoint composition remain
 required to complete T-CAM-2.5.
-The process-neutral `CRUCSCP1` catalog-plan codec now freezes the future sealed
+The process-neutral `CRUCSCP2` catalog-plan codec now freezes the future sealed
 descriptor body, including exact expectations, limits, registered identifiers,
 sequence watermarks, completed counters, and a complete pending request/trap
-coordinate. The plugin catalog converts cold/restored plans bidirectionally and
+coordinate plus its guest virtual reply target. Selection-free version-1 plans
+remain readable; pending version-1 continuations fail closed because they lack
+that target. The plugin catalog converts cold/restored plans bidirectionally and
 creates a fresh token incarnation on restore, so prior-process tokens cannot
-complete a restored pending request. The canonical `CRUCSUP1` composite now
+complete a restored pending request. The canonical `CRUCSUP2` composite now
 length-frames the independently versioned app-random and selectable plans for
 the negotiated setup profile. The existing control-protocol v2 third descriptor
 remains the raw app-random plan, while v3 now hands off the complete composite;

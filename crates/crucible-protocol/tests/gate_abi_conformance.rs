@@ -52,19 +52,19 @@ fn protocol_abi_conformance_runs_named_checks() {
     assert_doorbell_marker_kind_vocabulary();
     assert_doorbell_marker_subvocabularies();
     assert_selectable_v1_golden_vectors();
-    assert_selectable_catalog_plan_v1_golden_vector();
-    assert_plugin_setup_plan_v1_golden_vector();
+    assert_selectable_catalog_plan_v2_golden_vector();
+    assert_plugin_setup_plan_v2_golden_vector();
     assert_doorbell_decoder_fuzz_corpus();
     assert_structure_aware_fuzz_corpus();
     assert_protocol_codec_fuzz_corpus();
 }
 
 #[test]
-fn plugin_setup_plan_v1_golden_vector_matches_live_codec() {
-    assert_plugin_setup_plan_v1_golden_vector();
+fn plugin_setup_plan_v2_golden_vector_matches_live_codec() {
+    assert_plugin_setup_plan_v2_golden_vector();
 }
 
-fn assert_plugin_setup_plan_v1_golden_vector() {
+fn assert_plugin_setup_plan_v2_golden_vector() {
     let selectable = SelectableCatalogPlan::new(
         SelectablePlanLimits::new(1, 1, 1)
             .unwrap_or_else(|error| panic!("catalog plan limits must validate: {error}")),
@@ -77,19 +77,20 @@ fn assert_plugin_setup_plan_v1_golden_vector() {
         .encode()
         .unwrap_or_else(|error| panic!("plugin setup plan must encode: {error}"));
 
-    let mut expected = vec![0_u8; 140];
+    let total_len = PLUGIN_SETUP_PLAN_HEADER_BYTES + 16 + SELECTABLE_CATALOG_PLAN_HEADER_BYTES;
+    let mut expected = vec![0_u8; total_len];
     expected[..8].copy_from_slice(&PLUGIN_SETUP_PLAN_MAGIC);
     expected[8..12].copy_from_slice(&PLUGIN_SETUP_PLAN_VERSION.to_be_bytes());
     expected[12..16].copy_from_slice(&(PLUGIN_SETUP_PLAN_HEADER_BYTES as u32).to_be_bytes());
-    expected[16..20].copy_from_slice(&(140_u32).to_be_bytes());
+    expected[16..20].copy_from_slice(&(total_len as u32).to_be_bytes());
     expected[20..24].copy_from_slice(&(16_u32).to_be_bytes());
-    expected[24..28].copy_from_slice(&(96_u32).to_be_bytes());
+    expected[24..28].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
     expected[28..36].copy_from_slice(&APP_RANDOM_BRANCH_PLAN_MAGIC);
     expected[36..40].copy_from_slice(&APP_RANDOM_BRANCH_PLAN_VERSION.to_be_bytes());
     expected[44..52].copy_from_slice(&SELECTABLE_CATALOG_PLAN_MAGIC);
     expected[52..56].copy_from_slice(&SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
-    expected[56..60].copy_from_slice(&(96_u32).to_be_bytes());
-    expected[60..64].copy_from_slice(&(96_u32).to_be_bytes());
+    expected[56..60].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
+    expected[60..64].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
     expected[68..72].copy_from_slice(&(1_u32).to_be_bytes());
     expected[84..92].copy_from_slice(&(1_u64).to_be_bytes());
     expected[92..100].copy_from_slice(&(1_u64).to_be_bytes());
@@ -98,11 +99,11 @@ fn assert_plugin_setup_plan_v1_golden_vector() {
 }
 
 #[test]
-fn guest_selectable_catalog_plan_v1_golden_vector_matches_live_codec() {
-    assert_selectable_catalog_plan_v1_golden_vector();
+fn guest_selectable_catalog_plan_v2_golden_vector_matches_live_codec() {
+    assert_selectable_catalog_plan_v2_golden_vector();
 }
 
-fn assert_selectable_catalog_plan_v1_golden_vector() {
+fn assert_selectable_catalog_plan_v2_golden_vector() {
     let plan = SelectableCatalogPlan::new(
         SelectablePlanLimits::new(1, 1, 1)
             .unwrap_or_else(|error| panic!("catalog plan limits must validate: {error}")),
@@ -116,8 +117,8 @@ fn assert_selectable_catalog_plan_v1_golden_vector() {
     let mut expected = vec![0_u8; SELECTABLE_CATALOG_PLAN_HEADER_BYTES];
     expected[..8].copy_from_slice(&SELECTABLE_CATALOG_PLAN_MAGIC);
     expected[8..12].copy_from_slice(&SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
-    expected[12..16].copy_from_slice(&(96_u32).to_be_bytes());
-    expected[16..20].copy_from_slice(&(96_u32).to_be_bytes());
+    expected[12..16].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
+    expected[16..20].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
     expected[24..28].copy_from_slice(&(1_u32).to_be_bytes());
     expected[40..48].copy_from_slice(&(1_u64).to_be_bytes());
     expected[48..56].copy_from_slice(&(1_u64).to_be_bytes());
@@ -220,12 +221,12 @@ fn guest_selectable_v1_schemas_are_registered_exactly() {
             "missing exact selectable schema row {schema}"
         );
     }
-    let catalog_plan = "crucible.guest-selectable.catalog-plan\t1\tcrucible-protocol::selectable_catalog_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
+    let catalog_plan = "crucible.guest-selectable.catalog-plan\t2\tcrucible-protocol::selectable_catalog_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
     assert!(
         registry.lines().any(|line| line == catalog_plan),
         "missing exact selectable catalog-plan schema row"
     );
-    let setup_plan = "crucible.qemu-plugin.setup-plan\t1\tcrucible-protocol::plugin_setup_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
+    let setup_plan = "crucible.qemu-plugin.setup-plan\t2\tcrucible-protocol::plugin_setup_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
     assert!(
         registry.lines().any(|line| line == setup_plan),
         "missing exact plugin setup-plan schema row"

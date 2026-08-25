@@ -70,6 +70,7 @@ impl SelectableReplyService for Service {
         &mut self,
         request: &SelectionRequest,
         coordinate: SelectableCallbackCoordinate,
+        _reply_range: GuestMemoryRange,
     ) -> Result<SelectableReplyDisposition, SelectableDoorbellServiceError> {
         self.requests.push((request.clone(), coordinate));
         Ok(self.reply.clone().into())
@@ -95,6 +96,7 @@ impl SelectableReplyService for PendingService {
         &mut self,
         request: &SelectionRequest,
         coordinate: SelectableCallbackCoordinate,
+        _reply_range: GuestMemoryRange,
     ) -> Result<SelectableReplyDisposition, SelectableDoorbellServiceError> {
         self.request = Some((request.clone(), coordinate));
         Ok(SelectableReplyDisposition::Pending)

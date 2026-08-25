@@ -22,6 +22,8 @@ use crucible_protocol::{
 };
 use thiserror::Error;
 
+use crate::{GuestMemoryAddressSpace, GuestMemoryRange};
+
 use super::{
     SelectableCallbackCoordinate, SelectableDoorbellServiceError, SelectableRegistrationService,
     SelectableReplyDisposition, SelectableReplyService,
@@ -322,6 +324,7 @@ pub struct SelectablePendingRequest {
     incarnation: Arc<SelectableCatalogIncarnation>,
     request: SelectionRequest,
     coordinate: SelectableCallbackCoordinate,
+    reply_range: GuestMemoryRange,
     declaration: SelectableExpectedDeclaration,
 }
 
@@ -333,6 +336,7 @@ impl PartialEq for SelectablePendingRequest {
         Arc::ptr_eq(&self.incarnation, &other.incarnation)
             && self.request == other.request
             && self.coordinate == other.coordinate
+            && self.reply_range == other.reply_range
             && self.declaration == other.declaration
     }
 }
@@ -350,6 +354,12 @@ impl SelectablePendingRequest {
     #[must_use]
     pub const fn coordinate(&self) -> SelectableCallbackCoordinate {
         self.coordinate
+    }
+
+    /// Returns the exact guest virtual reply reservation retained across VMStop.
+    #[must_use]
+    pub const fn reply_range(&self) -> GuestMemoryRange {
+        self.reply_range
     }
 
     /// Returns the exact frozen declaration contract for this request.
@@ -474,6 +484,11 @@ impl SelectableCatalog {
                     pending.icount(),
                     pending.vcpu_index(),
                 ),
+                reply_range: GuestMemoryRange::new(
+                    GuestMemoryAddressSpace::Virtual,
+                    pending.guest_virtual_address(),
+                    pending.request().reply_capacity(),
+                ),
                 declaration,
             });
         }
@@ -515,6 +530,7 @@ impl SelectableCatalog {
                 pending.request.clone(),
                 pending.coordinate.icount(),
                 pending.coordinate.vcpu_index(),
+                pending.reply_range.guest_address(),
             )
         });
         let continuation = SelectablePlanContinuation::new(
@@ -683,6 +699,7 @@ impl SelectableCatalog {
         &mut self,
         request: &SelectionRequest,
         coordinate: SelectableCallbackCoordinate,
+        reply_range: GuestMemoryRange,
     ) -> Result<SelectablePendingRequest, SelectableCatalogError> {
         if self.phase != SelectableCatalogPhase::Frozen {
             return Err(SelectableCatalogError::RequestBeforeFreeze);
@@ -691,6 +708,15 @@ impl SelectableCatalog {
             return Err(SelectableCatalogError::RequestAlreadyPending {
                 pending_sequence: pending.request.sequence(),
                 actual_sequence: request.sequence(),
+            });
+        }
+        if reply_range.address_space() != GuestMemoryAddressSpace::Virtual {
+            return Err(SelectableCatalogError::PendingReplyRangeNotVirtual);
+        }
+        if reply_range.len() != request.reply_capacity() {
+            return Err(SelectableCatalogError::PendingReplyRangeLengthMismatch {
+                range_len: reply_range.len(),
+                request_capacity: request.reply_capacity(),
             });
         }
         require_increasing_sequence(
@@ -732,6 +758,7 @@ impl SelectableCatalog {
             incarnation: Arc::clone(&self.incarnation),
             request: request.clone(),
             coordinate,
+            reply_range,
             declaration,
         };
         self.pending = Some(pending.clone());
@@ -898,9 +925,10 @@ where
         &mut self,
         request: &SelectionRequest,
         coordinate: SelectableCallbackCoordinate,
+        reply_range: GuestMemoryRange,
     ) -> Result<SelectableReplyDisposition, SelectableDoorbellServiceError> {
         self.catalog
-            .begin_request(request, coordinate)
+            .begin_request(request, coordinate, reply_range)
             .map_err(catalog_service_error)?;
         self.resolve_pending()
     }
@@ -1005,6 +1033,19 @@ pub enum SelectableCatalogError {
     MissingRequiredDeclarations {
         /// Canonically ordered missing identifiers.
         missing: Vec<String>,
+    },
+    /// Deferred delivery cannot retain a physical-memory payload range.
+    #[error("pending selectable reply range is not guest virtual memory")]
+    PendingReplyRangeNotVirtual,
+    /// The retained range differs from the request's exact reply reservation.
+    #[error(
+        "pending selectable reply range length {range_len} differs from request capacity {request_capacity}"
+    )]
+    PendingReplyRangeLengthMismatch {
+        /// Guest-memory range bytes.
+        range_len: usize,
+        /// Request-owned reply reservation bytes.
+        request_capacity: usize,
     },
     /// A runtime request arrived before setup freeze.
     #[error("selectable request arrived before catalog freeze")]
