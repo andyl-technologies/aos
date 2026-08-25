@@ -78,7 +78,7 @@ impl SelectableDecisionAuthority for FlakyAuthority {
     fn decide_selection(
         &mut self,
         pending: &SelectablePendingRequest,
-    ) -> Result<SelectionReply, SelectableDoorbellServiceError> {
+    ) -> Result<SelectableReplyDisposition, SelectableDoorbellServiceError> {
         self.attempts += 1;
         if self.attempts == 1 {
             Err(SelectableDoorbellServiceError::new(
@@ -86,6 +86,7 @@ impl SelectableDecisionAuthority for FlakyAuthority {
             ))
         } else {
             reply(pending.request().sequence())
+                .map(SelectableReplyDisposition::from)
                 .map_err(|error| SelectableDoorbellServiceError::new(error.to_string()))
         }
     }
@@ -350,7 +351,7 @@ fn combined_service_retains_failed_decision_and_retries_without_readmission()
     assert_eq!(service.catalog().total_completed_requests(), 0);
 
     let resolved = service.resolve_pending()?;
-    assert_eq!(resolved.sequence(), 7);
+    assert_eq!(resolved, SelectableReplyDisposition::Reply(reply(7)?),);
     assert_eq!(service.catalog().pending_request(), None);
     assert_eq!(service.catalog().total_completed_requests(), 1);
     assert_eq!(service.authority.attempts, 2);
@@ -407,6 +408,43 @@ fn canonical_plan_round_trip_restores_exact_state_with_fresh_token()
         crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::decode(&final_bytes),
         Ok(final_plan)
     );
+    Ok(())
+}
+
+#[test]
+fn launch_pair_shares_declaration_bytes_but_not_request_incarnations()
+-> Result<(), Box<dyn std::error::Error>> {
+    let limits = limits(1, 3, 3)?;
+    let mut source = catalog(
+        vec![expected(
+            "network.policy",
+            &[1],
+            SelectableExpectedPresence::Required,
+        )?],
+        limits,
+    )?;
+    source.register(&registration(4, "network.policy", &[1])?)?;
+    source.freeze()?;
+    source.begin_request(&request(8, "network.policy")?, coordinate(120))?;
+    let plan = source.to_plan()?;
+
+    let (cold, restored) = SelectableCatalog::launch_pair_from_plan(&plan)?;
+    assert!(Arc::ptr_eq(
+        &cold.expectation.declarations,
+        &restored.expectation.declarations,
+    ));
+    assert_eq!(cold.phase(), SelectableCatalogPhase::Registering);
+    assert_eq!(cold.pending_request(), None);
+    assert_eq!(restored.phase(), SelectableCatalogPhase::Frozen);
+    assert_eq!(
+        restored
+            .pending_request()
+            .map(SelectablePendingRequest::request),
+        source
+            .pending_request()
+            .map(SelectablePendingRequest::request),
+    );
+    assert!(!Arc::ptr_eq(&cold.incarnation, &restored.incarnation));
     Ok(())
 }
 

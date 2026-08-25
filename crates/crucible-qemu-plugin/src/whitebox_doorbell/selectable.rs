@@ -76,7 +76,7 @@ pub trait SelectableRegistrationService {
 
 /// Authority that resolves one runtime selectable request.
 pub trait SelectableReplyService {
-    /// Validates one frozen-catalog request and returns its exact typed reply.
+    /// Validates one frozen-catalog request and either replies or retains it.
     ///
     /// # Errors
     ///
@@ -86,7 +86,22 @@ pub trait SelectableReplyService {
         &mut self,
         request: &SelectionRequest,
         coordinate: SelectableCallbackCoordinate,
-    ) -> Result<SelectionReply, SelectableDoorbellServiceError>;
+    ) -> Result<SelectableReplyDisposition, SelectableDoorbellServiceError>;
+}
+
+/// Whether choice authority completed or retained one admitted request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SelectableReplyDisposition {
+    /// The exact sequence-bound reply is ready for same-icount delivery.
+    Reply(SelectionReply),
+    /// The authority retained the request at a VM-stop/checkpoint boundary.
+    Pending,
+}
+
+impl From<SelectionReply> for SelectableReplyDisposition {
+    fn from(reply: SelectionReply) -> Self {
+        Self::Reply(reply)
+    }
 }
 
 /// Complete selectable callback authority.
@@ -104,8 +119,9 @@ impl<T> SelectableDoorbellService for T where
 ///
 /// Registration bytes are observational and remain unchanged. A request is
 /// decoded with its complete zero-filled reply reservation, delegated to the
-/// supplied authority, and replaced by one canonical reply followed by zeros.
-/// Guest-supplied reply messages are rejected.
+/// supplied authority, and either retained untouched at a pending boundary or
+/// replaced by one canonical reply followed by zeros. Guest-supplied reply
+/// messages are rejected.
 ///
 /// # Errors
 ///
@@ -139,7 +155,13 @@ where
         }
         SelectableMessageKind::Request => {
             let request = SelectionRequest::decode(&payload)?;
-            let reply = service.serve_selection(&request, coordinate)?;
+            let disposition = service.serve_selection(&request, coordinate)?;
+            let SelectableReplyDisposition::Reply(reply) = disposition else {
+                return Ok(SelectableDoorbellOutcome::Pending {
+                    request,
+                    coordinate,
+                });
+            };
             if reply.sequence() != request.sequence() {
                 return Err(SelectableDoorbellError::ReplySequenceMismatch {
                     expected: request.sequence(),
@@ -185,6 +207,13 @@ pub enum SelectableDoorbellOutcome {
         /// Exact decoded registration.
         registration: SelectableRegister,
         /// Trap coordinate attached to the registration.
+        coordinate: SelectableCallbackCoordinate,
+    },
+    /// A request was retained without making its reply reservation visible.
+    Pending {
+        /// Exact decoded request and zero-filled reply reservation.
+        request: SelectionRequest,
+        /// Trap coordinate at which the guest is stopped.
         coordinate: SelectableCallbackCoordinate,
     },
     /// A runtime request received one exact same-icount reply.

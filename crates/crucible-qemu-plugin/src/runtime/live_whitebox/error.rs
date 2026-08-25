@@ -33,6 +33,12 @@ pub enum LiveWhiteboxError {
     /// A second logical restore attempted to reuse the consumed continuation.
     #[error("live app-random restore continuation was already applied")]
     AppRandomRestoreAlreadyApplied,
+    /// A second logical restore attempted to reuse the consumed catalog.
+    #[error("live selectable restore continuation was already applied")]
+    SelectableRestoreAlreadyApplied,
+    /// A selectable message arrived without a negotiated v3 catalog plan.
+    #[error("live selectable doorbell message arrived without a catalog plan")]
+    SelectableNotConfigured,
     /// The mapped setup region could not expose this VM's marker queue.
     #[error("mapped live white-box marker queue is unavailable")]
     MappedMarkerQueue {

@@ -207,10 +207,15 @@ impl PluginSetupCompletion {
         &self.app_random_branch_plan
     }
 
-    /// Returns the validated selectable catalog plan when negotiated by v3.
+    /// Returns the v3 catalog plan until the live callback owner takes it.
     #[must_use]
     pub const fn selectable_catalog_plan(&self) -> Option<&SelectableCatalogPlan> {
         self.selectable_catalog_plan.as_ref()
+    }
+
+    /// Transfers the validated catalog plan into the pinned live callback owner.
+    pub(crate) fn take_selectable_catalog_plan(&mut self) -> Option<SelectableCatalogPlan> {
+        self.selectable_catalog_plan.take()
     }
 
     /// Returns evidence that the wake fd was registered with QEMU.

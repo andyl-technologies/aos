@@ -133,9 +133,15 @@ plugin-side catalog state now enforces nonzero scenario ceilings under hard
 4,096-declaration/1,000,000-request caps, exact required/optional declaration
 matching, strictly advancing sequences, no late registration, and one
 incarnation-bound pending request retained until an exact-sequence reply. Live
-`setup_complete` routing, daemon-side scenario conversion, semantic
-narrowed-domain validation, and durable checkpoint/setup descriptor handoff
-remain required before the callback may be wired into the production dispatcher.
+The live dispatcher now consumes that launch-authenticated plan, reconciles raw
+guest registrations, freezes before publishing `setup_complete`, retains an
+exact request without touching its zero-filled reply reservation, and requests
+native VMStop. It preallocates cold-priming and restored catalog incarnations
+over one shared declaration allocation, then swaps the exact continuation once
+at the logical-restore boundary before acknowledgement. Daemon-side scenario
+conversion, host-visible pending-plan capture, semantic narrowed-domain
+validation, selected-reply delivery, and durable checkpoint composition remain
+required to complete T-CAM-2.5.
 The process-neutral `CRUCSCP1` catalog-plan codec now freezes the future sealed
 descriptor body, including exact expectations, limits, registered identifiers,
 sequence watermarks, completed counters, and a complete pending request/trap
@@ -145,8 +151,8 @@ complete a restored pending request. The canonical `CRUCSUP1` composite now
 length-frames the independently versioned app-random and selectable plans for
 the negotiated setup profile. The existing control-protocol v2 third descriptor
 remains the raw app-random plan, while v3 now hands off the complete composite;
-the plugin decodes only the exact negotiated profile and retains the selectable
-continuation for later catalog activation.
+the plugin decodes only the exact negotiated profile and transfers the
+selectable continuation into the pinned live catalog owner.
 
 The application-random path now implements the pure normalization and
 application contract, executor-side verification of uniform model samples, live

@@ -683,6 +683,20 @@ the plugin's part.
   reorder the instruction stream. *Gate:* `gate:single-vm-fingerprint`,
   `gate:layer1-injection`. *Spec:* §12.7; routes [DET-17], [INV-3].
 
+For control-protocol v3, the live white-box owner also reconstructs the
+policy-free guest-selectable catalog from the sealed setup plan. It creates a
+cold incarnation for any throwaway boot-barrier execution and preallocates the
+exact restored incarnation over the same immutable declaration basis. Guest
+registrations reconcile only against that basis. A `setup_complete` marker
+freezes and validates the catalog before the marker can enter the observable
+ring. A runtime request is retained with its exact icount/vCPU coordinate and
+zero-filled reply reservation before QEMU is asked to enter VMStop; no reply
+byte becomes guest-visible until separate semantic authority supplies it. The
+logical-restore boundary swaps the preallocated exact continuation once, before
+the restore acknowledgement, so priming registrations or requests cannot leak
+into restored execution. Control-protocol v2 has no selectable plan and fails
+closed on a selectable message.
+
 - **[PLUG-51]** **App-controlled randomness (white-box, optional).** When and
   only when a node opts in (a white-box mode, [PLUG-5] `whitebox=on`), the plugin
   MUST serve a `random_request` doorbell: when the guest agent rings it

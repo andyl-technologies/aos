@@ -36,6 +36,11 @@ impl LiveVcpuTimeCallbackState {
                     message: source.to_string(),
                 }
             })?;
+            super::super::live_whitebox::restore_selectable_continuation().map_err(|source| {
+                LiveVcpuTimeCallbackError::WhiteboxCallback {
+                    message: source.to_string(),
+                }
+            })?;
             self.logical_restore_continuation_generation
                 .store(request.generation, Ordering::Release);
         }

@@ -383,10 +383,12 @@ impl OwnedCallbackRuntimeState {
         target_architecture: crate::abi::QemuPluginTargetArchitecture,
         vcpu_count: u32,
         request_shutdown: QemuRequestShutdownFn,
+        request_vmstop: crate::QemuRequestVmstopFn,
     ) -> Result<&mut live_whitebox::LiveWhiteboxState, live_whitebox::LiveWhiteboxError> {
         // SAFETY: assigning an independently heap-owned callback runtime does
         // not move the pinned parent or its setup mapping.
         let state = unsafe { self.get_unchecked_mut() };
+        let selectable_catalog_plan = state.setup.take_selectable_catalog_plan();
         let marker_ring = state
             .setup
             .mapped_region_mut()
@@ -419,10 +421,13 @@ impl OwnedCallbackRuntimeState {
             apis,
             live_whitebox::LiveWhiteboxTarget::new(target_architecture, args.whitebox_setup()),
             vcpu_count,
-            request_shutdown,
+            live_whitebox::LiveWhiteboxProcessControl::new(request_shutdown, request_vmstop),
             live_whitebox::LiveWhiteboxShmem::new(marker_output, guest_introspection_rings),
-            args.app_random(),
-            state.setup.app_random_branch_plan(),
+            live_whitebox::LiveWhiteboxLaunchPlans::new(
+                args.app_random(),
+                state.setup.app_random_branch_plan(),
+                selectable_catalog_plan.as_ref(),
+            ),
         )?;
         let mut callback_state = Box::pin(callback_state);
         // SAFETY: the independently boxed state is pinned and retained by this

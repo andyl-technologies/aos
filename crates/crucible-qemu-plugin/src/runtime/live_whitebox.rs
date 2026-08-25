@@ -4,7 +4,9 @@
 //! `hint #0x4c` encoding during translation and installs an execution callback
 //! only on that dedicated instruction. The admitted path reads the architecture's
 //! `(pointer, length)` payload registers and delegates bounded frame decoding to
-//! [`crate::PluginWhiteboxDoorbell`].
+//! [`crate::PluginWhiteboxDoorbell`]. Control-protocol v3 additionally installs
+//! a policy-free selectable catalog that reconciles setup registrations,
+//! freezes before readiness publication, and retains a VMStop-bound request.
 
 use std::ffi::CStr;
 use std::os::raw::{c_int, c_uint, c_void};
@@ -19,9 +21,10 @@ use crate::{
     QemuPluginTargetArchitecture, QemuPluginTb, QemuRequestShutdownFn,
     WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HINT_BYTES,
     WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
-    WhiteboxDoorbellCapabilities, WhiteboxDoorbellRegistrationPlan, WhiteboxDoorbellSetupResources,
-    WhiteboxDoorbellSetupValidation, WhiteboxDoorbellTrapEvent, WhiteboxMarkerPayload,
-    WhiteboxMarkerSinkError, handle_whitebox_doorbell_callback,
+    WhiteboxDoorbellCapabilities, WhiteboxDoorbellFrame, WhiteboxDoorbellRegistrationPlan,
+    WhiteboxDoorbellSetupResources, WhiteboxDoorbellSetupValidation, WhiteboxDoorbellTrapEvent,
+    WhiteboxMarkerPayload, WhiteboxMarkerSinkError, decode_whitebox_marker_payload,
+    handle_whitebox_doorbell_callback,
 };
 
 mod api;
@@ -30,6 +33,7 @@ mod error;
 mod guest_introspection;
 mod location;
 mod marker;
+mod selectable;
 #[cfg(test)]
 mod test_restore;
 pub(crate) use api::LiveWhiteboxApis;
@@ -37,6 +41,7 @@ use api::{QemuPluginRegDescriptor, QemuPluginRegister};
 use app_random::LiveAppRandomState;
 use crucible_protocol::app_random_branch_plan::AppRandomBranchPlan;
 use crucible_protocol::app_random_transport::app_random_stream_name_belongs_to_node;
+use crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan;
 pub use error::LiveWhiteboxError;
 use error::write_stderr;
 use location::{LiveWhiteboxInstructionLocation, LiveWhiteboxTbEntry};
@@ -63,6 +68,21 @@ pub(super) fn restore_app_random_continuation() -> Result<(), LiveWhiteboxError>
     unsafe { app_random.as_mut() }.restore_continuation()
 }
 
+/// Restores the launch-authenticated selectable continuation before restore ACK.
+pub(super) fn restore_selectable_continuation() -> Result<(), LiveWhiteboxError> {
+    let Some(mut state) = NonNull::new(LIVE_WHITEBOX_STATE.load(Ordering::Acquire)) else {
+        return Ok(());
+    };
+    // SAFETY: publication retains the state for QEMU's process lifetime. The
+    // deterministic single-threaded RR model serializes this logical-restore
+    // callback with white-box execution callbacks.
+    let state = unsafe { state.as_mut() };
+    state.selectable.as_mut().map_or(
+        Ok(()),
+        selectable::LiveSelectableState::restore_continuation,
+    )
+}
+
 #[derive(Clone, Copy, Default)]
 struct LiveWhiteboxRegisters {
     pointer: Option<NonNull<QemuPluginRegister>>,
@@ -86,12 +106,53 @@ pub(crate) struct LiveWhiteboxState {
     request_shutdown: QemuRequestShutdownFn,
     marker_sink: LiveMarkerSink,
     app_random: Option<LiveAppRandomState>,
+    selectable: Option<selectable::LiveSelectableState>,
     guest_introspection: guest_introspection::LiveGuestIntrospectionState,
 }
 
 pub(crate) struct LiveWhiteboxShmem {
     marker_output: LiveWhiteboxMarkerShmemProducer,
     guest_introspection_rings: crucible_shmem::DetachedPluginGuestIntrospectionRings,
+}
+
+/// Process-control callbacks owned by the joined live runtime.
+#[derive(Clone, Copy)]
+pub(crate) struct LiveWhiteboxProcessControl {
+    request_shutdown: QemuRequestShutdownFn,
+    request_vmstop: crate::QemuRequestVmstopFn,
+}
+
+impl LiveWhiteboxProcessControl {
+    pub(crate) const fn new(
+        request_shutdown: QemuRequestShutdownFn,
+        request_vmstop: crate::QemuRequestVmstopFn,
+    ) -> Self {
+        Self {
+            request_shutdown,
+            request_vmstop,
+        }
+    }
+}
+
+/// Borrowed launch-authenticated plans transferred into live state.
+pub(crate) struct LiveWhiteboxLaunchPlans<'a> {
+    app_random_config: Option<&'a PluginAppRandomConfig>,
+    app_random_branch_plan: &'a AppRandomBranchPlan,
+    selectable_catalog_plan: Option<&'a SelectableCatalogPlan>,
+}
+
+impl<'a> LiveWhiteboxLaunchPlans<'a> {
+    pub(crate) const fn new(
+        app_random_config: Option<&'a PluginAppRandomConfig>,
+        app_random_branch_plan: &'a AppRandomBranchPlan,
+        selectable_catalog_plan: Option<&'a SelectableCatalogPlan>,
+    ) -> Self {
+        Self {
+            app_random_config,
+            app_random_branch_plan,
+            selectable_catalog_plan,
+        }
+    }
 }
 
 impl LiveWhiteboxShmem {
@@ -137,10 +198,9 @@ impl LiveWhiteboxState {
         apis: LiveWhiteboxApis,
         target: LiveWhiteboxTarget,
         vcpu_count: u32,
-        request_shutdown: QemuRequestShutdownFn,
+        process_control: LiveWhiteboxProcessControl,
         shmem: LiveWhiteboxShmem,
-        app_random_config: Option<&PluginAppRandomConfig>,
-        app_random_branch_plan: &AppRandomBranchPlan,
+        launch_plans: LiveWhiteboxLaunchPlans<'_>,
     ) -> Result<Self, LiveWhiteboxError> {
         let architecture = target.architecture;
         let expected_attestation = match architecture {
@@ -188,27 +248,38 @@ impl LiveWhiteboxState {
             });
         }
 
-        if app_random_config.is_none() && !app_random_branch_plan.entries().is_empty() {
+        if launch_plans.app_random_config.is_none()
+            && !launch_plans.app_random_branch_plan.entries().is_empty()
+        {
             return Err(LiveWhiteboxError::RegistrationPlan {
                 message: "app-random branch plan requires an enabled app-random producer"
                     .to_owned(),
             });
         }
-        if app_random_config.is_some_and(|config| {
-            app_random_branch_plan.entries().iter().any(|entry| {
-                !app_random_stream_name_belongs_to_node(entry.stream_name(), config.node_name())
-            })
+        if launch_plans.app_random_config.is_some_and(|config| {
+            launch_plans
+                .app_random_branch_plan
+                .entries()
+                .iter()
+                .any(|entry| {
+                    !app_random_stream_name_belongs_to_node(entry.stream_name(), config.node_name())
+                })
         }) {
             return Err(LiveWhiteboxError::RegistrationPlan {
                 message: "app-random branch plan names another producer node".to_owned(),
             });
         }
-        let app_random = app_random_config
+        let app_random = launch_plans
+            .app_random_config
             .map(|config| {
                 doorbell
                     .require_guest_input_capability(capabilities)
                     .map(|capability| {
-                        LiveAppRandomState::new(config, app_random_branch_plan, capability)
+                        LiveAppRandomState::new(
+                            config,
+                            launch_plans.app_random_branch_plan,
+                            capability,
+                        )
                     })
             })
             .transpose()
@@ -220,6 +291,19 @@ impl LiveWhiteboxState {
             .map_err(|source| LiveWhiteboxError::RegistrationPlan {
                 message: source.to_string(),
             })?;
+        let selectable = launch_plans
+            .selectable_catalog_plan
+            .map(|plan| {
+                selectable::LiveSelectableState::new(
+                    plan,
+                    guest_input_capability,
+                    process_control.request_vmstop,
+                )
+            })
+            .transpose()
+            .map_err(|source| LiveWhiteboxError::RegistrationPlan {
+                message: source.to_string(),
+            })?;
 
         Ok(Self {
             apis,
@@ -228,9 +312,10 @@ impl LiveWhiteboxState {
             registers: [LiveWhiteboxRegisters::default(); MAX_LIVE_WHITEBOX_VCPUS],
             tb_entries: [LiveWhiteboxTbEntry::default(); MAX_LIVE_WHITEBOX_VCPUS],
             vcpu_count,
-            request_shutdown,
+            request_shutdown: process_control.request_shutdown,
             marker_sink: LiveMarkerSink::new(shmem.marker_output),
             app_random,
+            selectable,
             guest_introspection: guest_introspection::LiveGuestIntrospectionState::new(
                 shmem.guest_introspection_rings,
                 guest_input_capability,
@@ -365,7 +450,22 @@ impl LiveWhiteboxState {
             self.handle_guest_introspection(&mut reader, event, &payload)
         } else if app_random::is_request(&payload) {
             self.handle_app_random(&mut reader, event, current_icount, vcpu_index)
+        } else if selectable::is_message(&payload) {
+            let selectable = self
+                .selectable
+                .as_mut()
+                .ok_or(LiveWhiteboxError::SelectableNotConfigured)?;
+            selectable
+                .handle(&self.doorbell, self.apis, &mut reader, event)
+                .map(|_outcome| ())
         } else {
+            if is_setup_complete_marker(&payload)
+                && let Some(selectable) = self.selectable.as_mut()
+            {
+                // Reconcile required declarations before the readiness marker
+                // can enter the host-observable output ring.
+                selectable.freeze()?;
+            }
             let marker = handle_whitebox_doorbell_callback(
                 &self.doorbell,
                 &mut reader,
@@ -444,6 +544,15 @@ impl LiveWhiteboxState {
         let _written = write_stderr(message.as_bytes());
         (self.request_shutdown)(1);
     }
+}
+
+fn is_setup_complete_marker(payload: &[u8]) -> bool {
+    WhiteboxDoorbellFrame::decode_bounded(payload, MAX_FRAME_DATA)
+        .ok()
+        .and_then(|frame| decode_whitebox_marker_payload(&frame).ok())
+        == Some(WhiteboxMarkerPayload::Lifecycle(
+            crate::WhiteboxLifecycleMarkerEvent::SetupComplete,
+        ))
 }
 
 struct LiveGuestMemoryReader {
