@@ -681,8 +681,25 @@ in
           grep -Fxq \
             'production_effect_row=node.hang|node-vcpu-watchdog-recovery|gate:live-node-lifecycle-matrix|actual-patched-qemu|CRUCHNG1+CRUCWDC1+CRUCLIF1' \
             "${patchMicrotests}/per-patch/0056-crucible-node-lifecycle-faults.patch.result"
+          vcpu_result="${patchMicrotests}/per-patch/0055-crucible-vcpu-service-control.patch.result"
+          grep -Fxq PASS "$vcpu_result"
+          grep -Fxq 'live_vcpu_states=online,offline,stalled,recovery' \
+            "$vcpu_result"
+          grep '^production_effect_row=' "$vcpu_result" \
+            > "$TMPDIR/vcpu-production-effect-rows"
+          test "$(wc -l < "$TMPDIR/vcpu-production-effect-rows")" -eq 2
+          test "$(sort -u "$TMPDIR/vcpu-production-effect-rows" | wc -l)" -eq 2
+          grep -Fxq \
+            'production_effect_row=cpu.service|service-ratio-ledger|gate:patch-microtests|actual-patched-qemu|CRUCVCS1' \
+            "$TMPDIR/vcpu-production-effect-rows"
+          grep -Fxq \
+            'production_effect_row=cpu.vcpu_state|online-offline-stalled-recovery|gate:patch-microtests|actual-patched-qemu|CRUCVST1' \
+            "$TMPDIR/vcpu-production-effect-rows"
           grep -Fq \
             'node.hang|node|node.hang|gate:live-node-lifecycle-matrix|tests/crucible/phase2-qemu-node-lifecycle.nix via gate:patch-microtests|' \
+            "$production_matrix"
+          grep -Fq \
+            'cpu.vcpu_state|node|cpu.vcpu_state|gate:patch-microtests|tests/crucible/phase2-qemu-vcpu-service.nix via gate:patch-microtests|' \
             "$production_matrix"
 
           hardware_result=${liveFaultHardware}/result

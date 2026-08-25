@@ -289,7 +289,7 @@ mod tests {
             },
         ];
         let mut observed = Vec::new();
-        let result = cleanup_exact_captures_with(
+        let error = match cleanup_exact_captures_with(
             &mut captures,
             |capture| {
                 observed.push(capture.id);
@@ -301,9 +301,8 @@ mod tests {
                 }
             },
             |capture| capture.pending,
-        );
-        let error = match result {
-            Ok(()) => panic!("cleanup should retain the first reverse-order error"),
+        ) {
+            Ok(()) => panic!("the first reverse-order cleanup error should survive"),
             Err(error) => error,
         };
 
@@ -390,10 +389,15 @@ mod tests {
 
         let mut publications =
             BTreeMap::from([(configuration, ExactCheckpointPublicationState::Preparing)]);
-        let published =
-            finish_exact_checkpoint_transaction(&mut publications, configuration, Ok(identity))
-                .unwrap_or_else(|error| panic!("publication should commit: {error}"));
-        assert_eq!(published, identity);
+        let committed = match finish_exact_checkpoint_transaction(
+            &mut publications,
+            configuration,
+            Ok(identity),
+        ) {
+            Ok(committed) => committed,
+            Err(error) => panic!("publication should commit: {error}"),
+        };
+        assert_eq!(committed, identity);
         assert!(matches!(
             publications.get(&configuration),
             Some(ExactCheckpointPublicationState::Published(observed)) if *observed == identity

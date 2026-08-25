@@ -208,25 +208,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn published_checkpoint_count_ignores_transaction_staging_directories() {
-        let root = tempfile::tempdir()
-            .unwrap_or_else(|error| panic!("create checkpoint count fixture: {error}"));
-        fs::create_dir(root.path().join(".closure-incomplete"))
-            .unwrap_or_else(|error| panic!("create transaction staging directory: {error}"));
-        fs::create_dir(root.path().join("not-a-checkpoint"))
-            .unwrap_or_else(|error| panic!("create unrelated directory: {error}"));
-        fs::create_dir(root.path().join("0".repeat(64)))
-            .unwrap_or_else(|error| panic!("create one published checkpoint directory: {error}"));
+    fn published_checkpoint_count_ignores_transaction_staging_directories()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        fs::create_dir(root.path().join(".closure-incomplete"))?;
+        fs::create_dir(root.path().join("not-a-checkpoint"))?;
+        fs::create_dir(root.path().join("0".repeat(64)))?;
         let limits = FaultResourceLimits {
             checkpoint_count: 1,
             ..FaultResourceLimits::default()
         };
 
-        enforce_published_checkpoint_count(root.path(), limits)
-            .unwrap_or_else(|error| panic!("published identity should fit the limit: {error}"));
+        enforce_published_checkpoint_count(root.path(), limits)?;
 
-        fs::create_dir(root.path().join("1".repeat(64)))
-            .unwrap_or_else(|error| panic!("create second checkpoint directory: {error}"));
+        fs::create_dir(root.path().join("1".repeat(64)))?;
         assert!(matches!(
             enforce_published_checkpoint_count(root.path(), limits),
             Err(SchedulerError::ResourceLimit {
@@ -237,6 +232,7 @@ mod tests {
                 hard,
             }) if hard == FaultResourceLimits::compiled_maximum().checkpoint_count
         ));
+        Ok(())
     }
 
     #[test]
