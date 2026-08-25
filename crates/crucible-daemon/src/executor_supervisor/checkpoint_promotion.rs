@@ -1,6 +1,6 @@
 //! Durable supervisor phases for paused-root replay-oracle promotion.
 
-use crucible_campaign::{ExactCheckpointId, ExecutionId};
+use crucible_campaign::{CampaignHash, ExactCheckpointId, ExecutionId};
 
 use super::{AttemptAdvance, LocalExecutorError, LocalExecutorSupervisor};
 use crate::{
@@ -38,6 +38,7 @@ pub enum CheckpointPromotionCompletionOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CheckpointPromotionRecovery {
     key: AttemptExecutionKey,
+    execution_basis: CampaignHash,
     execution: ExecutionId,
     source: ExactCheckpointId,
     promoted: ExactCheckpointId,
@@ -49,6 +50,12 @@ impl CheckpointPromotionRecovery {
     #[must_use]
     pub const fn key(self) -> AttemptExecutionKey {
         self.key
+    }
+
+    /// Returns the assignment-neutral execution-contract digest.
+    #[must_use]
+    pub const fn execution_basis(self) -> CampaignHash {
+        self.execution_basis
     }
 
     /// Returns the execution that produced the paused source.
@@ -82,6 +89,7 @@ impl CheckpointPromotionRecovery {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PausedCheckpointPromotionRecovery {
     key: AttemptExecutionKey,
+    execution_basis: CampaignHash,
     execution: ExecutionId,
     source: ExactCheckpointId,
     promotion_basis: CheckpointPromotionExecutionBasis,
@@ -92,6 +100,12 @@ impl PausedCheckpointPromotionRecovery {
     #[must_use]
     pub const fn key(self) -> AttemptExecutionKey {
         self.key
+    }
+
+    /// Returns the assignment-neutral execution-contract digest.
+    #[must_use]
+    pub const fn execution_basis(self) -> CampaignHash {
+        self.execution_basis
     }
 
     /// Returns the execution that produced the raw paused root.
@@ -146,6 +160,7 @@ where
             .map_err(LocalExecutorError::Ledger)?;
         Ok(match state {
             Some(AttemptRuntimeState::CheckpointPromoting {
+                execution_basis,
                 execution,
                 source_checkpoint,
                 promoted_checkpoint,
@@ -153,6 +168,7 @@ where
                 ..
             }) => Some(CheckpointPromotionRecovery {
                 key,
+                execution_basis,
                 execution,
                 source: source_checkpoint,
                 promoted: promoted_checkpoint,
@@ -183,6 +199,7 @@ where
         self.ledger
             .visit_attempt_states(&mut |key, state| match state {
                 AttemptRuntimeState::Paused {
+                    execution_basis,
                     execution,
                     checkpoint,
                     promotion_basis: Some(promotion_basis),
@@ -190,12 +207,14 @@ where
                 } => visitor(CheckpointPromotionRestartWork::Paused(
                     PausedCheckpointPromotionRecovery {
                         key,
+                        execution_basis,
                         execution,
                         source: checkpoint,
                         promotion_basis,
                     },
                 )),
                 AttemptRuntimeState::CheckpointPromoting {
+                    execution_basis,
                     execution,
                     source_checkpoint,
                     promoted_checkpoint,
@@ -204,6 +223,7 @@ where
                 } => visitor(CheckpointPromotionRestartWork::Staged(
                     CheckpointPromotionRecovery {
                         key,
+                        execution_basis,
                         execution,
                         source: source_checkpoint,
                         promoted: promoted_checkpoint,

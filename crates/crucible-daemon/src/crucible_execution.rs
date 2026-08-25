@@ -146,6 +146,72 @@ impl CrucibleAttemptExecution {
     }
 }
 
+/// Strictly decodes one repository-resolved input into Crucible model values.
+///
+/// Selection-bearing schedules are resolved against the same narrow executor
+/// store and branch selections are replay-validated before a concrete runner
+/// receives them. The function performs no writes.
+///
+/// # Errors
+///
+/// Returns [`CrucibleArtifactError`] when the scenario or configuration bytes
+/// are malformed, carry a different identity, contain unresolved selections,
+/// or the branch selection does not replay at the authenticated parent.
+pub fn decode_crucible_attempt_execution(
+    store: &CampaignExecutorStore,
+    input: &AttemptExecutionInput,
+) -> Result<CrucibleAttemptExecution, CrucibleArtifactError> {
+    let scenario = decode_crucible_scenario_artifact(input.scenario())?;
+    let start = match input.start() {
+        ResolvedAttemptStart::Discover { configuration } => {
+            let configuration = decode_crucible_configuration_artifact_with_selections(
+                &scenario,
+                input.scenario(),
+                configuration,
+                store,
+            )?;
+            CrucibleResolvedAttemptStart::Discover { configuration }
+        }
+        ResolvedAttemptStart::Branch { parent, selection } => {
+            let parent = decode_crucible_configuration_artifact_with_selections(
+                &scenario,
+                input.scenario(),
+                parent,
+                store,
+            )?;
+            let recorded = selection.selection();
+            recorded
+                .validate_branch_replay(
+                    selection.opportunity(),
+                    selection.domain(),
+                    selection.opportunity().branch_point_id(
+                        crucible_campaign::ConfigurationId::from_hash(
+                            crucible_campaign::CampaignHash::from_bytes(parent.id().bytes),
+                        ),
+                    ),
+                )
+                .map_err(CrucibleArtifactError::Campaign)?;
+            let selected = step(
+                &parent,
+                Decision::Selection(SelectionDecision::new(recorded)),
+            );
+            CrucibleResolvedAttemptStart::Branch {
+                parent,
+                selection: selection.clone(),
+                selected,
+            }
+        }
+    };
+
+    Ok(CrucibleAttemptExecution {
+        lineage: input.lineage().clone(),
+        scenario,
+        attempt: input.attempt().clone(),
+        path: input.path().clone(),
+        start,
+    })
+}
+
 /// Concrete Crucible lifecycle runner behind the campaign execution contract.
 pub trait CrucibleExecutionRunner {
     /// Runner-specific process, materialization, or modeled-execution failure.
@@ -233,60 +299,8 @@ where
         context: &AttemptExecutionContext,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         self.last_materialization = None;
-        let scenario = decode_crucible_scenario_artifact(input.scenario()).map_err(|error| {
-            AttemptWorkerFailure::Terminal(CrucibleExecutionModelError::Artifact(error))
-        })?;
-        let start = match input.start() {
-            ResolvedAttemptStart::Discover { configuration } => {
-                let configuration = decode_crucible_configuration_artifact_with_selections(
-                    &scenario,
-                    input.scenario(),
-                    configuration,
-                    &self.store,
-                )
-                .map_err(map_artifact_failure)?;
-                CrucibleResolvedAttemptStart::Discover { configuration }
-            }
-            ResolvedAttemptStart::Branch { parent, selection } => {
-                let parent = decode_crucible_configuration_artifact_with_selections(
-                    &scenario,
-                    input.scenario(),
-                    parent,
-                    &self.store,
-                )
-                .map_err(map_artifact_failure)?;
-                let recorded = selection.selection();
-                recorded
-                    .validate_branch_replay(
-                        selection.opportunity(),
-                        selection.domain(),
-                        selection.opportunity().branch_point_id(
-                            crucible_campaign::ConfigurationId::from_hash(
-                                crucible_campaign::CampaignHash::from_bytes(parent.id().bytes),
-                            ),
-                        ),
-                    )
-                    .map_err(|error| {
-                        map_artifact_failure(CrucibleArtifactError::Campaign(error))
-                    })?;
-                let selected = step(
-                    &parent,
-                    Decision::Selection(SelectionDecision::new(recorded)),
-                );
-                CrucibleResolvedAttemptStart::Branch {
-                    parent,
-                    selection: selection.clone(),
-                    selected,
-                }
-            }
-        };
-        let decoded = CrucibleAttemptExecution {
-            lineage: input.lineage().clone(),
-            scenario,
-            attempt: input.attempt().clone(),
-            path: input.path().clone(),
-            start,
-        };
+        let decoded =
+            decode_crucible_attempt_execution(&self.store, input).map_err(map_artifact_failure)?;
         let outcome = self
             .runner
             .execute(&decoded, context)

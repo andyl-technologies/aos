@@ -11,7 +11,10 @@ use std::path::Path;
 
 use crucible::{Configuration, ScenarioDefForm, World};
 use crucible_api::LifecycleApiError;
-use crucible_campaign::{AttemptResourceLimits, ExactCheckpointId, ExecutionId};
+use crucible_campaign::{
+    AttemptResourceLimits, CampaignExecutorStore, CampaignRepositoryError, ExactCheckpointId,
+    ExecutionId, attempt_execution_basis_digest,
+};
 use crucible_qemu::{
     QemuFailedLaunchChildSource, QemuGuardedNodeRealizationLauncher,
     QemuGuardedThinNodeRealizationLauncher, QemuNodeRealizationExecutor, QemuVmRealizationError,
@@ -22,15 +25,17 @@ use thiserror::Error;
 use crate::{
     AssignmentLedger, AttemptAdmissionValidator, AttemptExecutionKey,
     CheckpointPromotionCompletionOutcome, CheckpointPromotionRecovery,
-    CheckpointPromotionStageOutcome, ExactCheckpointStore, ExactCheckpointStoreError,
+    CheckpointPromotionStageOutcome, CrucibleArtifactError, CrucibleAttemptExecution,
+    CrucibleResolvedAttemptStart, ExactCheckpointStore, ExactCheckpointStoreError,
     ExecutionCancellation, LocalExecutorError, LocalExecutorSupervisor,
-    MaterializedAttemptCheckpoint, PrepareReplayOraclePromotionError,
-    PreparedProductionAttemptReplayOraclePromotion, PreparedReplayOraclePromotion,
-    ProductionAttemptCheckpointRestoreError, QemuAttemptOperationalBoundary,
-    QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard, QemuGuardedReplayOracleSession,
+    MaterializedAttemptCheckpoint, PausedCheckpointPromotionRecovery,
+    PrepareReplayOraclePromotionError, PreparedProductionAttemptReplayOraclePromotion,
+    PreparedReplayOraclePromotion, ProductionAttemptCheckpointRestoreError,
+    QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,
+    QemuGuardedReplayOracleSession,
     authenticate_production_exact_checkpoint_replay_oracle_promotion,
-    install_attempt_production_exact_checkpoint,
-    prepare_attempt_production_replay_oracle_promotion,
+    decode_crucible_attempt_execution, install_attempt_production_exact_checkpoint,
+    prepare_attempt_production_replay_oracle_promotion, resolve_attempt_execution_input,
 };
 
 /// Replay-validated replacement bound to one paused attempt execution.
@@ -71,6 +76,46 @@ pub struct ProductionPausedCheckpointPromotionTarget<'a> {
     resources: AttemptResourceLimits,
 }
 
+/// Owned semantic input for restarting one raw paused-root comparison.
+pub struct ResolvedProductionPausedCheckpointPromotionRecovery {
+    recovery: PausedCheckpointPromotionRecovery,
+    execution: CrucibleAttemptExecution,
+    cancellation: ExecutionCancellation,
+}
+
+impl ResolvedProductionPausedCheckpointPromotionRecovery {
+    /// Returns the durable raw-pause identity being recovered.
+    #[must_use]
+    pub const fn recovery(&self) -> PausedCheckpointPromotionRecovery {
+        self.recovery
+    }
+
+    /// Borrows the complete target for one guarded production comparison.
+    #[must_use]
+    pub fn target<'a>(
+        &'a self,
+        run_state_root: &'a Path,
+    ) -> ProductionPausedCheckpointPromotionTarget<'a> {
+        let (initial, post_selection) = match self.execution.start() {
+            CrucibleResolvedAttemptStart::Discover { configuration } => (configuration, None),
+            CrucibleResolvedAttemptStart::Branch {
+                parent, selected, ..
+            } => (parent, Some(selected)),
+        };
+        ProductionPausedCheckpointPromotionTarget::new(
+            self.recovery.key(),
+            self.recovery.execution(),
+            self.recovery.source(),
+            self.execution.scenario(),
+            initial,
+            post_selection,
+            run_state_root,
+            &self.cancellation,
+            self.recovery.promotion_basis().resources(),
+        )
+    }
+}
+
 impl<'a> ProductionPausedCheckpointPromotionTarget<'a> {
     /// Binds one raw production root to its exact attempt and install authority.
     #[must_use]
@@ -98,6 +143,24 @@ impl<'a> ProductionPausedCheckpointPromotionTarget<'a> {
             cancellation,
             resources,
         }
+    }
+
+    /// Returns the raw exact root awaiting promotion.
+    #[must_use]
+    pub const fn raw(self) -> ExactCheckpointId {
+        self.raw
+    }
+
+    /// Returns the authenticated Crucible scenario form.
+    #[must_use]
+    pub const fn source(self) -> &'a ScenarioDefForm {
+        self.source
+    }
+
+    /// Returns the exact hard ceilings admitted for comparison recovery.
+    #[must_use]
+    pub const fn resources(self) -> AttemptResourceLimits {
+        self.resources
     }
 }
 
@@ -331,6 +394,58 @@ pub enum PausedCheckpointPromotionPreparationError {
     /// The source-bound immutable replacement could not be prepared.
     #[error(transparent)]
     Preparation(#[from] PrepareReplayOraclePromotionError),
+}
+
+/// Failure to resolve one durable raw pause into guarded comparison input.
+#[derive(Debug, Error)]
+pub enum PausedCheckpointPromotionRecoveryResolutionError {
+    /// Immutable campaign input was unavailable or failed authentication.
+    #[error(transparent)]
+    Repository(#[from] CampaignRepositoryError),
+    /// Nested Crucible scenario or configuration bytes failed strict decoding.
+    #[error(transparent)]
+    Artifact(#[from] CrucibleArtifactError),
+    /// The durable resource/retention basis does not match the attempt key.
+    #[error("paused checkpoint promotion execution basis is inconsistent")]
+    ExecutionBasisMismatch,
+}
+
+/// Resolves a durable raw pause into owned production-comparison input.
+///
+/// Repository and artifact authentication happen without supervisor ownership
+/// and without writes. The caller supplies the fresh cancellation incarnation
+/// that every guarded replay session must share during this recovery attempt.
+///
+/// # Errors
+///
+/// Returns [`PausedCheckpointPromotionRecoveryResolutionError`] when the
+/// durable execution basis is inconsistent or any immutable semantic input
+/// cannot be authenticated and strictly decoded.
+pub fn resolve_production_paused_checkpoint_promotion_recovery(
+    store: &CampaignExecutorStore,
+    recovery: PausedCheckpointPromotionRecovery,
+    cancellation: ExecutionCancellation,
+) -> Result<
+    ResolvedProductionPausedCheckpointPromotionRecovery,
+    PausedCheckpointPromotionRecoveryResolutionError,
+> {
+    let basis = recovery.promotion_basis();
+    if attempt_execution_basis_digest(
+        recovery.key().lineage(),
+        recovery.key().attempt(),
+        basis.resources(),
+        basis.retention(),
+    ) != recovery.execution_basis()
+    {
+        return Err(PausedCheckpointPromotionRecoveryResolutionError::ExecutionBasisMismatch);
+    }
+    let input = resolve_attempt_execution_input(store, recovery.key())?;
+    let execution = decode_crucible_attempt_execution(store, &input)?;
+    Ok(ResolvedProductionPausedCheckpointPromotionRecovery {
+        recovery,
+        execution,
+        cancellation,
+    })
 }
 
 /// Staging failure retaining the sole prepared promotion token.

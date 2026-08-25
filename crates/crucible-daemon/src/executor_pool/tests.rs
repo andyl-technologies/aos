@@ -23,16 +23,16 @@ use crucible_campaign::{
     CancelAttemptExecutionResponse, CandidateSource, CheckpointAttemptExecutionRequest,
     CheckpointAttemptExecutionResponse, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
     ChoiceOpportunity, ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationId,
-    ControlRequest, CoverageProjection, DaemonEpoch, ExactRational, ExecutionRetentionIntent,
-    ExecutorCapabilitySet, ExecutorClient, ExecutorCompatibilityProfile, ExecutorControlService,
-    ExecutorDescription, ExecutorMaterializationCapability, ExecutorRejection,
-    ExecutorResumeService, ExecutorService, ExecutorStatusService, ExplorerPolicy, FairnessPolicy,
-    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
-    MeasurementSet, Observation, ObservationCandidate, ProgressiveWideningPolicy,
-    PropertyVerdictSet, Proposal, PuctPolicy, ResumeAttemptExecutionRequest,
-    ResumeAttemptExecutionResponse, RetentionPolicy, ScenarioDefId, SelectableDeclaration,
-    Selection, SelectionOrigin, StopCondition, StopOutcome, SubmitAttemptDisposition,
-    SubmitAttemptRequest, SubmitAttemptResponse, WorkerSlotId,
+    ControlRequest, CoverageProjection, DaemonEpoch, ExactCheckpointId, ExactRational, ExecutionId,
+    ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient, ExecutorCompatibilityProfile,
+    ExecutorControlService, ExecutorDescription, ExecutorMaterializationCapability,
+    ExecutorRejection, ExecutorResumeService, ExecutorService, ExecutorStatusService,
+    ExplorerPolicy, FairnessPolicy, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
+    GetAttemptExecutionResponse, MeasurementSet, Observation, ObservationCandidate,
+    ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy,
+    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, RetentionPolicy, ScenarioDefId,
+    SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
+    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, WorkerSlotId,
 };
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, MemoryBlobBackend,
@@ -44,11 +44,14 @@ use super::*;
 use crate::{
     AllowAllAttemptAdmission, AttemptAdmissionValidator, AttemptExecutionContext,
     AttemptExecutionInput, AttemptExecutionKey, AttemptExecutionModel, AttemptExecutionProduct,
-    AttemptWorkResult, AttemptWorkerFailure, CheckpointRequestOutcome, ExactCheckpointStore,
-    ExecutorCapacity, ExecutorLocalService, ExecutorLocalServiceError,
-    ExecutorLoopbackEndpointConfig, ExecutorLoopbackServerConfig, LoopbackExecutorService,
-    MemoryAssignmentLedger, RepositoryAttemptAdmission, RepositoryAttemptWorker,
-    RepositoryAttemptWorkerError, UnixPeerExecutorIdentity,
+    AttemptRuntimeState, AttemptStateCas, AttemptWorkResult, AttemptWorkerFailure,
+    CheckpointPromotionExecutionBasis, CheckpointPromotionRestartWork, CheckpointRequestOutcome,
+    ExactCheckpointStore, ExecutionCancellation, ExecutorCapacity, ExecutorLocalService,
+    ExecutorLocalServiceError, ExecutorLoopbackEndpointConfig, ExecutorLoopbackServerConfig,
+    LoopbackExecutorService, MemoryAssignmentLedger,
+    PausedCheckpointPromotionRecoveryResolutionError, RepositoryAttemptAdmission,
+    RepositoryAttemptWorker, RepositoryAttemptWorkerError, UnixPeerExecutorIdentity,
+    resolve_production_paused_checkpoint_promotion_recovery,
 };
 
 struct TestDurableBackend {
@@ -1039,6 +1042,79 @@ fn repository_worker_rejects_a_checkpoint_from_another_scenario() {
                 reason: "exact checkpoint differs from assignment scenario",
             }
         ))
+    ));
+}
+
+#[test]
+fn raw_pause_restart_rejects_an_inconsistent_execution_basis_before_repository_reads() {
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "raw-pause-recovery",
+            64 * 1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let (lineage, _policy, _branch, admitted, _candidate) =
+        campaign_attempt_fixture(&repository, "raw-pause-recovery");
+    let epoch = DaemonEpoch::from_bytes([0xa1; 16]).expect("daemon epoch");
+    let resources = AttemptResourceLimits::new(1, 64 * 1024 * 1024, 0, 1_000).expect("resources");
+    let retention = ExecutionRetentionIntent::RetainOnFailure;
+    let request = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0xa2; 16]).expect("assignment"),
+        epoch,
+        lineage.id().expect("lineage id"),
+        admitted.attempt,
+        resources,
+        retention,
+    )
+    .expect("submit request");
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let execution = ExecutionId::from_bytes([0xa3; 16]).expect("execution");
+    let checkpoint = ExactCheckpointId::parse(&format!(
+        "crucible.executor.exact-checkpoint-root@exact-manifest.2.{}",
+        "a4".repeat(32)
+    ))
+    .expect("checkpoint");
+    let state = AttemptRuntimeState::Paused {
+        execution_basis: CampaignHash::derive(
+            "crucible.test.inconsistent-promotion-basis.v1",
+            b"different",
+        ),
+        origin: crate::AttemptExecutionOrigin::Initial,
+        daemon_epoch: epoch,
+        execution,
+        checkpoint,
+        promotion_basis: Some(CheckpointPromotionExecutionBasis::new(resources, retention)),
+    };
+    let mut ledger = MemoryAssignmentLedger::default();
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(key, None, Some(state))
+            .expect("seed raw pause"),
+        AttemptStateCas::Advanced
+    );
+    let supervisor = LocalExecutorSupervisor::new(
+        ledger,
+        AllowAllAttemptAdmission,
+        epoch,
+        ExecutorCapacity::new(1, 1, 64 * 1024 * 1024, 0, 1_000).expect("capacity"),
+    );
+    let mut work = Vec::new();
+    supervisor
+        .visit_checkpoint_promotion_restart_work(&mut |item| work.push(item))
+        .expect("discover raw pause");
+    let [CheckpointPromotionRestartWork::Paused(recovery)] = work.as_slice() else {
+        panic!("expected one raw-pause recovery")
+    };
+
+    let store = CampaignExecutorStore::new(repository);
+    assert!(matches!(
+        resolve_production_paused_checkpoint_promotion_recovery(
+            &store,
+            *recovery,
+            ExecutionCancellation::default(),
+        ),
+        Err(PausedCheckpointPromotionRecoveryResolutionError::ExecutionBasisMismatch)
     ));
 }
 

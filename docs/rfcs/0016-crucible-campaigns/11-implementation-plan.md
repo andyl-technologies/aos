@@ -757,6 +757,10 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   raw attempt root, stream one live-node snapshot at a time, and serialize the
   complete multi-node fat/thin comparison through node-specific guarded oracle
   owners that finish or quarantine before preparing that replacement.
+  Restart discovery retains the exact resource/retention basis and resolves
+  the same repository-authenticated lineage, scenario, attempt, path,
+  configuration, and branch selection used by ordinary worker dispatch before
+  constructing a guarded production-comparison target.
   Assignment-root-aware cleanup of abandoned
   native entries, automatic packaged scheduling and restart retry of this
   comparison phase, and capability advertisement remain open before the
