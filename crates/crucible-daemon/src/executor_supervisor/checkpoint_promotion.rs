@@ -141,6 +141,43 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
+    /// Loads one raw paused root ready for replay-oracle promotion.
+    ///
+    /// This is a short operational-ledger read used after checkpoint
+    /// reconciliation and after reverting an incomplete staged replacement.
+    /// Immutable checkpoint authentication and QEMU work must happen only after
+    /// the caller releases actor ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalExecutorError::Ledger`] when the durable record cannot be
+    /// read safely.
+    pub fn paused_checkpoint_promotion_recovery(
+        &self,
+        key: AttemptExecutionKey,
+    ) -> Result<Option<PausedCheckpointPromotionRecovery>, LocalExecutorError<L::Error>> {
+        let state = self
+            .ledger
+            .load_attempt(key)
+            .map_err(LocalExecutorError::Ledger)?;
+        Ok(match state {
+            Some(AttemptRuntimeState::Paused {
+                execution_basis,
+                execution,
+                checkpoint,
+                promotion_basis: Some(promotion_basis),
+                ..
+            }) => Some(PausedCheckpointPromotionRecovery {
+                key,
+                execution_basis,
+                execution,
+                source: checkpoint,
+                promotion_basis,
+            }),
+            Some(_) | None => None,
+        })
+    }
+
     /// Loads one staged paused-root promotion for restart recovery.
     ///
     /// This is a short operational-ledger read. Immutable-root authentication

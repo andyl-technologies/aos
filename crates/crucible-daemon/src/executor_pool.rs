@@ -41,6 +41,28 @@ use crate::{
     stage_prepared_checkpoint_result,
 };
 
+mod promotion;
+pub use promotion::{
+    LocalCheckpointPromotionWorker, MAX_LOCAL_CHECKPOINT_PROMOTION_QUEUE,
+    MAX_LOCAL_CHECKPOINT_PROMOTION_WORKERS, ProductionCheckpointPromotionWorker,
+};
+use promotion::{PromotionQueue, promotion_worker_loop};
+
+struct DisabledCheckpointPromotionWorker;
+
+impl LocalCheckpointPromotionWorker for DisabledCheckpointPromotionWorker {
+    type Error = ();
+
+    fn prepare(
+        &mut self,
+        _work: crate::CheckpointPromotionRestartWork,
+        _cancellation: crate::ExecutionCancellation,
+    ) -> Result<crate::PreparedPausedCheckpointPromotionRestart, AttemptWorkerFailure<Self::Error>>
+    {
+        Err(AttemptWorkerFailure::Terminal(()))
+    }
+}
+
 /// Maximum execution threads accepted by one local executor pool.
 pub const MAX_LOCAL_EXECUTOR_WORKERS: usize = 256;
 
@@ -282,6 +304,55 @@ where
     where
         W: LocalAttemptWorker + Send + 'static,
     {
+        Self::start_inner(
+            executor,
+            store,
+            checkpoints,
+            workers,
+            Vec::<DisabledCheckpointPromotionWorker>::new(),
+        )
+    }
+
+    /// Starts fixed semantic and paused-checkpoint promotion workers.
+    ///
+    /// Startup inventories compact raw/staged promotion records before any
+    /// service handle is returned. Promotion workers run repository, QEMU, and
+    /// immutable-store phases outside supervisor ownership and borrow the actor
+    /// only for exact ledger transitions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid semantic or promotion worker counts, more
+    /// than 65,536 durable restart items, an unreadable restart inventory, or an
+    /// operating-system thread-spawn failure.
+    pub fn start_with_checkpoint_promotions<W, P>(
+        executor: LocalExecutorCapabilityService<L, V>,
+        store: CampaignExecutorStore,
+        checkpoints: Arc<ExactCheckpointStore>,
+        workers: Vec<W>,
+        promotion_workers: Vec<P>,
+    ) -> Result<Self, LocalExecutorPoolConfigError>
+    where
+        W: LocalAttemptWorker + Send + 'static,
+        P: LocalCheckpointPromotionWorker + Send + 'static,
+    {
+        if promotion_workers.is_empty() {
+            return Err(LocalExecutorPoolConfigError::ZeroPromotionWorkers);
+        }
+        Self::start_inner(executor, store, checkpoints, workers, promotion_workers)
+    }
+
+    fn start_inner<W, P>(
+        executor: LocalExecutorCapabilityService<L, V>,
+        store: CampaignExecutorStore,
+        checkpoints: Arc<ExactCheckpointStore>,
+        workers: Vec<W>,
+        promotion_workers: Vec<P>,
+    ) -> Result<Self, LocalExecutorPoolConfigError>
+    where
+        W: LocalAttemptWorker + Send + 'static,
+        P: LocalCheckpointPromotionWorker + Send + 'static,
+    {
         let worker_count = workers.len();
         if worker_count == 0 {
             return Err(LocalExecutorPoolConfigError::ZeroWorkers);
@@ -300,14 +371,66 @@ where
             return Err(LocalExecutorPoolConfigError::WorkerCountExceedsSlots);
         }
 
-        let shared = Arc::new(SharedExecutor::new(executor, checkpoints, worker_count));
-        let mut joins: Vec<JoinHandle<()>> = Vec::with_capacity(worker_count);
+        let promotion_worker_count = promotion_workers.len();
+        if promotion_worker_count > MAX_LOCAL_CHECKPOINT_PROMOTION_WORKERS {
+            return Err(LocalExecutorPoolConfigError::TooManyPromotionWorkers);
+        }
+        if promotion_worker_count > maximum_slots {
+            return Err(LocalExecutorPoolConfigError::PromotionWorkerCountExceedsSlots);
+        }
+
+        let mut restart_work = Vec::new();
+        let mut restart_overflow = false;
+        if promotion_worker_count != 0 {
+            executor
+                .supervisor()
+                .visit_checkpoint_promotion_restart_work(&mut |work| {
+                    if restart_work.len() < MAX_LOCAL_CHECKPOINT_PROMOTION_QUEUE {
+                        restart_work.push(work);
+                    } else {
+                        restart_overflow = true;
+                    }
+                })
+                .map_err(|_| LocalExecutorPoolConfigError::PromotionRestartInventory)?;
+            if restart_overflow {
+                return Err(LocalExecutorPoolConfigError::TooManyPromotionRestarts);
+            }
+        }
+
+        let shared = Arc::new(SharedExecutor::new(
+            executor,
+            checkpoints,
+            worker_count,
+            promotion_worker_count,
+            restart_work,
+        ));
+        let total_workers = worker_count
+            .checked_add(promotion_worker_count)
+            .ok_or(LocalExecutorPoolConfigError::TooManyPromotionWorkers)?;
+        let mut joins: Vec<JoinHandle<()>> = Vec::with_capacity(total_workers);
         for (slot, worker) in workers.into_iter().enumerate() {
             let worker_shared = Arc::clone(&shared);
             let worker_store = store.clone();
             let join = match thread::Builder::new()
                 .name(format!("crucible-executor-{slot}"))
                 .spawn(move || worker_loop(worker_shared, worker_store, worker))
+            {
+                Ok(join) => join,
+                Err(source) => {
+                    shared.request_shutdown();
+                    for join in joins {
+                        let _ = join.join();
+                    }
+                    return Err(LocalExecutorPoolConfigError::Spawn { source });
+                }
+            };
+            joins.push(join);
+        }
+        for (slot, worker) in promotion_workers.into_iter().enumerate() {
+            let worker_shared = Arc::clone(&shared);
+            let join = match thread::Builder::new()
+                .name(format!("crucible-checkpoint-promotion-{slot}"))
+                .spawn(move || promotion_worker_loop(worker_shared, worker))
             {
                 Ok(join) => join,
                 Err(source) => {
@@ -468,6 +591,21 @@ pub enum LocalExecutorPoolConfigError {
     /// More workers were supplied than the supervisor can admit.
     #[error("local executor worker count exceeds configured execution slots")]
     WorkerCountExceedsSlots,
+    /// An explicit promotion-enabled pool supplied no promotion worker.
+    #[error("local executor checkpoint-promotion worker count is zero")]
+    ZeroPromotionWorkers,
+    /// The fixed process-wide promotion-thread safety bound was exceeded.
+    #[error("local executor checkpoint-promotion worker count exceeds 256")]
+    TooManyPromotionWorkers,
+    /// More promotion workers were supplied than execution slots.
+    #[error("local executor checkpoint-promotion worker count exceeds configured execution slots")]
+    PromotionWorkerCountExceedsSlots,
+    /// Durable attempt-state enumeration failed during promotion startup.
+    #[error("local executor checkpoint-promotion restart inventory is unavailable")]
+    PromotionRestartInventory,
+    /// Compact durable restart work exceeded the fixed process-local queue bound.
+    #[error("local executor checkpoint-promotion restart inventory exceeds 65536 items")]
+    TooManyPromotionRestarts,
     /// The operating system refused to create one fixed worker.
     #[error("local executor worker thread could not be created")]
     Spawn {
@@ -511,8 +649,11 @@ pub enum LocalExecutorPoolShutdownError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LocalExecutorPoolReport {
     workers: usize,
+    promotion_workers: usize,
     active: usize,
     queued: usize,
+    promotions_active: usize,
+    promotions_queued: usize,
     executions: u64,
     retry_requeues: u64,
     publication_retries: u64,
@@ -520,6 +661,10 @@ pub struct LocalExecutorPoolReport {
     discarded: u64,
     checkpoints_paused: u64,
     checkpoints_discarded: u64,
+    promotion_retries: u64,
+    promotions_reconciled: u64,
+    promotions_discarded: u64,
+    promotion_failures: u64,
     terminal_stops: u64,
     worker_panics: u64,
 }
@@ -529,6 +674,12 @@ impl LocalExecutorPoolReport {
     #[must_use]
     pub const fn workers(self) -> usize {
         self.workers
+    }
+
+    /// Returns the fixed number of checkpoint-promotion threads.
+    #[must_use]
+    pub const fn promotion_workers(self) -> usize {
+        self.promotion_workers
     }
 
     /// Returns exact currently charged supervisor reservations.
@@ -541,6 +692,18 @@ impl LocalExecutorPoolReport {
     #[must_use]
     pub const fn queued(self) -> usize {
         self.queued
+    }
+
+    /// Returns replay-oracle comparisons currently owned by promotion workers.
+    #[must_use]
+    pub const fn promotions_active(self) -> usize {
+        self.promotions_active
+    }
+
+    /// Returns compact raw/staged promotion phases awaiting a fixed worker.
+    #[must_use]
+    pub const fn promotions_queued(self) -> usize {
+        self.promotions_queued
     }
 
     /// Returns worker executions begun by this pool incarnation.
@@ -585,6 +748,30 @@ impl LocalExecutorPoolReport {
         self.checkpoints_discarded
     }
 
+    /// Returns transient promotion phase retries that did not rerun an attempt.
+    #[must_use]
+    pub const fn promotion_retries(self) -> u64 {
+        self.promotion_retries
+    }
+
+    /// Returns promoted paused roots committed by fixed promotion workers.
+    #[must_use]
+    pub const fn promotions_reconciled(self) -> u64 {
+        self.promotions_reconciled
+    }
+
+    /// Returns stale or deliberately reverted promotion phases.
+    #[must_use]
+    pub const fn promotions_discarded(self) -> u64 {
+        self.promotions_discarded
+    }
+
+    /// Returns stable promotion preparation, publication, or ledger failures.
+    #[must_use]
+    pub const fn promotion_failures(self) -> u64 {
+        self.promotion_failures
+    }
+
     /// Returns canceled or terminal worker results durably stopped.
     #[must_use]
     pub const fn terminal_stops(self) -> u64 {
@@ -603,8 +790,10 @@ struct SharedExecutor<L, V> {
     validator: Arc<V>,
     checkpoints: Arc<ExactCheckpointStore>,
     ready: Condvar,
+    promotions: PromotionQueue,
     state: AtomicU8,
     worker_count: usize,
+    promotion_worker_count: usize,
     completion: Arc<PoolCompletionState>,
     counters: PoolCounters,
 }
@@ -614,6 +803,8 @@ impl<L, V> SharedExecutor<L, V> {
         executor: LocalExecutorCapabilityService<L, V>,
         checkpoints: Arc<ExactCheckpointStore>,
         worker_count: usize,
+        promotion_worker_count: usize,
+        restart_work: Vec<crate::CheckpointPromotionRestartWork>,
     ) -> Self {
         let validator = executor.supervisor().admission_validator();
         Self {
@@ -621,9 +812,13 @@ impl<L, V> SharedExecutor<L, V> {
             validator,
             checkpoints,
             ready: Condvar::new(),
+            promotions: PromotionQueue::from_restart_work(restart_work),
             state: AtomicU8::new(POOL_RUNNING),
             worker_count,
-            completion: Arc::new(PoolCompletionState::new(worker_count)),
+            promotion_worker_count,
+            completion: Arc::new(PoolCompletionState::new(
+                worker_count.saturating_add(promotion_worker_count),
+            )),
             counters: PoolCounters::default(),
         }
     }
@@ -671,6 +866,7 @@ impl<L, V> SharedExecutor<L, V> {
                 .signal_all_active_cancellation(),
         }
         self.ready.notify_all();
+        self.promotions.shutdown();
     }
 
     fn poison(&self) {
@@ -688,13 +884,17 @@ impl<L, V> SharedExecutor<L, V> {
                 .signal_all_active_cancellation(),
         }
         self.ready.notify_all();
+        self.promotions.shutdown();
     }
 
     fn report(&self, supervisor: &LocalExecutorSupervisor<L, V>) -> LocalExecutorPoolReport {
         LocalExecutorPoolReport {
             workers: self.worker_count,
+            promotion_workers: self.promotion_worker_count,
             active: supervisor.active_count(),
             queued: supervisor.queued_count(),
+            promotions_active: self.promotions.active_count(),
+            promotions_queued: self.promotions.pending_count(),
             executions: self.counters.executions.load(Ordering::Relaxed),
             retry_requeues: self.counters.retry_requeues.load(Ordering::Relaxed),
             publication_retries: self.counters.publication_retries.load(Ordering::Relaxed),
@@ -702,6 +902,10 @@ impl<L, V> SharedExecutor<L, V> {
             discarded: self.counters.discarded.load(Ordering::Relaxed),
             checkpoints_paused: self.counters.checkpoints_paused.load(Ordering::Relaxed),
             checkpoints_discarded: self.counters.checkpoints_discarded.load(Ordering::Relaxed),
+            promotion_retries: self.counters.promotion_retries.load(Ordering::Relaxed),
+            promotions_reconciled: self.counters.promotions_reconciled.load(Ordering::Relaxed),
+            promotions_discarded: self.counters.promotions_discarded.load(Ordering::Relaxed),
+            promotion_failures: self.counters.promotion_failures.load(Ordering::Relaxed),
             terminal_stops: self.counters.terminal_stops.load(Ordering::Relaxed),
             worker_panics: self.counters.worker_panics.load(Ordering::Relaxed),
         }
@@ -858,6 +1062,10 @@ struct PoolCounters {
     discarded: AtomicU64,
     checkpoints_paused: AtomicU64,
     checkpoints_discarded: AtomicU64,
+    promotion_retries: AtomicU64,
+    promotions_reconciled: AtomicU64,
+    promotions_discarded: AtomicU64,
+    promotion_failures: AtomicU64,
     terminal_stops: AtomicU64,
     worker_panics: AtomicU64,
 }
@@ -1113,11 +1321,17 @@ fn reconcile_checkpoint_result<L, V>(
             abort_checkpoint(shared, CheckpointResultAbortToken::Published(published));
             return;
         }
+        let key = AttemptExecutionKey::new(
+            published.queued().request().lineage(),
+            published.queued().request().attempt(),
+        );
         let mut executor = lock_or_retain(shared, &published);
         match reconcile_published_checkpoint_result(executor.supervisor_mut(), *published) {
             Ok(crate::CheckpointCompletionOutcome::Paused)
             | Ok(crate::CheckpointCompletionOutcome::AlreadyPaused) => {
                 increment(&shared.counters.checkpoints_paused);
+                drop(executor);
+                enqueue_paused_checkpoint_promotion(shared, key);
                 return;
             }
             Ok(crate::CheckpointCompletionOutcome::NotCurrent) => {
@@ -1136,6 +1350,54 @@ fn reconcile_checkpoint_result<L, V>(
                     shared,
                     CheckpointResultAbortToken::Published(error.published),
                 );
+                return;
+            }
+        }
+    }
+}
+
+fn enqueue_paused_checkpoint_promotion<L, V>(
+    shared: &SharedExecutor<L, V>,
+    key: AttemptExecutionKey,
+) where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    if shared.promotion_worker_count == 0 {
+        return;
+    }
+    loop {
+        if shared.state.load(Ordering::Acquire) != POOL_RUNNING {
+            return;
+        }
+        let executor = match shared.executor.lock() {
+            Ok(executor) => executor,
+            Err(poisoned) => {
+                drop(poisoned.into_inner());
+                shared.fail_closed();
+                return;
+            }
+        };
+        match executor
+            .supervisor()
+            .paused_checkpoint_promotion_recovery(key)
+        {
+            Ok(Some(recovery)) => {
+                drop(executor);
+                shared.promotions.enqueue(
+                    shared,
+                    crate::CheckpointPromotionRestartWork::Paused(recovery),
+                );
+                return;
+            }
+            Ok(None) => return,
+            Err(error) if supervisor_error_is_retryable(&error) => {
+                increment(&shared.counters.promotion_retries);
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(_) => {
+                increment(&shared.counters.promotion_failures);
                 return;
             }
         }

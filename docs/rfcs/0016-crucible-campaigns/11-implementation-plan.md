@@ -764,9 +764,17 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   dispatcher now maps a raw pause to that complete guarded comparison and maps
   a staged pair directly to full production-pair reauthentication, yielding
   linear stage or reconcile tokens without supervisor ownership.
+  A fixed promotion-worker set now owns a deduplicated compact queue bounded at
+  65,536 attempt keys, inventories raw and staged phases before service startup,
+  enqueues newly committed pauses after releasing the actor, retries transient
+  preparation/publication without rerunning semantic execution, cancels active
+  comparisons on shutdown, and restores incomplete staged publication to the
+  retained raw root. The production adapter binds one guarded replay factory to
+  each fixed worker; repository, QEMU, and immutable-store work remains outside
+  supervisor ownership.
   Assignment-root-aware cleanup of abandoned
-  native entries, automatic packaged scheduling and restart retry of this
-  comparison phase, and capability advertisement remain open before the
+  native entries, construction of the packaged thin-source/real-node replay
+  factory, and capability advertisement remain open before the
   executor may claim exact resume. Production-loop process reconstruction and
   exact-resume driver selection are implemented: `NotRun` is rejected during no-write admission,
   the exact closure is restored under the attempt guard, and the packaged
@@ -830,6 +838,9 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   resource/retention promotion basis, streaming restart discovery, restart
   reauthentication, explicit incomplete-promotion revert, and the final paused-root CAS are
   implemented without holding the supervisor actor across QEMU or store work.
+  The fixed 65,536-entry promotion queue and fixed promotion worker set now
+  schedule both newly paused and restart-discovered phases with exact-key
+  deduplication, classified retry, cancellation, and bounded reporting.
   The crate-internal quota/run-directory owner and its public sealed composition
   with the process owner are implemented, including reap-before-storage release
   and nondroppable combined quarantine. The owner now lends fresh monotone,
@@ -839,8 +850,9 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   root materialization through the attempt-owned directory. The packaged worker
   selects that resume adapter without fresh fallback, restores the complete
   event prefix and quiescence boundary, and retains runner-owned shutdown and
-  result sealing. Fresh exact-cache, baked/thin image provisioning, automatic
-  replay-oracle promotion, and production tuning remain open; `NotRun` is still
+  result sealing. Fresh exact-cache, baked/thin image provisioning, concrete
+  packaged replay-oracle factory wiring, and production tuning remain open;
+  `NotRun` is still
   fail-closed and `ExactRestore` remains unadvertised. The fixed worker
   pool and its
   linear observation/checkpoint
