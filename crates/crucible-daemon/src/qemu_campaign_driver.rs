@@ -149,6 +149,35 @@ impl QemuFreshModeledDriver {
     }
 }
 
+/// Scheduler progress needed by the materialization-independent modeled core.
+///
+/// Fresh execution and exact resume have different process and checkpoint
+/// owners, but they must interpret an admitted attempt and project its result
+/// identically. This private boundary keeps that semantic loop independent of
+/// how the live scheduler was materialized while exposing no shutdown,
+/// checkpoint-publication, or resource-release authority.
+trait QemuModeledAttemptLifecycle {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError>;
+
+    fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict>;
+
+    fn pending_network_output_count(&self) -> usize;
+}
+
+impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        QemuFreshAttemptLifecycle::drive_quantum(self, request)
+    }
+
+    fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
+        QemuFreshAttemptLifecycle::terminal_verdict_for_stop(self)
+    }
+
+    fn pending_network_output_count(&self) -> usize {
+        QemuFreshAttemptLifecycle::pending_network_output_count(self)
+    }
+}
+
 impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
     type Pending = QemuFreshPendingObservation;
     type Error = QemuFreshModeledDriverError;
@@ -160,108 +189,7 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
         context: &AttemptExecutionContext,
         materialization: QemuFreshStartMaterialization,
     ) -> Result<Self::Pending, AttemptWorkerFailure<Self::Error>> {
-        let scenario = input.scenario().scenario_def();
-        let mut configuration = match input.start() {
-            CrucibleResolvedAttemptStart::Discover { configuration } => configuration.clone(),
-            CrucibleResolvedAttemptStart::Branch { selected, .. } => selected.clone(),
-        };
-        if configuration.def != scenario {
-            return Err(AttemptWorkerFailure::Terminal(
-                QemuFreshModeledDriverError::ScenarioMismatch,
-            ));
-        }
-
-        let (mut event_log, mut event_log_bytes, mut terminal_quiescence, terminal_verdict) =
-            materialization.into_parts();
-        let mut terminal_at = event_log
-            .last()
-            .map_or(VirtualTime { ticks: 0 }, SchedulerEventLogEntry::at);
-        let mut discoveries = RetainedChoiceDiscoveries::default();
-        if let Some(verdict) = terminal_verdict {
-            let stop = match verdict {
-                QuantumTerminalVerdict::Passed => ModeledStop::TerminalPassed,
-                QuantumTerminalVerdict::Failed(_) => ModeledStop::TerminalFailed,
-            };
-            let pending = lifecycle.pending_network_output_count();
-            if pending != 0 {
-                return Err(AttemptWorkerFailure::Terminal(
-                    QemuFreshModeledDriverError::PendingNetworkOutput(pending),
-                ));
-            }
-            return Ok(QemuFreshPendingObservation {
-                input: input.clone(),
-                configuration,
-                stop,
-                event_log,
-                event_log_bytes,
-                discoveries: discoveries.discoveries,
-                terminal_quiescence,
-                terminal_at,
-            });
-        }
-        let mut observed_event_count = 0usize;
-        loop {
-            check_operational_signals(context)?;
-            let outcome = lifecycle
-                .drive_quantum(QuantumRequest {
-                    configuration: configuration.clone(),
-                    control: Vec::new(),
-                })
-                .map_err(classify_scheduler_error)?;
-            if outcome.configuration.def != scenario {
-                return Err(AttemptWorkerFailure::Terminal(
-                    QemuFreshModeledDriverError::ScenarioMismatch,
-                ));
-            }
-
-            check_operational_signals(context)?;
-
-            let stop = match lifecycle.terminal_verdict_for_stop() {
-                Some(QuantumTerminalVerdict::Passed) => Some(ModeledStop::TerminalPassed),
-                Some(QuantumTerminalVerdict::Failed(_)) => Some(ModeledStop::TerminalFailed),
-                None => reached_requested_stop(
-                    input.attempt().stop(),
-                    &outcome,
-                    observed_event_count,
-                    &discoveries.discoveries,
-                ),
-            };
-            observed_event_count = observed_event_count
-                .checked_add(outcome.event_log_entries.len())
-                .ok_or(AttemptWorkerFailure::Terminal(
-                    QemuFreshModeledDriverError::LimitExceeded {
-                        limit: "fresh-campaign-event-log-entry-count",
-                    },
-                ))?;
-            configuration = append_quantum(
-                &mut event_log,
-                &mut event_log_bytes,
-                &mut discoveries,
-                &mut terminal_quiescence,
-                &mut terminal_at,
-                outcome,
-            )?;
-            let Some(stop) = stop else {
-                continue;
-            };
-
-            let pending = lifecycle.pending_network_output_count();
-            if pending != 0 {
-                return Err(AttemptWorkerFailure::Terminal(
-                    QemuFreshModeledDriverError::PendingNetworkOutput(pending),
-                ));
-            }
-            return Ok(QemuFreshPendingObservation {
-                input: input.clone(),
-                configuration,
-                stop,
-                event_log,
-                event_log_bytes,
-                discoveries: discoveries.discoveries,
-                terminal_quiescence,
-                terminal_at,
-            });
-        }
+        drive_modeled_attempt(lifecycle, input, context, materialization)
     }
 
     fn seal(
@@ -278,6 +206,120 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
         build_observation_candidate(pending)
             .map(AttemptExecutionProduct::observation)
             .map_err(AttemptWorkerFailure::Terminal)
+    }
+}
+
+fn drive_modeled_attempt(
+    lifecycle: &mut impl QemuModeledAttemptLifecycle,
+    input: &CrucibleAttemptExecution,
+    context: &AttemptExecutionContext,
+    materialization: QemuFreshStartMaterialization,
+) -> Result<QemuFreshPendingObservation, AttemptWorkerFailure<QemuFreshModeledDriverError>> {
+    let scenario = input.scenario().scenario_def();
+    let mut configuration = match input.start() {
+        CrucibleResolvedAttemptStart::Discover { configuration } => configuration.clone(),
+        CrucibleResolvedAttemptStart::Branch { selected, .. } => selected.clone(),
+    };
+    if configuration.def != scenario {
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshModeledDriverError::ScenarioMismatch,
+        ));
+    }
+
+    let (mut event_log, mut event_log_bytes, mut terminal_quiescence, terminal_verdict) =
+        materialization.into_parts();
+    let mut terminal_at = event_log
+        .last()
+        .map_or(VirtualTime { ticks: 0 }, SchedulerEventLogEntry::at);
+    let mut discoveries = RetainedChoiceDiscoveries::default();
+    if let Some(verdict) = terminal_verdict {
+        let stop = match verdict {
+            QuantumTerminalVerdict::Passed => ModeledStop::TerminalPassed,
+            QuantumTerminalVerdict::Failed(_) => ModeledStop::TerminalFailed,
+        };
+        require_settled_network(lifecycle)?;
+        return Ok(QemuFreshPendingObservation {
+            input: input.clone(),
+            configuration,
+            stop,
+            event_log,
+            event_log_bytes,
+            discoveries: discoveries.discoveries,
+            terminal_quiescence,
+            terminal_at,
+        });
+    }
+
+    let mut observed_event_count = 0usize;
+    loop {
+        check_operational_signals(context)?;
+        let outcome = lifecycle
+            .drive_quantum(QuantumRequest {
+                configuration: configuration.clone(),
+                control: Vec::new(),
+            })
+            .map_err(classify_scheduler_error)?;
+        if outcome.configuration.def != scenario {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshModeledDriverError::ScenarioMismatch,
+            ));
+        }
+
+        check_operational_signals(context)?;
+
+        let stop = match lifecycle.terminal_verdict_for_stop() {
+            Some(QuantumTerminalVerdict::Passed) => Some(ModeledStop::TerminalPassed),
+            Some(QuantumTerminalVerdict::Failed(_)) => Some(ModeledStop::TerminalFailed),
+            None => reached_requested_stop(
+                input.attempt().stop(),
+                &outcome,
+                observed_event_count,
+                &discoveries.discoveries,
+            ),
+        };
+        observed_event_count = observed_event_count
+            .checked_add(outcome.event_log_entries.len())
+            .ok_or(AttemptWorkerFailure::Terminal(
+                QemuFreshModeledDriverError::LimitExceeded {
+                    limit: "fresh-campaign-event-log-entry-count",
+                },
+            ))?;
+        configuration = append_quantum(
+            &mut event_log,
+            &mut event_log_bytes,
+            &mut discoveries,
+            &mut terminal_quiescence,
+            &mut terminal_at,
+            outcome,
+        )?;
+        let Some(stop) = stop else {
+            continue;
+        };
+
+        require_settled_network(lifecycle)?;
+        return Ok(QemuFreshPendingObservation {
+            input: input.clone(),
+            configuration,
+            stop,
+            event_log,
+            event_log_bytes,
+            discoveries: discoveries.discoveries,
+            terminal_quiescence,
+            terminal_at,
+        });
+    }
+}
+
+fn require_settled_network(
+    lifecycle: &impl QemuModeledAttemptLifecycle,
+) -> Result<(), AttemptWorkerFailure<QemuFreshModeledDriverError>> {
+    let pending = lifecycle.pending_network_output_count();
+    if pending == 0 {
+        Ok(())
+    } else {
+        Err(AttemptWorkerFailure::Terminal(
+            QemuFreshModeledDriverError::PendingNetworkOutput(pending),
+        ))
     }
 }
 

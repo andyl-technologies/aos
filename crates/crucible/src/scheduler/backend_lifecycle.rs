@@ -3,6 +3,54 @@
 use super::*;
 
 impl SingleScheduler {
+    /// Adopts the exact suffix appended by one paused live-backend operation.
+    ///
+    /// The backend receives a clone of [`Self::event_log`] while it drains or
+    /// shuts down. This method then replays only entries at or after the
+    /// scheduler's current dense sequence through the authoritative append
+    /// path and requires the resulting offset to equal the backend's complete
+    /// offset. It therefore cannot splice a foreign prefix or silently omit a
+    /// backend-observed suffix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `backend_log` does
+    /// not extend the exact current prefix, does not retain the required
+    /// suffix, or the replayed entries produce another final offset.
+    pub fn adopt_live_backend_event_log_suffix(
+        &mut self,
+        backend_log: &EventLog,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        let before = self.event_log.offset();
+        if backend_log.offset().events < before.events
+            || backend_log.offset().bytes < before.bytes
+            || backend_log.condition_base_events > before.events
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "live backend event log does not retain the scheduler's current prefix",
+                ),
+            });
+        }
+        let suffix = backend_log
+            .condition_entries
+            .iter()
+            .filter(|entry| entry.sequence() >= before.events)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut staged = self.event_log.clone();
+        let appended = staged.append_entries(suffix)?;
+        if staged.offset() != backend_log.offset() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "live backend event-log suffix does not reproduce its final offset",
+                ),
+            });
+        }
+        self.event_log = staged;
+        Ok(appended)
+    }
+
     /// Validates one VM identity without changing scheduler state.
     ///
     /// # Errors
