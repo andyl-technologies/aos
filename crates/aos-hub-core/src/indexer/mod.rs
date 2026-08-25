@@ -428,6 +428,15 @@ async fn index_registry_inner(
     }
 
     let tree = load_registry_tree_with_reader(&reader, commit_oid).await?;
+    let (bundle_fetches, loose_fetches, cached_objects) = reader.stats()?;
+    tracing::info!(
+        phase = "head_tree",
+        bundle_fetches,
+        loose_fetches,
+        cached_objects,
+        packages = tree.packages.len(),
+        "registry index phase completed"
+    );
 
     // In-band rotation: the roster committed by a verified commit extends
     // the trusted set for tag verification (apm pins these on sync).
@@ -577,6 +586,16 @@ async fn index_registry_inner(
             });
         }
     }
+    let (bundle_fetches, loose_fetches, cached_objects) = reader.stats()?;
+    tracing::info!(
+        phase = "release_trees",
+        bundle_fetches,
+        loose_fetches,
+        cached_objects,
+        releases = releases.len(),
+        images = release_images.len(),
+        "registry index phase completed"
+    );
 
     // Channels: branches are channel names; each resolves through 256
     // partition payloads pointing at release tag objects.
@@ -596,6 +615,11 @@ async fn index_registry_inner(
         &image_release_tag_oids,
     )
     .await?;
+    tracing::info!(
+        phase = "channels",
+        channels = channels.len(),
+        "registry index phase completed"
+    );
 
     // The committed [caches] cache stack (RFC-0004) is flattened into the
     // priority list stack-unaware clients and the display table resolve; when
@@ -649,6 +673,7 @@ async fn index_registry_inner(
         pending: false,
     };
     if let Some(placement_id) = indexed_placement_id {
+        tracing::info!(phase = "snapshot", "registry index phase started");
         db.apply_snapshot_with_image_presence(
             registry.id,
             &snapshot,
@@ -660,9 +685,11 @@ async fn index_registry_inner(
     } else if !image_presence.is_empty() {
         bail!("signed system images require an exact indexed placement");
     } else {
+        tracing::info!(phase = "snapshot", "registry index phase started");
         db.apply_snapshot_from_placement(registry.id, &snapshot, None)
             .await?;
     }
+    tracing::info!(phase = "snapshot", "registry index phase completed");
 
     // Cross-reference the verified HEAD commit with the change-set log
     // (RFC-0004 "Configuration management"): a commit carrying an
