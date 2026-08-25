@@ -760,7 +760,12 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   Restart discovery retains the exact resource/retention basis and resolves
   the same repository-authenticated lineage, scenario, attempt, path,
   configuration, and branch selection used by ordinary worker dispatch before
-  constructing a guarded production-comparison target. One no-write restart
+  constructing a guarded production-comparison target. That target now carries
+  read-only bounded streaming capabilities for the exact overlay and VMState;
+  each stream can check the caller-supplied attempt boundary around every
+  bounded I/O quantum and rechecks the authenticated manifest length and
+  content identity without exposing store mutation or path authority. One
+  no-write restart
   dispatcher now maps a raw pause to that complete guarded comparison and maps
   a staged pair directly to full production-pair reauthentication, yielding
   linear stage or reconcile tokens without supervisor ownership.
@@ -785,7 +790,11 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   worker uses a disjoint exact-origin runner. A guarded-only
   exact-root launcher now consumes that
   pinned authority, rechecks the selected snapshot and checkpoint identities,
-  and uses the sealed child-process contract for pre-`exec` containment. The
+  requires a common exact binding on VMState and every command-required root
+  overlay, and uses the sealed child-process contract for pre-`exec`
+  containment. The thin-path launcher applies the same pair check under a
+  distinct thin-catalog hash domain; replacement, exact-target, and thin
+  artifacts therefore cannot be substituted across roles. The
   daemon resume adapter derives production replay admission inside the QEMU
   boundary, rejects `NotRun` or mismatched oracle evidence before launch, and
   checks the guard immediately before and after realization. The single-host

@@ -17,6 +17,7 @@ use crate::QemuLaunchCommand;
 const EXACT_VMSTATE_BINDING_DOMAIN: &str = "crucible.executor.exact-vmstate-restore-binding.v1";
 const REPLACEMENT_VMSTATE_BINDING_DOMAIN: &str =
     "crucible.executor.replacement-vmstate-restore-binding.v1";
+const THIN_VMSTATE_BINDING_DOMAIN: &str = "crucible.executor.thin-vmstate-restore-binding.v1";
 const FICLONE: rustix::ioctl::Opcode = opcode::write::<libc::c_int>(0x94, 9);
 
 /// Operational binding from one exact-checkpoint root to materialized VMState.
@@ -50,6 +51,20 @@ impl QemuVmStateBinding {
     pub fn from_replacement_snapshot_digest(digest: [u8; 32]) -> Self {
         Self(ContentHash::from_canonical_hex_bytes(
             REPLACEMENT_VMSTATE_BINDING_DOMAIN,
+            &digest,
+        ))
+    }
+
+    /// Derives the binding for one authenticated thin-path artifact pair.
+    ///
+    /// The digest identifies a catalog entry that binds the prepared VMState,
+    /// root overlay when present, and checkpoint metadata. Domain separation
+    /// prevents a thin artifact from being mistaken for an exact campaign root
+    /// or an in-attempt replacement.
+    #[must_use]
+    pub fn from_thin_checkpoint_artifact_digest(digest: [u8; 32]) -> Self {
+        Self(ContentHash::from_canonical_hex_bytes(
+            THIN_VMSTATE_BINDING_DOMAIN,
             &digest,
         ))
     }
@@ -642,6 +657,22 @@ impl QemuPreparedRunDirectory {
                 })
             }
         }
+    }
+
+    /// Requires every checkpoint artifact named by one launch command.
+    ///
+    /// VMState is always required. The root overlay is required only when the
+    /// validated command names one, but it must then carry the same binding.
+    pub(crate) fn require_exact_launch_artifacts(
+        &self,
+        command: &QemuLaunchCommand,
+        binding: QemuVmStateBinding,
+    ) -> Result<(), QemuSpawnError> {
+        self.require_exact_vmstate(binding)?;
+        if command.resource_requirements().has_root_overlay() {
+            self.require_exact_root_overlay(binding)?;
+        }
+        Ok(())
     }
 }
 

@@ -2502,8 +2502,13 @@ reauthenticate the exact complete root pair after restart before the final
 paused-root CAS. A foreign source check, copied manifest identity, missing
 node, changed artifact, or non-matching oracle transition fails before writes.
 The production preparation boundary authenticates the raw attempt root, retains
-only compact live-node descriptors, streams one raw snapshot at a time, and
-requires a node-specific oracle owner to finish or quarantine each guarded
+compact live-node descriptors plus read-only capabilities for their exact
+overlay and VMState manifests, and decodes one raw snapshot at a time. Each
+artifact capability streams from the authenticated chunk sequence with fixed
+temporary memory, offers the caller's attempt operational boundary around every
+bounded I/O quantum, and rechecks exact length and content identity; it exposes
+no path, mutable-store, or campaign-ref authority. The node-specific oracle owner
+receives that complete target and MUST finish or quarantine each guarded
 fat/thin comparison before minting the complete no-write replacement.
 A fixed bounded worker set now schedules that comparison from every newly
 paused execution and from the durable raw/staged inventory after restart. The
@@ -2562,7 +2567,13 @@ spawn separately requires the same launch-resource ceiling and exact snapshot
 basis. The exact-root launcher is not an unguarded realization launcher: it can
 enter production resume only with the attempt guard's sealed child-process
 contract, and production replay admission rejects missing or mismatched oracle
-evidence before invoking it. The compatibility v2/v3 owner authenticates the
+evidence before invoking it. Before child launch, both the exact-target and
+thin-base launchers require authenticated VMState and, when the launch profile
+uses one, a writable-root overlay carrying one common artifact binding. Exact
+target, thin-catalog, and in-attempt replacement bindings use distinct hash
+domains, so a valid artifact pair from one role cannot satisfy another. A
+merely provisioned file, mixed pair, short stream, or foreign binding remains
+unlaunchable. The compatibility v2/v3 owner authenticates the
 exact selected raw root, runs the fat/thin comparison, promotes only a
 source-bound match into a new root that reuses the single VMState child, and
 durably replaces the selection. The version-four owner applies the same

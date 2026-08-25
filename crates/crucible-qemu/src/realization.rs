@@ -28,8 +28,8 @@ pub use node_executor::{
     QemuCapturedVmStateSource, QemuExactRootWarmRestoreNodeLauncher, QemuFailedLaunchChildSource,
     QemuGuardedNodeRealizationLauncher, QemuGuardedThinNodeRealizationLauncher,
     QemuLiveAttemptBackend, QemuLiveBackendShutdown, QemuNodeLauncher, QemuNodeRealizationExecutor,
-    QemuNodeRealizationLauncher, QemuRealizedNodeBackend, QemuReplayValidationNodeLauncher,
-    QemuVmLiveRealizationExecutor, QemuWarmRestoreNodeLauncher,
+    QemuNodeRealizationLauncher, QemuPreparedThinWarmRestoreNodeLauncher, QemuRealizedNodeBackend,
+    QemuReplayValidationNodeLauncher, QemuVmLiveRealizationExecutor, QemuWarmRestoreNodeLauncher,
 };
 
 /// An exact QEMU VM snapshot cached for one configuration.
