@@ -134,17 +134,86 @@ pub fn install_exact_checkpoint_closure(
     source: &ScenarioDefForm,
     portable: &dyn ProductionExactCheckpointSource,
 ) -> Result<ProductionExactCheckpointClosure, LifecycleApiError> {
-    let preflight = preflight_portable_source(source, portable)?;
-    let staging = stage_and_validate_portable_source(source, portable, &preflight)?;
+    install_exact_checkpoint_closure_with_boundary(run_state_root, source, portable, &mut || Ok(()))
+}
 
-    publish_validated_portable_source(run_state_root, source, &preflight, staging.path())?;
-    open_exact_checkpoint_closure(run_state_root, source, preflight.identity)
+/// Installs one portable checkpoint while observing an operational boundary.
+///
+/// The callback runs before path access, between source-object reads and
+/// destination writes of at most one MiB, throughout complete semantic
+/// validation, and between durable publication operations. An interrupted
+/// staging transaction never publishes its manifest; immutable destination
+/// objects placed before a later interruption remain unreachable and
+/// idempotently reusable.
+///
+/// # Errors
+///
+/// Returns the same errors as [`install_exact_checkpoint_closure`], including
+/// the exact [`LifecycleApiError`] returned by `boundary`.
+pub fn install_exact_checkpoint_closure_with_boundary(
+    run_state_root: &Path,
+    source: &ScenarioDefForm,
+    portable: &dyn ProductionExactCheckpointSource,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+) -> Result<ProductionExactCheckpointClosure, LifecycleApiError> {
+    install_exact_checkpoint_closure_with_boundary_and_admission(
+        run_state_root,
+        source,
+        portable,
+        boundary,
+        &mut |_| Ok(()),
+    )
+}
+
+/// Installs one portable checkpoint after modeled-basis admission.
+///
+/// Complete scenario-aware validation runs in an isolated staging directory.
+/// `admit` then receives the authenticated modeled continuation before any
+/// object or manifest is published beneath `run_state_root`. This lets an
+/// attempt owner reject a semantically valid closure for the wrong attempt
+/// without retaining it in the private native catalog.
+///
+/// # Errors
+///
+/// Returns the same errors as
+/// [`install_exact_checkpoint_closure_with_boundary`], including the exact
+/// [`LifecycleApiError`] returned by `boundary` or `admit`.
+pub fn install_exact_checkpoint_closure_with_boundary_and_admission(
+    run_state_root: &Path,
+    source: &ScenarioDefForm,
+    portable: &dyn ProductionExactCheckpointSource,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+    admit: &mut dyn FnMut(&ProductionExactCheckpointResumeBasis) -> Result<(), LifecycleApiError>,
+) -> Result<ProductionExactCheckpointClosure, LifecycleApiError> {
+    boundary()?;
+    let preflight = preflight_portable_source(source, portable, boundary)?;
+    let (staging, basis) =
+        stage_and_validate_portable_source(source, portable, &preflight, boundary)?;
+    boundary()?;
+    admit(&basis)?;
+    boundary()?;
+
+    publish_validated_portable_source(
+        run_state_root,
+        source,
+        &preflight,
+        staging.path(),
+        boundary,
+    )?;
+    open_exact_checkpoint_closure_with_boundary(
+        run_state_root,
+        source,
+        preflight.identity,
+        boundary,
+    )
 }
 
 fn preflight_portable_source(
     source: &ScenarioDefForm,
     portable: &dyn ProductionExactCheckpointSource,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
 ) -> Result<PortableClosurePreflight, LifecycleApiError> {
+    boundary()?;
     let source_manifest = portable.manifest();
     if source_manifest.len() > MAX_MANIFEST_BYTES {
         return Err(loop_factory_error(
@@ -155,7 +224,10 @@ fn preflight_portable_source(
     manifest
         .try_reserve_exact(source_manifest.len())
         .map_err(|_| loop_factory_error("reserve portable exact checkpoint manifest storage"))?;
-    manifest.extend_from_slice(source_manifest);
+    for chunk in source_manifest.chunks(CLOSURE_EXPORT_COPY_BUFFER_BYTES) {
+        boundary()?;
+        manifest.extend_from_slice(chunk);
+    }
 
     let limits = source.plan().fault_signals().resource_limits();
     let decoded = decode::decode_manifest_with_limits(&manifest, limits)?;
@@ -190,19 +262,19 @@ fn preflight_portable_source(
     let mut total = u64::try_from(manifest.len()).map_err(|_| {
         loop_factory_error("portable exact checkpoint manifest length is not representable")
     })?;
+    let mut objects = Vec::new();
+    objects
+        .try_reserve_exact(supplied.len())
+        .map_err(|_| loop_factory_error("reserve portable exact checkpoint inventory"))?;
     for object in supplied {
+        boundary()?;
         total = add_checkpoint_bytes(total, object.length()).map_err(scheduler_api_error)?;
+        objects.push(*object);
     }
     limits
         .reserve("fat_checkpoint_bytes", 0, total)
         .map_err(scheduler_resource_limit)
         .map_err(scheduler_api_error)?;
-
-    let mut objects = Vec::new();
-    objects
-        .try_reserve_exact(supplied.len())
-        .map_err(|_| loop_factory_error("reserve portable exact checkpoint inventory"))?;
-    objects.extend_from_slice(supplied);
     Ok(PortableClosurePreflight {
         identity,
         manifest,
@@ -214,7 +286,9 @@ fn stage_and_validate_portable_source(
     source: &ScenarioDefForm,
     portable: &dyn ProductionExactCheckpointSource,
     preflight: &PortableClosurePreflight,
-) -> Result<tempfile::TempDir, LifecycleApiError> {
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+) -> Result<(tempfile::TempDir, ProductionExactCheckpointResumeBasis), LifecycleApiError> {
+    boundary()?;
     let staging_parent = tempfile::tempdir().map_err(|error| {
         loop_factory_error(format!(
             "create portable exact checkpoint validation store: {error}"
@@ -228,7 +302,8 @@ fn stage_and_validate_portable_source(
         ))
     })?;
     for object in &preflight.objects {
-        stage_portable_object(&object_directory, portable, *object)?;
+        boundary()?;
+        stage_portable_object(&object_directory, portable, *object, boundary)?;
     }
 
     let publication =
@@ -238,22 +313,35 @@ fn stage_and_validate_portable_source(
             "create portable checkpoint staging publication: {error}"
         ))
     })?;
-    persist_file_bytes(&publication.join(MANIFEST_FILE), &preflight.manifest)
-        .map_err(scheduler_api_error)?;
-    load_exact_checkpoint_set(
+    let mut scheduler_boundary = || boundary().map_err(lifecycle_boundary_scheduler_error);
+    persist_file_bytes_with_boundary(
+        &publication.join(MANIFEST_FILE),
+        &preflight.manifest,
+        &mut scheduler_boundary,
+    )
+    .map_err(scheduler_api_error)?;
+    let restored = load_exact_checkpoint_set_with_boundary(
         staging_parent.path(),
         &source.scenario_def(),
         source,
         preflight.identity,
+        boundary,
     )?;
-    Ok(staging_parent)
+    let basis = ProductionExactCheckpointResumeBasis {
+        identity: restored.identity,
+        configuration: restored.configuration,
+        scheduler: restored.scheduler,
+    };
+    Ok((staging_parent, basis))
 }
 
 fn stage_portable_object(
     object_directory: &Path,
     portable: &dyn ProductionExactCheckpointSource,
     object: ProductionExactCheckpointObject,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
 ) -> Result<(), LifecycleApiError> {
+    boundary()?;
     let destination = object_path(object_directory, object.identity());
     let parent = destination
         .parent()
@@ -271,18 +359,39 @@ fn stage_portable_object(
                 object.identity().to_hex()
             ))
         })?;
-    let (reported, observed, hash) = {
+    let (observed, hash) = {
         let mut writer = BoundedObjectWriter::new(&mut file, object.length());
-        let reported = portable.copy_object_to(object.identity(), &mut writer)?;
+        let mut source = portable.open_object(object.identity())?;
+        let mut buffer = [0_u8; CLOSURE_EXPORT_COPY_BUFFER_BYTES];
+        loop {
+            boundary()?;
+            let count = match source.read(&mut buffer) {
+                Ok(count) => count,
+                Err(error) => {
+                    boundary()?;
+                    return Err(loop_factory_error(format!(
+                        "read portable checkpoint object: {error}"
+                    )));
+                }
+            };
+            boundary()?;
+            if count == 0 {
+                break;
+            }
+            writer.write_all(&buffer[..count]).map_err(|error| {
+                loop_factory_error(format!("write portable checkpoint object: {error}"))
+            })?;
+        }
+        boundary()?;
         writer.flush().map_err(|error| {
             loop_factory_error(format!(
                 "flush staged portable checkpoint object {}: {error}",
                 object.identity().to_hex()
             ))
         })?;
-        (reported, writer.written, writer.hash())
+        (writer.written, writer.hash())
     };
-    if reported != object.length() || observed != object.length() || hash != object.identity() {
+    if observed != object.length() || hash != object.identity() {
         return Err(loop_factory_error(format!(
             "portable checkpoint object {} failed independent streaming authentication",
             object.identity().to_hex()
@@ -351,15 +460,17 @@ fn publish_validated_portable_source(
     source: &ScenarioDefForm,
     preflight: &PortableClosurePreflight,
     staging_root: &Path,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
 ) -> Result<(), LifecycleApiError> {
+    boundary()?;
     let scenario = source.scenario_def().id();
     let limits = source.plan().fault_signals().resource_limits();
     let closure_directory = closure_parent(run_state_root, scenario);
     let destination = closure_directory.join(preflight.identity.to_hex());
-    admit_new_publication(&closure_directory, &destination, limits)?;
+    admit_new_publication(&closure_directory, &destination, limits, boundary)?;
 
     if destination.exists() {
-        return authenticate_existing_import(run_state_root, source, preflight);
+        return authenticate_existing_import(run_state_root, source, preflight, boundary);
     }
 
     let scenario_directory = run_state_root.join(scenario.to_hex());
@@ -384,10 +495,13 @@ fn publish_validated_portable_source(
 
     let staged_objects = object_parent(staging_root, scenario);
     for object in &preflight.objects {
-        persist_file_object(
+        boundary()?;
+        let mut scheduler_boundary = || boundary().map_err(lifecycle_boundary_scheduler_error);
+        persist_file_object_with_boundary(
             &object_directory,
             object.identity(),
             &object_path(&staged_objects, object.identity()),
+            &mut scheduler_boundary,
         )
         .map_err(scheduler_api_error)?;
     }
@@ -401,9 +515,11 @@ fn publish_validated_portable_source(
                 "create imported checkpoint manifest staging directory: {error}"
             ))
         })?;
-    persist_file_bytes(
+    let mut scheduler_boundary = || boundary().map_err(lifecycle_boundary_scheduler_error);
+    persist_file_bytes_with_boundary(
         &manifest_staging.path().join(MANIFEST_FILE),
         &preflight.manifest,
+        &mut scheduler_boundary,
     )
     .map_err(scheduler_api_error)?;
     sync_directory(manifest_staging.path()).map_err(scheduler_api_error)?;
@@ -417,9 +533,7 @@ fn publish_validated_portable_source(
     match publication.publish() {
         Ok(()) => Ok(()),
         Err(error) if destination.exists() => authenticate_existing_import(
-            run_state_root,
-            source,
-            preflight,
+            run_state_root, source, preflight, boundary,
         )
         .map_err(|authentication| {
             loop_factory_error(format!(
@@ -435,7 +549,9 @@ fn admit_new_publication(
     closure_directory: &Path,
     destination: &Path,
     limits: FaultResourceLimits,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
 ) -> Result<(), LifecycleApiError> {
+    boundary()?;
     if destination.exists() {
         return Ok(());
     }
@@ -456,6 +572,7 @@ fn admit_new_publication(
     };
     let mut count = 0_u64;
     for entry in entries {
+        boundary()?;
         let entry = entry.map_err(|error| {
             loop_factory_error(format!("enumerate imported checkpoint closures: {error}"))
         })?;
@@ -484,22 +601,34 @@ fn authenticate_existing_import(
     run_state_root: &Path,
     source: &ScenarioDefForm,
     preflight: &PortableClosurePreflight,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
 ) -> Result<(), LifecycleApiError> {
     let scenario = source.scenario_def();
     let manifest_path = closure_parent(run_state_root, scenario.id())
         .join(preflight.identity.to_hex())
         .join(MANIFEST_FILE);
-    let existing = read_bounded_file(&manifest_path, MAX_MANIFEST_BYTES_U64).map_err(|error| {
-        loop_factory_error(format!(
-            "read existing imported checkpoint manifest: {error}"
-        ))
-    })?;
+    let existing =
+        read_bounded_file_with_boundary(&manifest_path, MAX_MANIFEST_BYTES_U64, boundary).map_err(
+            |error| match error {
+                BoundedReadError::Boundary(error) => *error,
+                error => loop_factory_error(format!(
+                    "read existing imported checkpoint manifest: {error}"
+                )),
+            },
+        )?;
     if existing != preflight.manifest {
         return Err(loop_factory_error(
             "existing imported checkpoint manifest differs at the same identity",
         ));
     }
-    load_exact_checkpoint_set(run_state_root, &scenario, source, preflight.identity)?;
+    load_exact_checkpoint_set_with_boundary(
+        run_state_root,
+        &scenario,
+        source,
+        preflight.identity,
+        boundary,
+    )?;
+    boundary()?;
     enforce_published_checkpoint_count(
         &closure_parent(run_state_root, scenario.id()),
         source.plan().fault_signals().resource_limits(),
@@ -509,6 +638,9 @@ fn authenticate_existing_import(
 
 fn scheduler_api_error(error: SchedulerError) -> LifecycleApiError {
     match error {
+        SchedulerError::OperationalBoundary { class, message } => {
+            LifecycleApiError::AttemptOperational { class, message }
+        }
         SchedulerError::ResourceLimit {
             field,
             current,
@@ -523,6 +655,17 @@ fn scheduler_api_error(error: SchedulerError) -> LifecycleApiError {
             hard,
         }),
         error => loop_factory_error(error.to_string()),
+    }
+}
+
+fn lifecycle_boundary_scheduler_error(error: LifecycleApiError) -> SchedulerError {
+    match error {
+        LifecycleApiError::AttemptOperational { class, message } => {
+            SchedulerError::OperationalBoundary { class, message }
+        }
+        error => SchedulerError::BoundaryViolation {
+            message: error.to_string(),
+        },
     }
 }
 
@@ -675,6 +818,100 @@ mod tests {
         let repeated = install_exact_checkpoint_closure(destination.path(), &source.0, &closure)
             .expect("repeat identical portable checkpoint install");
         assert_eq!(repeated.identity(), source.1);
+
+        let basis = repeated
+            .authenticate_resume_basis()
+            .expect("authenticate installed resume basis");
+        assert_eq!(basis.identity(), source.1);
+        assert_eq!(basis.configuration().id(), repeated.configuration());
+        assert_eq!(
+            basis
+                .scheduler()
+                .configuration_for(&source.0.scenario_def())
+                .expect("reconstruct resume scheduler configuration"),
+            *basis.configuration()
+        );
+    }
+
+    #[test]
+    fn portable_install_cancellation_prevents_manifest_publication() {
+        let source_store = tempfile::tempdir().expect("create source checkpoint store");
+        let source = publish_empty_world_checkpoint(source_store.path());
+        let closure = open_exact_checkpoint_closure(source_store.path(), &source.0, source.1)
+            .expect("open source portable checkpoint");
+        let destination = tempfile::tempdir().expect("create canceled checkpoint store");
+        let scenario = source.0.scenario_def().id();
+        let object_directory = object_parent(destination.path(), scenario);
+        let publication = closure_parent(destination.path(), scenario).join(source.1.to_hex());
+        let mut boundary = || {
+            if object_directory.exists() {
+                Err(LifecycleApiError::AttemptOperational {
+                    class: crucible::SchedulerOperationalFailureClass::Canceled,
+                    message: String::from("portable install canceled"),
+                })
+            } else {
+                Ok(())
+            }
+        };
+
+        let error = match install_exact_checkpoint_closure_with_boundary(
+            destination.path(),
+            &source.0,
+            &closure,
+            &mut boundary,
+        ) {
+            Ok(_) => panic!("cancellation must stop before the production manifest is published"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            LifecycleApiError::AttemptOperational {
+                class: crucible::SchedulerOperationalFailureClass::Canceled,
+                ..
+            }
+        ));
+        assert!(!publication.exists());
+    }
+
+    #[test]
+    fn rejected_resume_basis_publishes_no_native_closure() {
+        let source_store = tempfile::tempdir().expect("create source checkpoint store");
+        let source = publish_empty_world_checkpoint(source_store.path());
+        let closure = open_exact_checkpoint_closure(source_store.path(), &source.0, source.1)
+            .expect("open source portable checkpoint");
+        let destination = tempfile::tempdir().expect("create rejected checkpoint store");
+        let scenario = source.0.scenario_def().id();
+        let object_directory = object_parent(destination.path(), scenario);
+        let publication = closure_parent(destination.path(), scenario).join(source.1.to_hex());
+        let mut observed_basis = None;
+        let mut admit = |basis: &ProductionExactCheckpointResumeBasis| {
+            observed_basis = Some(basis.clone());
+            Err(LifecycleApiError::LoopFactory {
+                message: String::from("checkpoint belongs to another attempt"),
+            })
+        };
+
+        let error = match install_exact_checkpoint_closure_with_boundary_and_admission(
+            destination.path(),
+            &source.0,
+            &closure,
+            &mut || Ok(()),
+            &mut admit,
+        ) {
+            Ok(_) => panic!("attempt admission must reject the native closure"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, LifecycleApiError::LoopFactory { .. }));
+        assert_eq!(
+            observed_basis
+                .expect("admission receives authenticated basis")
+                .identity(),
+            source.1
+        );
+        assert!(!object_directory.exists());
+        assert!(!publication.exists());
     }
 
     #[test]

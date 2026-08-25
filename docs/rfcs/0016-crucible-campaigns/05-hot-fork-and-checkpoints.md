@@ -434,7 +434,13 @@ multi-node trigger/assertion/fault/network closure and MUST NOT be advertised as
 packaged production resume. A version-four attempt resume must install and
 validate the complete production closure described above before modeled guest
 work. Packaged version-four capture and ledger handoff are implemented; exact
-production-loop reconstruction, resume-driver selection, capability
+production semantic installation is now cancellation-bounded and authenticates
+the restored configuration and scheduler continuation before launch authority
+can exist. The installer requires the branch post-selection configuration (or
+the discovery start) as an exact schedule prefix and rejects any later campaign
+branch edge as a different attempt before native-catalog publication.
+Production-loop process reconstruction,
+source-bound replay-oracle evidence, resume-driver selection, capability
 advertisement, and native-catalog cleanup remain gated in the implementation
 plan.
 

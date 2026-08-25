@@ -2439,6 +2439,17 @@ reconcile durable pause. The handoff callback is absent from modeled input,
 cannot be minted by an external model, and never releases capacity before the
 runner attests teardown.
 
+The version-four installation boundary observes the exact attempt cancellation
+before and between at-most-one-MiB source reads, destination writes, semantic
+validation reads, and durable publication operations. It reconstructs the
+complete configuration and scheduler continuation and binds them to the
+effective attempt start: the discovery configuration or a branch's validated
+post-selection configuration MUST be an exact schedule prefix. A later
+campaign-branch `Selection` in the restored suffix belongs to another attempt
+and is rejected before the native destination closure is published. This proof
+grants no QEMU process or replay-oracle authority;
+it is a prerequisite for the still-open production resume driver.
+
 Production capture itself uses the lifecycle store's independent bounded
 native catalog to retain a reopenable source closure. That private capture
 layer may place its native objects before campaign-root staging, but it grants
@@ -2448,8 +2459,9 @@ governs every campaign-CAS put. Integrating abandoned native-catalog entries
 with the durable assignment-root collector remains required cleanup work; it
 does not permit an unstaged campaign root to become visible.
 
-Concrete production-loop reconstruction, exact-resume modeled-driver
-selection, and capability advertisement remain open, so the packaged executor
+Concrete production-loop process reconstruction, source-bound replay-oracle
+evidence, exact-resume modeled-driver selection, and capability advertisement
+remain open, so the packaged executor
 does not yet advertise exact resume. Version-two roots remain readable for
 legacy authentication but are incomplete campaign continuations and MUST be
 rejected by attempt resume before VMState materialization. The

@@ -100,16 +100,19 @@ pub use rpc_abi::{
 };
 pub use vm_lifecycle::{
     ProductionBlockFaultEvidence, ProductionExactCheckpointClosure,
-    ProductionExactCheckpointObject, ProductionExactCheckpointSource,
-    ProductionFaultEvidenceSnapshot, ProductionNetworkOutageEvidence,
-    ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence, ProductionVmLifecycleConfig,
-    ProductionVmLifecycleLoop, ProductionVmNodeCheckpointArtifact, ProductionVmNodeGeneration,
-    ProductionVmNodeLaunch, ProductionVmNodeLaunchKind, ProductionVmNodeLaunchRequest,
-    ProductionVmNodeLauncher, ProductionVmNodeLease, ProductionVmNodePreparationKind,
-    build_production_vm_lifecycle_loop, build_production_vm_lifecycle_loop_from_checkpoint,
+    ProductionExactCheckpointObject, ProductionExactCheckpointResumeBasis,
+    ProductionExactCheckpointSource, ProductionFaultEvidenceSnapshot,
+    ProductionNetworkOutageEvidence, ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence,
+    ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmNodeCheckpointArtifact,
+    ProductionVmNodeGeneration, ProductionVmNodeLaunch, ProductionVmNodeLaunchKind,
+    ProductionVmNodeLaunchRequest, ProductionVmNodeLauncher, ProductionVmNodeLease,
+    ProductionVmNodePreparationKind, build_production_vm_lifecycle_loop,
+    build_production_vm_lifecycle_loop_from_checkpoint,
     build_production_vm_lifecycle_loop_from_checkpoint_with_launcher,
     build_production_vm_lifecycle_loop_with_launcher, collect_signal_artifact_objects,
-    install_exact_checkpoint_closure, open_exact_checkpoint_closure, production_vm_search_frontier,
+    install_exact_checkpoint_closure, install_exact_checkpoint_closure_with_boundary,
+    install_exact_checkpoint_closure_with_boundary_and_admission, open_exact_checkpoint_closure,
+    production_vm_search_frontier,
 };
 // Re-exported so control-plane clients (e.g. the CLI) record the *shared*
 // guest-host protocol version in a reproduction artifact's provenance triple
