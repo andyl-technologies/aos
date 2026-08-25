@@ -300,29 +300,87 @@ declaration.
 
 ## 02.7 Guest protocol
 
-The guest-host ABI adds three versioned messages:
+The guest-host ABI adds three independently dispatchable version-1 messages.
+Every multi-byte integer is little-endian. A `range` is two `u32` values,
+`start` followed by `len`, relative to byte zero of the complete message. All
+messages begin with this common prefix:
 
 ```text
-SelectableRegister
-  protocol_version
-  selectable_id
-  canonical domain bytes
-  default value
-  semantic tags
-
-SelectionRequest
-  protocol_version
-  selectable_id
-  instance_key
-  optional narrowed-domain bytes
-
-SelectionReply
-  protocol_version
-  choice_opportunity_id
-  domain_id
-  selected value
-  status
+offset  size  field
+------  ----  ----------------------------------------------------------
+  0      2   protocol_version : u16 = 1
+  2      2   kind             : u16; 1 register, 2 request, 3 reply
+  4      2   header_len       : u16; exact kind-specific fixed size
+  6      2   flags            : u16; closed per kind
+  8      4   total_len        : u32; complete message/buffer bytes
+ 12      8   sequence         : u64; registration order or request/reply ID
 ```
+
+`SelectableRegisterV1` has a 56-byte header:
+
+```text
+offset  size  field
+------  ----  ----------------------------------------------------------
+ 20      8   selectable_id : range
+ 28      8   domain        : range; canonical ChoiceDomain bytes
+ 36      8   default_value : range; canonical ChoiceValue bytes
+ 44      8   semantic_tags : range; concatenated u16-length UTF-8 tags
+ 52      2   tag_count     : u16
+ 54      2   reserved      : u16 = 0
+```
+
+Register flags are zero. The four body ranges are dense, in the listed order,
+and end exactly at `total_len`.
+
+`SelectionRequestV1` has a 48-byte header:
+
+```text
+offset  size  field
+------  ----  ----------------------------------------------------------
+ 20      8   selectable_id  : range
+ 28      8   instance_key   : range
+ 36      8   narrowed_domain: range, or zero range when absent
+ 44      4   request_end    : u32
+```
+
+Request flag bit zero means a narrowed domain is present; every other bit is
+reserved and zero. Present request ranges are dense, in the listed order, and
+end at `request_end`. Bytes `[request_end, total_len)` are one exact mutable
+reply reservation and MUST initially be zero. `total_len` is therefore the
+lent buffer capacity, not merely the request-body length, and is at least 96 so
+the host can always encode a typed rejection.
+
+`SelectionReplyV1` has a 96-byte header:
+
+```text
+offset  size  field
+------  ----  ----------------------------------------------------------
+ 20      2   status                : u16; closed table below
+ 22      2   reserved              : u16 = 0
+ 24     32   choice_opportunity_id : content-derived digest bytes
+ 56     32   domain_id             : content-derived digest bytes
+ 88      8   selected_value        : range, or zero range on rejection
+```
+
+Reply flags are zero. Status values are `0 Selected`, `1 UnknownSelectable`,
+`2 InvalidInstance`, `3 InvalidNarrowedDomain`, `4 NoAdmissibleValue`, and
+`5 Unavailable`; every other value is invalid. `Selected` carries one nonempty
+dense value range ending at `total_len`. Rejections carry the zero range and
+have `total_len == header_len`. The host overwrites the beginning of the lent
+request buffer with this exact reply and clears every unused byte in the
+reservation. The guest accepts it only when the reply sequence equals the
+request sequence.
+
+The complete register, request buffer, and reply are each at most 4,608 bytes.
+`selectable_id`, `instance_key`, and every semantic tag are 1..=128 bytes of
+ASCII alphanumeric plus `._-/:`; tags are strictly byte-ordered, unique, and
+limited to 32. Domains and values are nonempty canonical opaque bytes at this
+transport layer. Decoders reject an unknown version, kind, flag, or status;
+nonzero reserved data; an invalid identifier; non-dense, overlapping,
+out-of-bounds, or trailing ranges; a dirty reply reservation; and any aggregate
+bound violation before retaining allocation-sized fields. Byte-exact golden
+vectors and truncation/allocation adversarial tests are part of
+`gate:abi-conformance`.
 
 The request is reply-bearing. The guest blocks at the doorbell until the host
 returns a value or a typed rejection. This opportunity may also be a legal
@@ -331,9 +389,10 @@ the world may be paused immediately before the reply, cloned, and given
 different replies in sibling children. The opportunity still defines a branch
 point when only exact restore or thin replay is available.
 
-The wire protocol uses fixed-width little-endian headers, checked offsets,
-bounded UTF-8 identifiers normalized by the protocol, and explicit lengths. It
-contains no Rust-native layouts, pointers, callbacks, or QEMU-private objects.
+The wire protocol contains no Rust-native layouts, pointers, callbacks, or
+QEMU-private objects. The version-1 codec is owned by
+`crucible-protocol::selectable`; `crucible-guest` exposes typed emission and
+reply-validation helpers over the architecture-specific doorbell transport.
 
 Guest libraries expose typed helpers:
 

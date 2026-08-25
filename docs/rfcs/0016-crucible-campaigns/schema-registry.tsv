@@ -23,6 +23,9 @@ crucible.campaign.selectable-declaration	1	crucible-campaign::object	campaign-fa
 crucible.campaign.choice-opportunity	1	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address
 crucible.campaign.choice-group	1	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address
 crucible.campaign.selection	1	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address
+crucible.guest-selectable.register	1	crucible-protocol::selectable	process-protocol-message	gate:typed-choice,gate:abi-conformance
+crucible.guest-selectable.request	1	crucible-protocol::selectable	process-protocol-message	gate:typed-choice,gate:abi-conformance
+crucible.guest-selectable.reply	1	crucible-protocol::selectable	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.campaign.merkle-node	1	crucible-campaign::merkle	merkle-node	gate:campaign-model,gate:content-address
 crucible.campaign.candidate-generator-spec	1	crucible-campaign::object	policy	gate:lazy-frontier,gate:content-address
 crucible.campaign.scenario-artifact	1	crucible-campaign::artifact	scenario	gate:campaign-model,gate:content-address

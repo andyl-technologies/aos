@@ -15,7 +15,8 @@
 //! `app_random_transport` owns the app-random observation transport;
 //! `doorbell_abi` owns the shared white-box doorbell instruction ABI;
 //! `doorbell_frame` owns the shared white-box doorbell marker frame ABI; `doorbell_marker`
-//! owns the marker-kind vocabulary and body codecs; `preemption` owns deterministic IPI arithmetic;
+//! owns the marker-kind vocabulary and body codecs; `selectable` owns the
+//! guest choice register/request/reply ABI; `preemption` owns deterministic IPI arithmetic;
 //! `golden_vectors` owns the frozen ABI corpus; `codec_fuzz` owns its fuzz target and corpus.
 //!
 //! Unsafe boundary discipline: raw `sendmsg`/`recvmsg` and ancillary-buffer
@@ -46,6 +47,7 @@ mod golden_vectors;
 pub mod guest_introspection;
 pub mod guest_introspection_doorbell;
 mod preemption;
+mod selectable;
 
 use std::io::{ErrorKind, Read, Write};
 #[cfg(unix)]
@@ -97,6 +99,16 @@ pub use golden_vectors::{
     GOLDEN_VECTOR_PROTOCOL_VERSION, GOLDEN_VECTOR_REGENERATION_RULE,
 };
 pub use preemption::deterministic_ipi_delivery_icount;
+pub use selectable::{
+    SELECTABLE_DIGEST_BYTES, SELECTABLE_GOLDEN_VECTOR_REGENERATION_RULE,
+    SELECTABLE_IDENTIFIER_MAX_BYTES, SELECTABLE_MESSAGE_KIND_REGISTER,
+    SELECTABLE_MESSAGE_KIND_REPLY, SELECTABLE_MESSAGE_KIND_REQUEST, SELECTABLE_MESSAGE_MAX_BYTES,
+    SELECTABLE_PROTOCOL_VERSION, SELECTABLE_REGISTER_HEADER_BYTES,
+    SELECTABLE_SEMANTIC_TAG_MAX_COUNT, SELECTION_REPLY_HEADER_BYTES,
+    SELECTION_REQUEST_HEADER_BYTES, SelectableMessageKind, SelectableProtocolError,
+    SelectableRegister, SelectionReply, SelectionReplyStatus, SelectionRequest,
+    decode_selectable_message_kind,
+};
 
 use thiserror::Error;
 
