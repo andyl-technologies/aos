@@ -308,7 +308,7 @@ pub fn registry_home(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     channels: &[ChannelSummary],
-    packages: &[PackageRow],
+    package_count: usize,
     caches: &[(String, u32)],
     roster: &[(String, String, String)],
     validations: &[ValidationRunRow],
@@ -452,7 +452,7 @@ pub fn registry_home(
     let _ = write!(
         body,
         "<h2>Packages ({count})</h2>\n<p><a href=\"/{slug}/-/packages\">Browse the package index →</a></p>\n",
-        count = packages.len(),
+        count = package_count,
         slug = escape(slug),
     );
 
@@ -2792,7 +2792,7 @@ mod tests {
             &registry(),
             None,
             &[],
-            &[],
+            0,
             &[("https://cache.example".into(), 40)],
             &[("alice".into(), "demo:Ed25519:<k>".into(), "active".into())],
             &[],
@@ -2833,7 +2833,7 @@ mod tests {
             &registry,
             None,
             &[],
-            &[],
+            0,
             &[],
             &[],
             &[],

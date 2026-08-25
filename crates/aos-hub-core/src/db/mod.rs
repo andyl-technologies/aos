@@ -13025,6 +13025,30 @@ impl Database {
             .transpose()
     }
 
+    /// Counts the packages currently projected for a registry.
+    ///
+    /// Registry overview pages display only this count. Keeping the count in
+    /// SQL avoids materializing every package, newest version, and platform
+    /// row merely to call `len()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn package_count(&self, registry_id: i64) -> Result<usize> {
+        let row = self
+            .backend
+            .query(
+                "SELECT COUNT(*) FROM packages WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await?
+            .into_iter()
+            .next()
+            .context("package count query returned no row")?;
+        let count = row.get::<i64>(0)?;
+        usize::try_from(count).context("package count is outside usize")
+    }
+
     /// List every package in a registry with its newest indexed version.
     ///
     /// Used by the registry home, the indexer's package count, and the
@@ -14098,47 +14122,41 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub async fn list_channels(&self, registry_id: i64) -> Result<Vec<ChannelSummary>> {
-        let channel_rows = self
+        let rows = self
             .backend
             .query(
-                "SELECT id, name, frontier FROM channels
-                 WHERE registry_id = ?1 AND active = 1 ORDER BY name",
+                "SELECT c.id, c.name, c.frontier, p.bucket, p.release
+                 FROM channels c
+                 LEFT JOIN channel_partitions p ON p.channel_id = c.id
+                 WHERE c.registry_id = ?1 AND c.active = 1
+                 ORDER BY c.name, p.bucket",
                 &vals![registry_id],
             )
             .await?;
-        let channels = channel_rows
-            .iter()
-            .map(|row| {
-                Ok((
-                    row.get::<i64>(0)?,
-                    row.get::<String>(1)?,
-                    row.get::<Option<String>>(2)?,
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
 
-        let mut out = Vec::with_capacity(channels.len());
-        for (channel_id, name, frontier) in channels {
-            let mut partitions = vec![None; 256];
-            let rows = self
-                .backend
-                .query(
-                    "SELECT bucket, release FROM channel_partitions WHERE channel_id = ?1",
-                    &vals![channel_id],
-                )
-                .await?;
-            for row in &rows {
-                let bucket: i64 = row.get(0)?;
-                let release: String = row.get(1)?;
-                if let Some(slot) = partitions.get_mut(bucket as usize) {
-                    *slot = Some(release);
+        let mut out: Vec<ChannelSummary> = Vec::new();
+        let mut current_id = None;
+        for row in rows {
+            let channel_id: i64 = row.get(0)?;
+            if current_id != Some(channel_id) {
+                out.push(ChannelSummary {
+                    name: row.get(1)?,
+                    frontier: row.get(2)?,
+                    partitions: vec![None; 256],
+                });
+                current_id = Some(channel_id);
+            }
+
+            let bucket: Option<i64> = row.get(3)?;
+            let release: Option<String> = row.get(4)?;
+            if let (Some(bucket), Some(release), Some(channel)) = (bucket, release, out.last_mut())
+            {
+                if let Ok(bucket) = usize::try_from(bucket) {
+                    if let Some(slot) = channel.partitions.get_mut(bucket) {
+                        *slot = Some(release);
+                    }
                 }
             }
-            out.push(ChannelSummary {
-                name,
-                frontier,
-                partitions,
-            });
         }
         Ok(out)
     }
