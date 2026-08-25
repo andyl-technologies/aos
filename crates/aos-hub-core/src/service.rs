@@ -6675,7 +6675,9 @@ impl RpcService {
                 "gateway",
             )
             .await?;
-            if req.owner_scope_key != current.owner_scope_key {
+            if req.owner_scope_key.is_empty() {
+                req.owner_scope_key = current.owner_scope_key.clone();
+            } else if req.owner_scope_key != current.owner_scope_key {
                 return Err(RpcError::invalid("gateway owner scope is immutable"));
             }
             let expected = parse_resource_version(&req.expected_resource_version, 0)?;

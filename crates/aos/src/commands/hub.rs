@@ -6661,6 +6661,20 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
             if policy.access.is_none() {
                 anyhow::bail!("gateway add requires --access");
             }
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let binding_response: hub_types::GetBindingResponse = client
+                .call_topology(
+                    HubTopologyMethod::GetBinding,
+                    &hub_types::GetBindingRequest {
+                        binding: Some(parse_binding_ref(binding)?),
+                    },
+                )
+                .await?;
+            let binding = binding_response
+                .binding
+                .context("Hub returned no binding")?;
+            let owner_scope_key = binding.owner_scope_key;
+            let binding_stable_id = binding.stable_id;
             let (endpoint_id, endpoint_generation) = endpoint
                 .rsplit_once('@')
                 .map(|(id, generation)| {
@@ -6675,8 +6689,9 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
                 HubTopologyMethod::CreateGateway,
                 hub_types::PlanGatewayMutationRequest {
                     stable_id: topology_stable_id(stable_id.as_deref(), "storage-gateway"),
+                    owner_scope_key,
                     revision: Some(hub_types::GatewayRevisionSpec {
-                        binding_id: binding.clone(),
+                        binding_id: binding_stable_id,
                         endpoint_id,
                         endpoint_generation,
                         client_base_path: client_base_path.clone(),
