@@ -75,12 +75,16 @@ in
       cp ${routeKeys}/value "$route_keys"
       cp ${webhookSecret}/value "$webhook_secret"
       printf '%s\n' \
-        "{\"native://operations/webhook/v1\":\"$webhook_secret\"}" \
+        "{\"native://operations/webhook/v1\":\"$webhook_secret\",\"native://operations/storage/v1\":\"$route_keys\",\"native://operations/storage/v2\":\"$probe_signers\"}" \
         >"$secret_version_manifest"
       chmod 0600 "$jwt_secret" "$probe_signers" "$route_keys" \
         "$webhook_secret" "$secret_version_manifest"
       chown -R 65534:65534 "$credential_dir"
       webhook_fingerprint=$(${pkgs.coreutils}/bin/sha256sum "$webhook_secret" \
+        | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)
+      storage_v1_fingerprint=$(${pkgs.coreutils}/bin/sha256sum "$route_keys" \
+        | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)
+      storage_v2_fingerprint=$(${pkgs.coreutils}/bin/sha256sum "$probe_signers" \
         | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)
 
       echo '==> Schema is inspectable before instance creation'
@@ -166,6 +170,7 @@ in
           --hub "$hub_url" --token "$token" \
           --plan --idempotency-key "$label-plan" >"$plan_file"; then
           ${pkgs.coreutils}/bin/cat "$plan_file" >&2
+          ${pkgs.coreutils}/bin/cat /tmp/aos-hub.log >&2
           return 1
         fi
         ${pkgs.coreutils}/bin/cat "$plan_file" >&2
@@ -176,6 +181,7 @@ in
           --plan-id "$plan_id" --confirm-hash "$confirm_hash" --yes \
           --idempotency-key "$label-apply" >"$apply_file"; then
           ${pkgs.coreutils}/bin/cat "$apply_file" >&2
+          ${pkgs.coreutils}/bin/cat /tmp/aos-hub.log >&2
           return 1
         fi
         ${pkgs.coreutils}/bin/cat "$apply_file"
@@ -350,6 +356,79 @@ in
         --binding instance-default >/tmp/org-topology-set.json
       reviewed org-topology-clear org topology-defaults clear operations --binding \
         >/tmp/org-topology-clear.json
+
+      echo '==> Exercise organization binding, credentials, grants, and revisions'
+      reviewed consumer-org-create org create --slug analytics \
+        --display-name 'Analytics consumer' >/tmp/consumer-org-create.json
+      hub_cli org show analytics >/tmp/consumer-org-show.json
+      consumer_org_scope=$(${pkgs.jq}/bin/jq -er \
+        '.data.organization.stable_id' /tmp/consumer-org-show.json)
+      consumer_org_version=$(${pkgs.jq}/bin/jq -er \
+        '.data.organization.resource_version' /tmp/consumer-org-show.json)
+      reviewed binding-create binding create --org operations --name archive \
+        --kind s3 --bucket operations-archive --prefix objects \
+        --endpoint https://objects.example.test --region us-test-1 --access private \
+        >/tmp/binding-create.json
+      hub_cli binding list --org operations --page-size 1 >/tmp/binding-list-org.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data.bindings | length == 1 and .[0].spec.name == "archive"' \
+        /tmp/binding-list-org.json >/dev/null
+      binding_id=$(${pkgs.jq}/bin/jq -er \
+        '[.. | objects | .stable_id? // empty][0]' /tmp/binding-list-org.json)
+      hub_cli binding show operations:archive >/tmp/binding-show.json
+      reviewed binding-grant binding grant "$binding_id" \
+        --consumer-scope "$consumer_org_scope" >/tmp/binding-grant.json
+      reviewed binding-revoke binding revoke "$binding_id" \
+        --consumer-scope "$consumer_org_scope" >/tmp/binding-revoke.json
+
+      reviewed binding-credential-set binding credential set "$binding_id" \
+        --purpose write \
+        --secret-version-ref native://operations/storage/v1 \
+        --credential-fingerprint "$storage_v1_fingerprint" \
+        >/tmp/binding-credential-set.json
+      reviewed binding-credential-rotate binding credential rotate "$binding_id" \
+        --purpose write \
+        --from-generation 1 \
+        --secret-version-ref native://operations/storage/v2 \
+        --credential-fingerprint "$storage_v2_fingerprint" \
+        >/tmp/binding-credential-rotate.json
+      hub_cli binding write-revision list operations:archive \
+        >/tmp/binding-write-revisions.json
+      if hub_cli binding write-revision show operations:archive 1 \
+        >/tmp/binding-write-revision.json 2>&1; then
+        ${pkgs.jq}/bin/jq -e '.data | type == "object"' \
+          /tmp/binding-write-revision.json >/dev/null
+      else
+        ${pkgs.grep}/bin/grep -Eiq 'not found|revision' \
+          /tmp/binding-write-revision.json
+      fi
+      hub_cli binding show operations:archive >/tmp/binding-before-validate.json
+      binding_version=$(resource_version /tmp/binding-before-validate.json)
+      reviewed binding-credential-validate binding credential validate \
+        "$binding_id" --purpose write --if-version "$binding_version" \
+        >/tmp/binding-credential-validate.json
+      credential_operation_id=$(${pkgs.jq}/bin/jq -er \
+        '[.. | objects | .operation_id? // empty][0]' \
+        /tmp/binding-credential-validate.json)
+      echo '==> Inspect the credential-validation operation'
+      hub_cli operation show "$credential_operation_id" \
+        >/tmp/credential-operation-show.json
+      echo '==> List credential-validation operations by owner scope'
+      hub_cli operation list --scope "$org_scope" --page-size 1 \
+        >/tmp/credential-operation-list.json
+      echo '==> Wait for credential-validation terminal state'
+      hub_cli operation watch "$credential_operation_id" --timeout 10s \
+        >/tmp/credential-operation-watch.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data | tostring | test("failed|succeeded|cancelled")' \
+        /tmp/credential-operation-watch.json >/dev/null
+      hub_cli binding show operations:archive >/tmp/binding-before-delete.json
+      binding_delete_version=$(resource_version /tmp/binding-before-delete.json)
+      echo '==> Delete the unused binding'
+      reviewed binding-delete binding delete "$binding_id" \
+        --if-version "$binding_delete_version" >/tmp/binding-delete.json
+      reviewed consumer-org-delete org delete analytics \
+        --if-version "$consumer_org_version" >/tmp/consumer-org-delete.json
 
       echo '==> Exercise service-account and membership lifecycle'
       retained_plan service-account-create org service-account create plan \
