@@ -1540,19 +1540,21 @@ impl Database {
             "resource_version": 1,
         }))?;
         self.backend
-            .batch(&[
+            .checked_batch(&[
                 Statement::new(
                     "INSERT INTO gateways (id, org_id, owner_scope_key, enabled,
                  reconciliation_state, created_at, updated_at)
                  VALUES (?1, ?2, ?3, 0, 'pending', ?4, ?4)",
                     vals![id, org_id, owner_scope_key, now],
-                ),
+                )
+                .expecting(1),
                 Statement::new(
                     "INSERT INTO gateway_path_reservations
                  (reservation_id, gateway_id, endpoint_id, client_base_path, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                     vals![reservation_id, id, spec.endpoint_id, client_base_path, now],
-                ),
+                )
+                .expecting(1),
                 Statement::new(
                     "INSERT INTO gateway_revisions (gateway_id, generation, org_id,
                  owner_scope_key, path_reservation_id, binding_id, endpoint_id,
@@ -1593,11 +1595,13 @@ impl Database {
                         actor,
                         now
                     ],
-                ),
+                )
+                .expecting(1),
                 Statement::new(
                     "UPDATE gateways SET desired_generation = 1 WHERE id = ?1",
                     vals![id],
-                ),
+                )
+                .expecting(1),
                 Statement::new(
                     "INSERT INTO gateway_revision_route_scopes
                  (gateway_id, generation, consumer_scope_key, grant_generation, grant_kind,
@@ -1606,7 +1610,8 @@ impl Database {
                  WHERE EXISTS (SELECT 1 FROM gateway_revisions
                    WHERE gateway_id = ?1 AND generation = 1)",
                     vals![id, owner_scope_key, actor, now],
-                ),
+                )
+                .expecting(1),
                 Statement::new(
                     "INSERT INTO gateway_revision_events
                      (event_id, gateway_id, generation, gateway_resource_version,
@@ -1618,7 +1623,8 @@ impl Database {
                         actor,
                         now
                     ],
-                ),
+                )
+                .expecting(1),
                 Database::topology_event_insert_statement(&crate::db::NewTopologyEvent {
                     event_id: &topology_event_id,
                     event_name: "topology.gateway.created",
@@ -1631,7 +1637,8 @@ impl Database {
                     actor_label: actor,
                     payload_json: &topology_event_payload,
                     occurred_at: now,
-                }),
+                })
+                .expecting(1),
             ])
             .await?;
         self.gateway(id)
@@ -4602,6 +4609,48 @@ mod tests {
         assert!(first.is_ok());
         assert!(second.is_ok());
         assert_ne!(first.ok(), second.ok());
+    }
+
+    #[tokio::test]
+    async fn gateway_creation_rejects_ineligible_endpoint_atomically() {
+        let (db, _, _, _, _) = route_fixture().await;
+        let org = db.org_by_slug("route-probes").await.unwrap().unwrap();
+        let binding = db
+            .binding_by_stable_id("binding:route-probes")
+            .await
+            .unwrap()
+            .unwrap();
+        let access_policy_json = r#"{"public":true}"#.to_string();
+        let error = db
+            .create_gateway(
+                "gateway:ineligible-endpoint",
+                &org.stable_id,
+                Some(org.id),
+                &GatewayRevisionSpec {
+                    binding_id: binding.id,
+                    endpoint_id: "endpoint:route-probes".to_string(),
+                    endpoint_generation: 1,
+                    client_base_path: "/cache".to_string(),
+                    origin_prefix: "/objects".to_string(),
+                    access_policy_kind: "public".to_string(),
+                    access_boundary_id: None,
+                    access_boundary_revision: None,
+                    external_provider_kind: None,
+                    external_provider_resource_id: None,
+                    external_provider_revision: None,
+                    access_policy_json,
+                },
+                "test",
+            )
+            .await
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("affected"));
+        assert!(db
+            .gateway("gateway:ineligible-endpoint")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
