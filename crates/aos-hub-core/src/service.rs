@@ -13053,12 +13053,18 @@ impl RpcService {
             .ok_or_else(|| RpcError::not_found("binding"))?;
         self.writable_storage_owner(auth, &binding.owner_scope_key)
             .await?;
-        let current = self
-            .db
-            .binding_credential_revision(binding.id, &req.purpose, req.generation)
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("binding credential"))?;
+        let current = if req.generation == 0 {
+            self.db
+                .current_binding_credential(binding.id, &req.purpose)
+                .await
+                .map_err(RpcError::internal)?
+        } else {
+            self.db
+                .binding_credential_revision(binding.id, &req.purpose, req.generation)
+                .await
+                .map_err(RpcError::internal)?
+        }
+        .ok_or_else(|| RpcError::not_found("binding credential"))?;
         let expected = parse_resource_version(
             &req.expected_resource_version,
             current.head_resource_version,
@@ -13074,7 +13080,7 @@ impl RpcService {
         let operation_id = hex::encode(Sha256::digest(
             format!(
                 "storage-credential-probe-v1\0{}\0{}\0{}\0{}\0{}",
-                binding.stable_id, req.purpose, req.generation, expected, req.idempotency_key
+                binding.stable_id, req.purpose, current.generation, expected, req.idempotency_key
             )
             .as_bytes(),
         ));
@@ -13087,7 +13093,7 @@ impl RpcService {
                     binding_id: binding.id,
                     binding_resource_version: binding.resource_version,
                     purpose: req.purpose,
-                    generation: req.generation,
+                    generation: current.generation,
                     credential_head_resource_version: expected,
                 },
             )
@@ -13156,10 +13162,11 @@ impl RpcService {
             .ok_or_else(|| RpcError::not_found("binding"))?;
         let owner_scope_key = binding.owner_scope_key.clone();
         self.writable_storage_owner(auth, &owner_scope_key).await?;
-        if req.resource_generation != binding.resource_version {
-            return Err(RpcError::FailedPrecondition(
-                "binding generation is stale".to_string(),
-            ));
+        // Bindings are stable, non-generational grant targets. Their mutable
+        // resource version is carried separately by grant update requests and
+        // must not be confused with the generation field used by gateways.
+        if req.resource_generation != 0 {
+            return Err(RpcError::invalid("binding resourceGeneration must be zero"));
         }
         let grants = self
             .db

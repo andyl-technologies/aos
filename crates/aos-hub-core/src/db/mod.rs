@@ -17694,7 +17694,7 @@ impl Database {
             ),
             (
                 "gateways",
-                "SELECT COUNT(*) FROM gateways WHERE binding_id = ?1",
+                "SELECT COUNT(*) FROM gateway_revisions WHERE binding_id = ?1",
             ),
             (
                 "topology defaults",
@@ -17736,7 +17736,7 @@ impl Database {
                 "DELETE FROM bindings
                  WHERE id = ?1 AND resource_version = ?2 AND is_instance_default = 0
                    AND NOT EXISTS (SELECT 1 FROM surface_placements WHERE binding_id = ?1)
-                   AND NOT EXISTS (SELECT 1 FROM gateways WHERE binding_id = ?1)",
+                   AND NOT EXISTS (SELECT 1 FROM gateway_revisions WHERE binding_id = ?1)",
                 &vals![id, expected_resource_version],
             )
             .await?
@@ -24821,6 +24821,24 @@ mod tests {
             .ensure_instance_default_binding("deployment_r2", None, Some("different"))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn unused_topology_binding_can_be_checked_and_deleted() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db
+            .create_org("binding-owner", "Binding Owner")
+            .await
+            .unwrap();
+        let binding_id = create_test_binding(&db, org, "archive", "objects").await;
+
+        assert!(db
+            .binding_delete_blockers(binding_id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(db.delete_topology_binding(binding_id, 1).await.unwrap());
+        assert!(!db.delete_topology_binding(binding_id, 1).await.unwrap());
     }
 
     async fn create_test_binding(db: &Database, org_id: i64, name: &str, path: &str) -> i64 {
