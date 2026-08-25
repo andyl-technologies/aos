@@ -117,7 +117,7 @@ impl<'a> CandidateEnumerationBasis<'a> {
         self
     }
 
-    /// Adds the exact active-policy projection used by feedback version 11.
+    /// Adds the exact active-policy projection used by feedback versions 11 and 12.
     pub(super) const fn with_feedback(
         mut self,
         feedback_projection: Option<CandidateFeedbackProjection<'a>>,
@@ -295,13 +295,15 @@ impl PartialOrd for RefinementGap {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FeedbackRefinementGap {
     gap: RefinementGap,
+    producer_landmarks: usize,
     endpoint_score_delta: u64,
 }
 
 impl Ord for FeedbackRefinementGap {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.endpoint_score_delta
-            .cmp(&other.endpoint_score_delta)
+        self.producer_landmarks
+            .cmp(&other.producer_landmarks)
+            .then_with(|| self.endpoint_score_delta.cmp(&other.endpoint_score_delta))
             .then_with(|| self.gap.len().cmp(&other.gap.len()))
             .then_with(|| other.gap.lower.cmp(&self.gap.lower))
     }
@@ -402,7 +404,8 @@ impl CampaignRepository {
         };
         let score_intervals = match implementation_version {
             crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION => false,
-            crate::FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION => true,
+            crate::FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+            | crate::LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION => true,
             _ => return Ok(None),
         };
         if *initial_strata > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA {
@@ -776,6 +779,8 @@ impl CampaignRepository {
             else {
                 return Err(integrity("progressive-generator-basis-mismatch"));
             };
+            let score_landmarks = spec.implementation_version()
+                == crate::LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION;
             if ordinal <= u64::from(*initial_strata).min(count) {
                 return stratified_integer_candidate(*initial_strata, integer, ordinal)
                     .map(ChoiceValue::Integer)
@@ -809,6 +814,7 @@ impl CampaignRepository {
                 domain.semantic_id(),
                 &proposed,
                 feedback,
+                score_landmarks,
             )
             .map(ChoiceValue::Integer)
             .map(Some);
@@ -3799,6 +3805,7 @@ fn feedback_progressive_integer_candidate(
     domain_semantic: crate::ChoiceDomainSemanticId,
     proposed: &BTreeSet<ChoiceValue>,
     feedback: CandidateFeedbackProjection<'_>,
+    score_landmarks: bool,
 ) -> Result<IntegerValue, CampaignRepositoryError> {
     let projection = feedback.projection;
     if projection.branch_point() != request.branch_point() || projection.policy() != feedback.policy
@@ -3819,6 +3826,15 @@ fn feedback_progressive_integer_candidate(
         selected.insert(integer_candidate_offset(domain, *value)?);
     }
     let gaps = progressive_refinement_gaps(domain.cardinality(), &selected)?;
+    let landmark_offsets = if score_landmarks {
+        domain
+            .landmarks()
+            .iter()
+            .map(|landmark| integer_candidate_offset(domain, *landmark))
+            .collect::<Result<BTreeSet<_>, _>>()?
+    } else {
+        BTreeSet::new()
+    };
     let prospective_prior = projection.prospective_prior_basis(1)?;
     let mut endpoint_scores = BTreeMap::<u128, i64>::new();
     let mut scored = BinaryHeap::new();
@@ -3851,18 +3867,28 @@ fn feedback_progressive_integer_candidate(
         )?;
         scored.push(FeedbackRefinementGap {
             gap,
+            producer_landmarks: landmark_offsets.range(gap.lower..=gap.upper).count(),
             endpoint_score_delta: lower_score.abs_diff(upper_score),
         });
     }
     let selected = scored
         .pop()
-        .ok_or_else(|| integrity("progressive-generator-refinement-is-empty"))?
-        .gap;
+        .ok_or_else(|| integrity("progressive-generator-refinement-is-empty"))?;
     let midpoint = selected
+        .gap
         .lower
-        .checked_add((selected.len() - 1) / 2)
+        .checked_add((selected.gap.len() - 1) / 2)
         .ok_or_else(|| integrity("candidate-source-cardinality-overflow"))?;
-    integer_candidate_at_offset(domain, midpoint)
+    let offset = if selected.producer_landmarks == 0 {
+        midpoint
+    } else {
+        landmark_offsets
+            .range(selected.gap.lower..=selected.gap.upper)
+            .min_by_key(|landmark| (landmark.abs_diff(midpoint), **landmark))
+            .copied()
+            .ok_or_else(|| integrity("progressive-generator-landmark-index-mismatch"))?
+    };
+    integer_candidate_at_offset(domain, offset)
 }
 
 fn feedback_endpoint_score(
