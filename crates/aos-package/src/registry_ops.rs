@@ -5532,12 +5532,6 @@ fn derive_slot_uki_facts(
         if verify_slot_cmdline {
             validate_uki_slot_cmdline(&path, slot)?;
         }
-        if facts.signer_cert_sha256.is_some() && facts.expected_pcr11.is_none() {
-            bail!(
-                "signed A/B UKI {} has no calculable PCR-11 measurement",
-                path.display()
-            );
-        }
         entries.push(SysrootUkiEntry {
             slot,
             path: path
@@ -5872,8 +5866,10 @@ fn validate_uki_slot_cmdline(uki: &Path, slot: UkiSlot) -> Result<()> {
 
 /// Derives Secure Boot facts from the exact UKI named by `image-info.json`.
 ///
-/// Extracts the signer cert digest, SBAT table, and predicted PCR-11 without
-/// searching an artifact tree. Optionally enforces the publish-time
+/// Extracts the signer cert digest and SBAT table without searching an
+/// artifact tree. A predicted PCR-11 value is included only when the UKI
+/// carries a signed `.pcrsig` policy; Secure Boot signing alone does not make
+/// an image a measured-boot image. Optionally enforces the publish-time
 /// rule that an image's embedded signature must verify against `db_cert`
 /// before it can be cataloged.
 ///
@@ -5899,10 +5895,17 @@ fn derive_sb_facts(uki: &Path, db_cert: Option<&Path>) -> Result<SbFacts> {
         })?;
     }
 
+    let pe = fs::read(uki).with_context(|| format!("reading UKI {}", uki.display()))?;
+    let expected_pcr11 = if pe_section(&pe, ".pcrsig")?.is_some() {
+        extract_expected_pcr11(uki)?
+    } else {
+        None
+    };
+
     Ok(SbFacts {
         signer_cert_sha256: signer,
         sbat: extract_sbat_entries(uki)?,
-        expected_pcr11: extract_expected_pcr11(uki)?,
+        expected_pcr11,
         ukis: Vec::new(),
         recovery_ukis: Vec::new(),
         recovery_bundle: None,
