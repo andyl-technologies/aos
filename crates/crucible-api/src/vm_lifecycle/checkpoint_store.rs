@@ -8,11 +8,15 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 mod decode;
 mod io;
-use io::{BoundedReadError, read_bounded_file, read_bounded_file_with_boundary};
+use io::{BoundedReadError, read_bounded_file_with_boundary};
 mod paths;
 use paths::{closure_parent, object_parent};
 mod portable;
-pub use portable::{ProductionExactCheckpointSource, install_exact_checkpoint_closure};
+pub use portable::{
+    ProductionExactCheckpointSource, install_exact_checkpoint_closure,
+    install_exact_checkpoint_closure_with_boundary,
+    install_exact_checkpoint_closure_with_boundary_and_admission,
+};
 mod publication;
 pub(super) use publication::{PersistExactCheckpointError, PreparedExactCheckpointPublication};
 use publication::{enforce_published_checkpoint_count, scheduler_resource_limit};
@@ -78,6 +82,45 @@ pub struct ProductionExactCheckpointClosure {
     source: ScenarioDefForm,
     object_directory: PathBuf,
     objects: Vec<ProductionExactCheckpointObject>,
+}
+
+/// Authenticated modeled continuation recovered from one production closure.
+///
+/// The value contains no filesystem or QEMU launch authority. It is the exact
+/// configuration and scheduler continuation established by the complete
+/// scenario-aware restore validator and is suitable for binding an operational
+/// resume request before any guest process is launched.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductionExactCheckpointResumeBasis {
+    identity: ContentHash,
+    configuration: Configuration,
+    scheduler: SingleSchedulerCheckpoint,
+}
+
+impl ProductionExactCheckpointResumeBasis {
+    /// Returns the authenticated native production-closure identity.
+    #[must_use]
+    pub const fn identity(&self) -> ContentHash {
+        self.identity
+    }
+
+    /// Returns the exact configuration at the restored scheduler boundary.
+    #[must_use]
+    pub const fn configuration(&self) -> &Configuration {
+        &self.configuration
+    }
+
+    /// Returns the complete scheduler continuation at that boundary.
+    #[must_use]
+    pub const fn scheduler(&self) -> &SingleSchedulerCheckpoint {
+        &self.scheduler
+    }
+
+    /// Consumes the basis into its modeled continuation.
+    #[must_use]
+    pub fn into_parts(self) -> (Configuration, SingleSchedulerCheckpoint) {
+        (self.configuration, self.scheduler)
+    }
 }
 
 impl ProductionExactCheckpointClosure {
@@ -199,6 +242,55 @@ impl ProductionExactCheckpointClosure {
             ));
         }
         Ok(())
+    }
+
+    /// Authenticates and reconstructs the modeled production-resume basis.
+    ///
+    /// This applies the same complete scenario-aware validator used by
+    /// [`Self::validate_complete`] and retains only its exact configuration and
+    /// scheduler continuation. It performs no closure publication and grants
+    /// no QEMU launch authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when any closure object is unavailable,
+    /// corrupt, semantically inconsistent, or outside the authored bounds.
+    pub fn authenticate_resume_basis(
+        &self,
+    ) -> Result<ProductionExactCheckpointResumeBasis, LifecycleApiError> {
+        self.authenticate_resume_basis_with_boundary(&mut || Ok(()))
+    }
+
+    /// Reconstructs the modeled resume basis under an operational boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::authenticate_resume_basis`],
+    /// including the exact [`LifecycleApiError`] returned by `boundary`.
+    pub fn authenticate_resume_basis_with_boundary(
+        &self,
+        boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+    ) -> Result<ProductionExactCheckpointResumeBasis, LifecycleApiError> {
+        boundary()?;
+        let restored = load_exact_checkpoint_set_with_boundary(
+            &self.run_state_root,
+            &self.source.scenario_def(),
+            &self.source,
+            self.identity,
+            boundary,
+        )?;
+        if restored.configuration.id() != self.configuration {
+            return Err(loop_factory_error(
+                "portable checkpoint restored a different configuration",
+            ));
+        }
+        let basis = ProductionExactCheckpointResumeBasis {
+            identity: restored.identity,
+            configuration: restored.configuration,
+            scheduler: restored.scheduler,
+        };
+        boundary()?;
+        Ok(basis)
     }
 
     /// Streams and authenticates one exact object into `destination`.
@@ -1941,14 +2033,6 @@ fn persist_object_with_boundary(
     }
 }
 
-fn persist_file_object(
-    directory: &Path,
-    expected: ContentHash,
-    source: &Path,
-) -> Result<(), SchedulerError> {
-    persist_file_object_with_boundary(directory, expected, source, &mut || Ok(()))
-}
-
 fn persist_file_object_with_boundary(
     directory: &Path,
     expected: ContentHash,
@@ -2594,10 +2678,6 @@ impl std::io::Read for ChunkSequenceReader {
             self.index = self.index.saturating_add(1);
         }
     }
-}
-
-fn persist_file_bytes(path: &Path, bytes: &[u8]) -> Result<(), SchedulerError> {
-    persist_file_bytes_with_boundary(path, bytes, &mut || Ok(()))
 }
 
 fn read_bounded_file_with_scheduler_boundary(

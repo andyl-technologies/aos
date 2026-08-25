@@ -148,6 +148,7 @@ pub struct LoadedProductionExactCheckpoint {
     objects: Vec<ProductionExactCheckpointObject>,
     placements: Vec<ContentId>,
     backend: Arc<dyn ImmutableBlobBackend>,
+    cancellation: Option<ExecutionCancellation>,
 }
 
 impl LoadedProductionExactCheckpoint {
@@ -209,16 +210,39 @@ impl ProductionExactCheckpointSource for LoadedProductionExactCheckpoint {
             })?;
         let object = self.objects[index];
         let content = self.placements[index];
-        let handle = self
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(ExecutionCancellation::is_canceled)
+        {
+            return Err(LifecycleApiError::AttemptOperational {
+                class: SchedulerOperationalFailureClass::Canceled,
+                message: String::from("production checkpoint installation canceled"),
+            });
+        }
+        let mut handle = self
             .backend
             .read(content, None)
             .map_err(lifecycle_store_error)?;
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(ExecutionCancellation::is_canceled)
+        {
+            return Err(LifecycleApiError::AttemptOperational {
+                class: SchedulerOperationalFailureClass::Canceled,
+                message: String::from("production checkpoint installation canceled"),
+            });
+        }
+        if let Some(cancellation) = self.cancellation.as_ref() {
+            handle = cancellation_blob_handle(handle, cancellation.clone());
+        }
         if handle.logical_length() != object.length() {
             return Err(LifecycleApiError::LoopFactory {
                 message: String::from("production checkpoint CAS object length changed"),
             });
         }
-        handle.open().map_err(lifecycle_store_error)
+        handle.open().map_err(production_lifecycle_error)
     }
 }
 
@@ -372,7 +396,38 @@ impl ExactCheckpointStore {
         &self,
         root: ExactCheckpointId,
     ) -> Result<LoadedProductionExactCheckpoint, ExactCheckpointStoreError> {
-        let root_handle = self.backend.read(root.content_id(), None)?;
+        self.load_production_closure_inner(root, None)
+    }
+
+    /// Loads one complete production root under an execution cancellation signal.
+    ///
+    /// The returned portable source retains the same signal, so subsequent
+    /// semantic installation also observes cancellation between bounded CAS
+    /// reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::load_production_closure`], or
+    /// [`ExactCheckpointStoreError::Canceled`] after cancellation wins.
+    pub(crate) fn load_production_closure_with_cancellation(
+        &self,
+        root: ExactCheckpointId,
+        cancellation: &ExecutionCancellation,
+    ) -> Result<LoadedProductionExactCheckpoint, ExactCheckpointStoreError> {
+        self.load_production_closure_inner(root, Some(cancellation.clone()))
+    }
+
+    fn load_production_closure_inner(
+        &self,
+        root: ExactCheckpointId,
+        cancellation: Option<ExecutionCancellation>,
+    ) -> Result<LoadedProductionExactCheckpoint, ExactCheckpointStoreError> {
+        check_cancellation(cancellation.as_ref())?;
+        let mut root_handle = self.backend.read(root.content_id(), None)?;
+        check_cancellation(cancellation.as_ref())?;
+        if let Some(cancellation) = cancellation.as_ref() {
+            root_handle = cancellation_blob_handle(root_handle, cancellation.clone());
+        }
         if root_handle.logical_length() > MAX_PRODUCTION_ROOT_BYTES {
             return Err(ExactCheckpointStoreError::ArtifactLimit {
                 artifact: "production-root",
@@ -380,7 +435,9 @@ impl ExactCheckpointStore {
                 maximum: MAX_PRODUCTION_ROOT_BYTES,
             });
         }
-        let root_bytes = root_handle.read_all(MAX_PRODUCTION_ROOT_BYTES)?;
+        let root_bytes = root_handle
+            .read_all(MAX_PRODUCTION_ROOT_BYTES)
+            .map_err(map_checkpoint_store_error)?;
         let envelope = ContentEnvelope::from_canonical_bytes(&root_bytes)?;
         if envelope.schema_name() != EXACT_CHECKPOINT_ROOT_SCHEMA
             || envelope.schema_version() != EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
@@ -401,13 +458,20 @@ impl ExactCheckpointStore {
         let (manifest_id, index_ids) =
             decode_production_root_children(&envelope, body.index_count)?;
 
-        let manifest_handle = self.backend.read(manifest_id, None)?;
+        check_cancellation(cancellation.as_ref())?;
+        let mut manifest_handle = self.backend.read(manifest_id, None)?;
+        check_cancellation(cancellation.as_ref())?;
+        if let Some(cancellation) = cancellation.as_ref() {
+            manifest_handle = cancellation_blob_handle(manifest_handle, cancellation.clone());
+        }
         if manifest_handle.logical_length() != body.manifest_bytes
             || manifest_handle.logical_length() > MAX_PRODUCTION_MANIFEST_BYTES
         {
             return Err(invalid_root("production manifest length mismatch"));
         }
-        let manifest = manifest_handle.read_all(MAX_PRODUCTION_MANIFEST_BYTES)?;
+        let manifest = manifest_handle
+            .read_all(MAX_PRODUCTION_MANIFEST_BYTES)
+            .map_err(map_checkpoint_store_error)?;
 
         let expected_objects = usize::try_from(body.object_count)
             .map_err(|_| invalid_root("production object count is not representable"))?;
@@ -423,7 +487,12 @@ impl ExactCheckpointStore {
         let mut previous = None;
         let index_total = index_ids.len();
         for (index_ordinal, index_id) in index_ids.into_iter().enumerate() {
-            let handle = self.backend.read(index_id, None)?;
+            check_cancellation(cancellation.as_ref())?;
+            let mut handle = self.backend.read(index_id, None)?;
+            check_cancellation(cancellation.as_ref())?;
+            if let Some(cancellation) = cancellation.as_ref() {
+                handle = cancellation_blob_handle(handle, cancellation.clone());
+            }
             if handle.logical_length() > MAX_PRODUCTION_INDEX_BYTES {
                 return Err(ExactCheckpointStoreError::ArtifactLimit {
                     artifact: "production-index",
@@ -431,7 +500,9 @@ impl ExactCheckpointStore {
                     maximum: MAX_PRODUCTION_INDEX_BYTES,
                 });
             }
-            let bytes = handle.read_all(MAX_PRODUCTION_INDEX_BYTES)?;
+            let bytes = handle
+                .read_all(MAX_PRODUCTION_INDEX_BYTES)
+                .map_err(map_checkpoint_store_error)?;
             let index = ContentEnvelope::from_canonical_bytes(&bytes)?;
             if index.schema_name() != PRODUCTION_INDEX_SCHEMA
                 || index.schema_version() != PRODUCTION_INDEX_SCHEMA_VERSION
@@ -444,10 +515,12 @@ impl ExactCheckpointStore {
                 return Err(invalid_root("non-final production index page is not full"));
             }
             for placement in page {
+                check_cancellation(cancellation.as_ref())?;
                 if previous.is_some_and(|prior| prior >= placement.object.identity()) {
                     return Err(invalid_root("production objects are not globally sorted"));
                 }
                 let object_source = self.backend.read(placement.content, None)?;
+                check_cancellation(cancellation.as_ref())?;
                 if object_source.logical_length() != placement.object.length() {
                     return Err(invalid_root("production object declared length mismatch"));
                 }
@@ -474,6 +547,7 @@ impl ExactCheckpointStore {
             objects,
             placements,
             backend: Arc::clone(&self.backend),
+            cancellation,
         })
     }
 }
@@ -1081,6 +1155,18 @@ fn lifecycle_store_error(error: StoreError) -> LifecycleApiError {
     }
 }
 
+fn production_lifecycle_error(error: StoreError) -> LifecycleApiError {
+    match map_checkpoint_store_error(error) {
+        ExactCheckpointStoreError::Canceled => LifecycleApiError::AttemptOperational {
+            class: SchedulerOperationalFailureClass::Canceled,
+            message: String::from("production checkpoint installation canceled"),
+        },
+        error => LifecycleApiError::LoopFactory {
+            message: format!("read production checkpoint CAS object: {error}"),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // crucible-lint: allow panic-shortcut -- content-addressed fixtures require exact failure localization.
@@ -1302,6 +1388,48 @@ mod tests {
             .copy_object_to(last, &mut observed)
             .expect("copy last indexed object");
         assert_eq!(observed, expected_last);
+    }
+
+    #[test]
+    fn production_load_and_lazy_objects_retain_execution_cancellation() {
+        let source = memory_source(1);
+        let object = source.objects[0].identity();
+        let backend = Arc::new(DurableMemoryBackend::new());
+        let store =
+            ExactCheckpointStore::new(backend, 64 * 1024 * 1024).expect("admit production store");
+        let prepared = prepare_production_source(
+            Arc::new(source),
+            ContentHash::from_bytes(b"cancellable production closure"),
+            ContentHash::from_bytes(b"cancellable production scenario"),
+            ContentHash::from_bytes(b"cancellable production configuration"),
+            64 * 1024 * 1024,
+        )
+        .expect("prepare cancellable production closure");
+        let root = prepared.root();
+        store
+            .publish_production_closure(&prepared)
+            .expect("publish cancellable production closure");
+        let cancellation = ExecutionCancellation::default();
+        let loaded = store
+            .load_production_closure_with_cancellation(root, &cancellation)
+            .expect("load production root before cancellation");
+
+        cancellation.cancel_for_test();
+        let error = loaded
+            .copy_object_to(object, &mut Vec::new())
+            .expect_err("lazy object copy must retain the load cancellation signal");
+
+        assert!(matches!(
+            error,
+            LifecycleApiError::AttemptOperational {
+                class: SchedulerOperationalFailureClass::Canceled,
+                ..
+            }
+        ));
+        assert!(matches!(
+            store.load_production_closure_with_cancellation(root, &cancellation),
+            Err(ExactCheckpointStoreError::Canceled)
+        ));
     }
 
     #[test]

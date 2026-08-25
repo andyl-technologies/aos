@@ -8,9 +8,14 @@
 //! eligible for guarded launch.
 
 use std::io::{self, Read, Write};
+use std::path::Path;
 use std::sync::Arc;
 
-use crucible::{Configuration, ContentHash, SingleSchedulerCheckpoint};
+use crucible::{Configuration, ContentHash, Decision, ScenarioDefForm, SingleSchedulerCheckpoint};
+use crucible_api::{
+    LifecycleApiError, ProductionExactCheckpointClosure, ProductionExactCheckpointResumeBasis,
+    install_exact_checkpoint_closure_with_boundary_and_admission,
+};
 use crucible_cas::content_store::{BlobHandle, BlobSource, StoreError};
 use crucible_qemu::{
     QemuBakedGenesisRestoreAdmission, QemuCapturedVmState, QemuFailedLaunchChildSource,
@@ -117,6 +122,58 @@ pub struct MaterializedAttemptCheckpoint {
     vmstate_binding: QemuVmStateBinding,
     snapshot: QemuVmSnapshot,
     scheduler: SingleSchedulerCheckpoint,
+}
+
+/// Installed and semantically bound version-four production continuation.
+///
+/// The value proves that the complete portable closure was authenticated under
+/// the admitted scenario and that its restored schedule continues the exact
+/// effective attempt start without introducing another campaign branch edge.
+/// It grants no process-launch or replay-oracle authority.
+#[derive(Clone)]
+pub struct InstalledProductionAttemptCheckpoint {
+    checkpoint: ExactCheckpointId,
+    closure: ProductionExactCheckpointClosure,
+    configuration: Configuration,
+    scheduler: SingleSchedulerCheckpoint,
+}
+
+impl InstalledProductionAttemptCheckpoint {
+    /// Returns the exact campaign-CAS root that supplied this continuation.
+    #[must_use]
+    pub const fn checkpoint(&self) -> ExactCheckpointId {
+        self.checkpoint
+    }
+
+    /// Returns the installed native production closure.
+    #[must_use]
+    pub const fn closure(&self) -> &ProductionExactCheckpointClosure {
+        &self.closure
+    }
+
+    /// Returns the exact restored modeled configuration.
+    #[must_use]
+    pub const fn configuration(&self) -> &Configuration {
+        &self.configuration
+    }
+
+    /// Returns the complete restored scheduler continuation.
+    #[must_use]
+    pub const fn scheduler(&self) -> &SingleSchedulerCheckpoint {
+        &self.scheduler
+    }
+
+    /// Consumes the proof into its native closure and modeled continuation.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        ProductionExactCheckpointClosure,
+        Configuration,
+        SingleSchedulerCheckpoint,
+    ) {
+        (self.closure, self.configuration, self.scheduler)
+    }
 }
 
 /// Attempt-owned guarded executor for one exact fat/thin replay comparison.
@@ -424,6 +481,123 @@ where
     })
 }
 
+/// Installs and binds one version-four production checkpoint for attempt resume.
+///
+/// `initial` is the authenticated pre-selection configuration. A branch
+/// attempt supplies `post_selection`, which becomes its effective modeled
+/// start; a discovery attempt omits it. The restored production schedule must
+/// retain that effective start as an exact prefix. Any later campaign-branch
+/// selection is rejected because it belongs to a different semantic attempt,
+/// while ordinary scheduler decisions and scenario-authenticated model samples
+/// may extend the prefix.
+///
+/// This operation authenticates the campaign-CAS root, streams the complete
+/// portable closure into the private production run-state store, reruns the
+/// complete scenario-aware restore validator, and returns only a modeled
+/// continuation proof. It does not launch QEMU and does not establish the
+/// source-bound replay-oracle evidence required for production resume.
+///
+/// # Errors
+///
+/// Returns [`ProductionAttemptCheckpointRestoreError::Canceled`] when
+/// cancellation wins, or an exact store, semantic-installation, scenario,
+/// identity, configuration, or attempt-prefix error otherwise.
+pub fn install_attempt_production_exact_checkpoint(
+    checkpoints: &ExactCheckpointStore,
+    checkpoint: ExactCheckpointId,
+    source: &ScenarioDefForm,
+    initial: &Configuration,
+    post_selection: Option<&Configuration>,
+    run_state_root: &Path,
+    cancellation: &ExecutionCancellation,
+) -> Result<InstalledProductionAttemptCheckpoint, ProductionAttemptCheckpointRestoreError> {
+    check_production_cancellation(cancellation)?;
+    let effective_start = post_selection.unwrap_or(initial);
+    let scenario = source.scenario_def();
+    if initial.def != scenario || post_selection.is_some_and(|selected| selected.def != scenario) {
+        return Err(ProductionAttemptCheckpointRestoreError::AttemptScenarioMismatch);
+    }
+    if let Some(selected) = post_selection {
+        validate_production_post_selection(initial, selected)?;
+    }
+
+    let loaded = checkpoints
+        .load_production_closure_with_cancellation(checkpoint, cancellation)
+        .map_err(map_production_store_error)?;
+    if loaded.scenario() != scenario.id() {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::CheckpointScenarioMismatch {
+                checkpoint,
+                scenario: loaded.scenario(),
+            },
+        );
+    }
+    check_production_cancellation(cancellation)?;
+
+    let (installation, admitted_basis, mut admission_error) = {
+        let mut admitted_basis: Option<ProductionExactCheckpointResumeBasis> = None;
+        let mut admission_error = None;
+        let mut boundary = || production_restore_boundary(cancellation);
+        let mut admit = |basis: &ProductionExactCheckpointResumeBasis| {
+            let result = validate_production_resume_basis(
+                basis,
+                loaded.production_identity(),
+                loaded.configuration(),
+                effective_start,
+                checkpoint,
+            );
+            match result {
+                Ok(()) => {
+                    admitted_basis = Some(basis.clone());
+                    Ok(())
+                }
+                Err(error) => {
+                    admission_error = Some(error);
+                    Err(LifecycleApiError::LoopFactory {
+                        message: String::from(
+                            "production exact checkpoint failed attempt-basis admission",
+                        ),
+                    })
+                }
+            }
+        };
+        let installation = install_exact_checkpoint_closure_with_boundary_and_admission(
+            run_state_root,
+            source,
+            &loaded,
+            &mut boundary,
+            &mut admit,
+        );
+        (installation, admitted_basis, admission_error)
+    };
+    let closure = match installation {
+        Ok(closure) => closure,
+        Err(error) => {
+            if let Some(error) = admission_error.take() {
+                return Err(error);
+            }
+            return Err(map_production_lifecycle_error(error));
+        }
+    };
+    let basis = admitted_basis.ok_or_else(|| {
+        ProductionAttemptCheckpointRestoreError::Lifecycle(LifecycleApiError::LoopFactory {
+            message: String::from("production checkpoint installation skipped attempt admission"),
+        })
+    })?;
+    if closure.identity() != loaded.production_identity() {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::ClosureIdentityMismatch { checkpoint },
+        );
+    }
+    let (configuration, scheduler) = basis.into_parts();
+    Ok(InstalledProductionAttemptCheckpoint {
+        checkpoint,
+        closure,
+        configuration,
+        scheduler,
+    })
+}
+
 /// Materializes one supervisor-retained exact root for attempt resume.
 ///
 /// The root is authenticated directly from the immutable checkpoint store.
@@ -681,6 +855,62 @@ pub enum ExactCheckpointRestoreError {
     Spawn(#[from] QemuSpawnError),
 }
 
+/// Failure while installing and binding a production attempt continuation.
+#[derive(Debug, Error)]
+pub enum ProductionAttemptCheckpointRestoreError {
+    /// Cancellation won during bounded root loading or semantic installation.
+    #[error("production exact-checkpoint installation was canceled")]
+    Canceled,
+    /// The attempt start and submitted scenario form disagree.
+    #[error("production exact-checkpoint attempt start belongs to another scenario")]
+    AttemptScenarioMismatch,
+    /// The supplied branch post-selection boundary is not the exact next edge.
+    #[error("production exact-checkpoint post-selection boundary is not one branch edge")]
+    AttemptSelectionMismatch,
+    /// The version-four root names another scenario.
+    #[error("production exact checkpoint {checkpoint} names foreign scenario {scenario:?}")]
+    CheckpointScenarioMismatch {
+        /// Exact campaign-CAS root being installed.
+        checkpoint: ExactCheckpointId,
+        /// Scenario identity declared by the root.
+        scenario: ContentHash,
+    },
+    /// The installed native closure identity differs from the campaign root.
+    #[error("production exact checkpoint {checkpoint} installed another native closure")]
+    ClosureIdentityMismatch {
+        /// Exact campaign-CAS root being installed.
+        checkpoint: ExactCheckpointId,
+    },
+    /// The restored configuration differs from the campaign root declaration.
+    #[error(
+        "production exact checkpoint {checkpoint} restored another configuration than {configuration:?}"
+    )]
+    CheckpointConfigurationMismatch {
+        /// Exact campaign-CAS root being installed.
+        checkpoint: ExactCheckpointId,
+        /// Configuration identity declared by the root.
+        configuration: ContentHash,
+    },
+    /// The restored schedule does not continue the exact attempt start.
+    #[error("production exact checkpoint {checkpoint} is not a continuation of this attempt")]
+    AttemptPrefixMismatch {
+        /// Exact campaign-CAS root being installed.
+        checkpoint: ExactCheckpointId,
+    },
+    /// The restored suffix contains another campaign branch edge.
+    #[error("production exact checkpoint {checkpoint} crosses another campaign branch edge")]
+    NestedCampaignBranch {
+        /// Exact campaign-CAS root being installed.
+        checkpoint: ExactCheckpointId,
+    },
+    /// Immutable version-four root authentication failed.
+    #[error(transparent)]
+    Checkpoint(#[from] ExactCheckpointStoreError),
+    /// Complete scenario-aware native installation failed.
+    #[error(transparent)]
+    Lifecycle(#[from] LifecycleApiError),
+}
+
 /// Failure while turning a selected materialization into a guarded live node.
 #[derive(Debug, Error)]
 pub enum ExactCheckpointResumeError {
@@ -699,6 +929,116 @@ fn check_cancellation(
         Err(ExactCheckpointRestoreError::Canceled)
     } else {
         Ok(())
+    }
+}
+
+fn validate_production_attempt_continuation(
+    effective_start: &Configuration,
+    restored: &Configuration,
+    checkpoint: ExactCheckpointId,
+) -> Result<(), ProductionAttemptCheckpointRestoreError> {
+    let prefix = effective_start.schedule.decisions();
+    let decisions = restored.schedule.decisions();
+    if effective_start.def != restored.def || !decisions.starts_with(prefix) {
+        return Err(ProductionAttemptCheckpointRestoreError::AttemptPrefixMismatch { checkpoint });
+    }
+    if decisions[prefix.len()..].iter().any(|decision| {
+        matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
+    }) {
+        return Err(ProductionAttemptCheckpointRestoreError::NestedCampaignBranch {
+            checkpoint,
+        });
+    }
+    Ok(())
+}
+
+fn validate_production_resume_basis(
+    basis: &ProductionExactCheckpointResumeBasis,
+    expected_identity: ContentHash,
+    expected_configuration: ContentHash,
+    effective_start: &Configuration,
+    checkpoint: ExactCheckpointId,
+) -> Result<(), ProductionAttemptCheckpointRestoreError> {
+    if basis.identity() != expected_identity {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::ClosureIdentityMismatch { checkpoint },
+        );
+    }
+    if basis.configuration().id() != expected_configuration {
+        return Err(
+            ProductionAttemptCheckpointRestoreError::CheckpointConfigurationMismatch {
+                checkpoint,
+                configuration: expected_configuration,
+            },
+        );
+    }
+    validate_production_attempt_continuation(effective_start, basis.configuration(), checkpoint)
+}
+
+fn validate_production_post_selection(
+    initial: &Configuration,
+    selected: &Configuration,
+) -> Result<(), ProductionAttemptCheckpointRestoreError> {
+    let prefix = initial.schedule.decisions();
+    let decisions = selected.schedule.decisions();
+    let expected_length = prefix
+        .len()
+        .checked_add(1)
+        .ok_or(ProductionAttemptCheckpointRestoreError::AttemptSelectionMismatch)?;
+    if initial.def != selected.def
+        || decisions.len() != expected_length
+        || !decisions.starts_with(prefix)
+        || !matches!(
+            decisions.last(),
+            Some(Decision::Selection(selection)) if selection.is_campaign_branch()
+        )
+    {
+        return Err(ProductionAttemptCheckpointRestoreError::AttemptSelectionMismatch);
+    }
+    Ok(())
+}
+
+fn check_production_cancellation(
+    cancellation: &ExecutionCancellation,
+) -> Result<(), ProductionAttemptCheckpointRestoreError> {
+    if cancellation.is_canceled() {
+        Err(ProductionAttemptCheckpointRestoreError::Canceled)
+    } else {
+        Ok(())
+    }
+}
+
+fn production_restore_boundary(
+    cancellation: &ExecutionCancellation,
+) -> Result<(), LifecycleApiError> {
+    if cancellation.is_canceled() {
+        Err(LifecycleApiError::AttemptOperational {
+            class: crucible::SchedulerOperationalFailureClass::Canceled,
+            message: String::from("production exact-checkpoint installation canceled"),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn map_production_store_error(
+    error: ExactCheckpointStoreError,
+) -> ProductionAttemptCheckpointRestoreError {
+    match error {
+        ExactCheckpointStoreError::Canceled => ProductionAttemptCheckpointRestoreError::Canceled,
+        error => ProductionAttemptCheckpointRestoreError::Checkpoint(error),
+    }
+}
+
+fn map_production_lifecycle_error(
+    error: LifecycleApiError,
+) -> ProductionAttemptCheckpointRestoreError {
+    match error {
+        LifecycleApiError::AttemptOperational {
+            class: crucible::SchedulerOperationalFailureClass::Canceled,
+            ..
+        } => ProductionAttemptCheckpointRestoreError::Canceled,
+        error => ProductionAttemptCheckpointRestoreError::Lifecycle(error),
     }
 }
 
@@ -723,6 +1063,8 @@ fn check_resume_boundary(
 #[cfg(test)]
 mod captured_source_tests {
     use super::*;
+    use crucible::{RngDecision, RngStreamId, Schedule};
+    use crucible_cas::content_store::{ContentId, ObjectKind};
 
     #[test]
     fn captured_vmstate_blob_reopens_after_the_named_file_is_removed()
@@ -743,5 +1085,52 @@ mod captured_source_tests {
         assert_eq!(blob.read_all(1024)?, payload);
         assert_eq!(blob.read_all(1024)?, payload);
         Ok(())
+    }
+
+    #[test]
+    fn production_resume_basis_requires_the_exact_attempt_prefix() {
+        let scenario = crucible::happy_path_scenario()
+            .unwrap_or_else(|error| panic!("build production resume scenario: {error}"))
+            .scenario
+            .scenario_def();
+        let first = Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("resume-prefix"),
+            value: 1,
+        });
+        let second = Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("resume-suffix"),
+            value: 2,
+        });
+        let start = Configuration {
+            def: scenario.clone(),
+            schedule: Schedule::from_decisions([first.clone()]),
+        };
+        let restored = Configuration {
+            def: scenario.clone(),
+            schedule: Schedule::from_decisions([first, second.clone()]),
+        };
+        let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
+            ObjectKind::ExactManifest,
+            4,
+            b"production attempt continuation",
+        ))
+        .unwrap_or_else(|error| panic!("build production exact root: {error}"));
+
+        assert!(validate_production_attempt_continuation(&start, &restored, checkpoint).is_ok());
+
+        let foreign = Configuration {
+            def: scenario,
+            schedule: Schedule::from_decisions([second]),
+        };
+        assert!(matches!(
+            validate_production_attempt_continuation(&start, &foreign, checkpoint),
+            Err(ProductionAttemptCheckpointRestoreError::AttemptPrefixMismatch {
+                checkpoint: observed
+            }) if observed == checkpoint
+        ));
+        assert!(matches!(
+            validate_production_post_selection(&start, &restored),
+            Err(ProductionAttemptCheckpointRestoreError::AttemptSelectionMismatch)
+        ));
     }
 }

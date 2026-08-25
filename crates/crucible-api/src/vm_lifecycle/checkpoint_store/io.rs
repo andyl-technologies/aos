@@ -47,6 +47,7 @@ pub(super) enum BoundedReadError {
 ///
 /// Returns [`BoundedReadError`] for file I/O, role-limit, representation, or
 /// allocation failures, and when the file grows during the read.
+#[cfg(test)]
 pub(super) fn read_bounded_file(path: &Path, limit: u64) -> Result<Vec<u8>, BoundedReadError> {
     read_bounded_file_with_boundary(path, limit, &mut || Ok(()))
 }

@@ -737,10 +737,16 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   I/O chunks and between node/object operations. Cancellation remains typed,
   never retries as storage availability, and still runs mandatory QMP snapshot
   deletion/resume cleanup before the lifecycle can release its guard. The
-  native lifecycle catalog remains a separate scenario-bounded capture layer;
-  assignment-root-aware cleanup of abandoned native entries,
-  production-loop reconstruction, exact-resume driver selection, and capability
-  advertisement remain open before the executor may claim exact resume. A guarded-only
+  native lifecycle catalog remains a separate scenario-bounded capture layer.
+  Version-four restore now loads the campaign root under the execution
+  cancellation signal, installs it through one-MiB-bounded portable reads,
+  reruns complete scenario-aware validation, and returns a typed modeled basis
+  only when the restored schedule continues the exact effective attempt start
+  without crossing another campaign branch edge; that attempt admission occurs
+  before native destination publication. Assignment-root-aware cleanup
+  of abandoned native entries, production-loop process reconstruction,
+  source-bound replay-oracle evidence, exact-resume driver selection, and
+  capability advertisement remain open before the executor may claim exact resume. A guarded-only
   exact-root launcher now consumes that
   pinned authority, rechecks the selected snapshot and checkpoint identities,
   and uses the sealed child-process contract for pre-`exec` containment. The
