@@ -5,6 +5,13 @@
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use crucible_protocol::app_random_branch_plan::{
+    APP_RANDOM_BRANCH_PLAN_MAGIC, APP_RANDOM_BRANCH_PLAN_VERSION, AppRandomBranchPlan,
+};
+use crucible_protocol::plugin_setup_plan::{
+    PLUGIN_SETUP_PLAN_HEADER_BYTES, PLUGIN_SETUP_PLAN_MAGIC, PLUGIN_SETUP_PLAN_VERSION,
+    PluginSetupPlan,
+};
 use crucible_protocol::selectable_catalog_plan::{
     SELECTABLE_CATALOG_PLAN_HEADER_BYTES, SELECTABLE_CATALOG_PLAN_MAGIC,
     SELECTABLE_CATALOG_PLAN_VERSION, SelectableCatalogPlan, SelectablePlanContinuation,
@@ -46,9 +53,48 @@ fn protocol_abi_conformance_runs_named_checks() {
     assert_doorbell_marker_subvocabularies();
     assert_selectable_v1_golden_vectors();
     assert_selectable_catalog_plan_v1_golden_vector();
+    assert_plugin_setup_plan_v1_golden_vector();
     assert_doorbell_decoder_fuzz_corpus();
     assert_structure_aware_fuzz_corpus();
     assert_protocol_codec_fuzz_corpus();
+}
+
+#[test]
+fn plugin_setup_plan_v1_golden_vector_matches_live_codec() {
+    assert_plugin_setup_plan_v1_golden_vector();
+}
+
+fn assert_plugin_setup_plan_v1_golden_vector() {
+    let selectable = SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(1, 1, 1)
+            .unwrap_or_else(|error| panic!("catalog plan limits must validate: {error}")),
+        Vec::new(),
+        SelectablePlanContinuation::cold(),
+    )
+    .unwrap_or_else(|error| panic!("empty catalog plan must validate: {error}"));
+    let plan = PluginSetupPlan::new(AppRandomBranchPlan::default(), selectable);
+    let bytes = plan
+        .encode()
+        .unwrap_or_else(|error| panic!("plugin setup plan must encode: {error}"));
+
+    let mut expected = vec![0_u8; 140];
+    expected[..8].copy_from_slice(&PLUGIN_SETUP_PLAN_MAGIC);
+    expected[8..12].copy_from_slice(&PLUGIN_SETUP_PLAN_VERSION.to_be_bytes());
+    expected[12..16].copy_from_slice(&(PLUGIN_SETUP_PLAN_HEADER_BYTES as u32).to_be_bytes());
+    expected[16..20].copy_from_slice(&(140_u32).to_be_bytes());
+    expected[20..24].copy_from_slice(&(16_u32).to_be_bytes());
+    expected[24..28].copy_from_slice(&(96_u32).to_be_bytes());
+    expected[28..36].copy_from_slice(&APP_RANDOM_BRANCH_PLAN_MAGIC);
+    expected[36..40].copy_from_slice(&APP_RANDOM_BRANCH_PLAN_VERSION.to_be_bytes());
+    expected[44..52].copy_from_slice(&SELECTABLE_CATALOG_PLAN_MAGIC);
+    expected[52..56].copy_from_slice(&SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
+    expected[56..60].copy_from_slice(&(96_u32).to_be_bytes());
+    expected[60..64].copy_from_slice(&(96_u32).to_be_bytes());
+    expected[68..72].copy_from_slice(&(1_u32).to_be_bytes());
+    expected[84..92].copy_from_slice(&(1_u64).to_be_bytes());
+    expected[92..100].copy_from_slice(&(1_u64).to_be_bytes());
+    assert_eq!(bytes, expected);
+    assert_eq!(PluginSetupPlan::decode(&bytes), Ok(plan));
 }
 
 #[test]
@@ -178,6 +224,11 @@ fn guest_selectable_v1_schemas_are_registered_exactly() {
     assert!(
         registry.lines().any(|line| line == catalog_plan),
         "missing exact selectable catalog-plan schema row"
+    );
+    let setup_plan = "crucible.qemu-plugin.setup-plan\t1\tcrucible-protocol::plugin_setup_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
+    assert!(
+        registry.lines().any(|line| line == setup_plan),
+        "missing exact plugin setup-plan schema row"
     );
 }
 

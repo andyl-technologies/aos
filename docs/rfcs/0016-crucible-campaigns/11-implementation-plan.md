@@ -141,10 +141,11 @@ descriptor body, including exact expectations, limits, registered identifiers,
 sequence watermarks, completed counters, and a complete pending request/trap
 coordinate. The plugin catalog converts cold/restored plans bidirectionally and
 creates a fresh token incarnation on restore, so prior-process tokens cannot
-complete a restored pending request. The existing control-protocol v2 third
-descriptor remains the raw app-random plan; selectable plan handoff will use an
-explicitly negotiated v3 setup profile rather than silently redefining that v2
-descriptor.
+complete a restored pending request. The canonical `CRUCSUP1` composite now
+length-frames the independently versioned app-random and selectable plans for
+the future setup profile. The existing control-protocol v2 third descriptor
+remains the raw app-random plan; selectable plan handoff will use an explicitly
+negotiated v3 setup profile rather than silently redefining that v2 descriptor.
 
 The application-random path now implements the pure normalization and
 application contract, executor-side verification of uniform model samples, live

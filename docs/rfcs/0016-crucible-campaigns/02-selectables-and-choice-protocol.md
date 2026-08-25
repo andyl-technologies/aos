@@ -443,6 +443,32 @@ every completed/pending identifier is registered, required frozen declarations
 are present, request counts respect the encoded ceilings, and no trailing or
 alternate encoding is accepted. The complete plan is at most 32 MiB.
 
+Control-protocol v3 retains the three-descriptor `Setup` shape but changes the
+third descriptor from the v2 raw app-random body to
+`crucible.qemu-plugin.setup-plan` version 1. The descriptor is a regular memfd
+sealed against write, growth, shrink, and further seal changes. Every integer is
+big-endian, and its fixed 28-byte header is:
+
+```text
+offset  size  field
+------  ----  ----------------------------------------------------------
+  0      8   magic = "CRUCSUP1"
+  8      4   schema_version = 1
+ 12      4   header_len = 28
+ 16      4   total_len
+ 20      4   app_random_plan_len
+ 24      4   selectable_catalog_plan_len
+ 28      A   canonical AppRandomBranchPlanV1 body
+ 28+A    S   canonical SelectableCatalogPlanV1 body
+```
+
+The two nested lengths exactly partition the descriptor body, each nested body
+must pass its independent canonical decoder, and no trailing or alternate
+encoding is accepted. The app-random body remains at most 4 MiB, the selectable
+body remains at most 32 MiB, and the complete composite is at most 36 MiB plus
+the 28-byte header. Negotiated v2 continues to mean the raw `CRUCABP1` third
+descriptor and does not accept this composite encoding.
+
 Guest libraries expose typed helpers:
 
 ```rust,illustrative
