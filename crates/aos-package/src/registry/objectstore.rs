@@ -146,6 +146,69 @@ pub fn ensure_loose_completeness(repo: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Writes bounded OID-sharded transport bundles for the complete loose store.
+///
+/// Bundles are replaceable accelerators, not new trust roots: consumers still
+/// verify each enclosed loose object's Git OID and retain canonical loose-path
+/// fallback. Rebuilding all 256 fixed shard names after loose completeness
+/// makes publication retries deterministic and bounds indexer round trips.
+///
+/// # Errors
+///
+/// Returns an error when the object store cannot be enumerated or read, a path
+/// is not a canonical SHA-256 loose-object path, or a shard violates its wire
+/// format bounds.
+pub fn write_index_bundles(repo: &Path) -> Result<()> {
+    assert_sha256(repo)?;
+    let git_dir = repo_git_dir(repo)?;
+    let objects_dir = git_dir.join("objects");
+    let bundle_dir = objects_dir.join("aos-index-v1");
+    fs::create_dir_all(&bundle_dir)
+        .with_context(|| format!("creating {}", bundle_dir.display()))?;
+
+    for value in 0_u16..=255 {
+        let shard = format!("{value:02x}");
+        let loose_dir = objects_dir.join(&shard);
+        let mut entries = Vec::new();
+        if loose_dir.is_dir() {
+            for entry in fs::read_dir(&loose_dir)
+                .with_context(|| format!("reading {}", loose_dir.display()))?
+            {
+                let entry = entry?;
+                let file_type = entry.file_type()?;
+                if !file_type.is_file() {
+                    continue;
+                }
+                let filename = entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| anyhow::anyhow!("loose object filename is not UTF-8"))?;
+                if filename.len() != 62
+                    || !filename
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    bail!("non-canonical loose object filename '{shard}/{filename}'");
+                }
+                let oid =
+                    aos_registry_surface::object::Oid::from_hex(&format!("{shard}{filename}"))?;
+                let loose = fs::read(entry.path())
+                    .with_context(|| format!("reading loose object {oid}"))?;
+                entries.push((oid, loose));
+            }
+        }
+        entries.sort_by_key(|(oid, _)| *oid);
+        let encoded = aos_registry_surface::object_bundle::encode(&shard, &entries)?;
+        let destination = bundle_dir.join(&shard);
+        let temporary = bundle_dir.join(format!(".{shard}.tmp"));
+        fs::write(&temporary, encoded)
+            .with_context(|| format!("writing {}", temporary.display()))?;
+        fs::rename(&temporary, &destination)
+            .with_context(|| format!("installing {}", destination.display()))?;
+    }
+    Ok(())
+}
+
 /// Write a single loose git object to `path` (`objects/<2>/<62>`).
 ///
 /// The on-disk loose format is the zlib-compressed `"<type> <size>\0<body>"`
@@ -675,12 +738,25 @@ mod tests {
 
         ensure_loose_completeness(&repo).unwrap();
 
-        for oid in oids {
+        for oid in &oids {
             assert!(
                 repo.join("objects")
-                    .join(loose_object_path(&oid).unwrap())
+                    .join(loose_object_path(oid).unwrap())
                     .exists(),
                 "{oid} should have a root loose object copy",
+            );
+        }
+
+        write_index_bundles(&repo).unwrap();
+        for oid in oids {
+            let shard = &oid[..2];
+            let bundle = fs::read(repo.join("objects/aos-index-v1").join(shard)).unwrap();
+            let entries = aos_registry_surface::object_bundle::decode(shard, &bundle).unwrap();
+            assert!(
+                entries
+                    .iter()
+                    .any(|(entry_oid, _)| entry_oid.to_hex() == oid),
+                "{oid} should be present in its index bundle",
             );
         }
     }

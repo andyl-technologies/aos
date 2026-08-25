@@ -65,6 +65,7 @@ pub struct ObjectReader<'a> {
     // verified decoded form for this index pass so concurrent retained-release
     // walks do not repeatedly pay object-store and inflate latency.
     cache: Mutex<BTreeMap<Oid, (ObjectKind, Vec<u8>)>>,
+    attempted_bundles: Mutex<BTreeSet<String>>,
 }
 
 impl<'a> ObjectReader<'a> {
@@ -74,6 +75,7 @@ impl<'a> ObjectReader<'a> {
         Self {
             fetch,
             cache: Mutex::new(BTreeMap::new()),
+            attempted_bundles: Mutex::new(BTreeSet::new()),
         }
     }
 
@@ -85,13 +87,12 @@ impl<'a> ObjectReader<'a> {
     /// guarantees loose presence, so absence is surface corruption), fails
     /// to inflate, or hashes to a different oid.
     pub async fn read(&self, oid: Oid) -> Result<(ObjectKind, Vec<u8>)> {
-        if let Some(decoded) = self
-            .cache
-            .lock()
-            .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
-            .get(&oid)
-            .cloned()
-        {
+        if let Some(decoded) = self.cached(oid)? {
+            return Ok(decoded);
+        }
+
+        self.load_bundle(oid).await?;
+        if let Some(decoded) = self.cached(oid)? {
             return Ok(decoded);
         }
 
@@ -107,6 +108,60 @@ impl<'a> ObjectReader<'a> {
             .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
             .insert(oid, decoded.clone());
         Ok(decoded)
+    }
+
+    fn cached(&self, oid: Oid) -> Result<Option<(ObjectKind, Vec<u8>)>> {
+        Ok(self
+            .cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
+            .get(&oid)
+            .cloned())
+    }
+
+    async fn load_bundle(&self, oid: Oid) -> Result<()> {
+        let oid_hex = oid.to_hex();
+        let shard = oid_hex[..2].to_string();
+        let should_fetch = self
+            .attempted_bundles
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry bundle-attempt lock is poisoned"))?
+            .insert(shard.clone());
+        if !should_fetch {
+            return Ok(());
+        }
+
+        let path = aos_registry_surface::object_bundle::shard_path(&shard)?;
+        let Some(bytes) = self
+            .fetch
+            .fetch_bounded(&path, aos_registry_surface::object_bundle::MAX_BUNDLE_BYTES)
+            .await?
+        else {
+            return Ok(());
+        };
+        let entries = match aos_registry_surface::object_bundle::decode(&shard, &bytes) {
+            Ok(entries) => entries,
+            Err(error) => {
+                tracing::warn!(%path, error = %format!("{error:#}"), "ignoring invalid object bundle");
+                return Ok(());
+            }
+        };
+
+        let mut decoded = Vec::with_capacity(entries.len());
+        for (entry_oid, loose) in entries {
+            match object::decode_loose(&loose, Some(entry_oid)) {
+                Ok(object) => decoded.push((entry_oid, object)),
+                Err(error) => {
+                    tracing::warn!(%path, %entry_oid, error = %format!("{error:#}"), "ignoring invalid object bundle");
+                    return Ok(());
+                }
+            }
+        }
+        self.cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
+            .extend(decoded);
+        Ok(())
     }
 
     /// Read one loose object, requiring a specific kind.

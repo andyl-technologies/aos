@@ -1380,6 +1380,7 @@ fn refresh_registry_object_store(dir: &Path) -> Result<()> {
     }
     objectstore::write_alternates(dir, &releases)?;
     objectstore::ensure_loose_completeness(dir)?;
+    objectstore::write_index_bundles(dir)?;
     objectstore::refresh_server_info(dir)?;
     persist_image_publication_receipt(dir)?;
     Ok(())
