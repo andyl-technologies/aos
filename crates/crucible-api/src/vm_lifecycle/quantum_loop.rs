@@ -4,9 +4,11 @@ use super::checkpoint_store::{PersistExactCheckpointError, prepare_exact_checkpo
 use super::*;
 
 mod checkpoint_capture;
+mod debug_policy;
 mod lifecycle;
 pub(super) use checkpoint_capture::ExactCheckpointPublicationState;
 use checkpoint_capture::{ExactCheckpointTransactionError, PendingExactCapture};
+use debug_policy::trusted_debug_listener;
 pub(super) use lifecycle::{
     DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
     decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
@@ -48,17 +50,20 @@ fn checkpoint_artifact_from_stopped_file(
 fn combine_exact_checkpoint_transaction(
     operation: Result<ContentHash, ExactCheckpointTransactionError>,
     cleanup: Result<(), SchedulerError>,
+    captures: Vec<PendingExactCapture>,
 ) -> Result<ContentHash, ExactCheckpointTransactionError> {
     match (operation, cleanup) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) => Err(error),
         (Ok(identity), Err(source)) => Err(ExactCheckpointTransactionError::Indeterminate {
             identity: Some(identity),
+            captures,
             source,
         }),
         (Err(ExactCheckpointTransactionError::Unpublished(error)), Err(cleanup)) => {
             Err(ExactCheckpointTransactionError::Indeterminate {
                 identity: None,
+                captures,
                 source: SchedulerError::BoundaryViolation {
                     message: format!(
                         "exact checkpoint failed before publication ({error}); releasing paused QEMU nodes also failed ({cleanup})"
@@ -67,16 +72,28 @@ fn combine_exact_checkpoint_transaction(
             })
         }
         (
-            Err(ExactCheckpointTransactionError::Indeterminate { identity, source }),
+            Err(ExactCheckpointTransactionError::Indeterminate {
+                identity,
+                captures: prior_captures,
+                source,
+            }),
             Err(cleanup),
-        ) => Err(ExactCheckpointTransactionError::Indeterminate {
-            identity,
-            source: SchedulerError::BoundaryViolation {
-                message: format!(
-                    "exact checkpoint publication was indeterminate ({source}); releasing paused QEMU nodes also failed ({cleanup})"
-                ),
-            },
-        }),
+        ) => {
+            let captures = if captures.is_empty() {
+                prior_captures
+            } else {
+                captures
+            };
+            Err(ExactCheckpointTransactionError::Indeterminate {
+                identity,
+                captures,
+                source: SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "exact checkpoint publication was indeterminate ({source}); releasing paused QEMU nodes also failed ({cleanup})"
+                    ),
+                },
+            })
+        }
     }
 }
 
@@ -1642,17 +1659,19 @@ impl ProductionVmLifecycleLoop {
                     node,
                     counter,
                     scheduler_time,
-                    service_state,
                     snapshot,
+                    snapshot_cleanup_pending: true,
+                    resume_pending: service_state == ProductionNodeServiceState::Running,
                 });
             }
             Ok(())
         })();
         if let Err(error) = capture_result {
-            let cleanup = self.release_exact_captures(&captured);
+            let cleanup = self.release_exact_captures(&mut captured);
             return combine_exact_checkpoint_transaction(
                 Err(ExactCheckpointTransactionError::Unpublished(error)),
                 cleanup,
+                captured,
             );
         }
 
@@ -1735,6 +1754,7 @@ impl ProductionVmLifecycleLoop {
                 PersistExactCheckpointError::Indeterminate { identity, source } => {
                     ExactCheckpointTransactionError::Indeterminate {
                         identity: Some(identity),
+                        captures: Vec::new(),
                         source,
                     }
                 }
@@ -1743,15 +1763,16 @@ impl ProductionVmLifecycleLoop {
         let prepared = match preparation {
             Ok(prepared) => prepared,
             Err(error) => {
-                let cleanup = self.release_exact_captures(&captured);
-                return combine_exact_checkpoint_transaction(Err(error), cleanup);
+                let cleanup = self.release_exact_captures(&mut captured);
+                return combine_exact_checkpoint_transaction(Err(error), cleanup, captured);
             }
         };
         let identity = prepared.identity();
         let was_already_published = prepared.was_already_published();
-        if let Err(source) = self.release_exact_captures(&captured) {
+        if let Err(source) = self.release_exact_captures(&mut captured) {
             return Err(ExactCheckpointTransactionError::Indeterminate {
                 identity: was_already_published.then_some(identity),
+                captures: captured,
                 source,
             });
         }
@@ -1765,6 +1786,7 @@ impl ProductionVmLifecycleLoop {
                 PersistExactCheckpointError::Indeterminate { identity, source } => {
                     ExactCheckpointTransactionError::Indeterminate {
                         identity: Some(identity),
+                        captures: Vec::new(),
                         source,
                     }
                 }
@@ -2127,41 +2149,6 @@ impl ProductionVmLifecycleLoop {
         }
         Ok(())
     }
-}
-
-/// Validates an operator listener against the lifecycle's debugger policy.
-fn trusted_debug_listener(
-    configured: &ProductionVmDebugConfig,
-    listen: &GdbListen,
-) -> Result<SocketAddr, SchedulerError> {
-    let requested: SocketAddr =
-        listen
-            .as_str()
-            .parse()
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!(
-                    "parse trusted debugger listener {}: {error}",
-                    listen.as_str()
-                ),
-            })?;
-    if !requested.ip().is_loopback() {
-        return Err(SchedulerError::BoundaryViolation {
-            message: format!(
-                "unauthenticated production debugger listener must be loopback, not {requested}"
-            ),
-        });
-    }
-    if !configured.allow_requested_loopback_listen && listen.as_str() != configured.operator_listen
-    {
-        return Err(SchedulerError::BoundaryViolation {
-            message: format!(
-                "requested debugger listener {} does not match configured listener {}",
-                listen.as_str(),
-                configured.operator_listen
-            ),
-        });
-    }
-    Ok(requested)
 }
 
 #[cfg(test)]
