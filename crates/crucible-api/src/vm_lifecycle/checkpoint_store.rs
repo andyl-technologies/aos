@@ -8,9 +8,15 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 mod io;
 use io::read_bounded_file;
+mod paths;
+use paths::{closure_parent, object_parent};
 mod publication;
-use publication::scheduler_resource_limit;
 pub(super) use publication::{PersistExactCheckpointError, PreparedExactCheckpointPublication};
+use publication::{enforce_published_checkpoint_count, scheduler_resource_limit};
+mod recovery;
+pub(super) use recovery::{
+    reconcile_indeterminate_publication, recover_published_checkpoint_catalog,
+};
 
 const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v4\0";
 const MANIFEST_FILE: &str = "manifest.cbor";
@@ -174,6 +180,12 @@ pub(super) fn prepare_exact_checkpoint_set(
         .map_err(|source| PersistExactCheckpointError::Indeterminate {
             identity: manifest.identity,
             source,
+        })?;
+        enforce_published_checkpoint_count(&closure_parent, resource_limits).map_err(|source| {
+            PersistExactCheckpointError::Indeterminate {
+                identity: manifest.identity,
+                source,
+            }
         })?;
         install_persisted_artifact_paths(&object_directory, &manifest, checkpoint).map_err(
             |source| PersistExactCheckpointError::Indeterminate {
@@ -2018,18 +2030,6 @@ const fn service_state_tag(state: ProductionNodeServiceState) -> u8 {
         ProductionNodeServiceState::PoweredOff => 2,
         ProductionNodeServiceState::PermanentlyFailed => 3,
     }
-}
-
-fn closure_parent(run_state_root: &Path, scenario: ContentHash) -> PathBuf {
-    run_state_root
-        .join(scenario.to_hex())
-        .join("checkpoint-closures")
-}
-
-fn object_parent(run_state_root: &Path, scenario: ContentHash) -> PathBuf {
-    run_state_root
-        .join(scenario.to_hex())
-        .join("checkpoint-objects")
 }
 
 pub(super) fn checkpoint_dag_store(

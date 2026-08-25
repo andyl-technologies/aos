@@ -384,6 +384,8 @@ in
           run_exact_api_test \
             vm_lifecycle::checkpoint_store::publication::tests::published_checkpoint_count_ignores_transaction_staging_directories
           run_exact_api_test \
+            vm_lifecycle::checkpoint_recovery::tests::fresh_process_removes_only_abandoned_checkpoint_staging
+          run_exact_api_test \
             vm_lifecycle::storage_faults::tests::ambiguous_shared_ninep_commit_poisons_runtime_before_return
           test "$(grep -Fc '    fn prepare_terminal_replacements(' \
             crates/crucible-api/src/vm_lifecycle/quantum_loop.rs)" -eq 1

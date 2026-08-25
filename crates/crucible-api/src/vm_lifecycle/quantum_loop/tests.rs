@@ -37,12 +37,13 @@ fn exact_capture_reports_publication_and_release_failures_together() {
         message: String::from("resume failed"),
     });
 
-    let error = match combine_exact_checkpoint_transaction(publication, cleanup) {
+    let error = match combine_exact_checkpoint_transaction(publication, cleanup, Vec::new()) {
         Ok(_) => panic!("both failures must reject capture"),
         Err(ExactCheckpointTransactionError::Indeterminate {
             identity: None,
+            captures,
             source,
-        }) => source,
+        }) if captures.is_empty() => source,
         Err(_) => panic!("cleanup failure must make unpublished capture indeterminate"),
     };
 
@@ -58,7 +59,7 @@ fn exact_capture_retains_durable_identity_when_release_fails() {
     });
 
     assert!(matches!(
-        combine_exact_checkpoint_transaction(Ok(identity), cleanup),
+        combine_exact_checkpoint_transaction(Ok(identity), cleanup, Vec::new()),
         Err(ExactCheckpointTransactionError::Indeterminate {
             identity: Some(observed),
             ..
