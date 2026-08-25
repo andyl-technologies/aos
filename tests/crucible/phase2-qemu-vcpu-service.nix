@@ -84,6 +84,14 @@ in
               ${./phase2-qemu-vcpu-service.c} \
               -o crucible-vcpu-service.so \
               $(pkg-config --libs glib-2.0)
+            "$CC" -shared -fPIC \
+              -I${qemuPackage}/include/qemu \
+              -I${qemuPackage}/include \
+              -I${./.} \
+              $(pkg-config --cflags glib-2.0) \
+              ${./phase2-qemu-vcpu-state.c} \
+              -o crucible-vcpu-state.so \
+              $(pkg-config --libs glib-2.0)
             as --32 ${./phase2-qemu-fault-guest.S} -o fault-guest-x86.o
             ld -m elf_i386 -T ${./phase2-qemu-fault-guest.ld} \
               fault-guest-x86.o -o fault-guest-x86.elf
@@ -149,6 +157,53 @@ in
               run_service aarch64 3 "$numerator" "$denominator"
             done
 
+            run_state() {
+              architecture="$1"
+              architecture_id="$2"
+              case "$architecture" in
+                x86_64)
+                  qemu_binary=${qemuPackage}/bin/qemu-system-x86_64
+                  machine_args='-machine pc -m 64M'
+                  guest=fault-guest-x86.elf
+                  ;;
+                aarch64)
+                  qemu_binary=${qemuPackage}/bin/qemu-system-aarch64
+                  machine_args='-machine virt -cpu max -m 64M'
+                  guest=fault-guest-aarch64.elf
+                  ;;
+                *)
+                  echo "unknown architecture: $architecture" >&2
+                  exit 1
+                  ;;
+              esac
+              log="logs/$architecture-vcpu-state.log"
+              set +e
+              timeout 120 "$qemu_binary" \
+                $machine_args \
+                -accel sim \
+                -icount shift=0,rr_switch_quantum=256 \
+                -smp 1 \
+                -nographic \
+                -no-reboot \
+                -serial none \
+                -monitor none \
+                -kernel "$guest" \
+                -plugin "$PWD/crucible-vcpu-state.so,architecture=$architecture_id" \
+                > "$log" 2>&1
+              state_status=$?
+              set -e
+              cat "$log"
+              test "$state_status" -eq 0
+              grep -Fqx \
+                "CRUCIBLE_VCPU_STATE_LIVE_PASS architecture=$architecture_id transitions=online-offline-online-stalled-online evidence=CRUCVST1" \
+                "$log"
+              test "$(grep -Fc CRUCIBLE_VCPU_STATE_LIVE_PASS "$log")" -eq 1
+              ! grep -Fq 'Crucible vCPU state live test failed' "$log"
+            }
+
+            run_state x86_64 2
+            run_state aarch64 3
+
             set +e
             timeout --kill-after=5 15 \
               ${pkgs.qemu}/bin/qemu-system-x86_64 \
@@ -185,6 +240,9 @@ in
               printf 'backend=actual-patched-and-stock-qemu\n'
               printf 'live_ratios=1/1,1/2,1/3\n'
               printf 'live_windows_per_case=6\n'
+              printf 'live_vcpu_states=online,offline,stalled,recovery\n'
+              printf 'production_effect_row=cpu.service|service-ratio-ledger|gate:patch-microtests|actual-patched-qemu|CRUCVCS1\n'
+              printf 'production_effect_row=cpu.vcpu_state|online-offline-stalled-recovery|gate:patch-microtests|actual-patched-qemu|CRUCVST1\n'
             } > "$out/result"
           '';
         }
