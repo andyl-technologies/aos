@@ -753,11 +753,15 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   identities, and reuses unchanged chunked artifacts. The daemon prepares this
   replacement without writes, routes it through the linear source/replacement
   staging and publication phases, and reauthenticates both complete roots after
-  restart before the final paused-root CAS. Assignment-root-aware cleanup of
-  abandoned native entries, the automatic multi-node comparison flight, and
-  capability advertisement remain open before the executor may claim exact
-  resume. Production-loop process reconstruction and exact-resume driver
-  selection are implemented: `NotRun` is rejected during no-write admission,
+  restart before the final paused-root CAS. The daemon can now authenticate the
+  raw attempt root, stream one live-node snapshot at a time, and serialize the
+  complete multi-node fat/thin comparison through node-specific guarded oracle
+  owners that finish or quarantine before preparing that replacement.
+  Assignment-root-aware cleanup of abandoned
+  native entries, automatic packaged scheduling and restart retry of this
+  comparison phase, and capability advertisement remain open before the
+  executor may claim exact resume. Production-loop process reconstruction and
+  exact-resume driver selection are implemented: `NotRun` is rejected during no-write admission,
   the exact closure is restored under the attempt guard, and the packaged
   worker uses a disjoint exact-origin runner. A guarded-only
   exact-root launcher now consumes that

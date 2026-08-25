@@ -6,8 +6,12 @@
 //! then uses linear phase tokens to establish the promoted root as a durable GC
 //! root before its first write.
 
+use std::collections::BTreeMap;
+use std::path::Path;
+
 use crucible::{Configuration, ScenarioDefForm, World};
-use crucible_campaign::{ExactCheckpointId, ExecutionId};
+use crucible_api::LifecycleApiError;
+use crucible_campaign::{AttemptResourceLimits, ExactCheckpointId, ExecutionId};
 use crucible_qemu::{
     QemuFailedLaunchChildSource, QemuGuardedNodeRealizationLauncher,
     QemuGuardedThinNodeRealizationLauncher, QemuNodeRealizationExecutor, QemuVmRealizationError,
@@ -22,9 +26,11 @@ use crate::{
     ExecutionCancellation, LocalExecutorError, LocalExecutorSupervisor,
     MaterializedAttemptCheckpoint, PrepareReplayOraclePromotionError,
     PreparedProductionAttemptReplayOraclePromotion, PreparedReplayOraclePromotion,
-    ProductionAttemptCheckpointRestoreError, QemuAttemptProcessResourceGuard,
-    QemuGuardedReplayOracleSession,
+    ProductionAttemptCheckpointRestoreError, QemuAttemptOperationalBoundary,
+    QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard, QemuGuardedReplayOracleSession,
     authenticate_production_exact_checkpoint_replay_oracle_promotion,
+    install_attempt_production_exact_checkpoint,
+    prepare_attempt_production_replay_oracle_promotion,
 };
 
 /// Replay-validated replacement bound to one paused attempt execution.
@@ -49,6 +55,135 @@ pub struct PausedCheckpointPromotionTarget<'a> {
     world: &'a World,
     configuration: &'a Configuration,
     materialized: &'a MaterializedAttemptCheckpoint,
+}
+
+/// Complete semantic and operational basis for one production-root comparison.
+#[derive(Clone, Copy)]
+pub struct ProductionPausedCheckpointPromotionTarget<'a> {
+    key: AttemptExecutionKey,
+    execution: ExecutionId,
+    raw: ExactCheckpointId,
+    source: &'a ScenarioDefForm,
+    initial: &'a Configuration,
+    post_selection: Option<&'a Configuration>,
+    run_state_root: &'a Path,
+    cancellation: &'a ExecutionCancellation,
+    resources: AttemptResourceLimits,
+}
+
+impl<'a> ProductionPausedCheckpointPromotionTarget<'a> {
+    /// Binds one raw production root to its exact attempt and install authority.
+    #[must_use]
+    // crucible-lint: allow rust-allow -- every independent promotion basis is explicit at construction.
+    #[allow(clippy::too_many_arguments)]
+    pub const fn new(
+        key: AttemptExecutionKey,
+        execution: ExecutionId,
+        raw: ExactCheckpointId,
+        source: &'a ScenarioDefForm,
+        initial: &'a Configuration,
+        post_selection: Option<&'a Configuration>,
+        run_state_root: &'a Path,
+        cancellation: &'a ExecutionCancellation,
+        resources: AttemptResourceLimits,
+    ) -> Self {
+        Self {
+            key,
+            execution,
+            raw,
+            source,
+            initial,
+            post_selection,
+            run_state_root,
+            cancellation,
+            resources,
+        }
+    }
+}
+
+/// Factory for node-specific guarded production replay-oracle sessions.
+///
+/// Each call must construct an executor for exactly `node`, a realization store
+/// scoped to the same world, and one newly installed attempt guard. The caller
+/// verifies the executor node plus the guard's exact resource/cancellation
+/// basis, runs both realization paths, and structurally finishes the guarded
+/// session before asking for another node.
+pub trait ProductionPausedCheckpointReplayFactory {
+    /// Node-specific immutable realization lookup capability.
+    type Store: QemuVmRealizationStore;
+    /// Node-specific guarded fat/thin launcher.
+    type Launcher: QemuGuardedNodeRealizationLauncher
+        + QemuGuardedThinNodeRealizationLauncher
+        + QemuFailedLaunchChildSource;
+    /// Attempt resource owner retained until comparison cleanup.
+    type Guard: QemuAttemptProcessResourceGuard;
+
+    /// Installs one node-specific guarded comparison session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when node-specific store, launcher,
+    /// process containment, or resource admission cannot be established. An
+    /// error return must leave no launched process or retained resource owner.
+    // crucible-lint: allow rust-allow -- the explicit generic session is the linear store/executor/guard capability bundle.
+    #[allow(clippy::type_complexity)]
+    fn begin_target(
+        &mut self,
+        world: &World,
+        configuration: &Configuration,
+        node: &crucible::NodeId,
+        cancellation: &ExecutionCancellation,
+        resources: AttemptResourceLimits,
+    ) -> Result<
+        ProductionPausedCheckpointReplaySession<Self::Store, Self::Launcher, Self::Guard>,
+        QemuVmRealizationError,
+    >;
+}
+
+/// Newly admitted node-specific replay session before either QEMU path starts.
+///
+/// The value keeps the realization store, fixed-node executor, and exact
+/// attempt resource guard linear across the factory/orchestrator boundary.
+pub struct ProductionPausedCheckpointReplaySession<S, L, G>
+where
+    S: QemuVmRealizationStore,
+    L: QemuGuardedNodeRealizationLauncher
+        + QemuGuardedThinNodeRealizationLauncher
+        + QemuFailedLaunchChildSource,
+    G: QemuAttemptProcessResourceGuard,
+{
+    realization_store: S,
+    executor: QemuNodeRealizationExecutor<L>,
+    guard: G,
+}
+
+impl<S, L, G> ProductionPausedCheckpointReplaySession<S, L, G>
+where
+    S: QemuVmRealizationStore,
+    L: QemuGuardedNodeRealizationLauncher
+        + QemuGuardedThinNodeRealizationLauncher
+        + QemuFailedLaunchChildSource,
+    G: QemuAttemptProcessResourceGuard,
+{
+    /// Binds one unopened fixed-node executor to its store and attempt guard.
+    #[must_use]
+    pub const fn new(
+        realization_store: S,
+        executor: QemuNodeRealizationExecutor<L>,
+        guard: G,
+    ) -> Self {
+        Self {
+            realization_store,
+            executor,
+            guard,
+        }
+    }
+
+    /// Consumes the admission into its linear realization capabilities.
+    #[must_use]
+    pub fn into_parts(self) -> (S, QemuNodeRealizationExecutor<L>, G) {
+        (self.realization_store, self.executor, self.guard)
+    }
 }
 
 impl<'a> PausedCheckpointPromotionTarget<'a> {
@@ -184,6 +319,12 @@ pub enum PausedCheckpointPromotionStageOutcome {
 /// QEMU comparison or no-write promotion preparation failure.
 #[derive(Debug, Error)]
 pub enum PausedCheckpointPromotionPreparationError {
+    /// Production-root installation or no-write replacement preparation failed.
+    #[error(transparent)]
+    ProductionRestore(#[from] ProductionAttemptCheckpointRestoreError),
+    /// The portable production closure could not stream one raw live target.
+    #[error(transparent)]
+    ProductionClosure(#[from] LifecycleApiError),
     /// Fat/thin realization, comparison, or mandatory cleanup failed.
     #[error(transparent)]
     Realization(#[from] QemuVmRealizationError),
@@ -270,6 +411,137 @@ where
         target.execution,
         promotion,
     ))
+}
+
+/// Validates every live node in one raw production root and prepares promotion.
+///
+/// The raw root first passes complete attempt-prefix installation. Its live
+/// snapshot bodies are then streamed one at a time through a node-specific
+/// guarded replay oracle. Each target's process authority is reaped or
+/// quarantined before the next target is opened, and only compact source-bound
+/// checks survive to prepare the replacement. This function changes neither
+/// immutable campaign storage nor operational ledger state.
+///
+/// # Errors
+///
+/// Returns [`PausedCheckpointPromotionPreparationError`] when installation or
+/// target streaming fails, cancellation wins, any node's fat/thin realization
+/// differs or fails, mandatory cleanup cannot attest reap, or the no-write
+/// replacement does not derive exactly from the raw root.
+pub fn validate_and_prepare_production_paused_checkpoint_promotion<F>(
+    checkpoints: &ExactCheckpointStore,
+    target: ProductionPausedCheckpointPromotionTarget<'_>,
+    factory: &mut F,
+) -> Result<PreparedPausedCheckpointPromotion, PausedCheckpointPromotionPreparationError>
+where
+    F: ProductionPausedCheckpointReplayFactory,
+{
+    let installed = install_attempt_production_exact_checkpoint(
+        checkpoints,
+        target.raw,
+        target.source,
+        target.initial,
+        target.post_selection,
+        target.run_state_root,
+        target.cancellation,
+    )?;
+    let mut boundary = || {
+        if target.cancellation.is_canceled() {
+            Err(LifecycleApiError::LoopFactory {
+                message: String::from("production replay-oracle target streaming canceled"),
+            })
+        } else {
+            Ok(())
+        }
+    };
+    let mut targets = installed
+        .closure()
+        .replay_oracle_targets_with_boundary(&mut boundary)
+        .map_err(|error| map_production_target_error(error, target.cancellation))?;
+
+    let mut checks = BTreeMap::new();
+    loop {
+        let next = targets
+            .next_target_with_boundary(&mut boundary)
+            .map_err(|error| map_production_target_error(error, target.cancellation))?;
+        let Some(next) = next else {
+            break;
+        };
+        let (mut realization_store, mut executor, mut guard) = factory
+            .begin_target(
+                target.source.world(),
+                installed.configuration(),
+                next.node(),
+                target.cancellation,
+                target.resources,
+            )?
+            .into_parts();
+        if executor.node() != next.node()
+            || guard.resource_limits() != target.resources
+            || !guard.cancellation().same_incarnation(target.cancellation)
+        {
+            guard.finish()?;
+            return Err(QemuVmRealizationError::Executor {
+                operation: "admit production replay-oracle target",
+                message: String::from(
+                    "node executor or resource guard does not match the requested target",
+                ),
+            }
+            .into());
+        }
+        let mut session = QemuGuardedReplayOracleSession::new(&mut executor, guard);
+        let comparison = check_qemu_snapshot_replay_oracle_bound(
+            target.source.world(),
+            installed.configuration(),
+            next.snapshot(),
+            &mut realization_store,
+            &mut session,
+            crucible_qemu::QemuExactSnapshotPolicy::production(),
+        );
+        let cleanup = session.finish();
+        let check = match (comparison, cleanup) {
+            (_, Err(cleanup)) => return Err(cleanup.into()),
+            (Err(comparison), Ok(())) => return Err(comparison.into()),
+            (Ok(check), Ok(())) => check,
+        };
+        if checks.insert(next.node().clone(), check).is_some() {
+            return Err(
+                PausedCheckpointPromotionPreparationError::ProductionClosure(
+                    LifecycleApiError::LoopFactory {
+                        message: String::from(
+                            "production replay-oracle target set contains a duplicate node",
+                        ),
+                    },
+                ),
+            );
+        }
+    }
+
+    let promotion = prepare_attempt_production_replay_oracle_promotion(
+        checkpoints,
+        target.raw,
+        &installed,
+        &checks,
+        target.cancellation,
+    )?;
+    Ok(PreparedPausedCheckpointPromotion::new_production(
+        target.key,
+        target.execution,
+        promotion,
+    ))
+}
+
+fn map_production_target_error(
+    error: LifecycleApiError,
+    cancellation: &ExecutionCancellation,
+) -> PausedCheckpointPromotionPreparationError {
+    if cancellation.is_canceled() {
+        PausedCheckpointPromotionPreparationError::ProductionRestore(
+            ProductionAttemptCheckpointRestoreError::Canceled,
+        )
+    } else {
+        PausedCheckpointPromotionPreparationError::ProductionClosure(error)
+    }
 }
 
 /// Installs both promotion roots with one short supervisor CAS.

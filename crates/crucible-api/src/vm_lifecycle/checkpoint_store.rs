@@ -86,6 +86,106 @@ pub struct ProductionExactCheckpointClosure {
     objects: Vec<ProductionExactCheckpointObject>,
 }
 
+/// One raw live-node snapshot streamed from a production checkpoint closure.
+///
+/// The value owns only one decoded snapshot. Callers advance the corresponding
+/// [`ProductionExactCheckpointReplayTargets`] cursor before loading another,
+/// which keeps additional decoded-target memory to one snapshot at a time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductionExactCheckpointReplayTarget {
+    node: NodeId,
+    snapshot: QemuVmSnapshot,
+}
+
+/// Bounded cursor over the raw live-node snapshots in one production closure.
+///
+/// Construction completely authenticates the closure and retains only its
+/// compact target descriptors. Each call to [`Self::next_target`] opens,
+/// authenticates, and decodes at most one configured fat-checkpoint body.
+pub struct ProductionExactCheckpointReplayTargets<'a> {
+    closure: &'a ProductionExactCheckpointClosure,
+    targets: Vec<(NodeId, ContentHash)>,
+    next: usize,
+    snapshot_limit: u64,
+}
+
+impl ProductionExactCheckpointReplayTarget {
+    /// Returns the exact live node that owns this snapshot.
+    #[must_use]
+    pub const fn node(&self) -> &NodeId {
+        &self.node
+    }
+
+    /// Returns the authenticated raw snapshot for this node.
+    #[must_use]
+    pub const fn snapshot(&self) -> &QemuVmSnapshot {
+        &self.snapshot
+    }
+
+    /// Consumes the target into its node and snapshot values.
+    #[must_use]
+    pub fn into_parts(self) -> (NodeId, QemuVmSnapshot) {
+        (self.node, self.snapshot)
+    }
+}
+
+impl ProductionExactCheckpointReplayTargets<'_> {
+    /// Returns the number of target descriptors not yet decoded.
+    #[must_use]
+    pub fn remaining(&self) -> usize {
+        self.targets.len().saturating_sub(self.next)
+    }
+
+    /// Opens and authenticates the next raw live-node snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the next snapshot is unavailable,
+    /// corrupt, outside its configured byte bound, or already carries durable
+    /// replay-oracle evidence instead of the required raw `NotRun` state.
+    pub fn next_target(
+        &mut self,
+    ) -> Result<Option<ProductionExactCheckpointReplayTarget>, LifecycleApiError> {
+        self.next_target_with_boundary(&mut || Ok(()))
+    }
+
+    /// Opens the next target while observing an operational boundary.
+    ///
+    /// The callback runs before and throughout the bounded object read and
+    /// after canonical decoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::next_target`], including the exact
+    /// [`LifecycleApiError`] returned by `boundary`.
+    pub fn next_target_with_boundary(
+        &mut self,
+        boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+    ) -> Result<Option<ProductionExactCheckpointReplayTarget>, LifecycleApiError> {
+        boundary()?;
+        let Some((node, identity)) = self.targets.get(self.next).cloned() else {
+            return Ok(None);
+        };
+        let snapshot =
+            read_portable_snapshot(self.closure, identity, self.snapshot_limit, boundary)?;
+        if snapshot.replay_oracle_validation() != QemuReplayOracleValidation::NotRun {
+            return Err(loop_factory_error(format!(
+                "production replay-oracle source for `{}` is not raw",
+                node.name
+            )));
+        }
+        boundary()?;
+        self.next = self
+            .next
+            .checked_add(1)
+            .ok_or_else(|| loop_factory_error("production replay-oracle target cursor overflow"))?;
+        Ok(Some(ProductionExactCheckpointReplayTarget {
+            node,
+            snapshot,
+        }))
+    }
+}
+
 /// Authenticated modeled continuation recovered from one production closure.
 ///
 /// The value contains no filesystem or QEMU launch authority. It is the exact
@@ -213,6 +313,49 @@ impl ProductionExactCheckpointClosure {
     #[must_use]
     pub fn objects(&self) -> &[ProductionExactCheckpointObject] {
         &self.objects
+    }
+
+    /// Authenticates a bounded cursor over every raw live-node snapshot.
+    ///
+    /// The complete production closure is validated before the cursor is
+    /// returned. Only compact node/object descriptors are retained; snapshot
+    /// bodies are opened and decoded one at a time by the cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the closure is incomplete, corrupt,
+    /// semantically inconsistent, or outside its authored bounds.
+    pub fn replay_oracle_targets(
+        &self,
+    ) -> Result<ProductionExactCheckpointReplayTargets<'_>, LifecycleApiError> {
+        self.replay_oracle_targets_with_boundary(&mut || Ok(()))
+    }
+
+    /// Builds the raw-target cursor under an operational boundary callback.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::replay_oracle_targets`], including
+    /// the exact [`LifecycleApiError`] returned by `boundary`.
+    pub fn replay_oracle_targets_with_boundary(
+        &self,
+        boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+    ) -> Result<ProductionExactCheckpointReplayTargets<'_>, LifecycleApiError> {
+        self.validate_complete_with_boundary(boundary)?;
+        let limits = self.source.plan().fault_signals().resource_limits();
+        let manifest = decode::decode_manifest_with_limits(self.manifest(), limits)?;
+        let targets = manifest
+            .targets
+            .into_iter()
+            .map(|target| (NodeId { name: target.node }, target.snapshot))
+            .collect();
+        boundary()?;
+        Ok(ProductionExactCheckpointReplayTargets {
+            closure: self,
+            targets,
+            next: 0,
+            snapshot_limit: limits.fat_checkpoint_bytes,
+        })
     }
 
     /// Opens one exact object at its first byte.
@@ -4050,6 +4193,44 @@ mod tests {
             .expect("open raw production closure");
         raw.validate_complete()
             .expect("raw production closure should authenticate");
+        let mut replay_targets = raw
+            .replay_oracle_targets()
+            .expect("authenticate raw production replay targets");
+        assert_eq!(replay_targets.remaining(), 1);
+        let replay_target = replay_targets
+            .next_target()
+            .expect("stream raw production replay target")
+            .expect("one raw production replay target");
+        assert_eq!(replay_target.node(), &node);
+        assert_eq!(replay_target.snapshot().id(), raw_snapshot);
+        assert_eq!(replay_targets.remaining(), 0);
+        assert!(
+            replay_targets
+                .next_target()
+                .expect("finish raw production replay targets")
+                .is_none()
+        );
+        let mut retry_targets = raw
+            .replay_oracle_targets()
+            .expect("authenticate retryable raw production targets");
+        assert!(
+            retry_targets
+                .next_target_with_boundary(&mut || {
+                    Err(LifecycleApiError::LoopFactory {
+                        message: String::from("injected target boundary failure"),
+                    })
+                })
+                .is_err()
+        );
+        assert_eq!(retry_targets.remaining(), 1);
+        assert_eq!(
+            retry_targets
+                .next_target()
+                .expect("retry the same production target")
+                .expect("retried production target")
+                .node(),
+            &node,
+        );
         assert!(
             !raw.authenticate_resume_basis()
                 .expect("raw production resume basis")
@@ -4113,6 +4294,13 @@ mod tests {
                 .expect("promoted production resume basis")
                 .replay_oracle_ready(),
             "the exact source-bound Match replacement must be resume eligible",
+        );
+        let mut promoted_targets = promoted
+            .replay_oracle_targets()
+            .expect("authenticate promoted production replay targets");
+        assert!(
+            promoted_targets.next_target().is_err(),
+            "a promoted snapshot must not be exposed as a raw comparison source",
         );
         raw.authenticate_replay_oracle_promotion(&promoted)
             .expect("restart validation should authenticate the exact root pair");
