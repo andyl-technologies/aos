@@ -7,6 +7,7 @@
 //! remain behind [`AttemptExecutionModel`]; campaign storage stays language and
 //! runtime neutral.
 
+use crucible::ContentHash;
 use crucible_campaign::{
     Attempt, AttemptResourceLimits, AttemptStart, BranchPath, CampaignExecutorStore,
     CampaignLineage, CampaignRepositoryError, ConfigurationArtifact, ExactCheckpointId,
@@ -14,12 +15,15 @@ use crucible_campaign::{
     ResolvedSelection, ScenarioArtifact, SubmitAttemptRequest,
 };
 
+use crate::exact_checkpoint_store::AttemptCheckpointResultState;
+use crate::executor_supervisor::ExecutionCheckpointHandoff;
 use crate::{
-    AssignmentLedger, AttemptAdmissionValidator, CancellationOutcome, CapturedExactCheckpoint,
-    CheckpointCompletionOutcome, CheckpointPublicationOutcome, CompletionOutcome,
-    ExactCheckpointPublication, ExactCheckpointStore, ExactCheckpointStoreError,
-    ExecutionCancellation, ExecutionCheckpointRequest, LocalExecutorError, LocalExecutorSupervisor,
-    ObservationPublicationOutcome, PreparedExactCheckpoint, QueuedAttempt,
+    AssignmentLedger, AttemptAdmissionValidator, AttemptCheckpointPublication,
+    AttemptCheckpointResult, CancellationOutcome, CapturedAttemptCheckpoint,
+    CheckpointCompletionOutcome, CheckpointHandoffFailure, CheckpointPublicationOutcome,
+    CompletionOutcome, ExactCheckpointStore, ExactCheckpointStoreError, ExecutionCancellation,
+    ExecutionCheckpointRequest, LocalExecutorError, LocalExecutorSupervisor,
+    ObservationPublicationOutcome, PreparedAttemptCheckpoint, QueuedAttempt,
 };
 
 /// Fully authenticated discovery or branch start supplied to an execution model.
@@ -87,7 +91,10 @@ impl AttemptExecutionInput {
 /// contains no assignment ID or daemon epoch and must not influence canonical
 /// child or observation bytes. The runner uses it only to enforce local
 /// resource ceilings, interrupt work, and select the exact durable checkpoint
-/// for a resumed incarnation. A model MUST either restore
+/// for a resumed incarnation. The packaged QEMU runner also receives an opaque
+/// pool-owned handoff that can prepare and durably stage a captured root; it is
+/// not exposed as modeled input and cannot affect canonical evidence. A model
+/// MUST either restore
 /// [`Self::resume_checkpoint`] exactly or fail before beginning guest work; it
 /// must never silently restart a resumed attempt from its original
 /// configuration.
@@ -98,6 +105,8 @@ pub struct AttemptExecutionContext {
     cancellation: ExecutionCancellation,
     checkpoint_request: ExecutionCheckpointRequest,
     resume_checkpoint: Option<ExactCheckpointId>,
+    checkpoint_scenario: Option<ContentHash>,
+    checkpoint_handoff: Option<ExecutionCheckpointHandoff>,
 }
 
 impl AttemptExecutionContext {
@@ -115,6 +124,8 @@ impl AttemptExecutionContext {
             cancellation,
             checkpoint_request,
             resume_checkpoint: None,
+            checkpoint_scenario: None,
+            checkpoint_handoff: None,
         }
     }
 
@@ -125,6 +136,16 @@ impl AttemptExecutionContext {
         checkpoint: Option<ExactCheckpointId>,
     ) -> Self {
         self.resume_checkpoint = checkpoint;
+        self
+    }
+
+    pub(crate) fn with_checkpoint_handoff(
+        mut self,
+        scenario: ContentHash,
+        handoff: Option<ExecutionCheckpointHandoff>,
+    ) -> Self {
+        self.checkpoint_scenario = Some(scenario);
+        self.checkpoint_handoff = handoff;
         self
     }
 
@@ -158,16 +179,56 @@ impl AttemptExecutionContext {
         self.resume_checkpoint
     }
 
+    pub(crate) fn prepare_and_stage_checkpoint(
+        &self,
+        capture: CapturedAttemptCheckpoint,
+    ) -> Result<AttemptCheckpointResult, AttemptWorkerFailure<CheckpointHandoffFailure>> {
+        if self.cancellation.is_canceled() {
+            return Err(AttemptWorkerFailure::Canceled(
+                CheckpointHandoffFailure::Canceled,
+            ));
+        }
+        if self
+            .checkpoint_scenario
+            .is_some_and(|scenario| capture.scenario() != scenario)
+        {
+            return Err(AttemptWorkerFailure::Terminal(
+                CheckpointHandoffFailure::Terminal,
+            ));
+        }
+        let Some(handoff) = &self.checkpoint_handoff else {
+            return Ok(capture.into());
+        };
+        match handoff.prepare_and_stage(&capture) {
+            Ok(prepared) => Ok(AttemptCheckpointResult::from_prepared(prepared)),
+            Err(CheckpointHandoffFailure::Retryable) => Err(AttemptWorkerFailure::Retryable(
+                CheckpointHandoffFailure::Retryable,
+            )),
+            Err(CheckpointHandoffFailure::Canceled) => Err(AttemptWorkerFailure::Canceled(
+                CheckpointHandoffFailure::Canceled,
+            )),
+            Err(CheckpointHandoffFailure::Terminal) => Err(AttemptWorkerFailure::Terminal(
+                CheckpointHandoffFailure::Terminal,
+            )),
+        }
+    }
+
     /// Returns whether another context names the exact same execution contract.
     #[must_use]
     pub fn matches(&self, other: &Self) -> bool {
         self.resources == other.resources
             && self.retention == other.retention
             && self.resume_checkpoint == other.resume_checkpoint
+            && self.checkpoint_scenario == other.checkpoint_scenario
             && self.cancellation.same_incarnation(&other.cancellation)
             && self
                 .checkpoint_request
                 .same_incarnation(&other.checkpoint_request)
+            && match (&self.checkpoint_handoff, &other.checkpoint_handoff) {
+                (Some(left), Some(right)) => left.same_incarnation(right),
+                (None, None) => true,
+                (Some(_), None) | (None, Some(_)) => false,
+            }
     }
 }
 
@@ -200,7 +261,7 @@ pub enum AttemptExecutionProduct {
     /// The attempt reached its modeled stop and produced immutable evidence.
     Observation(Box<ObservationCandidate>),
     /// A durable checkpoint request won at an exact scheduler boundary.
-    ExactCheckpoint(Box<CapturedExactCheckpoint>),
+    ExactCheckpoint(Box<AttemptCheckpointResult>),
 }
 
 impl AttemptExecutionProduct {
@@ -208,6 +269,12 @@ impl AttemptExecutionProduct {
     #[must_use]
     pub fn observation(candidate: ObservationCandidate) -> Self {
         Self::Observation(Box::new(candidate))
+    }
+
+    /// Wraps one complete attempt checkpoint capture.
+    #[must_use]
+    pub fn exact_checkpoint(capture: impl Into<AttemptCheckpointResult>) -> Self {
+        Self::ExactCheckpoint(Box::new(capture.into()))
     }
 }
 
@@ -339,13 +406,17 @@ where
         let input = self
             .resolve_input(queued.request())
             .map_err(repository_worker_failure)?;
+        let expected_scenario = ContentHash {
+            bytes: input.lineage().scenario().as_hash().as_bytes(),
+        };
         let context = AttemptExecutionContext::new(
             queued.request().resources(),
             queued.request().retention(),
             queued.cancellation().clone(),
             queued.checkpoint_request().clone(),
         )
-        .with_resume_checkpoint(queued.origin().checkpoint());
+        .with_resume_checkpoint(queued.origin().checkpoint())
+        .with_checkpoint_handoff(expected_scenario, queued.checkpoint_handoff().cloned());
         let product = self
             .model
             .execute(&input, &context)
@@ -369,11 +440,18 @@ where
                     ));
                 }
             }
-            AttemptExecutionProduct::ExactCheckpoint(_) => {
+            AttemptExecutionProduct::ExactCheckpoint(checkpoint) => {
                 if !queued.checkpoint_request().is_requested() {
                     return Err(AttemptWorkerFailure::Terminal(
                         RepositoryAttemptWorkerError::IncompatibleResult {
                             reason: "execution returned an unsolicited exact checkpoint",
+                        },
+                    ));
+                }
+                if checkpoint.scenario() != expected_scenario {
+                    return Err(AttemptWorkerFailure::Terminal(
+                        RepositoryAttemptWorkerError::IncompatibleResult {
+                            reason: "exact checkpoint differs from assignment scenario",
                         },
                     ));
                 }
@@ -504,7 +582,7 @@ pub struct PendingAttemptResult {
 #[derive(Debug)]
 pub struct PendingCheckpointResult {
     queued: QueuedAttempt,
-    capture: CapturedExactCheckpoint,
+    checkpoint: AttemptCheckpointResult,
 }
 
 impl PendingCheckpointResult {
@@ -516,14 +594,14 @@ impl PendingCheckpointResult {
 
     /// Returns the captured metadata and opaque VMState source.
     #[must_use]
-    pub const fn capture(&self) -> &CapturedExactCheckpoint {
-        &self.capture
+    pub const fn checkpoint(&self) -> &AttemptCheckpointResult {
+        &self.checkpoint
     }
 
     /// Consumes the pending value into its execution token and capture.
     #[must_use]
-    pub fn into_parts(self) -> (QueuedAttempt, CapturedExactCheckpoint) {
-        (self.queued, self.capture)
+    pub fn into_parts(self) -> (QueuedAttempt, AttemptCheckpointResult) {
+        (self.queued, self.checkpoint)
     }
 }
 
@@ -565,7 +643,7 @@ pub struct StagedAttemptResult {
 #[derive(Debug)]
 pub struct PreparedCheckpointResult {
     queued: QueuedAttempt,
-    checkpoint: PreparedExactCheckpoint,
+    checkpoint: PreparedAttemptCheckpoint,
 }
 
 /// Read-only-prepared worker result ready for its short supervisor phase.
@@ -580,7 +658,7 @@ pub enum PreparedAttemptWorkResult {
 impl PreparedCheckpointResult {
     /// Binds a no-write checkpoint preparation to its consumed worker token.
     #[must_use]
-    pub const fn new(queued: QueuedAttempt, checkpoint: PreparedExactCheckpoint) -> Self {
+    pub const fn new(queued: QueuedAttempt, checkpoint: PreparedAttemptCheckpoint) -> Self {
         Self { queued, checkpoint }
     }
 
@@ -621,7 +699,7 @@ impl StagedCheckpointResult {
 #[derive(Debug)]
 pub struct PublishedCheckpointResult {
     queued: QueuedAttempt,
-    publication: ExactCheckpointPublication,
+    publication: AttemptCheckpointPublication,
 }
 
 impl PublishedCheckpointResult {
@@ -911,7 +989,7 @@ pub fn publish_staged_checkpoint_result(
     store: &ExactCheckpointStore,
     staged: StagedCheckpointResult,
 ) -> Result<PublishedCheckpointResult, CheckpointResultPublicationError> {
-    let publication = match store.publish(&staged.prepared.checkpoint) {
+    let publication = match store.publish_attempt_checkpoint(&staged.prepared.checkpoint) {
         Ok(publication) => publication,
         Err(source) => {
             return Err(CheckpointResultPublicationError {
@@ -1018,7 +1096,7 @@ pub fn prepare_attempt_result<W>(
             checkpoints,
             PendingCheckpointResult {
                 queued,
-                capture: *capture,
+                checkpoint: *capture,
             },
         )
         .map(|prepared| PreparedAttemptWorkResult::ExactCheckpoint(Box::new(prepared))),
@@ -1086,16 +1164,24 @@ fn prepare_pending_checkpoint_result<W>(
             },
         });
     }
-    let checkpoint = match checkpoints.prepare_capture(pending.capture.reopenable_copy()) {
-        Ok(checkpoint) => checkpoint,
-        Err(source) => {
-            return Err(AttemptResultPreparationError::Checkpoint {
-                pending: Box::new(pending),
-                source,
-            });
+    let PendingCheckpointResult { queued, checkpoint } = pending;
+    match checkpoint.into_state() {
+        AttemptCheckpointResultState::Prepared(checkpoint) => {
+            Ok(PreparedCheckpointResult::new(queued, checkpoint))
         }
-    };
-    Ok(PreparedCheckpointResult::new(pending.queued, checkpoint))
+        AttemptCheckpointResultState::Captured(capture) => {
+            match checkpoints.prepare_attempt_checkpoint(capture.reopenable_copy()) {
+                Ok(checkpoint) => Ok(PreparedCheckpointResult::new(queued, checkpoint)),
+                Err(source) => Err(AttemptResultPreparationError::Checkpoint {
+                    pending: Box::new(PendingCheckpointResult {
+                        queued,
+                        checkpoint: capture.into(),
+                    }),
+                    source,
+                }),
+            }
+        }
+    }
 }
 
 /// Reconciles a worker failure using only short supervisor operations.

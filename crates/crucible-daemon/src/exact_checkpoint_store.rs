@@ -43,6 +43,7 @@ use crucible::{
     ContentHash, MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES, SingleSchedulerCheckpoint,
     SingleSchedulerCheckpointError,
 };
+use crucible_api::ProductionExactCheckpointClosure;
 pub use crucible_campaign::ExactCheckpointId;
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope, ContentEnvelopeError};
 use crucible_cas::content_store::{
@@ -96,6 +97,7 @@ pub struct PreparedExactCheckpoint {
     vmstate_id: ContentId,
     vmstate_source: BlobHandle,
     snapshot_identity: ContentHash,
+    scenario: ContentHash,
     configuration: ContentHash,
 }
 
@@ -148,6 +150,7 @@ impl fmt::Debug for PreparedExactCheckpoint {
             .field("scheduler_id", &self.scheduler_id)
             .field("vmstate_id", &self.vmstate_id)
             .field("snapshot_identity", &self.snapshot_identity)
+            .field("scenario", &self.scenario)
             .field("configuration", &self.configuration)
             .field("vmstate_bytes", &self.vmstate_source.logical_length())
             .finish()
@@ -177,6 +180,12 @@ impl PreparedExactCheckpoint {
     #[must_use]
     pub const fn snapshot_identity(&self) -> ContentHash {
         self.snapshot_identity
+    }
+
+    /// Returns the exact semantic scenario materialized by the snapshot.
+    #[must_use]
+    pub const fn scenario(&self) -> ContentHash {
+        self.scenario
     }
 
     /// Returns the exact modeled configuration materialized by the snapshot.
@@ -247,6 +256,193 @@ pub struct CapturedExactCheckpoint {
     snapshot: QemuVmSnapshot,
     scheduler: Option<SingleSchedulerCheckpoint>,
     vmstate: BlobHandle,
+}
+
+/// Attempt-owned exact capture awaiting no-write immutable-store preparation.
+///
+/// The single-node variant preserves the compatibility v2/v3 path. Production
+/// lifecycle execution returns the complete portable multi-node closure so the
+/// worker publishes a version-four root through the same linear ledger phases.
+pub enum CapturedAttemptCheckpoint {
+    /// Compatibility QEMU snapshot, scheduler continuation, and VMState stream.
+    SingleNode(Box<CapturedExactCheckpoint>),
+    /// Complete production lifecycle manifest and immutable-object closure.
+    Production(Box<ProductionExactCheckpointClosure>),
+}
+
+impl fmt::Debug for CapturedAttemptCheckpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SingleNode(capture) => formatter
+                .debug_tuple("CapturedAttemptCheckpoint::SingleNode")
+                .field(capture)
+                .finish(),
+            Self::Production(capture) => formatter
+                .debug_struct("CapturedAttemptCheckpoint::Production")
+                .field("identity", &capture.identity())
+                .field("scenario", &capture.scenario())
+                .field("configuration", &capture.configuration())
+                .field("objects", &capture.objects().len())
+                .finish(),
+        }
+    }
+}
+
+impl From<CapturedExactCheckpoint> for CapturedAttemptCheckpoint {
+    fn from(capture: CapturedExactCheckpoint) -> Self {
+        Self::SingleNode(Box::new(capture))
+    }
+}
+
+impl From<ProductionExactCheckpointClosure> for CapturedAttemptCheckpoint {
+    fn from(capture: ProductionExactCheckpointClosure) -> Self {
+        Self::Production(Box::new(capture))
+    }
+}
+
+impl CapturedAttemptCheckpoint {
+    /// Returns the semantic scenario authenticated by this capture.
+    #[must_use]
+    pub fn scenario(&self) -> ContentHash {
+        match self {
+            Self::SingleNode(capture) => capture.snapshot().checkpoint().scenario_ref,
+            Self::Production(capture) => capture.scenario(),
+        }
+    }
+
+    /// Returns the modeled configuration authenticated at the capture boundary.
+    #[must_use]
+    pub fn configuration(&self) -> ContentHash {
+        match self {
+            Self::SingleNode(capture) => capture.snapshot().checkpoint().configuration,
+            Self::Production(capture) => capture.configuration(),
+        }
+    }
+
+    pub(crate) fn reopenable_copy(&self) -> Self {
+        match self {
+            Self::SingleNode(capture) => Self::SingleNode(Box::new(capture.reopenable_copy())),
+            Self::Production(capture) => Self::Production(capture.clone()),
+        }
+    }
+}
+
+/// No-write-prepared exact capture ready for durable root staging.
+#[derive(Debug)]
+pub enum PreparedAttemptCheckpoint {
+    /// Compatibility v2/v3 single-node root.
+    SingleNode(Box<PreparedExactCheckpoint>),
+    /// Complete v4 production root.
+    Production(Box<PreparedProductionExactCheckpoint>),
+}
+
+impl PreparedAttemptCheckpoint {
+    /// Returns the exact root that must be staged before immutable publication.
+    #[must_use]
+    pub const fn root(&self) -> ExactCheckpointId {
+        match self {
+            Self::SingleNode(checkpoint) => checkpoint.root(),
+            Self::Production(checkpoint) => checkpoint.root(),
+        }
+    }
+
+    /// Returns the semantic scenario authenticated by this preparation.
+    #[must_use]
+    pub fn scenario(&self) -> ContentHash {
+        match self {
+            Self::SingleNode(checkpoint) => checkpoint.scenario(),
+            Self::Production(checkpoint) => checkpoint.scenario(),
+        }
+    }
+
+    /// Returns the modeled configuration authenticated at the capture boundary.
+    #[must_use]
+    pub fn configuration(&self) -> ContentHash {
+        match self {
+            Self::SingleNode(checkpoint) => checkpoint.configuration(),
+            Self::Production(checkpoint) => checkpoint.configuration(),
+        }
+    }
+}
+
+/// Exact checkpoint returned by an execution before immutable publication.
+///
+/// The internal prepared form is deliberately opaque. Only the pool-owned
+/// handoff can mint proof that the exact root was durably staged while QEMU was
+/// still live; an external execution model may return only a captured value.
+#[derive(Debug)]
+pub struct AttemptCheckpointResult(AttemptCheckpointResultState);
+
+#[derive(Debug)]
+pub(crate) enum AttemptCheckpointResultState {
+    Captured(CapturedAttemptCheckpoint),
+    Prepared(PreparedAttemptCheckpoint),
+}
+
+impl AttemptCheckpointResult {
+    /// Returns the semantic scenario authenticated by this checkpoint result.
+    #[must_use]
+    pub fn scenario(&self) -> ContentHash {
+        match &self.0 {
+            AttemptCheckpointResultState::Captured(checkpoint) => checkpoint.scenario(),
+            AttemptCheckpointResultState::Prepared(checkpoint) => checkpoint.scenario(),
+        }
+    }
+
+    /// Returns the modeled configuration authenticated at the capture boundary.
+    #[must_use]
+    pub fn configuration(&self) -> ContentHash {
+        match &self.0 {
+            AttemptCheckpointResultState::Captured(checkpoint) => checkpoint.configuration(),
+            AttemptCheckpointResultState::Prepared(checkpoint) => checkpoint.configuration(),
+        }
+    }
+
+    pub(crate) const fn from_prepared(checkpoint: PreparedAttemptCheckpoint) -> Self {
+        Self(AttemptCheckpointResultState::Prepared(checkpoint))
+    }
+
+    pub(crate) fn into_state(self) -> AttemptCheckpointResultState {
+        self.0
+    }
+}
+
+impl From<CapturedAttemptCheckpoint> for AttemptCheckpointResult {
+    fn from(checkpoint: CapturedAttemptCheckpoint) -> Self {
+        Self(AttemptCheckpointResultState::Captured(checkpoint))
+    }
+}
+
+impl From<CapturedExactCheckpoint> for AttemptCheckpointResult {
+    fn from(checkpoint: CapturedExactCheckpoint) -> Self {
+        Self(AttemptCheckpointResultState::Captured(checkpoint.into()))
+    }
+}
+
+impl From<ProductionExactCheckpointClosure> for AttemptCheckpointResult {
+    fn from(checkpoint: ProductionExactCheckpointClosure) -> Self {
+        Self(AttemptCheckpointResultState::Captured(checkpoint.into()))
+    }
+}
+
+/// Durable publication receipt for either accepted exact-root generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttemptCheckpointPublication {
+    /// Compatibility v2/v3 single-node publication.
+    SingleNode(ExactCheckpointPublication),
+    /// Complete v4 production publication.
+    Production(ProductionExactCheckpointPublication),
+}
+
+impl AttemptCheckpointPublication {
+    /// Returns the durably published exact root.
+    #[must_use]
+    pub const fn root(self) -> ExactCheckpointId {
+        match self {
+            Self::SingleNode(publication) => publication.root(),
+            Self::Production(publication) => publication.root(),
+        }
+    }
 }
 
 impl fmt::Debug for CapturedExactCheckpoint {
@@ -556,6 +752,7 @@ impl ExactCheckpointStore {
         };
 
         let snapshot_identity = snapshot.id();
+        let scenario = snapshot.checkpoint().scenario_ref;
         let configuration = snapshot.checkpoint().configuration;
         let body = encode_root_body(
             snapshot_identity,
@@ -595,6 +792,7 @@ impl ExactCheckpointStore {
             vmstate_id,
             vmstate_source: vmstate,
             snapshot_identity,
+            scenario,
             configuration,
         })
     }
@@ -611,6 +809,46 @@ impl ExactCheckpointStore {
     ) -> Result<PreparedExactCheckpoint, ExactCheckpointStoreError> {
         let (snapshot, scheduler, vmstate) = capture.into_parts();
         self.prepare_parts(&snapshot, scheduler.as_ref(), vmstate)
+    }
+
+    /// Authenticates either accepted attempt capture without immutable writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the corresponding single-node or production preparation error.
+    pub fn prepare_attempt_checkpoint(
+        &self,
+        capture: CapturedAttemptCheckpoint,
+    ) -> Result<PreparedAttemptCheckpoint, ExactCheckpointStoreError> {
+        match capture {
+            CapturedAttemptCheckpoint::SingleNode(capture) => self
+                .prepare_capture(*capture)
+                .map(Box::new)
+                .map(PreparedAttemptCheckpoint::SingleNode),
+            CapturedAttemptCheckpoint::Production(capture) => self
+                .prepare_production_closure(*capture)
+                .map(Box::new)
+                .map(PreparedAttemptCheckpoint::Production),
+        }
+    }
+
+    /// Publishes either prepared attempt checkpoint through root-last ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns the corresponding single-node or production publication error.
+    pub fn publish_attempt_checkpoint(
+        &self,
+        prepared: &PreparedAttemptCheckpoint,
+    ) -> Result<AttemptCheckpointPublication, ExactCheckpointStoreError> {
+        match prepared {
+            PreparedAttemptCheckpoint::SingleNode(prepared) => self
+                .publish(prepared)
+                .map(AttemptCheckpointPublication::SingleNode),
+            PreparedAttemptCheckpoint::Production(prepared) => self
+                .publish_production_closure(prepared)
+                .map(AttemptCheckpointPublication::Production),
+        }
     }
 
     /// Prepares a source-bound replay-oracle promotion without store writes.

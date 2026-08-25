@@ -1126,10 +1126,15 @@ mod tests {
         assert_eq!(prepared.root().content_id().schema_version(), 4);
         assert_eq!(prepared.indexes.len(), 2);
         assert_eq!(backend.object_count(), 0);
+        let root = prepared.root();
+        let prepared = PreparedAttemptCheckpoint::Production(Box::new(prepared));
         let publication = store
-            .publish_production_closure(&prepared)
+            .publish_attempt_checkpoint(&prepared)
             .expect("publish production closure");
-        assert_eq!(publication.root(), prepared.root());
+        let AttemptCheckpointPublication::Production(publication) = publication else {
+            panic!("production preparation must return a production receipt")
+        };
+        assert_eq!(publication.root(), root);
         assert_eq!(publication.index_count(), 2);
         assert_eq!(
             publication.object_count(),
@@ -1137,7 +1142,7 @@ mod tests {
         );
 
         let loaded = store
-            .load_production_closure(prepared.root())
+            .load_production_closure(root)
             .expect("load production closure");
         assert_eq!(loaded.production_identity(), production_identity);
         assert_eq!(loaded.scenario(), scenario);

@@ -28,7 +28,8 @@ use crucible_campaign::{
 
 use crate::{
     AssignmentLedger, AssignmentPublish, AssignmentRecord, AttemptExecutionKey,
-    AttemptExecutionOrigin, AttemptRuntimeState, AttemptStateCas,
+    AttemptExecutionOrigin, AttemptRuntimeState, AttemptStateCas, CapturedAttemptCheckpoint,
+    PreparedAttemptCheckpoint,
 };
 
 mod checkpoint_promotion;
@@ -246,6 +247,7 @@ pub struct QueuedAttempt {
     origin: AttemptExecutionOrigin,
     cancellation: ExecutionCancellation,
     checkpoint_request: ExecutionCheckpointRequest,
+    checkpoint_handoff: Option<ExecutionCheckpointHandoff>,
 }
 
 impl QueuedAttempt {
@@ -277,6 +279,75 @@ impl QueuedAttempt {
     #[must_use]
     pub const fn checkpoint_request(&self) -> &ExecutionCheckpointRequest {
         &self.checkpoint_request
+    }
+
+    pub(crate) fn install_checkpoint_handoff(&mut self, handoff: ExecutionCheckpointHandoff) {
+        self.checkpoint_handoff = Some(handoff);
+    }
+
+    pub(crate) const fn checkpoint_handoff(&self) -> Option<&ExecutionCheckpointHandoff> {
+        self.checkpoint_handoff.as_ref()
+    }
+
+    pub(crate) fn reconciliation_copy(&self) -> Self {
+        Self {
+            execution: self.execution,
+            request: self.request.clone(),
+            origin: self.origin,
+            cancellation: self.cancellation.clone(),
+            checkpoint_request: self.checkpoint_request.clone(),
+            checkpoint_handoff: None,
+        }
+    }
+}
+
+/// Stable failure while preparing and durably staging an in-flight checkpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum CheckpointHandoffFailure {
+    /// A temporary store or ledger failure permits exact retry while capture is retained.
+    #[error("checkpoint handoff is temporarily unavailable")]
+    Retryable,
+    /// Cancellation won before the exact root became staged.
+    #[error("checkpoint handoff was canceled")]
+    Canceled,
+    /// The capture or current operational state cannot accept this root.
+    #[error("checkpoint handoff failed its exact execution contract")]
+    Terminal,
+}
+
+pub(crate) trait AttemptCheckpointHandoff: fmt::Debug + Send + Sync {
+    fn prepare_and_stage(
+        &self,
+        capture: &CapturedAttemptCheckpoint,
+    ) -> Result<PreparedAttemptCheckpoint, CheckpointHandoffFailure>;
+}
+
+/// Pool-owned capability for staging one exact root before QEMU teardown.
+#[derive(Clone)]
+pub(crate) struct ExecutionCheckpointHandoff(Arc<dyn AttemptCheckpointHandoff>);
+
+impl ExecutionCheckpointHandoff {
+    pub(crate) fn new(handoff: Arc<dyn AttemptCheckpointHandoff>) -> Self {
+        Self(handoff)
+    }
+
+    pub(crate) fn prepare_and_stage(
+        &self,
+        capture: &CapturedAttemptCheckpoint,
+    ) -> Result<PreparedAttemptCheckpoint, CheckpointHandoffFailure> {
+        self.0.prepare_and_stage(capture)
+    }
+
+    pub(crate) fn same_incarnation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for ExecutionCheckpointHandoff {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ExecutionCheckpointHandoff")
+            .finish_non_exhaustive()
     }
 }
 
@@ -469,6 +540,12 @@ impl ExecutionCheckpointRequest {
 
     fn request(&self) {
         self.requested.store(true, Ordering::Release);
+    }
+
+    /// Latches the request from a crate-internal regression fixture.
+    #[cfg(test)]
+    pub(crate) fn request_for_test(&self) {
+        self.request();
     }
 }
 
@@ -774,6 +851,7 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
                     origin: active.origin,
                     cancellation: active.cancellation.clone(),
                     checkpoint_request: active.checkpoint_request.clone(),
+                    checkpoint_handoff: None,
                 });
             }
         }
@@ -1003,6 +1081,29 @@ where
         queued: &QueuedAttempt,
         checkpoint: ExactCheckpointId,
     ) -> Result<CheckpointPublicationOutcome, LocalExecutorError<L::Error>> {
+        self.stage_checkpoint_publication_with_worker_state(queued, checkpoint, true)
+    }
+
+    /// Durably reserves an exact root while the guest worker is still live.
+    ///
+    /// Unlike [`Self::stage_checkpoint_publication`], idempotent terminal state
+    /// does not release the active reservation. The modeled runner must first
+    /// reap QEMU and return its linear token; the ordinary worker reconciliation
+    /// phase then acknowledges physical exit and releases capacity.
+    pub(crate) fn stage_checkpoint_publication_before_teardown(
+        &mut self,
+        queued: &QueuedAttempt,
+        checkpoint: ExactCheckpointId,
+    ) -> Result<CheckpointPublicationOutcome, LocalExecutorError<L::Error>> {
+        self.stage_checkpoint_publication_with_worker_state(queued, checkpoint, false)
+    }
+
+    fn stage_checkpoint_publication_with_worker_state(
+        &mut self,
+        queued: &QueuedAttempt,
+        checkpoint: ExactCheckpointId,
+        worker_finished: bool,
+    ) -> Result<CheckpointPublicationOutcome, LocalExecutorError<L::Error>> {
         self.validate_pending_basis(queued)?;
         let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
         let current = self
@@ -1049,8 +1150,10 @@ where
                 checkpoint: current_checkpoint,
                 ..
             } if execution == queued.execution && current_checkpoint == checkpoint => {
-                self.mark_worker_finished(execution);
-                self.release_active_if_present(execution)?;
+                if worker_finished {
+                    self.mark_worker_finished(execution);
+                    self.release_active_if_present(execution)?;
+                }
                 Ok(CheckpointPublicationOutcome::AlreadyPaused)
             }
             AttemptRuntimeState::Paused { execution, .. } if execution == queued.execution => {
@@ -1060,8 +1163,10 @@ where
             | AttemptRuntimeState::Canceled { execution, .. }
                 if execution == queued.execution =>
             {
-                self.mark_worker_finished(execution);
-                self.release_active_if_present(execution)?;
+                if worker_finished {
+                    self.mark_worker_finished(execution);
+                    self.release_active_if_present(execution)?;
+                }
                 Ok(CheckpointPublicationOutcome::NotCurrent)
             }
             AttemptRuntimeState::Running { .. }

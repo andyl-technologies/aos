@@ -21,9 +21,9 @@ use crucible_qemu::{
 
 use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
-    CapturedExactCheckpoint, CrucibleAttemptExecution, ExecutionCancellation,
-    QemuCrucibleAttemptSession, QemuCrucibleSessionFactory, captured_qemu_vmstate_blob,
-    exact_checkpoint_store::validate_scheduler_checkpoint_basis,
+    CapturedExactCheckpoint, CheckpointHandoffFailure, CrucibleAttemptExecution,
+    ExecutionCancellation, QemuCrucibleAttemptSession, QemuCrucibleSessionFactory,
+    captured_qemu_vmstate_blob, exact_checkpoint_store::validate_scheduler_checkpoint_basis,
 };
 
 /// Read-only operational boundary available to a modeled attempt driver.
@@ -579,6 +579,9 @@ pub enum QemuLiveAttemptSessionError<E> {
     /// The live backend or operational guard failed after realization began.
     #[error(transparent)]
     Operational(#[from] QemuVmRealizationError),
+    /// The captured root could not enter its durable supervisor phase.
+    #[error("live QEMU checkpoint handoff failed: {0}")]
+    CheckpointHandoff(#[source] CheckpointHandoffFailure),
     /// The modeled attempt driver failed.
     #[error("live QEMU campaign attempt driver failed")]
     Driver(E),
@@ -853,7 +856,11 @@ where
                 .capture_exact_checkpoint(checkpoint)
                 .map_err(classify_operational_failure)?
                 .with_scheduler(scheduler);
-            return Ok(AttemptExecutionProduct::ExactCheckpoint(Box::new(capture)));
+            let checkpoint = self
+                .context
+                .prepare_and_stage_checkpoint(capture.into())
+                .map_err(map_checkpoint_handoff_failure)?;
+            return Ok(AttemptExecutionProduct::exact_checkpoint(checkpoint));
         }
 
         let QemuLiveAttemptResult::Observation {
@@ -1036,8 +1043,24 @@ fn classify_operational_failure<E>(
         QemuLiveAttemptSessionError::Operational(QemuVmRealizationError::Canceled { .. }) => {
             AttemptWorkerFailure::Canceled(error)
         }
-        QemuLiveAttemptSessionError::Operational(_) | QemuLiveAttemptSessionError::Driver(_) => {
-            AttemptWorkerFailure::Terminal(error)
+        QemuLiveAttemptSessionError::Operational(_)
+        | QemuLiveAttemptSessionError::CheckpointHandoff(_)
+        | QemuLiveAttemptSessionError::Driver(_) => AttemptWorkerFailure::Terminal(error),
+    }
+}
+
+fn map_checkpoint_handoff_failure<E>(
+    failure: AttemptWorkerFailure<CheckpointHandoffFailure>,
+) -> AttemptWorkerFailure<QemuLiveAttemptSessionError<E>> {
+    match failure {
+        AttemptWorkerFailure::Retryable(error) => {
+            AttemptWorkerFailure::Retryable(QemuLiveAttemptSessionError::CheckpointHandoff(error))
+        }
+        AttemptWorkerFailure::Canceled(error) => {
+            AttemptWorkerFailure::Canceled(QemuLiveAttemptSessionError::CheckpointHandoff(error))
+        }
+        AttemptWorkerFailure::Terminal(error) => {
+            AttemptWorkerFailure::Terminal(QemuLiveAttemptSessionError::CheckpointHandoff(error))
         }
     }
 }
