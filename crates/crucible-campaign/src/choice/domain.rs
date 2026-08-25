@@ -657,6 +657,24 @@ pub enum ChoiceValue {
     Integer(IntegerValue),
 }
 
+impl ChoiceValue {
+    /// Returns strict canonical value bytes for guest delivery and replay.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes and validates strict canonical value bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical, or
+    /// unsupported value bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        codec::decode(bytes)
+    }
+}
+
 impl Canonical for ChoiceValue {
     fn encode(&self, encoder: &mut Encoder) {
         match self {

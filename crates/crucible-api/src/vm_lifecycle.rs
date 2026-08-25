@@ -1742,6 +1742,22 @@ fn build_production_vm_lifecycle_loop_with_restore(
     }
     let nodes = source.world().vm_nodes();
     validate_app_random_branch_replay_config(nodes, config)?;
+    if restore_checkpoint.is_some()
+        && source
+            .selectables()
+            .declarations()
+            .values()
+            .any(|declaration| {
+                matches!(
+                    declaration.source(),
+                    crucible::campaign::ChoiceSource::Guest { .. }
+                )
+            })
+    {
+        return Err(loop_factory_error(
+            "exact restore for a selectable-enabled scenario requires retained catalog continuations",
+        ));
+    }
     let first = nodes
         .first()
         .ok_or_else(|| loop_factory_error("scenario World has no VM nodes"))?;
@@ -1899,6 +1915,55 @@ fn build_production_vm_lifecycle_loop_with_restore(
             }
         }
         if vm.white_box == crucible::WhiteBoxPolicy::Enabled {
+            let declarations = source
+                .selectables()
+                .guest_declarations(&vm.id)
+                .map(|declaration| {
+                    crucible_protocol::selectable_catalog_plan::SelectablePlanDeclaration::new(
+                        declaration.name(),
+                        declaration.domain().canonical_bytes(),
+                        declaration.default().canonical_bytes(),
+                        declaration.semantic_tags().iter().cloned().collect(),
+                        if declaration.required() {
+                            crucible_protocol::selectable_catalog_plan::SelectablePlanPresence::Required
+                        } else {
+                            crucible_protocol::selectable_catalog_plan::SelectablePlanPresence::Optional
+                        },
+                    )
+                    .map_err(|error| {
+                        loop_factory_error(format!(
+                            "convert scenario selectable `{}` for `{}`: {error}",
+                            declaration.name(), vm.id.name
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, LifecycleApiError>>()?;
+            if !declarations.is_empty() {
+                let limits = source.selectables().limits();
+                let limits = crucible_protocol::selectable_catalog_plan::SelectablePlanLimits::new(
+                    limits.declarations_per_node() as usize,
+                    limits.requests_per_selectable(),
+                    limits.requests_per_node(),
+                )
+                .map_err(|error| {
+                    loop_factory_error(format!(
+                        "convert scenario selectable limits for `{}`: {error}",
+                        vm.id.name
+                    ))
+                })?;
+                let plan = crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::new(
+                    limits,
+                    declarations,
+                    crucible_protocol::selectable_catalog_plan::SelectablePlanContinuation::cold(),
+                )
+                .map_err(|error| {
+                    loop_factory_error(format!(
+                        "build scenario selectable catalog for `{}`: {error}",
+                        vm.id.name
+                    ))
+                })?;
+                launch = launch.with_selectable_catalog_plan(plan);
+            }
             let app_random = if let Some(checkpoint) = &restore_checkpoint {
                 production_app_random_checkpoint_config(
                     &checkpoint.scheduler,

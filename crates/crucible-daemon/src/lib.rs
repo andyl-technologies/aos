@@ -181,8 +181,9 @@ pub use control_responsiveness::{
 };
 pub use crucible_artifact::{
     CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V1,
-    CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2, CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1,
-    CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V2, CrucibleArtifactError, CrucibleCampaignArtifactStore,
+    CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
+    CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1, CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V2,
+    CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3, CrucibleArtifactError, CrucibleCampaignArtifactStore,
     MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES, decode_crucible_configuration_artifact,
     decode_crucible_configuration_artifact_with_selections, decode_crucible_scenario_artifact,
     encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,

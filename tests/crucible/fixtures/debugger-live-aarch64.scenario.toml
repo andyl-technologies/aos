@@ -1,9 +1,13 @@
-schema = "crucible.scenario.v6"
+schema = "crucible.scenario.v7"
 
 [scenario]
 id = "blake3:3f1504e2778c548777ccc73f10d6ed15514b51b2c82f8832ccc6dd0235c4da16"
 seed = "0x060d000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = "u64:18446744073709551615"
+selectable_declarations_per_node = 4096
+selectable_declarations_per_world = 65536
+selectable_requests_per_selectable = 1000000
+selectable_requests_per_node = 1000000
 
 [world]
 id = "blake3:4478e1d570008e2372398530e25523e49460e2a6d12e85dfa453db3eb12557aa"

@@ -462,15 +462,15 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     for (schema, version, owner) in [
         (
             "crucible.executor.crucible-scenario-payload",
-            "2",
+            "3",
             "crucible-daemon::crucible_artifact",
         ),
         (
             "crucible.executor.crucible-reproduction-payload",
-            "2",
+            "3",
             "crucible-daemon::crucible_artifact",
         ),
-        ("crucible.execution.scenario-form", "6", "crucible::model"),
+        ("crucible.execution.scenario-form", "7", "crucible::model"),
         (
             "crucible.execution.measurement-definitions",
             "1",
@@ -483,7 +483,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.execution.reproduction-artifact",
-            "6",
+            "7",
             "crucible::model",
         ),
     ] {
