@@ -8081,7 +8081,10 @@ fn package_platform_table(
                         "root_verity".into(),
                         toml::Value::String("root.verity".into()),
                     );
-                    entry.insert("root_hash".into(), toml::Value::String(hash.to_string()));
+                    entry.insert(
+                        "root_hash".into(),
+                        toml::Value::String(format!("sha256:{hash}")),
+                    );
                     entry.insert(
                         "root_hash_sig".into(),
                         toml::Value::String("root.roothash.p7s".into()),
@@ -20600,7 +20603,7 @@ references = []
 
         assert!(content.contains("root_image = \"root.img\""));
         assert!(content.contains("root_verity = \"root.verity\""));
-        assert!(content.contains(&format!("root_hash = \"{}\"", "a".repeat(64))));
+        assert!(content.contains(&format!("root_hash = \"sha256:{}\"", "a".repeat(64))));
         assert!(content.contains("root_hash_sig = \"root.roothash.p7s\""));
     }
 
