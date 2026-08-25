@@ -17730,17 +17730,70 @@ impl Database {
         id: i64,
         expected_resource_version: i64,
     ) -> Result<bool> {
-        Ok(self
+        let exists = self
             .backend
-            .execute(
-                "DELETE FROM bindings
-                 WHERE id = ?1 AND resource_version = ?2 AND is_instance_default = 0
-                   AND NOT EXISTS (SELECT 1 FROM surface_placements WHERE binding_id = ?1)
-                   AND NOT EXISTS (SELECT 1 FROM gateway_revisions WHERE binding_id = ?1)",
+            .query_opt(
+                "SELECT 1 FROM bindings
+                 WHERE id = ?1 AND resource_version = ?2 AND is_instance_default = 0",
                 &vals![id, expected_resource_version],
             )
             .await?
-            == 1)
+            .is_some();
+        if !exists {
+            return Ok(false);
+        }
+
+        // Credential heads and write-state rows use restrictive composite foreign keys so
+        // deleting the binding cannot rely on cascades alone. Keep the blocker CAS and the
+        // dependent-row teardown in one transaction to avoid partially deleting live state.
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE bindings SET resource_version = resource_version
+                     WHERE id = ?1 AND resource_version = ?2 AND is_instance_default = 0
+                       AND NOT EXISTS (SELECT 1 FROM surface_placements WHERE binding_id = ?1)
+                       AND NOT EXISTS (SELECT 1 FROM gateway_revisions WHERE binding_id = ?1)",
+                    vals![id, expected_resource_version],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM binding_write_state WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM binding_write_revisions WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM binding_credential_heads WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM binding_credential_revisions WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM binding_scope_grant_pins WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM binding_consumer_scopes WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM bindings WHERE id = ?1 AND resource_version = ?2",
+                    vals![id, expected_resource_version],
+                )
+                .expecting(1),
+            ])
+            .await?;
+        Ok(true)
     }
 
     /// Look up an organization by id.
@@ -24831,6 +24884,7 @@ mod tests {
             .await
             .unwrap();
         let binding_id = create_test_binding(&db, org, "archive", "objects").await;
+        create_valid_write_credential(&db, binding_id, "native://archive/write/v1").await;
 
         assert!(db
             .binding_delete_blockers(binding_id)
