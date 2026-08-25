@@ -69,6 +69,11 @@ pub struct ObjectReader<'a> {
     // verified decoded form for this index pass so concurrent retained-release
     // walks do not repeatedly pay object-store and inflate latency.
     cache: Mutex<BTreeMap<Oid, (ObjectKind, Vec<u8>)>>,
+    // Bundle framing is cheap to validate, but inflating and hash-checking every
+    // entry eagerly makes preload CPU scale with all published objects rather
+    // than the objects reached by this generation. Retain canonical loose bytes
+    // and verify them only when the dependency walk selects their OID.
+    bundled_loose: Mutex<BTreeMap<Oid, Arc<[u8]>>>,
     attempted_bundles: Mutex<BTreeSet<String>>,
     bundle_gates: Mutex<BTreeMap<String, Arc<futures_util::lock::Mutex<()>>>>,
     bundle_fetches: AtomicUsize,
@@ -82,6 +87,7 @@ impl<'a> ObjectReader<'a> {
         Self {
             fetch,
             cache: Mutex::new(BTreeMap::new()),
+            bundled_loose: Mutex::new(BTreeMap::new()),
             attempted_bundles: Mutex::new(BTreeSet::new()),
             bundle_gates: Mutex::new(BTreeMap::new()),
             bundle_fetches: AtomicUsize::new(0),
@@ -105,6 +111,20 @@ impl<'a> ObjectReader<'a> {
         if let Some(decoded) = self.cached(oid)? {
             return Ok(decoded);
         }
+        if let Some(loose) = self.bundled(oid)? {
+            match object::decode_loose(&loose, Some(oid)) {
+                Ok(decoded) => {
+                    self.cache
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
+                        .insert(oid, decoded.clone());
+                    return Ok(decoded);
+                }
+                Err(error) => {
+                    tracing::warn!(%oid, error = %format!("{error:#}"), "ignoring invalid bundled object");
+                }
+            }
+        }
 
         let path = oid.loose_path();
         self.loose_fetches.fetch_add(1, Ordering::Relaxed);
@@ -126,6 +146,15 @@ impl<'a> ObjectReader<'a> {
             .cache
             .lock()
             .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
+            .get(&oid)
+            .cloned())
+    }
+
+    fn bundled(&self, oid: Oid) -> Result<Option<Arc<[u8]>>> {
+        Ok(self
+            .bundled_loose
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry bundled-object lock is poisoned"))?
             .get(&oid)
             .cloned())
     }
@@ -203,20 +232,14 @@ impl<'a> ObjectReader<'a> {
             }
         };
 
-        let mut decoded = Vec::with_capacity(entries.len());
-        for (entry_oid, loose) in entries {
-            match object::decode_loose(&loose, Some(entry_oid)) {
-                Ok(object) => decoded.push((entry_oid, object)),
-                Err(error) => {
-                    tracing::warn!(%path, %entry_oid, error = %format!("{error:#}"), "ignoring invalid object bundle");
-                    return Ok(());
-                }
-            }
-        }
-        self.cache
+        self.bundled_loose
             .lock()
-            .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
-            .extend(decoded);
+            .map_err(|_| anyhow::anyhow!("registry bundled-object lock is poisoned"))?
+            .extend(
+                entries
+                    .into_iter()
+                    .map(|(oid, loose)| (oid, Arc::from(loose))),
+            );
         Ok(())
     }
 
@@ -666,6 +689,12 @@ mod bundle_tests {
         reads: AtomicUsize,
     }
 
+    struct InvalidBundleFetch {
+        bundle: Vec<u8>,
+        loose: Vec<u8>,
+        loose_reads: AtomicUsize,
+    }
+
     #[async_trait::async_trait]
     impl SurfaceFetch for MissingBundleFetch {
         async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
@@ -696,6 +725,22 @@ mod bundle_tests {
 
         fn describe(&self) -> String {
             "bundle-single-flight".into()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for InvalidBundleFetch {
+        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+            self.loose_reads.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(self.loose.clone()))
+        }
+
+        async fn fetch_bounded(&self, _path: &str, _max_bytes: usize) -> Result<Option<Vec<u8>>> {
+            Ok(Some(self.bundle.clone()))
+        }
+
+        fn describe(&self) -> String {
+            "invalid-bundle-fallback".into()
         }
     }
 
@@ -743,5 +788,30 @@ mod bundle_tests {
 
         assert_eq!(fetch.reads.load(Ordering::SeqCst), 256);
         assert_eq!(reader.stats().unwrap(), (256, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn invalid_selected_bundle_entry_falls_back_to_loose_object() {
+        let content = b"canonical loose fallback";
+        let oid = object::hash_object(ObjectKind::Blob, content);
+        let shard = &oid.to_hex()[..2];
+        let bundle = aos_registry_surface::object_bundle::encode(
+            shard,
+            &[(oid, b"not a zlib stream".to_vec())],
+        )
+        .unwrap();
+        let fetch = InvalidBundleFetch {
+            bundle,
+            loose: object::encode_loose(ObjectKind::Blob, content).unwrap(),
+            loose_reads: AtomicUsize::new(0),
+        };
+        let reader = ObjectReader::new(&fetch);
+
+        let (kind, decoded) = reader.read(oid).await.unwrap();
+
+        assert_eq!(kind, ObjectKind::Blob);
+        assert_eq!(decoded, content);
+        assert_eq!(fetch.loose_reads.load(Ordering::SeqCst), 1);
+        assert_eq!(reader.stats().unwrap(), (1, 1, 1));
     }
 }
