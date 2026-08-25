@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "f26329a5c4ec960969a5fd640b11c577745934bc887fa4b7183e7ad172a4dd76";
+  patchBranchBundleSha256 = "c8ebaa99a4ac3e062d8807e1057e618450114b2a8f4b76cdd7e9083744f33031";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "22253f8e0643a1fece1b4a4443bf617555d28ba1";
+  patchBranchHeadCommit = "4dba51665731496fa872294480cc22c96e570642";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -521,8 +521,8 @@ let
     {
       file = "0056-crucible-node-lifecycle-faults.patch";
       branchSubject = "crucible: add deterministic node lifecycle control";
-      branchCommit = "b37fcf793ce053acf278270e591f1ef707bbaabf";
-      branchTree = "15415ba2d4ed92894e40a4bc93ae752b89f6befb";
+      branchCommit = "776285311fd916918937e258db33fdf5c533401d";
+      branchTree = "0d269c4486cacabb36942d50c8d06f79521c3cde";
       catalogName = "crucible-node-lifecycle-faults";
       class = "D";
       enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
@@ -530,8 +530,8 @@ let
     }
     {
       file = "0060-crucible-block-typed-errors.patch";
-      branchCommit = "a2c4c977466f537784a6586ff5e3be232910c62e";
-      branchTree = "93246ded129d10a4f2b4c127066ef373543d9320";
+      branchCommit = "d2cfa59a7b3f612e8ea4c574e81afcde08418808";
+      branchTree = "9a481cf1b3c35ef1ccf45299de220140f5531a35";
       catalogName = "crucible-block-typed-errors";
       class = "F";
       enforces = "STOR-RESULT,IO-8,PATCH-26";
@@ -539,8 +539,8 @@ let
     }
     {
       file = "0061-crucible-block-discard.patch";
-      branchCommit = "34a589d1abf04653308b00f6777e0b28e411221f";
-      branchTree = "89dc89ec892f5db6c4d78e8541869e15b555ef88";
+      branchCommit = "0ea930626e1fef5618777597f3093c3520268c15";
+      branchTree = "f4eb072225d9f97f954710fb5e7594f9a5c4a06f";
       catalogName = "crucible-block-discard";
       class = "F";
       enforces = "STOR-DISCARD,DET-16,PATCH-26";
@@ -549,8 +549,8 @@ let
     {
       file = "0062-crucible-block-transport-reset.patch";
       branchSubject = "crucible: add transactional block transport reset";
-      branchCommit = "0a2e9f047ff1e7950afe9a5b01f5998d52b63a18";
-      branchTree = "a7dab8699cfd298e50b5f28bfd4892cae350a294";
+      branchCommit = "b4a949d58b4bb208f293496d7c94aeb53e373bc4";
+      branchTree = "bf8c6a308a2dc49fa03ff62b49e049eafd8a1e1a";
       catalogName = "crucible-block-transport-reset";
       class = "F";
       enforces = "STOR-RESET,STOR-RESULT,DET-16,PATCH-26";
@@ -559,8 +559,8 @@ let
     {
       file = "0063-crucible-plugin-vmstop.patch";
       branchSubject = "crucible: hand exact checkpoint boundaries to VM stop";
-      branchCommit = "3647ea0d671a3effd85166f0f7b3a905a7da8ae3";
-      branchTree = "9ed3bd3c9174902f1d58689ae268b76aa9a5fab5";
+      branchCommit = "73fadf2f3391e784222f7f7a382463d33407a57d";
+      branchTree = "2a300e5d078d7e59bcba531cb5fb5e41263127a9";
       catalogName = "crucible-plugin-vmstop";
       class = "D";
       enforces = "DET-1,INV-10,QEMU-43";
@@ -569,8 +569,8 @@ let
     {
       file = "0064-crucible-terminal-lifecycle-completion.patch";
       branchSubject = "crucible: stage terminal lifecycle completion";
-      branchCommit = "5f81caa19bdaba241ea3526cdbdc5020d2d82a59";
-      branchTree = "c7d9475a6c821c4e09cdbf40e66040148fbc4a3f";
+      branchCommit = "df69d64cbe528424006bbd2a1d8e63344ae668f5";
+      branchTree = "9de548d7662a85d68b08f71f71c2be749f51d9ce";
       catalogName = "crucible-terminal-lifecycle-completion";
       class = "D";
       enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
@@ -579,8 +579,8 @@ let
     {
       file = "0065-crucible-authenticated-terminal-lifecycle.patch";
       branchSubject = "crucible: authenticate terminal lifecycle completion";
-      branchCommit = "1a9f5386db1c07b3b80b137c0251280c8cf5b450";
-      branchTree = "21f39d5a03476ad241da43198c4f780345bb7608";
+      branchCommit = "795eab1f84b2563a384febef3d2a21e83cdf9ec7";
+      branchTree = "370753136cdae6c8d4ee208eb6a875b6c229239a";
       catalogName = "crucible-authenticated-terminal-lifecycle";
       class = "D";
       enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
@@ -589,8 +589,8 @@ let
     {
       file = "0066-crucible-immutable-process-generation.patch";
       branchSubject = "crucible: provision immutable process generations";
-      branchCommit = "27a984faa3a8152be6788b8c3d8c60e25c511907";
-      branchTree = "e3c032965d8a23bad2488e70c370fbf85974a402";
+      branchCommit = "2a75195c2d01ccde45fe3a23ac430d39913a9aeb";
+      branchTree = "e1609ae5eca1d8a74572ef85278a537beca464d4";
       catalogName = "crucible-immutable-process-generation";
       class = "D";
       enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
@@ -599,8 +599,8 @@ let
     {
       file = "0067-crucible-serialize-and-harden-core-fault-state.patch";
       branchSubject = "crucible: serialize and harden core fault state";
-      branchCommit = "463ec0474806daec742f825cc6700091f6731f5e";
-      branchTree = "5e41eeff25a8332cba20e01a5b424f11c4b0c0c4";
+      branchCommit = "9ff03cab223a25d6ef4f31bfed6c2d86b66a223e";
+      branchTree = "a965fa8cb87891cab35e0c15c6419230f7888201";
       catalogName = "crucible-core-fault-vmstate";
       class = "D";
       enforces = "QFP-STATE-1,QFP-STATE-2,FAULT-ORDER";
@@ -609,8 +609,8 @@ let
     {
       file = "0068-crucible-guest-clock-faults.patch";
       branchSubject = "crucible: guest clock faults";
-      branchCommit = "bc4626ea52ec5401f5934c28300be40abcf31484";
-      branchTree = "2686a30d275a6fb8b5fc2fbd23a69fdd2f4a67d5";
+      branchCommit = "409f802eb33f8a9ab671e2d291145e5e2e69fa08";
+      branchTree = "2733a3c03aeb2b5291226ad8f9f6532aa720e98b";
       catalogName = "crucible-guest-clock-faults";
       class = "D";
       enforces = "QFP-CLOCK-1,QFP-CLOCK-2,FAULT-ORDER";
@@ -619,8 +619,8 @@ let
     {
       file = "0069-crucible-accelerator-fault-device.patch";
       branchSubject = "crucible: add deterministic accelerator device";
-      branchCommit = "29cff29f44e71be2d28ddb9eb5c9a957db508ec8";
-      branchTree = "b72ae86c03e4a1950f80465256bbbf9ef1cb955a";
+      branchCommit = "192125f79642cba5314ff22f9d7a6a24ff97127c";
+      branchTree = "8650a37fdeb426cfa6d30ad0960d622589c00e07";
       catalogName = "crucible-accelerator-fault-device";
       class = "D";
       enforces = "QFP-ACCEL-1,QFP-ACCEL-2,FAULT-ORDER";
@@ -629,8 +629,8 @@ let
     {
       file = "0070-crucible-fault-vmstate.patch";
       branchSubject = "crucible: finalize fault VMState identity";
-      branchCommit = "31434c324887298e1c25833e042e23a88836f819";
-      branchTree = "273f95ea1cd6ed7c84d9ef712020a403f09a55a6";
+      branchCommit = "795d88ff70bb97e74afc4977f5c91e485ca66818";
+      branchTree = "db5bac40a939ef10e6eec70bc298c2d7dc0c8cea";
       catalogName = "crucible-fault-vmstate";
       class = "D";
       enforces = "QFP-STATE-1,QFP-STATE-2,QFP-STATE-3";
@@ -639,8 +639,8 @@ let
     {
       file = "0071-crucible-lifecycle-precondition.patch";
       branchSubject = "crucible: bind lifecycle preconditions to VM state";
-      branchCommit = "d5656b497bd2ff2fa6c0b7c6624b5747fc2b85fc";
-      branchTree = "a75c6d50967ff082373b1cd1432d71a82b47067d";
+      branchCommit = "be4d2d637089c0db2e4d4e8b21a9ad9b0dfae20c";
+      branchTree = "20e22fd523dc05e13c48ab9033b49ed67121f33c";
       catalogName = "crucible-lifecycle-precondition";
       class = "D";
       enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
@@ -649,8 +649,8 @@ let
     {
       file = "0072-crucible-typed-node-result-schema.patch";
       branchSubject = "crucible: preserve typed node result schema";
-      branchCommit = "81c8bccbd2950aea627ddf0ff51da9232dabc901";
-      branchTree = "4502fe5afbd4a494ef221c3fc50d5c52d6a8df4e";
+      branchCommit = "6440c48b9d998133d95aee901492dc9bd6eb432e";
+      branchTree = "aa5c3ee702cc86b89f88cfa126f3b24fc8036ed6";
       catalogName = "crucible-typed-node-result-schema";
       class = "D";
       enforces = "QFP-RESULT-1,QFP-EVENT-1,FAULT-ORDER";
@@ -659,8 +659,8 @@ let
     {
       file = "0073-crucible-device-wait-vmstop.patch";
       branchSubject = "crucible: admit checkpoint stop from exact callbacks";
-      branchCommit = "abeac89d9d49285f4bfde2212fe6880ab87d9665";
-      branchTree = "d5f247357aa1b70afad22a8f9787a7056ce3a2f5";
+      branchCommit = "1fad865e4709b2fa685a1043607a844dd6d02e34";
+      branchTree = "cd547ab923d683c5e03682cea6ba5354c4d45c4a";
       catalogName = "crucible-device-wait-vmstop";
       class = "F";
       enforces = "QFP-STATE-2,DET-1,INV-10";
@@ -669,8 +669,8 @@ let
     {
       file = "0074-crucible-arm-accelerator-result-opportunities.patch";
       branchSubject = "crucible: arm accelerator result opportunities";
-      branchCommit = "5841cec5774f678de0d69fcaa306fa277c784c1b";
-      branchTree = "cd0051ae0ea96e34fc1474ee91e92a088ac6c71f";
+      branchCommit = "e86b1efb2689cf1e0d47fdb48a2b62d3502511d9";
+      branchTree = "2517f5d608ba1fdb812d80561488e796f19474bd";
       catalogName = "crucible-accelerator-result-opportunity";
       class = "F";
       enforces = "QFP-ACCEL-3,QFP-RESULT-1,QFP-EVENT-1,FAULT-ORDER";
@@ -679,8 +679,8 @@ let
     {
       file = "0075-crucible-restore-authenticated-fault-event-requests.patch";
       branchSubject = "crucible: restore authenticated fault event requests";
-      branchCommit = "4dae9638925d5796bb032d1b4654374a641e2297";
-      branchTree = "e02ba0b129a8a3c414ca58fcf7e4f414469bbe69";
+      branchCommit = "1977dee7a7ea4707d72edd4aabc7a3bc6d2e19b9";
+      branchTree = "9654e4f78ac847b7eddffc60a9f231b4c023f9f3";
       catalogName = "crucible-authenticated-event-request-envelope";
       class = "F";
       enforces = "QFP-STATE-2,QFP-ACCEL-3,QFP-EVENT-1,FAULT-ORDER";
@@ -689,8 +689,8 @@ let
     {
       file = "0076-crucible-9p-completion-wake-registration.patch";
       branchSubject = "crucible: register 9p completion wakes before plugin install";
-      branchCommit = "5548ed88134317f5313733333b37c2e7fcaf58b8";
-      branchTree = "5f0354e2ea4d7e21874e7840a2e94d459a5dfd8f";
+      branchCommit = "7f6e6976c732ff1dd423ab93af9b18689a2d57fb";
+      branchTree = "277d590ae04eef6cce6e6b9c53840902959c66c5";
       catalogName = "crucible-9p-completion-wake-registration";
       class = "D";
       enforces = "PATCH-20,DET-1,INV-10";
@@ -699,8 +699,8 @@ let
     {
       file = "0077-crucible-serialize-rr-cursor.patch";
       branchSubject = "crucible: serialize authoritative RR cursor";
-      branchCommit = "47ff554ff4ebe000f50a3c56a55cde33c69ac445";
-      branchTree = "fcda61a23f464df35337b2ef1a94d760c841e0d8";
+      branchCommit = "d61f746568283b0c900230b120ef79aab692f0f8";
+      branchTree = "b169f87fe1387846c935dbfc3e5c80530116eaca";
       catalogName = "crucible-serialized-rr-cursor";
       class = "D";
       enforces = "DET-29,QEMU-34,QEMU-43,QFP-STATE-2";
@@ -709,8 +709,8 @@ let
     {
       file = "0078-crucible-fingerprint-guest-state-domains.patch";
       branchSubject = "crucible: fingerprint guest-visible state domains";
-      branchCommit = "f5315429785172bad836cc92e298d97915b936c3";
-      branchTree = "49ac458fff40e600412a08930ee28fecfaf74a24";
+      branchCommit = "d2bd1d8b9d72748e5afdd5e8b3096b1e26597692";
+      branchTree = "78a56bd4aaa393b0af3abe4cd2d4f2dd816c2a3a";
       catalogName = "crucible-fingerprint-guest-state-domains";
       class = "D";
       enforces = "DET-29,QEMU-34,QFP-STATE-2";
@@ -719,8 +719,8 @@ let
     {
       file = "0079-crucible-stopped-state-control-progress.patch";
       branchSubject = "crucible: bound stopped-state control progress";
-      branchCommit = "0c43eb3f85a7fc674c9f3dd32668484a4f6a9546";
-      branchTree = "03efca47f464b4012485552fb489c336acef7598";
+      branchCommit = "575c9bba298b0d53086bce2ba7fd74ecb226216a";
+      branchTree = "172e303cdc14b8db2cec85dc52477146a33466b2";
       catalogName = "crucible-stopped-state-control-progress";
       class = "D";
       enforces = "DET-1,INV-10,QEMU-43,QFP-STATE-2";
@@ -729,8 +729,8 @@ let
     {
       file = "0080-crucible-inactive-retention-clock-guard.patch";
       branchSubject = "crucible: guard inactive retention clock reads";
-      branchCommit = "46e6af1894777067f12c06d88d14a1e91c8a9429";
-      branchTree = "078b81f502929a3146f081fc556815d4429e3f63";
+      branchCommit = "cb7ab46714afed573995eb5ae57699a1c1c6cc6a";
+      branchTree = "7d8d2ebd16f154813d3d482a75ec38c912e4ccae";
       catalogName = "crucible-inactive-retention-clock-guard";
       class = "D";
       enforces = "DET-1,QFP-STATE-2,FAULT-ORDER";
@@ -739,8 +739,8 @@ let
     {
       file = "0081-crucible-deferred-result-evidence-test.patch";
       branchSubject = "crucible: validate deferred result evidence";
-      branchCommit = "204b65670d296c8b7c5699ab8ba1cc4079049ac1";
-      branchTree = "6ac80533c93e5021e29d4fa2c5a83ee2bdb9de3f";
+      branchCommit = "a9080e2b23107cbf01eccb4239b26600358f9715";
+      branchTree = "7193e3f97125b621c658171f84186afc00d4c08d";
       catalogName = "crucible-deferred-result-evidence-test";
       class = "F";
       enforces = "QEMU-44,FAULT-EVIDENCE";
@@ -749,8 +749,8 @@ let
     {
       file = "0082-crucible-deterministic-instruction-input-state.patch";
       branchSubject = "crucible: stabilize instruction input selectors";
-      branchCommit = "11c3a8025a978d3d1ec31f12779840cf0ebdcf6b";
-      branchTree = "9b78a684953ad0ef2e7d38055cd02ff4b2fd93f2";
+      branchCommit = "d87ae4155ae787de8c738b7f43425a99934a9c0f";
+      branchTree = "94db91de618a6fd56b070937f4e3810f171c5415";
       catalogName = "crucible-deterministic-instruction-input-state";
       class = "D";
       enforces = "DET-1,QEMU-44,FAULT-EVIDENCE";
@@ -759,8 +759,8 @@ let
     {
       file = "0083-crucible-inert-clock-restore.patch";
       branchSubject = "crucible: preserve clocks across VMState restore";
-      branchCommit = "582e7f948a03882e7b4c0a8f763afd7262afde16";
-      branchTree = "6932769109e794f27c5e52ae3823d545bf674cf3";
+      branchCommit = "057194a6e3c470c66334ad6f0b5658c9c16e64f2";
+      branchTree = "929f0d53c097ba7d05c69682027ee2972e9ccd18";
       catalogName = "crucible-inert-clock-restore";
       class = "D";
       enforces = "DET-1,QFP-CLOCK-2,QFP-STATE-2";
@@ -769,8 +769,8 @@ let
     {
       file = "0084-crucible-exact-restore-network-announcement.patch";
       branchSubject = "crucible: suppress migration announcements on exact restore";
-      branchCommit = "9b02fab8f539342fc4750f5f87b0ed29e1d564bc";
-      branchTree = "1734706a862e56dade0c7dcf07f8371500ab5641";
+      branchCommit = "6511de883f4e7cfdbd525695b9a82bbe8edc1e4b";
+      branchTree = "8325da9e349b41868f81d69e800637dd7819320b";
       catalogName = "crucible-exact-restore-network-announcement";
       class = "D";
       enforces = "DET-1,QFP-STATE-2,FAULT-ORDER";
@@ -779,8 +779,8 @@ let
     {
       file = "0085-crucible-register-rejection-atomicity.patch";
       branchSubject = "crucible: prove register rejection atomicity";
-      branchCommit = "655f558ebc0e50ad53f701bbd376266db0b2d5e5";
-      branchTree = "c39b53a02db040be5b154b50128bf91e2327713c";
+      branchCommit = "233b6b35af9e399f92379f3a75c5a616a390df0e";
+      branchTree = "17a95182b47e545d61074bff7a013186fcd00740";
       catalogName = "crucible-register-rejection-atomicity";
       class = "D";
       enforces = "DET-1,QFP-REG-1,QFP-REG-2,FAULT-EVIDENCE";
@@ -789,8 +789,8 @@ let
     {
       file = "0086-crucible-genesis-observation-boundary.patch";
       branchSubject = "crucible: admit genesis observation boundary";
-      branchCommit = "28eb61469cb87ef300663aab61adde9da6bbb0cc";
-      branchTree = "c9a9eac2d42dedab84c33077b2ee2af4bcfdd6aa";
+      branchCommit = "1f0996e48799cfdae76c60bb00bd41129d40aa7a";
+      branchTree = "b541af0e3f868752770f925c79c6e8667ccca259";
       catalogName = "crucible-genesis-observation-boundary";
       class = "D";
       enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
@@ -799,8 +799,8 @@ let
     {
       file = "0087-crucible-deterministic-rcu-quiescence.patch";
       branchSubject = "crucible: defer host RCU kicks in sim";
-      branchCommit = "17d9a1c5a5efac4884e361e56f864874256f0e6e";
-      branchTree = "1bb01ced205855f41d56dc8ea3dcb16017b670b9";
+      branchCommit = "4146e9473afcdd619181619975e7fa8eac1347be";
+      branchTree = "dbc62fb2c7ed0b2fc2089e6b9980683a621f1236";
       catalogName = "crucible-deterministic-rcu-quiescence";
       class = "D";
       enforces = "DET-1,DET-29,QEMU-43";
@@ -809,8 +809,8 @@ let
     {
       file = "0088-crucible-deterministic-host-kick-boundary.patch";
       branchSubject = "crucible: defer generic host kicks in active sim slices";
-      branchCommit = "08ac47bc8bd7b789e96fc7d210d7e81829d03653";
-      branchTree = "62db4c0dbb5aa7e6d215670c7906fffc7973c0fa";
+      branchCommit = "b74a72830566cf82c06caea2b48f2bdfccb33fcf";
+      branchTree = "eed61b4fe79859db97b538553ef56800a1eb0cb3";
       catalogName = "crucible-deterministic-host-kick-boundary";
       class = "D";
       enforces = "DET-1,DET-29,QEMU-43";
@@ -819,8 +819,8 @@ let
     {
       file = "0089-crucible-exact-boundary-vcpu-introspection.patch";
       branchSubject = "crucible: admit vCPU introspection at exact boundaries";
-      branchCommit = "ec765ccb46c4a2ab048cafc285700d99b47ce536";
-      branchTree = "9a18fca600a0a0e3948c4cc8d9c761ee792a62ef";
+      branchCommit = "ae94b78bf72aa349383461f1675b396ea568b18a";
+      branchTree = "6bfcc3dea7fc1f0d2459507ed9207ed5a9b32a19";
       catalogName = "crucible-exact-boundary-vcpu-introspection";
       class = "D";
       enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
@@ -829,8 +829,8 @@ let
     {
       file = "0090-crucible-active-tcg-kick-boundary.patch";
       branchSubject = "crucible: defer generic kicks to TCG boundaries";
-      branchCommit = "d15cdc7437ce37c81c029f98acc82500aeb8e713";
-      branchTree = "ac755d76eb92579c0f2416c04393c3b77f49644b";
+      branchCommit = "7bcead204fb80ef6deb4fb23fea6109c82951640";
+      branchTree = "dd1214b29f107e8651b2e3396ee69368461ae320";
       catalogName = "crucible-active-tcg-kick-boundary";
       class = "D";
       enforces = "DET-1,DET-29,QEMU-43";
@@ -839,8 +839,8 @@ let
     {
       file = "0091-crucible-canonical-rr-genesis-cursor.patch";
       branchSubject = "crucible: expose the canonical RR genesis cursor";
-      branchCommit = "ce94ce6d01c2c196fa1ba697433c37f9faeee738";
-      branchTree = "fe2f94717fa775971da91370d45dc1b6c1f7949c";
+      branchCommit = "e41b81123902186b0d1a1463e666d68d10045118";
+      branchTree = "e73429c3002a00a5054809bdbc23053dcfd73348";
       catalogName = "crucible-canonical-rr-genesis-cursor";
       class = "D";
       enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
@@ -849,8 +849,8 @@ let
     {
       file = "0092-crucible-canonical-terminal-rr-cursor.patch";
       branchSubject = "crucible: canonicalize terminal RR observations";
-      branchCommit = "ad1232cbdb32a2aac81ee25017a6767dd062967d";
-      branchTree = "17acb0bf7d0cbbcf4193f32187a820b79fba2850";
+      branchCommit = "6dc105541792878bd9a11c8cf54ab4b909c3bd0e";
+      branchTree = "0466ea7c98e164cd33e7c06ec0cc9e43334d69fe";
       catalogName = "crucible-canonical-terminal-rr-cursor";
       class = "D";
       enforces = "DET-1,DET-29,QFP-STATE-2";
@@ -859,8 +859,8 @@ let
     {
       file = "0093-crucible-canonical-register-cursor.patch";
       branchSubject = "crucible: canonicalize after-instruction register cursors";
-      branchCommit = "f350936d422ca5710c7460ab4d20139acfc370c2";
-      branchTree = "6cc1bc5616b88ec75da50616f494030f2e96f03c";
+      branchCommit = "805087dcc31320ac1d615fbe7a5b7c36bf71bac5";
+      branchTree = "d8e41ba4baace3a0403a191efa61284e918cb3c2";
       catalogName = "crucible-canonical-register-cursor";
       class = "D";
       enforces = "DET-1,DET-29,QFP-STATE-2";
@@ -869,8 +869,8 @@ let
     {
       file = "0094-crucible-retention-virtual-time-origin.patch";
       branchSubject = "crucible: anchor retention to virtual time";
-      branchCommit = "259767cae889a34afb15c948d2ecbb56f002875f";
-      branchTree = "bcca7dfa762836b7814debfd8681559ae5ac54f0";
+      branchCommit = "887b32dcd5fa6ce2c26b68cbc93f8754e0fa47c0";
+      branchTree = "ec162b01adba9c3ba986a39f17798c30dc20a55f";
       catalogName = "crucible-retention-virtual-time-origin";
       class = "D";
       enforces = "DET-1,TIME-23,E14";
@@ -879,8 +879,8 @@ let
     {
       file = "0095-crucible-raw-pte-update-identity.patch";
       branchSubject = "crucible: preserve raw PTE update identity";
-      branchCommit = "31fdc34a4c952b7c273f732f9bddd8321bf17508";
-      branchTree = "0955f064bc82c00497c2974fbae841bf29771eaa";
+      branchCommit = "36acf3c4787f59390cecc5e4c15ddb964a01929e";
+      branchTree = "c8ad99b53256def5e05ca4bef80734c606d0ab1f";
       catalogName = "crucible-raw-pte-update-identity";
       class = "D";
       enforces = "QFP-MEMA-1,QFP-MEMA-2,FAULT-ORDER";
@@ -889,8 +889,8 @@ let
     {
       file = "0096-crucible-physical-page-table-region-fixture.patch";
       branchSubject = "tests/tcg: target page-table regions physically";
-      branchCommit = "c179ad9790b93e06c6e426118ca419ee800130bc";
-      branchTree = "9193ae0e9d12086d3a26827f01fe4b3dadfa9712";
+      branchCommit = "ef180c26bbe3d512435b6ce5306c22edd00d1fe5";
+      branchTree = "16cd53d277d3156ba9c8b9502647a304e6b82550";
       catalogName = "crucible-physical-page-table-region-fixture";
       class = "F";
       enforces = "QFP-MEMA-1,QFP-MEMA-2,FAULT-EVIDENCE";
@@ -899,8 +899,8 @@ let
     {
       file = "0097-crucible-canonicalize-memory-retry-identity.patch";
       branchSubject = "crucible: canonicalize memory retry identity";
-      branchCommit = "6179f007a64e88c840ad7543df3647caee2c40f4";
-      branchTree = "9d879ba02f92755a0487ba20e02d64ee64028018";
+      branchCommit = "50b21eaf98a4b3baefdaec54a73e3dcd3ff8e05c";
+      branchTree = "4ec5ebebfbd4a73dad7f6b1fb3828acf43bd2382";
       catalogName = "crucible-canonical-memory-retry-identity";
       class = "D";
       enforces = "DET-1,QFP-MEMA-1,QFP-STATE-2";
@@ -909,8 +909,8 @@ let
     {
       file = "0098-crucible-inactive-nested-tsc-guard.patch";
       branchSubject = "crucible: guard inactive nested TSC reads";
-      branchCommit = "61557663c6f77ac642ae89d16b36b49d9b0bcaeb";
-      branchTree = "1544a7281defe4f5f9ca816d9db4f5fa952861ba";
+      branchCommit = "77c00c7ccbb047202afde3c3db615a49b7f5dcf3";
+      branchTree = "3feb4d8e0999ccd0cb78164ba351dd3539628511";
       catalogName = "crucible-inactive-nested-tsc-guard";
       class = "D";
       enforces = "DET-1,QFP-CLOCK-2,PATCH-3";
@@ -919,8 +919,8 @@ let
     {
       file = "0099-crucible-valid-aarch64-abort-fixture.patch";
       branchSubject = "tests/tcg: use valid AArch64 abort syndrome";
-      branchCommit = "c4529f713bbc2c67d4e57c4dbbdc9af2eb88b7d2";
-      branchTree = "19bbed54dd92eb8cbba18bc2bc5d49ce3dc03af2";
+      branchCommit = "c33b2114183607a18826fcc60ead21bbde1f7dd8";
+      branchTree = "5131036327904b1ce23baf2b12ba09268249df37";
       catalogName = "crucible-valid-aarch64-abort-fixture";
       class = "F";
       enforces = "QFP-MEMA-1,FAULT-EVIDENCE,PATCH-3";
@@ -929,8 +929,8 @@ let
     {
       file = "0100-crucible-aarch64-memory-exception-vectors.patch";
       branchSubject = "crucible: validate AArch64 memory exception vectors";
-      branchCommit = "b068b79c5c447dd722d561c56118cb18fa238a2f";
-      branchTree = "d624d9ea1bfa8ffd000b447988a52f904e195b6d";
+      branchCommit = "5302bcac3b446321fef66084a2a3a294f583787a";
+      branchTree = "74f144770c797d85aa9125d8e0345f9fb49bae18";
       catalogName = "crucible-aarch64-memory-exception-vectors";
       class = "D";
       enforces = "QFP-MEMA-1,FAULT-EVIDENCE,PATCH-3";
@@ -939,8 +939,8 @@ let
     {
       file = "0101-crucible-canonicalize-snapshot-rr-resume.patch";
       branchSubject = "crucible: canonicalize snapshot RR resume";
-      branchCommit = "6b7123e8a5cf1d4abbc1104c1a0802618825ddae";
-      branchTree = "cd34ac967f145ac6bdeb557d1f2c5edac85c8241";
+      branchCommit = "15253289779ef75f017b3b4de95128bfaeff954c";
+      branchTree = "f49224243d2696869bec456065448d0cd09584db";
       catalogName = "crucible-canonical-snapshot-rr-resume";
       class = "D";
       enforces = "DET-1,QFP-STATE-2,QEMU-43";
@@ -949,8 +949,8 @@ let
     {
       file = "0102-crucible-bql-exact-register-capture.patch";
       branchSubject = "crucible: admit BQL exact register capture";
-      branchCommit = "545f337f00f751001360a91c610dbcd772e4213a";
-      branchTree = "a44466f9265fcc57f310551289f68137c7536d15";
+      branchCommit = "22e6805be6243db5600f30cc404d7a928c4ee0cd";
+      branchTree = "b4c0cba93b63a223c22af94aac1e90fdee2d335f";
       catalogName = "crucible-bql-exact-register-capture";
       class = "D";
       enforces = "DET-1,QFP-STATE-2,QEMU-43";
@@ -959,8 +959,8 @@ let
     {
       file = "0103-crucible-isolate-checkpoint-control-wake.patch";
       branchSubject = "crucible: isolate checkpoint control wake";
-      branchCommit = "6584966e98b5072231ae72d3484b0ea7b1b3823a";
-      branchTree = "c8e00b38c6311ac4bd06ab9f6c4ef7d4f8138448";
+      branchCommit = "4d9da0d22f09991084e685b9fdbb8ff538d04110";
+      branchTree = "cb85f3ffaaeacb53649e6c19bdc6ee5cad29b679";
       catalogName = "crucible-isolate-checkpoint-control-wake";
       class = "D";
       enforces = "DET-1,QFP-STATE-2,PATCH-20";
@@ -969,8 +969,8 @@ let
     {
       file = "0104-crucible-preserve-checkpoint-block-durability.patch";
       branchSubject = "crucible: preserve checkpoint block durability";
-      branchCommit = "3d5c63506af1350de6625ff1b7faf449bdeb4ee6";
-      branchTree = "6a51977ed7efb2a759498c7acd93ea2f482f7516";
+      branchCommit = "8a6c3ea6f7cf823b8609875f4327e8b8068e2982";
+      branchTree = "7f34c324092310ddec31cdf5f809b49b8f0f0d06";
       catalogName = "crucible-preserve-checkpoint-block-durability";
       class = "D";
       enforces = "DET-1,QFP-STATE-2,QFP-BLOCK-3";
@@ -979,8 +979,8 @@ let
     {
       file = "0105-crucible-selector-control-plane-fixtures.patch";
       branchSubject = "crucible: isolate selector control-plane fixtures";
-      branchCommit = "e7475eb57e814c7efadbd89468e98c9ff37f8ddd";
-      branchTree = "cc2f5e0cbe87db0e68a191a3d5de5604f597e240";
+      branchCommit = "2fc19020522fafed796fed523ffa15152b376f46";
+      branchTree = "18bba5bcdc489b6904117382dad03b006e5ac6d5";
       catalogName = "crucible-selector-control-plane-fixtures";
       class = "F";
       enforces = "FAULT-ORDER,PATCH-3,QFP-INST-3";
@@ -989,8 +989,8 @@ let
     {
       file = "0106-crucible-defer-active-slice-host-wakes.patch";
       branchSubject = "crucible: defer active-slice host wake requests";
-      branchCommit = "8890c517cedfcdfe1b521e1f628c389ad675e9bd";
-      branchTree = "977b09c53974593b50d95bafba3da5a87424502a";
+      branchCommit = "7df0704a40f8dff5d7329569e9ab05aef8bd6245";
+      branchTree = "999a43db0b41bebf97f5e82ba66091d8154f6887";
       catalogName = "crucible-defer-active-slice-host-wakes";
       class = "D";
       enforces = "DET-1,QFP-KICK-3,QEMU-43";
@@ -999,8 +999,8 @@ let
     {
       file = "0107-crucible-anchor-rr-cursor-genesis.patch";
       branchSubject = "crucible: anchor RR cursor at guest genesis";
-      branchCommit = "869cbe50925f957035581c5255c7ff9bbc7c5c4a";
-      branchTree = "bfacc7c1f1fab14779a90586833bc5666b044bb2";
+      branchCommit = "e8a03808f07b1d469e3ea8c949f1b0b04f92dce6";
+      branchTree = "8419ad547b9518297dc2ed2d973689c761d0ba23";
       catalogName = "crucible-anchor-rr-cursor-genesis";
       class = "D";
       enforces = "DET-1,QFP-STATE-2,QEMU-43";
@@ -1009,8 +1009,8 @@ let
     {
       file = "0108-crucible-deterministic-network-kick.patch";
       branchSubject = "crucible: preserve deterministic network continuation";
-      branchCommit = "f86daedf7283aac98c1739fbe7b0c6625138e6b8";
-      branchTree = "ccdad271ccfb2679a4ff19b94c2c95ef3f5cf1f0";
+      branchCommit = "fa9e56fda83b3363a3979233544a257293e29909";
+      branchTree = "6ee7f50f65319620b51da496393795042f48cbbd";
       catalogName = "crucible-deterministic-network-kick";
       class = "D";
       enforces = "DET-1,PLUG-23,PLUG-24,QEMU-43";
@@ -1019,8 +1019,8 @@ let
     {
       file = "0109-crucible-control-boundary-node-faults.patch";
       branchSubject = "crucible: dispatch exact control-boundary node faults";
-      branchCommit = "cb983ca4a3f36fe161f7db46a48ec3314f6abb09";
-      branchTree = "0b8430f885f51f5fce1e871ce32ee2eb7474cfa6";
+      branchCommit = "51a1ec02a606d60465bfa32cbbc73bd242faef22";
+      branchTree = "5b2c51565862658ed75e83a4ca04e4b0858beb5f";
       catalogName = "crucible-control-boundary-node-faults";
       class = "F";
       enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
@@ -1029,8 +1029,8 @@ let
     {
       file = "0110-crucible-release-halted-rr-turn.patch";
       branchSubject = "crucible: release halted partial RR turns";
-      branchCommit = "22253f8e0643a1fece1b4a4443bf617555d28ba1";
-      branchTree = "5dd5ac15805cc1d31a3e74e28eabf926fd75dbd5";
+      branchCommit = "4dba51665731496fa872294480cc22c96e570642";
+      branchTree = "aa758829bf2b9613ca889d23d925ab913aea81e8";
       catalogName = "crucible-release-halted-rr-turn";
       class = "D";
       enforces = "DET-1,PLUG-24,QEMU-43";

@@ -678,9 +678,19 @@ in
             "${patchMicrotests}/per-patch/0109-crucible-control-boundary-node-faults.patch.result"
           grep -Fxq 'patched_fixture_exercised=true' \
             "${patchMicrotests}/per-patch/0109-crucible-control-boundary-node-faults.patch.result"
+          lifecycle_matrix_result="${patchMicrotests}/per-patch/0056-crucible-node-lifecycle-faults.patch.result"
+          grep -Fxq 'ready_exhaustion=attempts-2,effective-permanent-failure,exit-72' \
+            "$lifecycle_matrix_result"
+          grep '^production_effect_row=' "$lifecycle_matrix_result" \
+            > "$TMPDIR/node-production-effect-rows"
+          test "$(wc -l < "$TMPDIR/node-production-effect-rows")" -eq 2
+          test "$(sort -u "$TMPDIR/node-production-effect-rows" | wc -l)" -eq 2
           grep -Fxq \
             'production_effect_row=node.hang|node-vcpu-watchdog-recovery|gate:live-node-lifecycle-matrix|actual-patched-qemu|CRUCHNG1+CRUCWDC1+CRUCLIF1' \
-            "${patchMicrotests}/per-patch/0056-crucible-node-lifecycle-faults.patch.result"
+            "$TMPDIR/node-production-effect-rows"
+          grep -Fxq \
+            'production_effect_row=node.lifecycle|reset-ready-exhaustion|gate:live-node-lifecycle-matrix|actual-patched-qemu|CRUCLIF1-ready-exhausted-permanent-failure' \
+            "$TMPDIR/node-production-effect-rows"
           vcpu_result="${patchMicrotests}/per-patch/0055-crucible-vcpu-service-control.patch.result"
           grep -Fxq PASS "$vcpu_result"
           grep -Fxq 'live_vcpu_states=online,offline,stalled,recovery' \

@@ -107,6 +107,10 @@ the first matching event completes the original deferred lifecycle command,
 and a missed deadline performs another native machine reset. The final missed
 deadline executes `exhausted`. Failure to restore preserved reset state is a
 fail-closed permanent failure and never resumes the partially reset machine.
+Every repeated in-process restore replaces a pending one-shot pflash post-load
+state handler before registering its successor. This prevents two missed ready
+deadlines from retaining duplicate callbacks and makes the final authenticated
+pause safe on both x86_64 and AArch64.
 
 `CRUCLIF1` version 4 is 304 bytes. Its first 192 bytes carry the lifecycle,
 state-policy, timing, affected-byte-count, and before/after fingerprint fields.

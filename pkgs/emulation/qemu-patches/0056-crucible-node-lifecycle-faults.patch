@@ -176,6 +176,33 @@ index 8bc1b2109..8502efe20 100644
          if (icount_enabled() && all_cpu_threads_idle()) {
              /*
               * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
+diff --git a/hw/block/pflash_cfi01.c b/hw/block/pflash_cfi01.c
+index b5ea927f3..f974150c1 100644
+--- a/hw/block/pflash_cfi01.c
++++ b/hw/block/pflash_cfi01.c
+@@ -1027,8 +1027,10 @@ static void postload_update_cb(void *opaque, bool running, RunState state)
+     PFlashCFI01 *pfl = opaque;
+ 
+     /* This is called after bdrv_activate_all.  */
+-    qemu_del_vm_change_state_handler(pfl->vmstate);
+-    pfl->vmstate = NULL;
++    if (pfl->vmstate) {
++        qemu_del_vm_change_state_handler(pfl->vmstate);
++        pfl->vmstate = NULL;
++    }
+ 
+     trace_pflash_postload_cb(pfl->name);
+     pflash_update(pfl, 0, pfl->sector_len * pfl->nb_blocs);
+@@ -1039,6 +1041,9 @@ static int pflash_post_load(void *opaque, int version_id)
+     PFlashCFI01 *pfl = opaque;
+ 
+     if (!pfl->ro) {
++        if (pfl->vmstate) {
++            qemu_del_vm_change_state_handler(pfl->vmstate);
++        }
+         pfl->vmstate = qemu_add_vm_change_state_handler(postload_update_cb,
+                                                         pfl);
+     }
 diff --git a/hw/intc/apic_common.c b/hw/intc/apic_common.c
 index 7bddd0f70..703302097 100644
 --- a/hw/intc/apic_common.c
