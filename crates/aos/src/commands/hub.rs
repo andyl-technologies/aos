@@ -563,6 +563,34 @@ mod tests {
     }
 
     #[test]
+    fn route_update_masks_name_each_changed_wire_field_once() {
+        let input = HubRouteSpecArgs {
+            endpoint: None,
+            endpoint_generation: Some(2),
+            base_path: None,
+            mode: Some("hub-proxy".into()),
+            placement: Some("primary".into()),
+            placement_policy: None,
+            gateway: None,
+            serves: vec!["web".into()],
+            policy: HubAccessPolicyArgs {
+                access: Some("public".into()),
+                ..Default::default()
+            },
+        };
+
+        assert_eq!(
+            route_update_mask(&input),
+            [
+                "spec.endpoint_generation",
+                "spec.target",
+                "spec.access_policy",
+                "spec.capabilities",
+            ]
+        );
+    }
+
+    #[test]
     fn cidr_parser_requires_a_canonical_network_prefix() {
         assert_eq!(canonical_cidr("10.0.0.0/8").unwrap(), "10.0.0.0/8");
         assert!(canonical_cidr("10.0.0.1/8").is_err());
@@ -7238,6 +7266,27 @@ fn merge_route_spec(
     Ok(current)
 }
 
+fn route_update_mask(input: &HubRouteSpecArgs) -> Vec<String> {
+    let mut mask = Vec::with_capacity(4);
+    if input.endpoint_generation.is_some() {
+        mask.push("spec.endpoint_generation".into());
+    }
+    if input.mode.is_some()
+        || input.placement.is_some()
+        || input.placement_policy.is_some()
+        || input.gateway.is_some()
+    {
+        mask.push("spec.target".into());
+    }
+    if access_policy_args_present(&input.policy) {
+        mask.push("spec.access_policy".into());
+    }
+    if !input.serves.is_empty() {
+        mask.push("spec.capabilities".into());
+    }
+    mask
+}
+
 async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
     match command {
         HubRouteCmd::List {
@@ -7341,7 +7390,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
                     spec: Some(merge_route_spec(current_spec, spec)?),
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
                     idempotency_key: new_idempotency_key(),
-                    update_mask: vec!["spec".into()],
+                    update_mask: route_update_mask(spec),
                 },
                 mutation,
             )
@@ -7372,6 +7421,21 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
                 )
                 .await;
             }
+            let predecessor: hub_types::RouteResponse = client
+                .call_topology(
+                    HubTopologyMethod::GetRoute,
+                    &hub_types::GetTopologyResourceRequest {
+                        stable_id: route.clone(),
+                    },
+                )
+                .await?;
+            let surface = predecessor
+                .route
+                .and_then(|route| route.spec)
+                .and_then(|spec| spec.surface)
+                .context("the Hub returned a predecessor route without a surface")?;
+            let mut replacement_spec = route_spec(None, spec, true)?;
+            replacement_spec.surface = Some(surface);
             topology_mutation::<
                 _,
                 hub_types::ApplyRouteMutationRequest,
@@ -7384,7 +7448,8 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
                 HubTopologyMethod::ReplaceRoute,
                 &hub_types::PlanReplaceRouteRequest {
                     predecessor_route_id: route.clone(),
-                    spec: Some(route_spec(None, spec, true)?),
+                    stable_id: topology_stable_id(None, "delivery-route"),
+                    spec: Some(replacement_spec),
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
                     idempotency_key: new_idempotency_key(),
                     ..Default::default()
