@@ -8,16 +8,19 @@
 # device retry semantics. They do not rerun a failed test. The fixed sleeps are
 # production process-polling boundaries or child-process fixtures; their tests
 # still fail on the first unmet assertion or timeout.
-crucible-api	src/vm_lifecycle/checkpoint_store	retry	1
+crucible-api	src/vm_lifecycle/checkpoint_store/tests	retry	1
 crucible-api	src/vm_lifecycle/quantum_loop/checkpoint_capture	retry	1
 crucible-campaign	src/campaign_service	retry	1
+crucible-campaign	src/campaign_service/tests	retry	1
 crucible-campaign	src/execution	retry	1
+crucible-campaign	src/execution/tests	retry	1
 crucible-campaign	src/repository/tests/execution	retry	1
 crucible-cas	src/content_store/directory	retry	1
 crucible-cas	src/content_store/packed	retry	1
 crucible-cas	src/content_store/tests	thread::sleep	1
 crucible-cas	src/content_store	retry	1
 crucible-cli	src/cli/campaign	retry	1
+crucible-cli	src/cli/campaign/tests	retry	1
 crucible-cli	src/main	retry	1
 crucible-daemon	src/campaign_server/tests	thread::sleep	1
 crucible-daemon	src/campaign_server	thread::sleep	1
