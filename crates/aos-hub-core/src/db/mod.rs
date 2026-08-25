@@ -25847,7 +25847,10 @@ source_nar_hash = ""
             name: "demo".into(),
             description: None,
             readme: None,
-            caches: vec![("https://cache.example".into(), 40)],
+            caches: vec![
+                ("https://cache.example".into(), 40),
+                ("https://primary-cache.example".into(), 100),
+            ],
             roster: vec![("alice".into(), "demo:Ed25519:AA".into(), "active".into())],
             packages: vec![package],
             releases: vec![ReleaseRow {
@@ -26004,15 +26007,13 @@ source_nar_hash = ""
         let channels = db.list_channels(id).await.unwrap();
         assert_eq!(channels[0].partitions.iter().flatten().count(), 256);
         assert_eq!(db.index_status(id).await.unwrap().unwrap().state, "fresh");
+        let cache_stack = db.registry_cache_stack_entries(id).await.unwrap();
+        assert_eq!(cache_stack[0].resolved_priority, 100);
         assert_eq!(
-            db.registry_cache_stack_entries(id)
-                .await
-                .unwrap()
-                .first()
-                .unwrap()
-                .resolved_priority,
-            40
+            cache_stack[0].committed_url,
+            "https://primary-cache.example"
         );
+        assert_eq!(cache_stack[1].resolved_priority, 40);
         assert!(db.list_releases(id).await.unwrap()[0].pack_present);
         assert_eq!(
             db.refs_digest(id).await.unwrap().as_deref(),
