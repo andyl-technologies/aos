@@ -537,6 +537,7 @@ pub struct BranchPoint {
 }
 
 pub struct BranchRequest {
+    pub schema_version: u32, // v2 for new writes; v1 remains readable
     pub branch_point: BranchPointId,
     pub parent: ConfigurationArtifactId,
     pub opportunity: ChoiceOpportunityId,
@@ -555,6 +556,8 @@ pub enum CandidateSource {
 pub struct FiniteCandidateSource {
     // Private; constructed only through a nonempty, bounded validator.
     values: CanonicalSet<ChoiceValue>,
+    // None means implicit weight one for every value.
+    prior_weights: Option<CanonicalMap<ChoiceValue, u64>>,
 }
 
 pub struct BranchBudget {
@@ -640,6 +643,15 @@ pub struct Observation {
     pub discovered_choices: CanonicalSet<ChoiceOpportunityId>,
 }
 ```
+
+`BranchRequest` schema v1 encodes a uniform finite source as candidate-source
+tag 0 and a generated source as tag 1. Schema v2 preserves both encodings and
+adds tag 2 for a weighted finite source encoded as a canonical map from value
+to positive `u64` raw weight. The map is nonempty, contains at most 4,096
+entries, and its keys are exactly the finite value set. Absolute weight scale
+is immaterial; the owner normalizes the weights only when constructing exact
+planner guidance. New requests use v2. V1 request bodies and their original
+content identities remain readable, while a weighted source is invalid in v1.
 
 `BranchPath` schema version 2 retains each `BranchPointId` beside its
 non-invertible `BranchEdgeId`. This lets a restart rebuild observation credit

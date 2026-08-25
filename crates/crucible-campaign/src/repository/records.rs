@@ -1,5 +1,6 @@
 //! Strict campaign record publication, loading, and cross-record validation.
 
+use super::projection::PlannerCandidateProjectionCache;
 use super::*;
 use crate::IntegerValue;
 
@@ -641,8 +642,7 @@ impl CampaignRepository {
         } else {
             self.project_branch_puct_batch_loaded(&snapshot, guidance_points)?
         };
-        let mut domain_cache = BTreeMap::new();
-        let mut domain_bytes = 0_usize;
+        let mut candidate_cache = PlannerCandidateProjectionCache::default();
         for (position, input) in candidate_inputs {
             let expected_projection = self.planner_continuation_projection(&snapshot, position)?;
             if expected_projection != input.continuation {
@@ -653,8 +653,7 @@ impl CampaignRepository {
                     &snapshot,
                     request.invocation_id()?,
                     position,
-                    &mut domain_cache,
-                    &mut domain_bytes,
+                    &mut candidate_cache,
                 )?;
                 if expected != (input.continuation, Some(offer.clone())) {
                     return Err(integrity("planner-request-candidate-projection-mismatch"));
@@ -670,8 +669,7 @@ impl CampaignRepository {
                     &puct_projections[&position.branch_point()],
                     offer,
                     guidance.schema_version(),
-                    &mut domain_cache,
-                    &mut domain_bytes,
+                    &mut candidate_cache,
                 )?;
                 if &expected != guidance {
                     return Err(integrity("planner-request-candidate-guidance-mismatch"));
@@ -872,8 +870,9 @@ impl CampaignRepository {
         &self,
         request: &BranchRequest,
     ) -> Result<ContentId, CampaignRepositoryError> {
-        self.put_envelope(ObjectEnvelope::for_record(
+        self.put_envelope(ObjectEnvelope::for_record_versioned(
             crate::CampaignRecordKind::BranchRequest,
+            request.schema_version(),
             crate::object::content_children(request.content_children())?,
             request.canonical_bytes(),
         )?)

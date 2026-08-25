@@ -1520,6 +1520,58 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
             .expect("request decode"),
         request_envelope
     );
+    let encode_request_body = |schema_version: u32, source: &CandidateSource| {
+        let mut encoder = Encoder::new();
+        schema_version.encode(&mut encoder);
+        request.branch_point().encode(&mut encoder);
+        request.parent().encode(&mut encoder);
+        request.opportunity().encode(&mut encoder);
+        request.domain().encode(&mut encoder);
+        source.encode(&mut encoder);
+        request.cause().encode(&mut encoder);
+        request.budget().encode(&mut encoder);
+        request.stop().encode(&mut encoder);
+        encoder.finish()
+    };
+    let legacy_body = encode_request_body(1, request.source());
+    let legacy_request = BranchRequest::from_canonical_bytes(&legacy_body)
+        .expect("selection-free branch-request v1 remains readable");
+    assert_eq!(legacy_request.schema_version(), 1);
+    assert_eq!(legacy_request.canonical_bytes(), legacy_body);
+    let legacy_envelope = ObjectEnvelope::for_record_versioned(
+        CampaignRecordKind::BranchRequest,
+        1,
+        super::object::content_children(legacy_request.content_children())
+            .expect("legacy request children"),
+        legacy_body,
+    )
+    .expect("legacy request envelope");
+    assert_eq!(
+        legacy_request.id().expect("legacy request ID").content_id(),
+        legacy_envelope.content_id()
+    );
+
+    let weighted_source = CandidateSource::weighted_finite(BTreeMap::from([
+        (ChoiceValue::Integer(IntegerValue::Unsigned(0)), 1),
+        (ChoiceValue::Integer(IntegerValue::Unsigned(10)), u64::MAX),
+    ]))
+    .expect("weighted source");
+    assert_eq!(
+        decode::<CandidateSource>(&encode(&weighted_source)).expect("weighted source round trip"),
+        weighted_source
+    );
+    assert!(matches!(
+        CandidateSource::weighted_finite(BTreeMap::from([(ChoiceValue::Boolean(true), 0)])),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "weighted finite candidate source is empty, oversized, or has zero weight"
+        })
+    ));
+    assert!(matches!(
+        BranchRequest::from_canonical_bytes(&encode_request_body(1, &weighted_source)),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported branch-request schema or weighted legacy source"
+        })
+    ));
 
     let proposal = Proposal::new(
         branch_point,

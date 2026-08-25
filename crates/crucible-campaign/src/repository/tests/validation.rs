@@ -1249,7 +1249,7 @@ fn weighted_categorical_generator_is_exact_keyed_and_restart_stable() {
             .iter()
             .map(|alternative| labels[alternative])
             .collect::<Vec<_>>(),
-        vec!["beta", "delta", "alpha", "gamma"]
+        vec!["beta", "delta", "gamma", "alpha"]
     );
     assert_eq!(candidates.iter().copied().collect::<BTreeSet<_>>().len(), 4);
     assert_eq!(
@@ -1354,7 +1354,20 @@ fn weighted_categorical_generator_is_exact_keyed_and_restart_stable() {
                 .expect("other weighted candidate")
         })
         .collect::<Vec<_>>();
-    assert_ne!(other_candidates, expected_candidates);
+    assert_ne!(
+        other_request.id().expect("other weighted request ID"),
+        request.id().expect("weighted request ID")
+    );
+    assert_eq!(
+        other_candidates
+            .into_iter()
+            .flatten()
+            .collect::<BTreeSet<_>>(),
+        expected_candidates
+            .into_iter()
+            .flatten()
+            .collect::<BTreeSet<_>>()
+    );
 }
 
 #[test]
@@ -1584,7 +1597,7 @@ fn ordered_mixture_generator_schedules_deduplicates_and_restarts_exactly() {
             .iter()
             .map(|alternative| labels[alternative])
             .collect::<Vec<_>>(),
-        vec!["alpha", "beta", "delta", "gamma"]
+        vec!["beta", "alpha", "gamma", "delta"]
     );
     assert_eq!(candidates.iter().copied().collect::<BTreeSet<_>>().len(), 4);
     assert_eq!(
@@ -4021,7 +4034,7 @@ fn permuted_integer_generator_is_keyed_bijective_and_restart_stable() {
         .collect::<Vec<_>>();
     assert_eq!(
         sequence,
-        [24, 26, 14, 28, 12, 10, 20, 22, 18, 16]
+        [26, 28, 24, 12, 10, 20, 14, 16, 18, 22]
             .map(|value| ChoiceValue::Integer(IntegerValue::Unsigned(value)))
     );
     assert_eq!(

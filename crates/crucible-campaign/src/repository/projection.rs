@@ -26,7 +26,33 @@ struct BranchCreditedObservation {
 
 struct BranchEdgeVisitEvidence {
     statistics: crate::BranchEdgeVisitStatistics,
+    prior_weights: BTreeMap<crate::BranchEdgeId, u64>,
     observations: Vec<BranchCreditedObservation>,
+}
+
+#[derive(Clone, Copy)]
+struct AttemptProposalPrior {
+    admission_ordinal: AdmissionOrdinal,
+    raw_weight: u64,
+}
+
+#[derive(Default)]
+pub(super) struct PlannerCandidateProjectionCache {
+    requests: BTreeMap<BranchRequestId, Arc<BranchRequest>>,
+    domains: BTreeMap<crate::ChoiceDomainId, Arc<ChoiceDomain>>,
+    domain_bytes: usize,
+    prospective_priors:
+        BTreeMap<(crate::BranchPointId, u64), crate::exploration::BranchProspectivePriorBasis>,
+    prior_normalization_visits: usize,
+}
+
+#[derive(Default)]
+struct BranchEdgeProjectionWork {
+    total_credits: u64,
+    evidence_bytes: usize,
+    prior_cache: BTreeMap<AttemptId, AttemptProposalPrior>,
+    prior_request_cache: BTreeMap<BranchRequestId, Arc<BranchRequest>>,
+    charged_prior_records: BTreeSet<ContentId>,
 }
 
 type BranchFindingEvents = BTreeMap<crate::BranchEdgeId, BTreeMap<crate::FindingKind, u64>>;
@@ -1360,18 +1386,29 @@ impl CampaignRepository {
         snapshot: &LoadedSnapshot,
         invocation_id: crate::PlannerInvocationId,
         position: crate::PlanningScanPosition,
-        domain_cache: &mut BTreeMap<crate::ChoiceDomainId, Arc<ChoiceDomain>>,
-        domain_bytes: &mut usize,
+        cache: &mut PlannerCandidateProjectionCache,
     ) -> Result<(ContinuationProjection, Option<Proposal>), CampaignRepositoryError> {
         let observations = snapshot.snapshot.roots().observations;
         let candidate_view = CandidateViewRoots::from_roots(snapshot.snapshot.roots());
         let projection = self.planner_continuation_projection(snapshot, position)?;
-        let request = self.read_branch_request(position.source().content_id())?;
+        let request = match cache.requests.get(&position.source()) {
+            Some(request) => Arc::clone(request),
+            None => {
+                let request = Arc::new(self.read_branch_request(position.source().content_id())?);
+                cache
+                    .requests
+                    .insert(position.source(), Arc::clone(&request));
+                request
+            }
+        };
 
         let completed_visits =
             self.branch_completed_visits(observations, request.branch_point())?;
-        let domain =
-            self.read_planner_guidance_domain(request.domain(), domain_cache, domain_bytes)?;
+        let domain = self.read_planner_guidance_domain(
+            request.domain(),
+            &mut cache.domains,
+            &mut cache.domain_bytes,
+        )?;
         if self
             .candidate_source_profile(&request, domain.as_ref())?
             .is_none()
@@ -1669,7 +1706,7 @@ impl CampaignRepository {
     /// Rebuilds the active policy's bounded PUCT scores for one branch point.
     ///
     /// The projection authenticates the exact snapshot once, derives its
-    /// completed edge-visit partition, assigns a canonical uniform prior,
+    /// completed edge-visit partition, assigns canonical proposal priors,
     /// projects globally unique coverage identities onto credited edges, folds
     /// policy-weighted verified finding occurrences into reward, and reserves
     /// fairness for the least-visited edge. The active policy must select tree
@@ -1727,10 +1764,15 @@ impl CampaignRepository {
             loaded.snapshot.active_policy(),
             *puct,
             evidence.statistics,
-            novelty,
-            finding_weights,
-            finding_events,
-            objective_rewards.remove(&branch_point).unwrap_or_default(),
+            crate::exploration::BranchPuctProjectedEvidence {
+                prior_weights: evidence.prior_weights,
+                novelty_events: novelty,
+                finding_weights,
+                finding_events,
+                objective_reward_micros: objective_rewards
+                    .remove(&branch_point)
+                    .unwrap_or_default(),
+            },
         )
         .map_err(Into::into)
     }
@@ -1779,10 +1821,15 @@ impl CampaignRepository {
                     loaded.snapshot.active_policy(),
                     *puct,
                     evidence.statistics,
-                    novelty.remove(&branch_point).unwrap_or_default(),
-                    finding_weights.clone(),
-                    finding_events.remove(&branch_point).unwrap_or_default(),
-                    objective_rewards.remove(&branch_point).unwrap_or_default(),
+                    crate::exploration::BranchPuctProjectedEvidence {
+                        prior_weights: evidence.prior_weights,
+                        novelty_events: novelty.remove(&branch_point).unwrap_or_default(),
+                        finding_weights: finding_weights.clone(),
+                        finding_events: finding_events.remove(&branch_point).unwrap_or_default(),
+                        objective_reward_micros: objective_rewards
+                            .remove(&branch_point)
+                            .unwrap_or_default(),
+                    },
                 )
                 .map(|projection| (branch_point, projection))
                 .map_err(Into::into)
@@ -1796,8 +1843,7 @@ impl CampaignRepository {
         projection: &crate::BranchPuctProjection,
         offer: &Proposal,
         schema_version: u32,
-        domain_cache: &mut BTreeMap<crate::ChoiceDomainId, Arc<ChoiceDomain>>,
-        domain_bytes: &mut usize,
+        cache: &mut PlannerCandidateProjectionCache,
     ) -> Result<crate::PlannerCandidateGuidance, CampaignRepositoryError> {
         if projection.branch_point() != offer.branch_point()
             || projection.policy() != loaded.snapshot.active_policy()
@@ -1807,11 +1853,44 @@ impl CampaignRepository {
             ));
         }
         let semantic_id = self
-            .read_planner_guidance_domain(offer.domain(), domain_cache, domain_bytes)?
+            .read_planner_guidance_domain(
+                offer.domain(),
+                &mut cache.domains,
+                &mut cache.domain_bytes,
+            )?
             .semantic_id();
         let edge =
             crate::Selection::campaign_edge_id(offer.branch_point(), semantic_id, offer.value());
-        let evidence = projection.candidate_evidence(edge)?;
+        let request = match cache.requests.get(&offer.request()) {
+            Some(request) => Arc::clone(request),
+            None => {
+                let request = Arc::new(self.read_branch_request(offer.request().content_id())?);
+                cache.requests.insert(offer.request(), Arc::clone(&request));
+                request
+            }
+        };
+        let raw_prior_weight = request
+            .source()
+            .prior_weight(offer.value())
+            .ok_or_else(|| integrity("planner-offer-is-not-in-prior-source"))?;
+        let evidence = if projection.edge_statistics().contains_key(&edge) {
+            projection.candidate_evidence_with_prior(edge, raw_prior_weight)?
+        } else {
+            let cache_key = (projection.branch_point(), raw_prior_weight);
+            let basis = match cache.prospective_priors.get(&cache_key).copied() {
+                Some(basis) => basis,
+                None => {
+                    cache.prior_normalization_visits = charge_branch_prior_normalization_visits(
+                        cache.prior_normalization_visits,
+                        projection.edge_prior_weights().len(),
+                    )?;
+                    let basis = projection.prospective_prior_basis(raw_prior_weight)?;
+                    cache.prospective_priors.insert(cache_key, basis);
+                    basis
+                }
+            };
+            projection.candidate_evidence_with_prior_basis(edge, basis)?
+        };
         crate::PlannerCandidateGuidance::new_for_schema(
             schema_version,
             loaded.snapshot.planning_view().id()?,
@@ -1835,13 +1914,10 @@ impl CampaignRepository {
         loaded: &LoadedSnapshot,
         branch_point: crate::BranchPointId,
     ) -> Result<BranchEdgeVisitEvidence, CampaignRepositoryError> {
-        let mut total_credits = 0_u64;
-        let mut evidence_bytes = 0_usize;
         self.project_branch_edge_visit_evidence_bounded(
             loaded,
             branch_point,
-            &mut total_credits,
-            &mut evidence_bytes,
+            &mut BranchEdgeProjectionWork::default(),
         )
     }
 
@@ -1851,18 +1927,12 @@ impl CampaignRepository {
         branch_points: &BTreeSet<crate::BranchPointId>,
     ) -> Result<BTreeMap<crate::BranchPointId, BranchEdgeVisitEvidence>, CampaignRepositoryError>
     {
-        let mut total_credits = 0_u64;
-        let mut evidence_bytes = 0_usize;
+        let mut work = BranchEdgeProjectionWork::default();
         branch_points
             .iter()
             .map(|branch_point| {
-                self.project_branch_edge_visit_evidence_bounded(
-                    loaded,
-                    *branch_point,
-                    &mut total_credits,
-                    &mut evidence_bytes,
-                )
-                .map(|evidence| (*branch_point, evidence))
+                self.project_branch_edge_visit_evidence_bounded(loaded, *branch_point, &mut work)
+                    .map(|evidence| (*branch_point, evidence))
             })
             .collect()
     }
@@ -1871,8 +1941,7 @@ impl CampaignRepository {
         &self,
         loaded: &LoadedSnapshot,
         branch_point: crate::BranchPointId,
-        total_credits: &mut u64,
-        evidence_bytes: &mut usize,
+        work: &mut BranchEdgeProjectionWork,
     ) -> Result<BranchEdgeVisitEvidence, CampaignRepositoryError> {
         let Some(index) = self.merkle.get(
             loaded.snapshot.roots().observations,
@@ -1885,14 +1954,16 @@ impl CampaignRepository {
                     0,
                     BTreeMap::new(),
                 )?,
+                prior_weights: BTreeMap::new(),
                 observations: Vec::new(),
             });
         };
         let parent_visits = self.merkle.inspect_shallow(index)?.entry_count();
-        *total_credits = charge_branch_edge_visit_credits(*total_credits, parent_visits)?;
+        work.total_credits = charge_branch_edge_visit_credits(work.total_credits, parent_visits)?;
 
         let mut after = None;
         let mut edge_visits = BTreeMap::<crate::BranchEdgeId, u64>::new();
+        let mut edge_prior_basis = BTreeMap::<crate::BranchEdgeId, AttemptProposalPrior>::new();
         let mut observations = Vec::new();
         observations
             .try_reserve_exact(
@@ -1905,8 +1976,8 @@ impl CampaignRepository {
             let page = self.merkle.scan(index, after, PROJECTION_SCAN_PAGE_ITEMS)?;
             for (key, content) in page.entries() {
                 let credit = self.read_expansion_credit(*content)?;
-                *evidence_bytes = charge_branch_edge_visit_evidence(
-                    *evidence_bytes,
+                work.evidence_bytes = charge_branch_edge_visit_evidence(
+                    work.evidence_bytes,
                     credit.canonical_bytes().len(),
                 )?;
                 if credit.id().as_hash() != *key || credit.branch_point() != branch_point {
@@ -1914,18 +1985,18 @@ impl CampaignRepository {
                 }
 
                 let observation = self.decode_observation(credit.observation().content_id())?;
-                *evidence_bytes = charge_branch_edge_visit_evidence(
-                    *evidence_bytes,
+                work.evidence_bytes = charge_branch_edge_visit_evidence(
+                    work.evidence_bytes,
                     observation.canonical_bytes().len(),
                 )?;
                 let attempt = self.read_attempt(observation.attempt().content_id())?;
-                *evidence_bytes = charge_branch_edge_visit_evidence(
-                    *evidence_bytes,
+                work.evidence_bytes = charge_branch_edge_visit_evidence(
+                    work.evidence_bytes,
                     attempt.canonical_bytes().len(),
                 )?;
                 let path = self.read_branch_path(attempt.path().content_id())?;
-                *evidence_bytes = charge_branch_edge_visit_evidence(
-                    *evidence_bytes,
+                work.evidence_bytes = charge_branch_edge_visit_evidence(
+                    work.evidence_bytes,
                     path.canonical_bytes().len(),
                 )?;
                 if observation.path() != attempt.path() {
@@ -1942,6 +2013,29 @@ impl CampaignRepository {
                     .edge();
                 if matching.next().is_some() {
                     return Err(integrity("branch-edge-visit-path-repeats-branch-point"));
+                }
+                let prior = self.attempt_proposal_prior(
+                    loaded.snapshot.roots().accounting,
+                    observation.attempt(),
+                    &mut work.evidence_bytes,
+                    &mut work.prior_cache,
+                    &mut work.prior_request_cache,
+                    &mut work.charged_prior_records,
+                )?;
+                match edge_prior_basis.entry(edge) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(prior);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        let current = *entry.get();
+                        if prior.admission_ordinal < current.admission_ordinal {
+                            entry.insert(prior);
+                        } else if prior.admission_ordinal == current.admission_ordinal
+                            && prior.raw_weight != current.raw_weight
+                        {
+                            return Err(integrity("branch-edge-prior-basis-conflict"));
+                        }
+                    }
                 }
                 let visits = edge_visits.entry(edge).or_default();
                 *visits = visits
@@ -1964,14 +2058,100 @@ impl CampaignRepository {
         if visited != parent_visits {
             return Err(integrity("branch-edge-visit-credit-scan-mismatch"));
         }
+        let prior_weights = edge_prior_basis
+            .into_iter()
+            .map(|(edge, prior)| (edge, prior.raw_weight))
+            .collect::<BTreeMap<_, _>>();
+        if prior_weights.keys().ne(edge_visits.keys()) {
+            return Err(integrity("branch-edge-prior-partition-mismatch"));
+        }
         Ok(BranchEdgeVisitEvidence {
             statistics: crate::BranchEdgeVisitStatistics::new(
                 branch_point,
                 parent_visits,
                 edge_visits,
             )?,
+            prior_weights,
             observations,
         })
+    }
+
+    fn attempt_proposal_prior(
+        &self,
+        accounting: ContentId,
+        attempt: AttemptId,
+        evidence_bytes: &mut usize,
+        cache: &mut BTreeMap<AttemptId, AttemptProposalPrior>,
+        request_cache: &mut BTreeMap<BranchRequestId, Arc<BranchRequest>>,
+        charged_records: &mut BTreeSet<ContentId>,
+    ) -> Result<AttemptProposalPrior, CampaignRepositoryError> {
+        if let Some(prior) = cache.get(&attempt).copied() {
+            return Ok(prior);
+        }
+
+        let admission_content = self
+            .merkle
+            .get(
+                accounting,
+                map_key_content("accounting.attempt-execution-basis", attempt.content_id()),
+            )?
+            .ok_or_else(|| integrity("branch-edge-prior-attempt-is-not-admitted"))?;
+        let admission = self.decode_attempt_admission(admission_content)?;
+        charge_unique_branch_prior_record(
+            charged_records,
+            admission_content,
+            || admission.canonical_bytes().len(),
+            evidence_bytes,
+        )?;
+        if admission.attempt() != attempt {
+            return Err(integrity("branch-edge-prior-attempt-basis-mismatch"));
+        }
+        let AttemptAdmissionRole::ExecutionBasis {
+            proposal: Some(proposal_id),
+            cause,
+            admission_ordinal,
+        } = admission.role()
+        else {
+            return Err(integrity("branch-edge-prior-requires-proposal-basis"));
+        };
+
+        let proposal = self.decode_proposal(proposal_id.content_id())?;
+        charge_unique_branch_prior_record(
+            charged_records,
+            proposal_id.content_id(),
+            || proposal.canonical_bytes().len(),
+            evidence_bytes,
+        )?;
+        let request = match request_cache.get(&proposal.request()) {
+            Some(request) => Arc::clone(request),
+            None => {
+                let request = Arc::new(self.read_branch_request(proposal.request().content_id())?);
+                request_cache.insert(proposal.request(), Arc::clone(&request));
+                request
+            }
+        };
+        charge_unique_branch_prior_record(
+            charged_records,
+            proposal.request().content_id(),
+            || request.canonical_bytes().len(),
+            evidence_bytes,
+        )?;
+        if proposal.branch_point() != request.branch_point()
+            || proposal.domain() != request.domain()
+            || request.cause() != cause
+        {
+            return Err(integrity("branch-edge-prior-proposal-basis-mismatch"));
+        }
+        let raw_weight = request
+            .source()
+            .prior_weight(proposal.value())
+            .ok_or_else(|| integrity("branch-edge-prior-proposal-is-not-in-source"))?;
+        let prior = AttemptProposalPrior {
+            admission_ordinal,
+            raw_weight,
+        };
+        cache.insert(attempt, prior);
+        Ok(prior)
     }
 
     fn project_branch_novelty_events(
@@ -3113,6 +3293,18 @@ fn charge_branch_edge_visit_evidence(
     Ok(total)
 }
 
+fn charge_unique_branch_prior_record(
+    charged: &mut BTreeSet<ContentId>,
+    content: ContentId,
+    encoded_len: impl FnOnce() -> usize,
+    evidence_bytes: &mut usize,
+) -> Result<(), CampaignRepositoryError> {
+    if charged.insert(content) {
+        *evidence_bytes = charge_branch_edge_visit_evidence(*evidence_bytes, encoded_len())?;
+    }
+    Ok(())
+}
+
 pub(super) fn charge_branch_edge_visit_credits(
     prior: u64,
     credits: u64,
@@ -3122,6 +3314,19 @@ pub(super) fn charge_branch_edge_visit_credits(
         .ok_or_else(|| integrity("branch-edge-visit-projection-count"))?;
     if total > crate::MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS {
         return Err(integrity("branch-edge-visit-projection-count"));
+    }
+    Ok(total)
+}
+
+pub(super) fn charge_branch_prior_normalization_visits(
+    prior: usize,
+    visits: usize,
+) -> Result<usize, CampaignRepositoryError> {
+    let total = prior
+        .checked_add(visits)
+        .ok_or_else(|| integrity("planner-prior-normalization-visit-count"))?;
+    if total > crate::MAX_BRANCH_PRIOR_NORMALIZATION_VISITS {
+        return Err(integrity("planner-prior-normalization-visit-count"));
     }
     Ok(total)
 }

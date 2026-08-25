@@ -4,8 +4,9 @@
 //! adaptive planner engines. The repository supplies an owner-built completed-
 //! visit partition, coverage-novelty fold, weighted finding reward, and exact
 //! objective reward for each semantic edge. A versioned planner may rank
-//! prospective candidate edges with these inputs; nonuniform priors remain a
-//! separate owner.
+//! prospective candidate edges with these inputs. Explicit finite-source
+//! weights are normalized here so planner components receive only exact,
+//! owner-derived priors.
 
 use std::{cmp::Ordering, collections::BTreeMap};
 
@@ -52,6 +53,9 @@ pub const MAX_BRANCH_OBJECTIVE_EVALUATIONS: usize = 65_536;
 
 /// Maximum canonical evaluation-basis bytes folded into one projection batch.
 pub const MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES: usize = 128 * 1024 * 1024;
+
+/// Maximum completed-edge visits used to derive distinct prospective priors.
+pub const MAX_BRANCH_PRIOR_NORMALIZATION_VISITS: usize = 1_000_000;
 
 /// Owner-authenticated completed visits partitioned by one branch point's edges.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,9 +122,23 @@ impl BranchEdgeVisitStatistics {
     }
 }
 
+pub(crate) struct BranchPuctProjectedEvidence {
+    pub(crate) prior_weights: BTreeMap<BranchEdgeId, u64>,
+    pub(crate) novelty_events: BTreeMap<BranchEdgeId, u64>,
+    pub(crate) finding_weights: BTreeMap<FindingKind, u64>,
+    pub(crate) finding_events: BTreeMap<BranchEdgeId, BTreeMap<FindingKind, u64>>,
+    pub(crate) objective_reward_micros: BTreeMap<BranchEdgeId, i64>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct BranchProspectivePriorBasis {
+    prior_micros: u64,
+    remainder_cutoff: Option<BranchEdgeId>,
+}
+
 /// Policy-bound PUCT projection for one semantic branch point.
 ///
-/// This projection assigns a canonical uniform prior across completed edges,
+/// This projection assigns canonical normalized priors across completed edges,
 /// reserves fairness for the least-visited edge (breaking ties by
 /// [`BranchEdgeId`]), incorporates owner-derived coverage novelty, and adds
 /// policy-weighted owner-verified finding occurrences to reward.
@@ -130,6 +148,7 @@ pub struct BranchPuctProjection {
     policy: CampaignPolicyId,
     puct: PuctPolicy,
     parent_visits: u64,
+    edge_prior_weights: BTreeMap<BranchEdgeId, u64>,
     edge_novelty_events: BTreeMap<BranchEdgeId, u64>,
     edge_finding_events: BTreeMap<BranchEdgeId, BTreeMap<FindingKind, u64>>,
     edge_objective_reward_micros: BTreeMap<BranchEdgeId, i64>,
@@ -154,14 +173,18 @@ impl BranchPuctProjection {
         puct: PuctPolicy,
         visits: BranchEdgeVisitStatistics,
     ) -> Result<Self, CampaignCodecError> {
+        let edge_prior_weights = uniform_prior_weights(visits.edge_visits.keys().copied());
         Self::new_with_evidence(
             policy,
             puct,
             visits,
-            BTreeMap::new(),
-            BTreeMap::new(),
-            BTreeMap::new(),
-            BTreeMap::new(),
+            BranchPuctProjectedEvidence {
+                prior_weights: edge_prior_weights,
+                novelty_events: BTreeMap::new(),
+                finding_weights: BTreeMap::new(),
+                finding_events: BTreeMap::new(),
+                objective_reward_micros: BTreeMap::new(),
+            },
         )
     }
 
@@ -177,14 +200,18 @@ impl BranchPuctProjection {
         visits: BranchEdgeVisitStatistics,
         edge_novelty_events: BTreeMap<BranchEdgeId, u64>,
     ) -> Result<Self, CampaignCodecError> {
+        let edge_prior_weights = uniform_prior_weights(visits.edge_visits.keys().copied());
         Self::new_with_evidence(
             policy,
             puct,
             visits,
-            edge_novelty_events,
-            BTreeMap::new(),
-            BTreeMap::new(),
-            BTreeMap::new(),
+            BranchPuctProjectedEvidence {
+                prior_weights: edge_prior_weights,
+                novelty_events: edge_novelty_events,
+                finding_weights: BTreeMap::new(),
+                finding_events: BTreeMap::new(),
+                objective_reward_micros: BTreeMap::new(),
+            },
         )
     }
 
@@ -193,11 +220,25 @@ impl BranchPuctProjection {
         policy: CampaignPolicyId,
         puct: PuctPolicy,
         visits: BranchEdgeVisitStatistics,
-        edge_novelty_events: BTreeMap<BranchEdgeId, u64>,
-        finding_weights: BTreeMap<FindingKind, u64>,
-        edge_finding_events: BTreeMap<BranchEdgeId, BTreeMap<FindingKind, u64>>,
-        edge_objective_reward_micros: BTreeMap<BranchEdgeId, i64>,
+        evidence: BranchPuctProjectedEvidence,
     ) -> Result<Self, CampaignCodecError> {
+        let BranchPuctProjectedEvidence {
+            prior_weights: edge_prior_weights,
+            novelty_events: edge_novelty_events,
+            finding_weights,
+            finding_events: edge_finding_events,
+            objective_reward_micros: edge_objective_reward_micros,
+        } = evidence;
+        if edge_prior_weights
+            .keys()
+            .copied()
+            .ne(visits.edge_visits.keys().copied())
+            || edge_prior_weights.values().any(|weight| *weight == 0)
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "branch prior weights disagree with completed edges",
+            });
+        }
         if edge_novelty_events
             .iter()
             .any(|(edge, events)| *events == 0 || !visits.edge_visits.contains_key(edge))
@@ -235,32 +276,23 @@ impl BranchPuctProjection {
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         let branch_point = visits.branch_point;
         let parent_visits = visits.parent_visits;
-        let edge_count = u64::try_from(visits.edge_visits.len()).map_err(|_| {
-            CampaignCodecError::LimitExceeded {
-                limit: "branch-edge-visit-projection-count",
-            }
-        })?;
+        let normalized_priors = normalize_prior_weights(&edge_prior_weights)?;
         let fairness_edge = visits
             .edge_visits
             .iter()
             .min_by_key(|(edge, edge_visits)| (**edge_visits, **edge))
             .map(|(edge, _)| *edge);
-        let (base_prior, remainder) = if edge_count == 0 {
-            (0, 0)
-        } else {
-            (
-                GUIDANCE_MICROS_PER_UNIT / edge_count,
-                GUIDANCE_MICROS_PER_UNIT % edge_count,
-            )
-        };
 
         let mut edge_statistics = BTreeMap::new();
         let mut edge_scores = BTreeMap::new();
-        for (index, (edge, edge_visits)) in visits.edge_visits.into_iter().enumerate() {
-            let index = u64::try_from(index).map_err(|_| CampaignCodecError::LimitExceeded {
-                limit: "branch-edge-visit-projection-count",
-            })?;
-            let prior_micros = base_prior + u64::from(index < remainder);
+        for (edge, edge_visits) in visits.edge_visits {
+            let prior_micros =
+                normalized_priors
+                    .get(&edge)
+                    .copied()
+                    .ok_or(CampaignCodecError::InvalidValue {
+                        reason: "normalized prior omits completed edge",
+                    })?;
             let statistics = PuctEdgeStatistics::new(
                 parent_visits,
                 edge_visits,
@@ -284,7 +316,7 @@ impl BranchPuctProjection {
         }
 
         debug_assert!(
-            edge_count == 0 || {
+            edge_statistics.is_empty() || {
                 edge_statistics
                     .values()
                     .map(|statistics| statistics.prior_micros())
@@ -297,6 +329,7 @@ impl BranchPuctProjection {
             policy,
             puct,
             parent_visits,
+            edge_prior_weights,
             edge_novelty_events,
             edge_finding_events,
             edge_objective_reward_micros,
@@ -321,6 +354,12 @@ impl BranchPuctProjection {
     #[must_use]
     pub const fn parent_visits(&self) -> u64 {
         self.parent_visits
+    }
+
+    /// Returns the positive, pre-normalization proposal weights by edge.
+    #[must_use]
+    pub const fn edge_prior_weights(&self) -> &BTreeMap<BranchEdgeId, u64> {
+        &self.edge_prior_weights
     }
 
     /// Returns counts of globally unique coverage identities by semantic edge.
@@ -357,8 +396,8 @@ impl BranchPuctProjection {
     ///
     /// A completed edge reuses its authenticated statistics. An unseen edge is
     /// evaluated as the sole prospective addition to the completed edge set:
-    /// it has zero visits and reward, participates in the canonical uniform-
-    /// prior division over `completed edges + this edge`, and owns fairness
+    /// it has zero visits and reward, participates in canonical raw-weight
+    /// normalization over `completed edges + this edge`, and owns fairness
     /// because every retained completed edge has a positive visit count. This
     /// one-edge hypothetical keeps scores independent of planner page shape.
     ///
@@ -366,9 +405,19 @@ impl BranchPuctProjection {
     ///
     /// Returns [`CampaignCodecError`] if adding the prospective edge exceeds
     /// the fixed edge bound or derived statistics violate the PUCT contract.
+    #[cfg(test)]
     pub(crate) fn candidate_evidence(
         &self,
         edge: BranchEdgeId,
+    ) -> Result<BranchPuctCandidateEvidence, CampaignCodecError> {
+        self.candidate_evidence_with_prior(edge, 1)
+    }
+
+    /// Derives evidence for an offered edge with its authenticated raw weight.
+    pub(crate) fn candidate_evidence_with_prior(
+        &self,
+        edge: BranchEdgeId,
+        raw_prior_weight: u64,
     ) -> Result<BranchPuctCandidateEvidence, CampaignCodecError> {
         if let Some(statistics) = self.edge_statistics.get(&edge).copied() {
             return Ok(BranchPuctCandidateEvidence {
@@ -387,6 +436,26 @@ impl BranchPuctProjection {
             });
         }
 
+        if raw_prior_weight == 0 {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "prospective branch prior weight is zero",
+            });
+        }
+
+        let basis = self.prospective_prior_basis(raw_prior_weight)?;
+        self.candidate_evidence_with_prior_basis(edge, basis)
+    }
+
+    pub(crate) fn prospective_prior_basis(
+        &self,
+        raw_prior_weight: u64,
+    ) -> Result<BranchProspectivePriorBasis, CampaignCodecError> {
+        if raw_prior_weight == 0 {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "prospective branch prior weight is zero",
+            });
+        }
+
         let edge_count =
             self.edge_statistics
                 .len()
@@ -399,29 +468,90 @@ impl BranchPuctProjection {
                 limit: "branch-edge-visit-projection-count",
             });
         }
-        let edge_count_u64 =
-            u64::try_from(edge_count).map_err(|_| CampaignCodecError::LimitExceeded {
-                limit: "branch-edge-visit-projection-count",
+        let total = self
+            .edge_prior_weights
+            .values()
+            .try_fold(u128::from(raw_prior_weight), |total, weight| {
+                total.checked_add(u128::from(*weight))
+            })
+            .ok_or(CampaignCodecError::LimitExceeded {
+                limit: "branch-prior-weight-sum",
             })?;
-        let base_prior = GUIDANCE_MICROS_PER_UNIT / edge_count_u64;
-        let remainder = GUIDANCE_MICROS_PER_UNIT % edge_count_u64;
-        let edge_index = self
-            .edge_statistics
-            .keys()
-            .take_while(|current| **current < edge)
-            .count();
-        let edge_index =
-            u64::try_from(edge_index).map_err(|_| CampaignCodecError::LimitExceeded {
-                limit: "branch-edge-visit-projection-count",
+        let prior_micros = u64::try_from(
+            u128::from(GUIDANCE_MICROS_PER_UNIT) * u128::from(raw_prior_weight) / total,
+        )
+        .map_err(|_| CampaignCodecError::LimitExceeded {
+            limit: "branch-prior-normalization",
+        })?;
+        let assigned_completed =
+            self.edge_prior_weights
+                .values()
+                .try_fold(0_u64, |assigned, weight| {
+                    let prior = u64::try_from(
+                        u128::from(GUIDANCE_MICROS_PER_UNIT) * u128::from(*weight) / total,
+                    )
+                    .map_err(|_| CampaignCodecError::LimitExceeded {
+                        limit: "branch-prior-normalization",
+                    })?;
+                    assigned
+                        .checked_add(prior)
+                        .ok_or(CampaignCodecError::LimitExceeded {
+                            limit: "branch-prior-normalization",
+                        })
+                })?;
+        let remainder = GUIDANCE_MICROS_PER_UNIT
+            .checked_sub(assigned_completed.checked_add(prior_micros).ok_or(
+                CampaignCodecError::LimitExceeded {
+                    limit: "branch-prior-normalization",
+                },
+            )?)
+            .ok_or(CampaignCodecError::InvalidValue {
+                reason: "normalized branch priors exceed one",
             })?;
-        let statistics = PuctEdgeStatistics::new(
-            self.parent_visits,
-            0,
-            0,
-            base_prior + u64::from(edge_index < remainder),
-            false,
-            true,
-        )?;
+        let remainder_cutoff = if remainder == 0 {
+            None
+        } else {
+            let remainder_index =
+                usize::try_from(remainder - 1).map_err(|_| CampaignCodecError::LimitExceeded {
+                    limit: "branch-prior-normalization",
+                })?;
+            Some(*self.edge_prior_weights.keys().nth(remainder_index).ok_or(
+                CampaignCodecError::InvalidValue {
+                    reason: "branch prior remainder exceeds completed edges",
+                },
+            )?)
+        };
+        Ok(BranchProspectivePriorBasis {
+            prior_micros,
+            remainder_cutoff,
+        })
+    }
+
+    pub(crate) fn candidate_evidence_with_prior_basis(
+        &self,
+        edge: BranchEdgeId,
+        basis: BranchProspectivePriorBasis,
+    ) -> Result<BranchPuctCandidateEvidence, CampaignCodecError> {
+        if let Some(statistics) = self.edge_statistics.get(&edge).copied() {
+            return Ok(BranchPuctCandidateEvidence {
+                statistics,
+                novelty_events: self.edge_novelty_events.get(&edge).copied().unwrap_or(0),
+                finding_events: self
+                    .edge_finding_events
+                    .get(&edge)
+                    .cloned()
+                    .unwrap_or_default(),
+                objective_reward_micros: self
+                    .edge_objective_reward_micros
+                    .get(&edge)
+                    .copied()
+                    .unwrap_or(0),
+            });
+        }
+        let prior_micros = basis.prior_micros
+            + u64::from(basis.remainder_cutoff.is_some_and(|cutoff| edge < cutoff));
+        let statistics =
+            PuctEdgeStatistics::new(self.parent_visits, 0, 0, prior_micros, false, true)?;
         PuctScore::derive(self.puct, statistics)?;
         Ok(BranchPuctCandidateEvidence {
             statistics,
@@ -430,6 +560,79 @@ impl BranchPuctProjection {
             objective_reward_micros: 0,
         })
     }
+}
+
+#[cfg(test)]
+fn uniform_prior_weights(
+    edges: impl IntoIterator<Item = BranchEdgeId>,
+) -> BTreeMap<BranchEdgeId, u64> {
+    edges.into_iter().map(|edge| (edge, 1)).collect()
+}
+
+fn normalize_prior_weights(
+    weights: &BTreeMap<BranchEdgeId, u64>,
+) -> Result<BTreeMap<BranchEdgeId, u64>, CampaignCodecError> {
+    if weights.len() > MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS as usize {
+        return Err(CampaignCodecError::LimitExceeded {
+            limit: "branch-edge-visit-projection-count",
+        });
+    }
+    if weights.values().any(|weight| *weight == 0) {
+        return Err(CampaignCodecError::InvalidValue {
+            reason: "branch prior weight is zero",
+        });
+    }
+    let total = weights
+        .values()
+        .try_fold(0_u128, |total, weight| {
+            total.checked_add(u128::from(*weight))
+        })
+        .ok_or(CampaignCodecError::LimitExceeded {
+            limit: "branch-prior-weight-sum",
+        })?;
+    if total == 0 {
+        return Ok(BTreeMap::new());
+    }
+
+    let mut normalized = BTreeMap::new();
+    let mut assigned = 0_u64;
+    for (edge, weight) in weights {
+        let scaled = u128::from(GUIDANCE_MICROS_PER_UNIT) * u128::from(*weight) / total;
+        let scaled = u64::try_from(scaled).map_err(|_| CampaignCodecError::LimitExceeded {
+            limit: "branch-prior-normalization",
+        })?;
+        assigned = assigned
+            .checked_add(scaled)
+            .ok_or(CampaignCodecError::LimitExceeded {
+                limit: "branch-prior-normalization",
+            })?;
+        normalized.insert(*edge, scaled);
+    }
+
+    let remainder =
+        GUIDANCE_MICROS_PER_UNIT
+            .checked_sub(assigned)
+            .ok_or(CampaignCodecError::InvalidValue {
+                reason: "normalized branch priors exceed one",
+            })?;
+    for edge in normalized
+        .keys()
+        .copied()
+        .take(remainder as usize)
+        .collect::<Vec<_>>()
+    {
+        let prior = normalized
+            .get_mut(&edge)
+            .ok_or(CampaignCodecError::InvalidValue {
+                reason: "normalized prior remainder edge is missing",
+            })?;
+        *prior = prior
+            .checked_add(1)
+            .ok_or(CampaignCodecError::LimitExceeded {
+                limit: "branch-prior-normalization",
+            })?;
+    }
+    Ok(normalized)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1019,10 +1222,16 @@ mod tests {
             PuctPolicy::new(1_000_000, 50_000, 25_000),
             BranchEdgeVisitStatistics::new(branch_point, 2, BTreeMap::from([(completed, 2)]))
                 .expect("completed visit partition"),
-            BTreeMap::from([(completed, 3)]),
-            BTreeMap::from([(FindingKind::Divergence, 7)]),
-            BTreeMap::from([(completed, BTreeMap::from([(FindingKind::Divergence, 1)]))]),
-            BTreeMap::new(),
+            BranchPuctProjectedEvidence {
+                prior_weights: BTreeMap::from([(completed, 1)]),
+                novelty_events: BTreeMap::from([(completed, 3)]),
+                finding_weights: BTreeMap::from([(FindingKind::Divergence, 7)]),
+                finding_events: BTreeMap::from([(
+                    completed,
+                    BTreeMap::from([(FindingKind::Divergence, 1)]),
+                )]),
+                objective_reward_micros: BTreeMap::new(),
+            },
         )
         .expect("completed projection");
 
@@ -1050,6 +1259,83 @@ mod tests {
         assert!(prospective_evidence.statistics.is_fairness_reserved());
         assert_eq!(prospective_evidence.novelty_events, 0);
         assert!(prospective_evidence.finding_events.is_empty());
+    }
+
+    #[test]
+    fn explicit_prior_weights_normalize_exactly_with_edge_order_remainders() {
+        let branch_point = BranchPointId::from_hash(crate::CampaignHash::derive(
+            "test.weighted-branch-puct",
+            b"branch-point",
+        ));
+        let mut edges = [b"one".as_slice(), b"two".as_slice(), b"three".as_slice()]
+            .into_iter()
+            .map(|label| {
+                BranchEdgeId::from_hash(crate::CampaignHash::derive(
+                    "test.weighted-branch-puct",
+                    label,
+                ))
+            })
+            .collect::<Vec<_>>();
+        edges.sort_unstable();
+        let [first, second, prospective] = edges.as_slice() else {
+            panic!("three weighted edges")
+        };
+        let policy =
+            CampaignPolicyId::from_content_id(crucible_cas::content_store::ContentId::for_bytes(
+                crucible_cas::content_store::ObjectKind::Policy,
+                1,
+                b"test.weighted-branch-puct.policy",
+            ))
+            .expect("policy id");
+        let projection = BranchPuctProjection::new_with_evidence(
+            policy,
+            PuctPolicy::new(1_000_000, 0, 0),
+            BranchEdgeVisitStatistics::new(
+                branch_point,
+                2,
+                BTreeMap::from([(*first, 1), (*second, 1)]),
+            )
+            .expect("weighted visit partition"),
+            BranchPuctProjectedEvidence {
+                prior_weights: BTreeMap::from([(*first, 1), (*second, 2)]),
+                novelty_events: BTreeMap::new(),
+                finding_weights: BTreeMap::new(),
+                finding_events: BTreeMap::new(),
+                objective_reward_micros: BTreeMap::new(),
+            },
+        )
+        .expect("weighted projection");
+        assert_eq!(projection.edge_statistics()[first].prior_micros(), 333_334);
+        assert_eq!(projection.edge_statistics()[second].prior_micros(), 666_666);
+
+        let prospective_evidence = projection
+            .candidate_evidence_with_prior(*prospective, 3)
+            .expect("weighted prospective evidence");
+        assert_eq!(prospective_evidence.statistics.prior_micros(), 500_000);
+        for (index, raw_weight) in [1, 3, u64::MAX].into_iter().enumerate() {
+            let candidate = BranchEdgeId::from_hash(crate::CampaignHash::derive(
+                "test.weighted-branch-puct.prospective",
+                &index.to_be_bytes(),
+            ));
+            let mut expected_weights = projection.edge_prior_weights().clone();
+            expected_weights.insert(candidate, raw_weight);
+            let expected = normalize_prior_weights(&expected_weights)
+                .expect("reference prospective normalization")[&candidate];
+            assert_eq!(
+                projection
+                    .candidate_evidence_with_prior(candidate, raw_weight)
+                    .expect("prospective normalization")
+                    .statistics
+                    .prior_micros(),
+                expected
+            );
+        }
+        assert!(matches!(
+            projection.candidate_evidence_with_prior(*prospective, 0),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "prospective branch prior weight is zero"
+            })
+        ));
     }
 
     #[test]
@@ -1145,10 +1431,16 @@ mod tests {
             policy,
             PuctPolicy::new(0, 0, 0),
             visits(),
-            BTreeMap::new(),
-            BTreeMap::from([(FindingKind::Divergence, u64::MAX)]),
-            BTreeMap::from([(edge, BTreeMap::from([(FindingKind::Divergence, 2)]))]),
-            BTreeMap::new(),
+            BranchPuctProjectedEvidence {
+                prior_weights: BTreeMap::from([(edge, 1)]),
+                novelty_events: BTreeMap::new(),
+                finding_weights: BTreeMap::from([(FindingKind::Divergence, u64::MAX)]),
+                finding_events: BTreeMap::from([(
+                    edge,
+                    BTreeMap::from([(FindingKind::Divergence, 2)]),
+                )]),
+                objective_reward_micros: BTreeMap::new(),
+            },
         )
         .expect("weighted finding projection");
         assert_eq!(
@@ -1164,10 +1456,16 @@ mod tests {
                 policy,
                 PuctPolicy::new(0, 0, 0),
                 visits(),
-                BTreeMap::new(),
-                BTreeMap::new(),
-                BTreeMap::from([(edge, BTreeMap::from([(FindingKind::Divergence, 1)]),)]),
-                BTreeMap::new(),
+                BranchPuctProjectedEvidence {
+                    prior_weights: BTreeMap::from([(edge, 1)]),
+                    novelty_events: BTreeMap::new(),
+                    finding_weights: BTreeMap::new(),
+                    finding_events: BTreeMap::from([(
+                        edge,
+                        BTreeMap::from([(FindingKind::Divergence, 1)]),
+                    )]),
+                    objective_reward_micros: BTreeMap::new(),
+                },
             ),
             Err(CampaignCodecError::InvalidValue {
                 reason: "branch finding events disagree with completed edges or policy"
