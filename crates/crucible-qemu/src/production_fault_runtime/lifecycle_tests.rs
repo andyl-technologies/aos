@@ -7,6 +7,47 @@ use super::*;
 mod ownership;
 
 #[test]
+fn outer_poison_latch_rejects_an_inert_plan_after_ambiguous_visibility() {
+    let plan = FaultSignalPlan::empty();
+    let mut nodes = QemuNodeSet::new();
+    let mut runtime = ProductionFaultRuntime::new(
+        plan,
+        None,
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"outer-production-poison"),
+        test_host_manifests(),
+        &nodes,
+    )
+    .unwrap_or_else(|error| panic!("inert runtime should initialize: {error}"));
+
+    runtime.poison();
+
+    assert!(matches!(
+        runtime.checkpoint(&mut nodes),
+        Err(ProductionFaultRuntimeError::Poisoned)
+    ));
+    assert!(matches!(
+        runtime.try_clone(),
+        Err(ProductionFaultRuntimeError::Poisoned)
+    ));
+    assert!(matches!(
+        runtime.evaluate_boundary(
+            FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            0,
+            &mut nodes,
+        ),
+        Err(ProductionFaultRuntimeError::Poisoned)
+    ));
+    assert!(matches!(
+        runtime.set_boundary_snapshot(SignalBoundarySnapshot::default()),
+        Err(ProductionFaultRuntimeError::Poisoned)
+    ));
+}
+
+#[test]
 fn lifecycle_intent_preview_is_action_exact_and_ignores_active_hang_rules() {
     let terminal = lifecycle_action(NodeLifecycleTransition::Crash, NodeBootPolicy::Immediate);
     let mut active_hang = terminal.clone();

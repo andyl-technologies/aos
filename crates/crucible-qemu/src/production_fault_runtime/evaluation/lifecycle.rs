@@ -20,6 +20,7 @@ impl ProductionFaultRuntime {
         same_coordinate_sequence: u64,
         nodes: &mut QemuNodeSet,
     ) -> Result<Vec<QemuNodeLifecycleIntent>, ProductionFaultRuntimeError> {
+        self.require_usable()?;
         if self.lifecycle_work_in_flight.is_some() || self.lifecycle_release_in_flight.is_some() {
             return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
         }

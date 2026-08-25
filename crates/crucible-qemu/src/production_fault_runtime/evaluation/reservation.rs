@@ -45,6 +45,7 @@ impl ProductionFaultRuntime {
         reserved_event_records: u64,
         reserved_event_log_bytes: u64,
     ) -> Result<BindingEvaluation, ProductionFaultRuntimeError> {
+        self.require_usable()?;
         if self.lifecycle_work_in_flight.is_some() || self.lifecycle_release_in_flight.is_some() {
             return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
         }
