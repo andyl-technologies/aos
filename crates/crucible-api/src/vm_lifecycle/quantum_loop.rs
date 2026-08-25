@@ -4,9 +4,11 @@ use super::checkpoint_store::PersistExactCheckpointError;
 use super::*;
 
 mod checkpoint_capture;
+mod debug_policy;
 mod lifecycle;
 pub(super) use checkpoint_capture::ExactCheckpointPublicationState;
 use checkpoint_capture::{CapturedExactCheckpointTarget, ExactCheckpointTransactionError};
+use debug_policy::trusted_debug_listener;
 pub(super) use lifecycle::{
     DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
     decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
@@ -1403,6 +1405,7 @@ impl ProductionVmLifecycleLoop {
                     overlay_artifact: None,
                     vmstate_artifact: None,
                     manifest_identity: None,
+                    cleanup_pending: true,
                 });
                 let capture =
                     captured
@@ -1516,9 +1519,10 @@ impl ProductionVmLifecycleLoop {
         })();
         match result {
             Ok(()) => {
-                if let Err(cleanup) = self.rollback_exact_captures(&captured) {
+                if let Err(cleanup) = self.rollback_exact_captures(&mut captured) {
                     return Err(ExactCheckpointTransactionError::Indeterminate {
                         identity: None,
+                        captures: captured,
                         source: cleanup,
                     });
                 }
@@ -1560,15 +1564,17 @@ impl ProductionVmLifecycleLoop {
                     Err(PersistExactCheckpointError::Indeterminate { identity, source }) => {
                         Err(ExactCheckpointTransactionError::Indeterminate {
                             identity: Some(identity),
+                            captures: Vec::new(),
                             source,
                         })
                     }
                 }
             }
-            Err(error) => match self.rollback_exact_captures(&captured) {
+            Err(error) => match self.rollback_exact_captures(&mut captured) {
                 Ok(()) => Err(ExactCheckpointTransactionError::Unpublished(error)),
                 Err(cleanup) => Err(ExactCheckpointTransactionError::Indeterminate {
                     identity: None,
+                    captures: captured,
                     source: SchedulerError::BoundaryViolation {
                         message: format!(
                             "exact checkpoint capture failed ({error}); snapshot cleanup was indeterminate ({cleanup})"
@@ -1923,41 +1929,6 @@ impl ProductionVmLifecycleLoop {
         }
         Ok(())
     }
-}
-
-/// Validates an operator listener against the lifecycle's debugger policy.
-fn trusted_debug_listener(
-    configured: &ProductionVmDebugConfig,
-    listen: &GdbListen,
-) -> Result<SocketAddr, SchedulerError> {
-    let requested: SocketAddr =
-        listen
-            .as_str()
-            .parse()
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!(
-                    "parse trusted debugger listener {}: {error}",
-                    listen.as_str()
-                ),
-            })?;
-    if !requested.ip().is_loopback() {
-        return Err(SchedulerError::BoundaryViolation {
-            message: format!(
-                "unauthenticated production debugger listener must be loopback, not {requested}"
-            ),
-        });
-    }
-    if !configured.allow_requested_loopback_listen && listen.as_str() != configured.operator_listen
-    {
-        return Err(SchedulerError::BoundaryViolation {
-            message: format!(
-                "requested debugger listener {} does not match configured listener {}",
-                listen.as_str(),
-                configured.operator_listen
-            ),
-        });
-    }
-    Ok(requested)
 }
 
 #[cfg(test)]
