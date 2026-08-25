@@ -373,6 +373,8 @@ in
             vm_lifecycle::quantum_loop::lifecycle::restart_ownership::tests::terminal_generation_selection_moves_preowned_storage
           run_exact_api_test \
             vm_lifecycle::quantum_loop::lifecycle::restart_ownership::tests::terminal_successor_launch_owns_exact_app_random_continuation
+          run_exact_api_test \
+            vm_lifecycle::storage_faults::tests::ambiguous_shared_ninep_commit_poisons_runtime_before_return
           test "$(grep -Fc '    fn prepare_terminal_replacements(' \
             crates/crucible-api/src/vm_lifecycle/quantum_loop.rs)" -eq 1
           test "$(grep -Fc '    fn abort_staged_terminal_replacements(' \
