@@ -161,7 +161,28 @@ pub fn ensure_loose_completeness(repo: &Path) -> Result<()> {
 pub fn write_index_bundles(repo: &Path) -> Result<()> {
     assert_sha256(repo)?;
     let git_dir = repo_git_dir(repo)?;
-    let objects_dir = git_dir.join("objects");
+    write_index_bundles_for_surface(&git_dir)
+}
+
+/// Writes bounded OID-sharded bundles in a materialized static surface.
+///
+/// This backfills the transport accelerator in a publication directory that
+/// no longer has the Git configuration required to open it as a repository.
+/// Callers are responsible for ensuring its canonical loose store is complete.
+///
+/// # Errors
+///
+/// Returns an error when the surface has no root object store, an object cannot
+/// be enumerated or read, a path is not canonical, or a shard violates its
+/// wire-format bounds.
+pub fn write_index_bundles_for_surface(surface: &Path) -> Result<()> {
+    let objects_dir = surface.join("objects");
+    if !objects_dir.is_dir() {
+        bail!(
+            "static registry surface has no object store at {}",
+            objects_dir.display()
+        );
+    }
     let bundle_dir = objects_dir.join("aos-index-v1");
     fs::create_dir_all(&bundle_dir)
         .with_context(|| format!("creating {}", bundle_dir.display()))?;
@@ -658,6 +679,13 @@ mod tests {
         let dir = repo.join("releases/1/2/3/objects");
         assert!(dir.join("info").is_dir());
         assert!(dir.join("pack").is_dir());
+    }
+
+    #[test]
+    fn static_surface_bundle_backfill_requires_an_object_store() {
+        let tmp = TempDir::new().unwrap();
+        let error = write_index_bundles_for_surface(tmp.path()).unwrap_err();
+        assert!(format!("{error:#}").contains("has no object store"));
     }
 
     #[test]
