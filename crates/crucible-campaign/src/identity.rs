@@ -520,9 +520,9 @@ semantic_id!(
 content_object_id!(
     BranchRequestId,
     ObjectKind::CampaignFact,
-    [1, 2, 3],
+    [1, 2, 3, 4],
     "crucible.campaign.branch-request",
-    "Identifies one bounded request for branch candidates; version 1 uniform and version 2 explicit-weight IDs remain decodable for history compatibility."
+    "Identifies one bounded request for branch candidates; versions 1 through 3 remain decodable for history compatibility."
 );
 content_object_id!(
     CandidateGeneratorSpecId,

@@ -1203,9 +1203,16 @@ issues only at EOF. Acceptance publishes guidance envelopes with offers only
 after complete zero-write preflight and recomputes/reruns the exact transition
 on restart and import. Version 1 remains canonically replayable. Bounded
 model-resolved finite masses are retained in branch-request schema v3 and
-exact-checked against the opportunity's model ID; opaque non-finite
-scenario-model prior resolution remains an implementation-plan gate. Explicit
-finite weights and uniform defaults are owner-derived here.
+exact-checked against the opportunity's model ID. Schema v4 additionally
+retains an exact model ID and generator ID for modeled generated sources. The
+first closed adapter maps standardized uniform app-random integer models to
+permuted-integer implementation version 17, supports power-of-two cardinality
+through `2^64`, caps emitted candidates by the request's `u64` proposal budget,
+and uses raw prior weight one. The repository authenticates and replays the
+model/generator/domain contract before local publication and during restart or
+import. Other opaque non-finite scenario-model families remain an
+implementation-plan gate. Explicit finite weights and uniform defaults are
+owner-derived here.
 
 The initial coordinator retention profile is deliberately narrower than the
 version-1 wire format: an accepted request body is at most 32 MiB and its bundle

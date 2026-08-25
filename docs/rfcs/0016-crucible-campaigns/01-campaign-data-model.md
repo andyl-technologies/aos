@@ -537,7 +537,7 @@ pub struct BranchPoint {
 }
 
 pub struct BranchRequest {
-    pub schema_version: u32, // v2 explicit/uniform or v3 modeled finite
+    pub schema_version: u32, // v2 explicit/uniform, v3 modeled finite, v4 modeled generated
     pub branch_point: BranchPointId,
     pub parent: ConfigurationArtifactId,
     pub opportunity: ChoiceOpportunityId,
@@ -551,6 +551,7 @@ pub struct BranchRequest {
 pub enum CandidateSource {
     Finite(FiniteCandidateSource),
     ModeledFinite(ModeledFiniteCandidateSource),
+    ModeledGenerated(ModeledGeneratedCandidateSource),
     Generated(CandidateGeneratorSpecId),
 }
 
@@ -566,6 +567,13 @@ pub struct ModeledFiniteCandidateSource {
     model: ProbabilityModelId,
     // Exact positive masses resolved by the execution-model adapter.
     prior_weights: CanonicalMap<ChoiceValue, u64>,
+}
+
+pub struct ModeledGeneratedCandidateSource {
+    // Must equal the referenced opportunity's model_prior.
+    model: ProbabilityModelId,
+    // Exact portable generator resolved by the execution-model adapter.
+    generator: CandidateGeneratorSpecId,
 }
 
 pub struct BranchBudget {
@@ -666,7 +674,13 @@ constructing exact planner guidance. New uniform, generated, and explicitly
 weighted requests retain schema v2 and its established keyed generator
 streams; a newly authored modeled finite request uses v3. V1 and v2 request
 bodies retain their original content identities. A weighted source is invalid
-in v1, and a modeled source is invalid before v3.
+in v1, and a modeled finite source is invalid before v3. Schema v4 adds
+candidate-source tag 4 followed by one `ProbabilityModelId` and one
+`CandidateGeneratorSpecId`. The generator is an envelope child, and both its
+exact implementation contract and the opportunity-model equality are
+owner-validated before publication, restart, or import acceptance. New modeled
+generated requests use v4; v1 through v3 bodies and envelope identities remain
+unchanged.
 
 `BranchPath` schema version 2 retains each `BranchPointId` beside its
 non-invertible `BranchEdgeId`. This lets a restart rebuild observation credit

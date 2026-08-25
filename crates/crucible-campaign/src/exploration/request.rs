@@ -129,6 +129,8 @@ pub enum CandidateSource {
     Finite(FiniteCandidateSource),
     /// Finite values carrying exact masses resolved from the opportunity model.
     ModeledFinite(ModeledFiniteCandidateSource),
+    /// A deterministic generator resolved from one non-finite opportunity model.
+    ModeledGenerated(ModeledGeneratedCandidateSource),
     /// Versioned deterministic generator interpreted from campaign facts.
     Generated(CandidateGeneratorSpecId),
 }
@@ -146,6 +148,27 @@ pub struct ModeledFiniteCandidateSource {
     model: ProbabilityModelId,
     values: BTreeSet<ChoiceValue>,
     prior_weights: BTreeMap<ChoiceValue, u64>,
+}
+
+/// One portable non-finite model resolution and its deterministic generator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModeledGeneratedCandidateSource {
+    model: ProbabilityModelId,
+    generator: CandidateGeneratorSpecId,
+}
+
+impl ModeledGeneratedCandidateSource {
+    /// Returns the exact modeled distribution resolved by the adapter.
+    #[must_use]
+    pub const fn model(self) -> ProbabilityModelId {
+        self.model
+    }
+
+    /// Returns the deterministic generator retaining the resolved distribution.
+    #[must_use]
+    pub const fn generator(self) -> CandidateGeneratorSpecId {
+        self.generator
+    }
 }
 
 impl ModeledFiniteCandidateSource {
@@ -261,13 +284,22 @@ impl CandidateSource {
         Self::Generated(generator)
     }
 
+    /// Builds a generated source resolved from one exact probability model.
+    #[must_use]
+    pub const fn modeled_generated(
+        model: ProbabilityModelId,
+        generator: CandidateGeneratorSpecId,
+    ) -> Self {
+        Self::ModeledGenerated(ModeledGeneratedCandidateSource { model, generator })
+    }
+
     /// Returns the exact finite values, if this is an explicit source.
     #[must_use]
     pub fn finite_values(&self) -> Option<&BTreeSet<ChoiceValue>> {
         match self {
             Self::Finite(source) => Some(source.values()),
             Self::ModeledFinite(source) => Some(&source.values),
-            Self::Generated(_) => None,
+            Self::ModeledGenerated(_) | Self::Generated(_) => None,
         }
     }
 
@@ -276,6 +308,7 @@ impl CandidateSource {
     pub const fn generator(&self) -> Option<CandidateGeneratorSpecId> {
         match self {
             Self::Finite(_) | Self::ModeledFinite(_) => None,
+            Self::ModeledGenerated(source) => Some(source.generator),
             Self::Generated(generator) => Some(*generator),
         }
     }
@@ -292,7 +325,7 @@ impl CandidateSource {
                 |weights| weights.get(value).copied(),
             ),
             Self::ModeledFinite(source) => source.prior_weights.get(value).copied(),
-            Self::Generated(_) => Some(1),
+            Self::ModeledGenerated(_) | Self::Generated(_) => Some(1),
         }
     }
 
@@ -301,6 +334,7 @@ impl CandidateSource {
     pub const fn model_prior(&self) -> Option<ProbabilityModelId> {
         match self {
             Self::ModeledFinite(source) => Some(source.model),
+            Self::ModeledGenerated(source) => Some(source.model),
             Self::Finite(_) | Self::Generated(_) => None,
         }
     }
@@ -328,6 +362,11 @@ impl Canonical for CandidateSource {
                 source.model.encode(encoder);
                 source.prior_weights.encode(encoder);
             }
+            Self::ModeledGenerated(source) => {
+                encoder.u8(4);
+                source.model.encode(encoder);
+                source.generator.encode(encoder);
+            }
         }
     }
 
@@ -344,6 +383,10 @@ impl Canonical for CandidateSource {
                 ProbabilityModelId::decode(decoder)?,
                 decoder.map_bounded(MAX_FINITE_VALUES, "modeled-finite-candidate-value-count")?,
             ),
+            4 => Ok(Self::modeled_generated(
+                ProbabilityModelId::decode(decoder)?,
+                CandidateGeneratorSpecId::decode(decoder)?,
+            )),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "candidate-source",
                 tag,
@@ -422,6 +465,7 @@ impl BranchRequest {
     /// repository before publication or use. A modeled finite source emits
     /// schema version 3; the established uniform, explicit, and generated
     /// forms continue to emit version 2 so their keyed identities do not drift.
+    /// A modeled generated source emits schema version 4.
     ///
     /// # Errors
     ///
@@ -438,10 +482,10 @@ impl BranchRequest {
         budget: BranchBudget,
         stop: StopCondition,
     ) -> Result<Self, CampaignCodecError> {
-        let schema_version = if matches!(&source, CandidateSource::ModeledFinite(_)) {
-            BRANCH_REQUEST_SCHEMA_VERSION
-        } else {
-            2
+        let schema_version = match &source {
+            CandidateSource::ModeledFinite(_) => 3,
+            CandidateSource::ModeledGenerated(_) => BRANCH_REQUEST_SCHEMA_VERSION,
+            CandidateSource::Finite(_) | CandidateSource::Generated(_) => 2,
         };
         Self::new_for_schema(
             schema_version,
@@ -472,7 +516,8 @@ impl BranchRequest {
             (CandidateSource::Finite(source), RECORD_SCHEMA_VERSION) => {
                 source.prior_weights().is_some()
             }
-            (CandidateSource::ModeledFinite(_), version) => {
+            (CandidateSource::ModeledFinite(_), version) => version != 3,
+            (CandidateSource::ModeledGenerated(_), version) => {
                 version != BRANCH_REQUEST_SCHEMA_VERSION
             }
             (CandidateSource::Finite(_) | CandidateSource::Generated(_), _) => false,
@@ -643,6 +688,9 @@ impl BranchRequest {
             ("domain", self.domain.content_id()),
         ];
         match self.source {
+            CandidateSource::ModeledGenerated(source) => {
+                children.push(("generator", source.generator.content_id()));
+            }
             CandidateSource::Generated(generator) => {
                 children.push(("generator", generator.content_id()));
             }

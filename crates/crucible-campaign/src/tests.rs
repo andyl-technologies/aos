@@ -1666,6 +1666,55 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     modeled_request
         .validate_resolved(&parent, &modeled_opportunity, &domain)
         .expect("model-resolved request");
+
+    let modeled_generator = stored_id!(
+        CandidateGeneratorSpecId,
+        ObjectKind::Policy,
+        "modeled-generator"
+    );
+    let modeled_generated_source = CandidateSource::modeled_generated(model, modeled_generator);
+    assert_eq!(modeled_generated_source.model_prior(), Some(model));
+    assert_eq!(
+        modeled_generated_source.generator(),
+        Some(modeled_generator)
+    );
+    assert_eq!(
+        decode::<CandidateSource>(&encode(&modeled_generated_source))
+            .expect("modeled generated source round trip"),
+        modeled_generated_source
+    );
+    assert!(matches!(
+        BranchRequest::from_canonical_bytes(&encode_request_body(3, &modeled_generated_source)),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported branch-request schema or source"
+        })
+    ));
+    let modeled_generated_request = BranchRequest::new(
+        modeled_opportunity.branch_point_id(parent_configuration),
+        parent.id().expect("parent id"),
+        modeled_opportunity.id().expect("modeled opportunity id"),
+        domain.id().expect("domain id"),
+        modeled_generated_source,
+        cause,
+        BranchBudget::new(2, 2).expect("modeled generated budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("modeled generated request");
+    assert_eq!(modeled_generated_request.schema_version(), 4);
+    assert_eq!(
+        BranchRequest::from_canonical_bytes(&modeled_generated_request.canonical_bytes())
+            .expect("modeled generated branch-request v4 round trip"),
+        modeled_generated_request
+    );
+    assert!(
+        modeled_generated_request
+            .content_children()
+            .contains(&("generator", modeled_generator.content_id()))
+    );
+    modeled_generated_request
+        .validate_resolved(&parent, &modeled_opportunity, &domain)
+        .expect("modeled generated request basis");
+
     let wrong_model = ProbabilityModelId::from_hash(hash("wrong-retry-delay-model"));
     let mismatched_request = BranchRequest::new(
         modeled_opportunity.branch_point_id(parent_configuration),

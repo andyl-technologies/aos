@@ -80,6 +80,14 @@ pub const PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 6;
 /// values cannot be named completely and fails closed.
 pub const PERMUTED_INTEGER_GENERATOR_MAX_CARDINALITY: u128 = u64::MAX as u128;
 
+/// Generator implementation version for modeled uniform-integer permutation.
+///
+/// This version resolves a uniform integer probability model into a
+/// request-keyed permutation of its exact stepped domain. It admits the full
+/// `2^64` unsigned domain while one request still emits at most its explicit
+/// 64-bit proposal budget. Earlier and unknown versions remain suspended.
+pub const MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 17;
+
 /// Generator implementation version for weighted categorical enumeration.
 ///
 /// This version derives a request-keyed exact integer-weight draw at each

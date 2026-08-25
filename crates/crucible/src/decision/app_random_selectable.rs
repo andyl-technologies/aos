@@ -10,10 +10,12 @@ use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 use crucible_campaign::{
-    CampaignCodecError, CampaignHash, ChoiceClassContext, ChoiceCoordinate, ChoiceDiscovery,
-    ChoiceDomain, ChoiceRngStreamId, ChoiceSource, ChoiceValue, ConfigurationId, ExactRational,
-    IntegerDomain, IntegerRepresentation, IntegerValue, ModelSampleEvidence, ModelSampleVerifier,
-    ProbabilityModelId, ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin,
+    CampaignCodecError, CampaignHash, CandidateGeneratorAlgorithm, CandidateGeneratorSpec,
+    CandidateSource, ChoiceClassContext, ChoiceCoordinate, ChoiceDiscovery, ChoiceDomain,
+    ChoiceRngStreamId, ChoiceSource, ChoiceValue, ConfigurationId, ExactRational, IntegerDomain,
+    IntegerRepresentation, IntegerValue, MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+    ModelSampleEvidence, ModelSampleVerifier, ProbabilityModelId, ScenarioDefId,
+    SelectableDeclaration, Selection, SelectionOrigin,
 };
 use crucible_protocol::WHITEBOX_DOORBELL_PROTOCOL_VERSION;
 use crucible_protocol::app_random_transport::{
@@ -230,6 +232,27 @@ impl AppRandomSelectable {
     #[must_use]
     pub const fn model_id(&self) -> ProbabilityModelId {
         self.model.id()
+    }
+
+    /// Resolves the uniform model into a portable generated campaign source.
+    ///
+    /// The returned generator must be published before the source is retained
+    /// in a branch request. Its content identity and this selectable's exact
+    /// probability-model identity are bound into the source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppRandomSelectableError`] if canonical generator construction
+    /// or content identity derivation fails.
+    pub fn modeled_candidate_source(
+        &self,
+    ) -> Result<(CandidateGeneratorSpec, CandidateSource), AppRandomSelectableError> {
+        let generator = CandidateGeneratorSpec::new(
+            MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+            CandidateGeneratorAlgorithm::PermutedInteger,
+        )?;
+        let source = CandidateSource::modeled_generated(self.model.id(), generator.id()?);
+        Ok((generator, source))
     }
 
     /// Returns the keyed choice-RNG stream identity.
@@ -792,6 +815,37 @@ mod tests {
                 .apply_selection(&selection, &parent)
                 .expect("model selection should apply"),
             observed
+        );
+    }
+
+    #[test]
+    fn uniform_model_resolves_to_exact_portable_generator() {
+        let subject = AppRandomSelectable::new(
+            &scenario("modeled-generator"),
+            NodeId {
+                name: String::from("node-a"),
+            },
+            RngStreamId::for_node("guest/full-width"),
+            9,
+            64,
+        )
+        .expect("full-width selectable should build");
+        let (generator, source) = subject
+            .modeled_candidate_source()
+            .expect("uniform model should resolve");
+
+        assert_eq!(
+            generator.implementation_version(),
+            MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+        );
+        assert_eq!(
+            generator.algorithm(),
+            &CandidateGeneratorAlgorithm::PermutedInteger
+        );
+        assert_eq!(source.model_prior(), Some(subject.model_id()));
+        assert_eq!(
+            source.generator(),
+            Some(generator.id().expect("generator identity"))
         );
     }
 

@@ -27,7 +27,7 @@ crucible.campaign.merkle-node	1	crucible-campaign::merkle	merkle-node	gate:campa
 crucible.campaign.candidate-generator-spec	1	crucible-campaign::object	policy	gate:lazy-frontier,gate:content-address
 crucible.campaign.scenario-artifact	1	crucible-campaign::artifact	scenario	gate:campaign-model,gate:content-address
 crucible.campaign.configuration-artifact	1	crucible-campaign::artifact	configuration	gate:campaign-model,gate:content-address
-crucible.campaign.branch-request	3	crucible-campaign::exploration	campaign-fact	gate:branch-point-model,gate:content-address
+crucible.campaign.branch-request	4	crucible-campaign::exploration	campaign-fact	gate:branch-point-model,gate:content-address
 crucible.campaign.proposal	1	crucible-campaign::exploration	campaign-fact	gate:lazy-frontier,gate:content-address
 crucible.campaign.branch-path	2	crucible-campaign::exploration	campaign-fact	gate:campaign-replay,gate:content-address
 crucible.campaign.attempt	1	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address

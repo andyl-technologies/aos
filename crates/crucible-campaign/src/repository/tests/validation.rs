@@ -5426,6 +5426,253 @@ fn permuted_integer_generator_is_keyed_bijective_and_restart_stable() {
 }
 
 #[test]
+fn modeled_uniform_integer_generator_bounds_full_width_and_restarts() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let genesis = repository
+        .create("modeled-uniform", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(u64::MAX),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("scale"),
+            Vec::new(),
+        )
+        .expect("full-width domain"),
+    );
+    let declaration = SelectableDeclaration::new(
+        "modeled.uniform.full-width",
+        ChoiceSource::Workload {
+            producer: "modeled-uniform".to_owned(),
+        },
+        domain.clone(),
+        ChoiceValue::Integer(IntegerValue::Unsigned(0)),
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("declaration");
+    let model = ProbabilityModelId::from_hash(CampaignHash::derive(
+        "test.modeled-uniform.v1",
+        b"full-width",
+    ));
+    let opportunity = ChoiceOpportunity::new(
+        lineage.scenario(),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test", b"modeled-uniform"),
+            producer: CampaignHash::derive("test", b"modeled-uniform-producer"),
+        },
+        "modeled-uniform",
+        Some(model),
+    )
+    .expect("opportunity");
+    repository
+        .publish_choice_domain(&domain)
+        .expect("publish domain");
+    repository
+        .publish_selectable(&declaration)
+        .expect("publish declaration");
+    repository
+        .publish_choice_opportunity(&opportunity)
+        .expect("publish opportunity");
+    let generator = CandidateGeneratorSpec::new(
+        crate::MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::PermutedInteger,
+    )
+    .expect("modeled uniform generator");
+    let generator_id = repository
+        .publish_generator(&generator)
+        .expect("publish generator");
+    let request = BranchRequest::new(
+        opportunity.branch_point_id(lineage.genesis()),
+        lineage.genesis_content(),
+        opportunity.id().expect("opportunity id"),
+        domain.id().expect("domain id"),
+        CandidateSource::modeled_generated(model, generator_id),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"modeled-uniform-request",
+        ))),
+        BranchBudget::new(4, 4).expect("budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("request");
+    let discovered = repository
+        .discover_choice_opportunity(
+            "modeled-uniform",
+            genesis.snapshot_id(),
+            request.parent(),
+            request.opportunity(),
+        )
+        .expect("discover modeled opportunity");
+
+    let candidates = (1..=4)
+        .map(|ordinal| {
+            repository
+                .static_candidate_at(&request, &domain, ordinal)
+                .expect("modeled candidate")
+                .expect("implemented source")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(candidates.iter().cloned().collect::<BTreeSet<_>>().len(), 4);
+    assert!(candidates.iter().all(|value| domain.contains(value)));
+    assert_eq!(
+        repository
+            .static_candidate_count(&request, &domain)
+            .expect("bounded candidate count"),
+        Some(4)
+    );
+    assert!(matches!(
+        repository.static_candidate_at(&request, &domain, 5),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-ordinal-exceeds-source-cardinality"
+        })
+    ));
+
+    let wrong_model = BranchRequest::new(
+        request.branch_point(),
+        request.parent(),
+        request.opportunity(),
+        request.domain(),
+        CandidateSource::modeled_generated(
+            ProbabilityModelId::from_hash(CampaignHash::derive(
+                "test.modeled-uniform.v1",
+                b"wrong",
+            )),
+            generator_id,
+        ),
+        request.cause(),
+        request.budget(),
+        request.stop().clone(),
+    )
+    .expect("wrong-model request");
+    let before_wrong_model = blobs.object_count().expect("object count");
+    assert!(matches!(
+        repository.submit_branch_request("modeled-uniform", discovered.new_snapshot, &wrong_model,),
+        Err(CampaignRepositoryError::Codec(
+            CampaignCodecError::InvalidValue {
+                reason: "branch request modeled prior disagrees with its opportunity"
+            }
+        ))
+    ));
+    assert_eq!(
+        blobs.object_count().expect("unchanged object count"),
+        before_wrong_model
+    );
+
+    let legacy_generator = CandidateGeneratorSpec::new(
+        crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::PermutedInteger,
+    )
+    .expect("legacy generator");
+    let legacy_generator_id = repository
+        .publish_generator(&legacy_generator)
+        .expect("publish legacy generator");
+    let wrong_generator = BranchRequest::new(
+        request.branch_point(),
+        request.parent(),
+        request.opportunity(),
+        request.domain(),
+        CandidateSource::modeled_generated(model, legacy_generator_id),
+        request.cause(),
+        request.budget(),
+        request.stop().clone(),
+    )
+    .expect("wrong-generator request");
+    let before_wrong_generator = blobs.object_count().expect("object count");
+    let wrong_generator_result = repository.submit_branch_request(
+        "modeled-uniform",
+        discovered.new_snapshot,
+        &wrong_generator,
+    );
+    assert!(
+        matches!(
+            wrong_generator_result,
+            Err(CampaignRepositoryError::Integrity {
+                reason: "modeled-generated-source-contract-mismatch"
+            })
+        ),
+        "unexpected wrong-generator result: {wrong_generator_result:?}"
+    );
+    assert_eq!(
+        blobs.object_count().expect("unchanged object count"),
+        before_wrong_generator
+    );
+
+    let requested = repository
+        .submit_branch_request("modeled-uniform", discovered.new_snapshot, &request)
+        .expect("submit modeled request");
+    let projection = repository
+        .project_finite_expansion(requested.new_snapshot, request.branch_point(), None, 10)
+        .expect("project modeled source");
+    assert_eq!(
+        repository
+            .load_expansion_state(projection)
+            .expect("load projection")
+            .continuations()
+            .get(&request.id().expect("request id")),
+        Some(&ContinuationState::Ready)
+    );
+    let mut current = requested.new_snapshot;
+    for (index, candidate) in candidates.iter().enumerate() {
+        let proposal = finite_proposal(
+            &request,
+            &policy,
+            &repository.head("modeled-uniform").expect("proposal head"),
+            candidate.clone(),
+            index as u64 + 1,
+        );
+        let proposed = repository
+            .issue_proposal("modeled-uniform", current, &proposal)
+            .expect("issue modeled proposal");
+        let (selection, path, attempt) = branch_attempt(&repository, &request, &proposal);
+        current = repository
+            .admit_proposal(
+                "modeled-uniform",
+                proposed.new_snapshot,
+                proposed.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("admit modeled proposal")
+            .new_snapshot;
+    }
+    let closed_projection = repository
+        .project_finite_expansion(current, request.branch_point(), None, 10)
+        .expect("project bounded modeled source");
+    assert_eq!(
+        repository
+            .load_expansion_state(closed_projection)
+            .expect("load closed projection")
+            .continuations()
+            .get(&request.id().expect("request id")),
+        Some(&ContinuationState::Closed)
+    );
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        restarted
+            .head("modeled-uniform")
+            .expect("rebuild modeled history")
+            .snapshot_id(),
+        current
+    );
+    assert_eq!(
+        restarted
+            .static_candidate_at(&request, &domain, 1)
+            .expect("recompute candidate after restart"),
+        Some(candidates[0].clone())
+    );
+}
+
+#[test]
 fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
