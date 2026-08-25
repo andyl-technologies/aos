@@ -75,7 +75,7 @@ pub use execution::{
     GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
     MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES, ResumeAttemptExecutionDisposition,
     ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, SubmitAttemptDisposition,
-    SubmitAttemptRequest, SubmitAttemptResponse,
+    SubmitAttemptRequest, SubmitAttemptResponse, attempt_execution_basis_digest,
 };
 pub use executor_capability::{
     DescribeExecutorRequest, ExecutorCapabilityService, ExecutorCapabilitySet,

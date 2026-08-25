@@ -25,19 +25,22 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible_campaign::{
-    AssignmentId, AttemptId, CampaignCodecError, CampaignHash, CampaignLineageId, DaemonEpoch,
-    ExactCheckpointId, ExecutionId, ObservationId, SubmitAttemptRequest, SubmitAttemptResponse,
+    AssignmentId, AttemptId, AttemptResourceLimits, CampaignCodecError, CampaignHash,
+    CampaignLineageId, DaemonEpoch, ExactCheckpointId, ExecutionId, ExecutionRetentionIntent,
+    ObservationId, SubmitAttemptRequest, SubmitAttemptResponse, attempt_execution_basis_digest,
 };
 use rustix::fs::{FlockOperation, flock};
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
-const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v5\0";
+const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v6\0";
+const ATTEMPT_STATE_MAGIC_V5: &[u8] = b"crucible.executor.attempt-state-record.v5\0";
 const ATTEMPT_STATE_MAGIC_V4: &[u8] = b"crucible.executor.attempt-state-record.v4\0";
 const ATTEMPT_STATE_MAGIC_V3: &[u8] = b"crucible.executor.attempt-state-record.v3\0";
 const ATTEMPT_STATE_MAGIC_V2: &[u8] = b"crucible.executor.attempt-state-record.v2\0";
 const ATTEMPT_STATE_MAGIC_V1: &[u8] = b"crucible.executor.attempt-state-record.v1\0";
 const ASSIGNMENT_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-record.v1";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v5";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v6";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN_V5: &str = "crucible.executor.attempt-state-record.v5";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V4: &str = "crucible.executor.attempt-state-record.v4";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V3: &str = "crucible.executor.attempt-state-record.v3";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V2: &str = "crucible.executor.attempt-state-record.v2";
@@ -124,6 +127,39 @@ impl AttemptExecutionOrigin {
     }
 }
 
+/// Durable operational contract required to validate a paused root after restart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckpointPromotionExecutionBasis {
+    resources: AttemptResourceLimits,
+    retention: ExecutionRetentionIntent,
+}
+
+impl CheckpointPromotionExecutionBasis {
+    /// Captures the assignment-neutral resource and retention contract.
+    #[must_use]
+    pub const fn new(
+        resources: AttemptResourceLimits,
+        retention: ExecutionRetentionIntent,
+    ) -> Self {
+        Self {
+            resources,
+            retention,
+        }
+    }
+
+    /// Returns the exact hard ceilings admitted for the paused execution.
+    #[must_use]
+    pub const fn resources(self) -> AttemptResourceLimits {
+        self.resources
+    }
+
+    /// Returns the exact retention intent bound into the execution digest.
+    #[must_use]
+    pub const fn retention(self) -> ExecutionRetentionIntent {
+        self.retention
+    }
+}
+
 impl AttemptExecutionKey {
     /// Builds the runtime key for one exact lineage and semantic attempt.
     #[must_use]
@@ -194,6 +230,8 @@ pub enum AttemptRuntimeState {
         execution: ExecutionId,
         /// Complete durable exact-checkpoint root.
         checkpoint: ExactCheckpointId,
+        /// Resource/retention basis needed for automatic promotion recovery.
+        promotion_basis: Option<CheckpointPromotionExecutionBasis>,
     },
     /// One paused raw root has durably reserved its replay-validated replacement.
     CheckpointPromoting {
@@ -209,6 +247,8 @@ pub enum AttemptRuntimeState {
         source_checkpoint: ExactCheckpointId,
         /// Expected replacement root containing matching oracle evidence.
         promoted_checkpoint: ExactCheckpointId,
+        /// Resource/retention basis retained across promotion restart.
+        promotion_basis: Option<CheckpointPromotionExecutionBasis>,
     },
     /// One execution has durably reserved an observation publication root.
     Publishing {
@@ -651,6 +691,23 @@ pub trait AssignmentLedger {
         next: Option<AttemptRuntimeState>,
     ) -> Result<AttemptStateCas, Self::Error>;
 
+    /// Streams every durable lineage-qualified attempt runtime record.
+    ///
+    /// This unfenced operation supports bounded executor restart discovery and
+    /// diagnostics. Implementations must validate each record's encoded key
+    /// against its storage identity and must not materialize the complete
+    /// ledger in memory. It is not a generation-bound input to destructive GC;
+    /// maintenance code must use [`AssignmentRetentionAdmin`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend error when enumeration is incomplete or any durable
+    /// record is malformed, corrupt, or stored under the wrong identity.
+    fn visit_attempt_states(
+        &self,
+        visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
+    ) -> Result<(), Self::Error>;
+
     /// Streams durable in-progress and completed observation retention roots.
     ///
     /// This unfenced operation supports executor recovery and diagnostics. It
@@ -792,6 +849,16 @@ impl AssignmentLedger for MemoryAssignmentLedger {
             }
         }
         Ok(AttemptStateCas::Advanced)
+    }
+
+    fn visit_attempt_states(
+        &self,
+        visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
+    ) -> Result<(), Self::Error> {
+        for (key, state) in &self.attempts {
+            visitor(*key, *state);
+        }
+        Ok(())
     }
 
     fn visit_observation_roots(
@@ -956,9 +1023,9 @@ impl DirectoryAssignmentLedger {
         Ok(())
     }
 
-    fn visit_attempt_states(
+    fn visit_attempt_records(
         &self,
-        visitor: &mut dyn FnMut(AttemptRuntimeState),
+        visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
     ) -> Result<(), AssignmentLedgerError> {
         let attempts = self.root.join("attempts");
         let shards = match fs::read_dir(&attempts) {
@@ -1029,7 +1096,7 @@ impl DirectoryAssignmentLedger {
                 if self.attempt_path(key) != path {
                     return Err(corrupt("attempt-root-record-path-identity-mismatch"));
                 }
-                visitor(state);
+                visitor(key, state);
             }
         }
         Ok(())
@@ -1132,11 +1199,18 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         Ok(AttemptStateCas::Advanced)
     }
 
+    fn visit_attempt_states(
+        &self,
+        visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
+    ) -> Result<(), Self::Error> {
+        self.visit_attempt_records(visitor)
+    }
+
     fn visit_observation_roots(
         &self,
         visitor: &mut dyn FnMut(ObservationId),
     ) -> Result<(), Self::Error> {
-        self.visit_attempt_states(&mut |state| {
+        self.visit_attempt_records(&mut |_key, state| {
             if let Some(observation) = state.observation() {
                 visitor(observation);
             }
@@ -1147,7 +1221,7 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         &self,
         visitor: &mut dyn FnMut(ExactCheckpointId),
     ) -> Result<(), Self::Error> {
-        self.visit_attempt_states(&mut |state| {
+        self.visit_attempt_records(&mut |_key, state| {
             for checkpoint in state.retained_checkpoint_roots().into_iter().flatten() {
                 visitor(checkpoint);
             }
@@ -1184,7 +1258,7 @@ impl AssignmentRetentionFence for DirectoryAssignmentRetentionFence<'_> {
             AssignmentRetentionSummary::new(self.ledger.retention_state.digest(), 0, 0, 0);
         let mut visitor_error = None;
         self.ledger
-            .visit_attempt_states(&mut |state| {
+            .visit_attempt_states(&mut |_key, state| {
                 if visitor_error.is_none()
                     && let Err(source) = summary.visit(state, visitor)
                 {
@@ -1262,18 +1336,21 @@ fn encode_attempt_state(key: AttemptExecutionKey, state: AttemptRuntimeState) ->
             daemon_epoch,
             execution,
             checkpoint,
+            promotion_basis,
             ..
         } => {
             payload.push(6);
             payload.extend_from_slice(&daemon_epoch.as_bytes());
             payload.extend_from_slice(&execution.as_bytes());
             push_bytes(&mut payload, checkpoint.to_text().as_bytes());
+            encode_checkpoint_promotion_basis(&mut payload, promotion_basis);
         }
         AttemptRuntimeState::CheckpointPromoting {
             daemon_epoch,
             execution,
             source_checkpoint,
             promoted_checkpoint,
+            promotion_basis,
             ..
         } => {
             payload.push(7);
@@ -1281,6 +1358,7 @@ fn encode_attempt_state(key: AttemptExecutionKey, state: AttemptRuntimeState) ->
             payload.extend_from_slice(&execution.as_bytes());
             push_bytes(&mut payload, source_checkpoint.to_text().as_bytes());
             push_bytes(&mut payload, promoted_checkpoint.to_text().as_bytes());
+            encode_checkpoint_promotion_basis(&mut payload, promotion_basis);
         }
         AttemptRuntimeState::Completed {
             daemon_epoch,
@@ -1322,6 +1400,8 @@ fn decode_attempt_state(
 ) -> Result<(AttemptExecutionKey, AttemptRuntimeState), AssignmentLedgerError> {
     let (payload, magic) = if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN) {
         (payload, ATTEMPT_STATE_MAGIC)
+    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V5) {
+        (payload, ATTEMPT_STATE_MAGIC_V5)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V4) {
         (payload, ATTEMPT_STATE_MAGIC_V4)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V3) {
@@ -1339,7 +1419,10 @@ fn decode_attempt_state(
     let lineage = parse_typed(cursor.bytes()?, CampaignLineageId::parse)?;
     let attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
     let execution_basis = CampaignHash::from_bytes(cursor.fixed()?);
-    let origin = if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V4 {
+    let origin = if magic == ATTEMPT_STATE_MAGIC
+        || magic == ATTEMPT_STATE_MAGIC_V5
+        || magic == ATTEMPT_STATE_MAGIC_V4
+    {
         decode_attempt_origin(&mut cursor)?
     } else {
         AttemptExecutionOrigin::Initial
@@ -1368,6 +1451,7 @@ fn decode_attempt_state(
             execution,
         },
         3 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V5
             || magic == ATTEMPT_STATE_MAGIC_V4
             || magic == ATTEMPT_STATE_MAGIC_V3
             || magic == ATTEMPT_STATE_MAGIC_V2 =>
@@ -1381,6 +1465,7 @@ fn decode_attempt_state(
             }
         }
         4 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V5
             || magic == ATTEMPT_STATE_MAGIC_V4
             || magic == ATTEMPT_STATE_MAGIC_V3 =>
         {
@@ -1392,6 +1477,7 @@ fn decode_attempt_state(
             }
         }
         5 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V5
             || magic == ATTEMPT_STATE_MAGIC_V4
             || magic == ATTEMPT_STATE_MAGIC_V3 =>
         {
@@ -1404,6 +1490,7 @@ fn decode_attempt_state(
             }
         }
         6 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V5
             || magic == ATTEMPT_STATE_MAGIC_V4
             || magic == ATTEMPT_STATE_MAGIC_V3 =>
         {
@@ -1413,20 +1500,103 @@ fn decode_attempt_state(
                 daemon_epoch,
                 execution,
                 checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+                promotion_basis: if magic == ATTEMPT_STATE_MAGIC {
+                    decode_checkpoint_promotion_basis(&mut cursor)?
+                } else {
+                    None
+                },
             }
         }
-        7 if magic == ATTEMPT_STATE_MAGIC => AttemptRuntimeState::CheckpointPromoting {
-            execution_basis,
-            origin,
-            daemon_epoch,
-            execution,
-            source_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-            promoted_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-        },
+        7 if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V5 => {
+            AttemptRuntimeState::CheckpointPromoting {
+                execution_basis,
+                origin,
+                daemon_epoch,
+                execution,
+                source_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+                promoted_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+                promotion_basis: if magic == ATTEMPT_STATE_MAGIC {
+                    decode_checkpoint_promotion_basis(&mut cursor)?
+                } else {
+                    None
+                },
+            }
+        }
         _ => return Err(corrupt("attempt-state-unknown-tag")),
     };
+    let promotion_basis = match state {
+        AttemptRuntimeState::Paused {
+            promotion_basis, ..
+        }
+        | AttemptRuntimeState::CheckpointPromoting {
+            promotion_basis, ..
+        } => promotion_basis,
+        AttemptRuntimeState::Running { .. }
+        | AttemptRuntimeState::CheckpointRequested { .. }
+        | AttemptRuntimeState::CheckpointPublishing { .. }
+        | AttemptRuntimeState::Publishing { .. }
+        | AttemptRuntimeState::Completed { .. }
+        | AttemptRuntimeState::Canceled { .. } => None,
+    };
+    if let Some(promotion_basis) = promotion_basis
+        && attempt_execution_basis_digest(
+            lineage,
+            attempt,
+            promotion_basis.resources(),
+            promotion_basis.retention(),
+        ) != execution_basis
+    {
+        return Err(corrupt("checkpoint-promotion-execution-basis-mismatch"));
+    }
     cursor.finish()?;
     Ok((AttemptExecutionKey::new(lineage, attempt), state))
+}
+
+fn encode_checkpoint_promotion_basis(
+    payload: &mut Vec<u8>,
+    basis: Option<CheckpointPromotionExecutionBasis>,
+) {
+    let Some(basis) = basis else {
+        payload.push(0);
+        return;
+    };
+    payload.push(1);
+    let resources = basis.resources();
+    payload.extend_from_slice(&resources.maximum_vcpus().to_be_bytes());
+    payload.extend_from_slice(&resources.maximum_resident_bytes().to_be_bytes());
+    payload.extend_from_slice(&resources.maximum_disk_bytes().to_be_bytes());
+    payload.extend_from_slice(&resources.maximum_execution_quanta().to_be_bytes());
+    payload.push(match basis.retention() {
+        ExecutionRetentionIntent::Discard => 0,
+        ExecutionRetentionIntent::RetainOnFailure => 1,
+        ExecutionRetentionIntent::RetainAlways => 2,
+    });
+}
+
+fn decode_checkpoint_promotion_basis(
+    cursor: &mut RecordCursor<'_>,
+) -> Result<Option<CheckpointPromotionExecutionBasis>, AssignmentLedgerError> {
+    match cursor.byte()? {
+        0 => Ok(None),
+        1 => {
+            let resources = AttemptResourceLimits::new(
+                u32::from_be_bytes(cursor.fixed()?),
+                u64::from_be_bytes(cursor.fixed()?),
+                u64::from_be_bytes(cursor.fixed()?),
+                u64::from_be_bytes(cursor.fixed()?),
+            )?;
+            let retention = match cursor.byte()? {
+                0 => ExecutionRetentionIntent::Discard,
+                1 => ExecutionRetentionIntent::RetainOnFailure,
+                2 => ExecutionRetentionIntent::RetainAlways,
+                _ => return Err(corrupt("checkpoint-promotion-retention-tag")),
+            };
+            Ok(Some(CheckpointPromotionExecutionBasis::new(
+                resources, retention,
+            )))
+        }
+        _ => Err(corrupt("checkpoint-promotion-basis-tag")),
+    }
 }
 
 fn encode_attempt_origin(payload: &mut Vec<u8>, origin: AttemptExecutionOrigin) {

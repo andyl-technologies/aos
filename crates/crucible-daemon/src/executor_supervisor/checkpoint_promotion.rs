@@ -5,6 +5,7 @@ use crucible_campaign::{ExactCheckpointId, ExecutionId};
 use super::{AttemptAdvance, LocalExecutorError, LocalExecutorSupervisor};
 use crate::{
     AssignmentLedger, AttemptAdmissionValidator, AttemptExecutionKey, AttemptRuntimeState,
+    CheckpointPromotionExecutionBasis,
 };
 
 /// Durable outcome of reserving a replay-validated paused-root replacement.
@@ -40,6 +41,7 @@ pub struct CheckpointPromotionRecovery {
     execution: ExecutionId,
     source: ExactCheckpointId,
     promoted: ExactCheckpointId,
+    promotion_basis: Option<CheckpointPromotionExecutionBasis>,
 }
 
 impl CheckpointPromotionRecovery {
@@ -66,6 +68,58 @@ impl CheckpointPromotionRecovery {
     pub const fn promoted(self) -> ExactCheckpointId {
         self.promoted
     }
+
+    /// Returns the execution contract retained for regeneration after restart.
+    ///
+    /// Version-five operational records predate this basis and return `None`.
+    #[must_use]
+    pub const fn promotion_basis(self) -> Option<CheckpointPromotionExecutionBasis> {
+        self.promotion_basis
+    }
+}
+
+/// Restart-recoverable identity of one raw paused root awaiting validation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PausedCheckpointPromotionRecovery {
+    key: AttemptExecutionKey,
+    execution: ExecutionId,
+    source: ExactCheckpointId,
+    promotion_basis: CheckpointPromotionExecutionBasis,
+}
+
+impl PausedCheckpointPromotionRecovery {
+    /// Returns the exact lineage-qualified attempt key.
+    #[must_use]
+    pub const fn key(self) -> AttemptExecutionKey {
+        self.key
+    }
+
+    /// Returns the execution that produced the raw paused root.
+    #[must_use]
+    pub const fn execution(self) -> ExecutionId {
+        self.execution
+    }
+
+    /// Returns the complete raw root awaiting replay-oracle validation.
+    #[must_use]
+    pub const fn source(self) -> ExactCheckpointId {
+        self.source
+    }
+
+    /// Returns the exact resource and retention basis of the paused execution.
+    #[must_use]
+    pub const fn promotion_basis(self) -> CheckpointPromotionExecutionBasis {
+        self.promotion_basis
+    }
+}
+
+/// One durable paused-root recovery phase discovered during executor startup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckpointPromotionRestartWork {
+    /// A raw paused root still needs replay-oracle comparison and publication.
+    Paused(PausedCheckpointPromotionRecovery),
+    /// A source/replacement pair was already durably staged.
+    Staged(CheckpointPromotionRecovery),
 }
 
 impl<L, V> LocalExecutorSupervisor<L, V>
@@ -95,15 +149,76 @@ where
                 execution,
                 source_checkpoint,
                 promoted_checkpoint,
+                promotion_basis,
                 ..
             }) => Some(CheckpointPromotionRecovery {
                 key,
                 execution,
                 source: source_checkpoint,
                 promoted: promoted_checkpoint,
+                promotion_basis,
             }),
             Some(_) | None => None,
         })
+    }
+
+    /// Streams restartable raw and staged paused-root promotion phases.
+    ///
+    /// Legacy raw pauses without a retained resource/retention basis remain
+    /// durable checkpoint roots but are deliberately omitted because a new
+    /// guarded replay session cannot reconstruct their admitted contract.
+    /// Staged legacy pairs remain discoverable because a complete replacement
+    /// can still be authenticated and reconciled without launching QEMU.
+    /// Immutable checkpoint authentication and replay work must happen only
+    /// after the caller releases supervisor ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalExecutorError::Ledger`] when durable enumeration is
+    /// incomplete or any attempt record is corrupt.
+    pub fn visit_checkpoint_promotion_restart_work(
+        &self,
+        visitor: &mut dyn FnMut(CheckpointPromotionRestartWork),
+    ) -> Result<(), LocalExecutorError<L::Error>> {
+        self.ledger
+            .visit_attempt_states(&mut |key, state| match state {
+                AttemptRuntimeState::Paused {
+                    execution,
+                    checkpoint,
+                    promotion_basis: Some(promotion_basis),
+                    ..
+                } => visitor(CheckpointPromotionRestartWork::Paused(
+                    PausedCheckpointPromotionRecovery {
+                        key,
+                        execution,
+                        source: checkpoint,
+                        promotion_basis,
+                    },
+                )),
+                AttemptRuntimeState::CheckpointPromoting {
+                    execution,
+                    source_checkpoint,
+                    promoted_checkpoint,
+                    promotion_basis,
+                    ..
+                } => visitor(CheckpointPromotionRestartWork::Staged(
+                    CheckpointPromotionRecovery {
+                        key,
+                        execution,
+                        source: source_checkpoint,
+                        promoted: promoted_checkpoint,
+                        promotion_basis,
+                    },
+                )),
+                AttemptRuntimeState::Running { .. }
+                | AttemptRuntimeState::CheckpointRequested { .. }
+                | AttemptRuntimeState::CheckpointPublishing { .. }
+                | AttemptRuntimeState::Paused { .. }
+                | AttemptRuntimeState::Publishing { .. }
+                | AttemptRuntimeState::Completed { .. }
+                | AttemptRuntimeState::Canceled { .. } => {}
+            })
+            .map_err(LocalExecutorError::Ledger)
     }
 
     /// Retains a replay-validated paused-root replacement before publication.
@@ -132,6 +247,7 @@ where
                 daemon_epoch,
                 execution: current_execution,
                 checkpoint,
+                promotion_basis,
             } if current_execution == execution && checkpoint == source_checkpoint => {
                 let next = AttemptRuntimeState::CheckpointPromoting {
                     execution_basis,
@@ -140,6 +256,7 @@ where
                     execution,
                     source_checkpoint,
                     promoted_checkpoint,
+                    promotion_basis,
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
                 if let AttemptAdvance::CommittedAfterError(error) = advance {
@@ -151,6 +268,7 @@ where
                 execution: current_execution,
                 source_checkpoint: current_source,
                 promoted_checkpoint: current_promoted,
+                promotion_basis,
                 ..
             } if current_execution == execution
                 && current_source == source_checkpoint
@@ -205,6 +323,7 @@ where
                 execution: current_execution,
                 source_checkpoint: current_source,
                 promoted_checkpoint: current_promoted,
+                promotion_basis,
             } if current_execution == execution
                 && current_source == source_checkpoint
                 && current_promoted == promoted_checkpoint =>
@@ -215,6 +334,7 @@ where
                     daemon_epoch,
                     execution,
                     checkpoint: promoted_checkpoint,
+                    promotion_basis,
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
                 if let AttemptAdvance::CommittedAfterError(error) = advance {
@@ -269,6 +389,7 @@ where
                 execution: current_execution,
                 source_checkpoint: current_source,
                 promoted_checkpoint: current_promoted,
+                promotion_basis,
             } if current_execution == execution
                 && current_source == source_checkpoint
                 && current_promoted == promoted_checkpoint =>
@@ -279,6 +400,7 @@ where
                     daemon_epoch,
                     execution,
                     checkpoint: source_checkpoint,
+                    promotion_basis,
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
                 if let AttemptAdvance::CommittedAfterError(error) = advance {

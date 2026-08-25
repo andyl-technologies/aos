@@ -28,7 +28,8 @@ use crucible_qemu::{QemuReplayOracleCheck, QemuReplayOracleValidation};
 use super::*;
 use crate::{
     AllowAllAttemptAdmission, AssignmentLedger, AttemptRuntimeState, CancellationOutcome,
-    CheckpointCompletionOutcome, CheckpointPromotionCompletionOutcome, CheckpointResultAbortToken,
+    CheckpointCompletionOutcome, CheckpointPromotionCompletionOutcome,
+    CheckpointPromotionExecutionBasis, CheckpointPromotionRestartWork, CheckpointResultAbortToken,
     CheckpointResultStageOutcome, ExecutorCapacity, LocalExecutorSupervisor,
     MemoryAssignmentLedger, PausedCheckpointPromotionStageOutcome, PreparedCheckpointResult,
     PreparedPausedCheckpointPromotion, abort_checkpoint_result, publish_staged_checkpoint_result,
@@ -647,6 +648,10 @@ fn paused_raw_root_promotion_survives_restart_and_enables_exact_resume() {
         daemon_epoch: paused_epoch,
         execution,
         checkpoint: raw,
+        promotion_basis: Some(CheckpointPromotionExecutionBasis::new(
+            request.resources(),
+            request.retention(),
+        )),
     };
     let mut ledger = MemoryAssignmentLedger::default();
     ledger
@@ -658,6 +663,19 @@ fn paused_raw_root_promotion_survives_restart_and_enables_exact_resume() {
         paused_epoch,
         ExecutorCapacity::new(1, 2, 4096, 8192, 64).expect("capacity"),
     );
+    let mut restart_work = Vec::new();
+    supervisor
+        .visit_checkpoint_promotion_restart_work(&mut |work| restart_work.push(work))
+        .expect("discover raw paused promotion");
+    assert_eq!(restart_work.len(), 1);
+    let CheckpointPromotionRestartWork::Paused(recovery) = restart_work[0] else {
+        panic!("expected raw paused promotion work")
+    };
+    assert_eq!(recovery.key(), key);
+    assert_eq!(recovery.execution(), execution);
+    assert_eq!(recovery.source(), raw);
+    assert_eq!(recovery.promotion_basis().resources(), request.resources());
+    assert_eq!(recovery.promotion_basis().retention(), request.retention());
     let stale_promotion = store
         .prepare_replay_oracle_promotion(raw, check())
         .expect("prepare stale replay-oracle promotion");
@@ -723,6 +741,21 @@ fn paused_raw_root_promotion_survives_restart_and_enables_exact_resume() {
         .checkpoint_promotion_recovery(key)
         .expect("load staged promotion")
         .expect("staged promotion");
+    assert_eq!(
+        recovery
+            .promotion_basis()
+            .expect("current promotion basis")
+            .resources(),
+        request.resources()
+    );
+    let mut restart_work = Vec::new();
+    restarted
+        .visit_checkpoint_promotion_restart_work(&mut |work| restart_work.push(work))
+        .expect("discover staged promotion");
+    assert_eq!(
+        restart_work,
+        vec![CheckpointPromotionRestartWork::Staged(recovery)]
+    );
     let published = recover_published_paused_checkpoint_promotion(&store, recovery)
         .expect("authenticate complete promoted root after restart");
     assert_eq!(
@@ -741,6 +774,10 @@ fn paused_raw_root_promotion_survives_restart_and_enables_exact_resume() {
             daemon_epoch: paused_epoch,
             execution,
             checkpoint: promoted,
+            promotion_basis: Some(CheckpointPromotionExecutionBasis::new(
+                request.resources(),
+                request.retention(),
+            )),
         })
     );
 
