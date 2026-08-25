@@ -27,6 +27,7 @@ crucible.guest-selectable.register	1	crucible-protocol::selectable	process-proto
 crucible.guest-selectable.request	1	crucible-protocol::selectable	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.guest-selectable.reply	1	crucible-protocol::selectable	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.guest-selectable.catalog-plan	1	crucible-protocol::selectable_catalog_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
+crucible.qemu-plugin.setup-plan	1	crucible-protocol::plugin_setup_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.campaign.merkle-node	1	crucible-campaign::merkle	merkle-node	gate:campaign-model,gate:content-address
 crucible.campaign.candidate-generator-spec	1	crucible-campaign::object	policy	gate:lazy-frontier,gate:content-address
 crucible.campaign.scenario-artifact	1	crucible-campaign::artifact	scenario	gate:campaign-model,gate:content-address

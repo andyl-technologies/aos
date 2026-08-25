@@ -11,14 +11,16 @@
 //! Module map: the crate root owns the frame-format constants, closed tag
 //! registry, message bodies, pure codec, frame I/O helpers, handshake
 //! orchestration, setup descriptor passing, and control/data split contract.
-//! `app_random_branch_plan` owns the sealed setup-plan body;
+//! `app_random_branch_plan` owns the legacy sealed branch-plan body;
 //! `app_random_transport` owns the app-random observation transport;
 //! `doorbell_abi` owns the shared white-box doorbell instruction ABI;
 //! `doorbell_frame` owns the shared white-box doorbell marker frame ABI; `doorbell_marker`
 //! owns the marker-kind vocabulary and body codecs; `selectable` owns the
 //! guest choice register/request/reply ABI; `selectable_catalog_plan` owns the
-//! sealed catalog and continuation launch body; `preemption` owns deterministic IPI arithmetic;
-//! `golden_vectors` owns the frozen ABI corpus; `codec_fuzz` owns its fuzz target and corpus.
+//! sealed catalog and continuation launch body; `plugin_setup_plan` owns the
+//! composite setup descriptor body; `preemption` owns deterministic IPI
+//! arithmetic; `golden_vectors` owns the frozen ABI corpus; `codec_fuzz` owns
+//! its fuzz target and corpus.
 //!
 //! Unsafe boundary discipline: raw `sendmsg`/`recvmsg` and ancillary-buffer
 //! details stay private; public callers use safe setup descriptor handover wrappers.
@@ -47,6 +49,7 @@ mod doorbell_marker;
 mod golden_vectors;
 pub mod guest_introspection;
 pub mod guest_introspection_doorbell;
+pub mod plugin_setup_plan;
 mod preemption;
 mod selectable;
 pub mod selectable_catalog_plan;
