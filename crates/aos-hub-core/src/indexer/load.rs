@@ -15,7 +15,7 @@
 //! Phase 5).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
 use aos_registry_surface::manifest::{
@@ -66,6 +66,7 @@ pub struct ObjectReader<'a> {
     // walks do not repeatedly pay object-store and inflate latency.
     cache: Mutex<BTreeMap<Oid, (ObjectKind, Vec<u8>)>>,
     attempted_bundles: Mutex<BTreeSet<String>>,
+    bundle_gates: Mutex<BTreeMap<String, Arc<futures_util::lock::Mutex<()>>>>,
 }
 
 impl<'a> ObjectReader<'a> {
@@ -76,6 +77,7 @@ impl<'a> ObjectReader<'a> {
             fetch,
             cache: Mutex::new(BTreeMap::new()),
             attempted_bundles: Mutex::new(BTreeSet::new()),
+            bundle_gates: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -122,6 +124,19 @@ impl<'a> ObjectReader<'a> {
     async fn load_bundle(&self, oid: Oid) -> Result<()> {
         let oid_hex = oid.to_hex();
         let shard = oid_hex[..2].to_string();
+
+        // Retained release trees load concurrently and often reach the same
+        // shard together. A per-shard async gate makes that fetch single-flight:
+        // unrelated shards remain parallel, while followers wait for the cache
+        // population instead of falling through to thousands of loose reads.
+        let gate = self
+            .bundle_gates
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry bundle-gate lock is poisoned"))?
+            .entry(shard.clone())
+            .or_default()
+            .clone();
+        let _guard = gate.lock().await;
         let should_fetch = self
             .attempted_bundles
             .lock()
@@ -578,5 +593,66 @@ source_nar_hash = "sha256:source"
         let error =
             enrich_packages_from_store(&mut [modern_package()], &BTreeMap::new()).unwrap_err();
         assert!(format!("{error:#}").contains("has no signed store record"));
+    }
+}
+
+#[cfg(test)]
+mod bundle_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    struct BundleFetch {
+        bytes: Vec<u8>,
+        reads: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for BundleFetch {
+        async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("unexpected loose-object fallback for {path}")
+        }
+
+        async fn fetch_bounded(&self, _path: &str, _max_bytes: usize) -> Result<Option<Vec<u8>>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            tokio::task::yield_now().await;
+            Ok(Some(self.bytes.clone()))
+        }
+
+        fn describe(&self) -> String {
+            "bundle-single-flight".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_same_shard_reads_share_one_bundle_fetch() {
+        let mut by_shard = BTreeMap::<String, Vec<(Oid, Vec<u8>)>>::new();
+        for value in 0..10_000 {
+            let content = format!("bundle value {value}").into_bytes();
+            let oid = object::hash_object(ObjectKind::Blob, &content);
+            let shard = oid.to_hex()[..2].to_string();
+            let entries = by_shard.entry(shard.clone()).or_default();
+            entries.push((
+                oid,
+                object::encode_loose(ObjectKind::Blob, &content).unwrap(),
+            ));
+            if entries.len() == 2 {
+                entries.sort_by_key(|(oid, _)| *oid);
+                let bytes = aos_registry_surface::object_bundle::encode(&shard, entries).unwrap();
+                let fetch = BundleFetch {
+                    bytes,
+                    reads: AtomicUsize::new(0),
+                };
+                let reader = ObjectReader::new(&fetch);
+
+                let (first, second) =
+                    tokio::join!(reader.read(entries[0].0), reader.read(entries[1].0),);
+                assert_eq!(first.unwrap().0, ObjectKind::Blob);
+                assert_eq!(second.unwrap().0, ObjectKind::Blob);
+                assert_eq!(fetch.reads.load(Ordering::SeqCst), 1);
+                return;
+            }
+        }
+        panic!("test could not find two objects in one shard");
     }
 }
