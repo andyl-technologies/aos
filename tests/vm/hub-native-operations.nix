@@ -220,6 +220,20 @@ in
           '[.. | objects | .resource_version? // empty][0]' "$1"
       }
 
+      expect_hub_error() {
+        label=$1
+        pattern=$2
+        shift 2
+        output="/tmp/$label-expected-error.json"
+        if hub_cli "$@" >"$output" 2>&1; then
+          echo "$label unexpectedly succeeded" >&2
+          ${pkgs.coreutils}/bin/cat "$output" >&2
+          return 1
+        fi
+        ${pkgs.coreutils}/bin/cat "$output" >&2
+        ${pkgs.grep}/bin/grep -Eiq "$pattern" "$output"
+      }
+
       echo '==> Exercise the installed aos client against the native service'
       ${pkgs.aos}/bin/aos --json hub whoami --hub "$hub_url" --token "$token" \
         >/tmp/whoami.json
@@ -322,6 +336,21 @@ in
       retained_apply resource-defaults-update instance resource-defaults update \
         >/tmp/resource-defaults-update.json
 
+      echo '==> Exercise instance and organization topology-default inheritance'
+      hub_cli instance topology-defaults show >/tmp/instance-topology-defaults.json
+      reviewed instance-topology-clear instance topology-defaults clear --domain \
+        >/tmp/instance-topology-clear.json
+      hub_cli instance topology-defaults set --domain domain:missing \
+        --plan --idempotency-key instance-topology-set-plan \
+        >/tmp/instance-topology-set-plan.json
+      ${pkgs.jq}/bin/jq -e '.data.plan.plan_id != ""' \
+        /tmp/instance-topology-set-plan.json >/dev/null
+      hub_cli org topology-defaults show operations >/tmp/org-topology-defaults.json
+      reviewed org-topology-set org topology-defaults set operations \
+        --binding instance-default >/tmp/org-topology-set.json
+      reviewed org-topology-clear org topology-defaults clear operations --binding \
+        >/tmp/org-topology-clear.json
+
       echo '==> Exercise service-account and membership lifecycle'
       retained_plan service-account-create org service-account create plan \
         operations release-bot --idempotency-key service-account-create-plan
@@ -390,6 +419,30 @@ in
         --idempotency-key invitation-cancel-plan
       retained_apply invitation-cancel org invitation cancel \
         >/tmp/invitation-cancel.json
+
+      echo '==> Exercise organization email-domain claim and release'
+      hub_cli org domain list operations >/tmp/org-domains-empty.json
+      retained_plan org-domain-claim org domain claim plan operations example.test \
+        --if-version absent --idempotency-key org-domain-claim-plan
+      retained_apply org-domain-claim org domain claim >/tmp/org-domain-claim.json
+      hub_cli org domain show operations example.test >/tmp/org-domain-show.json
+      org_domain_version=$(resource_version /tmp/org-domain-show.json)
+      retained_plan org-domain-verify org domain verify plan operations example.test \
+        --if-version "$org_domain_version" --idempotency-key org-domain-verify-plan
+      org_domain_verify_plan_id=$(${pkgs.jq}/bin/jq -er \
+        .data.plan.plan_id /tmp/org-domain-verify-retained-plan.json)
+      org_domain_verify_hash=$(${pkgs.jq}/bin/jq -er \
+        .data.plan.confirmation_hash /tmp/org-domain-verify-retained-plan.json)
+      expect_hub_error org-domain-verify \
+        'unavailable.*DNS TXT verification is temporarily unavailable' \
+        org domain verify apply --plan-id "$org_domain_verify_plan_id" \
+        --confirm-hash "$org_domain_verify_hash" \
+        --idempotency-key org-domain-verify-apply --yes
+      hub_cli org domain show operations example.test >/tmp/org-domain-after-verify.json
+      org_domain_version=$(resource_version /tmp/org-domain-after-verify.json)
+      retained_plan org-domain-release org domain release plan operations example.test \
+        --if-version "$org_domain_version" --idempotency-key org-domain-release-plan
+      retained_apply org-domain-release org domain release >/tmp/org-domain-release.json
 
       echo '==> Exercise OIDC configuration lifecycle'
       retained_plan oidc-set org identity-provider set plan operations \
