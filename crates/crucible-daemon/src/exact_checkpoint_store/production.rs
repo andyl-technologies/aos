@@ -5,8 +5,8 @@ use std::io::{self, Read};
 
 use crucible::SchedulerOperationalFailureClass;
 use crucible_api::{
-    LifecycleApiError, ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
-    ProductionExactCheckpointSource,
+    LifecycleApiError, PreparedProductionReplayOraclePromotion, ProductionExactCheckpointClosure,
+    ProductionExactCheckpointObject, ProductionExactCheckpointSource,
 };
 use crucible_cas::content_store::BlobSource;
 
@@ -298,6 +298,53 @@ impl ExactCheckpointStore {
         let scenario = closure.scenario();
         let configuration = closure.configuration();
         let source: Arc<dyn ProductionExactCheckpointSource> = Arc::new(closure);
+        prepare_production_source_with_cancellation(
+            source,
+            production_identity,
+            scenario,
+            configuration,
+            self.maximum_checkpoint_bytes,
+            cancellation,
+        )
+    }
+
+    /// Wraps one no-write replay-oracle replacement as a campaign exact root.
+    ///
+    /// The input type can only be created by completely authenticating a raw
+    /// native production closure and applying one source-bound matching check
+    /// per live node. This operation independently streams every derived
+    /// snapshot and unchanged object through the campaign-CAS identity layer;
+    /// it performs no immutable writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a regenerated snapshot changes, an object identity
+    /// or length is inconsistent, aggregate arithmetic overflows, an index or
+    /// root exceeds its bound, or the source cannot be reopened.
+    pub fn prepare_production_replay_oracle_promotion(
+        &self,
+        promotion: PreparedProductionReplayOraclePromotion,
+    ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
+        self.prepare_production_replay_oracle_promotion_inner(promotion, None)
+    }
+
+    pub(crate) fn prepare_production_replay_oracle_promotion_with_cancellation(
+        &self,
+        promotion: PreparedProductionReplayOraclePromotion,
+        cancellation: &ExecutionCancellation,
+    ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
+        self.prepare_production_replay_oracle_promotion_inner(promotion, Some(cancellation.clone()))
+    }
+
+    fn prepare_production_replay_oracle_promotion_inner(
+        &self,
+        promotion: PreparedProductionReplayOraclePromotion,
+        cancellation: Option<ExecutionCancellation>,
+    ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
+        let production_identity = promotion.promoted();
+        let scenario = promotion.scenario();
+        let configuration = promotion.configuration();
+        let source: Arc<dyn ProductionExactCheckpointSource> = Arc::new(promotion);
         prepare_production_source_with_cancellation(
             source,
             production_identity,

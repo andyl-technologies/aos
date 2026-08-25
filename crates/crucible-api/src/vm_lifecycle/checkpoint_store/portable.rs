@@ -104,6 +104,148 @@ impl ProductionExactCheckpointSource for ProductionExactCheckpointClosure {
     }
 }
 
+impl ProductionExactCheckpointSource for PreparedProductionReplayOraclePromotion {
+    fn identity(&self) -> ContentHash {
+        self.promoted
+    }
+
+    fn scenario(&self) -> ContentHash {
+        self.scenario
+    }
+
+    fn configuration(&self) -> ContentHash {
+        self.configuration
+    }
+
+    fn manifest(&self) -> &[u8] {
+        &self.manifest
+    }
+
+    fn objects(&self) -> &[ProductionExactCheckpointObject] {
+        &self.objects
+    }
+
+    fn open_object(
+        &self,
+        identity: ContentHash,
+    ) -> Result<Box<dyn Read + Send>, LifecycleApiError> {
+        let Some(descriptor) = self.promoted_snapshots.get(&identity).copied() else {
+            return self.raw.open_object(identity);
+        };
+        let mut boundary = || Ok(());
+        let raw = read_portable_snapshot(
+            &self.raw,
+            descriptor.raw_object,
+            self.fat_checkpoint_bytes,
+            &mut boundary,
+        )?;
+        let promoted = descriptor.check.promote(&raw).map_err(|error| {
+            loop_factory_error(format!(
+                "regenerate promoted production replay-oracle snapshot: {error}"
+            ))
+        })?;
+        let bytes = promoted
+            .to_canonical_bytes_with_limit(self.fat_checkpoint_bytes)
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "encode regenerated production replay-oracle snapshot: {error}"
+                ))
+            })?;
+        if u64::try_from(bytes.len()).ok() != Some(descriptor.length)
+            || ContentHash::from_bytes(&bytes) != identity
+        {
+            return Err(loop_factory_error(
+                "regenerated production replay-oracle snapshot changed identity",
+            ));
+        }
+        Ok(Box::new(std::io::Cursor::new(bytes)))
+    }
+}
+
+/// Authenticates a portable source-bound production replay-oracle promotion.
+///
+/// Both source closures are copied into isolated temporary stores and pass the
+/// complete scenario-aware restore validator. The validator then proves that
+/// every live-node snapshot changed from raw `NotRun` evidence to `Match`
+/// evidence without changing any other production continuation field. It
+/// publishes no destination objects or manifests.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError`] when either portable closure is malformed,
+/// incomplete, semantically invalid, over the authored bounds, belongs to a
+/// different scenario, or is not an exact source-bound replay-oracle
+/// promotion.
+pub fn authenticate_portable_exact_checkpoint_replay_oracle_promotion(
+    source: &ScenarioDefForm,
+    raw: &dyn ProductionExactCheckpointSource,
+    promoted: &dyn ProductionExactCheckpointSource,
+) -> Result<(), LifecycleApiError> {
+    authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary(
+        source,
+        raw,
+        promoted,
+        &mut || Ok(()),
+    )
+}
+
+/// Authenticates a portable replay-oracle promotion under a boundary callback.
+///
+/// The callback runs before path access, between source reads and bounded
+/// temporary writes, throughout complete semantic validation, and between
+/// per-node snapshot comparisons.
+///
+/// # Errors
+///
+/// Returns the same errors as
+/// [`authenticate_portable_exact_checkpoint_replay_oracle_promotion`],
+/// including the exact [`LifecycleApiError`] returned by `boundary`.
+pub fn authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary(
+    source: &ScenarioDefForm,
+    raw: &dyn ProductionExactCheckpointSource,
+    promoted: &dyn ProductionExactCheckpointSource,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+) -> Result<(), LifecycleApiError> {
+    boundary()?;
+    if raw.identity() == promoted.identity() {
+        return Err(loop_factory_error(
+            "portable production replay-oracle promotion did not change the closure identity",
+        ));
+    }
+    let raw_preflight = preflight_portable_source(source, raw, boundary)?;
+    let promoted_preflight = preflight_portable_source(source, promoted, boundary)?;
+    let (raw_staging, _) =
+        stage_and_validate_portable_source(source, raw, &raw_preflight, boundary)?;
+    drop(raw_staging);
+    let (promoted_staging, _) =
+        stage_and_validate_portable_source(source, promoted, &promoted_preflight, boundary)?;
+    drop(promoted_staging);
+
+    let limits = source.plan().fault_signals().resource_limits();
+    let raw_manifest = decode::decode_manifest_with_limits(&raw_preflight.manifest, limits)?;
+    let promoted_manifest =
+        decode::decode_manifest_with_limits(&promoted_preflight.manifest, limits)?;
+    let raw_fault_identity = read_portable_fault_checkpoint_identity(
+        raw,
+        raw_manifest.fault_checkpoint,
+        source,
+        boundary,
+    )?;
+    let promoted_fault_identity = read_portable_fault_checkpoint_identity(
+        promoted,
+        promoted_manifest.fault_checkpoint,
+        source,
+        boundary,
+    )?;
+    if raw_fault_identity != promoted_fault_identity {
+        return Err(loop_factory_error(
+            "portable production replay-oracle promotion changed the fault-runtime identity",
+        ));
+    }
+
+    authenticate_replay_oracle_source_pair(raw, promoted, limits, raw_fault_identity, boundary)
+}
+
 struct PortableClosurePreflight {
     identity: ContentHash,
     manifest: Vec<u8>,

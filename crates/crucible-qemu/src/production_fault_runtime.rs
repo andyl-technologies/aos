@@ -165,6 +165,85 @@ impl ProductionFaultRuntimeCheckpoint {
     pub fn qemu_fault_event_sequence(&self, node: &NodeId) -> Option<u64> {
         self.qemu_fault_event_sequences.get(node).copied()
     }
+
+    /// Adds one synthetic live-node continuation for cross-crate tests.
+    ///
+    /// This constructor is unavailable in production builds. It accepts only
+    /// an otherwise node-empty checkpoint, installs the same node key in all
+    /// three exact QEMU continuation maps, and rebuilds the aggregate identity
+    /// under `plan`. Production code must obtain these values from a live
+    /// [`QemuNodeSet`] through [`ProductionFaultRuntime::checkpoint`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError`] when the checkpoint already
+    /// carries a node, the plan's node ceiling rejects the fixture, bounded
+    /// storage cannot be reserved, or the rebuilt identity exceeds its
+    /// authored limits.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_unvalidated_test_node(
+        mut self,
+        plan: &FaultSignalPlan,
+        node: NodeId,
+        fingerprint: ContentHash,
+    ) -> Result<Self, ProductionFaultRuntimeError> {
+        if self.qemu_fingerprints.len() != 0
+            || self.qemu_fault_sequences.len() != 0
+            || self.qemu_fault_event_sequences.len() != 0
+        {
+            return Err(BackendError::Rejected {
+                message: String::from(
+                    "synthetic production checkpoint must begin with empty QEMU maps",
+                ),
+            }
+            .into());
+        }
+        let limits = plan.resource_limits();
+        limits.reserve("nodes", 0, 1)?;
+        let allocation_error = || {
+            ProductionFaultRuntimeError::from(FaultResourceLimitError::Exceeded {
+                field: "nodes",
+                current: 0,
+                requested: 1,
+                configured: limits.nodes,
+                hard: FaultResourceLimits::compiled_maximum().nodes,
+            })
+        };
+
+        let mut qemu_fingerprints = QemuNodeMap::new();
+        qemu_fingerprints
+            .try_insert(node.clone(), fingerprint)
+            .map_err(|_| allocation_error())?;
+        let mut qemu_fault_sequences = QemuNodeMap::new();
+        qemu_fault_sequences
+            .try_insert(node.clone(), 1)
+            .map_err(|_| allocation_error())?;
+        let mut qemu_fault_event_sequences = QemuNodeMap::new();
+        qemu_fault_event_sequences
+            .try_insert(node, 1)
+            .map_err(|_| allocation_error())?;
+
+        self.qemu_fingerprints = qemu_fingerprints;
+        self.qemu_fault_sequences = qemu_fault_sequences;
+        self.qemu_fault_event_sequences = qemu_fault_event_sequences;
+        self.identity = production_checkpoint_identity(
+            plan.id(),
+            limits,
+            self.runtime.as_ref(),
+            &self.host,
+            &self.qemu_fingerprints,
+            &self.qemu_fault_sequences,
+            &self.qemu_fault_event_sequences,
+            &self.qemu_issued_actions,
+            &self.qemu_action_commits,
+            &self.qemu_active_rule_ids,
+            self.network_state.as_ref(),
+            &self.emitted_events,
+            &self.pending_qemu_observations,
+            &self.pending_qemu_events,
+        )?;
+        Ok(self)
+    }
 }
 
 /// Failure to admit, execute, checkpoint, or restore the production runtime.

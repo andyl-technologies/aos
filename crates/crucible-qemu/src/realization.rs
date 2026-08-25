@@ -159,8 +159,15 @@ pub fn validate_qemu_replay_oracle_promotion(
         promoted.replay_oracle_validation,
         QemuReplayOracleValidation::Match { .. }
     );
+    let promoted_source = promoted.replay_oracle_source_identity().map_err(|error| {
+        QemuVmRealizationError::InvalidCheckpoint {
+            role: "durable replay-oracle promotion",
+            message: format!("promoted snapshot cannot derive its raw source identity: {error}"),
+        }
+    })?;
     if !source_is_raw
         || !promoted_is_match
+        || promoted_source != source.id()
         || source.checkpoint != promoted.checkpoint
         || source.host_io != promoted.host_io
         || source.node != promoted.node
@@ -257,6 +264,30 @@ impl QemuVmSnapshot {
     #[must_use]
     pub const fn replay_oracle_validation(&self) -> QemuReplayOracleValidation {
         self.replay_oracle_validation
+    }
+
+    /// Derives the exact raw snapshot identity underlying replay-oracle evidence.
+    ///
+    /// A freshly captured snapshot already has this identity. A promoted
+    /// snapshot derives the identity it would have had with
+    /// [`QemuReplayOracleValidation::NotRun`] while retaining the exact same
+    /// scheduler, host-I/O, node-continuation, and capture-mode fields. This
+    /// compact binding lets durable multi-node closure validators compare one
+    /// snapshot at a time without retaining two potentially large decoded
+    /// continuations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmSnapshotCodecError`] when one of the bound continuation
+    /// records cannot be canonically encoded.
+    pub fn replay_oracle_source_identity(&self) -> Result<ContentHash, QemuVmSnapshotCodecError> {
+        exact_snapshot_identity(
+            &self.checkpoint,
+            &self.host_io,
+            &self.node,
+            QemuReplayOracleValidation::NotRun,
+            self.live_capture,
+        )
     }
 
     /// Builds a paired snapshot for a runtime with no host-serviced block device.
@@ -2129,6 +2160,8 @@ mod tests {
                 runtime_hash: target.id(),
             }
         );
+        assert_eq!(promoted.replay_oracle_source_identity(), Ok(source.id()));
+        assert_eq!(source.replay_oracle_source_identity(), Ok(source.id()));
         validate_qemu_replay_oracle_promotion(&source, &promoted)?;
         assert!(matches!(
             validate_qemu_replay_oracle_promotion(&foreign, &promoted),

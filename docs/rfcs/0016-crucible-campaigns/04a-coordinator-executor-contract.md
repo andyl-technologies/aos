@@ -2459,9 +2459,22 @@ governs every campaign-CAS put. Integrating abandoned native-catalog entries
 with the durable assignment-root collector remains required cleanup work; it
 does not permit an unstaged campaign root to become visible.
 
-Concrete production-loop process reconstruction, source-bound replay-oracle
-evidence, exact-resume modeled-driver selection, and capability advertisement
-remain open, so the packaged executor
+The version-four portable closure now supports source-bound replay-oracle
+promotion without destination writes. Preparation completely reauthenticates
+the raw closure, requires one check bound to every live node's exact raw
+snapshot, regenerates only the corresponding `NotRun` to `Match` snapshot
+objects, and derives the promoted target-manifest and closure identities from
+those semantic snapshot identities. All other modeled continuation and
+artifact objects are reused lazily. The daemon wraps this replacement in the
+same linear `checkpoint-promoting(raw,promoted)` phase used by the compatibility
+path, publishes the complete replacement only after staging both roots, and can
+reauthenticate the exact complete root pair after restart before the final
+paused-root CAS. A foreign source check, copied manifest identity, missing
+node, changed artifact, or non-matching oracle transition fails before writes.
+
+Concrete production-loop process reconstruction, exact-resume modeled-driver
+selection, native-catalog cleanup, and capability advertisement remain open,
+so the packaged executor
 does not yet advertise exact resume. Version-two roots remain readable for
 legacy authentication but are incomplete campaign continuations and MUST be
 rejected by attempt resume before VMState materialization. The
@@ -2503,9 +2516,10 @@ contract, and production replay admission rejects missing or mismatched oracle
 evidence before invoking it. The compatibility v2/v3 owner authenticates the
 exact selected raw root, runs the fat/thin comparison, promotes only a
 source-bound match into a new root that reuses the single VMState child, and
-durably replaces the selection. Equivalent source-bound replay-oracle evidence
-for the complete version-four production closure remains part of the open
-packaged resume wiring. No version-four root may become resume-eligible merely
+durably replaces the selection. The version-four owner applies the same
+source-bound rule independently to every live-node snapshot, reuses unchanged
+chunked overlay and VMState objects, and authenticates the raw/promoted closure
+pair on restart. No version-four root may become resume-eligible merely
 because its CAS closure is complete. The comparison session owns one
 process/resource guard, uses
 disjoint launch capabilities for target and thin base, reaps each generation
@@ -2513,9 +2527,10 @@ before replacement, and finishes before promotion writes. Any realization or
 cleanup failure quarantines the guard and leaves the raw root selected. The
 nondroppable child/cgroup/watcher worker now exists crate-internally, and the
 exact-resume adapter transfers both failed-launch and active-node child
-authority into the attempt guard before returning a failed realization. Raw
-paused-root validation/promotion and the complete pause/restart/resume flight
-remain mandatory before the full campaign/QEMU gate may claim completion.
+authority into the attempt guard before returning a failed realization. The
+concrete comparison flight, packaged production-loop reconstruction, and
+complete pause/restart/resume flight remain mandatory before the full
+campaign/QEMU gate may claim completion.
 
 Coverage-enabled warm restore remains fail-closed in this implementation slice.
 Boot-barrier priming occurs before `loadvm`, while the current QEMU plugin emits

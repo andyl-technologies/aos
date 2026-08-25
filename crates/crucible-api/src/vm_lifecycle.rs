@@ -33,8 +33,8 @@ use crucible::{
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
     QemuNode, QemuNodeLifecycleDecision, QemuNodeLifecycleIntent, QemuProcessIdentity,
-    QemuSharedBlockDevice, QemuVmSnapshot, linux_process_identity,
-    quarantine_orphaned_qemu_process,
+    QemuReplayOracleCheck, QemuReplayOracleValidation, QemuSharedBlockDevice, QemuVmSnapshot,
+    linux_process_identity, quarantine_orphaned_qemu_process,
 };
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -56,8 +56,11 @@ use assets::*;
 mod checkpoint_store;
 use checkpoint_store::load_exact_checkpoint_set;
 pub use checkpoint_store::{
-    ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
-    ProductionExactCheckpointResumeBasis, ProductionExactCheckpointSource,
+    PreparedProductionReplayOraclePromotion, ProductionExactCheckpointClosure,
+    ProductionExactCheckpointObject, ProductionExactCheckpointResumeBasis,
+    ProductionExactCheckpointSource,
+    authenticate_portable_exact_checkpoint_replay_oracle_promotion,
+    authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary,
     install_exact_checkpoint_closure, install_exact_checkpoint_closure_with_boundary,
     install_exact_checkpoint_closure_with_boundary_and_admission, open_exact_checkpoint_closure,
 };

@@ -743,10 +743,18 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   reruns complete scenario-aware validation, and returns a typed modeled basis
   only when the restored schedule continues the exact effective attempt start
   without crossing another campaign branch edge; that attempt admission occurs
-  before native destination publication. Assignment-root-aware cleanup
-  of abandoned native entries, production-loop process reconstruction,
-  source-bound replay-oracle evidence, exact-resume driver selection, and
-  capability advertisement remain open before the executor may claim exact resume. A guarded-only
+  before native destination publication. Version-four source-bound
+  replay-oracle promotion now completely reauthenticates the raw portable
+  closure, requires one exact source check per live node, lazily regenerates
+  only `NotRun` to `Match` snapshot objects and their derived manifest/root
+  identities, and reuses unchanged chunked artifacts. The daemon prepares this
+  replacement without writes, routes it through the linear source/replacement
+  staging and publication phases, and reauthenticates both complete roots after
+  restart before the final paused-root CAS. Assignment-root-aware cleanup of
+  abandoned native entries, production-loop process reconstruction, the
+  concrete multi-node comparison flight, exact-resume driver selection, and
+  capability advertisement remain open before the executor may claim exact
+  resume. A guarded-only
   exact-root launcher now consumes that
   pinned authority, rechecks the selected snapshot and checkpoint identities,
   and uses the sealed child-process contract for pre-`exec` containment. The

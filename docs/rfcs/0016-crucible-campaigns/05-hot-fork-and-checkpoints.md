@@ -439,10 +439,14 @@ the restored configuration and scheduler continuation before launch authority
 can exist. The installer requires the branch post-selection configuration (or
 the discovery start) as an exact schedule prefix and rejects any later campaign
 branch edge as a different attempt before native-catalog publication.
-Production-loop process reconstruction,
-source-bound replay-oracle evidence, resume-driver selection, capability
-advertisement, and native-catalog cleanup remain gated in the implementation
-plan.
+Version-four source-bound replay-oracle promotion is implemented over the
+complete portable closure. It validates one exact raw-snapshot check per live
+node, derives only matching snapshot and dependent manifest/root identities,
+reuses unchanged chunked artifacts, and reauthenticates the exact raw/promoted
+pair after restart before the paused-root CAS. Production-loop process
+reconstruction, the concrete comparison flight, resume-driver selection,
+capability advertisement, and native-catalog cleanup remain gated in the
+implementation plan.
 
 A newly captured exact root records replay-oracle state `NotRun` and is not
 eligible for resume. The single-host owner authenticates the selected root and
