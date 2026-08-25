@@ -328,7 +328,7 @@ enum CampaignCommand {
     ExplainFinding(CampaignFindingExplainArgs),
     /// Explain one exact attempt, proposal, and completion basis.
     ExplainAttempt(CampaignAttemptExplainArgs),
-    /// Rank candidates across an authenticated planner-step chain.
+    /// Rank candidates or policy epochs across an authenticated planner-step chain.
     Rankings(CampaignRankingsArgs),
     /// Read one authenticated page from the temporal graph.
     Graph(CampaignPageArgs),
@@ -597,13 +597,16 @@ struct CampaignRankingsArgs {
     /// Maximum planner-step pages followed through parent links.
     #[arg(long, value_name = "COUNT", default_value_t = 16)]
     pages: u32,
+    /// Continue across policy boundaries and rank each exact basis separately.
+    #[arg(long)]
+    policy_groups: bool,
     /// Keep only candidates for this exact semantic branch point.
     #[arg(long, value_name = "BRANCH_POINT")]
     branch_point: Option<String>,
     /// Keep only candidates produced from this exact branch request.
     #[arg(long, value_name = "REQUEST")]
     source: Option<String>,
-    /// Return at most this many best-ranked matching candidates.
+    /// Return this many matches globally, or per exact basis with --policy-groups.
     #[arg(long, value_name = "COUNT")]
     top: Option<u32>,
 }

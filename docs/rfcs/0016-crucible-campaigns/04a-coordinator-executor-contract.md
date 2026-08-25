@@ -825,7 +825,16 @@ differs, because scores from another interpretation basis are not comparable.
 Exact branch-point and branch-request filters run only after proof and retained-
 request validation. An optional top-result cap is in `1..=65_536` and truncates
 only after global best-first ordering; the version-2 CLI report retains the
-exact filter basis and pre-truncation matching count.
+exact filter basis and pre-truncation matching count. With `--policy-groups`,
+the client does not stop at the first incompatible parent. It authenticates
+pages up to the same 64-page and 128-MiB limits, partitions them into
+consecutive policy epochs, and then partitions each epoch into exact
+policy/engine/policy-artifact/planning-view bases. The version-1 policy-ranking
+report records each epoch's step range, pages, and match count. Candidates are
+ordered and `--top` is applied independently inside each exact basis; scores
+from different views or interpretation artifacts are never compared. All
+filters remain post-proof, and a page-limited result returns the exact next
+parent step.
 The proof
 key uses the membership-key derivation above with namespace
 `coordination.planner-step` and the planner step's canonical underlying

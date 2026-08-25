@@ -1256,7 +1256,13 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   a policy/engine/artifact/view boundary. Exact branch-point and source filters
   run after proof validation, and an at-most-65,536 top-result cap runs after
   global best-first ordering; the versioned machine report retains the filter
-  basis and pre-truncation match count. Policy-aggregated views remain open.
+  basis and pre-truncation match count. `--policy-groups` now continues across
+  policy changes under the same page/byte/cycle bounds, emits consecutive
+  policy epochs, and nests separately ordered exact
+  policy/engine/policy-artifact/planning-view bases. It preserves each epoch's
+  step range and pre-truncation count, applies filters only after proof
+  validation, and applies the top-result limit per comparable basis rather than
+  comparing incompatible scores.
 - [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
   projection in generation-bound GC retention plans. Snapshot-bound semantic
   and operational root inventory plus the exclusive generation-bound memory,
@@ -1372,7 +1378,7 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
 | `CSTORE-1..22` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
-| `CAPI-1..13` | 8 | CLI/API contracts, continuity, campaign replay |
+| `CAPI-1..14` | 8 | CLI/API contracts, continuity, campaign replay |
 | `CMEAS-1..14` | 3, 8 | campaign model, replay, ABI conformance |
 | `CSEC-1..12` | 1–9 | license boundary, ABI conformance, isolation, store equivalence |
 | `CPERF-1..9` | 4–7, 9 | branch-point model, lazy frontier, hot-fork scaling/equivalence, exact-closure streaming |

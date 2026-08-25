@@ -337,7 +337,17 @@ planning view rather than comparing scores from incompatible bases. Optional
 applied only after every returned page passes proof and retained-request
 validation. `--top` keeps at most 65,536 candidates after the packaged
 best-first comparator runs; the version-2 machine report echoes all filters and
-the pre-truncation matching count. Policy-aggregated inspection remains open.
+the pre-truncation matching count. `--policy-groups` instead continues through
+policy changes up to the same page and byte ceilings. It emits consecutive
+newest-to-oldest policy epochs in
+`crucible.cli.campaign-policy-rankings.v1`. Each epoch reports its policy,
+step range, page count, and pre-truncation match count, then nests one or more
+exact policy/engine/policy-artifact/planning-view bases. Only candidates within
+one such basis are compared and ranked. `--top` applies independently after
+best-first ordering in each exact basis; no total score is compared across
+planning views or other incompatible bases. Filters still run only after every
+page passes proof and retained-request validation, and `next_step` continues a
+page-limited grouped query.
 
 A concise status view includes:
 
@@ -718,3 +728,9 @@ not evidence of a hot checkpoint.
 - **[CAPI-13]** Branch-point inspection MUST expose every candidate source and
   request cause, while rendering a duplicate selected value as one semantic
   edge with multiple provenance records.
+- **[CAPI-14]** Policy-aggregated ranking inspection MUST authenticate every
+  retained planner page before grouping, preserve consecutive policy epochs,
+  and rank candidates only within an exact policy, engine, policy-artifact, and
+  planning-view basis. Filters MUST precede grouping, and a top-result limit
+  MUST apply independently after deterministic ordering in each comparable
+  basis.
