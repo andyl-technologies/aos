@@ -58,6 +58,9 @@ pub const MAX_STORE_ENTRIES: usize = 1_000_000;
 /// fanout keeps both native and Worker transports below their request limits.
 const OBJECT_FETCH_CONCURRENCY: usize = 32;
 
+/// Maximum bundle shards hydrated concurrently before an index walk.
+const BUNDLE_FETCH_CONCURRENCY: usize = 32;
+
 /// Reads loose objects through a [`SurfaceFetch`], verifying each object's
 /// content hash against the oid it was requested by.
 pub struct ObjectReader<'a> {
@@ -127,9 +130,40 @@ impl<'a> ObjectReader<'a> {
             .cloned())
     }
 
+    /// Hydrates every bounded bundle shard before dependency-ordered walking.
+    ///
+    /// Producers publish all 256 fixed shard names, including empty shards.
+    /// Fetching them in bounded parallel batches avoids turning tree discovery
+    /// into a sequential object-store round trip per newly encountered shard.
+    /// A legacy surface without bundles remains valid and falls back to loose
+    /// paths when objects are requested.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a shard transport fails. Missing or invalid
+    /// optional bundles retain canonical loose-object fallback.
+    pub(crate) async fn preload_bundles(&self) -> Result<()> {
+        let shards = (0_u16..=255)
+            .map(|value| format!("{value:02x}"))
+            .collect::<Vec<_>>();
+        for batch in shards.chunks(BUNDLE_FETCH_CONCURRENCY) {
+            try_join_all(
+                batch
+                    .iter()
+                    .map(|shard| self.load_bundle_shard(shard.as_str())),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     async fn load_bundle(&self, oid: Oid) -> Result<()> {
         let oid_hex = oid.to_hex();
-        let shard = oid_hex[..2].to_string();
+        self.load_bundle_shard(&oid_hex[..2]).await
+    }
+
+    async fn load_bundle_shard(&self, shard: &str) -> Result<()> {
+        let shard = shard.to_string();
 
         // Retained release trees load concurrently and often reach the same
         // shard together. A per-shard async gate makes that fetch single-flight:
@@ -628,6 +662,26 @@ mod bundle_tests {
         reads: AtomicUsize,
     }
 
+    struct MissingBundleFetch {
+        reads: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for MissingBundleFetch {
+        async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("unexpected loose-object fetch for {path}")
+        }
+
+        async fn fetch_bounded(&self, _path: &str, _max_bytes: usize) -> Result<Option<Vec<u8>>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+
+        fn describe(&self) -> String {
+            "missing-bundle-preload".into()
+        }
+    }
+
     #[async_trait::async_trait]
     impl SurfaceFetch for BundleFetch {
         async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
@@ -676,5 +730,18 @@ mod bundle_tests {
             }
         }
         panic!("test could not find two objects in one shard");
+    }
+
+    #[tokio::test]
+    async fn preload_attempts_every_fixed_shard_once() {
+        let fetch = MissingBundleFetch {
+            reads: AtomicUsize::new(0),
+        };
+        let reader = ObjectReader::new(&fetch);
+
+        reader.preload_bundles().await.unwrap();
+
+        assert_eq!(fetch.reads.load(Ordering::SeqCst), 256);
+        assert_eq!(reader.stats().unwrap(), (256, 0, 0));
     }
 }
