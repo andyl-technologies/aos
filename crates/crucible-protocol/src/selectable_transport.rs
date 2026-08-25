@@ -32,6 +32,12 @@ use crate::{SELECTABLE_MESSAGE_MAX_BYTES, SelectableProtocolError, SelectionRequ
 /// cannot be confused with a guest-originated observational marker.
 pub const WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING: u16 = 0xff06;
 
+/// Internal SPSC entry kind for one host-authorized selectable reply.
+///
+/// The reply travels through the directionally separate ABI-v18 ring and its
+/// payload is one canonical [`crate::SelectionReply`].
+pub const WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY: u16 = 0xff07;
+
 /// Magic prefix for the deferred selectable request transport.
 pub const SELECTABLE_PENDING_TRANSPORT_MAGIC: [u8; 8] = *b"CRUCSPQ1";
 

@@ -239,6 +239,20 @@ pub struct MappedWhiteboxMarkerRingMut<'a> {
     pub entries: &'a mut [WhiteboxMarkerEntry],
 }
 
+/// A mutable view of one VM's host-to-plugin selectable-reply ring.
+///
+/// The host is the sole entry/write-index producer and the plugin is the sole
+/// read-index consumer. Its single entry uses the public white-box envelope
+/// layout but is directionally disjoint from observational markers.
+pub struct MappedSelectableReplyRingMut<'a> {
+    /// VM slot whose plugin exclusively consumes this ring.
+    pub vm_slot: u32,
+    /// SPSC header shared by the host producer and plugin consumer.
+    pub header: &'a RingHeader,
+    /// Single bounded reply-entry slot.
+    pub entries: &'a mut [WhiteboxMarkerEntry],
+}
+
 /// A mutable view of one VM's host-to-plugin fault command transport.
 pub struct MappedFaultCommandTransportMut<'a> {
     /// VM slot whose plugin exclusively consumes the transport.

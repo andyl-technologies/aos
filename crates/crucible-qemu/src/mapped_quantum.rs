@@ -17,13 +17,15 @@ use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
 use crucible_protocol::selectable_transport::{
     SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING,
+    WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
 };
 use crucible_protocol::{
-    PluginBasicBlockCoverageObservation, WhiteboxDoorbellFrame, decode_whitebox_marker_payload,
+    PluginBasicBlockCoverageObservation, SelectionReply, WhiteboxDoorbellFrame,
+    decode_whitebox_marker_payload,
 };
 use crucible_shmem::{
     FingerprintSample, FrameDeliveryKey, GuestIntrospectionEntry, MappedDirectedRingMut,
-    MappedNodeRingPairMut, MappedSetupRegion, SLOT_NET_ROUTER, STATUS_DONE,
+    MappedNodeRingPairMut, MappedSetupRegion, SLOT_NET_ROUTER, STATUS_DONE, WhiteboxMarkerEntry,
 };
 
 use crate::{
@@ -840,6 +842,68 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
         })?;
         self.drain_markers_at_quantum_boundary(boundary_icount)?;
         Ok(std::mem::take(&mut self.pending_selectable_requests))
+    }
+
+    fn enqueue_selectable_reply(
+        &mut self,
+        pending: &SelectablePlanPendingRequest,
+        reply: &SelectionReply,
+    ) -> Result<(), QemuNodeChannelError> {
+        if reply.sequence() != pending.request().sequence() {
+            return Err(QemuNodeChannelError::new(
+                "enqueue selectable reply",
+                format!(
+                    "reply sequence {} differs from pending request {}",
+                    reply.sequence(),
+                    pending.request().sequence()
+                ),
+            ));
+        }
+        let payload = reply.encode().map_err(|error| {
+            QemuNodeChannelError::new("encode selectable reply", error.to_string())
+        })?;
+        if payload.len() > pending.request().reply_capacity() {
+            return Err(QemuNodeChannelError::new(
+                "enqueue selectable reply",
+                format!(
+                    "reply has {} bytes but guest reserved {}",
+                    payload.len(),
+                    pending.request().reply_capacity()
+                ),
+            ));
+        }
+        let boundary_icount = self.with_hot_path("selectable reply boundary", |hot_path| {
+            Ok(hot_path.node_snapshot().current_icount)
+        })?;
+        if boundary_icount != pending.icount() {
+            return Err(QemuNodeChannelError::new(
+                "enqueue selectable reply",
+                format!(
+                    "pending request icount {} differs from current boundary {boundary_icount}",
+                    pending.icount()
+                ),
+            ));
+        }
+        let entry = WhiteboxMarkerEntry::new(
+            pending.icount(),
+            pending.vcpu_index(),
+            WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
+            &payload,
+        )
+        .map_err(|error| {
+            QemuNodeChannelError::new("encode selectable reply entry", error.to_string())
+        })?;
+        let ring = self
+            .region
+            .selectable_reply_ring_mut(self.config.vm_slot)
+            .map_err(|error| {
+                QemuNodeChannelError::new("map selectable reply ring", error.to_string())
+            })?;
+        ring.header
+            .enqueue_whitebox_marker(ring.entries, entry)
+            .map_err(|error| {
+                QemuNodeChannelError::new("enqueue selectable reply ring", error.to_string())
+            })
     }
 
     fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError> {

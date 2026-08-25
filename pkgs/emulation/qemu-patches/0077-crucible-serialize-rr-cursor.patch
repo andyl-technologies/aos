@@ -201,10 +201,10 @@ index a47e73e93..acd85e050 100644
              cpu_work_list_empty(cpu) && !cpu->stop && !cpu->unplug &&
              cpu_can_run(cpu) &&
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index e904e6d70..13569f0ce 100644
+index 703dfe36a..5e9734995 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -2124,9 +2124,10 @@ struct qemu_plugin_rr_cursor {
+@@ -2142,9 +2142,10 @@ struct qemu_plugin_rr_cursor {
   * qemu_plugin_rr_cursor() - read the current round-robin cursor
   * @out: plugin-owned cursor output
   *
@@ -218,7 +218,7 @@ index e904e6d70..13569f0ce 100644
   */
  QEMU_PLUGIN_API
  int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out);
-@@ -2134,7 +2135,9 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out);
+@@ -2152,7 +2153,9 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out);
  /**
   * qemu_plugin_crucible_rr_current_vcpu() - return the current RR vCPU index
   *
@@ -229,7 +229,7 @@ index e904e6d70..13569f0ce 100644
   *
   * This AOS Crucible extension is available only in system emulation.
   */
-@@ -2145,7 +2148,10 @@ uint64_t qemu_plugin_crucible_rr_current_vcpu(void);
+@@ -2163,7 +2166,10 @@ uint64_t qemu_plugin_crucible_rr_current_vcpu(void);
   * qemu_plugin_crucible_rr_cursor_position() - return position in RR quantum
   *
   * Returns the retired-instruction offset within the current pinned
@@ -275,10 +275,10 @@ index fe2bc7c3c..3cbfd5c37 100644
  /* if the CPUs are idle, start accounting real time to virtual clock. */
  void icount_start_warp_timer(void);
 diff --git a/plugins/api.c b/plugins/api.c
-index a8d454964..746476382 100644
+index c6ea96ee1..8bcf33be1 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -684,12 +684,15 @@ int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
+@@ -696,12 +696,15 @@ int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
  
  int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
  {
@@ -298,7 +298,7 @@ index a8d454964..746476382 100644
          current_vcpu >= (uint64_t)num_vcpus || rr_switch_quantum == 0 ||
          cursor_position >= rr_switch_quantum) {
          return -1;
-@@ -703,16 +706,18 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
+@@ -715,16 +718,18 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
  
  uint64_t qemu_plugin_crucible_rr_current_vcpu(void)
  {

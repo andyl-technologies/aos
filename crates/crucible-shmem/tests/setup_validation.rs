@@ -16,8 +16,8 @@ use crucible_shmem::{
     REGION_HEADER_RING_HDR_OFF_OFFSET, REGION_HEADER_SIZE, REGION_MAGIC,
     RING_HEADER_READ_IDX_OFFSET, RING_HEADER_SIZE, RING_HEADER_WRITE_IDX_OFFSET, RegionAllocation,
     RegionConfig, RegionHeader, RegionHeaderSnapshot, RegionLayout, RegionSetupValidationError,
-    SLOT_9P_IO, SLOT_BLK_IO, SLOT_NET_ROUTER, STATUS_DONE, STATUS_IDLE, ValidatedSetupRegion,
-    WhiteboxMarkerEntry, validate_setup_region_header,
+    SLOT_9P_IO, SLOT_BLK_IO, SLOT_NET_ROUTER, STATUS_DONE, STATUS_IDLE, SpscRingError,
+    ValidatedSetupRegion, WhiteboxMarkerEntry, validate_setup_region_header,
 };
 
 #[cfg(unix)]
@@ -385,6 +385,40 @@ fn mmap_setup_region_round_trips_whitebox_marker_ring_entries() {
     };
 
     assert_eq!(consumed.validate(), Ok(marker));
+    assert_eq!(ring.header.dequeue_whitebox_marker(ring.entries), Ok(None));
+}
+
+#[test]
+#[cfg(unix)]
+fn mmap_setup_region_round_trips_one_bounded_selectable_reply() {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+        Ok(allocation) => allocation,
+        Err(error) => panic!("valid region allocation should build: {error}"),
+    };
+    let mut mapped = mapped_region_from_allocation(&allocation);
+    let reply = match WhiteboxMarkerEntry::new(1_207, 0, 0xff07, b"CRUCSRPL1") {
+        Ok(reply) => reply,
+        Err(error) => panic!("valid selectable reply entry should build: {error}"),
+    };
+
+    let ring = match mapped.selectable_reply_ring_mut(0) {
+        Ok(ring) => ring,
+        Err(error) => panic!("mapped selectable reply ring should bind: {error}"),
+    };
+    if let Err(error) = ring.header.enqueue_whitebox_marker(ring.entries, reply) {
+        panic!("mapped selectable reply ring should enqueue: {error}");
+    }
+    assert_eq!(
+        ring.header.enqueue_whitebox_marker(ring.entries, reply),
+        Err(SpscRingError::QueueFull { capacity: 1 })
+    );
+    let consumed = match ring.header.dequeue_whitebox_marker(ring.entries) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => panic!("mapped selectable reply ring should contain one entry"),
+        Err(error) => panic!("mapped selectable reply ring should dequeue: {error}"),
+    };
+
+    assert_eq!(consumed.validate(), Ok(reply));
     assert_eq!(ring.header.dequeue_whitebox_marker(ring.entries), Ok(None));
 }
 

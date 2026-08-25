@@ -2600,10 +2600,10 @@ index bbe9daa2b..a9b6bb375 100644
 +
  #endif
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 0b30e2f01..8e3a5634e 100644
+index d2f032fdf..c18d63871 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1816,6 +1816,30 @@ struct qemu_plugin_crucible_fault_result {
+@@ -1834,6 +1834,30 @@ struct qemu_plugin_crucible_fault_result {
      uint8_t evidence_hash[32];
  };
  
@@ -2634,7 +2634,7 @@ index 0b30e2f01..8e3a5634e 100644
  enum qemu_plugin_crucible_fault_scope {
      QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL = 1,
      QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64 = 2,
-@@ -1904,6 +1928,33 @@ int qemu_plugin_crucible_fault_poll(
+@@ -1922,6 +1946,33 @@ int qemu_plugin_crucible_fault_poll(
      struct qemu_plugin_crucible_fault_result *result,
      uint8_t *payload, size_t payload_capacity, size_t *payload_length);
  
@@ -2830,10 +2830,10 @@ index 8252173a5..b1dcce5ec 100644
                                     uint64_t *entry_icount)
  {
 diff --git a/plugins/api.c b/plugins/api.c
-index 964a40aa4..5fa29d640 100644
+index bc71ddf21..c1fc206eb 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -1514,7 +1514,13 @@ int qemu_plugin_crucible_process_argv_attestation(
+@@ -1526,7 +1526,13 @@ int qemu_plugin_crucible_process_argv_attestation(
  
  uint64_t qemu_plugin_crucible_icount(void)
  {

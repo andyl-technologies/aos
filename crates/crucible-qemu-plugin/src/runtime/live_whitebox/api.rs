@@ -17,6 +17,8 @@ const GET_REGISTERS_SYMBOL_C: &[u8] = b"qemu_plugin_get_registers\0";
 const READ_REGISTER_SYMBOL_C: &[u8] = b"qemu_plugin_read_register\0";
 const READ_MEMORY_VADDR_SYMBOL_C: &[u8] = b"qemu_plugin_read_memory_vaddr\0";
 const WRITE_MEMORY_VADDR_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_write_memory_vaddr\0";
+const WRITE_MEMORY_VADDR_FOR_VCPU_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_write_memory_vaddr_for_vcpu\0";
 const FAULT_READY_MARKER_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_ready_marker\0";
 const G_ARRAY_FREE_SYMBOL_C: &[u8] = b"g_array_free\0";
 const G_BYTE_ARRAY_NEW_SYMBOL_C: &[u8] = b"g_byte_array_new\0";
@@ -60,6 +62,7 @@ type QemuGetRegistersFn = extern "C" fn() -> *mut GArray;
 type QemuReadRegisterFn = extern "C" fn(*mut QemuPluginRegister, *mut GByteArray) -> c_int;
 type QemuReadMemoryVaddrFn = extern "C" fn(u64, *mut GByteArray, usize) -> bool;
 type QemuWriteMemoryVaddrFn = extern "C" fn(u64, *const u8, usize) -> bool;
+type QemuWriteMemoryVaddrForVcpuFn = extern "C" fn(c_uint, u64, *const u8, usize) -> bool;
 type QemuFaultReadyMarkerFn = extern "C" fn(*const c_char, usize, u64) -> c_int;
 type GArrayFreeFn = extern "C" fn(*mut GArray, bool) -> *mut c_char;
 type GByteArrayNewFn = extern "C" fn() -> *mut GByteArray;
@@ -79,6 +82,7 @@ pub(crate) struct LiveWhiteboxApis {
     pub(super) read_register: QemuReadRegisterFn,
     pub(super) read_memory_vaddr: QemuReadMemoryVaddrFn,
     pub(super) write_memory_vaddr: QemuWriteMemoryVaddrFn,
+    pub(super) write_memory_vaddr_for_vcpu: QemuWriteMemoryVaddrForVcpuFn,
     pub(super) fault_ready_marker: QemuFaultReadyMarkerFn,
     pub(super) g_array_free: GArrayFreeFn,
     pub(super) g_byte_array_new: GByteArrayNewFn,
@@ -122,6 +126,10 @@ impl LiveWhiteboxApis {
             write_memory_vaddr: resolve_symbol(
                 WRITE_MEMORY_VADDR_SYMBOL_C,
                 "qemu_plugin_crucible_write_memory_vaddr",
+            )?,
+            write_memory_vaddr_for_vcpu: resolve_symbol(
+                WRITE_MEMORY_VADDR_FOR_VCPU_SYMBOL_C,
+                "qemu_plugin_crucible_write_memory_vaddr_for_vcpu",
             )?,
             fault_ready_marker: resolve_symbol(
                 FAULT_READY_MARKER_SYMBOL_C,

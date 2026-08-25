@@ -13,7 +13,7 @@ index 4d1142f87..81299fdf6 100644
      /*
       * Keep the RR-thread barrier armed until the plugin has committed its
 diff --git a/plugins/api.c b/plugins/api.c
-index 186d36655..5542e476f 100644
+index 087fb9858..4a62a463c 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -39,6 +39,7 @@
@@ -24,7 +24,7 @@ index 186d36655..5542e476f 100644
  #include "qemu/log.h"
  #include "qapi/error.h"
  #include "io/channel-buffer.h"
-@@ -509,21 +510,32 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+@@ -521,21 +522,32 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
  static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
  {
      uint64_t owner = qemu_plugin_crucible_rr_current_vcpu();
@@ -67,7 +67,7 @@ index 186d36655..5542e476f 100644
  }
  
  GArray *qemu_plugin_crucible_get_vcpu_registers(unsigned int vcpu_index)
-@@ -544,8 +556,10 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+@@ -556,8 +568,10 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
  {
      CPUState *cpu = qemu_get_cpu(vcpu_index);
  

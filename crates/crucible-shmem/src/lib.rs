@@ -161,8 +161,9 @@ pub use mapped_setup_region::{
     MappedFaultResultTransportMut, MappedGuestIntrospectionConsumerRingMut,
     MappedGuestIntrospectionProducerRingMut, MappedHostAcceleratorRingsMut,
     MappedHostGuestIntrospectionRingsMut, MappedNodeRingPairMut, MappedPluginAcceleratorRingsMut,
-    MappedPluginGuestIntrospectionRingsMut, MappedSetupRegion, MappedSetupRegionAccessError,
-    MappedWhiteboxMarkerRingMut, SetupRegionMapError, mmap_setup_region,
+    MappedPluginGuestIntrospectionRingsMut, MappedSelectableReplyRingMut, MappedSetupRegion,
+    MappedSetupRegionAccessError, MappedWhiteboxMarkerRingMut, SetupRegionMapError,
+    mmap_setup_region,
 };
 
 use thiserror::Error;
@@ -193,7 +194,9 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// drained-control-boundary publication acknowledgement.
 /// Version 15 assigns one frame-entry padding byte to the consumer-owned
 /// canonical backpressure-retention state.
-pub const ABI_VERSION: u32 = 17;
+/// Version 18 appends one single-entry host-to-plugin selectable-reply ring per
+/// logical VM without changing any prior section offset.
+pub const ABI_VERSION: u32 = 18;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///
@@ -206,6 +209,11 @@ pub const COVERAGE_QUEUE_CAPACITY: u32 = 65_536;
 /// The queue is drained at quantum boundaries. Exhaustion is a fail-loud
 /// infrastructure error rather than causal guest backpressure.
 pub const WHITEBOX_MARKER_QUEUE_CAPACITY: u32 = 1_024;
+/// Fixed entries in each host-to-plugin selectable-reply queue.
+///
+/// A catalog permits only one pending request per VM generation. The single
+/// slot is therefore both sufficient and the hard bounded transport shape.
+pub const SELECTABLE_REPLY_QUEUE_CAPACITY: u32 = 1;
 /// Fixed entry capacity of each guest-introspection request or response ring.
 pub const GUEST_INTROSPECTION_QUEUE_CAPACITY: u32 = 64;
 /// Number of fixed-direction guest-introspection rings allocated per VM.

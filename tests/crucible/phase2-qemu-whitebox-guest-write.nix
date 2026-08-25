@@ -26,8 +26,14 @@
     lib.optionals (!(hasInfix "qemu_plugin_crucible_write_memory_vaddr" patchSource)) [
       "${patchName}: guest-memory write export is absent"
     ]
+    ++ lib.optionals (!(hasInfix "qemu_plugin_crucible_write_memory_vaddr_for_vcpu" patchSource)) [
+      "${patchName}: exact resume-vCPU guest-memory write export is absent"
+    ]
     ++ lib.optionals (!(hasInfix "cpu_memory_rw_debug(current_cpu" patchSource)) [
       "${patchName}: current-vCPU debug-memory write path is absent"
+    ]
+    ++ lib.optionals (!(hasInfix "qemu_get_cpu(vcpu_index)" patchSource)) [
+      "${patchName}: exact resume-vCPU lookup is absent"
     ]
     ++ lib.optionals (!(hasInfix "len, true) == 0" patchSource)) [
       "${patchName}: write direction or complete-write result check is absent"
@@ -74,7 +80,9 @@ in
             fi
             patch --batch --fuzz=0 -p1 < "${patchDir}/${patchName}" > /dev/null
             grep -q 'qemu_plugin_crucible_write_memory_vaddr' include/qemu/qemu-plugin.h
+            grep -q 'qemu_plugin_crucible_write_memory_vaddr_for_vcpu' include/qemu/qemu-plugin.h
             grep -q 'cpu_memory_rw_debug(current_cpu' plugins/api.c
+            grep -q 'qemu_get_cpu(vcpu_index)' plugins/api.c
 
             cat > "$TMPDIR/write-memory-fixture.c" <<'FIXTURE'
             #include <stdbool.h>
@@ -82,17 +90,27 @@ in
             #include <stdint.h>
             #include <string.h>
 
-            static uint8_t guest_memory[16];
-            static bool current_cpu = true;
+            typedef struct CPUState {
+                unsigned int index;
+            } CPUState;
+
+            static uint8_t guest_memory[2][16];
+            static CPUState cpus[] = {{0}, {1}};
+            static CPUState *current_cpu = &cpus[0];
+
+            static CPUState *qemu_get_cpu(unsigned int index)
+            {
+                return index < 2 ? &cpus[index] : NULL;
+            }
 
             static int cpu_memory_rw_debug(
-                bool cpu, uint64_t address, uint8_t *data, size_t length, bool write)
+                CPUState *cpu, uint64_t address, uint8_t *data, size_t length, bool write)
             {
-                if (!cpu || !write || address > sizeof guest_memory
-                    || length > sizeof guest_memory - address) {
+                if (!cpu || !write || address > sizeof guest_memory[0]
+                    || length > sizeof guest_memory[0] - address) {
                     return -1;
                 }
-                memcpy(&guest_memory[address], data, length);
+                memcpy(&guest_memory[cpu->index][address], data, length);
                 return 0;
             }
 
@@ -104,6 +122,19 @@ in
                 }
                 return cpu_memory_rw_debug(
                     current_cpu, address, (uint8_t *)data, length, true) == 0;
+            }
+
+            static bool qemu_plugin_crucible_write_memory_vaddr_for_vcpu(
+                unsigned int vcpu_index, uint64_t address,
+                const uint8_t *data, size_t length)
+            {
+                CPUState *cpu = qemu_get_cpu(vcpu_index);
+
+                if (!cpu || length == 0) {
+                    return false;
+                }
+                return cpu_memory_rw_debug(
+                    cpu, address, (uint8_t *)data, length, true) == 0;
             }
 
             int main(void)
@@ -121,11 +152,29 @@ in
                 if (!qemu_plugin_crucible_write_memory_vaddr(4, reply, sizeof reply)) {
                     return 3;
                 }
-                if (memcmp(&guest_memory[4], reply, sizeof reply) != 0) {
+                if (memcmp(&guest_memory[0][4], reply, sizeof reply) != 0) {
                     return 4;
                 }
                 if (qemu_plugin_crucible_write_memory_vaddr(14, reply, sizeof reply)) {
                     return 5;
+                }
+                if (qemu_plugin_crucible_write_memory_vaddr_for_vcpu(
+                        2, 0, reply, sizeof reply)) {
+                    return 6;
+                }
+                if (qemu_plugin_crucible_write_memory_vaddr_for_vcpu(
+                        1, 0, reply, 0)) {
+                    return 7;
+                }
+                if (!qemu_plugin_crucible_write_memory_vaddr_for_vcpu(
+                        1, 8, reply, sizeof reply)) {
+                    return 8;
+                }
+                if (memcmp(&guest_memory[1][8], reply, sizeof reply) != 0) {
+                    return 9;
+                }
+                if (memcmp(&guest_memory[0][8], reply, sizeof reply) == 0) {
+                    return 10;
                 }
                 return 0;
             }
@@ -142,6 +191,8 @@ in
             stock_negative_control=true
             prefix_negative_control=true
             current_vcpu_debug_write=true
+            exact_resume_vcpu_debug_write=true
+            unknown_vcpu_rejected=true
             zero_length_rejected=true
             out_of_range_write_rejected=true
             qemu_package=${qemuPackage}

@@ -23,9 +23,12 @@ use crucible::{
     SchedulerSendAuthorizer, event_log_coverage_projection,
 };
 #[cfg(unix)]
+use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
+#[cfg(unix)]
 use crucible_protocol::{
-    WhiteboxCoverageMarkerBody, WhiteboxMarkerPayload, WhiteboxMeasurementValue,
-    WhiteboxMetricSampleBody, WhiteboxRandomRequestBody, encode_whitebox_marker_payload_body,
+    SelectionReply, SelectionRequest, WhiteboxCoverageMarkerBody, WhiteboxMarkerPayload,
+    WhiteboxMeasurementValue, WhiteboxMetricSampleBody, WhiteboxRandomRequestBody,
+    encode_whitebox_marker_payload_body,
 };
 #[cfg(unix)]
 use crucible_qemu::{
@@ -75,6 +78,28 @@ fn mapped_quantum_can_publish_shared_shutdown_without_marking_plugin_done()
     hot_path.request_plugin_shutdown()?;
 
     assert!(!hot_path.plugin_teardown_done()?);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn mapped_quantum_publishes_one_exact_selectable_reply() -> Result<(), Box<dyn Error>> {
+    let region = mapped_region(6, None, &[])?;
+    let mut hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
+    let request = SelectionRequest::new(7, "packet-mode", "instance-a", None, 512)?;
+    let pending = SelectablePlanPendingRequest::new(request, 6, 0, 0x40_0000);
+    let reply = SelectionReply::selected(7, [0x11; 32], [0x22; 32], b"fast".to_vec())?;
+
+    QemuShmemHotPathChannel::enqueue_selectable_reply(&mut hot_path, &pending, &reply)?;
+
+    let full = QemuShmemHotPathChannel::enqueue_selectable_reply(&mut hot_path, &pending, &reply)
+        .expect_err("one-entry selectable reply ring must reject pipelining");
+    assert!(full.to_string().contains("full"));
+    let wrong_sequence = SelectionReply::selected(8, [0x11; 32], [0x22; 32], b"fast".to_vec())?;
+    let mismatch =
+        QemuShmemHotPathChannel::enqueue_selectable_reply(&mut hot_path, &pending, &wrong_sequence)
+            .expect_err("reply sequence must bind the retained request");
+    assert!(mismatch.to_string().contains("sequence"));
     Ok(())
 }
 
