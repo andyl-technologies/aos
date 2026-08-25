@@ -18,6 +18,11 @@
 #   drop-one-semantic          : N drops clean, full-minus-N builds and exports
 #                                no ABI symbol; a sim-mode runtime probe shows N's
 #                                effect present in full and absent in the variant.
+#   drop-one-binary            : the focused runtime probe is non-discriminating,
+#                                but the same-builder emulator executable changes.
+#   drop-one-test-fixture      : an explicitly catalogued QEMU test-only patch
+#                                changes exact fixture material while leaving the
+#                                shipped executable byte-identical.
 #   drop-one-composition       : Legacy fail-closed classification for a patch
 #                                whose runtime effect was not reached. The
 #                                aggregate rejects this result.
@@ -138,6 +143,9 @@
     ];
     "0030-crucible-preemption-inject.patch" = ["qemu_plugin_inject_preemption"];
     "0033-crucible-sim-observer.patch" = ["qemu_plugin_register_sim_shmem_observer_cb"];
+    "0035-crucible-process-argv-attestation.patch" = [
+      "qemu_plugin_crucible_process_argv_attestation"
+    ];
     "0036-crucible-raw-state-export.patch" = [
       "qemu_plugin_crucible_guest_ram_region_copy"
       "qemu_plugin_crucible_guest_ram_regions"
@@ -182,6 +190,9 @@
     "0061-crucible-block-discard.patch" = [];
     "0062-crucible-block-transport-reset.patch" = ["qemu_plugin_register_blk_event_cb"];
     "0063-crucible-plugin-vmstop.patch" = ["qemu_plugin_request_vmstop"];
+    "0070-crucible-fault-vmstate.patch" = [
+      "qemu_plugin_crucible_fault_system_manifest"
+    ];
   };
 
   # Some clean 3-way drops expose a later patch's semantic dependency as a
@@ -199,6 +210,32 @@
     ];
   };
 
+  # These patches intentionally change QEMU's executable test corpus rather
+  # than the installed emulator. Their full-minus variants must retain a
+  # byte-identical shipped binary, while losing the exact fixture material
+  # catalogued here. Every other byte-identical clean drop remains a rejected
+  # composition gap.
+  testFixtureDiscriminators = {
+    "0081-crucible-deferred-result-evidence-test.patch" = [
+      {
+        path = "tests/tcg/plugins/crucible-instruction.c";
+        fullSourceNeedle = "test_compose_mode() && result.command_sequence == 4 ?";
+      }
+    ];
+    "0096-crucible-physical-page-table-region-fixture.patch" = [
+      {
+        path = "tests/tcg/plugins/crucible-memory-access.c";
+        fullSourceNeedle = "test_payload_target(address, length, virtual_address);";
+      }
+    ];
+    "0099-crucible-valid-aarch64-abort-fixture.patch" = [
+      {
+        path = "tests/tcg/plugins/crucible-memory-access.c";
+        fullSourceNeedle = "TEST_AARCH64_DATA_ABORT_SAME_EL_SYNDROME";
+      }
+    ];
+  };
+
   dropOnes =
     lib.imap (i: patch: let
       index = i + 1;
@@ -209,6 +246,10 @@
       internalBuildFailures =
         if builtins.hasAttr patch internalBuildFailureDiscriminators
         then internalBuildFailureDiscriminators.${patch}
+        else [];
+      testFixtureEvidence =
+        if builtins.hasAttr patch testFixtureDiscriminators
+        then testFixtureDiscriminators.${patch}
         else [];
       # 0007 (block-rtc-read) forces the sim RTC to the virtual clock; it is only
       # observable when the guest reads a host-backed RTC, so its variant probe
@@ -223,29 +264,20 @@
         inherit pkgs lib qemuPackage index rtcClock dropOneRepository;
         expectAbsentSymbols = symbols;
         expectInternalBuildFailures = internalBuildFailures;
+        expectTestFixtureEvidence = testFixtureEvidence;
         attrPath = "${attrPath}.p${toString index}";
       };
     })
     patchFiles;
 
-  perPatchChecks =
-    lib.concatMapStringsSep "\n" (entry: ''
-      result="${entry.drv}/result"
-      grep -q '^PASS$' "$result"
-      grep -q "^dropped_patch=${entry.patch}$" "$result"
-      cp "$result" "$out/per-patch/${entry.patch}.result"
-      method=$(gawk -F= '/^attribution_method=/ { print $2 }' "$result")
-      if [ "$method" != drop-one-source-dependency ]; then
-        grep -q '^source_reconstruction_inventory_consumed=true$' "$result"
-        grep -q '^materialized_source_identity=[0-9a-f]\{64\}$' "$result"
-      fi
-      if [ "$method" = drop-one-build-required ]; then
-        grep -q '^exact_manifest_build_failure_evidence=true$' "$result"
-      fi
-      printf '%s\t%s\t%s\n' "${toString entry.index}" "${entry.patch}" "$method" \
-        >> "$out/methods.tsv"
-    '')
-    dropOnes;
+  # Passing this dependency-rich inventory as a file keeps the aggregate
+  # builder environment comfortably below Linux's argv/environment ceiling.
+  perPatchManifest =
+    lib.concatMapStringsSep "\n" (
+      entry: "${toString entry.index}\t${entry.patch}\t${entry.drv}"
+    )
+    dropOnes
+    + "\n";
 
   buildFailureEvidencePolicy = pkgs.mkDerivation {
     pname = "crucible-drop-one-build-evidence-policy";
@@ -361,6 +393,8 @@ in
 
       buildDeps = [pkgs.coreutils pkgs.gawk pkgs.grep];
       PATCH_COUNT = toString patchCount;
+      passAsFile = ["perPatchManifest"];
+      inherit perPatchManifest;
 
       phases = [
         {
@@ -401,7 +435,38 @@ in
             cp ${dropOneRepository}/drop-one-manifest.tsv \
               "$out/drop-one-repository-manifest.tsv"
 
-            ${perPatchChecks}
+            tab=$(printf '\t')
+            while IFS="$tab" read -r index patch drv; do
+              test -n "$index"
+              test -n "$patch"
+              test -n "$drv"
+              result="$drv/result"
+              grep -q '^PASS$' "$result"
+              grep -q "^dropped_patch=$patch$" "$result"
+              cp "$result" "$out/per-patch/$patch.result"
+              method=$(gawk -F= '/^attribution_method=/ { print $2 }' "$result")
+              if [ "$method" != drop-one-source-dependency ]; then
+                grep -q '^source_reconstruction_inventory_consumed=true$' "$result"
+                grep -q '^materialized_source_identity=[0-9a-f]\{64\}$' "$result"
+              fi
+              if [ "$method" = drop-one-build-required ]; then
+                grep -q '^exact_manifest_build_failure_evidence=true$' "$result"
+              fi
+              if [ "$method" = drop-one-binary ]; then
+                grep -q '^assembly_reference_patch=0081-crucible-deferred-result-evidence-test.patch$' "$result"
+                grep -q '^assembly_reference_executable_sha256=[0-9a-f]\{64\}$' "$result"
+                grep -q '^variant_executable_sha256=[0-9a-f]\{64\}$' "$result"
+                grep -q '^same_builder_executable_changes_without_patch=true$' "$result"
+              fi
+              if [ "$method" = drop-one-test-fixture ]; then
+                grep -q '^assembly_reference_patch=0081-crucible-deferred-result-evidence-test.patch$' "$result"
+                grep -q '^same_builder_executable_byte_identical=true$' "$result"
+                grep -q '^exact_test_fixture_source_loss_verified=true$' "$result"
+                grep -Eq '^test_fixture_evidence_count=[1-9][0-9]*$' "$result"
+              fi
+              printf '%s\t%s\t%s\n' "$index" "$patch" "$method" \
+                >> "$out/methods.tsv"
+            done < "$perPatchManifestPath"
 
             # Every patch resolves to exactly one recognized attribution method.
             bad=$(gawk -F'\t' '
@@ -409,6 +474,8 @@ in
               $3 != "drop-one-build-required" &&
               $3 != "drop-one-symbol" &&
               $3 != "drop-one-semantic" &&
+              $3 != "drop-one-binary" &&
+              $3 != "drop-one-test-fixture" &&
               $3 != "drop-one-composition" &&
               $3 != "structural-fallback" { print }
             ' "$out/methods.tsv")
@@ -426,6 +493,8 @@ in
             n_build=$(count drop-one-build-required)
             n_symbol=$(count drop-one-symbol)
             n_semantic=$(count drop-one-semantic)
+            n_binary=$(count drop-one-binary)
+            n_test_fixture=$(count drop-one-test-fixture)
             n_composition=$(count drop-one-composition)
             n_fallback=$(count structural-fallback)
             test "$n_composition" -eq 0
@@ -455,6 +524,8 @@ in
             drop_one_build_required_count=$n_build
             drop_one_symbol_count=$n_symbol
             drop_one_semantic_count=$n_semantic
+            drop_one_binary_count=$n_binary
+            drop_one_test_fixture_count=$n_test_fixture
             drop_one_composition_count=$n_composition
             structural_fallback_count=$n_fallback
             methods_manifest=methods.tsv
