@@ -95,7 +95,46 @@ pub struct ProductionExactCheckpointClosure {
 pub struct ProductionExactCheckpointReplayTarget {
     node: NodeId,
     snapshot: QemuVmSnapshot,
+    overlay: ProductionExactCheckpointReplayArtifact,
+    vmstate: ProductionExactCheckpointReplayArtifact,
 }
+
+/// Read-only streaming capability for one authenticated replay target artifact.
+///
+/// The value exposes no path or store mutation authority. It retains the exact
+/// chunk manifest needed to stream one artifact with fixed temporary memory and
+/// reauthenticate both its declared length and content identity.
+#[derive(Clone)]
+pub struct ProductionExactCheckpointReplayArtifact {
+    object_directory: PathBuf,
+    identity: ContentHash,
+    length: u64,
+    chunks: Vec<ContentHash>,
+    role: &'static str,
+}
+
+impl std::fmt::Debug for ProductionExactCheckpointReplayArtifact {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProductionExactCheckpointReplayArtifact")
+            .field("identity", &self.identity)
+            .field("length", &self.length)
+            .field("chunk_count", &self.chunks.len())
+            .field("role", &self.role)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for ProductionExactCheckpointReplayArtifact {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity == other.identity
+            && self.length == other.length
+            && self.chunks == other.chunks
+            && self.role == other.role
+    }
+}
+
+impl Eq for ProductionExactCheckpointReplayArtifact {}
 
 /// Bounded cursor over the raw live-node snapshots in one production closure.
 ///
@@ -104,9 +143,83 @@ pub struct ProductionExactCheckpointReplayTarget {
 /// authenticates, and decodes at most one configured fat-checkpoint body.
 pub struct ProductionExactCheckpointReplayTargets<'a> {
     closure: &'a ProductionExactCheckpointClosure,
-    targets: Vec<(NodeId, ContentHash)>,
+    targets: Vec<ProductionExactCheckpointReplayDescriptor>,
     next: usize,
     snapshot_limit: u64,
+}
+
+struct ProductionExactCheckpointReplayDescriptor {
+    node: NodeId,
+    snapshot: ContentHash,
+    overlay: ProductionExactCheckpointReplayArtifact,
+    vmstate: ProductionExactCheckpointReplayArtifact,
+}
+
+impl ProductionExactCheckpointReplayArtifact {
+    /// Returns the exact content identity of the artifact.
+    #[must_use]
+    pub const fn identity(&self) -> ContentHash {
+        self.identity
+    }
+
+    /// Returns the authenticated logical artifact length.
+    #[must_use]
+    pub const fn length(&self) -> u64 {
+        self.length
+    }
+
+    /// Streams and authenticates the artifact into `destination`.
+    ///
+    /// Temporary memory is bounded independently of artifact size. The
+    /// destination may contain a partial prefix after failure, so callers must
+    /// use a linear staging authority before making output visible.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError::LoopFactory`] when a source chunk is
+    /// missing or corrupt, the destination rejects a write, or the complete
+    /// length and identity do not match the authenticated manifest.
+    pub fn stream_into(
+        &self,
+        destination: &mut impl std::io::Write,
+    ) -> Result<(), LifecycleApiError> {
+        stream_chunked_checkpoint_artifact(
+            &self.object_directory,
+            &self.chunks,
+            self.length,
+            self.identity,
+            destination,
+            self.role,
+        )
+    }
+
+    /// Streams and authenticates the artifact under an operational boundary.
+    ///
+    /// `boundary` runs before and after every bounded source/destination I/O
+    /// quantum, including before the first read and after final
+    /// authentication. Blocking I/O itself must still obey the owner's bounded
+    /// storage contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact [`LifecycleApiError`] returned by `boundary`.
+    /// Otherwise returns [`LifecycleApiError::LoopFactory`] under the same
+    /// conditions as [`Self::stream_into`].
+    pub fn stream_into_with_boundary(
+        &self,
+        destination: &mut impl std::io::Write,
+        boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+    ) -> Result<(), LifecycleApiError> {
+        stream_chunked_checkpoint_artifact_with_boundary(
+            &self.object_directory,
+            &self.chunks,
+            self.length,
+            self.identity,
+            destination,
+            self.role,
+            boundary,
+        )
+    }
 }
 
 impl ProductionExactCheckpointReplayTarget {
@@ -122,10 +235,35 @@ impl ProductionExactCheckpointReplayTarget {
         &self.snapshot
     }
 
+    /// Returns the authenticated writable-root overlay artifact.
+    #[must_use]
+    pub const fn overlay(&self) -> &ProductionExactCheckpointReplayArtifact {
+        &self.overlay
+    }
+
+    /// Returns the authenticated QEMU VMState artifact.
+    #[must_use]
+    pub const fn vmstate(&self) -> &ProductionExactCheckpointReplayArtifact {
+        &self.vmstate
+    }
+
     /// Consumes the target into its node and snapshot values.
     #[must_use]
     pub fn into_parts(self) -> (NodeId, QemuVmSnapshot) {
         (self.node, self.snapshot)
+    }
+
+    /// Consumes the target into its metadata and both artifact capabilities.
+    #[must_use]
+    pub fn into_complete_parts(
+        self,
+    ) -> (
+        NodeId,
+        QemuVmSnapshot,
+        ProductionExactCheckpointReplayArtifact,
+        ProductionExactCheckpointReplayArtifact,
+    ) {
+        (self.node, self.snapshot, self.overlay, self.vmstate)
     }
 }
 
@@ -163,15 +301,15 @@ impl ProductionExactCheckpointReplayTargets<'_> {
         boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
     ) -> Result<Option<ProductionExactCheckpointReplayTarget>, LifecycleApiError> {
         boundary()?;
-        let Some((node, identity)) = self.targets.get(self.next).cloned() else {
+        let Some(target) = self.targets.get(self.next) else {
             return Ok(None);
         };
         let snapshot =
-            read_portable_snapshot(self.closure, identity, self.snapshot_limit, boundary)?;
+            read_portable_snapshot(self.closure, target.snapshot, self.snapshot_limit, boundary)?;
         if snapshot.replay_oracle_validation() != QemuReplayOracleValidation::NotRun {
             return Err(loop_factory_error(format!(
                 "production replay-oracle source for `{}` is not raw",
-                node.name
+                target.node.name
             )));
         }
         boundary()?;
@@ -180,8 +318,10 @@ impl ProductionExactCheckpointReplayTargets<'_> {
             .checked_add(1)
             .ok_or_else(|| loop_factory_error("production replay-oracle target cursor overflow"))?;
         Ok(Some(ProductionExactCheckpointReplayTarget {
-            node,
+            node: target.node.clone(),
             snapshot,
+            overlay: target.overlay.clone(),
+            vmstate: target.vmstate.clone(),
         }))
     }
 }
@@ -347,7 +487,24 @@ impl ProductionExactCheckpointClosure {
         let targets = manifest
             .targets
             .into_iter()
-            .map(|target| (NodeId { name: target.node }, target.snapshot))
+            .map(|target| ProductionExactCheckpointReplayDescriptor {
+                node: NodeId { name: target.node },
+                snapshot: target.snapshot,
+                overlay: ProductionExactCheckpointReplayArtifact {
+                    object_directory: self.object_directory.clone(),
+                    identity: target.overlay.identity,
+                    length: target.overlay.length,
+                    chunks: target.overlay.chunks,
+                    role: "replay-oracle root overlay",
+                },
+                vmstate: ProductionExactCheckpointReplayArtifact {
+                    object_directory: self.object_directory.clone(),
+                    identity: target.vmstate.identity,
+                    length: target.vmstate.length,
+                    chunks: target.vmstate.chunks,
+                    role: "replay-oracle VMState",
+                },
+            })
             .collect();
         boundary()?;
         Ok(ProductionExactCheckpointReplayTargets {
@@ -3138,64 +3295,134 @@ pub(super) fn stream_checkpoint_artifact(
             )
         }
         ProductionCheckpointArtifactSource::ChunkStore(directory) => {
-            let reader = ChunkSequenceReader::new(directory, &artifact.chunks)?;
-            copy_authenticated(reader, destination, artifact.length, artifact.identity).map_err(
-                |error| {
-                    loop_factory_error(format!(
-                        "stream chunked exact checkpoint {role} from {}: {error}",
-                        directory.display()
-                    ))
-                },
+            stream_chunked_checkpoint_artifact(
+                directory,
+                &artifact.chunks,
+                artifact.length,
+                artifact.identity,
+                destination,
+                role,
             )
         }
     }
 }
 
+fn stream_chunked_checkpoint_artifact(
+    directory: &Path,
+    chunks: &[ContentHash],
+    length: u64,
+    identity: ContentHash,
+    destination: &mut impl Write,
+    role: &str,
+) -> Result<(), LifecycleApiError> {
+    let reader = ChunkSequenceReader::new(directory, chunks)?;
+    copy_authenticated(reader, destination, length, identity).map_err(|error| {
+        loop_factory_error(format!(
+            "stream chunked exact checkpoint {role} from {}: {error}",
+            directory.display()
+        ))
+    })
+}
+
+fn stream_chunked_checkpoint_artifact_with_boundary(
+    directory: &Path,
+    chunks: &[ContentHash],
+    length: u64,
+    identity: ContentHash,
+    destination: &mut impl Write,
+    role: &str,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+) -> Result<(), LifecycleApiError> {
+    let reader = ChunkSequenceReader::new(directory, chunks)?;
+    match copy_authenticated_with_boundary(reader, destination, length, identity, boundary) {
+        Ok(()) => Ok(()),
+        Err(AuthenticatedCopyError::Io(error)) => Err(loop_factory_error(format!(
+            "stream chunked exact checkpoint {role} from {}: {error}",
+            directory.display()
+        ))),
+        Err(AuthenticatedCopyError::Boundary(error)) => Err(error),
+    }
+}
+
+enum AuthenticatedCopyError<E> {
+    Io(std::io::Error),
+    Boundary(E),
+}
+
 fn copy_authenticated(
-    mut source: impl Read,
+    source: impl Read,
     destination: &mut impl Write,
     expected_length: u64,
     expected_identity: ContentHash,
 ) -> Result<(), std::io::Error> {
+    let mut boundary = || Ok::<(), std::convert::Infallible>(());
+    match copy_authenticated_with_boundary(
+        source,
+        destination,
+        expected_length,
+        expected_identity,
+        &mut boundary,
+    ) {
+        Ok(()) => Ok(()),
+        Err(AuthenticatedCopyError::Io(error)) => Err(error),
+        Err(AuthenticatedCopyError::Boundary(never)) => match never {},
+    }
+}
+
+fn copy_authenticated_with_boundary<E>(
+    mut source: impl Read,
+    destination: &mut impl Write,
+    expected_length: u64,
+    expected_identity: ContentHash,
+    boundary: &mut (impl FnMut() -> Result<(), E> + ?Sized),
+) -> Result<(), AuthenticatedCopyError<E>> {
     let mut buffer = vec![0_u8; SPARSE_COPY_BUFFER_BYTES];
     let mut hasher = blake3::Hasher::new();
     let mut copied = 0_u64;
     loop {
-        let read = source.read(&mut buffer)?;
+        boundary().map_err(AuthenticatedCopyError::Boundary)?;
+        let read = source
+            .read(&mut buffer)
+            .map_err(AuthenticatedCopyError::Io)?;
+        boundary().map_err(AuthenticatedCopyError::Boundary)?;
         if read == 0 {
             break;
         }
         let read_u64 = u64::try_from(read).map_err(|_| {
-            std::io::Error::new(
+            AuthenticatedCopyError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "checkpoint copy length is not representable",
-            )
+            ))
         })?;
         copied = copied.checked_add(read_u64).ok_or_else(|| {
-            std::io::Error::new(
+            AuthenticatedCopyError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "checkpoint copy length overflowed",
-            )
+            ))
         })?;
         if copied > expected_length {
-            return Err(std::io::Error::new(
+            return Err(AuthenticatedCopyError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "checkpoint artifact exceeds its declared length",
-            ));
+            )));
         }
         let bytes = &buffer[..read];
         hasher.update(bytes);
-        destination.write_all(bytes)?;
+        destination
+            .write_all(bytes)
+            .map_err(AuthenticatedCopyError::Io)?;
+        boundary().map_err(AuthenticatedCopyError::Boundary)?;
     }
     let observed = ContentHash {
         bytes: *hasher.finalize().as_bytes(),
     };
     if copied != expected_length || observed != expected_identity {
-        return Err(std::io::Error::new(
+        return Err(AuthenticatedCopyError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "checkpoint artifact failed length or content authentication",
-        ));
+        )));
     }
+    boundary().map_err(AuthenticatedCopyError::Boundary)?;
     Ok(())
 }
 
@@ -4203,6 +4430,40 @@ mod tests {
             .expect("one raw production replay target");
         assert_eq!(replay_target.node(), &node);
         assert_eq!(replay_target.snapshot().id(), raw_snapshot);
+        let mut overlay = Vec::new();
+        let mut boundary_calls = 0_u64;
+        {
+            let mut boundary = || {
+                boundary_calls += 1;
+                Ok(())
+            };
+            replay_target
+                .overlay()
+                .stream_into_with_boundary(&mut overlay, &mut boundary)
+                .expect("stream authenticated replay overlay");
+        }
+        assert!(boundary_calls >= 4);
+        assert_eq!(
+            u64::try_from(overlay.len()).expect("overlay length"),
+            replay_target.overlay().length()
+        );
+        assert_eq!(
+            ContentHash::from_bytes(&overlay),
+            replay_target.overlay().identity()
+        );
+        let mut vmstate = Vec::new();
+        replay_target
+            .vmstate()
+            .stream_into(&mut vmstate)
+            .expect("stream authenticated replay VMState");
+        assert_eq!(
+            u64::try_from(vmstate.len()).expect("VMState length"),
+            replay_target.vmstate().length()
+        );
+        assert_eq!(
+            ContentHash::from_bytes(&vmstate),
+            replay_target.vmstate().identity()
+        );
         assert_eq!(replay_targets.remaining(), 0);
         assert!(
             replay_targets

@@ -277,8 +277,8 @@ pub use realization::{
     QemuCapturedVmStateSource, QemuExactRootWarmRestoreNodeLauncher, QemuFailedLaunchChildSource,
     QemuGuardedNodeRealizationLauncher, QemuGuardedThinNodeRealizationLauncher,
     QemuLiveAttemptBackend, QemuLiveBackendShutdown, QemuNodeLauncher, QemuNodeRealizationExecutor,
-    QemuNodeRealizationLauncher, QemuRealizedNodeBackend, QemuReplayValidationNodeLauncher,
-    QemuVmLiveRealizationExecutor, QemuWarmRestoreNodeLauncher,
+    QemuNodeRealizationLauncher, QemuPreparedThinWarmRestoreNodeLauncher, QemuRealizedNodeBackend,
+    QemuReplayValidationNodeLauncher, QemuVmLiveRealizationExecutor, QemuWarmRestoreNodeLauncher,
 };
 pub use setup_failure::{
     FailedQemuNodeSetup, QemuNodeSetup, QemuSchedulableNodeSetup, QemuSetupAbortError,

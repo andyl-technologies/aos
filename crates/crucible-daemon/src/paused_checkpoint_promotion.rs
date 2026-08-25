@@ -194,7 +194,7 @@ pub trait ProductionPausedCheckpointReplayFactory {
         &mut self,
         world: &World,
         configuration: &Configuration,
-        node: &crucible::NodeId,
+        target: &crucible_api::ProductionExactCheckpointReplayTarget,
         cancellation: &ExecutionCancellation,
         resources: AttemptResourceLimits,
     ) -> Result<
@@ -673,7 +673,7 @@ where
             .begin_target(
                 target.source.world(),
                 installed.configuration(),
-                next.node(),
+                &next,
                 target.cancellation,
                 target.resources,
             )?

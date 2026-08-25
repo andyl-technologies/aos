@@ -381,12 +381,12 @@ pub struct QemuWarmRestoreNodeLauncher<A, R, F> {
     _runtime: std::marker::PhantomData<fn() -> (A, R)>,
 }
 
-/// One-shot launcher for a prepared, exact-checkpoint-root-bound VMState file.
+/// One-shot launcher for prepared exact-checkpoint-root-bound artifacts.
 ///
-/// Construction authenticates the process-local VMState binding before the
-/// authority can enter a real-node executor. Launch rechecks the complete
-/// snapshot identity and checkpoint identity, while the node factory repeats
-/// the binding check immediately before guarded spawn.
+/// Construction authenticates the process-local VMState and required root-
+/// overlay binding before the authority can enter a real-node executor. Launch
+/// rechecks the complete snapshot identity and checkpoint identity, while the
+/// node factory repeats the artifact checks immediately before guarded spawn.
 pub struct QemuExactRootWarmRestoreNodeLauncher<A, R, F> {
     command: QemuLaunchCommand,
     run_directory: QemuPreparedRunDirectory,
@@ -400,14 +400,15 @@ pub struct QemuExactRootWarmRestoreNodeLauncher<A, R, F> {
     _runtime: std::marker::PhantomData<fn() -> (A, R)>,
 }
 
-/// One-shot guarded launcher for a trusted thin-path VMState file.
+/// One-shot guarded launcher for authenticated thin-path artifacts.
 ///
 /// The owner prepares a baked-genesis or proper-ancestor VMState in a pinned
 /// run directory and binds this launcher to that checkpoint identity. Unlike an
 /// exact-root launcher, this type cannot consume the selected target snapshot.
-pub(crate) struct QemuPreparedThinWarmRestoreNodeLauncher<A, R, F> {
+pub struct QemuPreparedThinWarmRestoreNodeLauncher<A, R, F> {
     command: QemuLaunchCommand,
     run_directory: QemuPreparedRunDirectory,
+    vmstate_binding: QemuVmStateBinding,
     checkpoint: ContentHash,
     region_config: RegionConfig,
     slot_index: u32,
@@ -433,8 +434,8 @@ impl<A, R, F> QemuExactRootWarmRestoreNodeLauncher<A, R, F> {
     /// # Errors
     ///
     /// Returns [`QemuSpawnError`] unless `run_directory` has committed the
-    /// supplied root binding and still retains the exact completed VMState
-    /// length.
+    /// supplied root binding for VMState and every command-required root
+    /// overlay.
     pub fn new(
         command: QemuLaunchCommand,
         run_directory: QemuPreparedRunDirectory,
@@ -444,7 +445,7 @@ impl<A, R, F> QemuExactRootWarmRestoreNodeLauncher<A, R, F> {
         slot_index: u32,
         runtime_factory: F,
     ) -> Result<Self, QemuSpawnError> {
-        run_directory.require_exact_vmstate(vmstate_binding)?;
+        run_directory.require_exact_launch_artifacts(&command, vmstate_binding)?;
         Ok(Self {
             command,
             run_directory,
@@ -467,28 +468,33 @@ impl<A, R, F> QemuExactRootWarmRestoreNodeLauncher<A, R, F> {
 }
 
 impl<A, R, F> QemuPreparedThinWarmRestoreNodeLauncher<A, R, F> {
-    /// Creates a launcher for one independently prepared thin-path checkpoint.
-    #[must_use]
-    // crucible-lint: allow rust-allow -- the authenticated thin VMState materializer is the next composition slice.
-    #[allow(dead_code)]
-    pub(crate) const fn new(
+    /// Creates a launcher for one independently authenticated thin checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] unless the pinned VMState and, when required
+    /// by `command`, root overlay both carry `vmstate_binding`.
+    pub fn new(
         command: QemuLaunchCommand,
         run_directory: QemuPreparedRunDirectory,
+        vmstate_binding: QemuVmStateBinding,
         checkpoint: ContentHash,
         region_config: RegionConfig,
         slot_index: u32,
         runtime_factory: F,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, QemuSpawnError> {
+        run_directory.require_exact_launch_artifacts(&command, vmstate_binding)?;
+        Ok(Self {
             command,
             run_directory,
+            vmstate_binding,
             checkpoint,
             region_config,
             slot_index,
             runtime_factory,
             failed_child: None,
             _runtime: std::marker::PhantomData,
-        }
+        })
     }
 }
 
@@ -722,9 +728,10 @@ where
         }
         let runtime = (self.runtime_factory)(config);
         let result = spawn_setup_and_restore_prepared_qemu_node_guarded(
-            QemuPreparedWarmRestoreLaunch::provisioned(
+            QemuPreparedWarmRestoreLaunch::new(
                 &self.command,
                 &self.run_directory,
+                self.vmstate_binding,
                 process_contract,
                 self.region_config,
                 self.slot_index,

@@ -617,10 +617,6 @@ fn exact_vmstate_materialization_commits_one_checkpoint_root_basis() -> Result<(
     let directory = tempfile::tempdir()?;
     let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
     std::fs::write(&vmstate_path, b"provisioned")?;
-    std::fs::write(
-        directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
-        b"provisioned",
-    )?;
     let mut prepared =
         QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
     let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
@@ -634,11 +630,27 @@ fn exact_vmstate_materialization_commits_one_checkpoint_root_basis() -> Result<(
     materialization.finish()?;
 
     prepared.require_exact_vmstate(binding)?;
+    assert!(matches!(
+        prepared.require_exact_launch_artifacts(&command, binding),
+        Err(QemuSpawnError::PreparedRootOverlayNotReady { .. })
+    ));
+
+    let overlay = b"authenticated exact root overlay";
+    let mut materialization = prepared
+        .begin_exact_root_overlay_materialization(binding, u64::try_from(overlay.len())?)?;
+    materialization.write_all(overlay)?;
+    materialization.finish()?;
+    prepared.require_exact_launch_artifacts(&command, binding)?;
+
     prepared.revalidate()?;
     assert_eq!(std::fs::read(vmstate_path)?, payload);
     let other = QemuVmStateBinding::from_exact_checkpoint_root_digest(
         ContentHash::from_canonical_material("checkpoint-root", "exact-b").bytes,
     );
+    let thin = QemuVmStateBinding::from_thin_checkpoint_artifact_digest(
+        ContentHash::from_canonical_material("thin-checkpoint-artifact", "exact-a").bytes,
+    );
+    assert_ne!(binding, thin);
     assert!(matches!(
         prepared.require_exact_vmstate(other),
         Err(QemuSpawnError::PreparedVmStateBindingMismatch {
