@@ -201,6 +201,9 @@
   # APM/APR VM tests (headless Firecracker, registry + tracking + packages)
   # ---------------------------------------------------------------------------
   apmTests = import ./tests/vm/apm {inherit testing pkgs;};
+  hubNativeOperationsTest = import ./tests/vm/hub-native-operations.nix {
+    inherit testing pkgs;
+  };
 
   # ---------------------------------------------------------------------------
   # Package integration checks (Firecracker-based, defined on packages)
@@ -1175,6 +1178,7 @@ in {
       serverSystem.config.system.build.checks
       // {
         apm = apmTests;
+        hub-native-operations = hubNativeOperationsTest;
         apm-install-at-boot = apmInstallAtBootCheck;
         package-expose-lifecycle = packageExposeLifecycleCheck;
         package-preset = packagePresetCheck;
