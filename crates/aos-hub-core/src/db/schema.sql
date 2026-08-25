@@ -2347,8 +2347,6 @@ CREATE TABLE gateway_revision_events(
   UNIQUE(gateway_id, generation),
   FOREIGN KEY(gateway_id, generation)
   REFERENCES gateway_revisions(gateway_id, generation),
-  FOREIGN KEY(gateway_id, generation, gateway_resource_version)
-  REFERENCES gateways(id, desired_generation, resource_version),
   CHECK(transition = 'desired')
 );
 CREATE TABLE route_url_reservations(
