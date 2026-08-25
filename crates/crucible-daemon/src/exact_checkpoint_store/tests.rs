@@ -99,6 +99,42 @@ struct OpenCountingSource {
     opens: Arc<AtomicUsize>,
 }
 
+struct CancelingSource {
+    bytes: Arc<[u8]>,
+    cancellation: crate::ExecutionCancellation,
+}
+
+impl BlobSource for CancelingSource {
+    fn logical_length(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        Ok(Box::new(CancelAfterRead {
+            bytes: Cursor::new(Arc::clone(&self.bytes)),
+            cancellation: self.cancellation.clone(),
+            canceled: false,
+        }))
+    }
+}
+
+struct CancelAfterRead {
+    bytes: Cursor<Arc<[u8]>>,
+    cancellation: crate::ExecutionCancellation,
+    canceled: bool,
+}
+
+impl Read for CancelAfterRead {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.bytes.read(buffer)?;
+        if read != 0 && !self.canceled {
+            self.canceled = true;
+            self.cancellation.cancel_for_test();
+        }
+        Ok(read)
+    }
+}
+
 impl BlobSource for OpenCountingSource {
     fn logical_length(&self) -> u64 {
         self.logical_length
@@ -175,6 +211,49 @@ fn prepare_is_write_free_and_publication_round_trips_streamed_vmstate() {
         publication
     );
     assert_eq!(backend.object_count(), 3);
+}
+
+#[test]
+fn canceled_streaming_preparation_is_typed_and_write_free() {
+    let backend = Arc::new(TestDurableBackend::new());
+    let store = ExactCheckpointStore::new(backend.clone(), STORE_LIMIT).expect("admit store");
+    let cancellation = crate::ExecutionCancellation::default();
+    let bytes: Arc<[u8]> = vec![0x7c; 768 * 1024].into();
+    let source = BlobHandle::new(Arc::new(CancelingSource {
+        bytes,
+        cancellation: cancellation.clone(),
+    }));
+    let capture = CapturedExactCheckpoint::new(snapshot("canceled-prepare"), source);
+
+    let error = store
+        .prepare_attempt_checkpoint_with_cancellation(capture.into(), &cancellation)
+        .expect_err("cancellation during identity streaming must stop preparation");
+
+    assert!(matches!(error, ExactCheckpointStoreError::Canceled));
+    assert!(cancellation.is_canceled());
+    assert_eq!(backend.object_count(), 0);
+}
+
+#[test]
+fn cancellation_after_preparation_stops_before_the_first_publication_write() {
+    let backend = Arc::new(TestDurableBackend::new());
+    let store = ExactCheckpointStore::new(backend.clone(), STORE_LIMIT).expect("admit store");
+    let cancellation = crate::ExecutionCancellation::default();
+    let capture = CapturedExactCheckpoint::new(
+        snapshot("canceled-publication"),
+        BlobHandle::from_bytes(vec![0x4e; 768 * 1024]),
+    );
+    let prepared = store
+        .prepare_attempt_checkpoint_with_cancellation(capture.into(), &cancellation)
+        .expect("prepare checkpoint before cancellation");
+    cancellation.cancel_for_test();
+
+    let error = store
+        .publish_attempt_checkpoint(&prepared)
+        .expect_err("cancellation must stop publication before its first put");
+
+    assert!(matches!(error, ExactCheckpointStoreError::Canceled));
+    assert_eq!(backend.object_count(), 0);
 }
 
 #[test]

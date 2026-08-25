@@ -27,6 +27,43 @@ fn stopped_checkpoint_artifact_keeps_the_pinned_source_without_copying() {
 }
 
 #[test]
+fn stopped_checkpoint_hash_observes_cancellation_between_bounded_chunks() {
+    let directory = tempfile::tempdir()
+        .unwrap_or_else(|error| panic!("create checkpoint artifact directory: {error}"));
+    let source = directory.path().join("active-vmstate");
+    fs::write(
+        &source,
+        vec![0x39; CHECKPOINT_BOUNDARY_CHUNK_BYTES.saturating_mul(3)],
+    )
+    .unwrap_or_else(|error| panic!("write stopped artifact: {error}"));
+
+    let mut checks = 0_u8;
+    let error =
+        match checkpoint_artifact_from_stopped_file_with_boundary(&source, "VMState", &mut || {
+            checks = checks.saturating_add(1);
+            if checks == 3 {
+                return Err(SchedulerError::OperationalBoundary {
+                    class: SchedulerOperationalFailureClass::Canceled,
+                    message: String::from("checkpoint hash canceled"),
+                });
+            }
+            Ok(())
+        }) {
+            Ok(_) => panic!("cancellation must stop a multi-chunk checkpoint hash"),
+            Err(error) => error,
+        };
+
+    assert!(matches!(
+        error,
+        SchedulerError::OperationalBoundary {
+            class: SchedulerOperationalFailureClass::Canceled,
+            ..
+        }
+    ));
+    assert_eq!(checks, 3);
+}
+
+#[test]
 fn exact_capture_reports_publication_and_release_failures_together() {
     let publication = Err(ExactCheckpointTransactionError::Unpublished(
         SchedulerError::BoundaryViolation {

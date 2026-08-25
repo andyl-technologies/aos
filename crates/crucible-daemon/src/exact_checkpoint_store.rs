@@ -36,7 +36,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::io::Write;
+use std::io::{self, Read, Write};
 use std::sync::Arc;
 
 use crucible::{
@@ -55,6 +55,10 @@ use crucible_qemu::{
     validate_qemu_replay_oracle_promotion,
 };
 use thiserror::Error;
+
+use crate::ExecutionCancellation;
+
+const CHECKPOINT_CANCELLATION_READ_CHUNK_BYTES: usize = 1024 * 1024;
 
 /// Canonical schema name of the child-bearing exact-checkpoint root.
 pub const EXACT_CHECKPOINT_ROOT_SCHEMA: &str = "crucible.executor.exact-checkpoint-root";
@@ -727,7 +731,8 @@ impl ExactCheckpointStore {
             ObjectKind::DeviceState,
             QEMU_VMSTATE_SCHEMA_VERSION,
             &vmstate,
-        )?;
+        )
+        .map_err(map_checkpoint_store_error)?;
         let (scheduler_id, scheduler_source, scheduler_bytes) = match scheduler {
             Some(scheduler) => {
                 validate_scheduler_checkpoint_basis(snapshot.checkpoint(), scheduler)?;
@@ -827,6 +832,45 @@ impl ExactCheckpointStore {
                 .map(PreparedAttemptCheckpoint::SingleNode),
             CapturedAttemptCheckpoint::Production(capture) => self
                 .prepare_production_closure(*capture)
+                .map(Box::new)
+                .map(PreparedAttemptCheckpoint::Production),
+        }
+    }
+
+    /// Authenticates and prepares a capture under one execution cancellation signal.
+    ///
+    /// Complete large-object reads observe `cancellation` between at-most-one-
+    /// MiB chunks. The prepared streams retain the same signal so publication
+    /// cannot continue silently after cancellation wins.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExactCheckpointStoreError::Canceled`] when cancellation wins,
+    /// or the corresponding single-node or production preparation error.
+    pub(crate) fn prepare_attempt_checkpoint_with_cancellation(
+        &self,
+        capture: CapturedAttemptCheckpoint,
+        cancellation: &ExecutionCancellation,
+    ) -> Result<PreparedAttemptCheckpoint, ExactCheckpointStoreError> {
+        if cancellation.is_canceled() {
+            return Err(ExactCheckpointStoreError::Canceled);
+        }
+        match capture {
+            CapturedAttemptCheckpoint::SingleNode(capture) => {
+                let (snapshot, scheduler, vmstate) = capture.into_parts();
+                let vmstate = cancellation_blob_handle(vmstate, cancellation.clone());
+                let mut prepared = self.prepare_parts(&snapshot, scheduler.as_ref(), vmstate)?;
+                prepared.root_source =
+                    cancellation_blob_handle(prepared.root_source, cancellation.clone());
+                prepared.metadata_source =
+                    cancellation_blob_handle(prepared.metadata_source, cancellation.clone());
+                prepared.scheduler_source = prepared
+                    .scheduler_source
+                    .map(|source| cancellation_blob_handle(source, cancellation.clone()));
+                Ok(PreparedAttemptCheckpoint::SingleNode(Box::new(prepared)))
+            }
+            CapturedAttemptCheckpoint::Production(capture) => self
+                .prepare_production_closure_with_cancellation(*capture, cancellation)
                 .map(Box::new)
                 .map(PreparedAttemptCheckpoint::Production),
         }
@@ -940,7 +984,8 @@ impl ExactCheckpointStore {
         )?;
         require_durable_receipt(
             self.backend
-                .put_if_absent(prepared.metadata_id, &prepared.metadata_source)?,
+                .put_if_absent(prepared.metadata_id, &prepared.metadata_source)
+                .map_err(map_checkpoint_store_error)?,
             prepared.metadata_id,
             prepared.metadata_source.logical_length(),
         )?;
@@ -948,20 +993,24 @@ impl ExactCheckpointStore {
             (prepared.scheduler_id, prepared.scheduler_source.as_ref())
         {
             require_durable_receipt(
-                self.backend.put_if_absent(scheduler_id, scheduler_source)?,
+                self.backend
+                    .put_if_absent(scheduler_id, scheduler_source)
+                    .map_err(map_checkpoint_store_error)?,
                 scheduler_id,
                 scheduler_source.logical_length(),
             )?;
         }
         require_durable_receipt(
             self.backend
-                .put_if_absent(prepared.vmstate_id, &prepared.vmstate_source)?,
+                .put_if_absent(prepared.vmstate_id, &prepared.vmstate_source)
+                .map_err(map_checkpoint_store_error)?,
             prepared.vmstate_id,
             prepared.vmstate_source.logical_length(),
         )?;
         require_durable_receipt(
             self.backend
-                .put_if_absent(prepared.root.content_id(), &prepared.root_source)?,
+                .put_if_absent(prepared.root.content_id(), &prepared.root_source)
+                .map_err(map_checkpoint_store_error)?,
             prepared.root.content_id(),
             prepared.root_source.logical_length(),
         )?;
@@ -1079,6 +1128,9 @@ pub enum PrepareReplayOraclePromotionError {
 /// Failure while preparing, publishing, or loading an exact QEMU checkpoint.
 #[derive(Debug, Error)]
 pub enum ExactCheckpointStoreError {
+    /// The owning execution canceled checkpoint preparation or publication.
+    #[error("exact-checkpoint operation was canceled")]
+    Canceled,
     /// The configured per-checkpoint byte ceiling was zero.
     #[error("exact-checkpoint byte limit must be nonzero")]
     InvalidLimit,
@@ -1127,6 +1179,86 @@ pub enum ExactCheckpointStoreError {
     /// The complete production continuation failed scenario-aware authentication.
     #[error(transparent)]
     Production(#[from] crucible_api::LifecycleApiError),
+}
+
+fn map_checkpoint_store_error(error: StoreError) -> ExactCheckpointStoreError {
+    match error {
+        StoreError::StreamIo { source, .. } if is_checkpoint_cancellation_io(&source) => {
+            ExactCheckpointStoreError::Canceled
+        }
+        error => ExactCheckpointStoreError::Store(error),
+    }
+}
+
+fn cancellation_blob_handle(source: BlobHandle, cancellation: ExecutionCancellation) -> BlobHandle {
+    BlobHandle::new(Arc::new(CancellationBlobSource {
+        source,
+        cancellation,
+    }))
+}
+
+struct CancellationBlobSource {
+    source: BlobHandle,
+    cancellation: ExecutionCancellation,
+}
+
+impl crucible_cas::content_store::BlobSource for CancellationBlobSource {
+    fn logical_length(&self) -> u64 {
+        self.source.logical_length()
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        if self.cancellation.is_canceled() {
+            return Err(StoreError::StreamIo {
+                operation: "open-canceled-exact-checkpoint-source",
+                source: checkpoint_cancellation_io(),
+            });
+        }
+        Ok(Box::new(CancellationReader {
+            source: self.source.open()?,
+            cancellation: self.cancellation.clone(),
+        }))
+    }
+}
+
+struct CancellationReader {
+    source: Box<dyn Read + Send>,
+    cancellation: ExecutionCancellation,
+}
+
+impl Read for CancellationReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.cancellation.is_canceled() {
+            return Err(io::Error::other(CheckpointCancellationIo));
+        }
+        let limit = buffer.len().min(CHECKPOINT_CANCELLATION_READ_CHUNK_BYTES);
+        let read = self.source.read(&mut buffer[..limit])?;
+        if self.cancellation.is_canceled() {
+            return Err(io::Error::other(CheckpointCancellationIo));
+        }
+        Ok(read)
+    }
+}
+
+#[derive(Debug)]
+struct CheckpointCancellationIo;
+
+impl fmt::Display for CheckpointCancellationIo {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("checkpoint canceled")
+    }
+}
+
+impl std::error::Error for CheckpointCancellationIo {}
+
+fn checkpoint_cancellation_io() -> io::Error {
+    io::Error::other(CheckpointCancellationIo)
+}
+
+fn is_checkpoint_cancellation_io(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|source| source.is::<CheckpointCancellationIo>())
 }
 
 impl ExactCheckpointStoreError {

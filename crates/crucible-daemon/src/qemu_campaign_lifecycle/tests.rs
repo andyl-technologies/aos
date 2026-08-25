@@ -470,6 +470,7 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
 
     fn capture_attempt_checkpoint(
         &mut self,
+        _context: &crate::AttemptExecutionContext,
     ) -> Result<crate::CapturedAttemptCheckpoint, crucible::SchedulerError> {
         self.order
             .lock()

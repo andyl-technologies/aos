@@ -1,6 +1,8 @@
 //! `QuantumLoop` delegation for the production VM lifecycle.
 
-use super::checkpoint_store::{PersistExactCheckpointError, prepare_exact_checkpoint_set};
+use super::checkpoint_store::{
+    PersistExactCheckpointError, prepare_exact_checkpoint_set_with_boundary,
+};
 use super::*;
 
 mod checkpoint_capture;
@@ -21,24 +23,56 @@ use lifecycle::{
     release_restored_generation_after_scheduler_publication, select_preowned_terminal_generation,
 };
 
+const CHECKPOINT_BOUNDARY_CHUNK_BYTES: usize = 1024 * 1024;
+
+#[cfg(test)]
 fn checkpoint_artifact_from_stopped_file(
     source: &Path,
     role: &str,
 ) -> Result<ProductionCheckpointArtifact, SchedulerError> {
-    let identity = hash_file(source).map_err(|error| SchedulerError::BoundaryViolation {
+    checkpoint_artifact_from_stopped_file_with_boundary(source, role, &mut || Ok(()))
+}
+
+fn checkpoint_artifact_from_stopped_file_with_boundary(
+    source: &Path,
+    role: &str,
+    boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
+) -> Result<ProductionCheckpointArtifact, SchedulerError> {
+    boundary()?;
+    let mut file = File::open(source).map_err(|error| SchedulerError::BoundaryViolation {
         message: format!(
-            "hash stopped exact-checkpoint {role} {}: {error}",
+            "open stopped exact-checkpoint {role} {}: {error}",
             source.display()
         ),
     })?;
-    let length = fs::metadata(source)
-        .map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!(
-                "inspect stopped exact-checkpoint {role} {}: {error}",
-                source.display()
-            ),
-        })?
-        .len();
+    let mut buffer = vec![0_u8; CHECKPOINT_BOUNDARY_CHUNK_BYTES];
+    let mut hasher = blake3::Hasher::new();
+    loop {
+        boundary()?;
+        let read = std::io::Read::read(&mut file, &mut buffer).map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!(
+                    "hash stopped exact-checkpoint {role} {}: {error}",
+                    source.display()
+                ),
+            }
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    boundary()?;
+    let identity = ContentHash {
+        bytes: *hasher.finalize().as_bytes(),
+    };
+    let length = fs::metadata(source).map_err(|error| SchedulerError::BoundaryViolation {
+        message: format!(
+            "inspect stopped exact-checkpoint {role} {}: {error}",
+            source.display()
+        ),
+    })?;
+    let length = length.len();
     Ok(ProductionCheckpointArtifact {
         source: ProductionCheckpointArtifactSource::File(source.to_path_buf()),
         identity,
@@ -1520,7 +1554,9 @@ impl ProductionVmLifecycleLoop {
     fn capture_reserved_exact_checkpoint_set(
         &mut self,
         configuration: &Configuration,
+        boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
     ) -> Result<ContentHash, ExactCheckpointTransactionError> {
+        boundary()?;
         let checkpoint_virtual_time = self.inner.loop_impl().frontier();
         let network_committed_frontier = self.inner.committed_frontier();
         let fault_checkpoint = {
@@ -1539,9 +1575,11 @@ impl ProductionVmLifecycleLoop {
                     ),
                 })?
         };
+        boundary()?;
         let mut node_icounts = BTreeMap::new();
         let mut boundaries = Vec::new();
         for vm in self.source.world().vm_nodes() {
+            boundary()?;
             let scheduler_time = self.inner.loop_impl().scheduler_time_for_node(&vm.id)?;
             if self.node_service_states.get(&vm.id)
                 == Some(&ProductionNodeServiceState::PermanentlyFailed)
@@ -1610,6 +1648,7 @@ impl ProductionVmLifecycleLoop {
             })?;
         let capture_result = (|| -> Result<(), SchedulerError> {
             for (node, counter, scheduler_time, service_state) in boundaries {
+                boundary()?;
                 let parent = if configuration.schedule.is_empty() {
                     None
                 } else {
@@ -1663,6 +1702,7 @@ impl ProductionVmLifecycleLoop {
                     snapshot_cleanup_pending: true,
                     resume_pending: service_state == ProductionNodeServiceState::Running,
                 });
+                boundary()?;
             }
             Ok(())
         })();
@@ -1678,6 +1718,7 @@ impl ProductionVmLifecycleLoop {
         let preparation = (|| -> Result<_, ExactCheckpointTransactionError> {
             let mut targets = BTreeMap::new();
             for capture in &captured {
+                boundary()?;
                 let source_directory =
                     self.node_run_directories
                         .get(&capture.node)
@@ -1687,13 +1728,15 @@ impl ProductionVmLifecycleLoop {
                                 capture.node.name
                             ),
                         })?;
-                let overlay_artifact = checkpoint_artifact_from_stopped_file(
+                let overlay_artifact = checkpoint_artifact_from_stopped_file_with_boundary(
                     &source_directory.join(PRODUCTION_ROOT_OVERLAY_FILE_NAME),
                     "root overlay",
+                    boundary,
                 )?;
-                let vmstate_artifact = checkpoint_artifact_from_stopped_file(
+                let vmstate_artifact = checkpoint_artifact_from_stopped_file_with_boundary(
                     &source_directory.join(PRODUCTION_VMSTATE_FILE_NAME),
                     "VMState",
+                    boundary,
                 )?;
                 let manifest_identity = crucible::ContentHash::from_canonical_material(
                     "crucible.production-vm-exact-checkpoint.v1",
@@ -1741,11 +1784,12 @@ impl ProductionVmLifecycleLoop {
                 node_generations,
                 node_service_states,
             };
-            prepare_exact_checkpoint_set(
+            prepare_exact_checkpoint_set_with_boundary(
                 &self.config.run_state_root,
                 self.scenario.id(),
                 self.source.plan().fault_signals().resource_limits(),
                 &mut checkpoint_set,
+                boundary,
             )
             .map_err(|error| match error {
                 PersistExactCheckpointError::Unpublished(source) => {

@@ -51,6 +51,7 @@ impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
 
     fn capture_attempt_checkpoint(
         &mut self,
+        _context: &crate::AttemptExecutionContext,
     ) -> Result<crate::CapturedAttemptCheckpoint, SchedulerError> {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("modeled driver fixture has no checkpoint authority"),

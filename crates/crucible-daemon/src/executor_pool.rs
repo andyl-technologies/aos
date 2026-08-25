@@ -741,9 +741,14 @@ where
             }
             match shared
                 .checkpoints
-                .prepare_attempt_checkpoint(capture.reopenable_copy())
-            {
+                .prepare_attempt_checkpoint_with_cancellation(
+                    capture.reopenable_copy(),
+                    self.queued.cancellation(),
+                ) {
                 Ok(prepared) => break prepared,
+                Err(crate::ExactCheckpointStoreError::Canceled) => {
+                    return Err(CheckpointHandoffFailure::Canceled);
+                }
                 Err(source) if source.is_retryable() => {
                     increment(&shared.counters.publication_retries);
                     thread::sleep(WORKER_RETRY_INTERVAL);

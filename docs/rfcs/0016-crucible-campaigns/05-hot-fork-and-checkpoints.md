@@ -265,7 +265,10 @@ sequence through a fixed 1 MiB buffer into an atomic destination-side staging
 file, hashes the logical byte stream during that pass, and recreates zero runs
 as sparse extents before durable publication. A corrupt, short, long, or
 missing source leaves no partial destination. Cleanup attempts every captured
-node even when one delete or resume fails. The remaining storage work is:
+node even when one delete or resume fails. Hashing, chunk persistence, portable
+closure validation, and campaign-store streaming observe attempt cancellation
+between fixed one-MiB I/O chunks; cancellation cannot bypass that cleanup or be
+misclassified as retryable store I/O. The remaining storage work is:
 
 - represent disk state as immutable backing plus changed overlay objects;
 - admit QEMU-emitted RAM dirty-page/extent manifests when the fork/snapshot

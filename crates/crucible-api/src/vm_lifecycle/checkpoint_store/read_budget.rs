@@ -86,6 +86,7 @@ impl CheckpointReadBudget {
 
     fn map_read_error(&self, error: BoundedReadError, current: u64) -> LifecycleApiError {
         match error {
+            BoundedReadError::Boundary(error) => *error,
             BoundedReadError::Allocation { requested }
             | BoundedReadError::Representation { length: requested } => resource_limit(
                 current,
