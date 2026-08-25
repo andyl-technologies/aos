@@ -179,7 +179,7 @@ in
         if ! ${pkgs.aos}/bin/aos --json hub "$@" \
           --hub "$hub_url" --token "$token" \
           --plan-id "$plan_id" --confirm-hash "$confirm_hash" --yes \
-          --idempotency-key "$label-apply" >"$apply_file"; then
+          --idempotency-key "$label-apply" >"$apply_file" 2>&1; then
           ${pkgs.coreutils}/bin/cat "$apply_file" >&2
           ${pkgs.coreutils}/bin/cat /tmp/aos-hub.log >&2
           return 1
@@ -575,6 +575,57 @@ in
       reviewed endpoint-revoke endpoint revoke operations-endpoint \
         --consumer-scope "$consumer_org_scope" \
         --if-version "$endpoint_grant_version" >/tmp/endpoint-revoke.json
+
+      echo '==> Exercise route creation, revision, serving, and replacement'
+      reviewed route-add route add registry:operations/maintenance \
+        --stable-id operations-route --endpoint operations-endpoint \
+        --endpoint-generation 2 --base-path /maintenance --mode hub-proxy \
+        --placement primary --serves web --serves cache --access public \
+        >/tmp/route-add.json
+      hub_cli route list registry:operations/maintenance --page-size 1 \
+        >/tmp/route-list.json
+      hub_cli route explain operations-route --path /maintenance \
+        --access-class web >/tmp/route-explain.json
+      route_version=$(resource_version /tmp/route-add.json)
+      reviewed route-update route update operations-route \
+        --serves web --access public --if-version "$route_version" \
+        >/tmp/route-update.json
+      route_version=$(resource_version /tmp/route-update.json)
+      reviewed route-enable route enable operations-route \
+        --if-version "$route_version" >/tmp/route-enable.json
+      route_version=$(resource_version /tmp/route-enable.json)
+      expect_hub_error route-canonical-unreconciled 'ready|reconciled|canonical' \
+        route canonical registry:operations/maintenance operations-route \
+        --audience web --if-version "$route_version" --plan \
+        --idempotency-key route-canonical-unreconciled
+      reviewed route-disable route disable operations-route \
+        --if-version "$route_version" >/tmp/route-disable.json
+      route_version=$(resource_version /tmp/route-disable.json)
+      expect_hub_error route-replace-disabled 'must be enabled' \
+        route replace operations-route \
+        --endpoint operations-endpoint --endpoint-generation 2 \
+        --base-path /maintenance-v2 --mode hub-proxy --placement primary \
+        --serves web --access public --if-version "$route_version" --plan \
+        --idempotency-key route-replace-disabled
+      reviewed route-reenable route enable operations-route \
+        --if-version "$route_version" >/tmp/route-reenable.json
+      route_version=$(resource_version /tmp/route-reenable.json)
+      reviewed route-replace route replace operations-route \
+        --endpoint operations-endpoint --endpoint-generation 2 \
+        --base-path /maintenance-v2 --mode hub-proxy --placement primary \
+        --serves web --access public --if-version "$route_version" \
+        >/tmp/route-replace.json
+      replacement_route_id=$(${pkgs.jq}/bin/jq -er \
+        '.data.result.route.stable_id' /tmp/route-replace.json)
+      replacement_route_version=$(resource_version /tmp/route-replace.json)
+      reviewed route-replacement-remove route remove "$replacement_route_id" \
+        --if-version "$replacement_route_version" \
+        >/tmp/route-replacement-remove.json
+      reviewed route-redisable route disable operations-route \
+        --if-version "$route_version" >/tmp/route-redisable.json
+      route_version=$(resource_version /tmp/route-redisable.json)
+      reviewed route-remove route remove operations-route \
+        --if-version "$route_version" >/tmp/route-remove.json
 
       echo '==> Exercise gateway generation, authorization, and lifecycle'
       reviewed gateway-add gateway add --stable-id operations-gateway \
