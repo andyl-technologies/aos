@@ -362,7 +362,6 @@ qemu-manifest|crucible-cli|crates/crucible-cli/Cargo.toml|crucible-daemon|depend
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle.rs|crucible_qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle.rs|qemu
-qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs|qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/checkpoint_store/portable.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay.rs|Qemu
@@ -377,12 +376,9 @@ qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/process_owners.rs|Q
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/quantum_loop.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/quantum_loop.rs|crucible_qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/quantum_loop.rs|qemu
-qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/quantum_loop/checkpoint_capture.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/persistence/recovery.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/process_ownership.rs|Qemu
-qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/restart_ownership.rs|Qemu
-qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/restart_ownership.rs|qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/staging.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/runtime.rs|crucible_qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/runtime.rs|qemu
@@ -390,7 +386,6 @@ qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/runtime/tests/durab
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/storage_faults.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/storage_faults.rs|crucible_qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/storage_faults.rs|qemu
-qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/storage_faults/ambiguous_commit.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/storage_faults/evidence.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_resume.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_resume.rs|crucible_qemu

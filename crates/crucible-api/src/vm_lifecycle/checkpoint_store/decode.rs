@@ -4,10 +4,22 @@ use super::*;
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::cell::Cell;
+use std::fmt;
 use std::marker::PhantomData;
 use std::mem;
 
 const RESOURCE_PREFIX: &str = "crucible-checkpoint-resource-limit";
+
+#[derive(Debug)]
+struct DecodeAdmissionError(String);
+
+impl fmt::Display for DecodeAdmissionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for DecodeAdmissionError {}
 
 #[derive(Clone, Copy)]
 struct DecodeBudget {
@@ -164,17 +176,17 @@ pub(super) fn map_decode_resource_error<T>(
     ))
 }
 
-fn admit_owned(requested: u64) -> Result<u64, String> {
+fn admit_owned(requested: u64) -> Result<u64, DecodeAdmissionError> {
     ACTIVE_BUDGET.with(|active| {
         let Some(mut budget) = active.get() else {
             return Ok(0);
         };
         let current = budget.owned;
         let Some(total) = current.checked_add(requested) else {
-            return Err(resource_message(current, requested));
+            return Err(DecodeAdmissionError(resource_message(current, requested)));
         };
         if total > budget.configured || total > budget.hard {
-            return Err(resource_message(current, requested));
+            return Err(DecodeAdmissionError(resource_message(current, requested)));
         }
         budget.owned = total;
         active.set(Some(budget));
@@ -204,12 +216,12 @@ mod tests {
     use super::*;
 
     #[derive(Debug)]
-    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
-    struct FallibleVector(#[allow(dead_code)] Vec<u64>);
+    struct FallibleVector;
 
     impl<'de> Deserialize<'de> for FallibleVector {
         fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-            deserialize_vec(deserializer).map(Self)
+            let _: Vec<u64> = deserialize_vec(deserializer)?;
+            Ok(Self)
         }
     }
 

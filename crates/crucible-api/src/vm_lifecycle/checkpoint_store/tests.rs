@@ -3,7 +3,7 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used)]
 
-use super::*;
+use super::{ExactSnapshotHandle as Snapshot, *};
 
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt as _;
@@ -88,7 +88,7 @@ impl ProductionExactCheckpointSource for MemoryPortable {
     }
 }
 
-fn snapshot_portable(mut manifest: ClosureManifest, snapshot: &QemuVmSnapshot) -> MemoryPortable {
+fn snapshot_portable(mut manifest: ClosureManifest, snapshot: &Snapshot) -> MemoryPortable {
     let bytes = snapshot
         .to_canonical_bytes()
         .expect("encode production snapshot fixture");
@@ -228,7 +228,7 @@ fn publish_one_node_raw_checkpoint(
         BTreeMap::new(),
     )
     .expect("build one-node modeled checkpoint");
-    let snapshot = QemuVmSnapshot::diskless(modeled_checkpoint, QemuReplayOracleValidation::NotRun)
+    let snapshot = Snapshot::diskless(modeled_checkpoint, QemuReplayOracleValidation::NotRun)
         .expect("build raw one-node QEMU snapshot");
     let snapshot_identity = snapshot.id();
 
@@ -412,10 +412,10 @@ fn replay_oracle_source_pair_is_bound_to_every_exact_snapshot() {
         BTreeMap::new(),
     )
     .expect("build replay-oracle checkpoint fixture");
-    let raw = QemuVmSnapshot::diskless(checkpoint.clone(), QemuReplayOracleValidation::NotRun)
+    let raw = Snapshot::diskless(checkpoint.clone(), QemuReplayOracleValidation::NotRun)
         .expect("build raw production snapshot");
     let runtime_hash = ContentHash::from_bytes(b"matching production runtime");
-    let promoted = QemuVmSnapshot::diskless(
+    let promoted = Snapshot::diskless(
         checkpoint,
         QemuReplayOracleValidation::Match { runtime_hash },
     )
@@ -449,7 +449,7 @@ fn replay_oracle_source_pair_is_bound_to_every_exact_snapshot() {
         BTreeMap::new(),
     )
     .expect("build foreign checkpoint fixture");
-    let foreign = QemuVmSnapshot::diskless(
+    let foreign = Snapshot::diskless(
         foreign_checkpoint,
         QemuReplayOracleValidation::Match { runtime_hash },
     )

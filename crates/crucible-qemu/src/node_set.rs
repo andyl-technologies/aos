@@ -22,10 +22,16 @@ use crate::QemuProcessIdentity;
 use crate::QemuVmSnapshot;
 use crate::{QemuNode, QemuNodeError, QemuNodeIdleState};
 
+#[cfg(target_os = "linux")]
+#[path = "node_set/block_boundary.rs"]
+mod block_boundary;
 #[path = "node_set/fault_events.rs"]
 mod fault_events;
 #[path = "node_set/lifecycle.rs"]
 mod lifecycle;
+
+#[cfg(target_os = "linux")]
+pub use block_boundary::QemuNodeSetBlockBoundaryCheckpoint;
 
 /// A fully validated, no-fail terminal node-generation map update.
 pub struct QemuNodeTerminalReplacementPlan {
@@ -70,102 +76,23 @@ fn stagnant_pause_boundary(
 pub struct QemuNodeSet {
     nodes: BTreeMap<NodeId, QemuNode>,
     permanently_closed: Vec<NodeId>,
+    fault_event_staging_budget: Option<QemuFaultEventStagingBudget>,
 }
 
-/// Exact per-node block state captured around one scheduler boundary.
-#[cfg(target_os = "linux")]
-pub struct QemuNodeSetBlockBoundaryCheckpoint {
-    states: BTreeMap<NodeId, Option<crucible_device::block::BlockFaultState>>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct QemuFaultEventStagingBudget {
+    maximum_event_records: usize,
+    configured_event_records: usize,
 }
 
 impl QemuNodeSet {
-    /// Captures every node's block state before a boundary transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] if an authoritative device lock is poisoned.
-    #[cfg(target_os = "linux")]
-    pub fn checkpoint_block_boundary_state(
-        &self,
-    ) -> Result<QemuNodeSetBlockBoundaryCheckpoint, BackendError> {
-        let states = self
-            .nodes
-            .iter()
-            .map(|(id, node)| {
-                node.checkpoint_block_boundary_state()
-                    .map(|state| (id.clone(), state))
-                    .map_err(BackendError::from)
-            })
-            .collect::<Result<_, _>>()?;
-        Ok(QemuNodeSetBlockBoundaryCheckpoint { states })
-    }
-
-    /// Restores every node's exact pre-boundary block state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when node membership changed or any host-I/O
-    /// runtime cannot restore its captured state.
-    #[cfg(target_os = "linux")]
-    pub fn restore_block_boundary_state(
-        &mut self,
-        checkpoint: QemuNodeSetBlockBoundaryCheckpoint,
-    ) -> Result<(), BackendError> {
-        if checkpoint.states.len() != self.nodes.len()
-            || checkpoint
-                .states
-                .keys()
-                .any(|id| !self.nodes.contains_key(id))
-        {
-            return Err(BackendError::Rejected {
-                message: String::from("block boundary rollback node membership changed"),
-            });
-        }
-        for (id, state) in checkpoint.states {
-            self.nodes
-                .get_mut(&id)
-                .ok_or_else(|| BackendError::Rejected {
-                    message: String::from("block rollback node disappeared"),
-                })?
-                .restore_block_boundary_state(state)
-                .map_err(BackendError::from)?;
-        }
-        Ok(())
-    }
-
-    /// Applies one batch of storage boundary actions to every live coordinator.
-    ///
-    /// Each coordinator filters the batch by its authenticated World target;
-    /// unmatched nodes are unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when any matching live adapter fails closed.
-    #[cfg(target_os = "linux")]
-    pub fn apply_block_boundary_actions(
-        &mut self,
-        coordinate: crucible::model::FaultCoordinate,
-        evaluation_sequence: u64,
-        actions: &[crucible::model::ResolvedBindingAction],
-    ) -> Result<(), BackendError> {
-        let rollback = self.checkpoint_block_boundary_state()?;
-        for node in self.nodes.values_mut() {
-            if let Err(error) =
-                node.apply_block_boundary_actions(coordinate, evaluation_sequence, actions)
-            {
-                self.restore_block_boundary_state(rollback)?;
-                return Err(BackendError::from(error));
-            }
-        }
-        Ok(())
-    }
-
     /// Builds an empty node set.
     #[must_use]
     pub const fn new() -> Self {
         Self {
             nodes: BTreeMap::new(),
             permanently_closed: Vec::new(),
+            fault_event_staging_budget: None,
         }
     }
 
@@ -732,16 +659,23 @@ impl Default for QemuNodeSet {
 
 impl SimulationBackend for QemuNodeSet {
     fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
-        let mut nodes = self.nodes.values_mut();
-        let node = nodes.next().ok_or_else(|| BackendError::Rejected {
-            message: String::from("QEMU backend set cannot step without a node"),
-        })?;
-        if nodes.next().is_some() {
-            return Err(BackendError::Unsupported {
-                capability: "backend-global step on a multi-node QEMU set",
-            });
-        }
-        node.step_to(ceiling)
+        let node = {
+            let mut nodes = self.nodes.keys();
+            let node = nodes
+                .next()
+                .cloned()
+                .ok_or_else(|| BackendError::Rejected {
+                    message: String::from("QEMU backend set cannot step without a node"),
+                })?;
+            if nodes.next().is_some() {
+                return Err(BackendError::Unsupported {
+                    capability: "backend-global step on a multi-node QEMU set",
+                });
+            }
+            node
+        };
+        self.arm_selected_fault_event_staging(&node)?;
+        self.node_mut(&node)?.step_to(ceiling)
     }
 
     fn step_node_to(
@@ -749,6 +683,7 @@ impl SimulationBackend for QemuNodeSet {
         node: &NodeId,
         ceiling: VirtualTime,
     ) -> Result<StepObservation, BackendError> {
+        self.arm_selected_fault_event_staging(node)?;
         let backend = self.node_mut(node)?;
         let mut previous = SimulationBackend::now(backend);
         let mut last_stagnant_pause = None;

@@ -44,7 +44,7 @@ pub(in crate::vm_lifecycle) struct PendingExactCapture {
     /// Scheduler time paired with the physical counter.
     pub(super) scheduler_time: VirtualTime,
     /// Live QEMU snapshot deleted before publication or during rollback.
-    pub(super) snapshot: QemuVmSnapshot,
+    pub(super) snapshot: ExactSnapshotHandle,
     /// Whether the live QMP snapshot still requires deletion.
     pub(super) snapshot_cleanup_pending: bool,
     /// Whether a formerly running node remains paused at the capture boundary.

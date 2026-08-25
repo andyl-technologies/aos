@@ -197,6 +197,46 @@ in
               -- --exact --include-ignored --test-threads=1
           }
 
+          taxonomy_tests="$TMPDIR/rfc0014-taxonomy-ledger-tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible \
+            --test rfc0014_taxonomy_ledger \
+            -- --list > "$taxonomy_tests"
+          taxonomy_match_test=rfc0014_taxonomy_ledger_matches_every_executable_row
+          taxonomy_negative_test=rfc0014_taxonomy_ledger_parser_rejects_hostile_row_mutations
+          grep -Fqx "$taxonomy_match_test: test" "$taxonomy_tests"
+          grep -Fqx "$taxonomy_negative_test: test" "$taxonomy_tests"
+          export CRUCIBLE_RFC0014_TAXONOMY_LEDGER_OUTPUT="$TMPDIR/rfc0014-taxonomy-ledger.tsv"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible \
+            --test rfc0014_taxonomy_ledger \
+            "$taxonomy_match_test" \
+            -- --exact --include-ignored --test-threads=1
+          unset CRUCIBLE_RFC0014_TAXONOMY_LEDGER_OUTPUT
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible \
+            --test rfc0014_taxonomy_ledger \
+            "$taxonomy_negative_test" \
+            -- --exact --include-ignored --test-threads=1
+          test "$(wc -l < "$TMPDIR/rfc0014-taxonomy-ledger.tsv")" -eq 226
+          test "$(grep -c '^4\.2-wired[[:space:]]' "$TMPDIR/rfc0014-taxonomy-ledger.tsv")" -eq 76
+          test "$(grep -c '^4\.3-radio[[:space:]]' "$TMPDIR/rfc0014-taxonomy-ledger.tsv")" -eq 52
+          test "$(grep -c '^4\.4-satellite[[:space:]]' "$TMPDIR/rfc0014-taxonomy-ledger.tsv")" -eq 20
+          test "$(grep -c '^4\.5-node[[:space:]]' "$TMPDIR/rfc0014-taxonomy-ledger.tsv")" -eq 41
+          test "$(grep -c '^4\.6-storage[[:space:]]' "$TMPDIR/rfc0014-taxonomy-ledger.tsv")" -eq 37
+
           for test_target in \
             gate_signal_fault_system \
             fault_reference \
@@ -317,6 +357,8 @@ in
             node::tests::shutdown_and_preemption::process_identity_components_reuse_preowned_executable_storage
           run_exact_qemu_test \
             node::tests::fault_event_budget::node_set_arms_one_node_from_one_aggregate_fault_event_budget
+          run_exact_qemu_test \
+            node::tests::fault_event_budget::selected_node_step_rearms_the_retained_aggregate_fault_event_budget
           run_exact_qemu_test \
             node::tests::fault_event_budget::fault_event_limit_rejects_before_consuming_staged_ownership
           run_exact_qemu_test \
@@ -784,6 +826,8 @@ in
           cp ${cliSearchFuzz}/result "$out/evidence/cli-search-fuzz.result"
           cp "$TMPDIR/production-effect-matrix" \
             "$out/evidence/production-effect-matrix.txt"
+          cp "$TMPDIR/rfc0014-taxonomy-ledger.tsv" \
+            "$out/evidence/rfc0014-taxonomy-ledger.tsv"
 
           matrix_network_count=$(grep -c '|network|' \
             "$out/evidence/production-effect-matrix.txt")
@@ -809,6 +853,10 @@ in
           per_kind_metadata=admission,capability,replay-evidence,user-reference
           per_kind_production_execution_matrix=network-$matrix_network_count,storage-$matrix_storage_count,node-$matrix_node_count
           per_kind_production_execution_matrix_artifact=evidence/production-effect-matrix.txt
+          executable_taxonomy_rows=226
+          executable_taxonomy_section_counts=wired-76,radio-52,satellite-20,node-41,storage-37
+          executable_taxonomy_ledger=exact-section-identity-and-registered-effects
+          executable_taxonomy_ledger_artifact=evidence/rfc0014-taxonomy-ledger.tsv
           missing_acceptance=none
           system_evidence=adapter-dispatch,event-log,checkpoint,recomputed-replay,locked-replay,search,negative-tests
           live_boundary_evidence=network,block,9p,node-lifecycle,qemu-fault-patches,clock,accelerator,fresh-plugin-restore
