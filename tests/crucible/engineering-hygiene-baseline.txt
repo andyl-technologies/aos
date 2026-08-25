@@ -10,7 +10,7 @@ shape-line|crates/crucible-api/src/rpc_abi.rs|812
 shape-line|crates/crucible-api/src/server.rs|2930
 shape-line|crates/crucible-api/src/streaming.rs|1252
 shape-line|crates/crucible-api/src/vm_lifecycle.rs|1565
-shape-line|crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs|2159
+shape-line|crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs|2145
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults.rs|2786
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/boundary.rs|1841
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/route.rs|1215
@@ -18,7 +18,7 @@ shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/route/custody_and
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/route/frame_policy.rs|2187
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/route_tests.rs|2940
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/tests.rs|1261
-shape-line|crates/crucible-api/src/vm_lifecycle/quantum_loop.rs|1971
+shape-line|crates/crucible-api/src/vm_lifecycle/quantum_loop.rs|1965
 shape-line|crates/crucible-api/src/vm_lifecycle/runtime.rs|777
 shape-line|crates/crucible-api/src/vm_lifecycle/runtime/tests.rs|686
 shape-line|crates/crucible-api/src/vm_lifecycle/storage_faults.rs|2681

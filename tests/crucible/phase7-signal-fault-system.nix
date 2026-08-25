@@ -376,6 +376,14 @@ in
           run_exact_api_test \
             vm_lifecycle::quantum_loop::lifecycle::restart_ownership::tests::terminal_successor_launch_owns_exact_app_random_continuation
           run_exact_api_test \
+            vm_lifecycle::quantum_loop::checkpoint_capture::tests::cleanup_attempts_every_capture_in_reverse_order
+          run_exact_api_test \
+            vm_lifecycle::quantum_loop::checkpoint_capture::tests::publication_registry_retains_only_durable_or_indeterminate_owners
+          run_exact_api_test \
+            vm_lifecycle::checkpoint_store::publication::tests::publication_commit_tail_distinguishes_rollback_from_durability_uncertainty
+          run_exact_api_test \
+            vm_lifecycle::checkpoint_store::publication::tests::published_checkpoint_count_ignores_transaction_staging_directories
+          run_exact_api_test \
             vm_lifecycle::storage_faults::tests::ambiguous_shared_ninep_commit_poisons_runtime_before_return
           test "$(grep -Fc '    fn prepare_terminal_replacements(' \
             crates/crucible-api/src/vm_lifecycle/quantum_loop.rs)" -eq 1

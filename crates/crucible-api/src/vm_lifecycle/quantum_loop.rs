@@ -1,8 +1,12 @@
 //! `QuantumLoop` delegation for the production VM lifecycle.
 
+use super::checkpoint_store::{PersistExactCheckpointError, prepare_exact_checkpoint_set};
 use super::*;
 
+mod checkpoint_capture;
 mod lifecycle;
+pub(super) use checkpoint_capture::ExactCheckpointPublicationState;
+use checkpoint_capture::{ExactCheckpointTransactionError, PendingExactCapture};
 pub(super) use lifecycle::{
     DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
     decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
@@ -14,14 +18,6 @@ use lifecycle::{
     PreparedTerminalReplacement, map_journal_limit,
     release_restored_generation_after_scheduler_publication, select_preowned_terminal_generation,
 };
-
-struct PendingExactCapture {
-    node: NodeId,
-    counter: u64,
-    scheduler_time: VirtualTime,
-    service_state: ProductionNodeServiceState,
-    snapshot: QemuVmSnapshot,
-}
 
 fn checkpoint_artifact_from_stopped_file(
     source: &Path,
@@ -49,18 +45,37 @@ fn checkpoint_artifact_from_stopped_file(
     })
 }
 
-fn combine_exact_capture_result<T>(
-    operation: Result<T, SchedulerError>,
+fn combine_exact_checkpoint_transaction(
+    operation: Result<ContentHash, ExactCheckpointTransactionError>,
     cleanup: Result<(), SchedulerError>,
-) -> Result<T, SchedulerError> {
+) -> Result<ContentHash, ExactCheckpointTransactionError> {
     match (operation, cleanup) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) => Err(error),
-        (Ok(_), Err(cleanup)) => Err(cleanup),
-        (Err(error), Err(cleanup)) => Err(SchedulerError::BoundaryViolation {
-            message: format!(
-                "exact checkpoint failed ({error}); releasing paused QEMU nodes also failed ({cleanup})"
-            ),
+        (Ok(identity), Err(source)) => Err(ExactCheckpointTransactionError::Indeterminate {
+            identity: Some(identity),
+            source,
+        }),
+        (Err(ExactCheckpointTransactionError::Unpublished(error)), Err(cleanup)) => {
+            Err(ExactCheckpointTransactionError::Indeterminate {
+                identity: None,
+                source: SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "exact checkpoint failed before publication ({error}); releasing paused QEMU nodes also failed ({cleanup})"
+                    ),
+                },
+            })
+        }
+        (
+            Err(ExactCheckpointTransactionError::Indeterminate { identity, source }),
+            Err(cleanup),
+        ) => Err(ExactCheckpointTransactionError::Indeterminate {
+            identity,
+            source: SchedulerError::BoundaryViolation {
+                message: format!(
+                    "exact checkpoint publication was indeterminate ({source}); releasing paused QEMU nodes also failed ({cleanup})"
+                ),
+            },
         }),
     }
 }
@@ -1485,18 +1500,10 @@ impl ProductionVmLifecycleLoop {
         Ok(())
     }
 
-    fn capture_exact_checkpoint_set(
+    fn capture_reserved_exact_checkpoint_set(
         &mut self,
         configuration: &Configuration,
-    ) -> Result<ContentHash, SchedulerError> {
-        if self.checkpoint_targets.contains_key(&configuration.id()) {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "exact checkpoint {} was already captured by this lifecycle",
-                    configuration.id().to_hex()
-                ),
-            });
-        }
+    ) -> Result<ContentHash, ExactCheckpointTransactionError> {
         let checkpoint_virtual_time = self.inner.loop_impl().frontier();
         let network_committed_frontier = self.inner.committed_frontier();
         let fault_checkpoint = {
@@ -1530,7 +1537,11 @@ impl ProductionVmLifecycleLoop {
                 );
                 continue;
             }
-            let physical = self.inner.backend().node_now(&vm.id)?;
+            let physical = self
+                .inner
+                .backend()
+                .node_now(&vm.id)
+                .map_err(SchedulerError::from)?;
             node_icounts.insert(
                 vm.id.clone(),
                 crucible::Icount {
@@ -1547,7 +1558,39 @@ impl ProductionVmLifecycleLoop {
             boundaries.push((vm.id.clone(), physical.ticks, scheduler_time, service_state));
         }
 
+        // Own every scheduler/controller input before the first QMP save can
+        // pause a running node. Immutable object and manifest preparation is
+        // fallible but remains rollback-safe under the capture owners below.
+        let event_log_objects = self
+            .inner
+            .loop_impl()
+            .event_log_dependency_objects()
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("capture exact event-log closure: {error}"),
+            })?
+            .into_iter()
+            .collect();
+        let scheduler = self.inner.loop_impl().checkpoint().map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!("capture exact scheduler continuation: {error}"),
+            }
+        })?;
+        let signal_artifact_objects = self.signal_artifact_objects.clone();
+        let trigger_state = self.trigger_state.clone();
+        let assertion_state = self.assertion_evaluator.checkpoint();
+        let terminal_verdict = self.terminal_verdict.clone();
+        let terminal_cause = self.checkpoint_terminal_cause.clone();
+        let branch = self.branch.clone();
+        let recorded_controls = self.recorded_controls.clone();
+        let node_generations = self.node_generations.clone();
+        let node_service_states = self.node_service_states.clone();
+
         let mut captured = Vec::new();
+        captured
+            .try_reserve_exact(boundaries.len())
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("reserve exact checkpoint capture owners: {error}"),
+            })?;
         let capture_result = (|| -> Result<(), SchedulerError> {
             for (node, counter, scheduler_time, service_state) in boundaries {
                 let parent = if configuration.schedule.is_empty() {
@@ -1607,10 +1650,13 @@ impl ProductionVmLifecycleLoop {
         })();
         if let Err(error) = capture_result {
             let cleanup = self.release_exact_captures(&captured);
-            return combine_exact_capture_result(Err(error), cleanup);
+            return combine_exact_checkpoint_transaction(
+                Err(ExactCheckpointTransactionError::Unpublished(error)),
+                cleanup,
+            );
         }
 
-        let publication = (|| -> Result<ContentHash, SchedulerError> {
+        let preparation = (|| -> Result<_, ExactCheckpointTransactionError> {
             let mut targets = BTreeMap::new();
             for capture in &captured {
                 let source_directory =
@@ -1658,89 +1704,71 @@ impl ProductionVmLifecycleLoop {
                 );
             }
 
-            let event_log_objects = self
-                .inner
-                .loop_impl()
-                .event_log_dependency_objects()
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("capture exact event-log closure: {error}"),
-                })?
-                .into_iter()
-                .collect();
-            let scheduler = self.inner.loop_impl().checkpoint().map_err(|error| {
-                SchedulerError::BoundaryViolation {
-                    message: format!("capture exact scheduler continuation: {error}"),
-                }
-            })?;
             let mut checkpoint_set = ProductionVmExactCheckpointSet {
                 identity: ContentHash::default(),
                 configuration: configuration.clone(),
                 scheduler,
                 event_log_objects,
-                signal_artifact_objects: self.signal_artifact_objects.clone(),
-                trigger_state: self.trigger_state.clone(),
-                assertion_state: self.assertion_evaluator.checkpoint(),
-                terminal_verdict: self.terminal_verdict.clone(),
-                terminal_cause: self.checkpoint_terminal_cause.clone(),
+                signal_artifact_objects,
+                trigger_state,
+                assertion_state,
+                terminal_verdict,
+                terminal_cause,
                 initial_lifecycle_observations_pending: self.initial_lifecycle_observations_pending,
-                branch: self.branch.clone(),
-                recorded_controls: self.recorded_controls.clone(),
+                branch,
+                recorded_controls,
                 fault_checkpoint: Some(fault_checkpoint),
                 targets,
-                node_generations: self.node_generations.clone(),
-                node_service_states: self.node_service_states.clone(),
+                node_generations,
+                node_service_states,
             };
-            persist_exact_checkpoint_set(
+            prepare_exact_checkpoint_set(
                 &self.config.run_state_root,
                 self.scenario.id(),
                 self.source.plan().fault_signals().resource_limits(),
                 &mut checkpoint_set,
-            )?;
-            Ok(checkpoint_set.identity)
+            )
+            .map_err(|error| match error {
+                PersistExactCheckpointError::Unpublished(source) => {
+                    ExactCheckpointTransactionError::Unpublished(source)
+                }
+                PersistExactCheckpointError::Indeterminate { identity, source } => {
+                    ExactCheckpointTransactionError::Indeterminate {
+                        identity: Some(identity),
+                        source,
+                    }
+                }
+            })
         })();
-        let cleanup = self.release_exact_captures(&captured);
-        let checkpoint_set_identity = combine_exact_capture_result(publication, cleanup)?;
-        let replaced = self
-            .checkpoint_targets
-            .insert(configuration.id(), checkpoint_set_identity);
-        debug_assert!(replaced.is_none());
-        Ok(checkpoint_set_identity)
-    }
-
-    fn release_exact_captures(
-        &mut self,
-        captured: &[PendingExactCapture],
-    ) -> Result<(), SchedulerError> {
-        let mut first_failure = None;
-        for capture in captured.iter().rev() {
-            if let Err(error) = self
-                .inner
-                .backend_mut()
-                .delete_exact_snapshot(&capture.node, &capture.snapshot)
-                && first_failure.is_none()
-            {
-                first_failure = Some(format!(
-                    "delete paused exact snapshot for `{}`: {error}",
-                    capture.node.name
-                ));
+        let prepared = match preparation {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let cleanup = self.release_exact_captures(&captured);
+                return combine_exact_checkpoint_transaction(Err(error), cleanup);
             }
-            if capture.service_state == ProductionNodeServiceState::Running
-                && let Err(error) = self
-                    .inner
-                    .backend_mut()
-                    .resume_after_exact_snapshot(&capture.node)
-                && first_failure.is_none()
-            {
-                first_failure = Some(format!(
-                    "resume `{}` after exact checkpoint publication: {error}",
-                    capture.node.name
-                ));
-            }
+        };
+        let identity = prepared.identity();
+        let was_already_published = prepared.was_already_published();
+        if let Err(source) = self.release_exact_captures(&captured) {
+            return Err(ExactCheckpointTransactionError::Indeterminate {
+                identity: was_already_published.then_some(identity),
+                source,
+            });
         }
-        if let Some(message) = first_failure {
-            return Err(SchedulerError::BoundaryViolation { message });
-        }
-        Ok(())
+        prepared
+            .publish()
+            .map(|()| identity)
+            .map_err(|error| match error {
+                PersistExactCheckpointError::Unpublished(source) => {
+                    ExactCheckpointTransactionError::Unpublished(source)
+                }
+                PersistExactCheckpointError::Indeterminate { identity, source } => {
+                    ExactCheckpointTransactionError::Indeterminate {
+                        identity: Some(identity),
+                        source,
+                    }
+                }
+            })
     }
 
     /// Evaluates the signal program exactly once in the ordered sequence of
