@@ -29,8 +29,10 @@
 #      REFUSE on the floor, again without changing either axis.
 #   4. ACCEPT CATALOG — the floor is lowered to the image's generation. The
 #      Secure Boot catalog validation passes and the consumer reaches the A/B
-#      staging boundary. This kernel-boot policy fixture cannot mutate an A/B
-#      disk, so both generation axes remain unchanged.
+#      staging boundary. This direct-kernel policy fixture has no mounted EFI
+#      System Partition, so staging fails closed before mutating a slot and both
+#      generation axes remain unchanged. The image-mode lifecycle test owns full
+#      staging, reboot, bless, fallback, and rollback coverage.
 #
 # Machines (lexicographic: registry=192.168.50.10, target=192.168.50.11):
 #   registry: aos-registry-server (gitd :9418) + static-cache package (:8000),
@@ -426,7 +428,7 @@ in {
           timeout=1800,
       )
       print("=== refuse (unknown signer) ===\n" + out)
-      assert "active db-cert set" in out, (
+      assert "signer cert" in out and "is not active" in out, (
           f"upgrade was not refused for an untrusted signer:\n{out}"
       )
       assert_generation_axes_unchanged("unknown signer")
@@ -468,7 +470,7 @@ in {
           timeout=600,
       )
       print("=== refuse (sbat floor) ===\n" + out)
-      assert "revocation floor" in out, (
+      assert "below floor" in out, (
           f"upgrade was not refused for a below-floor SBAT generation:\n{out}"
       )
       assert_generation_axes_unchanged("SBAT floor")
@@ -489,14 +491,15 @@ in {
           "${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
           timeout=600,
       )
-      print("=== accept catalog, reject legacy payload ===\n" + out)
+      print("=== accept catalog, reach unavailable ESP ===\n" + out)
       assert "Secure Boot catalog validation passed" in out, (
           f"a valid catalog did not report SB validation:\n{out}"
       )
-      assert "no authenticated raw OTA image" in out, (
-          f"a legacy UKI-only payload passed the A/B image gate:\n{out}"
+      assert "/boot is not a mounted EFI System Partition" in out, (
+          f"accepted image did not reach the direct-kernel fixture's "
+          f"unavailable ESP boundary:\n{out}"
       )
-      assert_generation_axes_unchanged("catalog accepted without raw OTA")
+      assert_generation_axes_unchanged("catalog accepted before slot commit")
       target.succeed("${pkgs.nix}/bin/nix-store --check-validity '${sbTop}'")
       failed = target.succeed("systemctl --failed --no-legend").strip()
       assert not failed, f"failed units after accepted upgrade: {failed!r}"
