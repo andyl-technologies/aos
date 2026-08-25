@@ -487,7 +487,7 @@ Manual validation begins before the final CLI phase:
 | --- | --- |
 | Phase 0 | Tabletop of the lifecycle, destructive drill, claims, and evidence manifest |
 | Phase 1 | Offline create/inspect/derive/stale-command/pause snapshot flight using canonical objects and linear ancestry |
-| Phase 2 | Real guest registers choices, blocks for selections, rejects mismatch, and replays replies |
+| Phase 2 | Real guest registers choices, blocks for selections, rejects mismatch, and replays replies. The automated `checks.crucible.phase2.qemuLiveSelectableProduct` exact-restore flight is a prerequisite, not a substitute for the signed operator record. |
 | Phase 3 | Human cross-check of guest markers, modeled network evidence, metric windows, objectives, and finding evidence |
 | Phase 4 | Direct/RPC component equivalence plus local operator flight through lazy widening, additive finite branching, edge deduplication, backpressure, independent coordinator/executor restart, steering, and explanation |
 | Phase 5 | Hibernate/resume, composed-backend outage, tier promotion/eviction, packing/repacking, archival transfer, import, corruption, pin, and store-wide GC flights |

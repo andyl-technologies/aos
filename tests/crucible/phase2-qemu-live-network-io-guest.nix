@@ -1,4 +1,7 @@
-{pkgs}:
+{
+  pkgs,
+  selectable ? false,
+}:
 # A diskless Linux initramfs whose PID 1 exchanges a raw Ethernet probe,
 # acknowledgement, and checkpoint-continuation stream. The guest creates all
 # application traffic; the host gate only routes guest-originated frames and
@@ -8,11 +11,13 @@ pkgs.mkDerivation {
   version = "0";
   src = null;
 
-  buildDeps = [
-    pkgs.coreutils
-    pkgs.cpio
-    pkgs.pigz
-  ];
+  buildDeps =
+    [
+      pkgs.coreutils
+      pkgs.cpio
+      pkgs.pigz
+    ]
+    ++ pkgs.lib.optional selectable pkgs.crucible-guest;
 
   phases = [
     {
@@ -24,12 +29,15 @@ pkgs.mkDerivation {
         #include <linux/if_packet.h>
         #include <net/ethernet.h>
         #include <net/if.h>
+        #include <stdio.h>
         #include <stdint.h>
+        #include <stdlib.h>
         #include <string.h>
         #include <sys/ioctl.h>
         #include <sys/socket.h>
         #include <time.h>
         #include <unistd.h>
+        #include <sys/wait.h>
 
         #define FRAME_LEN 60
         #define PAYLOAD_OFFSET 14
@@ -46,6 +54,145 @@ pkgs.mkDerivation {
           "crucible-network-checkpoint-v1";
         static const uint8_t continuation_payload[] =
           "crucible-network-continuation-v1";
+
+        #if CRUCIBLE_SELECTABLE_PRODUCT
+        static const char recovery_fast_id[] =
+          "0101010101010101010101010101010101010101010101010101010101010101";
+        static const char recovery_safe_id[] =
+          "0202020202020202020202020202020202020202020202020202020202020202";
+
+        static int run_crucible_guest(char *const argv[], char *output,
+                                      size_t output_capacity) {
+          int output_pipe[2];
+          if (pipe(output_pipe) != 0) {
+            return -1;
+          }
+          pid_t child = fork();
+          if (child < 0) {
+            close(output_pipe[0]);
+            close(output_pipe[1]);
+            return -1;
+          }
+          if (child == 0) {
+            close(output_pipe[0]);
+            if (dup2(output_pipe[1], STDOUT_FILENO) < 0) {
+              _exit(126);
+            }
+            close(output_pipe[1]);
+            execv(argv[0], argv);
+            _exit(127);
+          }
+
+          close(output_pipe[1]);
+          size_t used = 0;
+          int overflow = 0;
+          for (;;) {
+            uint8_t scratch[128];
+            ssize_t count = read(output_pipe[0], scratch, sizeof(scratch));
+            if (count == 0) {
+              break;
+            }
+            if (count < 0) {
+              close(output_pipe[0]);
+              (void)waitpid(child, 0, 0);
+              return -1;
+            }
+            size_t available = output_capacity > used
+              ? output_capacity - used - 1
+              : 0;
+            size_t copy = (size_t)count < available
+              ? (size_t)count
+              : available;
+            if (copy > 0) {
+              memcpy(output + used, scratch, copy);
+              used += copy;
+            }
+            if (copy != (size_t)count) {
+              overflow = 1;
+            }
+          }
+          close(output_pipe[0]);
+          int status = 0;
+          if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+              WEXITSTATUS(status) != 0 || overflow || output_capacity == 0) {
+            return -1;
+          }
+          while (used > 0 && (output[used - 1] == '\n' || output[used - 1] == '\r')) {
+            --used;
+          }
+          output[used] = '\0';
+          return 0;
+        }
+
+        static int configure_product_selectables(int *fast_recovery,
+                                                 uint64_t *retry_quanta) {
+          char empty[1];
+          char *register_recovery[] = {
+            "/crucible-guest", "selectable", "register-discrete", "1",
+            "network.recovery-policy",
+            (char *)recovery_safe_id,
+            "0101010101010101010101010101010101010101010101010101010101010101=fast",
+            "0202020202020202020202020202020202020202020202020202020202020202=safe",
+            0
+          };
+          if (run_crucible_guest(register_recovery, empty, sizeof(empty)) != 0) {
+            return -1;
+          }
+          char *register_retry[] = {
+            "/crucible-guest", "selectable", "register-u64", "2",
+            "network.retry-quanta", "1", "9", "2", "3", "quanta", 0
+          };
+          if (run_crucible_guest(register_retry, empty, sizeof(empty)) != 0) {
+            return -2;
+          }
+          char *setup_complete[] = {
+            "/crucible-guest", "setup-complete", 0
+          };
+          if (run_crucible_guest(setup_complete, empty, sizeof(empty)) != 0) {
+            return -3;
+          }
+
+          char recovery[80];
+          char *choose_recovery[] = {
+            "/crucible-guest", "selectable", "choose-discrete", "1",
+            "network.recovery-policy", "routing/boot",
+            (char *)recovery_fast_id, (char *)recovery_safe_id, 0
+          };
+          if (run_crucible_guest(choose_recovery, recovery, sizeof(recovery)) != 0) {
+            return -4;
+          }
+          const char discrete_prefix[] = "discrete=";
+          if (strncmp(recovery, discrete_prefix, sizeof(discrete_prefix) - 1) != 0) {
+            return -5;
+          }
+          const char *recovery_id = recovery + sizeof(discrete_prefix) - 1;
+          if (strcmp(recovery_id, recovery_fast_id) == 0) {
+            *fast_recovery = 1;
+          } else if (strcmp(recovery_id, recovery_safe_id) == 0) {
+            *fast_recovery = 0;
+          } else {
+            return -6;
+          }
+
+          char retry[32];
+          char *choose_retry[] = {
+            "/crucible-guest", "selectable", "choose-u64", "2",
+            "network.retry-quanta", "routing/boot", "1", "9", "2", 0
+          };
+          if (run_crucible_guest(choose_retry, retry, sizeof(retry)) != 0 ||
+              strncmp(retry, "u64=", 4) != 0) {
+            return -7;
+          }
+          char *end = 0;
+          unsigned long long parsed = strtoull(retry + 4, &end, 10);
+          if (end == retry + 4 || *end != '\0' || parsed < 1 || parsed > 9 ||
+              ((parsed - 1) % 2) != 0) {
+            return -8;
+          }
+          *retry_quanta = (uint64_t)parsed;
+          return 0;
+        }
+        #endif
 
         static void park_forever(void) {
           const struct timespec interval = {0, 20000000};
@@ -170,6 +317,49 @@ pkgs.mkDerivation {
           uint8_t frame[FRAME_LEN];
           const uint8_t broadcast[6] =
             {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+
+          #if CRUCIBLE_SELECTABLE_PRODUCT
+          int fast_recovery = 0;
+          uint64_t retry_quanta = 0;
+          int selectable_status =
+            configure_product_selectables(&fast_recovery, &retry_quanta);
+          if (selectable_status != 0) {
+            uint8_t error_payload[40];
+            memset(error_payload, 0, sizeof(error_payload));
+            int error_len = snprintf((char *)error_payload,
+                                     sizeof(error_payload),
+                                     "crucible-selectable-error-%d",
+                                     -selectable_status);
+            if (error_len > 0 && error_len < (int)sizeof(error_payload) &&
+                error_len <= FRAME_LEN - PAYLOAD_OFFSET) {
+              build_frame(frame, broadcast, guest_mac, error_payload,
+                          (size_t)error_len);
+              (void)send_frame(fd, index_request.ifr_ifindex, frame);
+            }
+            park_forever();
+          }
+          #endif
+
+          #if CRUCIBLE_SELECTABLE_PRODUCT
+          uint8_t selected_payload[40];
+          memset(selected_payload, 0, sizeof(selected_payload));
+          const char *policy = fast_recovery ? "fast" : "safe";
+          int selected_len = snprintf((char *)selected_payload,
+                                      sizeof(selected_payload),
+                                      "crucible-selected-%s-q%llu",
+                                      policy,
+                                      (unsigned long long)retry_quanta);
+          if (selected_len <= 0 || selected_len >= (int)sizeof(selected_payload) ||
+              selected_len > FRAME_LEN - PAYLOAD_OFFSET) {
+            park_forever();
+          }
+          build_frame(frame, broadcast, guest_mac, selected_payload,
+                      (size_t)selected_len);
+          if (send_frame(fd, index_request.ifr_ifindex, frame) !=
+              (ssize_t)sizeof(frame)) {
+            park_forever();
+          }
+          #endif
           build_frame(frame, broadcast, guest_mac, probe_payload,
                       sizeof(probe_payload) - 1);
           if (send_frame(fd, index_request.ifr_ifindex, frame) !=
@@ -258,20 +448,37 @@ pkgs.mkDerivation {
         }
         INIT_C
 
-        cc -static -O2 -Wall -Wextra -Werror -o init init.c
+        cc -static -O2 -Wall -Wextra -Werror \
+          -DCRUCIBLE_SELECTABLE_PRODUCT=${
+          if selectable
+          then "1"
+          else "0"
+        } \
+          -o init init.c
         strip --strip-all init
 
         mkdir -p root
         cp init root/init
         chmod 0755 root/init
+        ${pkgs.lib.optionalString selectable ''
+          cp ${pkgs.crucible-guest}/bin/crucible-guest root/crucible-guest
+          chmod 0755 root/crucible-guest
+        ''}
 
         mkdir -p "$out"
+        # The product fixture carries a static Rust client. Keep its newc
+        # archive uncompressed so deterministic TCG time measures the product
+        # behavior rather than billions of guest inflate instructions.
         (
           cd root
           find . -print0 \
             | LC_ALL=C sort -z \
             | cpio --quiet -o -H newc -R +0:+0 --reproducible --null \
-            | pigz -9 -n > "$out/initrd.img"
+            | ${
+          if selectable
+          then "cat"
+          else "pigz -9 -n"
+        } > "$out/initrd.img"
         )
         test -s "$out/initrd.img"
 
@@ -285,6 +492,21 @@ pkgs.mkDerivation {
         guest_reply_ack_binding=exact-router-source-and-guest-destination
         guest_self_probe_acknowledgement=forbidden
         multi_guest_tx_order=deterministic-node-mac-stagger
+        selectable_product=${
+          if selectable
+          then "true"
+          else "false"
+        }
+        selectable_guest_surface=${
+          if selectable
+          then "crucible-guest-typed-cli"
+          else "disabled"
+        }
+        initramfs_encoding=${
+          if selectable
+          then "uncompressed-newc"
+          else "gzip-newc"
+        }
         EVIDENCE
       '';
     }

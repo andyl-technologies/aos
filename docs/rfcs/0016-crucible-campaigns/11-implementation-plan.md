@@ -195,6 +195,21 @@ live producer is the fail-closed conversion path. The broader legacy-decision
 migration policy and Phase 2 real-guest flight remain under T-CAM-2.3 and
 T-CAM-2.8 respectively.
 
+The public static `crucible-guest` product client now constructs discrete and
+unsigned-integral registrations and requests from the same canonical
+`ChoiceDomain` and `ChoiceValue` types used by the coordinator. The actual
+network-product initramfs registers a required recovery-policy choice and a
+required stepped retry-quanta choice, blocks on both through the supported
+guest CLI, and makes the returned values change a guest-originated Ethernet
+frame. `checks.crucible.phase2.qemuLiveSelectableProduct` captures that guest
+with the first request pending, writes the ordinary exact-snapshot envelope and
+canonical catalog-plan sidecar, force-kills the source QEMU, restores a fresh
+QEMU/plugin process, proves the pending token is exact, supplies the discrete
+and integral replies, and observes `crucible-selected-fast-q7` from the guest.
+Together with the production checkpoint-manifest version-5 codec tests, this is
+the automated prerequisite for T-CAM-2.8. The task remains unchecked until the
+§14 Phase 2 operator flight records its required human acceptance evidence.
+
 ## 11.5 Phase 3 — Measurements and objectives
 
 Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and

@@ -2230,6 +2230,7 @@ dependencies = [
 name = "crucible-guest"
 version = "0.1.0"
 dependencies = [
+ "crucible-campaign",
  "crucible-protocol",
  "libc",
  "thiserror 2.0.18",
@@ -2258,6 +2259,7 @@ dependencies = [
  "blake3",
  "ciborium",
  "crucible",
+ "crucible-campaign",
  "crucible-device",
  "crucible-protocol",
  "crucible-shmem",

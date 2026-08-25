@@ -1,5 +1,10 @@
 //! Guest selectable helper tests over a safe in-process transport.
 
+use std::collections::BTreeMap;
+
+use crucible_campaign::{
+    AlternativeId, CampaignHash, ChoiceDomain, ChoiceValue, DiscreteAlternative, DiscreteDomain,
+};
 use crucible_protocol::{SELECTABLE_DIGEST_BYTES, SelectableMessageKind, SelectionReplyStatus};
 
 use super::*;
@@ -15,6 +20,10 @@ impl DoorbellTransport for Untouched {
 struct Replace {
     reply: Vec<u8>,
     clear_tail: bool,
+}
+
+fn must<T, E: std::fmt::Display>(result: Result<T, E>) -> T {
+    result.unwrap_or_else(|error| panic!("test fixture construction failed: {error}"))
 }
 
 impl DoorbellTransport for Replace {
@@ -44,6 +53,15 @@ fn registration() -> Result<SelectableRegister, SelectableProtocolError> {
 
 fn request(sequence: u64) -> Result<SelectionRequest, SelectableProtocolError> {
     SelectionRequest::new(sequence, "network.recovery-policy", "routing/7", None, 256)
+}
+
+fn recovery_domain() -> ChoiceDomain {
+    let fast = AlternativeId::from_hash(CampaignHash::from_bytes([1; 32]));
+    let safe = AlternativeId::from_hash(CampaignHash::from_bytes([2; 32]));
+    let mut alternatives = BTreeMap::new();
+    alternatives.insert(fast, must(DiscreteAlternative::new(fast, "fast", None)));
+    alternatives.insert(safe, must(DiscreteAlternative::new(safe, "safe", None)));
+    ChoiceDomain::Discrete(must(DiscreteDomain::new(1, alternatives)))
 }
 
 #[test]
@@ -152,6 +170,101 @@ fn typed_helpers_reject_mutation_stale_reply_and_uncleared_tail() -> Result<(), 
             }
         ),
         Err(GuestSelectableError::ReplyTailNotCleared)
+    );
+    Ok(())
+}
+
+#[test]
+fn product_registration_uses_the_shared_typed_domain_codec() -> Result<(), GuestSelectableError> {
+    let domain = recovery_domain();
+    let default =
+        ChoiceValue::Discrete(AlternativeId::from_hash(CampaignHash::from_bytes([2; 32])));
+    let registration = build_selectable_registration(
+        1,
+        "network.recovery-policy",
+        &domain,
+        &default,
+        vec![String::from("network"), String::from("recovery")],
+    )?;
+    assert_eq!(registration.domain(), domain.canonical_bytes());
+    assert_eq!(registration.default_value(), default.canonical_bytes());
+
+    let foreign =
+        ChoiceValue::Discrete(AlternativeId::from_hash(CampaignHash::from_bytes([9; 32])));
+    assert_eq!(
+        build_selectable_registration(2, "network.recovery-policy", &domain, &foreign, Vec::new()),
+        Err(GuestSelectableError::DefaultOutsideDomain)
+    );
+    Ok(())
+}
+
+#[test]
+fn product_request_decodes_and_revalidates_the_selected_value() -> Result<(), GuestSelectableError>
+{
+    let domain = recovery_domain();
+    let selected =
+        ChoiceValue::Discrete(AlternativeId::from_hash(CampaignHash::from_bytes([1; 32])));
+    let request = request(71)?;
+    let reply = SelectionReply::selected(
+        71,
+        [3; SELECTABLE_DIGEST_BYTES],
+        [4; SELECTABLE_DIGEST_BYTES],
+        selected.canonical_bytes(),
+    )?;
+    let outcome = request_typed_selection(
+        &request,
+        &domain,
+        &mut Replace {
+            reply: reply.encode()?,
+            clear_tail: true,
+        },
+    )?;
+    assert_eq!(outcome.value(), &selected);
+
+    let foreign =
+        ChoiceValue::Discrete(AlternativeId::from_hash(CampaignHash::from_bytes([9; 32])));
+    let reply = SelectionReply::selected(
+        71,
+        [3; SELECTABLE_DIGEST_BYTES],
+        [4; SELECTABLE_DIGEST_BYTES],
+        foreign.canonical_bytes(),
+    )?;
+    assert_eq!(
+        request_typed_selection(
+            &request,
+            &domain,
+            &mut Replace {
+                reply: reply.encode()?,
+                clear_tail: true,
+            },
+        ),
+        Err(GuestSelectableError::SelectedValueOutsideDomain)
+    );
+    Ok(())
+}
+
+#[test]
+fn product_request_keeps_typed_host_rejection_distinct() -> Result<(), GuestSelectableError> {
+    let domain = recovery_domain();
+    let request = request(81)?;
+    let reply = SelectionReply::rejected(
+        81,
+        SelectionReplyStatus::NoAdmissibleValue,
+        [0; SELECTABLE_DIGEST_BYTES],
+        [0; SELECTABLE_DIGEST_BYTES],
+    )?;
+    assert_eq!(
+        request_typed_selection(
+            &request,
+            &domain,
+            &mut Replace {
+                reply: reply.encode()?,
+                clear_tail: true,
+            },
+        ),
+        Err(GuestSelectableError::SelectionRejected {
+            status: SelectionReplyStatus::NoAdmissibleValue,
+        })
     );
     Ok(())
 }

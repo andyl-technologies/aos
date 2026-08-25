@@ -1871,13 +1871,17 @@ impl QemuNode {
             })
     }
 
-    /// Enqueues one exact host-authorized selectable reply before QEMU resumes.
+    /// Enqueues one exact host-authorized selectable reply and resumes QEMU.
+    ///
+    /// The shared-memory publication precedes the QMP running-state transition,
+    /// so the plugin's first resumed-vCPU callback observes and applies the
+    /// exact reply before guest execution continues.
     ///
     /// # Errors
     ///
     /// Returns [`QemuNodeError`] when the pending token is stale or malformed,
-    /// the reply does not fit its guest reservation, or shared-memory
-    /// publication fails.
+    /// the reply does not fit its guest reservation, shared-memory publication
+    /// fails, or QMP cannot acknowledge the running-state transition.
     pub fn enqueue_selectable_reply(
         &mut self,
         pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
@@ -1888,7 +1892,11 @@ impl QemuNode {
             .enqueue_selectable_reply(pending, reply)
             .map_err(|source| {
                 QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-            })
+            })?;
+        if let Err(source) = self.channels.qmp_machine_control.resume_after_checkpoint() {
+            return self.handle_qmp_channel_error(source);
+        }
+        Ok(())
     }
 
     /// Returns a copy of the exact host-mirrored selectable catalog plan.

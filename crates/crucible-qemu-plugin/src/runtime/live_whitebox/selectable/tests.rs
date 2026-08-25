@@ -37,13 +37,28 @@ impl WhiteboxGuestInputWriter for RecordingWriter {
 }
 
 thread_local! {
-    static VMSTOP_STATUS: Cell<i32> = const { Cell::new(0) };
-    static VMSTOP_CALLS: Cell<usize> = const { Cell::new(0) };
+    static FORCE_EXIT_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
-extern "C" fn request_vmstop() -> i32 {
-    VMSTOP_CALLS.set(VMSTOP_CALLS.get() + 1);
-    VMSTOP_STATUS.get()
+extern "C" fn force_vcpu_exit() {
+    FORCE_EXIT_CALLS.set(FORCE_EXIT_CALLS.get() + 1);
+}
+
+fn vmstop_handoff() -> Arc<super::super::super::live_callbacks::SelectableVmstopHandoff> {
+    Arc::new(super::super::super::live_callbacks::SelectableVmstopHandoff::new())
+}
+
+fn live_state(
+    plan: &SelectableCatalogPlan,
+    reply_input: LiveSelectableReplyShmemConsumer,
+) -> Result<LiveSelectableState, SelectableCatalogError> {
+    LiveSelectableState::new(
+        plan,
+        capability(),
+        force_vcpu_exit,
+        vmstop_handoff(),
+        reply_input,
+    )
 }
 
 fn registration(sequence: u64) -> Result<SelectableRegister, Box<dyn std::error::Error>> {
@@ -134,12 +149,18 @@ fn reply_input() -> LiveSelectableReplyShmemConsumer {
 }
 
 #[test]
-fn live_catalog_freezes_and_retains_a_request_before_vmstop()
+fn live_catalog_retains_request_before_deferring_stop_to_exact_callback()
 -> Result<(), Box<dyn std::error::Error>> {
-    VMSTOP_STATUS.set(0);
-    VMSTOP_CALLS.set(0);
+    FORCE_EXIT_CALLS.set(0);
     let plan = cold_plan()?;
-    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop, reply_input())?;
+    let vmstop_handoff = vmstop_handoff();
+    let mut state = LiveSelectableState::new(
+        &plan,
+        capability(),
+        force_vcpu_exit,
+        Arc::clone(&vmstop_handoff),
+        reply_input(),
+    )?;
     state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
     state.freeze()?;
 
@@ -156,7 +177,8 @@ fn live_catalog_freezes_and_retains_a_request_before_vmstop()
         )?,
         SelectableReplyDisposition::Pending,
     );
-    assert_eq!(VMSTOP_CALLS.get(), 1);
+    assert_eq!(FORCE_EXIT_CALLS.get(), 1);
+    assert!(vmstop_handoff.is_pending());
     let pending = state
         .catalog()
         .pending_request()
@@ -176,12 +198,11 @@ fn live_catalog_freezes_and_retains_a_request_before_vmstop()
 }
 
 #[test]
-fn deferred_transport_bound_rejects_before_catalog_mutation_or_vmstop()
+fn deferred_transport_bound_rejects_before_catalog_mutation_or_forced_exit()
 -> Result<(), Box<dyn std::error::Error>> {
-    VMSTOP_STATUS.set(0);
-    VMSTOP_CALLS.set(0);
+    FORCE_EXIT_CALLS.set(0);
     let plan = cold_plan()?;
-    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop, reply_input())?;
+    let mut state = live_state(&plan, reply_input())?;
     state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
     state.freeze()?;
     let request = SelectionRequest::new(
@@ -205,7 +226,7 @@ fn deferred_transport_bound_rejects_before_catalog_mutation_or_vmstop()
             )
             .is_err()
     );
-    assert_eq!(VMSTOP_CALLS.get(), 0);
+    assert_eq!(FORCE_EXIT_CALLS.get(), 0);
     assert!(state.catalog().pending_request().is_none());
     Ok(())
 }
@@ -214,7 +235,7 @@ fn deferred_transport_bound_rejects_before_catalog_mutation_or_vmstop()
 fn logical_restore_discards_priming_catalog_and_recovers_exact_continuation()
 -> Result<(), Box<dyn std::error::Error>> {
     let plan = restored_plan()?;
-    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop, reply_input())?;
+    let mut state = live_state(&plan, reply_input())?;
     state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
     state.freeze()?;
     assert_eq!(state.catalog().total_completed_requests(), 0);
@@ -248,7 +269,7 @@ fn resume_delivery_binds_reply_to_pending_coordinate_and_zero_fills_reservation(
     header.enqueue_whitebox_marker(&mut entries, entry)?;
 
     let plan = restored_plan()?;
-    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop, reply_input)?;
+    let mut state = live_state(&plan, reply_input)?;
     state.restore_continuation()?;
     let mut writer = RecordingWriter::default();
     state.deliver_reply(700, 1, &mut writer)?;
@@ -277,6 +298,55 @@ fn resume_delivery_binds_reply_to_pending_coordinate_and_zero_fills_reservation(
 }
 
 #[test]
+fn live_reply_rebinds_the_in_block_trap_to_the_exact_stop_boundary()
+-> Result<(), Box<dyn std::error::Error>> {
+    let header = RingHeader::new();
+    let mut entries = vec![WhiteboxMarkerEntry::default()];
+    // SAFETY: the stack-owned ring storage outlives the state and has one
+    // consumer in this test.
+    let reply_input = unsafe {
+        LiveSelectableReplyShmemConsumer::from_raw_parts(
+            std::ptr::from_ref(&header),
+            entries.as_mut_ptr(),
+            entries.len(),
+        )
+    };
+    let reply = SelectionReply::selected(2, [0x11; 32], [0x22; 32], vec![2])?;
+    header.enqueue_whitebox_marker(
+        &mut entries,
+        WhiteboxMarkerEntry::new(
+            60,
+            1,
+            WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
+            &reply.encode()?,
+        )?,
+    )?;
+
+    let plan = cold_plan()?;
+    let mut state = live_state(&plan, reply_input)?;
+    state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
+    state.freeze()?;
+    let request = request(2)?;
+    state.serve_selection(
+        &request,
+        SelectableCallbackCoordinate::new(50, 1),
+        crate::GuestMemoryRange::new(
+            crate::GuestMemoryAddressSpace::Virtual,
+            0x4000,
+            request.reply_capacity(),
+        ),
+    )?;
+
+    let mut writer = RecordingWriter::default();
+    state.deliver_reply(60, 1, &mut writer)?;
+
+    assert_eq!(writer.delivery_icount, Some(60));
+    assert!(state.catalog().pending_request().is_none());
+    assert_eq!(state.catalog().total_completed_requests(), 1);
+    Ok(())
+}
+
+#[test]
 fn stale_reply_coordinate_fails_before_guest_write_or_catalog_completion()
 -> Result<(), Box<dyn std::error::Error>> {
     let header = RingHeader::new();
@@ -300,7 +370,7 @@ fn stale_reply_coordinate_fails_before_guest_write_or_catalog_completion()
     header.enqueue_whitebox_marker(&mut entries, entry)?;
 
     let plan = restored_plan()?;
-    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop, reply_input)?;
+    let mut state = live_state(&plan, reply_input)?;
     state.restore_continuation()?;
     let mut writer = RecordingWriter::default();
 
@@ -312,11 +382,19 @@ fn stale_reply_coordinate_fails_before_guest_write_or_catalog_completion()
 }
 
 #[test]
-fn vmstop_rejection_keeps_the_exact_request_pending() -> Result<(), Box<dyn std::error::Error>> {
-    VMSTOP_STATUS.set(-1);
-    VMSTOP_CALLS.set(0);
+fn occupied_vmstop_handoff_keeps_the_exact_request_pending()
+-> Result<(), Box<dyn std::error::Error>> {
+    FORCE_EXIT_CALLS.set(0);
     let plan = cold_plan()?;
-    let mut state = LiveSelectableState::new(&plan, capability(), request_vmstop, reply_input())?;
+    let vmstop_handoff = vmstop_handoff();
+    assert!(vmstop_handoff.defer(force_vcpu_exit));
+    let mut state = LiveSelectableState::new(
+        &plan,
+        capability(),
+        force_vcpu_exit,
+        Arc::clone(&vmstop_handoff),
+        reply_input(),
+    )?;
     state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
     state.freeze()?;
     let request = request(2)?;
@@ -334,7 +412,8 @@ fn vmstop_rejection_keeps_the_exact_request_pending() -> Result<(), Box<dyn std:
             )
             .is_err()
     );
-    assert_eq!(VMSTOP_CALLS.get(), 1);
+    assert_eq!(FORCE_EXIT_CALLS.get(), 1);
+    assert!(vmstop_handoff.is_pending());
     assert_eq!(
         state
             .catalog()
@@ -342,7 +421,6 @@ fn vmstop_rejection_keeps_the_exact_request_pending() -> Result<(), Box<dyn std:
             .map(|pending| pending.request()),
         Some(&request),
     );
-    VMSTOP_STATUS.set(0);
     Ok(())
 }
 

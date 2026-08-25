@@ -606,10 +606,13 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
                 retired: final_snapshot.idle_wake_icount,
             });
         }
-        if matches!(
-            classify_quantum_boundary(&final_state, pending.ceiling.retired),
-            QuantumBoundary::Pending
-        ) && !completed_clamp
+        let boundary = classify_quantum_boundary(&final_state, pending.ceiling.retired);
+        let stale_quiesced_boundary = matches!(
+            boundary,
+            QuantumBoundary::Paused { at, deadline } if at == deadline
+        ) && final_snapshot.publish_gen == pending.report_generation;
+        if (matches!(boundary, QuantumBoundary::Pending) || stale_quiesced_boundary)
+            && !completed_clamp
         {
             return Err(QemuQuantumError::PluginReportNotPublished {
                 current_icount: final_snapshot.current_icount,

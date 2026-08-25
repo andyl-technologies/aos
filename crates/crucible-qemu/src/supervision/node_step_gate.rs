@@ -102,8 +102,9 @@ mod error;
 pub use error::QemuLiveNodeStepGateError;
 mod exact_snapshot;
 pub use exact_snapshot::{
-    QemuLiveRetainedNetworkSnapshotReport, run_qemu_live_exact_snapshot_gate,
-    run_qemu_live_retained_network_snapshot_gate,
+    QemuLiveRetainedNetworkSnapshotReport, QemuLiveSelectableProductSnapshotReport,
+    run_qemu_live_exact_snapshot_gate, run_qemu_live_retained_network_snapshot_gate,
+    run_qemu_live_selectable_product_snapshot_gate,
 };
 
 /// Content-addressing domain for node-step launch artifacts.

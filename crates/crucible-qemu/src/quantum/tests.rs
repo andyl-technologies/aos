@@ -164,6 +164,38 @@ fn qemu_quantum_rejects_finish_before_reaching_a_boundary() {
 }
 
 #[test]
+fn qemu_quantum_accepts_a_fresh_explicit_quiesced_boundary() {
+    let slot = NodeSlot::default();
+    let inbound_ring = RingHeader::new();
+    let outbound_ring = RingHeader::new();
+    let mut inbound_entries = frame_entries(8);
+    let mut outbound_entries = frame_entries(8);
+    let mut hot_path = hot_path(
+        &slot,
+        &inbound_ring,
+        &mut inbound_entries,
+        &outbound_ring,
+        &mut outbound_entries,
+    );
+
+    let pending = hot_path
+        .start_quantum(horizon(10))
+        .unwrap_or_else(|error| panic!("quantum start should publish ceiling: {error}"));
+    slot.publish_pause_quiesced(0, 0, 0)
+        .unwrap_or_else(|error| panic!("fresh quiesced boundary should publish: {error}"));
+    let report = hot_path
+        .finish_quantum(pending)
+        .unwrap_or_else(|error| panic!("fresh quiesced boundary should complete: {error}"));
+
+    assert_eq!(
+        report.outcome,
+        AdvanceOutcome::Paused {
+            at: Icount { retired: 0 },
+        }
+    );
+}
+
+#[test]
 fn qemu_quantum_reports_idle_before_horizon() {
     let slot = NodeSlot::default();
     let inbound_ring = RingHeader::new();
