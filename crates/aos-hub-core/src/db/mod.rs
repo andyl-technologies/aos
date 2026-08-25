@@ -330,9 +330,10 @@ macro_rules! vals {
 // statement, even when all statements belong to one storage transaction. A
 // complete registry generation can contain thousands of catalog rows, so
 // issuing one INSERT per row exhausts a queue activation before the atomic
-// snapshot becomes visible. Keep each statement comfortably below SQLite's
-// binding limit while collapsing the hot path to a few dozen calls.
-const SNAPSHOT_ROWS_PER_INSERT: usize = 50;
+// snapshot becomes visible. Cloudflare Durable Object SQLite accepts at most
+// 100 bound parameters per query; size chunks from their actual row width so
+// every statement honors that limit while collapsing the hot path.
+const SNAPSHOT_MAX_BOUND_PARAMETERS: usize = 100;
 
 fn extend_multirow_insert(
     statements: &mut Vec<Statement>,
@@ -340,16 +341,21 @@ fn extend_multirow_insert(
     rows: &[Vec<Value>],
     suffix: &str,
 ) -> Result<()> {
-    for chunk in rows.chunks(SNAPSHOT_ROWS_PER_INSERT) {
-        let Some(first) = chunk.first() else {
-            continue;
-        };
-        anyhow::ensure!(!first.is_empty(), "multi-row insert has no columns");
-        anyhow::ensure!(
-            chunk.iter().all(|row| row.len() == first.len()),
-            "multi-row insert has inconsistent row widths"
-        );
+    let Some(first) = rows.first() else {
+        return Ok(());
+    };
+    anyhow::ensure!(!first.is_empty(), "multi-row insert has no columns");
+    anyhow::ensure!(
+        rows.iter().all(|row| row.len() == first.len()),
+        "multi-row insert has inconsistent row widths"
+    );
+    anyhow::ensure!(
+        first.len() <= SNAPSHOT_MAX_BOUND_PARAMETERS,
+        "multi-row insert exceeds the SQL binding limit"
+    );
+    let rows_per_insert = SNAPSHOT_MAX_BOUND_PARAMETERS / first.len();
 
+    for chunk in rows.chunks(rows_per_insert) {
         let mut parameter = 1;
         let mut tuples = Vec::with_capacity(chunk.len());
         let mut params = Vec::with_capacity(chunk.len() * first.len());
@@ -378,11 +384,12 @@ fn extend_release_artifact_inserts(
     snapshot_id: &str,
     rows: &[Vec<Value>],
 ) -> Result<()> {
-    for chunk in rows.chunks(SNAPSHOT_ROWS_PER_INSERT) {
-        anyhow::ensure!(
-            chunk.iter().all(|row| row.len() == 7),
-            "release artifact insert has an inconsistent row width"
-        );
+    anyhow::ensure!(
+        rows.iter().all(|row| row.len() == 7),
+        "release artifact insert has an inconsistent row width"
+    );
+    let rows_per_insert = (SNAPSHOT_MAX_BOUND_PARAMETERS - 1) / 7;
+    for chunk in rows.chunks(rows_per_insert) {
         let mut parameter = 2;
         let mut tuples = Vec::with_capacity(chunk.len());
         let mut params = vals![snapshot_id];
@@ -418,6 +425,40 @@ fn extend_release_artifact_inserts(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod snapshot_insert_tests {
+    use super::{
+        extend_multirow_insert, extend_release_artifact_inserts, Statement, Value,
+        SNAPSHOT_MAX_BOUND_PARAMETERS,
+    };
+
+    #[test]
+    fn multirow_inserts_respect_durable_object_parameter_limit() {
+        let rows = vec![vec![Value::Int(1); 9]; 123];
+        let mut statements = Vec::<Statement>::new();
+
+        extend_multirow_insert(&mut statements, "INSERT INTO example", &rows, "").unwrap();
+
+        assert_eq!(statements.len(), 12);
+        assert!(statements
+            .iter()
+            .all(|statement| statement.params.len() <= SNAPSHOT_MAX_BOUND_PARAMETERS));
+    }
+
+    #[test]
+    fn release_artifact_inserts_include_shared_snapshot_parameter_in_limit() {
+        let rows = vec![vec![Value::Int(1); 7]; 100];
+        let mut statements = Vec::<Statement>::new();
+
+        extend_release_artifact_inserts(&mut statements, "snapshot", &rows).unwrap();
+
+        assert_eq!(statements.len(), 8);
+        assert!(statements
+            .iter()
+            .all(|statement| statement.params.len() <= SNAPSHOT_MAX_BOUND_PARAMETERS));
+    }
 }
 
 mod cache_write_admission;
