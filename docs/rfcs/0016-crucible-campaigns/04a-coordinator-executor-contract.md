@@ -2386,10 +2386,15 @@ authenticates the durable exact-root artifacts into pinned inodes, constructs
 root-bound real-node launchers, restores the complete production
 scheduler/evidence continuation, and exposes only the guarded live facade to
 the modeled driver. The runner rejects retained log suffixes, performs final
-drain and teardown itself, and reports `ExactRestore` only after sealing. Fresh
-exact-cache, baked-genesis, and thin image provisioning remain separate future
-optimizations; concrete packaged replay-oracle comparison remains mandatory
-before the packaged service may advertise exact restore. A
+drain and teardown itself, and reports `ExactRestore` only after sealing. The
+guarded fresh lifecycle now provides the baked-genesis bootstrap capture: at
+exact scenario genesis it executes no modeled quantum, captures through the
+same bounded version-four native store, tears every process down, and admits
+the result only when its exact World live-node set authenticates. This
+read-only capability grants neither campaign publication nor replay admission
+by itself. Fresh exact-cache and packaged thin-image materialization remain
+separate optimizations; concrete packaged replay-oracle comparison remains
+mandatory before the packaged service may advertise exact restore. A
 process-only Linux facade
 now validates a daemon-incarnation
 namespace, non-root child IDs, task and finish bounds before acquiring the
@@ -2515,8 +2520,11 @@ paused execution and from the durable raw/staged inventory after restart. The
 generic production adapter retains one node-specific replay factory per worker,
 retries only classified availability failures, restores incomplete staged work
 to its raw root, and never holds supervisor ownership across repository,
-comparison, or publication work. Constructing that adapter with the packaged
-executor's concrete thin-source and real-node replay factory remains open. The
+comparison, or publication work. The ordinary guarded lifecycle now constructs
+the adapter's independent baked-genesis source candidate at exact scenario
+genesis and admits only a complete version-four native closure with exactly the
+World live-node set. Constructing the packaged node-specific materializer and
+real-node replay factory over that source remains open. The
 packaged capability set is derived from this owner: the default composition
 installs no promotion worker and advertises only `ThinReplay`; a composition
 with at least one fixed promotion owner also advertises `ExactRestore` and

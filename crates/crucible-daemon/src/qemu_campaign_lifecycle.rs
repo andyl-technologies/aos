@@ -535,6 +535,100 @@ pub enum QemuFreshStartReplayError {
     },
 }
 
+/// Failure before a fresh genesis checkpoint candidate reached teardown.
+#[derive(Debug, Error)]
+pub enum QemuFreshGenesisCheckpointCaptureFailure {
+    /// The freshly launched lifecycle was not at an exact checkpoint boundary.
+    #[error("fresh genesis lifecycle is not checkpoint ready")]
+    NotCheckpointReady,
+    /// Exact checkpoint capture failed at the authenticated genesis boundary.
+    #[error("capture fresh genesis checkpoint: {0}")]
+    Capture(#[source] SchedulerError),
+    /// The capture named a scenario or configuration other than exact genesis.
+    #[error("fresh genesis checkpoint capture returned a foreign semantic basis")]
+    BasisMismatch,
+}
+
+/// Failure while producing one independently captured genesis checkpoint candidate.
+#[derive(Debug, Error)]
+pub enum QemuFreshGenesisCheckpointError<E> {
+    /// Fresh lifecycle construction failed with its original retry class.
+    #[error("start fresh genesis checkpoint lifecycle")]
+    Start(AttemptWorkerFailure<E>),
+    /// Capture failed after lifecycle construction and teardown succeeded.
+    #[error(transparent)]
+    Capture(#[from] QemuFreshGenesisCheckpointCaptureFailure),
+    /// Teardown failed and therefore retains precedence over an earlier result.
+    #[error("tear down fresh genesis checkpoint lifecycle: {cleanup}")]
+    Cleanup {
+        /// Earlier capture failure, when teardown followed another failure.
+        prior: Option<Box<QemuFreshGenesisCheckpointCaptureFailure>>,
+        /// Mandatory lifecycle teardown failure.
+        #[source]
+        cleanup: SchedulerError,
+    },
+}
+
+/// Captures a fresh exact checkpoint at the scenario's genesis ready boundary.
+///
+/// This is the QEMU-backed bootstrap primitive for a future authenticated baked-
+/// genesis catalog. It starts the ordinary production lifecycle at exact
+/// genesis, performs no modeled quantum, captures through the same portable
+/// checkpoint path used by attempts, and always tears the lifecycle down before
+/// returning. The returned value remains only a candidate: a catalog owner must
+/// require the version-four production variant and authenticate its complete
+/// closure before lending any thin-replay authority.
+///
+/// # Errors
+///
+/// Returns [`QemuFreshGenesisCheckpointError`] when guarded lifecycle startup
+/// fails, genesis is not checkpoint ready, capture returns a foreign basis, or
+/// mandatory teardown cannot be attested. Teardown failure takes precedence
+/// and retains any earlier capture diagnostic.
+pub fn capture_fresh_genesis_checkpoint_candidate<F>(
+    factory: &mut F,
+    source: &ScenarioDefForm,
+    context: &AttemptExecutionContext,
+) -> Result<CapturedAttemptCheckpoint, QemuFreshGenesisCheckpointError<F::Error>>
+where
+    F: QemuFreshAttemptLifecycleFactory,
+{
+    let scenario = source.scenario_def();
+    let genesis = Configuration::genesis(scenario.clone());
+    let mut lifecycle = factory
+        .start_fresh_lifecycle(&scenario, source, &genesis, context)
+        .map_err(QemuFreshGenesisCheckpointError::Start)?;
+
+    let captured = match lifecycle.exact_checkpoint_ready() {
+        Ok(true) => lifecycle
+            .capture_attempt_checkpoint(context)
+            .map_err(QemuFreshGenesisCheckpointCaptureFailure::Capture)
+            .and_then(|capture| {
+                if capture.scenario() == scenario.id() && capture.configuration() == genesis.id() {
+                    Ok(capture)
+                } else {
+                    Err(QemuFreshGenesisCheckpointCaptureFailure::BasisMismatch)
+                }
+            }),
+        Ok(false) => Err(QemuFreshGenesisCheckpointCaptureFailure::NotCheckpointReady),
+        Err(error) => Err(QemuFreshGenesisCheckpointCaptureFailure::Capture(error)),
+    };
+    let cleanup = lifecycle.shutdown();
+
+    match (captured, cleanup) {
+        (Ok(capture), Ok(_final_events)) => Ok(capture),
+        (Err(error), Ok(_final_events)) => Err(error.into()),
+        (Ok(_capture), Err(cleanup)) => Err(QemuFreshGenesisCheckpointError::Cleanup {
+            prior: None,
+            cleanup,
+        }),
+        (Err(prior), Err(cleanup)) => Err(QemuFreshGenesisCheckpointError::Cleanup {
+            prior: Some(Box::new(prior)),
+            cleanup,
+        }),
+    }
+}
+
 enum QemuFreshRunnerResult<P> {
     Observation(P),
     Checkpoint(AttemptCheckpointResult),

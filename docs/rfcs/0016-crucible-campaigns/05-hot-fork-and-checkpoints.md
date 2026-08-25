@@ -447,9 +447,15 @@ pair after restart before the paused-root CAS. Production-loop process
 reconstruction and resume-driver selection are now composed in the packaged
 worker: the resume-only admission rejects `NotRun` before native publication or
 resource installation, restores the complete scheduler/evidence continuation,
-and never falls back to fresh replay. The automatic concrete comparison flight,
-capability advertisement, and native-catalog cleanup remain gated in the
-implementation plan.
+and never falls back to fresh replay. The ordinary guarded lifecycle can now
+capture a separate candidate at the exact scenario-genesis ready boundary
+without executing a modeled quantum, tear QEMU down, and admit only a complete
+version-four native closure whose live-node set exactly equals the World. That
+capability is the authenticated bootstrap source for baked-genesis replay; it
+does not publish a campaign root or advertise exact restore. Materializing it
+through the packaged node-specific thin launcher, the automatic concrete
+comparison flight, capability advertisement, and native-catalog cleanup remain
+gated in the implementation plan.
 
 A newly captured exact root records replay-oracle state `NotRun` and is not
 eligible for resume. The single-host owner authenticates the selected root and
