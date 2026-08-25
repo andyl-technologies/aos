@@ -164,3 +164,53 @@ fn lifecycle_scheduler_error(error: LifecycleApiError) -> SchedulerError {
         error => store_error(error.to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // crucible-lint: allow panic-shortcut -- fixtures require exact failure localization.
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn production_checkpoint_load_rejects_manifest_bytes_before_decode() {
+        let fixture = crucible::happy_path_scenario()
+            .expect("build checkpoint-load scenario")
+            .scenario;
+        let limits = FaultResourceLimits {
+            fat_checkpoint_bytes: 7,
+            ..FaultResourceLimits::default()
+        };
+        let faults = crucible::model::FaultSignalPlan::new(Vec::new(), Vec::new(), limits)
+            .expect("build exact checkpoint resource contract");
+        let plan = fixture.plan().clone().with_fault_signals(faults);
+        let source = ScenarioDefForm::from_components_with_app_random_draw_cap(
+            fixture.world(),
+            &plan,
+            fixture.properties(),
+            fixture.seed(),
+            fixture.app_random_draw_cap(),
+        )
+        .expect("rebuild checkpoint-load scenario");
+        let scenario = source.scenario_def();
+        let identity = ContentHash::from_bytes(b"oversized manifest");
+        let root = tempfile::tempdir().expect("create checkpoint-load store");
+        let closure = closure_parent(root.path(), scenario.id()).join(identity.to_hex());
+        fs::create_dir_all(&closure).expect("create checkpoint closure directory");
+        fs::write(closure.join(MANIFEST_FILE), b"12345678").expect("write over-authored manifest");
+
+        let error = load_exact_checkpoint_set(root.path(), &scenario, &source, identity)
+            .expect_err("manifest bytes must be admitted before decode");
+
+        assert!(matches!(
+            error,
+            LifecycleApiError::ResourceLimit(crate::LifecycleResourceLimit {
+                field: "fat_checkpoint_bytes",
+                current: 0,
+                requested: 8,
+                configured: 7,
+                hard,
+            }) if hard == FaultResourceLimits::compiled_maximum().fat_checkpoint_bytes
+        ));
+    }
+}
