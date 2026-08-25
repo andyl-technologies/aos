@@ -119,7 +119,7 @@ impl<'a> CandidateEnumerationBasis<'a> {
         self
     }
 
-    /// Adds the exact active-policy projection used by feedback versions 11 through 14.
+    /// Adds the exact active-policy projection used by feedback versions 11 through 15.
     pub(super) const fn with_feedback(
         mut self,
         feedback_projection: Option<CandidateFeedbackProjection<'a>>,
@@ -312,6 +312,7 @@ struct FeedbackIntervalTerms {
     landmarks: bool,
     objective_discontinuity: bool,
     novelty_discontinuity: bool,
+    finding_discontinuity: bool,
 }
 
 impl FeedbackIntervalTerms {
@@ -322,14 +323,21 @@ impl FeedbackIntervalTerms {
                 crate::LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
                     | crate::MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
                     | crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                    | crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
             ),
             objective_discontinuity: matches!(
                 version,
                 crate::MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
                     | crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                    | crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
             ),
-            novelty_discontinuity: version
-                == crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+            novelty_discontinuity: matches!(
+                version,
+                crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                    | crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+            ),
+            finding_discontinuity: version
+                == crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
         }
     }
 }
@@ -360,6 +368,7 @@ impl PartialOrd for ExactMeanDiscontinuity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FeedbackRefinementGap {
     gap: RefinementGap,
+    finding_discontinuity: ExactMeanDiscontinuity,
     novelty_discontinuity: ExactMeanDiscontinuity,
     objective_discontinuity: ExactMeanDiscontinuity,
     producer_landmarks: usize,
@@ -368,8 +377,9 @@ struct FeedbackRefinementGap {
 
 impl Ord for FeedbackRefinementGap {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.novelty_discontinuity
-            .cmp(&other.novelty_discontinuity)
+        self.finding_discontinuity
+            .cmp(&other.finding_discontinuity)
+            .then_with(|| self.novelty_discontinuity.cmp(&other.novelty_discontinuity))
             .then_with(|| {
                 self.objective_discontinuity
                     .cmp(&other.objective_discontinuity)
@@ -479,7 +489,8 @@ impl CampaignRepository {
             crate::FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
             | crate::LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
             | crate::MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-            | crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION => true,
+            | crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+            | crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION => true,
             _ => return Ok(None),
         };
         if *initial_strata > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA {
@@ -3940,6 +3951,11 @@ fn feedback_progressive_integer_candidate(
         )?;
         scored.push(FeedbackRefinementGap {
             gap,
+            finding_discontinuity: if terms.finding_discontinuity {
+                finding_discontinuity(projection, lower.edge, upper.edge)?
+            } else {
+                ExactMeanDiscontinuity::ZERO
+            },
             novelty_discontinuity: if terms.novelty_discontinuity {
                 novelty_discontinuity(projection, lower.edge, upper.edge)?
             } else {
@@ -4064,6 +4080,52 @@ fn novelty_discontinuity(
         numerator,
         denominator,
     })
+}
+
+fn finding_discontinuity(
+    projection: &crate::BranchPuctProjection,
+    lower: Option<crate::BranchEdgeId>,
+    upper: Option<crate::BranchEdgeId>,
+) -> Result<ExactMeanDiscontinuity, CampaignRepositoryError> {
+    let (lower_reward, lower_visits) = finding_endpoint_mean_basis(projection, lower);
+    let (upper_reward, upper_visits) = finding_endpoint_mean_basis(projection, upper);
+    let lower_scaled = i128::from(lower_reward)
+        .checked_mul(i128::from(upper_visits))
+        .ok_or_else(|| integrity("progressive-generator-finding-discontinuity-overflow"))?;
+    let upper_scaled = i128::from(upper_reward)
+        .checked_mul(i128::from(lower_visits))
+        .ok_or_else(|| integrity("progressive-generator-finding-discontinuity-overflow"))?;
+    let numerator = lower_scaled
+        .checked_sub(upper_scaled)
+        .ok_or_else(|| integrity("progressive-generator-finding-discontinuity-overflow"))?
+        .unsigned_abs();
+    let denominator = u128::from(lower_visits)
+        .checked_mul(u128::from(upper_visits))
+        .ok_or_else(|| integrity("progressive-generator-finding-discontinuity-overflow"))?;
+    Ok(ExactMeanDiscontinuity {
+        numerator,
+        denominator,
+    })
+}
+
+fn finding_endpoint_mean_basis(
+    projection: &crate::BranchPuctProjection,
+    edge: Option<crate::BranchEdgeId>,
+) -> (i64, u64) {
+    let Some(edge) = edge else {
+        return (0, 1);
+    };
+    let Some(statistics) = projection.edge_statistics().get(&edge) else {
+        return (0, 1);
+    };
+    (
+        projection
+            .edge_finding_reward_micros()
+            .get(&edge)
+            .copied()
+            .unwrap_or(0),
+        statistics.edge_visits(),
+    )
 }
 
 fn novelty_endpoint_mean_basis(
