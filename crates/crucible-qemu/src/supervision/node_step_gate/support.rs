@@ -551,6 +551,9 @@ pub(super) fn live_node_plugin_config(
     if let Some(app_random) = &config.app_random {
         plugin = plugin.with_app_random(app_random.clone());
     }
+    if let Some(selectable_catalog_plan) = &config.selectable_catalog_plan {
+        plugin = plugin.with_selectable_catalog_plan(selectable_catalog_plan.clone());
+    }
     Ok(plugin)
 }
 
