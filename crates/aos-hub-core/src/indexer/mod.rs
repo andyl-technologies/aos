@@ -86,13 +86,13 @@ pub const MAX_RELEASE_TAGS: usize = 1024;
 /// trips while remaining below Worker subrequest and memory limits.
 const CHANNEL_FETCH_CONCURRENCY: usize = 32;
 
-/// Maximum release trees loaded concurrently during a full index pass.
+/// Maximum release generations verified concurrently during a full index pass.
 ///
-/// A release tree contains hundreds of independently addressable package and
-/// store records. Loading releases serially multiplies that object-store
-/// latency by the retention depth; a small outer fanout keeps Worker memory
-/// and subrequests bounded while overlapping independent release generations.
-const RELEASE_TREE_FETCH_CONCURRENCY: usize = 4;
+/// A release generation includes its tree, image-publication evidence, and pack
+/// probe. Processing releases serially multiplies that object-store latency by
+/// the retention depth; this bounded fanout covers a typical retention window
+/// while keeping Worker memory and subrequests bounded.
+const RELEASE_TREE_FETCH_CONCURRENCY: usize = 8;
 
 /// Outcome of one indexing run.
 #[derive(Debug)]
