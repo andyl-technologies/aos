@@ -128,10 +128,14 @@ decodes register/request messages at the exact trap coordinate, delegates them
 to a typed catalog/decision authority, rejects guest-owned replies and stale
 service replies, and writes one zero-padded reply through the existing
 same-icount guest-input capability. This does not complete T-CAM-2.5: the live
-runtime still needs a launch-authenticated catalog service, `setup_complete`
-freeze/reconciliation, semantic narrowed-domain validation, and durable
-pending-request checkpoint state before the callback may be wired into the
-production dispatcher.
+runtime still needs to supply and persist the launch-authenticated inputs. The
+plugin-side catalog state now enforces nonzero scenario ceilings under hard
+4,096-declaration/1,000,000-request caps, exact required/optional declaration
+matching, strictly advancing sequences, no late registration, and one
+incarnation-bound pending request retained until an exact-sequence reply. Live
+`setup_complete` routing, daemon-side scenario conversion, semantic
+narrowed-domain validation, and canonical checkpoint serialization/restoration
+remain required before the callback may be wired into the production dispatcher.
 
 The application-random path now implements the pure normalization and
 application contract, executor-side verification of uniform model samples, live

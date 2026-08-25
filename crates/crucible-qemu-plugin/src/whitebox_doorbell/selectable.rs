@@ -16,6 +16,14 @@ use super::{
     WhiteboxGuestInputOutcome, WhiteboxGuestInputWriter, read_doorbell_payload,
 };
 
+mod catalog;
+pub use catalog::{
+    SELECTABLE_CATALOG_HARD_MAX_DECLARATIONS, SELECTABLE_CATALOG_HARD_MAX_REQUESTS,
+    SelectableCatalog, SelectableCatalogError, SelectableCatalogExpectation,
+    SelectableCatalogFreeze, SelectableCatalogLimits, SelectableCatalogPhase,
+    SelectableExpectedDeclaration, SelectableExpectedPresence, SelectablePendingRequest,
+};
+
 /// Exact execution coordinate attached to one selectable callback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SelectableCallbackCoordinate {
@@ -24,6 +32,12 @@ pub struct SelectableCallbackCoordinate {
 }
 
 impl SelectableCallbackCoordinate {
+    /// Builds one exact callback coordinate for authenticated continuation state.
+    #[must_use]
+    pub const fn new(icount: u64, vcpu_index: u32) -> Self {
+        Self { icount, vcpu_index }
+    }
+
     /// Returns the aggregate instruction count at the guest doorbell.
     #[must_use]
     pub const fn icount(self) -> u64 {
@@ -39,10 +53,7 @@ impl SelectableCallbackCoordinate {
 
 impl From<WhiteboxDoorbellTrapEvent> for SelectableCallbackCoordinate {
     fn from(event: WhiteboxDoorbellTrapEvent) -> Self {
-        Self {
-            icount: event.current_icount(),
-            vcpu_index: event.vcpu_index(),
-        }
+        Self::new(event.current_icount(), event.vcpu_index())
     }
 }
 

@@ -371,6 +371,15 @@ request buffer with this exact reply and clears every unused byte in the
 reservation. The guest accepts it only when the reply sequence equals the
 request sequence.
 
+Within one node generation, accepted registration sequences and completed
+request sequences each strictly increase in their own namespace. At most one
+guest request may own a pending reply range at a time. A failed registration or
+request admission does not advance its sequence watermark. Checkpoint restore
+retains the frozen registered identifiers, both sequence watermarks, completed
+per-selectable and total request counts, and the exact pending request and trap
+coordinate when one exists; it does not infer continuation state from mutable
+guest bytes alone.
+
 The complete register, request buffer, and reply are each at most 4,608 bytes.
 `selectable_id`, `instance_key`, and every semantic tag are 1..=128 bytes of
 ASCII alphanumeric plus `._-/:`; tags are strictly byte-ordered, unique, and
@@ -543,6 +552,13 @@ The scenario declares ceilings for:
 - maximum choice message and reply bytes;
 - pending simultaneous guest requests;
 - candidate proposals per opportunity and per class.
+
+The version-1 plugin implementation additionally caps one node catalog at 4,096
+declarations and one node run at 1,000,000 completed requests. Scenario ceilings
+MUST be nonzero and no greater than those hard maxima, and the per-selectable
+request ceiling MUST be no greater than the total request ceiling. These limits
+bound catalog maps, missing-declaration diagnostics, and continuation counters;
+the scenario normally selects substantially smaller values.
 
 - **[SEL-20]** Guest-controlled declarations and requests are untrusted input.
   All allocation bounds MUST be checked before allocation or iteration, and
