@@ -549,6 +549,7 @@ async fn index_registry_inner(
                         &source_commit,
                         &release_tree.root.registry.name,
                         &release_tree.packages,
+                        &tag_name,
                         &mut release_leases,
                     )
                     .await
@@ -1019,6 +1020,7 @@ async fn verify_system_image_objects(
     commit: &str,
     registry_identity: &str,
     packages: &[aos_registry_surface::manifest::PackageToml],
+    selected_release: &str,
     snapshot_leases: &mut Vec<String>,
 ) -> Result<VerifiedSystemImageCatalog> {
     let mut expected = BTreeMap::<String, ExpectedImageObject>::new();
@@ -1032,7 +1034,7 @@ async fn verify_system_image_objects(
                         continue;
                     }
                     image.validate_delivery(&version.version, platform)?;
-                    images.push(crate::db::IndexedSystemImage {
+                    let indexed_image = crate::db::IndexedSystemImage {
                         package: package.package.name.clone(),
                         release: version.version.clone(),
                         platform: platform.clone(),
@@ -1041,7 +1043,11 @@ async fn verify_system_image_objects(
                         nar_hash: image.nar_hash.clone(),
                         nar_size: image.nar_size,
                         delivery: image.delivery.clone(),
-                    });
+                    };
+                    let selected = version.version == selected_release;
+                    if selected {
+                        images.push(indexed_image);
+                    }
                     if image.delivery.is_store_backed() {
                         let mut store_artifacts = vec![
                             (
@@ -1100,7 +1106,9 @@ async fn verify_system_image_objects(
                             byte_size: size,
                             role,
                         };
-                        insert_expected_image_artifact(&mut expected, key, identity.clone())?;
+                        if selected {
+                            insert_expected_image_artifact(&mut expected, key, identity.clone())?;
+                        }
                         insert_expected_image_artifact(&mut catalog_artifacts, key, identity)?;
                     }
                 }
@@ -1126,7 +1134,11 @@ async fn verify_system_image_objects(
             objects: Vec::new(),
         });
     }
-    verify_image_publication_receipt(fetch, commit, registry_identity, &expected).await?;
+    // The receipt still proves the complete catalog committed by this release
+    // tree. Only objects exposed by this tag need placement evidence here;
+    // historical versions are verified when their own retained tags are
+    // indexed instead of being redundantly revalidated for every newer tag.
+    verify_image_publication_receipt(fetch, commit, registry_identity, &catalog_artifacts).await?;
     let digest = image_catalog_digest(registry_identity, &catalog_artifacts)?;
 
     let mut verified = Vec::with_capacity(expected.len());
