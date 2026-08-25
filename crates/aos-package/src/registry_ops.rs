@@ -8051,7 +8051,14 @@ fn package_platform_table(
                 let root_verity = image.directory.path.join("root.verity");
                 let root_hash = image.directory.path.join("root.roothash");
                 let root_hash_sig = image.directory.path.join("root.roothash.p7s");
-                if matches!(image.format.as_str(), "ext4-verity" | "erofs-verity") {
+                // Recovery UKIs are only valid with the complete A/B verity
+                // payload, including when its distributable disk encoding is
+                // `raw`. Ordinary raw disk images may contain unrelated files
+                // with these names and must not acquire a verity contract.
+                let catalogs_verity =
+                    matches!(image.format.as_str(), "ext4-verity" | "erofs-verity")
+                        || !image.sb.recovery_ukis.is_empty();
+                if catalogs_verity {
                     let verity_count = [&root_image, &root_verity, &root_hash, &root_hash_sig]
                         .iter()
                         .filter(|path| path.is_file())
@@ -20530,6 +20537,71 @@ references = []
         assert!(image.root_verity.is_none());
         assert!(image.root_hash.is_none());
         assert!(image.root_hash_sig.is_none());
+    }
+
+    #[test]
+    fn build_package_toml_catalogs_verity_for_raw_recovery_image() {
+        let image_fixture = TempDir::new().unwrap();
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-server-2026.04".into(),
+            nar_hash: "sha256:aabb".into(),
+            nar_size: 12345678,
+            references: vec!["ref1".into()],
+            closure_size: 52428800,
+        };
+        let img_info = write_direct_image_output(
+            image_fixture.path(),
+            "raw",
+            serde_json::json!(["bare-metal"]),
+        );
+        let image_root = Path::new(&img_info.path);
+        fs::write(image_root.join("root.img"), b"root").unwrap();
+        fs::write(image_root.join("root.verity"), b"verity").unwrap();
+        fs::write(image_root.join("root.roothash"), "a".repeat(64)).unwrap();
+        fs::write(image_root.join("root.roothash.p7s"), b"signature").unwrap();
+        rewrite_test_image_parent(&img_info, "2026.04", "x86_64-linux");
+        let mut image = inspect_test_image("raw", img_info, "2026.04", "x86_64-linux").unwrap();
+        image.sb.recovery_ukis.push(RecoveryUkiEntry {
+            copy: UkiSlot::A,
+            path: "recovery-a.efi".into(),
+            entry_path: "recovery-a.conf".into(),
+            byte_size: 1,
+            sha256: "b".repeat(64),
+            release: "2026.04".into(),
+            recovery_abi: 1,
+            sb_signer_cert_sha256: "c".repeat(64),
+            sbat: vec![SbatEntry {
+                component: "aos".into(),
+                generation: 1,
+            }],
+        });
+
+        let content = build_package_toml(
+            "",
+            "server",
+            "2026.04",
+            "x86_64-linux",
+            &info,
+            Some("AOS server"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            true,
+            None,
+            &[image],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(content.contains("root_image = \"root.img\""));
+        assert!(content.contains("root_verity = \"root.verity\""));
+        assert!(content.contains(&format!("root_hash = \"{}\"", "a".repeat(64))));
+        assert!(content.contains("root_hash_sig = \"root.roothash.p7s\""));
     }
 
     #[test]
