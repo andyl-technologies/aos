@@ -4284,6 +4284,7 @@ mod tests {
             &planner_step.to_string(),
             "--pages",
             "4",
+            "--policy-groups",
             "--branch-point",
             &branch_point.to_string(),
             "--source",
@@ -4297,6 +4298,7 @@ mod tests {
             Commands::Campaign(CampaignArgs {
                 command: CampaignCommand::Rankings(CampaignRankingsArgs {
                     pages: 4,
+                    policy_groups: true,
                     branch_point: Some(_),
                     source: Some(_),
                     top: Some(2),
