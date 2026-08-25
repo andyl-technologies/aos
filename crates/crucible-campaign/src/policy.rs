@@ -137,6 +137,13 @@ pub const FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 1
 /// landmark nearest to its lower midpoint before ordinary refinement resumes.
 pub const LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 12;
 
+/// Generator implementation version for measurement-sensitive integer refinement.
+///
+/// This version retains version 12's exact landmark and PUCT terms, preceded by
+/// the exact discontinuity between the endpoint edges' mean owner-verified
+/// objective rewards. Earlier versions retain their own interval order.
+pub const MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 13;
+
 /// Maximum initial strata admitted by executable progressive-integer versions.
 pub const PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA: u32 = 4_096;
 

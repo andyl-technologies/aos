@@ -508,6 +508,9 @@ Implementation-version 12 retains that basis, prioritizes intervals by their
 exact producer-landmark count before endpoint PUCT difference, and emits the
 winning interval's nearest lower-midpoint landmark before ordinary midpoint
 refinement.
+Implementation-version 13 first compares the exact owner-verified endpoint
+mean objective-reward discontinuity from §03.2, then retains version 12's
+landmark, PUCT, and value-selection rules.
 Proposals from every other generated source require the selected deterministic
 generator owner to reproduce the same value and remain fail-closed until that
 owner is implemented.
@@ -546,7 +549,7 @@ budget, create a graph child, or count as an admitted continuation value.
   deterministic ordinal order, but its refinement ordinals MUST additionally
   satisfy the exact source-snapshot feedback threshold in §03.2.
   Implementation-version 10 `mutate_near_corpus` and implementation-versions
-  11 and 12 `progressive_integer` have view-dependent next values whose exact
+  11 through 13 `progressive_integer` have view-dependent next values whose exact
   portable continuations and owner-derived feedback bases MUST reproduce
   §03.2. Other generated proposal issuance MUST fail closed unless the named
   deterministic generator owner reproduces the value from authenticated
@@ -591,6 +594,11 @@ budget, create a graph child, or count as an admitted continuation value.
   and nearest-lower-midpoint landmark selection in §03.2, and reject a
   substituted PUCT-only midpoint before publication. Version 11 MUST continue
   to ignore producer landmarks.
+- **[LAZY-51]** Measurement-progressive implementation-version 13 MUST use the
+  exact version-12 basis plus the active-policy objective reward sum and
+  completed-visit denominator for each endpoint, reproduce §03.2's rational
+  mean-discontinuity order, and reject a substituted landmark-only value before
+  publication. Versions 11 and 12 MUST continue to ignore this term.
 
 ## 04.13 Atomic attempt admission
 
@@ -713,7 +721,7 @@ is `WaitingForFeedback` with the exact current and required counts. Completing
 the bounded stream is `Exhausted` only when the request budget covers the exact
 domain; a truncated stream is `Closed`.
 
-Implementation-versions 11 and 12 have the same continuation states and
+Implementation-versions 11 through 13 have the same continuation states and
 thresholds as version 9. Feedback changes only which exact legal value owns the
 next available ordinal. Implementation-version 10 is `Ready` when its current
 exact view yields an unproposed corpus mutation, `WaitingForFeedback` when it
@@ -774,7 +782,8 @@ admission is rejected.
   implementation-version 10 `mutate_near_corpus` within its portable
   proposal-set/corpus bounds, implementation-version 11 `progressive_integer`
   within its exact PUCT-feedback bounds, or implementation-version 12 within
-  its exact PUCT-plus-landmark bounds. Static
+  its exact PUCT-plus-landmark bounds, or implementation-version 13 within its
+  exact objective-discontinuity bounds. Static
   continuation state MAY bind a nonempty observation root because its state is
   independent of feedback. Every completed-visit statistic and progressive
   wakeup MUST equal the exact nested credit-set count. The compact expansion

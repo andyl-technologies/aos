@@ -2709,6 +2709,187 @@ fn landmark_progressive_integer_prioritizes_an_authenticated_producer_landmark()
 }
 
 #[test]
+fn measurement_progressive_integer_prioritizes_verified_objective_discontinuity() {
+    let (repository, lineage, base_policy, blobs) = counted_fixture();
+    let objective_name = "latency";
+    let policy = CampaignPolicy::new(
+        base_policy.scenario(),
+        base_policy.campaign_seed(),
+        base_policy.mode(),
+        base_policy.explorer().clone(),
+        base_policy.choice_policies().clone(),
+        BTreeMap::from([(
+            objective_name.to_owned(),
+            Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000)
+                .expect("measurement-progressive objective"),
+        )]),
+        base_policy.guidance().clone(),
+        base_policy.stop_conditions().clone(),
+        base_policy.fairness(),
+        base_policy.retention(),
+        base_policy.admits_scenario_defaults(),
+    )
+    .expect("measurement-progressive policy");
+    let campaign = "generated-measurement-progressive";
+    let genesis = repository
+        .create(campaign, &lineage, &policy, &BTreeMap::new())
+        .expect("create measurement-progressive campaign");
+    let domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(16),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("scale"),
+            vec![IntegerValue::Unsigned(2), IntegerValue::Unsigned(6)],
+        )
+        .expect("measurement-progressive domain"),
+    );
+    let generator = CandidateGeneratorSpec::new(
+        crate::MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::ProgressiveInteger {
+            initial_strata: 3,
+            feedback_interval: 2,
+        },
+    )
+    .expect("measurement-progressive generator");
+    let generator_id = repository
+        .publish_generator(&generator)
+        .expect("publish measurement-progressive generator");
+    let (_, request) = generated_integer_request(
+        &repository,
+        &lineage,
+        domain,
+        IntegerValue::Unsigned(8),
+        generator_id,
+        "measurement-progressive",
+        9,
+    );
+    let requested = repository
+        .submit_known_branch_request(campaign, genesis.snapshot_id(), &request)
+        .expect("submit measurement-progressive request");
+
+    let mut current = requested.new_snapshot;
+    let mut observations = Vec::new();
+    for (index, value) in [0_u64, 8, 16].into_iter().enumerate() {
+        let head = repository
+            .head(campaign)
+            .expect("measurement-progressive proposal head");
+        let proposal = finite_proposal(
+            &request,
+            &policy,
+            &head,
+            ChoiceValue::Integer(IntegerValue::Unsigned(value)),
+            index as u64 + 1,
+        );
+        let proposed = repository
+            .issue_proposal(campaign, current, &proposal)
+            .expect("issue measurement-progressive initial proposal");
+        let (selection, path, attempt) = branch_attempt(&repository, &request, &proposal);
+        let admitted = repository
+            .admit_proposal(
+                campaign,
+                proposed.new_snapshot,
+                proposed.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("admit measurement-progressive initial proposal");
+        current = admitted.new_snapshot;
+        observations.push(generated_observation(
+            &repository,
+            &lineage,
+            &admitted,
+            &path,
+            request.opportunity(),
+            &format!("measurement-progressive-{index}"),
+        ));
+    }
+    for observation in observations.iter().take(2) {
+        current = repository
+            .publish_observation(campaign, current, observation)
+            .expect("publish measurement-progressive observation")
+            .new_snapshot;
+        let properties = repository
+            .load_property_verdict_set(observation.properties())
+            .expect("measurement-progressive properties");
+        let evaluation = evaluate_objectives(
+            &policy,
+            observation,
+            &properties,
+            BTreeMap::from([(objective_name.to_owned(), ObjectiveValue::Unsigned(7))]),
+        )
+        .expect("measurement-progressive evaluation");
+        current = repository
+            .publish_objective_evaluation(campaign, current, &evaluation)
+            .expect("publish measurement-progressive evaluation")
+            .new_snapshot;
+    }
+
+    let ready = repository
+        .head(campaign)
+        .expect("measurement-progressive ready head");
+    let planner_state = CanonicalFrontierPlanner::initial_state().expect("planner state");
+    let (_, _, invocation) =
+        canonical_planner_basis_with_page(&repository, campaign, current, &planner_state, None, 16);
+    let planner_request = repository
+        .build_planner_request(current, invocation.id().expect("planner invocation id"))
+        .expect("build measurement-progressive planner request");
+    let planner_output = CanonicalFrontierPlanner
+        .plan(&planner_request)
+        .expect("plan measurement-progressive frontier");
+    let PlannerProposalDisposition::Issue { proposals, .. } =
+        planner_output.proposal().disposition()
+    else {
+        panic!("ready measurement-progressive request did not issue");
+    };
+    assert_eq!(
+        proposals.first().map(Proposal::value),
+        Some(&ChoiceValue::Integer(IntegerValue::Unsigned(12)))
+    );
+
+    let landmark_only_candidate = finite_proposal(
+        &request,
+        &policy,
+        &ready,
+        ChoiceValue::Integer(IntegerValue::Unsigned(2)),
+        4,
+    );
+    let before_rejection = blobs
+        .object_count()
+        .expect("objects before measurement-discontinuity substitution");
+    assert!(matches!(
+        repository.issue_proposal(campaign, current, &landmark_only_candidate),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-value-does-not-match-source-order"
+        })
+    ));
+    assert_eq!(
+        blobs
+            .object_count()
+            .expect("objects after measurement-discontinuity substitution"),
+        before_rejection
+    );
+
+    let discontinuity = finite_proposal(
+        &request,
+        &policy,
+        &ready,
+        ChoiceValue::Integer(IntegerValue::Unsigned(12)),
+        4,
+    );
+    let refined = repository
+        .issue_proposal(campaign, current, &discontinuity)
+        .expect("issue measurement-progressive refinement");
+    CampaignRepository::new(repository.blobs.clone(), repository.refs.clone())
+        .validate_complete_head(refined.new_snapshot.content_id())
+        .expect("restart validates measurement-progressive refinement");
+}
+
+#[test]
 fn corpus_mutation_generator_tracks_retained_values_by_portable_proposal_set() {
     let (repository, lineage, base_policy, blobs) = counted_fixture();
     let policy = CampaignPolicy::new(

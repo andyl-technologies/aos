@@ -406,10 +406,13 @@ midpoint is selected by exact owner-derived endpoint PUCT feedback.
 Implementation-version 12 reports those same thresholds while prioritizing
 authenticated producer-landmark intervals and selecting the nearest
 lower-midpoint landmark before ordinary midpoint refinement.
+Implementation-version 13 reports the same thresholds while prioritizing exact
+owner-verified endpoint mean objective-reward discontinuity before version
+12's interval terms.
 A mixture containing any suspended child remains conservatively `Open`. Other
 generated sources remain `Open` until their deterministic enumerator and
-feedback owner land. Rich admitted-value, raw measurement interval, and
-explanation views and CLI rendering remain open.
+feedback owner land. Rich admitted-value and interval explanation views and CLI
+rendering remain open.
 
 The local repository API exposes the same validation boundary at object scale.
 Typed loads authenticate scenario/configuration artifacts, opportunities,
