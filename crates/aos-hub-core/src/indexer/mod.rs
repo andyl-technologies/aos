@@ -409,6 +409,15 @@ async fn index_registry_inner(
     }
 
     let reader = ObjectReader::new(fetch);
+    reader.preload_bundles().await?;
+    let (bundle_fetches, loose_fetches, cached_objects) = reader.stats()?;
+    tracing::info!(
+        phase = "bundle_preload",
+        bundle_fetches,
+        loose_fetches,
+        cached_objects,
+        "registry index phase completed"
+    );
     let commit = reader.read_commit(commit_oid).await?;
     let mut trusted: Vec<String> = registry.trust_keys.clone();
     let typed_publication = append_signing_usage_key(
