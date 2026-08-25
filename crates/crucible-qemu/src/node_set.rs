@@ -12,7 +12,9 @@ use crucible::{
     FingerprintSample, GdbAttachInfo, GdbListen, Icount, NodeId, ObservableEvent,
     SimulationBackend, StepObservation, VirtualTime,
 };
+use crucible_protocol::SelectionReply;
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
+use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
 use crucible_shmem::{
     DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1, MAX_FRAME_DELIVERY_ATTEMPTS,
 };
@@ -37,6 +39,31 @@ pub use block_boundary::QemuNodeSetBlockBoundaryCheckpoint;
 pub struct QemuNodeTerminalReplacementPlan {
     nodes: Vec<NodeId>,
     retired: Vec<(NodeId, QemuNode)>,
+}
+
+/// One node-qualified guest selectable request retained at a paused boundary.
+///
+/// The node identity is part of the delivery authority. A request drained from
+/// one VM cannot be replayed into another VM even when both guests used the
+/// same selectable identifier, sequence, and trap coordinate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuNodeSelectablePendingRequest {
+    node: NodeId,
+    pending: SelectablePlanPendingRequest,
+}
+
+impl QemuNodeSelectablePendingRequest {
+    /// Returns the exact scheduler node that owns the pending request.
+    #[must_use]
+    pub const fn node(&self) -> &NodeId {
+        &self.node
+    }
+
+    /// Returns the process-neutral guest request and trap coordinate.
+    #[must_use]
+    pub const fn pending(&self) -> &SelectablePlanPendingRequest {
+        &self.pending
+    }
 }
 
 /// Maximum early-pause reissues for one scheduler-selected node step.
@@ -77,6 +104,7 @@ pub struct QemuNodeSet {
     nodes: BTreeMap<NodeId, QemuNode>,
     permanently_closed: Vec<NodeId>,
     fault_event_staging_budget: Option<QemuFaultEventStagingBudget>,
+    pending_selectable_requests: BTreeMap<NodeId, SelectablePlanPendingRequest>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,6 +121,7 @@ impl QemuNodeSet {
             nodes: BTreeMap::new(),
             permanently_closed: Vec::new(),
             fault_event_staging_budget: None,
+            pending_selectable_requests: BTreeMap::new(),
         }
     }
 
@@ -132,6 +161,89 @@ impl QemuNodeSet {
     #[must_use]
     pub fn contains(&self, node: &NodeId) -> bool {
         self.nodes.contains_key(node)
+    }
+
+    /// Drains every node's selectable request at the current paused boundary.
+    ///
+    /// Results follow canonical [`NodeId`] order. Each node may own at most one
+    /// pending request, matching the plugin catalog state machine.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when a node's shared-memory transport is
+    /// malformed or reports more than one pending request.
+    pub fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<QemuNodeSelectablePendingRequest>, BackendError> {
+        for (node, backend) in &mut self.nodes {
+            if self.pending_selectable_requests.contains_key(node) {
+                continue;
+            }
+            let pending = backend
+                .drain_pending_selectable_requests()
+                .map_err(BackendError::from)?;
+            if pending.len() > 1 {
+                return Err(BackendError::Rejected {
+                    message: format!(
+                        "QEMU node `{}` reported {} pending selectable requests",
+                        node.name,
+                        pending.len()
+                    ),
+                });
+            }
+            if let Some(pending) = pending.into_iter().next() {
+                self.pending_selectable_requests
+                    .insert(node.clone(), pending.clone());
+            }
+        }
+        let mut drained = Vec::new();
+        drained
+            .try_reserve_exact(self.pending_selectable_requests.len())
+            .map_err(|_| BackendError::Rejected {
+                message: String::from("QEMU selectable request storage is exhausted"),
+            })?;
+        for (node, pending) in &self.pending_selectable_requests {
+            drained.push(QemuNodeSelectablePendingRequest {
+                node: node.clone(),
+                pending: pending.clone(),
+            });
+        }
+        Ok(drained)
+    }
+
+    /// Enqueues a reply for the exact node-qualified pending request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or permanently closed,
+    /// or when its shared-memory transport rejects the request/reply binding.
+    pub fn enqueue_selectable_reply(
+        &mut self,
+        pending: &QemuNodeSelectablePendingRequest,
+        reply: &SelectionReply,
+    ) -> Result<(), BackendError> {
+        let retained = self
+            .pending_selectable_requests
+            .get(pending.node())
+            .ok_or_else(|| BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` has no retained selectable request",
+                    pending.node().name
+                ),
+            })?;
+        if retained != pending.pending() {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` selectable request differs from the retained token",
+                    pending.node().name
+                ),
+            });
+        }
+        self.node_mut(pending.node())?
+            .enqueue_selectable_reply(pending.pending(), reply)
+            .map_err(BackendError::from)?;
+        self.pending_selectable_requests.remove(pending.node());
+        Ok(())
     }
 
     /// Returns one node's authoritative live block-device handle.
@@ -888,6 +1000,8 @@ impl SimulationBackend for QemuNodeSet {
 #[cfg(test)]
 mod tests {
     use crucible::{AdvanceOutcome, Icount};
+    use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
+    use crucible_protocol::{SelectionReply, SelectionReplyStatus, SelectionRequest};
 
     use super::*;
 
@@ -959,5 +1073,40 @@ mod tests {
             },
         );
         assert_eq!(stagnant_pause_boundary(&regressed, previous, None), None);
+    }
+
+    #[test]
+    fn drained_selectable_request_remains_owned_after_delivery_failure() {
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        let request = SelectionRequest::new(7, "product.test.selectable", "instance-a", None, 128)
+            .expect("selection request");
+        let pending = SelectablePlanPendingRequest::new(request, 41, 0, 0x1000);
+        let mut nodes = QemuNodeSet::new();
+        nodes
+            .pending_selectable_requests
+            .insert(node.clone(), pending.clone());
+
+        let first = nodes
+            .drain_pending_selectable_requests()
+            .expect("retained request");
+        let second = nodes
+            .drain_pending_selectable_requests()
+            .expect("retry retained request");
+        assert_eq!(first, second);
+        assert_eq!(first[0].node(), &node);
+        assert_eq!(first[0].pending(), &pending);
+
+        let reply =
+            SelectionReply::rejected(7, SelectionReplyStatus::Unavailable, [0; 32], [0; 32])
+                .expect("unavailable reply");
+        assert!(nodes.enqueue_selectable_reply(&first[0], &reply).is_err());
+        assert_eq!(
+            nodes
+                .drain_pending_selectable_requests()
+                .expect("request survives failed delivery"),
+            first
+        );
     }
 }

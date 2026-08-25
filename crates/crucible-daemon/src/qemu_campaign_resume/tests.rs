@@ -60,6 +60,22 @@ impl QemuFreshAttemptLifecycleOwner for FakeResumeLifecycle {
         Ok(true)
     }
 
+    fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<crucible_qemu::QemuNodeSelectablePendingRequest>, SchedulerError> {
+        Ok(Vec::new())
+    }
+
+    fn enqueue_selectable_reply(
+        &mut self,
+        _pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
+        _reply: &crucible_protocol::SelectionReply,
+    ) -> Result<(), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("resume lifecycle fixture has no selectable transport"),
+        })
+    }
+
     fn capture_attempt_checkpoint(
         &mut self,
         _context: &AttemptExecutionContext,

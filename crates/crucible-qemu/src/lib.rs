@@ -242,7 +242,9 @@ pub use node_factory::{
 };
 #[cfg(target_os = "linux")]
 pub use node_set::QemuNodeSetBlockBoundaryCheckpoint;
-pub use node_set::{QemuNodeSet, QemuNodeTerminalReplacementPlan};
+pub use node_set::{
+    QemuNodeSelectablePendingRequest, QemuNodeSet, QemuNodeTerminalReplacementPlan,
+};
 pub use production_fault_runtime::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint,
     ProductionFaultRuntimeCheckpointCodecError, ProductionFaultRuntimeError,
