@@ -303,10 +303,32 @@ though presentation-only landmark edits deliberately preserve the domain's
 semantic ID and branch-edge identity. The existing 4,096-landmark domain bound
 keeps the interval fold and selected-interval search bounded.
 
+Generator implementation-version 13 adds a direct objective-measurement
+discontinuity term before version 12's interval terms. For one completed
+semantic edge `e`, let `R_e` be its owner-verified policy-weighted objective
+reward sum after the canonical once-per-edge signed saturation and `N_e` its
+positive completed-visit count. A completed edge without a verified objective
+evaluation has `R_e = 0`; an exterior endpoint or unobserved edge uses the exact
+basis `(R_e, N_e) = (0, 1)`. The endpoint mean discontinuity is
+
+```text
+D(a, b) = abs(R_a * N_b - R_b * N_a) / (N_a * N_b)
+```
+
+Compare `D` as an exact nonnegative rational, then compare landmark count,
+endpoint PUCT-score difference, interval cardinality, and lower offset exactly
+as version 12. The winning interval still emits its nearest lower-midpoint
+landmark when one remains and its ordinary lower midpoint otherwise. Objective
+reward sums, visit counts, observations, evaluations, property verdicts, and
+active-policy contracts come from the same bounded owner projection already
+used by PUCT; uninterpreted or unauthenticated measurement payloads never enter
+the term. The existing 65,536-credit, 65,536-evaluation, 128-MiB evidence, and
+4,096-proposal bounds also bound every numerator, denominator, and comparison.
+
 Other algorithms remain valid suspended specifications but fail closed at
 proposal issuance and expansion projection until their versioned cursor and
 feedback owners are implemented. Earlier and unknown implementation versions
-remain suspended rather than being reinterpreted as versions 2 through 12; this
+remain suspended rather than being reinterpreted as versions 2 through 13; this
 preserves owner validation of histories created before executable enumeration
 landed.
 
@@ -388,9 +410,12 @@ Splits use exact integer midpoint and rounding rules. Empty or duplicate splits
 are discarded. Version 9 is the bounded feedback-gated interval owner described
 in §03.2: its visit count gates refinement, while its largest-gap choice does
 not consume guidance scores. Version 11 consumes the exact owner-derived PUCT
-endpoint score described there. Dedicated raw measurement-discontinuity and
-producer-landmark interval terms require a later implementation version; they
-MUST NOT be inferred from unauthenticated telemetry in the meantime.
+endpoint score described there. Dedicated objective-measurement discontinuity
+and producer-landmark interval terms require replay-distinct implementation
+versions. Version 12 consumes the exact landmark term and version 13
+additionally consumes the direct owner-verified discontinuity above. Neither
+term may be inferred from unauthenticated telemetry or opaque measurement
+payloads.
 
 - **[GUIDE-5]** Progressive widening MUST feed descendant observations back to
   the expansion state at every branch point on the recorded branch-edge path.
@@ -430,6 +455,13 @@ MUST NOT be inferred from unauthenticated telemetry in the meantime.
   lower-offset tie-break. Local issue, import, and restart MUST authenticate the
   exact domain body and reproduce the same choice without mutating version 9 or
   version 11 histories.
+- **[GUIDE-29]** Measurement-progressive implementation-version 13 MUST rank
+  intervals first by the exact endpoint mean objective-reward discontinuity,
+  then by version 12's landmark, PUCT, cardinality, and lower-offset terms. Its
+  reward sums, visit denominators, and evaluation basis MUST be owner-verified
+  under the active policy and bounded projection. Local issue, import, and
+  restart MUST reproduce the exact rational comparison, while versions 11 and
+  12 MUST ignore it.
 
 ## 03.4 Tree policy: deterministic MCTS/PUCT
 

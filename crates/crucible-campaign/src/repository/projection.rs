@@ -3,6 +3,8 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
+use num_bigint::BigUint;
+
 use super::*;
 use crate::{ChoiceValue, IntegerDomain, IntegerRepresentation, IntegerValue};
 
@@ -117,7 +119,7 @@ impl<'a> CandidateEnumerationBasis<'a> {
         self
     }
 
-    /// Adds the exact active-policy projection used by feedback versions 11 and 12.
+    /// Adds the exact active-policy projection used by feedback versions 11 through 13.
     pub(super) const fn with_feedback(
         mut self,
         feedback_projection: Option<CandidateFeedbackProjection<'a>>,
@@ -293,16 +295,54 @@ impl PartialOrd for RefinementGap {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Retains one endpoint-mean difference as an unreduced exact rational.
+struct ExactObjectiveDiscontinuity {
+    numerator: u128,
+    denominator: u128,
+}
+
+#[derive(Clone, Copy)]
+struct FeedbackEndpoint {
+    edge: Option<crate::BranchEdgeId>,
+    score_micros: i64,
+}
+
+impl ExactObjectiveDiscontinuity {
+    const ZERO: Self = Self {
+        numerator: 0,
+        denominator: 1,
+    };
+}
+
+impl Ord for ExactObjectiveDiscontinuity {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // The projection bounds keep every operand small, while `BigUint`
+        // keeps cross multiplication exact without adding a hidden overflow
+        // condition to the language-neutral interval order.
+        (BigUint::from(self.numerator) * BigUint::from(other.denominator))
+            .cmp(&(BigUint::from(other.numerator) * BigUint::from(self.denominator)))
+    }
+}
+
+impl PartialOrd for ExactObjectiveDiscontinuity {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct FeedbackRefinementGap {
     gap: RefinementGap,
+    objective_discontinuity: ExactObjectiveDiscontinuity,
     producer_landmarks: usize,
     endpoint_score_delta: u64,
 }
 
 impl Ord for FeedbackRefinementGap {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.producer_landmarks
-            .cmp(&other.producer_landmarks)
+        self.objective_discontinuity
+            .cmp(&other.objective_discontinuity)
+            .then_with(|| self.producer_landmarks.cmp(&other.producer_landmarks))
             .then_with(|| self.endpoint_score_delta.cmp(&other.endpoint_score_delta))
             .then_with(|| self.gap.len().cmp(&other.gap.len()))
             .then_with(|| other.gap.lower.cmp(&self.gap.lower))
@@ -405,7 +445,8 @@ impl CampaignRepository {
         let score_intervals = match implementation_version {
             crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION => false,
             crate::FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-            | crate::LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION => true,
+            | crate::LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+            | crate::MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION => true,
             _ => return Ok(None),
         };
         if *initial_strata > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA {
@@ -779,8 +820,13 @@ impl CampaignRepository {
             else {
                 return Err(integrity("progressive-generator-basis-mismatch"));
             };
-            let score_landmarks = spec.implementation_version()
-                == crate::LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION;
+            let score_landmarks = matches!(
+                spec.implementation_version(),
+                crate::LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                    | crate::MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+            );
+            let score_objective_discontinuity = spec.implementation_version()
+                == crate::MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION;
             if ordinal <= u64::from(*initial_strata).min(count) {
                 return stratified_integer_candidate(*initial_strata, integer, ordinal)
                     .map(ChoiceValue::Integer)
@@ -815,6 +861,7 @@ impl CampaignRepository {
                 &proposed,
                 feedback,
                 score_landmarks,
+                score_objective_discontinuity,
             )
             .map(ChoiceValue::Integer)
             .map(Some);
@@ -3806,6 +3853,7 @@ fn feedback_progressive_integer_candidate(
     proposed: &BTreeSet<ChoiceValue>,
     feedback: CandidateFeedbackProjection<'_>,
     score_landmarks: bool,
+    score_objective_discontinuity: bool,
 ) -> Result<IntegerValue, CampaignRepositoryError> {
     let projection = feedback.projection;
     if projection.branch_point() != request.branch_point() || projection.policy() != feedback.policy
@@ -3836,7 +3884,7 @@ fn feedback_progressive_integer_candidate(
         BTreeSet::new()
     };
     let prospective_prior = projection.prospective_prior_basis(1)?;
-    let mut endpoint_scores = BTreeMap::<u128, i64>::new();
+    let mut endpoints = BTreeMap::<u128, FeedbackEndpoint>::new();
     let mut scored = BinaryHeap::new();
     for gap in gaps {
         let lower_endpoint = selected.range(..gap.lower).next_back().copied();
@@ -3847,28 +3895,33 @@ fn feedback_progressive_integer_candidate(
             ))
             .next()
             .copied();
-        let lower_score = feedback_endpoint_score(
+        let lower = feedback_endpoint(
             request,
             domain,
             domain_semantic,
             projection,
             prospective_prior,
             lower_endpoint,
-            &mut endpoint_scores,
+            &mut endpoints,
         )?;
-        let upper_score = feedback_endpoint_score(
+        let upper = feedback_endpoint(
             request,
             domain,
             domain_semantic,
             projection,
             prospective_prior,
             upper_endpoint,
-            &mut endpoint_scores,
+            &mut endpoints,
         )?;
         scored.push(FeedbackRefinementGap {
             gap,
+            objective_discontinuity: if score_objective_discontinuity {
+                objective_discontinuity(projection, lower.edge, upper.edge)?
+            } else {
+                ExactObjectiveDiscontinuity::ZERO
+            },
             producer_landmarks: landmark_offsets.range(gap.lower..=gap.upper).count(),
-            endpoint_score_delta: lower_score.abs_diff(upper_score),
+            endpoint_score_delta: lower.score_micros.abs_diff(upper.score_micros),
         });
     }
     let selected = scored
@@ -3891,20 +3944,23 @@ fn feedback_progressive_integer_candidate(
     integer_candidate_at_offset(domain, offset)
 }
 
-fn feedback_endpoint_score(
+fn feedback_endpoint(
     request: &BranchRequest,
     domain: &IntegerDomain,
     domain_semantic: crate::ChoiceDomainSemanticId,
     projection: &crate::BranchPuctProjection,
     prospective_prior: crate::exploration::BranchProspectivePriorBasis,
     offset: Option<u128>,
-    cache: &mut BTreeMap<u128, i64>,
-) -> Result<i64, CampaignRepositoryError> {
+    cache: &mut BTreeMap<u128, FeedbackEndpoint>,
+) -> Result<FeedbackEndpoint, CampaignRepositoryError> {
     let Some(offset) = offset else {
-        return Ok(0);
+        return Ok(FeedbackEndpoint {
+            edge: None,
+            score_micros: 0,
+        });
     };
-    if let Some(score) = cache.get(&offset) {
-        return Ok(*score);
+    if let Some(endpoint) = cache.get(&offset) {
+        return Ok(*endpoint);
     }
     let value = ChoiceValue::Integer(integer_candidate_at_offset(domain, offset)?);
     let edge = crate::Selection::campaign_edge_id(request.branch_point(), domain_semantic, &value);
@@ -3922,9 +3978,59 @@ fn feedback_endpoint_score(
     } else {
         projection.candidate_evidence_with_prior_basis(edge, prospective_prior)?
     };
-    let score = crate::PuctScore::derive(projection.puct(), evidence.statistics)?.total_micros();
-    cache.insert(offset, score);
-    Ok(score)
+    let endpoint = FeedbackEndpoint {
+        edge: Some(edge),
+        score_micros: crate::PuctScore::derive(projection.puct(), evidence.statistics)?
+            .total_micros(),
+    };
+    cache.insert(offset, endpoint);
+    Ok(endpoint)
+}
+
+fn objective_discontinuity(
+    projection: &crate::BranchPuctProjection,
+    lower: Option<crate::BranchEdgeId>,
+    upper: Option<crate::BranchEdgeId>,
+) -> Result<ExactObjectiveDiscontinuity, CampaignRepositoryError> {
+    let (lower_reward, lower_visits) = objective_endpoint_mean_basis(projection, lower);
+    let (upper_reward, upper_visits) = objective_endpoint_mean_basis(projection, upper);
+    let lower_scaled = i128::from(lower_reward)
+        .checked_mul(i128::from(upper_visits))
+        .ok_or_else(|| integrity("progressive-generator-objective-discontinuity-overflow"))?;
+    let upper_scaled = i128::from(upper_reward)
+        .checked_mul(i128::from(lower_visits))
+        .ok_or_else(|| integrity("progressive-generator-objective-discontinuity-overflow"))?;
+    let numerator = lower_scaled
+        .checked_sub(upper_scaled)
+        .ok_or_else(|| integrity("progressive-generator-objective-discontinuity-overflow"))?
+        .unsigned_abs();
+    let denominator = u128::from(lower_visits)
+        .checked_mul(u128::from(upper_visits))
+        .ok_or_else(|| integrity("progressive-generator-objective-discontinuity-overflow"))?;
+    Ok(ExactObjectiveDiscontinuity {
+        numerator,
+        denominator,
+    })
+}
+
+fn objective_endpoint_mean_basis(
+    projection: &crate::BranchPuctProjection,
+    edge: Option<crate::BranchEdgeId>,
+) -> (i64, u64) {
+    let Some(edge) = edge else {
+        return (0, 1);
+    };
+    let Some(statistics) = projection.edge_statistics().get(&edge) else {
+        return (0, 1);
+    };
+    (
+        projection
+            .edge_objective_reward_micros()
+            .get(&edge)
+            .copied()
+            .unwrap_or(0),
+        statistics.edge_visits(),
+    )
 }
 
 fn integer_candidate_offset(
