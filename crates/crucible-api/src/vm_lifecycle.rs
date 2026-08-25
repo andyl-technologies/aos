@@ -54,7 +54,7 @@ use quantum_loop::{
 mod assets;
 use assets::*;
 mod checkpoint_store;
-use checkpoint_store::{load_exact_checkpoint_set, persist_exact_checkpoint_set};
+use checkpoint_store::load_exact_checkpoint_set;
 mod checkpoint_dependencies;
 pub use checkpoint_dependencies::collect_signal_artifact_objects;
 mod fault_implementation;
@@ -475,7 +475,7 @@ pub struct ProductionVmLifecycleLoop {
     scenario: ScenarioDef,
     source: ScenarioDefForm,
     config: ProductionVmLifecycleConfig,
-    checkpoint_targets: BTreeMap<ContentHash, ContentHash>,
+    checkpoint_targets: BTreeMap<ContentHash, quantum_loop::ExactCheckpointPublicationState>,
     recorded_controls: Vec<ProductionVmRecordedControl>,
     signal_artifact_objects: BTreeMap<ContentHash, Vec<u8>>,
     debug_backend_paths: BTreeMap<NodeId, PathBuf>,

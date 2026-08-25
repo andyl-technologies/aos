@@ -8,6 +8,9 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 mod io;
 use io::read_bounded_file;
+mod publication;
+use publication::scheduler_resource_limit;
+pub(super) use publication::{PersistExactCheckpointError, PreparedExactCheckpointPublication};
 
 const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v4\0";
 const MANIFEST_FILE: &str = "manifest.cbor";
@@ -115,12 +118,12 @@ struct RecordedControlWire {
     control: Vec<ControlOperation>,
 }
 
-pub(super) fn persist_exact_checkpoint_set(
+pub(super) fn prepare_exact_checkpoint_set(
     run_state_root: &Path,
     scenario: ContentHash,
     resource_limits: FaultResourceLimits,
     checkpoint: &mut ProductionVmExactCheckpointSet,
-) -> Result<(), SchedulerError> {
+) -> Result<PreparedExactCheckpointPublication, PersistExactCheckpointError> {
     validate_checkpoint_set(scenario, checkpoint)?;
     let (mut manifest, objects) = manifest_and_objects(scenario, resource_limits, checkpoint)?;
     manifest.identity = closure_identity(&manifest)?;
@@ -136,8 +139,16 @@ pub(super) fn persist_exact_checkpoint_set(
         manifest_bytes.len(),
     )?;
 
-    let closure_parent = closure_parent(run_state_root, scenario);
-    let object_directory = object_parent(run_state_root, scenario);
+    let scenario_directory = run_state_root.join(scenario.to_hex());
+    fs::create_dir_all(&scenario_directory).map_err(|error| {
+        store_error(format!(
+            "create exact checkpoint scenario directory {}: {error}",
+            scenario_directory.display()
+        ))
+    })?;
+    sync_directory(run_state_root)?;
+    let closure_parent = scenario_directory.join("checkpoint-closures");
+    let object_directory = scenario_directory.join("checkpoint-objects");
     fs::create_dir_all(&closure_parent).map_err(|error| {
         store_error(format!(
             "create exact checkpoint closure directory {}: {error}",
@@ -150,6 +161,7 @@ pub(super) fn persist_exact_checkpoint_set(
             object_directory.display()
         ))
     })?;
+    sync_directory(&scenario_directory)?;
     let destination = closure_parent.join(manifest.identity.to_hex());
     if destination.exists() {
         authenticate_existing_publication(
@@ -158,9 +170,21 @@ pub(super) fn persist_exact_checkpoint_set(
             &manifest,
             &objects,
             checkpoint,
+        )
+        .map_err(|source| PersistExactCheckpointError::Indeterminate {
+            identity: manifest.identity,
+            source,
+        })?;
+        install_persisted_artifact_paths(&object_directory, &manifest, checkpoint).map_err(
+            |source| PersistExactCheckpointError::Indeterminate {
+                identity: manifest.identity,
+                source,
+            },
         )?;
-        install_published_artifact_paths(&object_directory, &manifest, checkpoint)?;
-        return Ok(());
+        return Ok(PreparedExactCheckpointPublication::Existing {
+            identity: manifest.identity,
+            closure_parent,
+        });
     }
     let staging = tempfile::Builder::new()
         .prefix(".closure-")
@@ -183,9 +207,9 @@ pub(super) fn persist_exact_checkpoint_set(
             .put(bytes)
             .map_err(|error| store_error(format!("persist checkpoint DAG object: {error}")))?;
         if stored != *identity {
-            return Err(store_error(
+            return Err(PersistExactCheckpointError::Unpublished(store_error(
                 "checkpoint DAG returned a different content identity",
-            ));
+            )));
         }
     }
     persist_object(
@@ -228,55 +252,14 @@ pub(super) fn persist_exact_checkpoint_set(
 
     persist_file_bytes(&staging.path().join(MANIFEST_FILE), &manifest_bytes)?;
     sync_directory(staging.path())?;
-    fs::rename(staging.path(), &destination).map_err(|error| {
-        store_error(format!(
-            "publish exact checkpoint closure {}: {error}",
-            destination.display()
-        ))
-    })?;
-    if let Err(error) = enforce_published_checkpoint_count(&closure_parent, resource_limits) {
-        let cleanup = fs::remove_dir_all(&destination).map_err(|cleanup| {
-            store_error(format!(
-                "roll back over-limit checkpoint publication {}: {cleanup}",
-                destination.display()
-            ))
-        });
-        cleanup?;
-        sync_directory(&closure_parent)?;
-        return Err(error);
-    }
-    sync_directory(&closure_parent)?;
-
-    install_published_artifact_paths(&object_directory, &manifest, checkpoint)?;
-    Ok(())
-}
-
-fn enforce_published_checkpoint_count(
-    parent: &Path,
-    limits: FaultResourceLimits,
-) -> Result<(), SchedulerError> {
-    let count = fs::read_dir(parent)
-        .map_err(|error| store_error(format!("count published checkpoint closures: {error}")))?
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry.file_type().is_ok_and(|kind| kind.is_dir())
-                && entry.file_name().to_str().is_some_and(|name| {
-                    name.len() == 64
-                        && name
-                            .bytes()
-                            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-                })
-        })
-        .count();
-    let count = u64::try_from(count)
-        .map_err(|_| store_error("published checkpoint count is not representable"))?;
-    limits
-        .reserve(
-            "checkpoint_count",
-            count.saturating_sub(1),
-            u64::from(count != 0),
-        )
-        .map_err(|error| store_error(error.to_string()))
+    install_persisted_artifact_paths(&object_directory, &manifest, checkpoint)?;
+    Ok(PreparedExactCheckpointPublication::Staged {
+        identity: manifest.identity,
+        staging,
+        destination,
+        closure_parent,
+        resource_limits: Box::new(resource_limits),
+    })
 }
 
 pub(super) fn load_exact_checkpoint_set(
@@ -812,7 +795,7 @@ fn enforce_persist_limits(
     }
     limits
         .reserve("fat_checkpoint_bytes", 0, bytes)
-        .map_err(|error| store_error(error.to_string()))
+        .map_err(scheduler_resource_limit)
 }
 
 fn add_checkpoint_bytes(current: u64, requested: u64) -> Result<u64, SchedulerError> {
@@ -907,7 +890,7 @@ fn authenticate_existing_publication(
     Ok(())
 }
 
-fn install_published_artifact_paths(
+fn install_persisted_artifact_paths(
     object_directory: &Path,
     manifest: &ClosureManifest,
     checkpoint: &mut ProductionVmExactCheckpointSet,
@@ -2439,26 +2422,5 @@ mod tests {
         assert_eq!(branch.seed, Some(Seed::from_u64(9)));
         assert_eq!(decoded.recorded_controls.len(), 1);
         assert_eq!(decoded.recorded_controls[0].control[0].sequence, 1);
-    }
-
-    #[test]
-    fn published_checkpoint_count_ignores_transaction_staging_directories() {
-        let root = tempfile::tempdir().expect("create checkpoint count fixture");
-        fs::create_dir(root.path().join(".closure-incomplete"))
-            .expect("create transaction staging directory");
-        fs::create_dir(root.path().join("not-a-checkpoint")).expect("create unrelated directory");
-        fs::create_dir(root.path().join("0".repeat(64)))
-            .expect("create one published checkpoint directory");
-        let limits = FaultResourceLimits {
-            checkpoint_count: 1,
-            ..FaultResourceLimits::default()
-        };
-
-        enforce_published_checkpoint_count(root.path(), limits)
-            .expect("only the published identity counts against the limit");
-
-        fs::create_dir(root.path().join("1".repeat(64)))
-            .expect("create a second published checkpoint directory");
-        assert!(enforce_published_checkpoint_count(root.path(), limits).is_err());
     }
 }

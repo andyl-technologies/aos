@@ -28,20 +28,42 @@ fn stopped_checkpoint_artifact_keeps_the_pinned_source_without_copying() {
 
 #[test]
 fn exact_capture_reports_publication_and_release_failures_together() {
-    let publication: Result<(), SchedulerError> = Err(SchedulerError::BoundaryViolation {
-        message: String::from("publication failed"),
-    });
+    let publication = Err(ExactCheckpointTransactionError::Unpublished(
+        SchedulerError::BoundaryViolation {
+            message: String::from("publication failed"),
+        },
+    ));
     let cleanup = Err(SchedulerError::BoundaryViolation {
         message: String::from("resume failed"),
     });
 
-    let error = match combine_exact_capture_result(publication, cleanup) {
-        Ok(()) => panic!("both failures must reject capture"),
-        Err(error) => error,
+    let error = match combine_exact_checkpoint_transaction(publication, cleanup) {
+        Ok(_) => panic!("both failures must reject capture"),
+        Err(ExactCheckpointTransactionError::Indeterminate {
+            identity: None,
+            source,
+        }) => source,
+        Err(_) => panic!("cleanup failure must make unpublished capture indeterminate"),
     };
 
     assert!(error.to_string().contains("publication failed"));
     assert!(error.to_string().contains("resume failed"));
+}
+
+#[test]
+fn exact_capture_retains_durable_identity_when_release_fails() {
+    let identity = ContentHash::from_bytes(b"durable exact checkpoint");
+    let cleanup = Err(SchedulerError::BoundaryViolation {
+        message: String::from("resume failed"),
+    });
+
+    assert!(matches!(
+        combine_exact_checkpoint_transaction(Ok(identity), cleanup),
+        Err(ExactCheckpointTransactionError::Indeterminate {
+            identity: Some(observed),
+            ..
+        }) if observed == identity
+    ));
 }
 
 #[test]
