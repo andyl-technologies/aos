@@ -325,10 +325,31 @@ used by PUCT; uninterpreted or unauthenticated measurement payloads never enter
 the term. The existing 65,536-credit, 65,536-evaluation, 128-MiB evidence, and
 4,096-proposal bounds also bound every numerator, denominator, and comparison.
 
+Generator implementation-version 14 adds a direct coverage-novelty
+discontinuity term before version 13's interval terms. For one completed
+semantic edge `e`, let `C_e` be the exact count of globally unique canonical
+coverage identities assigned to that edge and retain `N_e` as its positive
+completed-visit count. An edge without unique coverage and an exterior or
+unobserved endpoint use `C_e = 0`, with the latter retaining the exact
+denominator basis `N_e = 1`. Compare
+
+```text
+C(a, b) = abs(C_a * N_b - C_b * N_a) / (N_a * N_b)
+```
+
+as an exact nonnegative rational, then compare version 13's objective
+discontinuity, landmark count, endpoint PUCT-score difference, interval
+cardinality, and lower offset. The winning interval retains version 12's exact
+landmark-or-midpoint value rule. Coverage identities, visit counts, and edge
+ownership come from the same bounded, snapshot-authenticated projection used by
+PUCT; executor arrival order and duplicate coverage identities cannot affect
+the term. Existing credit, observation, coverage-identity, evidence-byte, and
+proposal bounds therefore also bound this comparison.
+
 Other algorithms remain valid suspended specifications but fail closed at
 proposal issuance and expansion projection until their versioned cursor and
 feedback owners are implemented. Earlier and unknown implementation versions
-remain suspended rather than being reinterpreted as versions 2 through 13; this
+remain suspended rather than being reinterpreted as versions 2 through 14; this
 preserves owner validation of histories created before executable enumeration
 landed.
 
@@ -412,10 +433,11 @@ in §03.2: its visit count gates refinement, while its largest-gap choice does
 not consume guidance scores. Version 11 consumes the exact owner-derived PUCT
 endpoint score described there. Dedicated objective-measurement discontinuity
 and producer-landmark interval terms require replay-distinct implementation
-versions. Version 12 consumes the exact landmark term and version 13
-additionally consumes the direct owner-verified discontinuity above. Neither
-term may be inferred from unauthenticated telemetry or opaque measurement
-payloads.
+versions. Version 12 consumes the exact landmark term, version 13 additionally
+consumes the direct owner-verified objective discontinuity, and version 14
+precedes it with the exact globally unique coverage-novelty discontinuity.
+No adaptive term may be inferred from unauthenticated telemetry or opaque
+measurement payloads.
 
 - **[GUIDE-5]** Progressive widening MUST feed descendant observations back to
   the expansion state at every branch point on the recorded branch-edge path.
@@ -462,6 +484,13 @@ payloads.
   under the active policy and bounded projection. Local issue, import, and
   restart MUST reproduce the exact rational comparison, while versions 11 and
   12 MUST ignore it.
+- **[GUIDE-30]** Coverage-progressive implementation-version 14 MUST rank
+  intervals first by the exact endpoint mean globally unique coverage-identity
+  discontinuity, then by version 13's objective, landmark, PUCT, cardinality,
+  and lower-offset terms. Coverage counts, visit denominators, and edge
+  ownership MUST come from the bounded canonical observation projection. Local
+  issue, import, and restart MUST reproduce the comparison, while versions 11
+  through 13 MUST ignore the new leading term.
 
 ## 03.4 Tree policy: deterministic MCTS/PUCT
 
