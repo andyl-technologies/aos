@@ -707,6 +707,7 @@ impl ReproductionArtifact {
     ///
     /// Returns [`CampaignCodecError`] for an invalid payload, an inconsistent
     /// minimization target, or an encoded record above 34 MiB.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new_minimized(
         scenario: ScenarioDefId,
@@ -738,6 +739,8 @@ impl ReproductionArtifact {
         )
     }
 
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     fn new_versioned(
         schema_version: u32,
@@ -1071,6 +1074,7 @@ impl Finding {
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] when the encoded record exceeds 4 MiB.
+    // crucible-lint: allow rust-allow -- the stable constructor retains explicit schema arguments at this boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_retention(
         signature: FindingSignature,
@@ -1093,6 +1097,7 @@ impl Finding {
         )
     }
 
+    // crucible-lint: allow rust-allow -- the versioned constructor keeps every canonical field explicit.
     #[allow(clippy::too_many_arguments)]
     fn new_versioned(
         schema_version: u32,

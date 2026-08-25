@@ -1,3 +1,6 @@
+//! Repository coordination, execution, and validation test module wiring.
+
+// crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
 #![allow(clippy::expect_used)]
 
 use super::*;

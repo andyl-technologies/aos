@@ -2876,6 +2876,7 @@ const fn require_service_version(version: u32) -> Result<(), CampaignCodecError>
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
     use std::collections::BTreeSet;

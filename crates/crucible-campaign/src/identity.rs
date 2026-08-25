@@ -238,6 +238,7 @@ macro_rules! content_object_id {
             /// Returns [`CampaignCodecError::InvalidValue`] for the wrong kind.
             // Schema compatibility is an explicit set even when its current
             // members happen to form a contiguous numeric range.
+            // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
             #[allow(clippy::manual_range_patterns)]
             pub(crate) fn from_content_id(value: ContentId) -> Result<Self, CampaignCodecError> {
                 if value.kind() != $kind

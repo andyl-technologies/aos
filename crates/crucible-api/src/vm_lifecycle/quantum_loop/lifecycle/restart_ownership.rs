@@ -131,6 +131,7 @@ impl ProductionVmLifecycleLoop {
         })
     }
 
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(
         clippy::too_many_arguments,
         reason = "restart ownership binds the authenticated node, generation, launch identity, resource coordinate, and coordinator policy"

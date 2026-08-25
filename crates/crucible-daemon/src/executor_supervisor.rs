@@ -49,6 +49,11 @@ pub trait AttemptAdmissionValidator {
     /// The implementation authenticates the attempt, lineage, referenced
     /// objects, and supported executor profile. Temporary input absence and
     /// stable incompatibility are protocol rejections, not transport errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns the stable executor rejection when the immutable request basis
+    /// is unavailable, unauthorized, or incompatible with this executor.
     fn validate(&self, request: &SubmitAttemptRequest) -> Result<(), ExecutorRejection>;
 
     /// Validates a published observation before durable completion admission.
@@ -56,6 +61,11 @@ pub trait AttemptAdmissionValidator {
     /// The default is deliberately fail-closed. Production validators
     /// authenticate the observation closure and exact attempt/lineage
     /// correspondence through the repository's read-only response validator.
+    ///
+    /// # Errors
+    ///
+    /// Returns the stable completion failure when the observation cannot be
+    /// authenticated for the exact admitted request.
     fn validate_completion(
         &self,
         _request: &SubmitAttemptRequest,

@@ -1,5 +1,6 @@
 //! Conformance tests for content-store identities, leaves, refs, and layers.
 
+// crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
 #![allow(clippy::expect_used)]
 
 use std::collections::{BTreeMap, BTreeSet};

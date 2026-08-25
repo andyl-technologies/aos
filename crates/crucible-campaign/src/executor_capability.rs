@@ -494,6 +494,7 @@ impl ExecutorCapacityReport {
     ///
     /// Returns [`CampaignCodecError`] when the sequence is zero or the
     /// materialization-locality set is oversized.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         daemon_epoch: DaemonEpoch,
@@ -731,6 +732,7 @@ const fn require_capability_version(version: u32) -> Result<(), CampaignCodecErr
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
     use std::collections::{BTreeMap, BTreeSet};

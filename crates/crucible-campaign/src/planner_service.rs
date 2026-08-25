@@ -573,6 +573,7 @@ impl PlannerRequest {
     /// Returns [`CampaignCodecError`] when a by-value object's derived identity
     /// disagrees with the invocation, the served page and input bundle differ,
     /// or the total request exceeds 64 MiB.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         expected_snapshot: CampaignSnapshotId,
@@ -1344,6 +1345,7 @@ fn planner_response_basis(request_digest: CampaignHash, submission: &PlannerSubm
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
     use std::convert::Infallible;

@@ -18,6 +18,7 @@ const SOFT_LINE_LIMIT: usize = 600;
 const HARD_LINE_LIMIT: usize = 1_000;
 const QEMU_BOUNDARY_PACKAGES: &[&str] = &[
     "crucible-debug-gateway",
+    "crucible-daemon",
     "crucible-qemu",
     "crucible-qemu-plugin",
 ];

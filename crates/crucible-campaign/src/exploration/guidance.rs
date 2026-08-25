@@ -1108,6 +1108,7 @@ fn compare_u256(left: [u64; 4], right: [u64; 4]) -> Ordering {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;

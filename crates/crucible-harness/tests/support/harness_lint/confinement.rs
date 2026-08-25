@@ -108,7 +108,7 @@ pub(super) fn boundary_manifest_findings(
     dependency_specs(manifest, workspace_dependencies)
         .into_iter()
         .filter(|dependency| dependency.package == "crucible")
-        .filter(|_| !matches!(package, "crucible-cli" | "crucible-qemu"))
+        .filter(|_| !matches!(package, "crucible-cli" | "crucible-daemon" | "crucible-qemu"))
         .map(|dependency| {
             format!(
                 "`{package}` may not route host nondeterminism directly into engine State; dependency `{}` in {} must cross an API/session boundary or the crucible-sim decision source",

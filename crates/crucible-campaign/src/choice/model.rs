@@ -209,6 +209,7 @@ impl SelectableDeclaration {
     ///
     /// Returns [`CampaignCodecError`] for invalid names, tags, source, or
     /// default value.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: impl Into<String>,

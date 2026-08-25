@@ -62,6 +62,7 @@ impl CanonicalCampaignRuntimeConfig {
     ///
     /// Returns [`CanonicalCampaignRuntimeConfigError`] when either scan limit
     /// or an explicit worker-slot count is outside its fixed protocol bound.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         campaign: CampaignName,

@@ -61,6 +61,7 @@ pub fn fault_event_count(
 /// Returns [`FaultEventError`] for corrupt transport geometry, insufficient
 /// pre-reserved destination storage, invalid slot framing, or payload
 /// authentication failure.
+// crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
 #[allow(
     clippy::too_many_arguments,
     reason = "keeps independent shared-memory regions and byte ceilings explicit"

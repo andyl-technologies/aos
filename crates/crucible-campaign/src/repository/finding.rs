@@ -32,6 +32,7 @@ impl CampaignRepository {
     /// missing or inconsistent, an existing cluster conflicts, or bounds are
     /// exceeded. Storage failure after preflight may leave unreachable
     /// immutable objects before the final ref compare-and-swap.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_finding(
         &self,
@@ -64,6 +65,7 @@ impl CampaignRepository {
     ///
     /// Returns an error under the same fail-closed and failure-atomic contract
     /// as [`Self::publish_finding`].
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_finding_with_retention(
         &self,

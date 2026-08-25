@@ -1,3 +1,5 @@
+//! QEMU campaign driver candidate, evidence, and cancellation tests.
+
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
 #![allow(clippy::expect_used)]
 

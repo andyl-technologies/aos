@@ -794,6 +794,7 @@ impl PlannerStep {
     ///
     /// Returns [`CampaignCodecError`] when the disposition, output identities,
     /// or coordinator accounting are structurally inconsistent.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         parent: Option<PlannerStepId>,

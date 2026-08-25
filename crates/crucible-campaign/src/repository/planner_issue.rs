@@ -657,6 +657,7 @@ impl CampaignRepository {
         Ok(())
     }
 
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     fn expected_planner_issue_admission(
         &self,

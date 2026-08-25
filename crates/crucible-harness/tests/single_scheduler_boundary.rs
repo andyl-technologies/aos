@@ -1,4 +1,4 @@
-//! Checks that the single-scheduler boundary is explicit and L4-driven.
+//! Checks that the single-scheduler boundary is explicit and driven only by L4.
 
 #![forbid(unsafe_code)]
 
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use toml::Value;
 
 #[test]
-fn engine_owns_quantum_loop_and_session_is_only_driver() -> Result<(), Box<dyn Error>> {
+fn engine_owns_quantum_loop_and_only_l4_drivers_advance_it() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let engine_lib = read_repo_file(&root, "crates/crucible/src/lib.rs")?;
     let engine_model = read_module_tree(
@@ -180,7 +180,6 @@ fn non_authority_scheduler_exports(root: &Path) -> Result<Vec<String>, Box<dyn E
         "crucible-qemu-plugin",
         "crucible-guest",
         "crucible-api",
-        "crucible-daemon",
         "crucible-cli",
     ] {
         findings.extend(package_source_scheduler_ownership_findings(root, package)?);

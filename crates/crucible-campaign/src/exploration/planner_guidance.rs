@@ -43,6 +43,7 @@ impl PlannerCandidateGuidance {
     /// with the PUCT predicates, a legacy record carries objective reward,
     /// finding counts are empty or oversized, or the canonical record exceeds
     /// 64 KiB.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         input_view: CampaignViewId,
@@ -75,6 +76,7 @@ impl PlannerCandidateGuidance {
         )
     }
 
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_for_schema(
         schema_version: u32,

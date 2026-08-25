@@ -471,6 +471,7 @@ impl BranchRequest {
     ///
     /// Returns [`CampaignCodecError`] for an invalid stop condition or an
     /// oversized record.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         branch_point: BranchPointId,
@@ -500,6 +501,7 @@ impl BranchRequest {
         )
     }
 
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     fn new_for_schema(
         schema_version: u32,

@@ -1,4 +1,4 @@
-//! Checks that control-plane crates do not bypass the session/API boundary.
+//! Checks that public CLI code does not bypass the host composition boundary.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -7,11 +7,10 @@ use std::path::{Path, PathBuf};
 use toml::Value;
 
 #[test]
-fn cli_and_daemon_do_not_depend_on_engine_directly() -> Result<(), Box<dyn Error>> {
+fn cli_uses_only_declared_host_composition_dependencies() -> Result<(), Box<dyn Error>> {
     let manifests = load_crucible_manifests()?;
     let workspace_dependencies = load_workspace_dependencies()?;
-    let findings =
-        control_plane_boundary_findings(&manifests, &workspace_dependencies, &CONTROL_PLANE_CRATES);
+    let findings = control_plane_boundary_findings(&manifests, &workspace_dependencies);
 
     assert!(
         findings.is_empty(),
@@ -35,8 +34,7 @@ fn control_plane_boundary_rejects_direct_engine_dependency() -> Result<(), Box<d
     "#
     .parse()?;
     let manifests = BTreeMap::from([(String::from("crucible-cli"), manifest)]);
-    let findings =
-        control_plane_boundary_findings(&manifests, &toml::map::Map::new(), &["crucible-cli"]);
+    let findings = control_plane_boundary_findings(&manifests, &toml::map::Map::new());
 
     assert!(
         findings
@@ -53,7 +51,7 @@ fn control_plane_boundary_rejects_target_specific_engine_dependency() -> Result<
 {
     let manifest: Value = r#"
         [package]
-        name = "crucible-daemon"
+        name = "crucible-cli"
         version = "0.1.0"
         edition = "2024"
 
@@ -61,9 +59,8 @@ fn control_plane_boundary_rejects_target_specific_engine_dependency() -> Result<
         engine = { package = "crucible", path = "../crucible" }
     "#
     .parse()?;
-    let manifests = BTreeMap::from([(String::from("crucible-daemon"), manifest)]);
-    let findings =
-        control_plane_boundary_findings(&manifests, &toml::map::Map::new(), &["crucible-daemon"]);
+    let manifests = BTreeMap::from([(String::from("crucible-cli"), manifest)]);
+    let findings = control_plane_boundary_findings(&manifests, &toml::map::Map::new());
 
     assert!(
         findings
@@ -99,8 +96,7 @@ fn control_plane_boundary_rejects_workspace_engine_alias() -> Result<(), Box<dyn
         .cloned()
         .unwrap_or_default();
     let manifests = BTreeMap::from([(String::from("crucible-cli"), manifest)]);
-    let findings =
-        control_plane_boundary_findings(&manifests, &workspace_dependencies, &["crucible-cli"]);
+    let findings = control_plane_boundary_findings(&manifests, &workspace_dependencies);
 
     assert!(
         findings
@@ -116,7 +112,7 @@ fn control_plane_boundary_rejects_workspace_engine_alias() -> Result<(), Box<dyn
 fn control_plane_boundary_allows_api_and_session_dependencies() -> Result<(), Box<dyn Error>> {
     let manifest: Value = r#"
         [package]
-        name = "crucible-daemon"
+        name = "crucible-cli"
         version = "0.1.0"
         edition = "2024"
 
@@ -125,43 +121,43 @@ fn control_plane_boundary_allows_api_and_session_dependencies() -> Result<(), Bo
         session = { package = "crucible-session", path = "../crucible-session" }
     "#
     .parse()?;
-    let manifests = BTreeMap::from([(String::from("crucible-daemon"), manifest)]);
-    let findings =
-        control_plane_boundary_findings(&manifests, &toml::map::Map::new(), &["crucible-daemon"]);
+    let manifests = BTreeMap::from([(String::from("crucible-cli"), manifest)]);
+    let findings = control_plane_boundary_findings(&manifests, &toml::map::Map::new());
 
     assert!(findings.is_empty(), "{findings:?}");
 
     Ok(())
 }
 
-const CONTROL_PLANE_CRATES: [&str; 2] = ["crucible-cli", "crucible-daemon"];
-const ALLOWED_ENGINE_ENTRYPOINTS: [&str; 2] = ["crucible-api", "crucible-session"];
+const CLI_ALLOWED_CRUCIBLE_DEPENDENCIES: [&str; 4] = [
+    "crucible-api",
+    "crucible-campaign",
+    "crucible-daemon",
+    "crucible-session",
+];
 
 fn control_plane_boundary_findings(
     manifests: &BTreeMap<String, Value>,
     workspace_dependencies: &toml::map::Map<String, Value>,
-    packages: &[&str],
 ) -> Vec<String> {
     let mut findings = Vec::new();
 
-    for package in packages {
-        let manifest = manifests
-            .get(*package)
-            .unwrap_or_else(|| panic!("missing manifest for `{package}`"));
-        for dependency in dependency_specs(manifest, workspace_dependencies) {
-            if dependency.package == "crucible" {
-                findings.push(format!(
-                    "`{package}` has direct dependency `{}` on the engine crate in {}",
-                    dependency.key, dependency.scope
-                ));
-            } else if dependency.package.starts_with("crucible-")
-                && !ALLOWED_ENGINE_ENTRYPOINTS.contains(&dependency.package.as_str())
-            {
-                findings.push(format!(
-                    "`{package}` may reach the engine only through crucible-api/crucible-session, found `{}`",
-                    dependency.package
-                ));
-            }
+    let Some(manifest) = manifests.get("crucible-cli") else {
+        return findings;
+    };
+    for dependency in dependency_specs(manifest, workspace_dependencies) {
+        if dependency.package == "crucible" {
+            findings.push(format!(
+                "`crucible-cli` has direct dependency `{}` on the engine crate in {}",
+                dependency.key, dependency.scope
+            ));
+        } else if dependency.package.starts_with("crucible-")
+            && !CLI_ALLOWED_CRUCIBLE_DEPENDENCIES.contains(&dependency.package.as_str())
+        {
+            findings.push(format!(
+                "`crucible-cli` may reach lower layers only through the API, session, campaign, or daemon composition crates, found `{}`",
+                dependency.package
+            ));
         }
     }
 

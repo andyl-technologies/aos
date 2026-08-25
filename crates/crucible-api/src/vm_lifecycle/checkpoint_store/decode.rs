@@ -198,11 +198,13 @@ fn resource_message(current: u64, requested: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
     use super::*;
 
     #[derive(Debug)]
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     struct FallibleVector(#[allow(dead_code)] Vec<u64>);
 
     impl<'de> Deserialize<'de> for FallibleVector {

@@ -1,3 +1,6 @@
+//! Planner loopback framing, poisoning, request binding, and deadline tests.
+
+// crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
 #![allow(clippy::expect_used)]
 
 use std::collections::{BTreeMap, BTreeSet};

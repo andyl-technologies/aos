@@ -610,6 +610,7 @@ fn process_io(operation: &'static str, source: io::Error) -> CanonicalPlannerPro
 
 // Monotonic process time bounds only operational worker lifetime. It never
 // enters planner input, output, content identity, or deterministic fuel.
+// crucible-lint: allow clippy-disallowed-method -- the bounded host operation is operational only and cannot enter modeled state.
 #[allow(clippy::disallowed_methods)]
 fn process_now() -> Instant {
     Instant::now()

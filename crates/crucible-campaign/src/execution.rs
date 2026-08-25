@@ -2549,6 +2549,7 @@ const fn require_executor_message_version(version: u32) -> Result<(), CampaignCo
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
     use super::*;
