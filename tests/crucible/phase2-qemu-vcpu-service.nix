@@ -66,6 +66,7 @@ in
         pkgs.glib.dev
         pkgs.llvm
         pkgs.pkg-config
+        pkgs.qemu
         qemuPackage
       ];
       phases = [
@@ -147,6 +148,20 @@ in
               run_service x86_64 2 "$numerator" "$denominator"
               run_service aarch64 3 "$numerator" "$denominator"
             done
+
+            set +e
+            timeout --kill-after=5 15 \
+              ${pkgs.qemu}/bin/qemu-system-x86_64 \
+              -machine none -accel tcg -display none -nodefaults -S \
+              -plugin "$PWD/crucible-vcpu-service.so" \
+              > logs/stock-qemu.log 2>&1
+            stock_status=$?
+            set -e
+            test "$stock_status" -ne 0
+            test "$stock_status" -ne 124
+            ! grep -Fq CRUCIBLE_VCPU_SERVICE_LIVE_PASS logs/stock-qemu.log
+            ! nm -D --defined-only ${pkgs.qemu}/bin/qemu-system-x86_64 \
+              | grep -q qemu_plugin_crucible_fault_submit
           '';
         }
         {
@@ -157,11 +172,17 @@ in
             cp -R logs "$out/"
             {
               printf 'PASS\n'
+              printf 'gate=gate:patch-microtests\n'
+              printf 'patch=%s\n' '${patchName}'
+              printf 'patched_fixture_exercised=true\n'
+              printf 'stock_negative_control=true\n'
+              printf 'qemu_package=%s\n' '${qemuPackage}'
+              printf 'qemu_package_version=%s\n' '${qemuPackage.version}'
               printf 'check=%s\n' '${attrPath}'
               printf 'tasks=%s\n' '${taskList}'
               printf 'architectures=x86_64,aarch64\n'
               printf 'test_double=false\n'
-              printf 'backend=actual-patched-qemu\n'
+              printf 'backend=actual-patched-and-stock-qemu\n'
               printf 'live_ratios=1/1,1/2,1/3\n'
               printf 'live_windows_per_case=6\n'
             } > "$out/result"

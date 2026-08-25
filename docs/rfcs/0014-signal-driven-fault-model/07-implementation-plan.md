@@ -507,6 +507,17 @@ produce live patched-QEMU architectural or device evidence.
   consume guest-to-router kicks synchronously, so uninterrupted and
   fresh-process-restored worlds retain identical packet, interrupt, scheduler,
   and fault-decision continuation.
+- [x] **T-QEMU-0109** Implement
+  [`crucible-control-boundary-node-faults`](14-qemu-fault-patches/60-control-boundary-node-faults.md):
+  dispatch due node-boundary commands after an exact drained control callback,
+  preserve phase ownership, authenticate the backend-refined application
+  coordinate, and prove halted-node lifecycle mutation and replay through the
+  production runtime.
+- [x] **T-QEMU-0110** Implement
+  [`crucible-release-halted-rr-turn`](14-qemu-fault-patches/61-release-halted-rr-turn.md):
+  release all-halted partial RR turns to the canonical idle boundary and commit
+  helper-authenticated multi-vCPU `PAUSE` yields before host work, with live SMP
+  progress and a site-authenticated early-yield negative control.
 - [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result
