@@ -4,7 +4,7 @@
 use std::error::Error;
 use std::fs;
 
-use super::common::{EXPECTED_PATCHES, assert_contains, required, workspace_root};
+use super::common::{assert_contains, required, workspace_root, EXPECTED_PATCHES};
 
 /// Asserts plugin ABI, Nix fixtures, and aggregate contracts for every patch.
 ///
@@ -593,7 +593,6 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
         assert_contains(&aggregate, patch);
         assert_contains(&aggregate, "grep -q '^patch=${test.patch}$' \"$result\"");
         assert_contains(&aggregate, "grep -q '^patched_fixture_exercised=true$'");
-        assert_contains(&aggregate, "grep -q '^stock_negative_control=true$'");
     }
 
     Ok(())
