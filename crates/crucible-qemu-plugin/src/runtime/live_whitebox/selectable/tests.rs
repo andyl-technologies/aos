@@ -72,7 +72,12 @@ fn restored_plan() -> Result<SelectableCatalogPlan, Box<dyn std::error::Error>> 
         Some(4),
         completed,
         Some(8),
-        Some(SelectablePlanPendingRequest::new(request(9)?, 700, 2)),
+        Some(SelectablePlanPendingRequest::new(
+            request(9)?,
+            700,
+            2,
+            0x4000,
+        )),
     )?;
     Ok(SelectableCatalogPlan::new(
         SelectablePlanLimits::new(1, 3, 3)?,
@@ -103,7 +108,15 @@ fn live_catalog_freezes_and_retains_a_request_before_vmstop()
 
     let request = request(2)?;
     assert_eq!(
-        state.serve_selection(&request, SelectableCallbackCoordinate::new(50, 1))?,
+        state.serve_selection(
+            &request,
+            SelectableCallbackCoordinate::new(50, 1),
+            crate::GuestMemoryRange::new(
+                crate::GuestMemoryAddressSpace::Virtual,
+                0x4000,
+                request.reply_capacity(),
+            ),
+        )?,
         SelectableReplyDisposition::Pending,
     );
     assert_eq!(VMSTOP_CALLS.get(), 1);
@@ -112,6 +125,8 @@ fn live_catalog_freezes_and_retains_a_request_before_vmstop()
         .pending_request()
         .unwrap_or_else(|| panic!("admitted live request should remain pending"));
     assert_eq!(pending.request(), &request);
+    assert_eq!(pending.reply_range().guest_address(), 0x4000);
+    assert_eq!(pending.reply_range().len(), request.reply_capacity());
     assert_eq!(
         pending.coordinate(),
         SelectableCallbackCoordinate::new(50, 1)
@@ -150,7 +165,15 @@ fn vmstop_rejection_keeps_the_exact_request_pending() -> Result<(), Box<dyn std:
 
     assert!(
         state
-            .serve_selection(&request, SelectableCallbackCoordinate::new(50, 1))
+            .serve_selection(
+                &request,
+                SelectableCallbackCoordinate::new(50, 1),
+                crate::GuestMemoryRange::new(
+                    crate::GuestMemoryAddressSpace::Virtual,
+                    0x4000,
+                    request.reply_capacity(),
+                ),
+            )
             .is_err()
     );
     assert_eq!(VMSTOP_CALLS.get(), 1);

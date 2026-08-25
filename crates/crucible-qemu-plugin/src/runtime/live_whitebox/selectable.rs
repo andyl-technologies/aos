@@ -100,9 +100,10 @@ impl SelectableReplyService for LiveSelectableState {
         &mut self,
         request: &crucible_protocol::SelectionRequest,
         coordinate: SelectableCallbackCoordinate,
+        reply_range: crate::GuestMemoryRange,
     ) -> Result<SelectableReplyDisposition, SelectableDoorbellServiceError> {
         self.catalog
-            .begin_request(request, coordinate)
+            .begin_request(request, coordinate, reply_range)
             .map_err(service_error)?;
         let status = (self.request_vmstop)();
         if status != 0 {

@@ -54,6 +54,10 @@ fn coordinate(icount: u64) -> SelectableCallbackCoordinate {
     SelectableCallbackCoordinate::new(icount, 0)
 }
 
+fn reply_range() -> GuestMemoryRange {
+    GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0x4000, 128)
+}
+
 fn request(
     sequence: u64,
     selectable_id: &str,
@@ -255,19 +259,23 @@ fn request_is_frozen_catalog_bound_and_retained_until_exact_reply()
     )?;
     let first = request(7, "network.policy")?;
     assert_eq!(
-        catalog.begin_request(&first, coordinate(100)),
+        catalog.begin_request(&first, coordinate(100), reply_range()),
         Err(SelectableCatalogError::RequestBeforeFreeze)
     );
     catalog.register(&registration(1, "network.policy", &[1])?)?;
     catalog.freeze()?;
 
-    let pending = catalog.begin_request(&first, coordinate(100))?;
+    let pending = catalog.begin_request(&first, coordinate(100), reply_range())?;
     assert_eq!(pending.request(), &first);
     assert_eq!(pending.coordinate(), coordinate(100));
     assert_eq!(pending.declaration().domain(), [1]);
     assert_eq!(catalog.pending_request(), Some(&pending));
     assert!(matches!(
-        catalog.begin_request(&request(8, "network.policy")?, coordinate(101)),
+        catalog.begin_request(
+            &request(8, "network.policy")?,
+            coordinate(101),
+            reply_range(),
+        ),
         Err(SelectableCatalogError::RequestAlreadyPending {
             pending_sequence: 7,
             actual_sequence: 8,
@@ -304,8 +312,8 @@ fn pending_token_is_bound_to_one_catalog_incarnation() -> Result<(), Box<dyn std
         catalog.freeze()?;
     }
     let request = request(7, "network.policy")?;
-    let first_pending = first.begin_request(&request, coordinate(100))?;
-    let second_pending = second.begin_request(&request, coordinate(100))?;
+    let first_pending = first.begin_request(&request, coordinate(100), reply_range())?;
+    let second_pending = second.begin_request(&request, coordinate(100), reply_range())?;
 
     assert_eq!(
         first.complete_request(&second_pending, &reply(7)?),
@@ -335,7 +343,7 @@ fn combined_service_retains_failed_decision_and_retries_without_readmission()
 
     assert_eq!(
         service
-            .serve_selection(&request, coordinate(100))
+            .serve_selection(&request, coordinate(100), reply_range())
             .map(|_reply| ()),
         Err(SelectableDoorbellServiceError::new(
             "semantic resolver temporarily unavailable",
@@ -372,9 +380,17 @@ fn canonical_plan_round_trip_restores_exact_state_with_fresh_token()
     )?;
     catalog.register(&registration(4, "network.policy", &[1])?)?;
     catalog.freeze()?;
-    let completed = catalog.begin_request(&request(7, "network.policy")?, coordinate(100))?;
+    let completed = catalog.begin_request(
+        &request(7, "network.policy")?,
+        coordinate(100),
+        reply_range(),
+    )?;
     catalog.complete_request(&completed, &reply(7)?)?;
-    let old_pending = catalog.begin_request(&request(8, "network.policy")?, coordinate(120))?;
+    let old_pending = catalog.begin_request(
+        &request(8, "network.policy")?,
+        coordinate(120),
+        reply_range(),
+    )?;
 
     let encoded = catalog.to_plan()?.encode()?;
     let decoded =
@@ -395,6 +411,7 @@ fn canonical_plan_round_trip_restores_exact_state_with_fresh_token()
         .ok_or_else(|| std::io::Error::other("restored pending request is missing"))?;
     assert_eq!(restored_pending.request().sequence(), 8);
     assert_eq!(restored_pending.coordinate(), coordinate(120));
+    assert_eq!(restored_pending.reply_range(), reply_range());
 
     assert_eq!(
         restored.complete_request(&old_pending, &reply(8)?),
@@ -412,6 +429,45 @@ fn canonical_plan_round_trip_restores_exact_state_with_fresh_token()
 }
 
 #[test]
+fn pending_request_requires_the_exact_guest_virtual_reservation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let limits = limits(1, 1, 1)?;
+    let mut catalog = catalog(
+        vec![expected(
+            "network.policy",
+            &[1],
+            SelectableExpectedPresence::Required,
+        )?],
+        limits,
+    )?;
+    catalog.register(&registration(1, "network.policy", &[1])?)?;
+    catalog.freeze()?;
+    let request = request(2, "network.policy")?;
+
+    assert_eq!(
+        catalog.begin_request(
+            &request,
+            coordinate(10),
+            GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, 128),
+        ),
+        Err(SelectableCatalogError::PendingReplyRangeNotVirtual)
+    );
+    assert_eq!(
+        catalog.begin_request(
+            &request,
+            coordinate(10),
+            GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0x4000, 127),
+        ),
+        Err(SelectableCatalogError::PendingReplyRangeLengthMismatch {
+            range_len: 127,
+            request_capacity: 128,
+        })
+    );
+    assert_eq!(catalog.pending_request(), None);
+    Ok(())
+}
+
+#[test]
 fn launch_pair_shares_declaration_bytes_but_not_request_incarnations()
 -> Result<(), Box<dyn std::error::Error>> {
     let limits = limits(1, 3, 3)?;
@@ -425,7 +481,11 @@ fn launch_pair_shares_declaration_bytes_but_not_request_incarnations()
     )?;
     source.register(&registration(4, "network.policy", &[1])?)?;
     source.freeze()?;
-    source.begin_request(&request(8, "network.policy")?, coordinate(120))?;
+    source.begin_request(
+        &request(8, "network.policy")?,
+        coordinate(120),
+        reply_range(),
+    )?;
     let plan = source.to_plan()?;
 
     let (cold, restored) = SelectableCatalog::launch_pair_from_plan(&plan)?;
@@ -463,24 +523,25 @@ fn completed_request_sequences_and_all_request_limits_fail_closed()
     catalog.register(&registration(2, "network.b", &[2])?)?;
     catalog.freeze()?;
 
-    let first = catalog.begin_request(&request(10, "network.a")?, coordinate(10))?;
+    let first = catalog.begin_request(&request(10, "network.a")?, coordinate(10), reply_range())?;
     catalog.complete_request(&first, &reply(10)?)?;
     assert!(matches!(
-        catalog.begin_request(&request(10, "network.b")?, coordinate(11)),
+        catalog.begin_request(&request(10, "network.b")?, coordinate(11), reply_range()),
         Err(SelectableCatalogError::SequenceNotIncreasing {
             kind: "request",
             ..
         })
     ));
     assert!(matches!(
-        catalog.begin_request(&request(11, "network.a")?, coordinate(11)),
+        catalog.begin_request(&request(11, "network.a")?, coordinate(11), reply_range()),
         Err(SelectableCatalogError::SelectableRequestLimitExceeded { .. })
     ));
 
-    let second = catalog.begin_request(&request(11, "network.b")?, coordinate(11))?;
+    let second =
+        catalog.begin_request(&request(11, "network.b")?, coordinate(11), reply_range())?;
     catalog.complete_request(&second, &reply(11)?)?;
     assert!(matches!(
-        catalog.begin_request(&request(12, "network.b")?, coordinate(12)),
+        catalog.begin_request(&request(12, "network.b")?, coordinate(12), reply_range()),
         Err(SelectableCatalogError::TotalRequestLimitExceeded { maximum: 2 })
     ));
     Ok(())

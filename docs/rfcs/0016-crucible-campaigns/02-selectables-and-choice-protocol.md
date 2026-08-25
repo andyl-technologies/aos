@@ -415,15 +415,15 @@ QEMU-private objects. The version-1 codec is owned by
 reply-validation helpers over the architecture-specific doorbell transport.
 
 The launch-authenticated node-local catalog and checkpoint continuation use the
-independent `crucible.guest-selectable.catalog-plan` version-1 descriptor body.
-Every integer is big-endian. Its 96-byte header is:
+independent `crucible.guest-selectable.catalog-plan` version-2 descriptor body.
+Every integer is big-endian. Its 104-byte header is:
 
 ```text
 offset  size  field
 ------  ----  ----------------------------------------------------------
-  0      8   magic = "CRUCSCP1"
-  8      4   schema_version = 1
- 12      4   header_len = 96
+  0      8   magic = "CRUCSCP2"
+  8      4   schema_version = 2
+ 12      4   header_len = 104
  16      4   total_len
  20      4   flags: bit 0 frozen, bit 1 last registration present,
                   bit 2 last completed request present, bit 3 pending
@@ -439,6 +439,7 @@ offset  size  field
  80      8   pending_trap_icount, or zero when absent
  88      4   pending_vcpu_index, or zero when absent
  92      4   pending_request_len, or zero when absent
+ 96      8   pending_guest_virtual_address, or zero when absent
 ```
 
 The header is followed by strictly identifier-ordered expected declarations,
@@ -448,7 +449,11 @@ zero reserved bytes, `body_len:u32`, and one canonical sequence-zero
 `SelectableRegisterV1`. A registered identifier is `len:u16 | bytes`; a
 completed counter is `len:u16 | bytes | count:u64`. The pending body is one
 complete canonical `SelectionRequestV1`, including its zero-filled reply
-reservation. The encoded total and per-collection counts are exact, absent
+reservation. The process-neutral guest virtual address is the exact reservation
+target restored by VMState; native pointers and QEMU-private objects never enter
+the descriptor. Version-1 selection-free plans remain readable, but a version-1
+plan carrying a pending request fails closed because it cannot identify that
+reply target. The encoded total and per-collection counts are exact, absent
 optional header fields are zero, every continuation identifier is declared,
 every completed/pending identifier is registered, required frozen declarations
 are present, request counts respect the encoded ceilings, and no trailing or
@@ -456,21 +461,21 @@ alternate encoding is accepted. The complete plan is at most 32 MiB.
 
 Control-protocol v3 retains the three-descriptor `Setup` shape but changes the
 third descriptor from the v2 raw app-random body to
-`crucible.qemu-plugin.setup-plan` version 1. The descriptor is a regular memfd
+`crucible.qemu-plugin.setup-plan` version 2. The descriptor is a regular memfd
 sealed against write, growth, shrink, and further seal changes. Every integer is
 big-endian, and its fixed 28-byte header is:
 
 ```text
 offset  size  field
 ------  ----  ----------------------------------------------------------
-  0      8   magic = "CRUCSUP1"
-  8      4   schema_version = 1
+  0      8   magic = "CRUCSUP2"
+  8      4   schema_version = 2
  12      4   header_len = 28
  16      4   total_len
  20      4   app_random_plan_len
  24      4   selectable_catalog_plan_len
  28      A   canonical AppRandomBranchPlanV1 body
- 28+A    S   canonical SelectableCatalogPlanV1 body
+ 28+A    S   canonical SelectableCatalogPlanV2 body
 ```
 
 The two nested lengths exactly partition the descriptor body, each nested body
@@ -479,6 +484,8 @@ encoding is accepted. The app-random body remains at most 4 MiB, the selectable
 body remains at most 32 MiB, and the complete composite is at most 36 MiB plus
 the 28-byte header. Negotiated v2 continues to mean the raw `CRUCABP1` third
 descriptor and does not accept this composite encoding.
+Selection-free version-1 composites remain readable for checkpoint/tooling
+compatibility; new writes always use version 2.
 
 Guest libraries expose typed helpers:
 
