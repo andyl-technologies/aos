@@ -339,6 +339,8 @@ in
             production_fault_runtime::runtime_tests::external_event_reservation_is_charged_before_boundary_apply
           run_exact_qemu_test \
             production_fault_runtime::lifecycle_tests::boot_ready_exhaustion_preserves_requested_intent_and_effective_terminal_decision
+          run_exact_qemu_test \
+            production_fault_runtime::lifecycle_tests::outer_poison_latch_rejects_an_inert_plan_after_ambiguous_visibility
           run_exact_shmem_test \
             fault_event::tests::event_snapshot_authenticates_without_consuming_transport_ownership
           run_exact_shmem_test \

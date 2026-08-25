@@ -15,6 +15,7 @@ impl ProductionFaultRuntime {
         same_coordinate_sequence: u64,
         nodes: &mut QemuNodeSet,
     ) -> Result<BindingEvaluation, ProductionFaultRuntimeError> {
+        self.require_usable()?;
         if self.lifecycle_work_in_flight.is_some() || self.lifecycle_release_in_flight.is_some() {
             return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
         }
@@ -92,6 +93,7 @@ impl ProductionFaultRuntime {
         opportunity: &FaultOpportunity,
         same_coordinate_sequence: u64,
     ) -> Result<BindingEvaluation, ProductionFaultRuntimeError> {
+        self.require_usable()?;
         if self.lifecycle_work_in_flight.is_some() || self.lifecycle_release_in_flight.is_some() {
             return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
         }
@@ -140,6 +142,7 @@ impl ProductionFaultRuntime {
         &mut self,
         boundary: SignalBoundarySnapshot,
     ) -> Result<(), ProductionFaultRuntimeError> {
+        self.require_usable()?;
         if self.lifecycle_work_in_flight.is_some() || self.lifecycle_release_in_flight.is_some() {
             return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
         }

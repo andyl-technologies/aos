@@ -10,6 +10,7 @@ impl ProductionFaultRuntime {
     /// Returns [`ProductionFaultRuntimeError`] when canonical ledger storage
     /// cannot be reserved for the clone.
     pub fn try_clone(&self) -> Result<Self, ProductionFaultRuntimeError> {
+        self.require_usable()?;
         if self.lifecycle_work_in_flight.is_some() || self.lifecycle_release_in_flight.is_some() {
             return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
         }
@@ -17,6 +18,7 @@ impl ProductionFaultRuntime {
         Ok(Self {
             plan_id: self.plan_id,
             resource_limits: self.resource_limits,
+            poisoned: false,
             runtime: self.runtime.clone(),
             host: self.host.clone(),
             restored_network_state: self.restored_network_state.clone(),
@@ -164,6 +166,7 @@ impl ProductionFaultRuntime {
         Ok(Self {
             plan_id,
             resource_limits,
+            poisoned: false,
             runtime,
             host: HostFaultActionSink::new(resource_limits),
             restored_network_state: None,
@@ -331,6 +334,7 @@ impl ProductionFaultRuntime {
         Ok(Self {
             plan_id,
             resource_limits,
+            poisoned: false,
             runtime,
             host: HostFaultActionSink::from_state(host, resource_limits),
             restored_network_state,

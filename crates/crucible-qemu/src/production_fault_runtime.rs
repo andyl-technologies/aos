@@ -205,6 +205,9 @@ pub enum ProductionFaultRuntimeError {
     /// Process-local lifecycle owner identities exhausted their representation.
     #[error("production lifecycle owner-instance sequence exhausted")]
     LifecycleOwnerInstanceExhausted,
+    /// Coupled adapter visibility became ambiguous and the continuation is terminal.
+    #[error("production fault continuation is poisoned after ambiguous adapter visibility")]
+    Poisoned,
     /// A scenario-owned production resource reservation failed.
     #[error(transparent)]
     ResourceLimit(#[from] FaultResourceLimitError),
@@ -311,6 +314,7 @@ impl QemuNodeLifecycleRelease {
 pub struct ProductionFaultRuntime {
     plan_id: ContentHash,
     resource_limits: FaultResourceLimits,
+    poisoned: bool,
     runtime: Option<OwnedFaultExecutionRuntime>,
     host: HostFaultActionSink,
     restored_network_state: Option<ProductionNetworkStateCheckpoint>,
