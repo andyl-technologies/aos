@@ -238,8 +238,8 @@ mod entry {
     use futures_util::{lock::Mutex, stream, StreamExt};
     use wasm_bindgen::JsCast;
     use worker::{
-        durable_object, Context, DurableObject, Env, MessageExt, Method, Request, Response, Result,
-        ScheduleContext, ScheduledEvent, State,
+        durable_object, Cache, Context, DurableObject, Env, MessageExt, Method, Request, Response,
+        Result, ScheduleContext, ScheduledEvent, State,
     };
 
     use aos_hub_core::auth::jwt::JwtKeys;
@@ -249,6 +249,7 @@ mod entry {
     #[cfg(feature = "do-e2e")]
     use aos_hub_core::domain::{Permission, Principal, Role, Scope};
     use aos_hub_core::fetch::SurfaceProvider as _;
+    use aos_hub_core::kv::KvStore as _;
     use aos_hub_core::ratelimit::RateLimiter;
     use aos_hub_core::service::RpcService;
     use aos_hub_core::web::console::{console_router, ConsoleDeps};
@@ -368,10 +369,86 @@ mod entry {
         }
     }
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum AnonymousBrowseTarget {
+        Instance,
+        Registry(String),
+    }
+
+    fn anonymous_browse_target(req: &Request) -> Result<Option<AnonymousBrowseTarget>> {
+        let url = req.url()?;
+        let headers = req.headers();
+        let accept = headers.get("accept")?;
+        let authorization_present = headers.has("authorization")?;
+        let session_cookie_present = headers
+            .get("cookie")?
+            .is_some_and(|cookie| cookie.contains("__Host-aos_session="));
+        let route = crate::requestshard::anonymous_browse_route(
+            req.method().as_ref(),
+            url.path(),
+            accept.as_deref(),
+            authorization_present,
+            session_cookie_present,
+        );
+        Ok(route.map(|route| match route {
+            crate::requestshard::AnonymousBrowseRoute::Instance => AnonymousBrowseTarget::Instance,
+            crate::requestshard::AnonymousBrowseRoute::Registry(slug) => {
+                AnonymousBrowseTarget::Registry(slug.to_string())
+            }
+        }))
+    }
+
+    async fn anonymous_browse_cache_key(
+        req: &Request,
+        env: &Env,
+        target: &AnonymousBrowseTarget,
+    ) -> Result<Option<String>> {
+        if req.method() != Method::Get {
+            return Ok(None);
+        }
+        if req.url()?.query().is_some() {
+            return Ok(None);
+        }
+        let kv = crate::workerkv::WorkerKv::new(env.kv(crate::handlers::bindings::KV_SESSIONS)?);
+        let Some(entries) = aos_hub_core::directory::read(&kv)
+            .await
+            .map_err(|error| worker::Error::RustError(format!("browse directory: {error:#}")))?
+        else {
+            return Ok(None);
+        };
+        let generation = match target {
+            AnonymousBrowseTarget::Instance => {
+                use sha2::{Digest as _, Sha256};
+                hex::encode(Sha256::digest(serde_json::to_vec(&entries).map_err(
+                    |error| worker::Error::RustError(format!("browse directory JSON: {error}")),
+                )?))
+            }
+            AnonymousBrowseTarget::Registry(slug) => {
+                let Some(entry) = entries.iter().find(|entry| entry.slug == *slug) else {
+                    return Ok(None);
+                };
+                entry.cache_generation()
+            }
+        };
+        let deployment = env
+            .var(HUB_DEPLOYMENT_ID)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        let mut url = req.url()?;
+        url.query_pairs_mut().append_pair(
+            "__aos_browse_generation",
+            &format!("{deployment}-{generation}"),
+        );
+        Ok(Some(url.to_string()))
+    }
+
     async fn request_execution_route(
         req: &Request,
         env: &Env,
     ) -> Result<Option<crate::requestshard::RequestShardRoute>> {
+        if anonymous_browse_target(req)?.is_some() {
+            return Ok(None);
+        }
         let mode = request_sharding_mode(env)?;
         if mode == RequestShardingMode::Off {
             return Ok(None);
@@ -541,9 +618,16 @@ mod entry {
     /// keeps transaction ownership in `HubDb`. Everything else (JWT,
     /// rate-limit bindings, surface, lease, reindexer, and KV projections) is
     /// built from `env`.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum RouterRuntimeKind {
+        Colocated,
+        ExecutionShard,
+    }
+
     async fn router_from(
         env: &Env,
         db: Arc<Database>,
+        runtime_kind: RouterRuntimeKind,
     ) -> Result<(
         Router,
         Arc<RpcService>,
@@ -563,13 +647,15 @@ mod entry {
                 "{HUB_DEFAULT_BUCKET} must not be empty"
             )));
         }
-        db.ensure_instance_default_binding("deployment_r2", None, Some(&default_bucket))
-            .await
-            .map_err(|error| {
-                worker::Error::RustError(format!(
-                    "provisioning instance-default binding: {error:#}"
-                ))
-            })?;
+        if runtime_kind == RouterRuntimeKind::Colocated {
+            db.ensure_instance_default_binding("deployment_r2", None, Some(&default_bucket))
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "provisioning instance-default binding: {error:#}"
+                    ))
+                })?;
+        }
 
         let secret = env.secret(HUB_JWT_SECRET)?.to_string();
         if secret.is_empty() {
@@ -624,14 +710,16 @@ mod entry {
                 ))
             })?,
         );
-        route_reservation_keyring
-            .validate_referenced_versions(&db)
-            .await
-            .map_err(|error| {
-                worker::Error::RustError(format!(
-                    "{HUB_ROUTE_RESERVATION_KEYRING} cannot open this database: {error:#}"
-                ))
-            })?;
+        if runtime_kind == RouterRuntimeKind::Colocated {
+            route_reservation_keyring
+                .validate_referenced_versions(&db)
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "{HUB_ROUTE_RESERVATION_KEYRING} cannot open this database: {error:#}"
+                    ))
+                })?;
+        }
         let delivery_attestation_verifier = env
             .secret(HUB_DELIVERY_ATTESTATION_KEY)
             .ok()
@@ -839,7 +927,7 @@ mod entry {
         // save updates the live chrome via `set_site_chrome`; other isolates
         // pick it up on recycle. Guarded so the hot path reads HubDb at most once
         // per isolate.
-        {
+        if runtime_kind == RouterRuntimeKind::Colocated {
             use std::sync::atomic::{AtomicBool, Ordering};
             static SEEDED: AtomicBool = AtomicBool::new(false);
             if !SEEDED.swap(true, Ordering::Relaxed) {
@@ -901,7 +989,7 @@ mod entry {
     /// no unauthenticated init path. A handler error is logged and returned as a
     /// `500` so a binding/back-end failure never panics the isolate.
     #[worker::event(fetch, respond_with_errors)]
-    async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         // Route the shared core's `tracing` events to the console so handler
         // errors land in Workers Logs (idempotent; see `crate::tracinglog`).
         crate::tracinglog::init();
@@ -939,6 +1027,21 @@ mod entry {
             };
         }
 
+        let browse_target = anonymous_browse_target(&req)?;
+        let browse_cache_key = match browse_target.as_ref() {
+            Some(target) => anonymous_browse_cache_key(&req, &env, target).await?,
+            None => None,
+        };
+        if let Some(cache_key) = browse_cache_key.as_ref() {
+            if let Some(response) = Cache::default().get(cache_key, false).await? {
+                let headers = response.headers().clone();
+                headers.set("cache-control", "private, no-store")?;
+                headers.set("server-timing", "hubedgecache;dur=0;desc=\"hit\"")?;
+                headers.set("x-aos-browse-cache", "hit")?;
+                return Ok(response.with_headers(headers));
+            }
+        }
+
         // `HubDb` remains the only relational system of record. During the
         // staged execution-shard cutover, the outer Worker routes application
         // work to a control singleton or a resource-affine tenant, registry, or
@@ -965,6 +1068,9 @@ mod entry {
                 "database",
             ),
         };
+        let invalidates_browse = req.url().ok().is_some_and(|url| {
+            crate::requestshard::invalidates_browse_directory(req.method().as_ref(), url.path())
+        });
         let stub = env
             .durable_object(binding)?
             .id_from_name(&instance_name)
@@ -986,7 +1092,38 @@ mod entry {
         let headers = resp.headers().clone();
         headers.set("server-timing", &timing)?;
         headers.set("x-aos-hub-shard", shard_kind)?;
-        let resp = resp.with_headers(headers);
+        let mut resp = resp.with_headers(headers);
+        if let Some(cache_key) = browse_cache_key {
+            let content_is_html = resp
+                .headers()
+                .get("content-type")?
+                .is_some_and(|value| value.starts_with("text/html"));
+            if resp.status_code() == 200 && content_is_html && !resp.headers().has("set-cookie")? {
+                let cached = resp.cloned()?;
+                let cached_headers = cached.headers().clone();
+                cached_headers.set("cache-control", "public, max-age=60")?;
+                cached_headers.set("x-aos-browse-cache", "stored")?;
+                let cached = cached.with_headers(cached_headers);
+                ctx.wait_until(async move {
+                    if let Err(error) = Cache::default().put(cache_key, cached).await {
+                        worker::console_error!("browse cache put: {error}");
+                    }
+                });
+                let response_headers = resp.headers().clone();
+                response_headers.set("cache-control", "private, no-store")?;
+                response_headers.set("x-aos-browse-cache", "miss")?;
+                resp = resp.with_headers(response_headers);
+            }
+        }
+        if invalidates_browse && (200..300).contains(&resp.status_code()) {
+            let kv =
+                crate::workerkv::WorkerKv::new(env.kv(crate::handlers::bindings::KV_SESSIONS)?);
+            ctx.wait_until(async move {
+                if let Err(error) = kv.delete(aos_hub_core::directory::DIRECTORY_KEY).await {
+                    worker::console_error!("browse directory invalidation: {error:#}");
+                }
+            });
+        }
         worker::console_log!(
             "hub_edge_request status={} route={shard_kind} dispatch_ms={duration_ms}",
             resp.status_code()
@@ -1090,6 +1227,17 @@ mod entry {
             Some(state) => Box::new(crate::sqldobackend::SqlDoBackend::new(state.storage())),
             None => Box::new(crate::remotebackend::RemoteHubBackend::new(env)),
         }
+    }
+
+    async fn rebuild_worker_directory(db: &Database, env: &Env) -> Result<()> {
+        let namespace = env.kv(crate::handlers::bindings::KV_SESSIONS)?;
+        let kv = crate::workerkv::WorkerKv::new(namespace);
+        aos_hub_core::directory::rebuild(db, &kv)
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                worker::Error::RustError(format!("rebuild registry directory: {error:#}"))
+            })
     }
 
     /// Fans a maintenance tick out into independent bounded queue jobs.
@@ -1575,6 +1723,7 @@ mod entry {
                                 worker::console_log!(
                                     "job reindex {registry_id}: generation already finished"
                                 );
+                                rebuild_worker_directory(db.as_ref(), env).await?;
                                 return Ok(());
                             }
                         };
@@ -1627,6 +1776,7 @@ mod entry {
                                 "job reindex {registry_id} generation completion: {error:#}"
                             ))
                         })?;
+                        rebuild_worker_directory(db.as_ref(), env).await?;
                     }
                     Ok(None) => worker::console_log!("job reindex {registry_id}: registry gone"),
                     Err(err) => {
@@ -1978,7 +2128,7 @@ mod entry {
             crate::remotebackend::RemoteHubBackend::with_metrics(env, remote_sql_metrics.clone()),
         )));
         let (router, service, console_deps, delivery_attestation_verifier) =
-            router_from(env, db).await?;
+            router_from(env, db, RouterRuntimeKind::ExecutionShard).await?;
         let initialized = HubShardRuntime {
             router,
             service,
@@ -2373,7 +2523,7 @@ mod entry {
                 ),
             )));
             let (router, service, console_deps, delivery_attestation_verifier) =
-                router_from(&self.env, db).await?;
+                router_from(&self.env, db, RouterRuntimeKind::Colocated).await?;
             let initialized = HubRequestRuntime {
                 router,
                 service,

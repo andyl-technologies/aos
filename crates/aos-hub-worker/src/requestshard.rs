@@ -47,6 +47,78 @@ pub(crate) struct RequestShardRoute {
     pub(crate) resource_specific: bool,
 }
 
+/// Anonymous server-rendered browse surface eligible for the colocated path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnonymousBrowseRoute<'a> {
+    /// Instance registry directory.
+    Instance,
+    /// One registry's human browse surface.
+    Registry(&'a str),
+}
+
+/// Classifies a request that can never contain personalized browse content.
+#[must_use]
+pub(crate) fn anonymous_browse_route<'a>(
+    method: &str,
+    path: &'a str,
+    accept: Option<&str>,
+    authorization_present: bool,
+    session_cookie_present: bool,
+) -> Option<AnonymousBrowseRoute<'a>> {
+    if !matches!(method, "GET" | "HEAD")
+        || authorization_present
+        || session_cookie_present
+        || !accepts_html(accept)
+    {
+        return None;
+    }
+    if path == "/" {
+        return Some(AnonymousBrowseRoute::Instance);
+    }
+    browse_registry_slug(path).map(AnonymousBrowseRoute::Registry)
+}
+
+fn accepts_html(accept: Option<&str>) -> bool {
+    let Some(accept) = accept else {
+        return true;
+    };
+    accept.split(',').any(|part| {
+        matches!(
+            part.split(';').next().map(str::trim),
+            Some("text/html" | "text/*" | "*/*")
+        )
+    })
+}
+
+/// Returns whether a successful request can change anonymous browse output.
+#[must_use]
+pub(crate) fn invalidates_browse_directory(method: &str, path: &str) -> bool {
+    if matches!(method, "GET" | "HEAD" | "OPTIONS") || !is_connect_path(path) {
+        return false;
+    }
+    if path.contains("/UploadObject/") || path.contains("/UploadPart/") {
+        return false;
+    }
+    let operation = path.rsplit('/').next().unwrap_or_default();
+    ![
+        "Get",
+        "List",
+        "Search",
+        "Resolve",
+        "Preview",
+        "WhoAmI",
+        "GitLog",
+        "GitDiff",
+        "CacheClosure",
+        "Plan",
+        "UploadObject",
+        "UploadPart",
+        "AppendRegistryPublicationManifest",
+    ]
+    .iter()
+    .any(|prefix| operation.starts_with(prefix))
+}
+
 impl RequestShardRoute {
     /// Returns the deployment-scoped Durable Object instance name.
     #[must_use]
@@ -171,13 +243,37 @@ fn resource_key_from_path(kind: RequestShardKind, path: &str) -> Option<String> 
         }
     }
     if kind == RequestShardKind::Registry {
-        if let Some((slug, _)) = path.trim_start_matches('/').split_once("/-/") {
-            if !slug.is_empty() {
-                return Some(format!("registry:{slug}"));
-            }
+        if let Some(slug) = browse_registry_slug(path) {
+            return Some(format!("registry:{slug}"));
         }
     }
     None
+}
+
+/// Extracts the canonical registry slug from a human browse path.
+///
+/// Registry homes do not contain the reserved `/-/` marker, so treating only
+/// marked browse paths as resource-specific sent every home page on a host to
+/// one authority shard. This parser deliberately owns both shapes and rejects
+/// reserved instance namespaces.
+#[must_use]
+pub(crate) fn browse_registry_slug(path: &str) -> Option<&str> {
+    let nested = path.trim_start_matches('/');
+    if let Some((slug, _)) = nested.split_once("/-/") {
+        return valid_browse_slug(slug).then_some(slug);
+    }
+
+    let slug = nested.strip_suffix('/')?;
+    valid_browse_slug(slug).then_some(slug)
+}
+
+fn valid_browse_slug(slug: &str) -> bool {
+    !slug.is_empty()
+        && !slug.starts_with('_')
+        && !slug.starts_with('.')
+        && slug
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
 fn resource_key_from_json(kind: RequestShardKind, value: &serde_json::Value) -> Option<String> {
@@ -328,6 +424,84 @@ mod tests {
         );
         assert_eq!(cache.kind, RequestShardKind::Cache);
         assert!(cache.resource_specific);
+    }
+
+    #[test]
+    fn registry_home_and_browse_pages_share_affinity() {
+        let home = classify_request("GET", "/andyl/main/", "hub.example", None);
+        let packages = classify_request("GET", "/andyl/main/-/packages", "hub.example", None);
+        let images = classify_request("GET", "/andyl/main/-/images", "hub.example", None);
+
+        assert!(home.resource_specific);
+        assert_eq!(home.key, packages.key);
+        assert_eq!(home.key, images.key);
+        assert_eq!(browse_registry_slug("/andyl/main/"), Some("andyl/main"));
+        assert_eq!(
+            browse_registry_slug("/andyl/main/-/packages"),
+            Some("andyl/main")
+        );
+        assert_eq!(browse_registry_slug("/"), None);
+        assert_eq!(browse_registry_slug("/_assets/"), None);
+    }
+
+    #[test]
+    fn only_anonymous_html_uses_the_colocated_browse_fast_path() {
+        assert_eq!(
+            anonymous_browse_route("GET", "/", Some("text/html"), false, false),
+            Some(AnonymousBrowseRoute::Instance)
+        );
+        assert_eq!(
+            anonymous_browse_route(
+                "GET",
+                "/andyl/main/-/packages",
+                Some("text/html,application/xhtml+xml"),
+                false,
+                false,
+            ),
+            Some(AnonymousBrowseRoute::Registry("andyl/main"))
+        );
+        assert_eq!(
+            anonymous_browse_route("GET", "/andyl/main/", None, true, false),
+            None
+        );
+        assert_eq!(
+            anonymous_browse_route("GET", "/andyl/main/", None, false, true),
+            None
+        );
+        assert_eq!(
+            anonymous_browse_route(
+                "GET",
+                "/andyl/main/",
+                Some("application/octet-stream"),
+                false,
+                false,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn browse_invalidation_excludes_reads_plans_and_object_chunks() {
+        assert!(invalidates_browse_directory(
+            "POST",
+            "/aos.hub.v1.PublishService/CommitRegistryPublication"
+        ));
+        assert!(invalidates_browse_directory(
+            "POST",
+            "/aos.hub.v1.RegistryService/UpdateRegistry"
+        ));
+        assert!(!invalidates_browse_directory(
+            "POST",
+            "/aos.hub.v1.RegistryService/GetRegistry"
+        ));
+        assert!(!invalidates_browse_directory(
+            "POST",
+            "/aos.hub.v1.RegistryService/PlanUpdateRegistry"
+        ));
+        assert!(!invalidates_browse_directory(
+            "PUT",
+            "/aos.hub.v1.PublishService/UploadObject/publication/42"
+        ));
     }
 
     #[test]

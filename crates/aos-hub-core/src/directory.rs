@@ -22,6 +22,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 
 use crate::db::{Database, IndexStatus, RegistryRecord};
 use crate::kv::KvStore;
@@ -45,9 +46,28 @@ pub struct DirectoryEntry {
     pub name: Option<String>,
     /// The indexed description, if any (home search).
     pub description: Option<String>,
+    /// Registry configuration generation included in browse-cache identity.
+    #[serde(default = "default_resource_version")]
+    pub registry_resource_version: i64,
+    /// Derived index generation included in browse-cache identity.
+    #[serde(default)]
+    pub index_generation: i64,
+    /// Digest of the indexed content, when indexing produced one.
+    #[serde(default)]
+    pub content_digest: Option<String>,
+}
+
+const fn default_resource_version() -> i64 {
+    1
 }
 
 impl DirectoryEntry {
+    /// Returns a fixed-width cache identity for this exact browse projection.
+    #[must_use]
+    pub fn cache_generation(&self) -> String {
+        let bytes = serde_json::to_vec(self).unwrap_or_default();
+        hex::encode(Sha256::digest(bytes))
+    }
     /// Reconstructs the `(RegistryRecord, Option<IndexStatus>)` row the home
     /// renderer ([`instance_home`](crate::web::browse_pages::instance_home))
     /// consumes, from the projection.
@@ -71,7 +91,7 @@ impl DirectoryEntry {
             visibility: "public".to_string(),
             crawl_policy: String::new(),
             llms_txt_body: None,
-            resource_version: 1,
+            resource_version: self.registry_resource_version,
             updated_at: 0,
         };
         let status = if self.state == "unregistered" {
@@ -119,6 +139,11 @@ pub async fn rebuild(db: &Database, kv: &dyn KvStore) -> Result<Vec<DirectoryEnt
                 .unwrap_or_else(|| "unregistered".to_string()),
             name: status.as_ref().and_then(|s| s.name.clone()),
             description: status.as_ref().and_then(|s| s.description.clone()),
+            registry_resource_version: registry.resource_version,
+            index_generation: status.as_ref().map_or(0, |status| status.generation),
+            content_digest: status
+                .as_ref()
+                .and_then(|status| status.content_digest.clone()),
         });
     }
     let bytes = serde_json::to_vec(&entries)?;
@@ -167,6 +192,10 @@ mod tests {
         assert_eq!(built[0].state, "empty");
         let read_back = read(&kv).await.unwrap().unwrap();
         assert_eq!(read_back, built);
+        let generation = read_back[0].cache_generation();
+        let mut changed = read_back[0].clone();
+        changed.index_generation += 1;
+        assert_ne!(generation, changed.cache_generation());
         // The reconstructed row carries the slug the home renders.
         let (record, status) = built[0].to_row();
         assert_eq!(record.slug, "andyl/main");
