@@ -2343,6 +2343,206 @@ fn progressive_integer_generator_refines_only_after_exact_feedback() {
 }
 
 #[test]
+fn feedback_progressive_integer_refines_the_highest_owner_scored_interval() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let genesis = repository
+        .create(
+            "generated-feedback-progressive",
+            &lineage,
+            &policy,
+            &BTreeMap::new(),
+        )
+        .expect("create feedback-progressive campaign");
+    let domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(16),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("scale"),
+            Vec::new(),
+        )
+        .expect("feedback-progressive domain"),
+    );
+    let generator = CandidateGeneratorSpec::new(
+        crate::FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::ProgressiveInteger {
+            initial_strata: 3,
+            feedback_interval: 2,
+        },
+    )
+    .expect("feedback-progressive generator");
+    let generator_id = repository
+        .publish_generator(&generator)
+        .expect("publish feedback-progressive generator");
+    let (_, request) = generated_integer_request(
+        &repository,
+        &lineage,
+        domain,
+        IntegerValue::Unsigned(8),
+        generator_id,
+        "feedback-progressive",
+        9,
+    );
+    let requested = repository
+        .submit_known_branch_request(
+            "generated-feedback-progressive",
+            genesis.snapshot_id(),
+            &request,
+        )
+        .expect("submit feedback-progressive request");
+
+    let initial = [0_u64, 8, 16];
+    let mut current = requested.new_snapshot;
+    let mut observations = Vec::new();
+    for (index, value) in initial.into_iter().enumerate() {
+        let head = repository
+            .head("generated-feedback-progressive")
+            .expect("feedback-progressive proposal head");
+        let proposal = finite_proposal(
+            &request,
+            &policy,
+            &head,
+            ChoiceValue::Integer(IntegerValue::Unsigned(value)),
+            index as u64 + 1,
+        );
+        let proposed = repository
+            .issue_proposal("generated-feedback-progressive", current, &proposal)
+            .expect("issue feedback-progressive initial proposal");
+        let (selection, path, attempt) = branch_attempt(&repository, &request, &proposal);
+        let admitted = repository
+            .admit_proposal(
+                "generated-feedback-progressive",
+                proposed.new_snapshot,
+                proposed.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("admit feedback-progressive initial proposal");
+        current = admitted.new_snapshot;
+        observations.push(generated_observation(
+            &repository,
+            &lineage,
+            &admitted,
+            &path,
+            request.opportunity(),
+            &format!("feedback-progressive-{index}"),
+        ));
+    }
+
+    for (index, observation) in observations.iter().take(2).enumerate() {
+        current = repository
+            .publish_observation("generated-feedback-progressive", current, observation)
+            .expect("publish feedback-progressive observation")
+            .new_snapshot;
+        if index == 0 {
+            let early_head = repository
+                .head("generated-feedback-progressive")
+                .expect("early feedback-progressive head");
+            let early = finite_proposal(
+                &request,
+                &policy,
+                &early_head,
+                ChoiceValue::Integer(IntegerValue::Unsigned(12)),
+                4,
+            );
+            let before_early = blobs
+                .object_count()
+                .expect("objects before early feedback refinement");
+            assert!(matches!(
+                repository.issue_proposal("generated-feedback-progressive", current, &early),
+                Err(CampaignRepositoryError::Integrity {
+                    reason: "progressive-generator-feedback-is-insufficient"
+                })
+            ));
+            assert_eq!(
+                blobs
+                    .object_count()
+                    .expect("objects after early feedback refinement"),
+                before_early
+            );
+        }
+    }
+    let ready = repository
+        .head("generated-feedback-progressive")
+        .expect("feedback-progressive ready head");
+    let planner_state = CanonicalFrontierPlanner::initial_state().expect("planner state");
+    let (_, _, invocation) = canonical_planner_basis_with_page(
+        &repository,
+        "generated-feedback-progressive",
+        current,
+        &planner_state,
+        None,
+        16,
+    );
+    let planner_request = repository
+        .build_planner_request(current, invocation.id().expect("planner invocation id"))
+        .expect("build feedback-progressive planner request");
+    let planner_output = CanonicalFrontierPlanner
+        .plan(&planner_request)
+        .expect("plan feedback-progressive frontier");
+    let PlannerProposalDisposition::Issue { proposals, .. } =
+        planner_output.proposal().disposition()
+    else {
+        panic!("ready feedback-progressive request did not issue");
+    };
+    assert_eq!(
+        proposals.first().map(Proposal::value),
+        Some(&ChoiceValue::Integer(IntegerValue::Unsigned(12)))
+    );
+    let old_largest_gap = finite_proposal(
+        &request,
+        &policy,
+        &ready,
+        ChoiceValue::Integer(IntegerValue::Unsigned(4)),
+        4,
+    );
+    let before_rejection = blobs
+        .object_count()
+        .expect("objects before wrong feedback refinement");
+    assert!(matches!(
+        repository.issue_proposal("generated-feedback-progressive", current, &old_largest_gap,),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-value-does-not-match-source-order"
+        })
+    ));
+    assert_eq!(
+        blobs
+            .object_count()
+            .expect("objects after wrong feedback refinement"),
+        before_rejection
+    );
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    restarted
+        .validate_complete_head(current.content_id())
+        .expect("restart validates feedback-progressive head");
+    let restarted_head = restarted
+        .head("generated-feedback-progressive")
+        .expect("restarted feedback-progressive head");
+    let scored_refinement = finite_proposal(
+        &request,
+        &policy,
+        &restarted_head,
+        ChoiceValue::Integer(IntegerValue::Unsigned(12)),
+        4,
+    );
+    let refined = restarted
+        .issue_proposal(
+            "generated-feedback-progressive",
+            current,
+            &scored_refinement,
+        )
+        .expect("issue owner-scored feedback refinement");
+    CampaignRepository::new(repository.blobs.clone(), repository.refs.clone())
+        .validate_complete_head(refined.new_snapshot.content_id())
+        .expect("restart validates owner-scored feedback refinement");
+}
+
+#[test]
 fn corpus_mutation_generator_tracks_retained_values_by_portable_proposal_set() {
     let (repository, lineage, base_policy, blobs) = counted_fixture();
     let policy = CampaignPolicy::new(

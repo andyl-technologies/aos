@@ -272,9 +272,16 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   prospective offer with exact edge-ordered remainder distribution. Uniform
   and generated sources remain weight one, and schema-v1/v2 request identities
   remain readable. Prospective bases are shared by branch point/raw weight and
-  capped at 1,000,000 completed-edge visits per planner page. Opaque
-  non-finite model-prior resolution, interval feedback, and the
-  generator integrations that consume those remaining owners remain open.
+  capped at 1,000,000 completed-edge visits per planner page.
+  Progressive-integer implementation version 11 now retains version 9's exact
+  prefix and visit gates while ranking remaining intervals by owner-derived
+  endpoint PUCT-score difference, interval size, and lower offset. It uses the
+  exact active policy and planning view, batches branch-point projections under
+  the established guidance bounds, preserves the already-proposed value set,
+  and revalidates identically after restart/import. Opaque non-finite
+  model-prior resolution, dedicated raw measurement/landmark interval terms,
+  and the generator integrations that consume those remaining owners remain
+  open.
 - [x] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.
@@ -317,8 +324,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   body, and existing 4,096-ID/128-MiB selection-resolution bounds during local
   acceptance, import, and restart. It waits for another completed credit when
   the current retained corpus has no unproposed mutation and closes only at its
-  proposal budget. Static continuation projection remains valid after modeled
-  observations exist: it binds the exact observation root and projects exact
+  proposal budget. Implementation-version 11 `progressive_integer` retains the
+  version-9 prefix, threshold, and midpoint rules but selects the next interval
+  by absolute exact endpoint PUCT-score difference, then interval size and lower
+  offset. Planner input construction batches those snapshot-bound projections,
+  and owner validation rejects a largest-gap substitution before writes and
+  replays the selected value after restart. Static continuation projection
+  remains valid after modeled observations exist: it binds the exact
+  observation root and projects exact
   completed visits from canonical branch-point credit sets. The independent
   exact PUCT arithmetic and guidance projection are consumed only by canonical
   frontier engine version 2; version 1 retains its original least-position
@@ -1354,8 +1367,8 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `CAM-1..14` | 1–9 | campaign model, replay, continuity, ABI, license boundary, manual acceptance |
 | `CMOD-1..30` | 1, 2, 4 | campaign model, content address, attempt idempotence, continuity |
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
-| `GUIDE-1..26` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
-| `LAZY-1..47` | 4 | lazy frontier, attempt idempotence, campaign replay |
+| `GUIDE-1..27` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
+| `LAZY-1..49` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
 | `CSTORE-1..22` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |

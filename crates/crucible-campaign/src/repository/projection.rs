@@ -72,6 +72,61 @@ struct ContinuationProgress {
     next_candidate: Option<ChoiceValue>,
 }
 
+/// One exact active-policy binding for feedback-sensitive candidate selection.
+#[derive(Clone, Copy)]
+pub(super) struct CandidateFeedbackProjection<'a> {
+    policy: crate::CampaignPolicyId,
+    projection: &'a crate::BranchPuctProjection,
+}
+
+impl<'a> CandidateFeedbackProjection<'a> {
+    /// Binds an owner-built projection to the policy of its source snapshot.
+    pub(super) const fn new(
+        policy: crate::CampaignPolicyId,
+        projection: &'a crate::BranchPuctProjection,
+    ) -> Self {
+        Self { policy, projection }
+    }
+}
+
+/// Snapshot roots and optional feedback needed to reproduce one candidate.
+pub(super) struct CandidateEnumerationBasis<'a> {
+    view: CandidateViewRoots,
+    completed_visits: u64,
+    additional_previous: &'a [Proposal],
+    feedback_projection: Option<CandidateFeedbackProjection<'a>>,
+}
+
+impl<'a> CandidateEnumerationBasis<'a> {
+    /// Builds one enumeration basis without an in-flight proposal overlay.
+    pub(super) const fn new(view: CandidateViewRoots, completed_visits: u64) -> Self {
+        Self {
+            view,
+            completed_visits,
+            additional_previous: &[],
+            feedback_projection: None,
+        }
+    }
+
+    /// Adds proposals already validated in the same atomic owner transition.
+    pub(super) const fn with_additional_previous(
+        mut self,
+        additional_previous: &'a [Proposal],
+    ) -> Self {
+        self.additional_previous = additional_previous;
+        self
+    }
+
+    /// Adds the exact active-policy projection used by feedback version 11.
+    pub(super) const fn with_feedback(
+        mut self,
+        feedback_projection: Option<CandidateFeedbackProjection<'a>>,
+    ) -> Self {
+        self.feedback_projection = feedback_projection;
+        self
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct CandidateViewRoots {
     exploration: ContentId,
@@ -124,6 +179,7 @@ pub(super) enum CandidateSourceProfile {
         initial_count: u64,
         feedback_interval: u64,
         exhausts_domain: bool,
+        score_intervals: bool,
     },
     CorpusMutation,
 }
@@ -187,6 +243,27 @@ impl CandidateSourceProfile {
     pub(super) const fn requires_feedback_index(self) -> bool {
         matches!(self, Self::ProgressiveInteger { .. } | Self::CorpusMutation)
     }
+
+    pub(super) const fn scores_intervals(self) -> bool {
+        matches!(
+            self,
+            Self::ProgressiveInteger {
+                score_intervals: true,
+                ..
+            }
+        )
+    }
+
+    pub(super) const fn scores_interval_at(self, ordinal: u64) -> bool {
+        matches!(
+            self,
+            Self::ProgressiveInteger {
+                initial_count,
+                score_intervals: true,
+                ..
+            } if ordinal > initial_count
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,6 +287,27 @@ impl Ord for RefinementGap {
 }
 
 impl PartialOrd for RefinementGap {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FeedbackRefinementGap {
+    gap: RefinementGap,
+    endpoint_score_delta: u64,
+}
+
+impl Ord for FeedbackRefinementGap {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.endpoint_score_delta
+            .cmp(&other.endpoint_score_delta)
+            .then_with(|| self.gap.len().cmp(&other.gap.len()))
+            .then_with(|| other.gap.lower.cmp(&self.gap.lower))
+    }
+}
+
+impl PartialOrd for FeedbackRefinementGap {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
@@ -296,11 +394,16 @@ impl CampaignRepository {
                 initial_strata,
                 feedback_interval,
             },
-            crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+            implementation_version,
             ChoiceDomain::Integer(integer),
         ) = (spec.algorithm(), spec.implementation_version(), domain)
         else {
             return Ok(None);
+        };
+        let score_intervals = match implementation_version {
+            crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION => false,
+            crate::FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION => true,
+            _ => return Ok(None),
         };
         if *initial_strata > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA {
             return Err(integrity("progressive-generator-initial-strata-limit"));
@@ -324,6 +427,7 @@ impl CampaignRepository {
             initial_count,
             feedback_interval: *feedback_interval,
             exhausts_domain: cardinality <= u128::from(budget),
+            score_intervals,
         }))
     }
 
@@ -627,21 +731,88 @@ impl CampaignRepository {
         if ordinal == 0 || ordinal > crate::CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS {
             return Err(integrity("corpus-mutation-proposal-ordinal-limit"));
         }
-        self.expected_candidate_at_view(request, domain, view, ordinal, 0, &[])
+        self.expected_candidate_at_view(
+            request,
+            domain,
+            ordinal,
+            CandidateEnumerationBasis::new(view, 0),
+        )
     }
 
     pub(super) fn expected_candidate_at_view(
         &self,
         request: &BranchRequest,
         domain: &ChoiceDomain,
-        view: CandidateViewRoots,
         ordinal: u64,
-        completed_visits: u64,
-        additional_previous: &[Proposal],
+        basis: CandidateEnumerationBasis<'_>,
     ) -> Result<Option<ChoiceValue>, CampaignRepositoryError> {
+        let CandidateEnumerationBasis {
+            view,
+            completed_visits,
+            additional_previous,
+            feedback_projection,
+        } = basis;
         let Some(profile) = self.candidate_source_profile(request, domain)? else {
             return Ok(None);
         };
+        if profile.scores_intervals() {
+            let count = profile.count().unwrap_or_default();
+            if ordinal == 0 || ordinal > count {
+                return Err(integrity("proposal-ordinal-exceeds-source-cardinality"));
+            }
+            if ordinal > profile.available_count(completed_visits)? {
+                return Err(integrity("progressive-generator-feedback-is-insufficient"));
+            }
+            let ChoiceDomain::Integer(integer) = domain else {
+                return Err(integrity("candidate-generator-domain-family-mismatch"));
+            };
+            let generator = request
+                .source()
+                .generator()
+                .ok_or_else(|| integrity("candidate-source-kind-is-invalid"))?;
+            let spec = self.read_generator(generator.content_id())?;
+            let CandidateGeneratorAlgorithm::ProgressiveInteger { initial_strata, .. } =
+                spec.algorithm()
+            else {
+                return Err(integrity("progressive-generator-basis-mismatch"));
+            };
+            if ordinal <= u64::from(*initial_strata).min(count) {
+                return stratified_integer_candidate(*initial_strata, integer, ordinal)
+                    .map(ChoiceValue::Integer)
+                    .map(Some);
+            }
+            let feedback = feedback_projection
+                .ok_or_else(|| integrity("progressive-generator-feedback-projection-is-missing"))?;
+            let additional_count = u64::try_from(additional_previous.len())
+                .map_err(|_| integrity("progressive-generator-proposal-history-mismatch"))?;
+            let base_ordinal = ordinal
+                .checked_sub(additional_count)
+                .ok_or_else(|| integrity("progressive-generator-proposal-history-mismatch"))?;
+            let mut proposed =
+                self.proposed_values_before(view.exploration, request.id()?, base_ordinal)?;
+            for (index, proposal) in additional_previous.iter().enumerate() {
+                let expected_ordinal = base_ordinal
+                    .checked_add(u64::try_from(index).map_err(|_| {
+                        integrity("progressive-generator-proposal-history-mismatch")
+                    })?)
+                    .ok_or_else(|| integrity("progressive-generator-proposal-history-mismatch"))?;
+                if proposal.request() != request.id()?
+                    || proposal.ordinal() != expected_ordinal
+                    || !proposed.insert(proposal.value().clone())
+                {
+                    return Err(integrity("progressive-generator-proposal-history-mismatch"));
+                }
+            }
+            return feedback_progressive_integer_candidate(
+                request,
+                integer,
+                domain.semantic_id(),
+                &proposed,
+                feedback,
+            )
+            .map(ChoiceValue::Integer)
+            .map(Some);
+        }
         if profile != CandidateSourceProfile::CorpusMutation {
             return self.candidate_at_with_feedback(request, domain, ordinal, completed_visits);
         }
@@ -1387,6 +1558,7 @@ impl CampaignRepository {
         invocation_id: crate::PlannerInvocationId,
         position: crate::PlanningScanPosition,
         cache: &mut PlannerCandidateProjectionCache,
+        feedback_projection: Option<&crate::BranchPuctProjection>,
     ) -> Result<(ContinuationProjection, Option<Proposal>), CampaignRepositoryError> {
         let observations = snapshot.snapshot.roots().observations;
         let candidate_view = CandidateViewRoots::from_roots(snapshot.snapshot.roots());
@@ -1451,11 +1623,17 @@ impl CampaignRepository {
             let value = match progress.next_candidate {
                 Some(value) => value,
                 None => self
-                    .candidate_at_with_feedback(
+                    .expected_candidate_at_view(
                         &request,
                         domain.as_ref(),
                         ordinal,
-                        completed_visits,
+                        CandidateEnumerationBasis::new(candidate_view, completed_visits)
+                            .with_feedback(feedback_projection.map(|projection| {
+                                CandidateFeedbackProjection::new(
+                                    snapshot.snapshot.active_policy(),
+                                    projection,
+                                )
+                            })),
                     )?
                     .ok_or_else(|| integrity("planner-candidate-enumerator-is-not-implemented"))?,
             };
@@ -3008,6 +3186,31 @@ impl CampaignRepository {
         })
     }
 
+    /// Returns whether the next exact ordinal requires version-11 PUCT input.
+    pub(super) fn next_candidate_scores_intervals(
+        &self,
+        view: CandidateViewRoots,
+        request_id: BranchRequestId,
+        request: &BranchRequest,
+        domain: &ChoiceDomain,
+    ) -> Result<bool, CampaignRepositoryError> {
+        let Some(CandidateSourceProfile::ProgressiveInteger {
+            initial_count,
+            score_intervals: true,
+            ..
+        }) = self.candidate_source_profile(request, domain)?
+        else {
+            return Ok(false);
+        };
+        Ok(self
+            .merkle
+            .get(
+                view.exploration,
+                proposal_ordinal_key(request_id, initial_count),
+            )?
+            .is_some())
+    }
+
     pub(super) fn put_expansion_state(
         &self,
         state: &ExpansionState,
@@ -3588,6 +3791,134 @@ fn progressive_integer_candidate(
         domain,
         selected_offset.ok_or_else(|| integrity("progressive-generator-refinement-is-empty"))?,
     )
+}
+
+fn feedback_progressive_integer_candidate(
+    request: &BranchRequest,
+    domain: &IntegerDomain,
+    domain_semantic: crate::ChoiceDomainSemanticId,
+    proposed: &BTreeSet<ChoiceValue>,
+    feedback: CandidateFeedbackProjection<'_>,
+) -> Result<IntegerValue, CampaignRepositoryError> {
+    let projection = feedback.projection;
+    if projection.branch_point() != request.branch_point() || projection.policy() != feedback.policy
+    {
+        return Err(integrity(
+            "progressive-generator-feedback-projection-basis-mismatch",
+        ));
+    }
+    if proposed.len() >= crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_PROPOSALS as usize {
+        return Err(integrity("progressive-generator-proposal-limit"));
+    }
+
+    let mut selected = BTreeSet::new();
+    for value in proposed {
+        let ChoiceValue::Integer(value) = value else {
+            return Err(integrity("candidate-generator-domain-family-mismatch"));
+        };
+        selected.insert(integer_candidate_offset(domain, *value)?);
+    }
+    let gaps = progressive_refinement_gaps(domain.cardinality(), &selected)?;
+    let prospective_prior = projection.prospective_prior_basis(1)?;
+    let mut endpoint_scores = BTreeMap::<u128, i64>::new();
+    let mut scored = BinaryHeap::new();
+    for gap in gaps {
+        let lower_endpoint = selected.range(..gap.lower).next_back().copied();
+        let upper_endpoint = selected
+            .range((
+                std::ops::Bound::Excluded(gap.upper),
+                std::ops::Bound::Unbounded,
+            ))
+            .next()
+            .copied();
+        let lower_score = feedback_endpoint_score(
+            request,
+            domain,
+            domain_semantic,
+            projection,
+            prospective_prior,
+            lower_endpoint,
+            &mut endpoint_scores,
+        )?;
+        let upper_score = feedback_endpoint_score(
+            request,
+            domain,
+            domain_semantic,
+            projection,
+            prospective_prior,
+            upper_endpoint,
+            &mut endpoint_scores,
+        )?;
+        scored.push(FeedbackRefinementGap {
+            gap,
+            endpoint_score_delta: lower_score.abs_diff(upper_score),
+        });
+    }
+    let selected = scored
+        .pop()
+        .ok_or_else(|| integrity("progressive-generator-refinement-is-empty"))?
+        .gap;
+    let midpoint = selected
+        .lower
+        .checked_add((selected.len() - 1) / 2)
+        .ok_or_else(|| integrity("candidate-source-cardinality-overflow"))?;
+    integer_candidate_at_offset(domain, midpoint)
+}
+
+fn feedback_endpoint_score(
+    request: &BranchRequest,
+    domain: &IntegerDomain,
+    domain_semantic: crate::ChoiceDomainSemanticId,
+    projection: &crate::BranchPuctProjection,
+    prospective_prior: crate::exploration::BranchProspectivePriorBasis,
+    offset: Option<u128>,
+    cache: &mut BTreeMap<u128, i64>,
+) -> Result<i64, CampaignRepositoryError> {
+    let Some(offset) = offset else {
+        return Ok(0);
+    };
+    if let Some(score) = cache.get(&offset) {
+        return Ok(*score);
+    }
+    let value = ChoiceValue::Integer(integer_candidate_at_offset(domain, offset)?);
+    let edge = crate::Selection::campaign_edge_id(request.branch_point(), domain_semantic, &value);
+    let raw_prior_weight = request
+        .source()
+        .prior_weight(&value)
+        .ok_or_else(|| integrity("progressive-generator-endpoint-is-not-in-source"))?;
+    if raw_prior_weight != 1 {
+        return Err(integrity(
+            "progressive-generator-endpoint-prior-is-not-uniform",
+        ));
+    }
+    let evidence = if projection.edge_statistics().contains_key(&edge) {
+        projection.candidate_evidence_with_prior(edge, raw_prior_weight)?
+    } else {
+        projection.candidate_evidence_with_prior_basis(edge, prospective_prior)?
+    };
+    let score = crate::PuctScore::derive(projection.puct(), evidence.statistics)?.total_micros();
+    cache.insert(offset, score);
+    Ok(score)
+}
+
+fn integer_candidate_offset(
+    domain: &IntegerDomain,
+    value: IntegerValue,
+) -> Result<u128, CampaignRepositoryError> {
+    if !domain.contains_integer(value) {
+        return Err(integrity("candidate-source-integer-is-not-in-domain"));
+    }
+    let delta = match (domain.minimum(), value) {
+        (IntegerValue::Signed(minimum), IntegerValue::Signed(value)) => {
+            u128::try_from(i128::from(value) - i128::from(minimum))
+                .map_err(|_| integrity("candidate-source-cardinality-overflow"))?
+        }
+        (IntegerValue::Unsigned(minimum), IntegerValue::Unsigned(value)) => {
+            u128::from(value - minimum)
+        }
+        _ => return Err(integrity("candidate-generator-domain-family-mismatch")),
+    };
+    Ok(delta / u128::from(domain.step()))
 }
 
 fn progressive_refinement_gaps(

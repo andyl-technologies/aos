@@ -631,12 +631,27 @@ impl CampaignRepository {
             }
         }
         let snapshot = self.read_snapshot(request.expected_snapshot().content_id())?;
-        let guidance_points = candidate_inputs
+        let mut guidance_points = candidate_inputs
             .iter()
             .filter_map(|(position, input)| {
                 input.guidance.as_ref().map(|_| position.branch_point())
             })
             .collect::<BTreeSet<_>>();
+        for (position, input) in &candidate_inputs {
+            if input.offer.is_none() {
+                continue;
+            }
+            let request = self.read_branch_request(position.source().content_id())?;
+            let domain = self.read_choice_domain(request.domain().content_id())?;
+            if self
+                .candidate_source_profile(&request, &domain)?
+                .is_some_and(|profile| {
+                    profile.scores_interval_at(input.offer.as_ref().map_or(0, Proposal::ordinal))
+                })
+            {
+                guidance_points.insert(position.branch_point());
+            }
+        }
         let puct_projections = if guidance_points.is_empty() {
             BTreeMap::new()
         } else {
@@ -654,6 +669,7 @@ impl CampaignRepository {
                     request.invocation_id()?,
                     position,
                     &mut candidate_cache,
+                    puct_projections.get(&position.branch_point()),
                 )?;
                 if expected != (input.continuation, Some(offer.clone())) {
                     return Err(integrity("planner-request-candidate-projection-mismatch"));
@@ -1625,9 +1641,12 @@ impl CampaignRepository {
                 CandidateGeneratorAlgorithm::ProgressiveInteger { initial_strata, .. }
                     if matches!(domain, ChoiceDomain::Integer(_)) =>
                 {
-                    if generator.implementation_version()
-                        == crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                        && *initial_strata > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA
+                    if matches!(
+                        generator.implementation_version(),
+                        crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                            | crate::FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                    ) && *initial_strata
+                        > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA
                     {
                         return Err(integrity("progressive-generator-initial-strata-limit"));
                     }
@@ -1794,14 +1813,29 @@ impl CampaignRepository {
             snapshot.snapshot.roots().observations,
             request.branch_point(),
         )?;
+        let feedback_projection = if self
+            .candidate_source_profile(&request, &domain)?
+            .is_some_and(|profile| profile.scores_interval_at(proposal.ordinal()))
+        {
+            Some(self.project_branch_puct_loaded(snapshot, request.branch_point())?)
+        } else {
+            None
+        };
         let expected = self
             .expected_candidate_at_view(
                 &request,
                 &domain,
-                super::projection::CandidateViewRoots::from_roots(snapshot.snapshot.roots()),
                 proposal.ordinal(),
-                completed_visits,
-                &[],
+                super::projection::CandidateEnumerationBasis::new(
+                    super::projection::CandidateViewRoots::from_roots(snapshot.snapshot.roots()),
+                    completed_visits,
+                )
+                .with_feedback(feedback_projection.as_ref().map(|projection| {
+                    super::projection::CandidateFeedbackProjection::new(
+                        snapshot.snapshot.active_policy(),
+                        projection,
+                    )
+                })),
             )?
             .ok_or_else(|| integrity("generated-proposal-enumerator-is-not-implemented"))?;
         if &expected != proposal.value() {
