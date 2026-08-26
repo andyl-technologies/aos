@@ -759,6 +759,21 @@ pub trait QemuQmpMachineControlChannel: Send {
     /// running-state transition. The next bounded step proves execution.
     fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError>;
 
+    /// Queries QEMU's exact hot-fork readiness proof report.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
+    /// versioned response validation fails.
+    fn query_hot_fork_readiness(
+        &mut self,
+    ) -> Result<crate::QmpHotForkReadiness, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query_hot_fork_readiness",
+            "hot-fork readiness is not implemented by this QMP channel",
+        ))
+    }
+
     /// Completes an authenticated terminal lifecycle transition without
     /// expecting QEMU to resume guest execution.
     ///
@@ -1532,6 +1547,48 @@ impl QemuNode {
                 self.process_id()
             ))
         })
+    }
+
+    /// Captures a stable bounded process inventory at an exact QEMU boundary.
+    ///
+    /// The method brackets two complete Linux thread, descriptor, and mapping
+    /// passes with QEMU's versioned readiness query and exact process identity.
+    /// The resulting value is Phase 6 audit evidence only: missing QEMU proof
+    /// classes remain missing and the report cannot authorize a process fork.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::QemuHotForkAuditError`] when QEMU is not at its exact
+    /// paused/device-flush boundary, readiness changes, process identity or
+    /// procfs validation fails, an inventory bound is exceeded, or two passes
+    /// do not identify one fixed point.
+    #[cfg(target_os = "linux")]
+    pub fn audit_hot_fork_process(
+        &mut self,
+    ) -> Result<crate::QemuHotForkAudit, crate::QemuHotForkAuditError> {
+        let process = self
+            .process_identity()
+            .map_err(crate::QemuHotForkAuditError::ProcessIdentity)?;
+        let before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_readiness()
+            .map_err(crate::QemuHotForkAuditError::Readiness)?;
+        if !before.acknowledges(crate::QmpHotForkProof::ExactPausedBoundary) {
+            return Err(crate::QemuHotForkAuditError::NotExactPausedBoundary);
+        }
+
+        let inventory =
+            crate::hot_fork_audit::capture_linux_qemu_hot_fork_process_inventory(&process)?;
+        let after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_readiness()
+            .map_err(crate::QemuHotForkAuditError::Readiness)?;
+        if before != after {
+            return Err(crate::QemuHotForkAuditError::ReadinessChanged);
+        }
+        Ok(crate::QemuHotForkAudit::new(before, inventory))
     }
 
     /// Returns numeric identity components after authenticating a preowned executable path.

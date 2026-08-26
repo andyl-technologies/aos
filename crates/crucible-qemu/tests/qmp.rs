@@ -208,6 +208,7 @@ fn hot_fork_readiness_is_exact_versioned_and_fail_closed() -> Result<(), Box<dyn
 
     let readiness = client.query_hot_fork_readiness()?;
     assert!(!readiness.ready());
+    assert_eq!(readiness.acknowledged_proofs(), 7);
     assert!(readiness.acknowledges(QmpHotForkProof::PreciseIcount));
     assert!(readiness.acknowledges(QmpHotForkProof::SingleThreadedSimRoundRobin));
     assert!(readiness.acknowledges(QmpHotForkProof::ExactPausedBoundary));

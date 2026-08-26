@@ -1543,6 +1543,18 @@ proofs clear, so no hot-fork capability can be advertised yet. The remaining
 T-CAM-6.1 inventory and T-CAM-6.2 coordinator work must move those bits through
 subsystem-owned barriers rather than weakening this fail-closed query.
 
+The Apache host now also captures a bounded two-pass Linux inventory for one
+process generation while bracketing it with the exact QEMU readiness report.
+It records every visible thread, descriptor, and mapping under fixed
+65,536-entry-per-class and 16-MiB-per-pass aggregate-body limits, retains at
+most two compared passes, rejects process or inventory drift, and exposes
+writable/shared mapping counts for lab review.
+This is an executable T-CAM-6.1 audit prerequisite, not completion of the task:
+the process view cannot prove QEMU mutex, AIO/BH/timer, RCU, block, plugin, or
+child-reinitialization state, and it cannot promote a readiness bit. T-CAM-6.1
+remains unchecked until the complete supported-profile registry and all
+subsystem-owned proofs are implemented and accepted in the Phase 6 lab.
+
 **Exit:** either the spike satisfies the structural and minimum-speedup targets,
 its manual lab evidence is accepted, or hot fork remains rejected and the RFC is
 revised around another measured local-COW mechanism. No optimistic partial

@@ -57,6 +57,8 @@ mod gdbstub_proxy;
 #[cfg(target_os = "linux")]
 mod host_setup;
 mod host_worker_pool;
+#[cfg(target_os = "linux")]
+mod hot_fork_audit;
 mod inertness;
 mod launch;
 #[cfg(target_os = "linux")]
@@ -168,6 +170,14 @@ pub use host_setup::{
 pub use host_worker_pool::{
     QemuHostCompletionOrderKey, QemuHostWorkerOutcome, QemuHostWorkerPool, QemuHostWorkerPoolError,
     QemuHostWorkerPoolReport, QemuHostWorkerRun,
+};
+#[cfg(target_os = "linux")]
+pub use hot_fork_audit::{
+    MAX_QEMU_HOT_FORK_DESCRIPTOR_TARGET_BYTES, MAX_QEMU_HOT_FORK_INVENTORY_BYTES,
+    MAX_QEMU_HOT_FORK_INVENTORY_ENTRIES, MAX_QEMU_HOT_FORK_MAPPING_RECORD_BYTES,
+    MAX_QEMU_HOT_FORK_THREAD_NAME_BYTES, QemuHotForkAudit, QemuHotForkAuditError,
+    QemuHotForkDescriptorInventory, QemuHotForkInventoryError, QemuHotForkMappingInventory,
+    QemuHotForkProcessInventory, QemuHotForkThreadInventory,
 };
 pub use inertness::{
     QemuControlFrameClass, QemuControlPlaneInertnessError, QemuControlPlaneInertnessReport,

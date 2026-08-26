@@ -69,6 +69,7 @@ enum ChannelCall {
     },
     QmpStop,
     QmpContinue,
+    QmpHotForkReadiness,
     QmpTerminalLifecycle {
         action: ContentHash,
         evidence: ContentHash,
@@ -361,6 +362,21 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         Ok(())
     }
 
+    fn query_hot_fork_readiness(
+        &mut self,
+    ) -> Result<crate::QmpHotForkReadiness, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkReadiness);
+        crate::QmpHotForkReadiness::from_acknowledged_proofs(7).ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "query_hot_fork_readiness",
+                "scripted readiness bitmap is invalid",
+            )
+        })
+    }
+
     fn complete_terminal_lifecycle_exit(
         &mut self,
         action: ContentHash,
@@ -621,6 +637,30 @@ fn qemu_node_owns_one_child_and_exactly_three_channel_roles() -> Result<(), Box<
         QemuNodeLifecycleState::ShutdownRequested
     );
 
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hot_fork_audit_brackets_one_exact_child_process_inventory() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+    let process_id = node.child.process_id();
+
+    let audit = node.audit_hot_fork_process()?;
+    assert_eq!(audit.readiness().acknowledged_proofs(), 7);
+    assert_eq!(audit.process().process().process_id, process_id);
+    assert!(!audit.process().threads().is_empty());
+    assert!(!audit.process().mappings().is_empty());
+    assert_eq!(
+        recorded(&log),
+        vec![
+            ChannelCall::QmpHotForkReadiness,
+            ChannelCall::QmpHotForkReadiness,
+        ]
+    );
+
+    node.shutdown_child()?;
     Ok(())
 }
 

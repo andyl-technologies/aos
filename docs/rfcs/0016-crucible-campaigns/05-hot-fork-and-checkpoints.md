@@ -160,6 +160,30 @@ flush boundary. Bits 3 through 8 remain clear, so hot fork remains unavailable,
 until their subsystem-owned barriers and reinitializers land. The query is
 observational and does not itself pause, prepare, fork, or mutate the VM.
 
+The Phase 6 host audit complements that query with bounded operational evidence
+for one exact Linux process generation. It accepts only while proof bit 2 is
+set, brackets the audit with two identical readiness reports, authenticates the
+QEMU PID/start-time/executable identity before and after, and requires two
+complete process-inventory passes to match byte-for-byte. Each pass records all
+visible thread IDs and names, descriptor numbers and link targets, and
+`/proc/<pid>/maps` records, including writable/shared classification. A warm
+pass occurs before the two compared passes so audit-allocation growth is not
+mistaken for target drift in conformance fixtures.
+
+The version-1 operational limits are 65,536 threads, 65,536 descriptors,
+65,536 mappings, 256 bytes per thread name, 4 KiB per descriptor target, 8 KiB
+per mapping record, and 16 MiB of aggregate retained record bytes. Every count,
+length, numeric identifier, mapping grammar, and aggregate addition is checked
+before retention. The aggregate limit applies to each pass; exact comparison
+retains at most two bounded passes, and the warm pass is released first.
+Exceeding a bound, changing process generation, changing the readiness report,
+or observing different inventory passes rejects the audit.
+This observed fixed point is deliberately not a quiescence proof: it does not
+inventory mutex ownership, QEMU-internal AIO/BH/timer or RCU state, block/plugin
+internals, or child reinitializers; it cannot set any readiness bit, prepare a
+template, or authorize `fork(2)`. Those proofs must be produced while the
+future QEMU coordinator holds the corresponding subsystem barriers.
+
 Template realization then adds the following operations:
 
 ```text
