@@ -1190,6 +1190,7 @@ in {
       base = discoverFleetTests // crucibleFleetChecks;
       runtimeConfigNames = [
         "apm-desired-sequencing"
+        "apm-sysroot-lock"
         "apm-system-activation-fail"
         "apm-system-upgrade"
         "config-degraded-boot"
