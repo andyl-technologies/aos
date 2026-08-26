@@ -982,6 +982,15 @@ fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
 
 #[test]
 fn encrypted_graph_admin_drives_plaintext_accounted_gc_across_restart() {
+    run_encrypted_graph_gc_restart(false);
+}
+
+#[test]
+fn compressed_encrypted_graph_admin_drives_plaintext_accounted_gc_across_restart() {
+    run_encrypted_graph_gc_restart(true);
+}
+
+fn run_encrypted_graph_gc_restart(compressed: bool) {
     let temp = tempfile::TempDir::new().expect("temporary encrypted GC root");
     let blob_root = temp.path().join("encrypted");
     let ref_root = temp.path().join("refs");
@@ -994,10 +1003,18 @@ fn encrypted_graph_admin_drives_plaintext_accounted_gc_across_restart() {
         admitted_kinds: BTreeSet::from([ObjectKind::RamExtent, ObjectKind::Trace]),
         nodes: BTreeMap::from([(
             encrypted_node.clone(),
-            StoreNodeSpec::EncryptedDirectory {
-                root: blob_root.clone(),
-                maximum_logical_object_bytes: 1024 * 1024,
-                key_id: key_id.clone(),
+            if compressed {
+                StoreNodeSpec::CompressedEncryptedDirectory {
+                    root: blob_root.clone(),
+                    maximum_logical_object_bytes: 1024 * 1024,
+                    key_id: key_id.clone(),
+                }
+            } else {
+                StoreNodeSpec::EncryptedDirectory {
+                    root: blob_root.clone(),
+                    maximum_logical_object_bytes: 1024 * 1024,
+                    key_id: key_id.clone(),
+                }
             },
         )]),
     };

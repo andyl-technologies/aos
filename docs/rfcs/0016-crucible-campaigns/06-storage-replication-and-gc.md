@@ -480,8 +480,57 @@ and use the directory leaf's sync/link publication and persistent inventory
 generation. Encrypted, compressed, plaintext, packed, journal, and quota-state
 roots must not overlap.
 
+The combined compressed-encrypted directory is a distinct physical leaf that
+implements the required transform order without materializing an intermediate
+plaintext or compressed staging file. It first authenticates and streams the
+logical bytes through the same fixed Zstandard profile, then encrypts that
+frame in fixed 65,536-byte chunks. Its key-generation state, external secret
+capability, publication, range authentication, inventory, and deletion rules
+are identical to the encrypted-directory leaf. The private v1 record is:
+
+```text
+"CRUCC001"
+logical_length:u64be
+compressed_length:u64be
+chunk_bytes:u32be                         # exactly 65,536
+key_id_binding[32]
+keyed_header_authenticator[32]
+repeated ceil(compressed_length / chunk_bytes) times:
+    ciphertext[compressed_chunk_length] || authentication_tag[16]
+```
+
+The compressed length is nonzero, no greater than the fixed Zstandard
+compression bound for the logical length, and uniquely fixed by the exact
+physical file length and chunk-tag count. Nonces and associated data use the
+separate domains
+`crucible.content-store.compressed-encrypted-chunk-nonce.v1` and
+`crucible.content-store.compressed-encrypted-chunk-aad.v1`; the remaining AAD
+fields are the same as the encrypted-only leaf. A reader validates the complete
+physical shape and the keyed header authenticator before inventory accounting,
+authenticates every encrypted compressed chunk, caps the
+Zstandard window at 8 MiB, and authenticates the complete decompressed
+plaintext `ContentId` even for a range request. The separate magic and
+cryptographic domains make encrypted-only and compressed-encrypted records
+non-substitutable under the same logical ID and key generation.
+
+The combined-placement nonce is the first 12 bytes of
+`BLAKE3_keyed(secret,
+"crucible.content-store.compressed-encrypted-chunk-nonce.v1" ||
+key_id_binding[32] || content_id_ascii || i:u32be)`. Including the public key
+generation binding prevents nonce reuse even if an operator mistakenly
+provisions the same master secret under two distinct generation IDs.
+
+The header authenticator is
+`BLAKE3_keyed(secret,
+"crucible.content-store.compressed-encrypted-header-authenticator.v1" ||
+content_id_length:u64be || content_id_ascii || logical_length:u64be ||
+compressed_length:u64be || chunk_bytes:u32be || key_id_binding[32])`. It makes
+the logical and compressed lengths safe to consume during bounded physical
+inventory without first decompressing each complete object.
+
 The initial `LogicalQuota` composition owns exactly one durable directory,
-compressed-directory, encrypted-directory, or packed leaf. Admission rejects
+compressed-directory, encrypted-directory, compressed-encrypted-directory, or
+packed leaf. Admission rejects
 an ephemeral memory or non-leaf child and any second incoming edge to that
 child. Construction transfers the child's separate inventory/delete capability
 into the quota node, and
@@ -608,7 +657,8 @@ bypass these checks.
 separate, non-cloneable `StoreGraphAdmin`. The graph does not retain or expose
 physical inventory/delete authority. The administrative value retains exactly
 one capability for every admitted memory, directory, compressed-directory,
-encrypted-directory, or packed leaf except that a logical-quota node owns and
+encrypted-directory, compressed-encrypted-directory, or packed leaf except that
+a logical-quota node owns and
 replaces its child's direct capability. It lends those boundaries in canonical
 node-ID order to the daemon maintenance owner. Shared graph paths therefore do not duplicate a leaf
 inventory, and a campaign repository that receives only `StoreGraph` cannot
@@ -617,14 +667,18 @@ construct a deletion fence. Both values retain the same content-derived
 cannot pair independently supplied leaves with an unrelated graph hash.
 
 The registered `crucible.content-store.graph-configuration` schemas v1 through
-v4 freeze that identity basis. New writers retain the byte-for-byte v1 body
-when the graph has no compressed-directory, logical-quota, or encrypted nodes,
+v5 freeze that identity basis. New writers retain the byte-for-byte v1 body
+when the graph has no compressed-directory, logical-quota, encrypted, or
+compressed-encrypted nodes,
 emit v2 when it has a compressed-directory node but no logical quota or
 encryption, emit v3 when it has a logical-quota node but no encryption, and
-emit v4 when it has any encrypted-directory node. V2 uses the same grammar and
-existing tags as v1, changes the magic suffix from `v1` to `v2`, and adds tag
-11. V3 changes the suffix to `v3`, retains tags 1 through 11, and adds tag 12.
-V4 changes the suffix to `v4`, retains tags 1 through 12, and adds tag 13.
+emit v4 when it has any encrypted-directory node but no compressed-encrypted
+node. A graph with any compressed-encrypted-directory node emits v5. V2 uses
+the same grammar and existing tags as v1, changes the magic suffix from `v1`
+to `v2`, and adds tag 11. V3 changes the suffix to `v3`, retains tags 1 through
+11, and adds tag 12. V4 changes the suffix to `v4`, retains tags 1 through 12,
+and adds tag 13. V5 changes the suffix to `v5`, retains tags 1 through 13, and
+adds tag 14.
 Every persistent
 path is an absolute host-local Unix path; its opaque bytes, rather than a lossy
 Unicode rendering, enter the identity.
@@ -665,6 +719,9 @@ node tag 12 LogicalQuota: child:string_u16 || state_root:path_u32
                          || maximum_objects:u64be
                          || maximum_logical_bytes:u64be
 node tag 13 EncryptedDirectory:
+                         root:path_u32 || maximum_logical_object_bytes:u64be
+                         || key_id:string_u16
+node tag 14 CompressedEncryptedDirectory:
                          root:path_u32 || maximum_logical_object_bytes:u64be
                          || key_id:string_u16
 ```
@@ -1177,12 +1234,13 @@ journal replays idempotently. Any failure after `Applying`, including an
 indeterminate durable delete or final state write, retains the journal in the
 recovery-required phase and never authorizes reuse of its generations.
 Construction-time graph administration now supplies the exact memory,
-directory, and packed leaf capabilities without granting them to the campaign
-repository. Restart testing proves that two logical objects may share one pack,
+directory, compressed-directory, encrypted-directory,
+compressed-encrypted-directory, and packed leaf capabilities without granting
+them to the campaign repository. Restart testing proves that two logical objects may share one pack,
 planning selects only the unreachable entry, and apply removes that entry while
-retaining the live object and shared physical pack. Transform/S3 leaf
-administration and policy-aware eviction of extra reachable cache copies remain
-open beyond this physical-leaf apply.
+retaining the live object and shared physical pack. S3 leaf administration,
+broader transform composition, and policy-aware eviction of extra reachable
+cache copies remain open beyond this physical-leaf apply.
 
 The single-host daemon composes these sources into one logical root inventory:
 authoritative refs, current exact-pin selections, durable observation and
@@ -1216,14 +1274,15 @@ readers, then permits delayed deletion of old packs. Removing an exact
 materialization never removes the semantic configuration or thin replay path.
 
 The implemented memory, directory, compressed-directory, encrypted-directory,
-and packed blob
+compressed-encrypted-directory, and packed blob
 leaves now provide the exclusive physical inventory generation/idempotent
 exact-candidate deletion primitive. The memory and directory ref leaves provide
 the exclusive authoritative-ref inventory generation and publication-lifecycle
 fence needed by that apply step. The assignment ledger likewise provides one
 exclusive, persistent generation over its combined operational root inventory.
-Directory, compressed-directory, encrypted-directory, and packed generations
-survive restart; memory generations are process-local and monotonic for their
+Directory, compressed-directory, encrypted-directory,
+compressed-encrypted-directory, and packed generations survive restart; memory
+generations are process-local and monotonic for their
 ephemeral backend instance. These primitives remain held by the daemon maintenance owner. The
 canonical bounded v1 plan header now binds these
 generations to constructed root and candidate manifests, and the external
@@ -1233,8 +1292,9 @@ administrative capabilities, and no deletion is safe until durable external
 manifest ownership and every applicable root and physical generation have been
 revalidated. The implemented single-host physical-leaf apply and exact-pin
 selection fence satisfy that rule for memory, directory, compressed-directory,
-encrypted-directory, and packed leaves. The compressed- and
-encrypted-directory integration regressions plan from authenticated plaintext
+encrypted-directory, compressed-encrypted-directory, and packed leaves. The
+compressed-, encrypted-, and compressed-encrypted-directory integration
+regressions plan from authenticated plaintext
 lengths, persist and reopen the journal and graph, delete the respective
 unreachable physical placement, and reauthenticate the retained plaintext
 object. The packed leaf separately provides generation-bound repack
@@ -1277,3 +1337,9 @@ logs, or placement receipts returned to ordinary operators.
   ID/length/key generation/ordinal/final state, authenticate the complete
   plaintext for every read, and receive secret keys only through a separate
   non-serializable construction capability.
+- **[CSTORE-25]** A compressed-encrypted placement MUST stream the fixed
+  compression profile before encryption, use a physical grammar and nonce/AAD
+  domains distinct from encrypted-only placement, authenticate header lengths
+  before inventory accounting, bound the compressed length before decoding,
+  and authenticate the complete decompressed plaintext without persisting an
+  intermediate unencrypted frame.

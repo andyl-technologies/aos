@@ -115,6 +115,15 @@ pub enum StoreNodeSpec {
         /// Non-secret identifier resolved through an external key capability.
         key_id: StoreEncryptionKeyId,
     },
+    /// Crash-safe compressed-then-encrypted loose-object directory leaf.
+    CompressedEncryptedDirectory {
+        /// Trusted operator-owned filesystem root.
+        root: PathBuf,
+        /// Hard cap on one object's authenticated plaintext bytes.
+        maximum_logical_object_bytes: u64,
+        /// Non-secret identifier resolved through an external key capability.
+        key_id: StoreEncryptionKeyId,
+    },
     /// Immutable physical packs with one crash-safe logical index.
     Packed {
         /// Trusted operator-owned pack and index root.
@@ -191,6 +200,7 @@ impl StoreNodeSpec {
             | Self::Directory { .. }
             | Self::CompressedDirectory { .. }
             | Self::EncryptedDirectory { .. }
+            | Self::CompressedEncryptedDirectory { .. }
             | Self::Packed { .. } => Vec::new(),
             Self::Verified { child } => vec![child],
             Self::Routed { routes } => routes.values().collect(),
@@ -213,6 +223,9 @@ impl StoreNodeSpec {
             Self::Directory { .. } => StoreNodeKind::Directory,
             Self::CompressedDirectory { .. } => StoreNodeKind::CompressedDirectory,
             Self::EncryptedDirectory { .. } => StoreNodeKind::EncryptedDirectory,
+            Self::CompressedEncryptedDirectory { .. } => {
+                StoreNodeKind::CompressedEncryptedDirectory
+            }
             Self::Packed { .. } => StoreNodeKind::Packed,
             Self::Verified { .. } => StoreNodeKind::Verified,
             Self::Routed { .. } => StoreNodeKind::Routed,
@@ -248,6 +261,8 @@ pub enum StoreNodeKind {
     CompressedDirectory,
     /// Durable authenticated encrypted directory leaf.
     EncryptedDirectory,
+    /// Durable compressed-then-encrypted directory leaf.
+    CompressedEncryptedDirectory,
     /// Durable immutable-pack leaf.
     Packed,
     /// Verification facade.
@@ -709,6 +724,7 @@ fn validate_administrative_paths(config: &StoreGraphConfig) -> Result<(), StoreE
             StoreNodeSpec::Directory { root } => Some((id, root, false)),
             StoreNodeSpec::CompressedDirectory { root, .. } => Some((id, root, true)),
             StoreNodeSpec::EncryptedDirectory { root, .. } => Some((id, root, true)),
+            StoreNodeSpec::CompressedEncryptedDirectory { root, .. } => Some((id, root, true)),
             StoreNodeSpec::Packed { root, .. } => Some((id, root, true)),
             StoreNodeSpec::WriteBack { journal_root, .. } => Some((id, journal_root, true)),
             StoreNodeSpec::LogicalQuota { state_root, .. } => Some((id, state_root, true)),
@@ -766,6 +782,7 @@ fn validate_logical_quota_ownership(config: &StoreGraphConfig) -> Result<(), Sto
                 StoreNodeSpec::Directory { .. }
                     | StoreNodeSpec::CompressedDirectory { .. }
                     | StoreNodeSpec::EncryptedDirectory { .. }
+                    | StoreNodeSpec::CompressedEncryptedDirectory { .. }
                     | StoreNodeSpec::Packed { .. }
             )
         );
@@ -849,6 +866,17 @@ fn validate_local_shape(id: &StoreNodeId, node: &StoreNodeSpec) -> Result<(), St
                 GraphViolation::InvalidEncryptedObjectLimit,
             ))
         }
+        StoreNodeSpec::CompressedEncryptedDirectory {
+            maximum_logical_object_bytes,
+            ..
+        } if *maximum_logical_object_bytes == 0
+            || *maximum_logical_object_bytes > MAXIMUM_ENCRYPTED_LOGICAL_OBJECT_BYTES =>
+        {
+            Err(invalid_graph(
+                id.as_str(),
+                GraphViolation::InvalidEncryptedObjectLimit,
+            ))
+        }
         StoreNodeSpec::LogicalQuota {
             maximum_objects,
             maximum_logical_bytes,
@@ -884,6 +912,7 @@ fn validate_demands(config: &StoreGraphConfig) -> Result<(), StoreError> {
             | StoreNodeSpec::Directory { .. }
             | StoreNodeSpec::CompressedDirectory { .. }
             | StoreNodeSpec::EncryptedDirectory { .. }
+            | StoreNodeSpec::CompressedEncryptedDirectory { .. }
             | StoreNodeSpec::Packed { .. } => {}
             StoreNodeSpec::Verified { child } => {
                 extend_demand(child, &kinds, &mut demands, &mut queue);
@@ -1002,6 +1031,22 @@ fn instantiate(
         } => {
             let key = keys.resolve(key_id)?;
             let leaf = Arc::new(EncryptedDirectoryBlobBackend::open(
+                id.as_str(),
+                root.clone(),
+                *maximum_logical_object_bytes,
+                key_id.clone(),
+                key,
+            )?);
+            state.physical.insert(id.clone(), leaf.clone());
+            leaf
+        }
+        StoreNodeSpec::CompressedEncryptedDirectory {
+            root,
+            maximum_logical_object_bytes,
+            key_id,
+        } => {
+            let key = keys.resolve(key_id)?;
+            let leaf = Arc::new(EncryptedDirectoryBlobBackend::open_compressed(
                 id.as_str(),
                 root.clone(),
                 *maximum_logical_object_bytes,

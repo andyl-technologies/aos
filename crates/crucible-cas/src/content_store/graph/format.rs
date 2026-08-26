@@ -10,6 +10,7 @@ const GRAPH_CONFIGURATION_V1_MAGIC: &[u8] = b"crucible.content-store.graph-confi
 const GRAPH_CONFIGURATION_V2_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v2\0";
 const GRAPH_CONFIGURATION_V3_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v3\0";
 const GRAPH_CONFIGURATION_V4_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v4\0";
+const GRAPH_CONFIGURATION_V5_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v5\0";
 
 pub(super) fn canonical_graph_configuration(
     config: &StoreGraphConfig,
@@ -27,7 +28,13 @@ pub(super) fn canonical_graph_configuration(
         .nodes
         .values()
         .any(|node| matches!(node, StoreNodeSpec::EncryptedDirectory { .. }));
-    bytes.extend_from_slice(if has_encrypted_directory {
+    let has_compressed_encrypted_directory = config
+        .nodes
+        .values()
+        .any(|node| matches!(node, StoreNodeSpec::CompressedEncryptedDirectory { .. }));
+    bytes.extend_from_slice(if has_compressed_encrypted_directory {
+        GRAPH_CONFIGURATION_V5_MAGIC
+    } else if has_encrypted_directory {
         GRAPH_CONFIGURATION_V4_MAGIC
     } else if has_logical_quota {
         GRAPH_CONFIGURATION_V3_MAGIC
@@ -73,6 +80,16 @@ pub(super) fn canonical_graph_configuration(
                 key_id,
             } => {
                 bytes.push(13);
+                encode_path(&mut bytes, root)?;
+                bytes.extend_from_slice(&maximum_logical_object_bytes.to_be_bytes());
+                encode_string(&mut bytes, key_id.as_str())?;
+            }
+            StoreNodeSpec::CompressedEncryptedDirectory {
+                root,
+                maximum_logical_object_bytes,
+                key_id,
+            } => {
+                bytes.push(14);
                 encode_path(&mut bytes, root)?;
                 bytes.extend_from_slice(&maximum_logical_object_bytes.to_be_bytes());
                 encode_string(&mut bytes, key_id.as_str())?;

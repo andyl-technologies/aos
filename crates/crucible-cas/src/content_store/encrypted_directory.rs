@@ -18,6 +18,15 @@
 //! || repeated AES-256-GCM(plaintext_chunk, derived_nonce, bound_aad)
 //! ```
 //!
+//! [`EncryptedDirectoryBlobBackend::new_compressed`] instead streams one fixed
+//! Zstandard frame into a separately domain-separated encryption chunker:
+//!
+//! ```text
+//! "CRUCC001" || logical_length:u64be || compressed_length:u64be
+//! || chunk_bytes:u32be || key_id_binding[32] || keyed_header_authenticator[32]
+//! || repeated AES-256-GCM(compressed_chunk, derived_nonce, bound_aad)
+//! ```
+//!
 //! The inventory administration directory also pins one key generation before
 //! any object access can proceed:
 //!
@@ -28,7 +37,7 @@
 use std::collections::{BTreeMap, btree_map::Entry};
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -37,6 +46,12 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use rustix::fs::{Mode, OFlags, open};
 use zeroize::Zeroizing;
+
+mod compressed;
+
+use compressed::{
+    compress_and_encrypt_source, compressed_header_authenticator, maximum_compressed_length,
+};
 
 use super::admin::{InventoryCounter, persistent_inventory_generation};
 use super::directory::{
@@ -47,12 +62,15 @@ use super::directory::{
 use super::*;
 
 const ENCRYPTED_OBJECT_MAGIC: &[u8; 8] = b"CRUCE001";
+const COMPRESSED_ENCRYPTED_OBJECT_MAGIC: &[u8; 8] = b"CRUCC001";
 const ENCRYPTION_KEY_STATE_MAGIC: &[u8; 8] = b"CRUCK001";
 const ENCRYPTION_KEY_STATE_BYTES: u64 = 104;
 const ENCRYPTION_KEY_STATE_FILE: &str = "encryption-key-v1";
 const ENCRYPTED_OBJECT_HEADER_BYTES: u64 = 52;
+const COMPRESSED_ENCRYPTED_OBJECT_HEADER_BYTES: u64 = 92;
 const ENCRYPTED_CHUNK_BYTES: u64 = 64 * 1024;
 const AES_GCM_TAG_BYTES: u64 = 16;
+const MAXIMUM_DECOMPRESSION_WINDOW_LOG: u32 = 23;
 pub(super) const MAXIMUM_ENCRYPTED_LOGICAL_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
 const KEY_ID_BINDING_DOMAIN: &[u8] = b"crucible.content-store.encryption-key-id.v1";
 const AES_KEY_DOMAIN: &[u8] = b"crucible.content-store.encrypted-aes-key.v1";
@@ -60,6 +78,46 @@ const KEY_STATE_VERIFIER_DOMAIN: &[u8] = b"crucible.content-store.encryption-key
 const KEY_STATE_CHECKSUM_DOMAIN: &[u8] = b"crucible.content-store.encryption-key-state.v1";
 const CHUNK_NONCE_DOMAIN: &[u8] = b"crucible.content-store.encrypted-chunk-nonce.v1";
 const CHUNK_AAD_DOMAIN: &[u8] = b"crucible.content-store.encrypted-chunk-aad.v1";
+const COMPRESSED_CHUNK_NONCE_DOMAIN: &[u8] =
+    b"crucible.content-store.compressed-encrypted-chunk-nonce.v1";
+const COMPRESSED_CHUNK_AAD_DOMAIN: &[u8] =
+    b"crucible.content-store.compressed-encrypted-chunk-aad.v1";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EncryptedObjectEncoding {
+    Plaintext,
+    Zstandard,
+}
+
+impl EncryptedObjectEncoding {
+    const fn magic(self) -> &'static [u8; 8] {
+        match self {
+            Self::Plaintext => ENCRYPTED_OBJECT_MAGIC,
+            Self::Zstandard => COMPRESSED_ENCRYPTED_OBJECT_MAGIC,
+        }
+    }
+
+    const fn header_bytes(self) -> u64 {
+        match self {
+            Self::Plaintext => ENCRYPTED_OBJECT_HEADER_BYTES,
+            Self::Zstandard => COMPRESSED_ENCRYPTED_OBJECT_HEADER_BYTES,
+        }
+    }
+
+    const fn nonce_domain(self) -> &'static [u8] {
+        match self {
+            Self::Plaintext => CHUNK_NONCE_DOMAIN,
+            Self::Zstandard => COMPRESSED_CHUNK_NONCE_DOMAIN,
+        }
+    }
+
+    const fn aad_domain(self) -> &'static [u8] {
+        match self {
+            Self::Plaintext => CHUNK_AAD_DOMAIN,
+            Self::Zstandard => COMPRESSED_CHUNK_AAD_DOMAIN,
+        }
+    }
+}
 
 /// Non-secret operational identifier for one encryption-key generation.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -172,6 +230,7 @@ pub struct EncryptedDirectoryBlobBackend {
     key_id: StoreEncryptionKeyId,
     key_id_binding: [u8; 32],
     key: Arc<StoreEncryptionKey>,
+    encoding: EncryptedObjectEncoding,
 }
 
 impl fmt::Debug for EncryptedDirectoryBlobBackend {
@@ -184,6 +243,10 @@ impl fmt::Debug for EncryptedDirectoryBlobBackend {
                 &self.maximum_logical_object_bytes,
             )
             .field("key_id", &self.key_id)
+            .field(
+                "compressed",
+                &(self.encoding == EncryptedObjectEncoding::Zstandard),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -211,12 +274,75 @@ impl EncryptedDirectoryBlobBackend {
         )
     }
 
+    /// Opens one compression-before-encryption directory leaf.
+    ///
+    /// The fixed Zstandard transform is applied before fixed-size authenticated
+    /// encryption. Plaintext identity, range authentication, and the external
+    /// key capability remain identical to [`Self::new`], while the physical
+    /// grammar and nonce domain are distinct.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::InvalidComposition`] when the per-object limit is
+    /// zero or exceeds 64 MiB.
+    pub fn new_compressed(
+        name: impl Into<String>,
+        root: impl Into<PathBuf>,
+        maximum_logical_object_bytes: u64,
+        key_id: StoreEncryptionKeyId,
+        key: StoreEncryptionKey,
+    ) -> Result<Self, StoreError> {
+        Self::open_with_encoding(
+            name,
+            root.into(),
+            maximum_logical_object_bytes,
+            key_id,
+            Arc::new(key),
+            EncryptedObjectEncoding::Zstandard,
+        )
+    }
+
     pub(super) fn open(
         name: impl Into<String>,
         root: PathBuf,
         maximum_logical_object_bytes: u64,
         key_id: StoreEncryptionKeyId,
         key: Arc<StoreEncryptionKey>,
+    ) -> Result<Self, StoreError> {
+        Self::open_with_encoding(
+            name,
+            root,
+            maximum_logical_object_bytes,
+            key_id,
+            key,
+            EncryptedObjectEncoding::Plaintext,
+        )
+    }
+
+    pub(super) fn open_compressed(
+        name: impl Into<String>,
+        root: PathBuf,
+        maximum_logical_object_bytes: u64,
+        key_id: StoreEncryptionKeyId,
+        key: Arc<StoreEncryptionKey>,
+    ) -> Result<Self, StoreError> {
+        Self::open_with_encoding(
+            name,
+            root,
+            maximum_logical_object_bytes,
+            key_id,
+            key,
+            EncryptedObjectEncoding::Zstandard,
+        )
+    }
+
+    fn open_with_encoding(
+        name: impl Into<String>,
+        root: PathBuf,
+        maximum_logical_object_bytes: u64,
+        key_id: StoreEncryptionKeyId,
+        key: Arc<StoreEncryptionKey>,
+        encoding: EncryptedObjectEncoding,
     ) -> Result<Self, StoreError> {
         if maximum_logical_object_bytes == 0
             || maximum_logical_object_bytes > MAXIMUM_ENCRYPTED_LOGICAL_OBJECT_BYTES
@@ -232,6 +358,7 @@ impl EncryptedDirectoryBlobBackend {
             key_id,
             key_id_binding,
             key,
+            encoding,
         })
     }
 
@@ -274,6 +401,8 @@ impl EncryptedDirectoryBlobBackend {
             id,
             self.maximum_logical_object_bytes,
             self.key_id_binding,
+            self.encoding,
+            self.key.bytes(),
         )?;
         let range = range.unwrap_or(ByteRange {
             offset: 0,
@@ -430,10 +559,43 @@ impl ImmutableBlobBackend for EncryptedDirectoryBlobBackend {
         let publish_result = (|| {
             let header = EncryptedObjectHeader {
                 logical_length: source.logical_length(),
+                payload_length: match self.encoding {
+                    EncryptedObjectEncoding::Plaintext => source.logical_length(),
+                    EncryptedObjectEncoding::Zstandard => 0,
+                },
                 key_id_binding: self.key_id_binding,
+                encoding: self.encoding,
             };
-            write_encrypted_header(&mut staging, header)?;
-            encrypt_source(id, source, header, self.key.bytes(), &mut staging)?;
+            write_encrypted_header(&mut staging, id, header, self.key.bytes())?;
+            match self.encoding {
+                EncryptedObjectEncoding::Plaintext => {
+                    encrypt_source(id, source, header, self.key.bytes(), &mut staging)?;
+                }
+                EncryptedObjectEncoding::Zstandard => {
+                    let payload_length = compress_and_encrypt_source(
+                        id,
+                        source,
+                        header,
+                        self.key.bytes(),
+                        &mut staging,
+                    )?;
+                    write_encrypted_header(
+                        &mut staging,
+                        id,
+                        EncryptedObjectHeader {
+                            payload_length,
+                            ..header
+                        },
+                        self.key.bytes(),
+                    )?;
+                    staging
+                        .seek(SeekFrom::End(0))
+                        .map_err(|source| StoreError::StreamIo {
+                            operation: "seek-compressed-encrypted-object-end",
+                            source,
+                        })?;
+                }
+            }
             staging.sync_all().map_err(|source| StoreError::Io {
                 operation: "sync-encrypted-object-staging",
                 path: staging_path.clone(),
@@ -489,7 +651,9 @@ impl BlobStoreAdmin for EncryptedDirectoryBlobBackend {
 #[derive(Clone, Copy)]
 struct EncryptedObjectHeader {
     logical_length: u64,
+    payload_length: u64,
     key_id_binding: [u8; 32],
+    encoding: EncryptedObjectEncoding,
 }
 
 fn encryption_key_state(key_id_binding: [u8; 32], key: &[u8; 32]) -> [u8; 104] {
@@ -558,7 +722,13 @@ fn read_key_state(
     let mut verifier = blake3::Hasher::new_keyed(key);
     verifier.update(KEY_STATE_VERIFIER_DOMAIN);
     verifier.update(&expected_key_id_binding);
-    if verifier.finalize() != bytes[40..72] {
+    let observed_verifier: [u8; 32] =
+        bytes[40..72]
+            .try_into()
+            .map_err(|_| StoreError::InvalidComposition {
+                reason: "encrypted directory key state is malformed",
+            })?;
+    if !constant_time_equal_32(verifier.finalize().as_bytes(), &observed_verifier) {
         return Err(StoreError::Unauthorized);
     }
     Ok(true)
@@ -566,12 +736,27 @@ fn read_key_state(
 
 fn write_encrypted_header(
     file: &mut File,
+    id: ContentId,
     header: EncryptedObjectHeader,
+    key: &[u8; 32],
 ) -> Result<(), StoreError> {
-    file.write_all(ENCRYPTED_OBJECT_MAGIC)
+    file.seek(SeekFrom::Start(0))
+        .and_then(|_| file.write_all(header.encoding.magic()))
         .and_then(|()| file.write_all(&header.logical_length.to_be_bytes()))
+        .and_then(|()| match header.encoding {
+            EncryptedObjectEncoding::Plaintext => Ok(()),
+            EncryptedObjectEncoding::Zstandard => {
+                file.write_all(&header.payload_length.to_be_bytes())
+            }
+        })
         .and_then(|()| file.write_all(&(ENCRYPTED_CHUNK_BYTES as u32).to_be_bytes()))
         .and_then(|()| file.write_all(&header.key_id_binding))
+        .and_then(|()| match header.encoding {
+            EncryptedObjectEncoding::Plaintext => Ok(()),
+            EncryptedObjectEncoding::Zstandard => {
+                file.write_all(&compressed_header_authenticator(key, id, header))
+            }
+        })
         .map_err(|source| StoreError::StreamIo {
             operation: "write-encrypted-object-header",
             source,
@@ -583,6 +768,8 @@ fn open_encrypted_object(
     id: ContentId,
     maximum_logical_object_bytes: u64,
     expected_key_id_binding: [u8; 32],
+    expected_encoding: EncryptedObjectEncoding,
+    key: &[u8; 32],
 ) -> Result<(Arc<File>, EncryptedObjectHeader), StoreError> {
     let descriptor = match open(
         path,
@@ -613,9 +800,11 @@ fn open_encrypted_object(
         });
     }
     let physical_length = metadata.len();
-    let mut bytes = [0_u8; ENCRYPTED_OBJECT_HEADER_BYTES as usize];
-    read_exact_at(&file, &mut bytes, 0).map_err(|_| StoreError::Corrupt { id })?;
-    if &bytes[..8] != ENCRYPTED_OBJECT_MAGIC {
+    let header_bytes = expected_encoding.header_bytes();
+    let mut bytes = [0_u8; COMPRESSED_ENCRYPTED_OBJECT_HEADER_BYTES as usize];
+    let header_length = usize::try_from(header_bytes).map_err(|_| StoreError::Quota)?;
+    read_exact_at(&file, &mut bytes[..header_length], 0).map_err(|_| StoreError::Corrupt { id })?;
+    if &bytes[..8] != expected_encoding.magic() {
         return Err(StoreError::Corrupt { id });
     }
     let logical_length = u64::from_be_bytes(
@@ -623,28 +812,52 @@ fn open_encrypted_object(
             .try_into()
             .map_err(|_| StoreError::Corrupt { id })?,
     );
+    let (payload_length, chunk_offset, binding_offset) = match expected_encoding {
+        EncryptedObjectEncoding::Plaintext => (logical_length, 16, 20),
+        EncryptedObjectEncoding::Zstandard => {
+            let compressed_length = u64::from_be_bytes(
+                bytes[16..24]
+                    .try_into()
+                    .map_err(|_| StoreError::Corrupt { id })?,
+            );
+            (compressed_length, 24, 28)
+        }
+    };
     let chunk_bytes = u32::from_be_bytes(
-        bytes[16..20]
+        bytes[chunk_offset..chunk_offset + 4]
             .try_into()
             .map_err(|_| StoreError::Corrupt { id })?,
     );
-    let key_id_binding = bytes[20..52]
+    let key_id_binding = bytes[binding_offset..binding_offset + 32]
         .try_into()
         .map_err(|_| StoreError::Corrupt { id })?;
-    if logical_length > maximum_logical_object_bytes
+    let header = EncryptedObjectHeader {
+        logical_length,
+        payload_length,
+        key_id_binding,
+        encoding: expected_encoding,
+    };
+    let header_authentication_failed = if expected_encoding == EncryptedObjectEncoding::Zstandard {
+        let observed: [u8; 32] = bytes[binding_offset + 32..binding_offset + 64]
+            .try_into()
+            .map_err(|_| StoreError::Corrupt { id })?;
+        !constant_time_equal_32(&compressed_header_authenticator(key, id, header), &observed)
+    } else {
+        false
+    };
+    if header_authentication_failed
+        || logical_length > maximum_logical_object_bytes
+        || (expected_encoding == EncryptedObjectEncoding::Zstandard
+            && (payload_length == 0
+                || maximum_compressed_length(logical_length)
+                    .is_none_or(|maximum| payload_length > maximum)))
         || chunk_bytes != ENCRYPTED_CHUNK_BYTES as u32
         || key_id_binding != expected_key_id_binding
-        || encrypted_physical_length(logical_length) != Some(physical_length)
+        || encrypted_physical_length(header_bytes, payload_length) != Some(physical_length)
     {
         return Err(StoreError::Corrupt { id });
     }
-    Ok((
-        Arc::new(file),
-        EncryptedObjectHeader {
-            logical_length,
-            key_id_binding,
-        },
-    ))
+    Ok((Arc::new(file), header))
 }
 
 fn encrypt_source(
@@ -676,7 +889,7 @@ fn encrypt_source(
         hasher.update(&plaintext);
         remaining -= plaintext_length;
         let last = remaining == 0;
-        let nonce = chunk_nonce(key, id, chunk_index);
+        let nonce = chunk_nonce(key, id, chunk_index, header);
         let aad = chunk_aad(id, header, chunk_index, last, plaintext_length)?;
         let ciphertext = cipher
             .encrypt(
@@ -755,12 +968,31 @@ impl BlobSource for EncryptedDirectoryBlobSource {
     }
 
     fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
-        let plaintext = EncryptedPlaintextReader::new(
+        let decrypted = EncryptedPlaintextReader::new(
             Arc::clone(&self.file),
             self.id,
             self.header,
             Arc::clone(&self.key),
         )?;
+        let plaintext: Box<dyn Read + Send> = match self.header.encoding {
+            EncryptedObjectEncoding::Plaintext => Box::new(decrypted),
+            EncryptedObjectEncoding::Zstandard => {
+                let mut decoder =
+                    zstd::stream::read::Decoder::new(decrypted).map_err(|source| {
+                        StoreError::StreamIo {
+                            operation: "open-compressed-encrypted-object-decoder",
+                            source,
+                        }
+                    })?;
+                decoder
+                    .window_log_max(MAXIMUM_DECOMPRESSION_WINDOW_LOG)
+                    .map_err(|source| StoreError::StreamIo {
+                        operation: "configure-compressed-encrypted-object-decoder",
+                        source,
+                    })?;
+                Box::new(decoder)
+            }
+        };
         Ok(Box::new(AuthenticatingEncryptedReader::new(
             plaintext,
             self.id,
@@ -803,8 +1035,8 @@ impl EncryptedPlaintextReader {
             cipher,
             key,
             chunk_index: 0,
-            remaining: header.logical_length,
-            physical_offset: ENCRYPTED_OBJECT_HEADER_BYTES,
+            remaining: header.payload_length,
+            physical_offset: header.encoding.header_bytes(),
             plaintext: Zeroizing::new(Vec::new()),
             plaintext_offset: 0,
             finished: false,
@@ -821,7 +1053,7 @@ impl EncryptedPlaintextReader {
         read_exact_at(&self.file, &mut ciphertext, self.physical_offset)
             .map_err(|_| invalid_encrypted_data())?;
         let last = self.remaining == plaintext_length;
-        let nonce = chunk_nonce(self.key.bytes(), self.id, self.chunk_index);
+        let nonce = chunk_nonce(self.key.bytes(), self.id, self.chunk_index, self.header);
         let aad = chunk_aad(
             self.id,
             self.header,
@@ -885,7 +1117,7 @@ impl Read for EncryptedPlaintextReader {
 }
 
 struct AuthenticatingEncryptedReader {
-    reader: EncryptedPlaintextReader,
+    reader: Box<dyn Read + Send>,
     id: ContentId,
     logical_length: u64,
     range: ByteRange,
@@ -897,7 +1129,7 @@ struct AuthenticatingEncryptedReader {
 
 impl AuthenticatingEncryptedReader {
     fn new(
-        reader: EncryptedPlaintextReader,
+        reader: Box<dyn Read + Send>,
         id: ContentId,
         logical_length: u64,
         range: ByteRange,
@@ -1100,6 +1332,8 @@ fn visit_encrypted_inventory(
                         id,
                         backend.maximum_logical_object_bytes,
                         backend.key_id_binding,
+                        backend.encoding,
+                        backend.key.bytes(),
                     )?;
                     let record = BlobInventoryRecord::new(id, header.logical_length);
                     inventory.push(record)?;
@@ -1126,20 +1360,28 @@ fn derived_aes_key(key: &[u8; 32]) -> Zeroizing<[u8; 32]> {
     Zeroizing::new(*hasher.finalize().as_bytes())
 }
 
-fn encrypted_physical_length(logical_length: u64) -> Option<u64> {
-    let chunks = if logical_length == 0 {
+fn encrypted_physical_length(header_bytes: u64, payload_length: u64) -> Option<u64> {
+    let chunks = if payload_length == 0 {
         1
     } else {
-        logical_length.checked_add(ENCRYPTED_CHUNK_BYTES - 1)? / ENCRYPTED_CHUNK_BYTES
+        payload_length.checked_add(ENCRYPTED_CHUNK_BYTES - 1)? / ENCRYPTED_CHUNK_BYTES
     };
-    ENCRYPTED_OBJECT_HEADER_BYTES
-        .checked_add(logical_length)?
+    header_bytes
+        .checked_add(payload_length)?
         .checked_add(chunks.checked_mul(AES_GCM_TAG_BYTES)?)
 }
 
-fn chunk_nonce(key: &[u8; 32], id: ContentId, chunk_index: u32) -> [u8; 12] {
+fn chunk_nonce(
+    key: &[u8; 32],
+    id: ContentId,
+    chunk_index: u32,
+    header: EncryptedObjectHeader,
+) -> [u8; 12] {
     let mut hasher = blake3::Hasher::new_keyed(key);
-    hasher.update(CHUNK_NONCE_DOMAIN);
+    hasher.update(header.encoding.nonce_domain());
+    if header.encoding == EncryptedObjectEncoding::Zstandard {
+        hasher.update(&header.key_id_binding);
+    }
     hasher.update(id.encode().as_bytes());
     hasher.update(&chunk_index.to_be_bytes());
     let mut nonce = [0_u8; 12];
@@ -1156,9 +1398,10 @@ fn chunk_aad(
 ) -> Result<Vec<u8>, StoreError> {
     let encoded_id = id.encode();
     let id_length = u16::try_from(encoded_id.len()).map_err(|_| StoreError::Quota)?;
+    let aad_domain = header.encoding.aad_domain();
     let mut aad =
-        Vec::with_capacity(CHUNK_AAD_DOMAIN.len() + 2 + encoded_id.len() + 8 + 4 + 32 + 4 + 1 + 8);
-    aad.extend_from_slice(CHUNK_AAD_DOMAIN);
+        Vec::with_capacity(aad_domain.len() + 2 + encoded_id.len() + 8 + 4 + 32 + 4 + 1 + 8);
+    aad.extend_from_slice(aad_domain);
     aad.extend_from_slice(&id_length.to_be_bytes());
     aad.extend_from_slice(encoded_id.as_bytes());
     aad.extend_from_slice(&header.logical_length.to_be_bytes());
@@ -1175,6 +1418,15 @@ fn invalid_encrypted_data() -> std::io::Error {
         std::io::ErrorKind::InvalidData,
         "encrypted content authentication failed",
     )
+}
+
+fn constant_time_equal_32(left: &[u8; 32], right: &[u8; 32]) -> bool {
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
 }
 
 fn read_exact_at(file: &File, mut output: &mut [u8], mut offset: u64) -> std::io::Result<()> {
