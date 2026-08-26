@@ -36,6 +36,9 @@
               '#include <CoreFoundation/CoreFoundation.h>' \
               '#include <netinet/tcp_fsm.h>' \
               '#include <netinet/tcp_timer.h>' \
+              '#include <rpc/pmap_prot.h>' \
+              '#include <rpc/rpc.h>' \
+              '#include <sys/syscall.h>' \
               '#include <sys/ttydev.h>' \
               '#include <SystemConfiguration/SystemConfiguration.h>' \
               'int main(void) {' \
@@ -58,8 +61,9 @@
               '}' \
               > framework-smoke.c
             "$CC" framework-smoke.c \
-              -framework SystemConfiguration \
               -framework CoreFoundation \
+              -framework CoreServices \
+              -framework SystemConfiguration \
               -lobjc \
               -o "$c/bin/aos-darwin-framework-smoke"
 

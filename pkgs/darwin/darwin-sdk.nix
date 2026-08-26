@@ -21,6 +21,7 @@
   securityRevision = "db15acbe6a7f257a859ad9a3bb86097bfe0679d9";
   objcRevision = "fb265098298302243cd7eeaa1f63f0ba7786dd9a";
   libcRevision = "71bbe350ab79eef58113991d817ccc6165061a64";
+  libinfoRevision = "39b70c515baee5b609e7e91693edbd934b6845a1";
   libresolvRevision = "e48cd914edc1cb14f8289b8e2dfdaac360481cd2";
 
   coreFoundationSrc = fetchurl {
@@ -93,6 +94,13 @@
     hash = "sha256-wjA85gC0Qm8yH6CWwDRvRknlQnnQK0BXor1uaCzlX7w=";
   };
 
+  libinfoSrc = fetchurl {
+    urls = [
+      "https://github.com/apple-oss-distributions/Libinfo/archive/${libinfoRevision}.tar.gz"
+    ];
+    hash = "sha256-ATGH4traRQdY99JsxRmn2knOK3gG/VXzuaiCSL/Xp8c=";
+  };
+
   libresolvSrc = fetchurl {
     urls = [
       "https://github.com/apple-oss-distributions/libresolv/archive/${libresolvRevision}.tar.gz"
@@ -128,6 +136,7 @@ in
           tar xf ${securitySrc}
           tar xf ${objcSrc}
           tar xf ${libcSrc}
+          tar xf ${libinfoSrc}
           tar xf ${libresolvSrc}
           cd "zig-${version}"
         '';
@@ -145,14 +154,17 @@ in
           securityRoot="../Security-${securityRevision}"
           objcRoot="../objc4-${objcRevision}"
           libcRoot="../Libc-${libcRevision}"
+          libinfoRoot="../Libinfo-${libinfoRevision}"
           libresolvRoot="../libresolv-${libresolvRevision}"
 
           mkdir -p \
             "$out/usr/include/c++/v1" \
             "$out/usr/include/libunwind" \
             "$out/usr/include/objc" \
+            "$out/usr/include/rpc" \
             "$out/usr/lib" \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Headers" \
+            "$out/System/Library/Frameworks/CoreServices.framework" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/storage/ata" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/storage" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/usb" \
@@ -176,9 +188,18 @@ in
           cp "$xnuRoot/bsd/netinet/tcp_fsm.h" "$out/usr/include/netinet/"
           cp "$xnuRoot/bsd/netinet/tcp_timer.h" "$out/usr/include/netinet/"
           cp "$xnuRoot/bsd/sys/ttydev.h" "$out/usr/include/sys/"
+          # XNU generates the installed syscall-number header from its
+          # authoritative master table rather than checking it into source.
+          # Run Apple's generator with the hermetic AOS shell and build tools.
+          (
+            cd "$xnuRoot/bsd/sys"
+            "$CONFIG_SHELL" ../kern/makesyscalls.sh ../kern/syscalls.master header
+            cp syscall.h "$out/usr/include/sys/"
+          )
           cp "$libresolvRoot/resolv.h" "$out/usr/include/"
           cp "$libresolvRoot/arpa/nameser.h" "$out/usr/include/arpa/"
           cp "$libcRoot/include/arpa/nameser_compat.h" "$out/usr/include/arpa/"
+          cp "$libinfoRoot"/rpc.subproj/*.h "$out/usr/include/rpc/"
 
           # Newer Apple open-source framework headers describe bridgeOS API
           # availability, while Zig's open SDK snapshot omits that platform's
@@ -304,6 +325,8 @@ in
             "$out/share/licenses/darwin-sdk/ObjectiveC-LICENSE"
           cp "$libcRoot/APPLE_LICENSE" \
             "$out/share/licenses/darwin-sdk/Libc-LICENSE"
+          cp "$libinfoRoot/APPLE_LICENSE" \
+            "$out/share/licenses/darwin-sdk/Libinfo-LICENSE"
           cp "$libresolvRoot/APPLE_LICENSE" \
             "$out/share/licenses/darwin-sdk/libresolv-LICENSE"
 
@@ -406,6 +429,21 @@ in
                 - _kCFRunLoopDefaultMode
                 - _kCFTypeDictionaryKeyCallBacks
                 - _kCFTypeDictionaryValueCallBacks
+          ...
+          EOF
+
+          # CoreServices is a compatibility umbrella on current Darwin.  Curl
+          # retains it in the framework group used for system proxy discovery,
+          # although that code calls only CoreFoundation and
+          # SystemConfiguration.  Publish the real umbrella install name so
+          # the complete Apple link contract remains intact.
+          cat > "$out/System/Library/Frameworks/CoreServices.framework/CoreServices.tbd" <<'EOF'
+          --- !tapi-tbd
+          tbd-version: 4
+          targets: [ x86_64-macos, arm64-macos ]
+          install-name: '/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices'
+          current-version: 1228.0.0
+          compatibility-version: 1.0.0
           ...
           EOF
 
@@ -577,7 +615,7 @@ in
     meta = {
       description = "Redistributable Darwin headers and system link stubs";
       homepage = "https://ziglang.org/";
-      license = "APSL-2.0 AND BSD-3-Clause AND MIT AND (Apache-2.0 WITH Swift-exception)";
+      license = "APSL-1.1 AND APSL-2.0 AND BSD-3-Clause AND MIT AND (Apache-2.0 WITH Swift-exception)";
       platforms = [
         "x86_64-linux"
         "aarch64-linux"
