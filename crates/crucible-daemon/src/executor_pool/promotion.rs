@@ -31,7 +31,7 @@ use crucible_qemu::QemuVmRealizationError;
 
 use super::{
     POOL_RUNNING, SharedExecutor, WORKER_RETRY_INTERVAL, WorkerCompletion, increment,
-    supervisor_error_is_retryable,
+    retain_forever, supervisor_error_is_retryable,
 };
 
 /// Maximum fixed promotion threads accepted by one local executor pool.
@@ -489,6 +489,7 @@ fn process_prepared<L, V>(
 {
     let staged = loop {
         if cancellation.is_canceled() {
+            retire_prepared_native_source(shared, prepared);
             return;
         }
         let mut executor = match shared.executor.lock() {
@@ -501,7 +502,11 @@ fn process_prepared<L, V>(
         };
         match stage_prepared_paused_checkpoint_promotion(executor.supervisor_mut(), prepared) {
             Ok(PausedCheckpointPromotionStageOutcome::Publish(staged)) => break *staged,
-            Ok(PausedCheckpointPromotionStageOutcome::Finished { outcome, .. }) => {
+            Ok(PausedCheckpointPromotionStageOutcome::Finished {
+                prepared, outcome, ..
+            }) => {
+                drop(executor);
+                retire_prepared_native_source(shared, *prepared);
                 record_stage_outcome(shared, outcome);
                 return;
             }
@@ -511,7 +516,9 @@ fn process_prepared<L, V>(
                 drop(executor);
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
-            Err(_) => {
+            Err(error) => {
+                drop(executor);
+                retire_prepared_native_source(shared, *error.prepared);
                 increment(&shared.counters.promotion_failures);
                 return;
             }
@@ -533,7 +540,7 @@ fn publish_staged<L, V>(
         if cancellation.is_canceled()
             || shared.state.load(std::sync::atomic::Ordering::Acquire) != POOL_RUNNING
         {
-            revert_staged(shared, &staged);
+            revert_staged(shared, staged);
             return;
         }
         match publish_staged_paused_checkpoint_promotion(&shared.checkpoints, staged) {
@@ -548,7 +555,7 @@ fn publish_staged<L, V>(
             }
             Err(error) => {
                 staged = *error.staged;
-                revert_staged(shared, &staged);
+                revert_staged(shared, staged);
                 increment(&shared.counters.promotion_failures);
                 return;
             }
@@ -604,7 +611,7 @@ fn reconcile_published<L, V>(
     }
 }
 
-fn revert_staged<L, V>(shared: &SharedExecutor<L, V>, staged: &StagedPausedCheckpointPromotion)
+fn revert_staged<L, V>(shared: &SharedExecutor<L, V>, staged: StagedPausedCheckpointPromotion)
 where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
@@ -618,8 +625,10 @@ where
                 return;
             }
         };
-        match revert_staged_paused_checkpoint_promotion(executor.supervisor_mut(), staged) {
+        match revert_staged_paused_checkpoint_promotion(executor.supervisor_mut(), &staged) {
             Ok(_) => {
+                drop(executor);
+                retire_staged_native_source(shared, staged);
                 increment(&shared.counters.promotions_discarded);
                 return;
             }
@@ -629,9 +638,47 @@ where
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
             Err(_) => {
-                increment(&shared.counters.promotion_failures);
-                return;
+                drop(executor);
+                retain_forever(shared, staged);
             }
+        }
+    }
+}
+
+fn retire_prepared_native_source<L, V>(
+    shared: &SharedExecutor<L, V>,
+    prepared: PreparedPausedCheckpointPromotion,
+) where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    loop {
+        match prepared.retire_native_source() {
+            Ok(()) => return,
+            Err(error) if error.is_retryable() => {
+                increment(&shared.counters.promotion_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(_) => retain_forever(shared, prepared),
+        }
+    }
+}
+
+fn retire_staged_native_source<L, V>(
+    shared: &SharedExecutor<L, V>,
+    staged: StagedPausedCheckpointPromotion,
+) where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    loop {
+        match staged.retire_native_source() {
+            Ok(()) => return,
+            Err(error) if error.is_retryable() => {
+                increment(&shared.counters.promotion_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(_) => retain_forever(shared, staged),
         }
     }
 }

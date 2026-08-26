@@ -335,6 +335,15 @@ impl PreparedPausedCheckpointPromotion {
             PreparedPausedCheckpointReplacement::Production(promotion) => promotion.promoted(),
         }
     }
+
+    pub(crate) fn retire_native_source(&self) -> Result<(), ExactCheckpointStoreError> {
+        match &self.promotion {
+            PreparedPausedCheckpointReplacement::SingleNode(_) => Ok(()),
+            PreparedPausedCheckpointReplacement::Production(promotion) => {
+                promotion.replacement().retire_native_source()
+            }
+        }
+    }
 }
 
 /// Linear proof that both source and replacement are durable retention roots.
@@ -355,6 +364,10 @@ impl StagedPausedCheckpointPromotion {
     pub const fn promoted(&self) -> ExactCheckpointId {
         self.prepared.promoted()
     }
+
+    pub(crate) fn retire_native_source(&self) -> Result<(), ExactCheckpointStoreError> {
+        self.prepared.retire_native_source()
+    }
 }
 
 /// Complete durable replacement awaiting the final paused-state CAS.
@@ -373,6 +386,8 @@ pub enum PausedCheckpointPromotionStageOutcome {
     Publish(Box<StagedPausedCheckpointPromotion>),
     /// Another idempotent or stale state won without further writes.
     Finished {
+        /// Prepared token retained so redundant native state can be retired.
+        prepared: Box<PreparedPausedCheckpointPromotion>,
         /// Durable staging disposition.
         outcome: CheckpointPromotionStageOutcome,
         /// Expected promoted root.
@@ -788,9 +803,11 @@ where
         }
         CheckpointPromotionStageOutcome::AlreadyPromoted
         | CheckpointPromotionStageOutcome::NotCurrent => {
+            let promoted = prepared.promoted();
             Ok(PausedCheckpointPromotionStageOutcome::Finished {
+                prepared: Box::new(prepared),
                 outcome: stage,
-                promoted: prepared.promoted(),
+                promoted,
             })
         }
     }
@@ -812,7 +829,7 @@ pub fn publish_staged_paused_checkpoint_promotion(
         }
         PreparedPausedCheckpointReplacement::Production(promotion) => checkpoints
             .publish_production_closure(promotion.replacement())
-            .map(|_| ()),
+            .and_then(|_| promotion.replacement().retire_native_source()),
     };
     if let Err(source) = publication {
         return Err(PausedCheckpointPromotionPublicationError {

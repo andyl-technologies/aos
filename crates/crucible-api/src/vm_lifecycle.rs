@@ -61,11 +61,13 @@ pub use checkpoint_store::{
     ProductionExactCheckpointObject, ProductionExactCheckpointReplayArtifact,
     ProductionExactCheckpointReplayCatalog, ProductionExactCheckpointReplayTarget,
     ProductionExactCheckpointReplayTargets, ProductionExactCheckpointResumeBasis,
-    ProductionExactCheckpointSource,
+    ProductionExactCheckpointRetirement, ProductionExactCheckpointRetirementError,
+    ProductionExactCheckpointRetirementReport, ProductionExactCheckpointSource,
     authenticate_portable_exact_checkpoint_replay_oracle_promotion,
     authenticate_portable_exact_checkpoint_replay_oracle_promotion_with_boundary,
     install_exact_checkpoint_closure, install_exact_checkpoint_closure_with_boundary,
     install_exact_checkpoint_closure_with_boundary_and_admission, open_exact_checkpoint_closure,
+    retire_production_exact_checkpoint_catalog,
 };
 mod checkpoint_dependencies;
 pub use checkpoint_dependencies::collect_signal_artifact_objects;

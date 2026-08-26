@@ -512,3 +512,81 @@ fn packaged_executor_completion_is_sticky_across_owner_panic() {
     assert!(owner.join().is_err());
     completion.wait();
 }
+
+#[test]
+fn packaged_native_catalog_recovery_is_crash_safe_and_idempotent() {
+    let directory = tempfile::tempdir().expect("packaged native catalog root");
+    let workers = directory.path().join("campaign-workers");
+    let promotions = directory.path().join("campaign-checkpoint-promotions");
+    std::fs::create_dir_all(workers.join("worker-0/scenario")).expect("active worker catalog");
+    std::fs::write(workers.join("worker-0/scenario/native"), b"worker")
+        .expect("worker catalog sentinel");
+    std::fs::create_dir_all(promotions.join("worker-0/scenario"))
+        .expect("active promotion catalog");
+    std::fs::write(promotions.join("worker-0/scenario/native"), b"promotion")
+        .expect("promotion catalog sentinel");
+
+    reconcile_packaged_native_catalogs(directory.path()).expect("retire active catalogs");
+    for namespace in PACKAGED_NATIVE_NAMESPACES {
+        assert!(!directory.path().join(namespace).exists());
+        assert!(
+            !directory
+                .path()
+                .join(format!(".retired-{namespace}"))
+                .exists()
+        );
+    }
+
+    reconcile_packaged_native_catalogs(directory.path()).expect("idempotent catalog recovery");
+}
+
+#[test]
+fn packaged_native_catalog_recovery_finishes_a_renamed_generation() {
+    let directory = tempfile::tempdir().expect("packaged native catalog root");
+    let retired_workers = directory.path().join(".retired-campaign-workers");
+    let promotions = directory.path().join("campaign-checkpoint-promotions");
+    std::fs::create_dir_all(retired_workers.join("worker-0/scenario"))
+        .expect("retired worker catalog");
+    std::fs::create_dir_all(promotions.join("worker-0/scenario"))
+        .expect("active promotion catalog");
+
+    reconcile_packaged_native_catalogs(directory.path()).expect("finish catalog recovery");
+    assert!(!retired_workers.exists());
+    assert!(!promotions.exists());
+}
+
+#[test]
+fn packaged_native_catalog_recovery_rejects_conflicting_generations() {
+    let directory = tempfile::tempdir().expect("packaged native catalog root");
+    let active = directory.path().join("campaign-workers");
+    let retired = directory.path().join(".retired-campaign-workers");
+    std::fs::create_dir(&active).expect("active worker catalog");
+    std::fs::create_dir(&retired).expect("retired worker catalog");
+
+    assert!(matches!(
+        reconcile_packaged_native_catalogs(directory.path()),
+        Err(PackagedNativeCatalogRecoveryError::ConflictingGeneration {
+            namespace: "campaign-workers"
+        })
+    ));
+    assert!(active.exists());
+    assert!(retired.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn packaged_native_catalog_recovery_rejects_namespace_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempfile::tempdir().expect("packaged native catalog root");
+    let target = directory.path().join("unrelated");
+    std::fs::create_dir(&target).expect("unrelated directory");
+    let workers = directory.path().join("campaign-workers");
+    symlink(&target, &workers).expect("worker namespace symlink");
+
+    assert!(matches!(
+        reconcile_packaged_native_catalogs(directory.path()),
+        Err(PackagedNativeCatalogRecoveryError::InvalidPath { path }) if path == workers
+    ));
+    assert!(target.exists());
+}

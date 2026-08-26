@@ -13,6 +13,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use crucible_api::{
+    ProductionExactCheckpointRetirement, retire_production_exact_checkpoint_catalog,
+};
 use crucible_campaign::{
     CampaignExecutorStore, CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
     CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse,
@@ -1279,7 +1282,11 @@ fn reconcile_checkpoint_result<L, V>(
         let mut executor = lock_or_retain(shared, &prepared);
         match stage_prepared_checkpoint_result(executor.supervisor_mut(), prepared) {
             Ok(CheckpointResultStageOutcome::Publish(staged)) => break staged,
-            Ok(CheckpointResultStageOutcome::Finished { outcome, .. }) => {
+            Ok(CheckpointResultStageOutcome::Finished {
+                prepared, outcome, ..
+            }) => {
+                drop(executor);
+                retire_native_checkpoint_source(shared, prepared.native_retirement());
                 record_checkpoint_stage_outcome(shared, outcome);
                 return;
             }
@@ -1409,10 +1416,13 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
+    let native_retirement = token.native_retirement();
     loop {
         let mut executor = lock_or_retain(shared, &token);
         match abort_checkpoint_result(executor.supervisor_mut(), token) {
             Ok(_) => {
+                drop(executor);
+                retire_native_checkpoint_source(shared, native_retirement);
                 increment(&shared.counters.checkpoints_discarded);
                 increment(&shared.counters.terminal_stops);
                 return;
@@ -1427,6 +1437,28 @@ where
                 drop(executor);
                 retain_forever(shared, error.token);
             }
+        }
+    }
+}
+
+fn retire_native_checkpoint_source<L, V>(
+    shared: &SharedExecutor<L, V>,
+    retirement: Option<ProductionExactCheckpointRetirement>,
+) where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    let Some(retirement) = retirement else {
+        return;
+    };
+    loop {
+        match retire_production_exact_checkpoint_catalog(&retirement) {
+            Ok(_) => return,
+            Err(error) if error.is_retryable() => {
+                increment(&shared.counters.publication_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(_) => retain_forever(shared, retirement),
         }
     }
 }

@@ -442,9 +442,17 @@ The runner then tears down the lifecycle and returns an opaque prepared token;
 the pool publishes the immutable closure and moves to `paused(root)` without
 repeating guest execution or capture. External models cannot construct the
 opaque prepared phase, and idempotent staging never releases the active
-reservation before teardown. Abandoned native-catalog cleanup must be composed
-with the assignment-root collector before this capture layer is treated as a
-long-term retention store.
+reservation before teardown. The packaged single-host owner composes native
+cleanup with those durable roots. After the campaign-CAS root is complete, it
+renames the attempt-owned scenario catalog to a deterministic retired
+generation, synchronizes the parent directory, removes that generation, and
+synchronizes the parent again before the final paused-state CAS. Abort, stale,
+and promotion-revert paths retain the same cleanup authority and retry without
+guest work. At restart, the exclusive assignment-ledger writer first
+authenticates the complete retained checkpoint-root inventory, then applies the
+same crash-safe retirement protocol to the dedicated `campaign-workers` and
+`campaign-checkpoint-promotions` namespaces before creating any worker. The
+separate baked-genesis catalog is not retired by this recovery pass.
 
 The single-host restore transaction accepts either a current exact-pin
 selection or the exact root retained by a paused execution origin. The latter
@@ -506,8 +514,13 @@ one exact attempt guard, and launches them through disjoint exact and thin
 profile capabilities. Packaged startup captures that baked source before
 binding the endpoint, installs one fixed promotion owner per semantic worker,
 and advertises `ExactRestore` only when that nonempty owner set exists.
-Assignment-root-aware cleanup of abandoned native catalog entries remains
-gated in the implementation plan.
+Assignment-root-aware cleanup of abandoned attempt and promotion native
+catalogs is implemented by the crash-safe retirement protocol above. A
+`checkpoint-publishing(root)` record interrupted before immutable publication
+retains the expected content identity; restart deterministically recaptures and
+must reproduce that root. Once the root is complete in campaign CAS, the native
+catalog is redundant and may be retired without weakening recovery or GC
+reachability.
 
 A newly captured exact root records replay-oracle state `NotRun` and is not
 eligible for resume. The single-host owner authenticates the selected root and

@@ -2665,9 +2665,14 @@ native catalog to retain a reopenable source closure. That private capture
 layer may place its native objects before campaign-root staging, but it grants
 no campaign-CAS reachability and remains subject to the scenario-authored
 checkpoint count and byte ceilings. The assignment-ledger ordering above
-governs every campaign-CAS put. Integrating abandoned native-catalog entries
-with the durable assignment-root collector remains required cleanup work; it
-does not permit an unstaged campaign root to become visible.
+governs every campaign-CAS put. After campaign-CAS publication, the packaged
+owner crash-safely renames, synchronizes, removes, and synchronizes the
+attempt-local catalog before the final paused-state CAS. Abort and promotion
+revert retain the cleanup token until retirement completes. On restart, the
+exclusive ledger owner authenticates its retained checkpoint-root inventory
+before retiring stale worker and promotion namespaces. This cleanup never
+permits an unstaged campaign root to become visible and never touches the
+separate baked-genesis source catalog.
 
 The version-four portable closure now supports source-bound replay-oracle
 promotion without destination writes. Preparation completely reauthenticates
@@ -2704,14 +2709,15 @@ catalog avoids complete-closure rescans, one target snapshot is decoded at a
 time, and every artifact stream observes the exact attempt guard. Packaged
 startup installs one such promotion owner per semantic worker. The packaged
 capability set is derived from that fixed owner set: a nonempty set advertises
-`ExactRestore` and reports its installed count. Native-catalog cleanup remains
-open.
+`ExactRestore` and reports its installed count. Attempt and promotion native
+catalog retirement uses the durable ordering above.
 
 Concrete production-loop process reconstruction and exact-resume modeled-driver
 selection are implemented: a resume-only installer rejects `NotRun` before
 native publication or resource installation, the guarded lifecycle restores the
 complete version-four loop, and the packaged worker routes retained roots only
-to the exact-resume runner. Native-catalog cleanup remains open. The packaged
+to the exact-resume runner. Native-catalog cleanup uses the crash-safe
+attempt-owned retirement protocol above. The packaged
 executor installs the concrete replay owners during startup and advertises exact
 resume only after that installation succeeds.
 Version-two roots

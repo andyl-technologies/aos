@@ -439,6 +439,15 @@ impl PreparedProductionReplayOraclePromotion {
     pub const fn promoted(&self) -> ContentHash {
         self.promoted
     }
+
+    /// Returns opaque authority to retire the attempt-local native source catalog.
+    ///
+    /// The caller may exercise this only after the promoted campaign-CAS root
+    /// is durable or after the owning publication phase has been abandoned.
+    #[must_use]
+    pub fn native_retirement(&self) -> ProductionExactCheckpointRetirement {
+        self.raw.native_retirement()
+    }
 }
 
 impl ProductionExactCheckpointResumeBasis {
@@ -502,6 +511,17 @@ impl ProductionExactCheckpointClosure {
     #[must_use]
     pub fn objects(&self) -> &[ProductionExactCheckpointObject] {
         &self.objects
+    }
+
+    /// Returns opaque authority to retire this attempt-local native catalog.
+    ///
+    /// Reading the closure remains valid until the returned authority is
+    /// exercised. The retirement operation requires exclusive lifecycle-store
+    /// ownership and is intended for the executor publication owner after QEMU
+    /// teardown, not for ordinary replay consumers.
+    #[must_use]
+    pub fn native_retirement(&self) -> ProductionExactCheckpointRetirement {
+        ProductionExactCheckpointRetirement::new(self.run_state_root.clone(), self.scenario)
     }
 
     /// Authenticates a bounded cursor over every raw live-node snapshot.
