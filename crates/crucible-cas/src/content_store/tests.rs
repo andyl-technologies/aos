@@ -751,6 +751,159 @@ fn encrypted_directory_authenticates_ranges_and_inventory_across_restart() {
 }
 
 #[test]
+fn compressed_encrypted_directory_streams_round_trip_and_restart() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = temp.path().join("compressed-encrypted");
+    let key_id = StoreEncryptionKeyId::new("compressed-key-1").expect("key ID");
+    let key_bytes = [0x6d; 32];
+    let store = EncryptedDirectoryBlobBackend::new_compressed(
+        "compressed-encrypted",
+        &root,
+        4 * 1024 * 1024,
+        key_id.clone(),
+        StoreEncryptionKey::new(key_bytes).expect("key"),
+    )
+    .expect("compressed encrypted directory");
+
+    let mut expected = BTreeMap::new();
+    for length in [0_usize, 1, 65_535, 65_536, 65_537, 256 * 1024] {
+        let bytes = (0..length)
+            .map(|index| ((index / 257) as u32).wrapping_mul(13) as u8)
+            .collect::<Vec<_>>();
+        let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, &bytes);
+        let receipt = put_bytes(&store, id, &bytes).expect("compressed encrypted put");
+        assert!(receipt.is_durable());
+        assert_eq!(receipt.id, id);
+        assert_eq!(
+            put_bytes(&store, id, &bytes).expect("idempotent compressed encrypted put"),
+            receipt
+        );
+        let physical = fs::read(object_path(&root, id)).expect("physical record");
+        assert_eq!(&physical[..8], b"CRUCC001");
+        if bytes.len() >= 64 {
+            assert!(!physical.windows(bytes.len()).any(|window| window == bytes));
+        }
+        expected.insert(id, bytes);
+    }
+
+    let largest = *expected
+        .iter()
+        .max_by_key(|(_, bytes)| bytes.len())
+        .map(|(id, _)| id)
+        .expect("largest ID");
+    let largest_bytes = &expected[&largest];
+    let alternate_root = temp.path().join("compressed-encrypted-alternate-key-id");
+    let alternate = EncryptedDirectoryBlobBackend::new_compressed(
+        "compressed-encrypted-alternate-key-id",
+        &alternate_root,
+        4 * 1024 * 1024,
+        StoreEncryptionKeyId::new("compressed-key-1b").expect("alternate key ID"),
+        StoreEncryptionKey::new(key_bytes).expect("reused master key"),
+    )
+    .expect("alternate compressed encrypted directory");
+    put_bytes(&alternate, largest, largest_bytes).expect("alternate-key-ID put");
+    let physical = fs::read(object_path(&root, largest)).expect("primary physical record");
+    let alternate_physical =
+        fs::read(object_path(&alternate_root, largest)).expect("alternate physical record");
+    assert_ne!(physical[92..108], alternate_physical[92..108]);
+
+    let reopened = EncryptedDirectoryBlobBackend::new_compressed(
+        "compressed-encrypted",
+        &root,
+        4 * 1024 * 1024,
+        key_id,
+        StoreEncryptionKey::new(key_bytes).expect("restart key"),
+    )
+    .expect("reopened compressed encrypted directory");
+    for (id, bytes) in &expected {
+        assert_eq!(
+            read_bytes(&reopened, *id, None).expect("restart read"),
+            *bytes
+        );
+    }
+    if largest_bytes.len() >= 65_549 {
+        assert_eq!(
+            read_bytes(
+                &reopened,
+                largest,
+                Some(ByteRange::new(65_530, 19).expect("cross-chunk range")),
+            )
+            .expect("authenticated compressed encrypted range"),
+            largest_bytes[65_530..65_549]
+        );
+    }
+
+    let mut fence = reopened
+        .acquire_inventory_fence()
+        .expect("compressed encrypted inventory fence");
+    let summary = fence
+        .visit_inventory(&mut |_| Ok(()))
+        .expect("compressed encrypted inventory");
+    assert_eq!(summary.objects(), expected.len() as u64);
+    assert_eq!(
+        summary.logical_bytes(),
+        expected.values().map(|bytes| bytes.len() as u64).sum()
+    );
+}
+
+#[test]
+fn compressed_encrypted_directory_rejects_format_substitution_and_corruption() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = temp.path().join("compressed-encrypted");
+    let key_id = StoreEncryptionKeyId::new("compressed-key-2").expect("key ID");
+    let key_bytes = [0x7e; 32];
+    let store = EncryptedDirectoryBlobBackend::new_compressed(
+        "compressed-encrypted",
+        &root,
+        512 * 1024,
+        key_id.clone(),
+        StoreEncryptionKey::new(key_bytes).expect("key"),
+    )
+    .expect("compressed encrypted directory");
+    let bytes = vec![0x41; 192 * 1024];
+    let id = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
+    put_bytes(&store, id, &bytes).expect("compressed encrypted put");
+
+    let plain = EncryptedDirectoryBlobBackend::new(
+        "encrypted",
+        &root,
+        512 * 1024,
+        key_id,
+        StoreEncryptionKey::new(key_bytes).expect("same key"),
+    )
+    .expect("plain encrypted directory view");
+    assert!(matches!(
+        plain.read(id, None),
+        Err(StoreError::Corrupt { .. })
+    ));
+
+    let physical_path = object_path(&root, id);
+    let mut physical = fs::read(&physical_path).expect("physical record");
+    let original = physical.clone();
+    physical[8..16].copy_from_slice(&1_u64.to_be_bytes());
+    fs::write(&physical_path, &physical).expect("forge logical length");
+    let mut fence = store
+        .acquire_inventory_fence()
+        .expect("inventory fence with forged header");
+    assert!(matches!(
+        fence.visit_inventory(&mut |_| Ok(())),
+        Err(StoreError::Corrupt { .. })
+    ));
+    drop(fence);
+
+    physical = original;
+    *physical.last_mut().expect("ciphertext tail") ^= 0x80;
+    fs::write(&physical_path, physical).expect("corrupt ciphertext tail");
+    let leading = store
+        .read(id, Some(ByteRange::new(0, 16).expect("leading range")))
+        .expect("open corrupted range");
+    assert!(matches!(
+        leading.read_all(1024),
+        Err(StoreError::Corrupt { .. })
+    ));
+}
+
+#[test]
 fn encrypted_directory_fails_closed_on_limits_wrong_keys_and_corruption() {
     let temp = TempDir::new().expect("temporary directory");
     let root = temp.path().join("encrypted");
@@ -1800,7 +1953,6 @@ fn compressed_directory_is_a_bounded_versioned_graph_leaf() {
     assert_eq!(graph.describe()[0].kind, StoreNodeKind::CompressedDirectory);
     assert_eq!(admin.physical().len(), 1);
     assert_eq!(admin.physical()[0].node(), &root);
-
     let bytes = vec![0x77; 256 * 1024];
     let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, &bytes);
     put_bytes(&graph, id, &bytes).expect("compressed graph put");
@@ -1992,6 +2144,96 @@ fn encrypted_directory_graph_identity_excludes_secret_key_material() {
     ));
     assert!(matches!(
         StoreGraph::build_with_keys(config(64 * 1024 * 1024 + 1, key_id), &same_keys),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::InvalidEncryptedObjectLimit,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn compressed_encrypted_directory_is_a_versioned_graph_leaf() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = node_id("compressed-encrypted");
+    let key_id = StoreEncryptionKeyId::new("campaign-key-12").expect("key ID");
+    let config = |maximum_logical_object_bytes| StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
+        nodes: BTreeMap::from([(
+            root.clone(),
+            StoreNodeSpec::CompressedEncryptedDirectory {
+                root: temp.path().join("objects"),
+                maximum_logical_object_bytes,
+                key_id: key_id.clone(),
+            },
+        )]),
+    };
+    let mut keys = StoreGraphKeyring::new();
+    keys.insert(
+        key_id.clone(),
+        StoreEncryptionKey::new([0x57; 32]).expect("key"),
+    )
+    .expect("insert key");
+    let (graph, admin) =
+        StoreGraph::build_with_admin_and_keys(config(1024 * 1024), &keys).expect("graph");
+    let restarted = StoreGraph::build_with_keys(config(1024 * 1024), &keys).expect("restart graph");
+    let changed =
+        StoreGraph::build_with_keys(config(2 * 1024 * 1024), &keys).expect("changed graph");
+
+    assert_eq!(graph.configuration_id(), admin.configuration_id());
+    assert_eq!(graph.configuration_id(), restarted.configuration_id());
+    assert_ne!(graph.configuration_id(), changed.configuration_id());
+    assert_eq!(
+        graph.describe()[0].kind,
+        StoreNodeKind::CompressedEncryptedDirectory
+    );
+    assert_eq!(admin.physical().len(), 1);
+    assert_eq!(admin.physical()[0].node(), &root);
+    let golden = StoreGraph::build_with_keys(
+        StoreGraphConfig {
+            root: root.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
+            nodes: BTreeMap::from([(
+                root.clone(),
+                StoreNodeSpec::CompressedEncryptedDirectory {
+                    root: PathBuf::from("/var/lib/crucible/campaign-compressed-encrypted-objects"),
+                    maximum_logical_object_bytes: 1024 * 1024,
+                    key_id: key_id.clone(),
+                },
+            )]),
+        },
+        &keys,
+    )
+    .expect("golden compressed encrypted graph");
+    assert_eq!(
+        encode_hex(&golden.configuration_id().as_bytes()),
+        "4aef4520268f7fa30a99c075a3f176237da5be4815b7e2e55bd12b7478615b89"
+    );
+
+    let bytes = vec![0x5a; 256 * 1024];
+    let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, &bytes);
+    put_bytes(&graph, id, &bytes).expect("graph put");
+    assert_eq!(
+        read_bytes(&restarted, id, None).expect("restart read"),
+        bytes
+    );
+    assert_eq!(
+        admin.physical()[0]
+            .admin()
+            .acquire_inventory_fence()
+            .expect("inventory fence")
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("inventory")
+            .objects(),
+        1
+    );
+
+    assert!(matches!(
+        StoreGraph::build(config(1024 * 1024)),
+        Err(StoreError::Unauthorized)
+    ));
+    assert!(matches!(
+        StoreGraph::build_with_keys(config(0), &keys),
         Err(StoreError::InvalidGraph {
             violation: GraphViolation::InvalidEncryptedObjectLimit,
             ..

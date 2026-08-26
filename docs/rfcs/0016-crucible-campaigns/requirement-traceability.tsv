@@ -6,7 +6,7 @@ GUIDE-1..32	T-CAM-3.4,T-CAM-4.1,T-CAM-4.2,T-CAM-4.3,T-CAM-4.7	gate:lazy-frontier
 LAZY-1..54	T-CAM-4.1,T-CAM-4.2,T-CAM-4.4,T-CAM-4.5,T-CAM-4.6	gate:lazy-frontier,gate:attempt-idempotence,gate:campaign-replay
 CCOMP-1..24	T-CAM-4.5,T-CAM-4.6,T-CAM-4.9,T-CAM-8.1,T-CAM-8.2	gate:component-contract,gate:control-responsiveness,gate:attempt-idempotence
 HFORK-1..24	T-CAM-6.1,T-CAM-6.2,T-CAM-6.3,T-CAM-6.4,T-CAM-6.5,T-CAM-6.6,T-CAM-6.7,T-CAM-7.1,T-CAM-7.2,T-CAM-7.3,T-CAM-7.4,T-CAM-7.5,T-CAM-7.6	gate:hot-fork-equivalence,gate:hot-fork-isolation,gate:hot-fork-scaling,gate:world-fork-atomicity
-CSTORE-1..24	T-CAM-1.2,T-CAM-5.1,T-CAM-5.2,T-CAM-5.3,T-CAM-5.4,T-CAM-5.5,T-CAM-5.6,T-CAM-5.7,T-CAM-5.9	gate:campaign-store-equivalence,gate:campaign-store-composition,gate:exact-closure-streaming
+CSTORE-1..25	T-CAM-1.2,T-CAM-5.1,T-CAM-5.2,T-CAM-5.3,T-CAM-5.4,T-CAM-5.5,T-CAM-5.6,T-CAM-5.7,T-CAM-5.9	gate:campaign-store-equivalence,gate:campaign-store-composition,gate:exact-closure-streaming
 CAPI-1..14	T-CAM-1.1,T-CAM-4.9,T-CAM-8.1,T-CAM-8.2,T-CAM-8.3,T-CAM-8.4,T-CAM-8.5	gate:campaign-operator-acceptance,gate:campaign-replay,gate:campaign-continuity-v2
 CMEAS-1..14	T-CAM-3.1,T-CAM-3.2,T-CAM-3.3,T-CAM-3.4,T-CAM-3.5,T-CAM-8.2	gate:campaign-model,gate:campaign-replay,gate:abi-conformance
 CSEC-1..12	T-CAM-1.6,T-CAM-2.4,T-CAM-4.6,T-CAM-5.7,T-CAM-6.4,T-CAM-7.1,T-CAM-8.3,T-CAM-9.5	gate:license-boundary,gate:abi-conformance,gate:hot-fork-isolation,gate:campaign-store-equivalence

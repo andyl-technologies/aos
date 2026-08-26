@@ -1357,7 +1357,7 @@ path-free saturating synchronous operation/byte/error/elapsed-nanosecond counter
 plus deferred stream opens, authenticated completions, partial abandonments,
 failures, delivered bytes, and open/read elapsed nanoseconds over memory,
 durable directory, durable compressed-directory, durable encrypted-directory,
-and packed leaves. The
+durable compressed-encrypted-directory, and packed leaves. The
 compressed-directory leaf streams a fixed private Zstandard representation
 below plaintext identity, enforces a per-object plaintext bound before source
 or decoder work, authenticates complete plaintext for range reads, survives
@@ -1372,6 +1372,14 @@ bytes are absent from graph identity, descriptions, receipts, and disk headers.
 A checksummed, keyed-verifier state under the inventory lock pins one exact
 key generation to the physical root before any object operation, so a wrong
 secret cannot create a mixed-key directory.
+The compressed-encrypted-directory leaf now supplies the required fixed
+compression-before-encryption order as one streaming physical placement. It
+uses a distinct v1 grammar and nonce/AAD domains, never persists an
+intermediate unencrypted frame, validates the bounded compressed length before
+decoding, and authenticates the complete decompressed plaintext for every read.
+Graph schema v5/tag 14 identifies this placement without serializing secret
+material; older graph bodies remain byte-for-byte stable when the new node is
+absent.
 The graph now also admits a restart-safe aggregate logical-quota node around
 one exclusively owned physical leaf. A durable dirty/clean state transaction
 repairs commit-indeterminate puts and deletes from a bounded fenced child
@@ -1393,8 +1401,8 @@ therefore cannot collect a children-before-journal publication. Tests cover
 restart, torn-tail recovery, corrupt-journal rejection, count/byte limits,
 durable-child and non-overlapping-path admission, lifecycle exclusion,
 single-pass staging authentication, transfer completion, and stale GC plans.
-Destination-specific durability policy plumbing, compression-before-encryption
-and broader layered transforms, physical-filesystem quota, namespaced
+Destination-specific durability policy plumbing, broader layered transforms,
+physical-filesystem quota, namespaced
 authorization, and S3 remain open; therefore T-CAM-5.5 is not checked by this
 checkpoint.
 
@@ -1416,7 +1424,8 @@ admission, and physical configuration mismatch. Phase 5's composed-tier, S3,
 global-GC, archival, and realistic operator flights remain under T-CAM-5.7
 through T-CAM-5.9 rather than weakening this completed leaf contract.
 
-The memory, directory, compressed-directory, encrypted-directory, and packed
+The memory, directory, compressed-directory, encrypted-directory,
+compressed-encrypted-directory, and packed
 blob leaves now expose separately held, exclusive administrative fences for physical logical-object
 inventory. A logical-quota node exclusively owns one such leaf's fence and
 re-exports the same generation under its quota boundary so GC deletion updates
@@ -1606,7 +1615,8 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
 - [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
   projection in generation-bound GC retention plans. Snapshot-bound semantic
   and operational root inventory plus the exclusive generation-bound memory,
-  directory, compressed-directory, encrypted-directory, and packed
+  directory, compressed-directory, encrypted-directory,
+  compressed-encrypted-directory, and packed
   physical-leaf inventory/delete,
   authoritative-ref
   inventory, and operational-ledger inventory primitives plus the canonical
@@ -1627,7 +1637,8 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   and physical basis, deletes under the leaf fence, and leaves interrupted
   journals recovery-required. One restart regression applies that path to a
   compressed-directory leaf, and another applies it to an encrypted-directory
-  leaf with a separately reconstructed key capability. Both prove
+  leaf with a separately reconstructed key capability. A third applies the
+  same restart boundary to a compressed-encrypted leaf. All three prove
   inventory/candidate accounting uses authenticated plaintext lengths, delete
   only the unreachable physical placement, and reauthenticate the retained
   plaintext after reopening every durable component. A further regression
@@ -1636,7 +1647,8 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   materialization selection is now
   restart-safe, exact-configuration/fact-bound, and consumed by both planning
   and apply; stale records cease to root checkpoint closures after unpin.
-  Transform/S3 administration, policy-aware reachable-cache eviction, and full
+  Broader-transform/S3 administration, policy-aware reachable-cache eviction,
+  and full
   operator-flight tests remain open. Implement
   replay/debug, export/import, push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
@@ -1725,7 +1737,7 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `LAZY-1..51` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
-| `CSTORE-1..24` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
+| `CSTORE-1..25` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
 | `CAPI-1..14` | 8 | CLI/API contracts, continuity, campaign replay |
 | `CMEAS-1..14` | 3, 8 | campaign model, replay, ABI conformance |
 | `CSEC-1..12` | 1–9 | license boundary, ABI conformance, isolation, store equivalence |

@@ -9,9 +9,10 @@
 //! removal require the separately held [`BlobStoreAdmin`] capability; complete
 //! ref-namespace inventory requires [`RefStoreAdmin`].
 //!
-//! Built-in memory, plaintext-directory, compressed-directory, and packed
-//! leaves are public. Composition implementations remain private and can only
-//! be assembled through the admitted [`StoreGraph`] configuration algebra.
+//! Built-in memory, plaintext-directory, compressed-directory, encrypted,
+//! compressed-encrypted, and packed leaves are public. Composition
+//! implementations remain private and can only be assembled through the
+//! admitted [`StoreGraph`] configuration algebra.
 
 use std::fmt;
 use std::io::{self, Cursor, Read, Write};
