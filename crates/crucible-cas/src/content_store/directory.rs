@@ -73,7 +73,7 @@ impl DirectoryBlobBackend {
         &self.root
     }
 
-    fn object_path(&self, id: ContentId) -> PathBuf {
+    pub(super) fn object_path(&self, id: ContentId) -> PathBuf {
         let digest = encode_digest(id.digest());
         self.root
             .join(id.kind().as_str())
@@ -107,7 +107,7 @@ impl DirectoryBlobBackend {
         }
     }
 
-    fn create_staging(&self, directory: &Path) -> Result<(PathBuf, File), StoreError> {
+    pub(super) fn create_staging(&self, directory: &Path) -> Result<(PathBuf, File), StoreError> {
         loop {
             let ordinal = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
             let path = directory.join(format!(".staging-{}-{ordinal}", std::process::id()));
@@ -129,7 +129,7 @@ impl DirectoryBlobBackend {
         self.root.join(INVENTORY_ADMIN_DIRECTORY)
     }
 
-    fn acquire_inventory_lock(&self) -> Result<File, StoreError> {
+    pub(super) fn acquire_inventory_lock(&self) -> Result<File, StoreError> {
         let directory = self.inventory_admin_directory();
         create_dir_all_durable(&directory)?;
         let path = directory.join(INVENTORY_LOCK_FILE);
@@ -152,7 +152,9 @@ impl DirectoryBlobBackend {
         Ok(file)
     }
 
-    fn load_or_create_inventory_state(&self) -> Result<DirectoryInventoryState, StoreError> {
+    pub(super) fn load_or_create_inventory_state(
+        &self,
+    ) -> Result<DirectoryInventoryState, StoreError> {
         let directory = self.inventory_admin_directory();
         let path = directory.join(INVENTORY_STATE_FILE);
         match File::open(&path) {
@@ -173,7 +175,7 @@ impl DirectoryBlobBackend {
         }
     }
 
-    fn advance_inventory_state(
+    pub(super) fn advance_inventory_state(
         &self,
         state: &mut DirectoryInventoryState,
     ) -> Result<(), StoreError> {
@@ -293,9 +295,9 @@ impl BlobStoreAdmin for DirectoryBlobBackend {
 }
 
 #[derive(Clone, Copy)]
-struct DirectoryInventoryState {
-    instance: [u8; 32],
-    generation: u64,
+pub(super) struct DirectoryInventoryState {
+    pub(super) instance: [u8; 32],
+    pub(super) generation: u64,
 }
 
 struct DirectoryBlobInventoryFence<'a> {
@@ -439,7 +441,7 @@ fn visit_directory_inventory(
     Ok(())
 }
 
-fn inventory_directory_entry(
+pub(super) fn inventory_directory_entry(
     entry: io::Result<fs::DirEntry>,
     directory: &Path,
     operation: &'static str,
@@ -451,7 +453,10 @@ fn inventory_directory_entry(
     })
 }
 
-fn read_directory_entries(path: &Path, operation: &'static str) -> Result<fs::ReadDir, StoreError> {
+pub(super) fn read_directory_entries(
+    path: &Path,
+    operation: &'static str,
+) -> Result<fs::ReadDir, StoreError> {
     fs::read_dir(path).map_err(|source| StoreError::Io {
         operation,
         path: path.to_path_buf(),
@@ -459,7 +464,7 @@ fn read_directory_entries(path: &Path, operation: &'static str) -> Result<fs::Re
     })
 }
 
-fn require_directory(path: &Path) -> Result<(), StoreError> {
+pub(super) fn require_directory(path: &Path) -> Result<(), StoreError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| StoreError::Io {
         operation: "inspect-inventory-directory",
         path: path.to_path_buf(),
@@ -474,7 +479,7 @@ fn require_directory(path: &Path) -> Result<(), StoreError> {
     }
 }
 
-fn path_name(path: &Path) -> Result<&str, StoreError> {
+pub(super) fn path_name(path: &Path) -> Result<&str, StoreError> {
     path.file_name()
         .and_then(|name| name.to_str())
         .ok_or(StoreError::InvalidComposition {
@@ -482,7 +487,7 @@ fn path_name(path: &Path) -> Result<&str, StoreError> {
         })
 }
 
-fn is_lower_hex(byte: u8) -> bool {
+pub(super) fn is_lower_hex(byte: u8) -> bool {
     byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')
 }
 
@@ -943,7 +948,7 @@ struct DirectoryRefPublicationGuard {
 
 impl RefPublicationGuard for DirectoryRefPublicationGuard {}
 
-fn directory_receipt(name: &str, id: ContentId, logical_length: u64) -> PutReceipt {
+pub(super) fn directory_receipt(name: &str, id: ContentId, logical_length: u64) -> PutReceipt {
     PutReceipt::one(
         id,
         PlacementReceipt {
@@ -979,7 +984,7 @@ fn open_pinned_object(path: &Path, id: ContentId) -> Result<(Arc<File>, u64), St
     Ok((Arc::new(file), logical_length))
 }
 
-fn sync_directory(path: &Path) -> Result<(), StoreError> {
+pub(super) fn sync_directory(path: &Path) -> Result<(), StoreError> {
     let directory = File::open(path).map_err(|source| StoreError::Io {
         operation: "open-directory-for-sync",
         path: path.to_path_buf(),

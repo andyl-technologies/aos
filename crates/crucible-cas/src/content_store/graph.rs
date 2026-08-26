@@ -9,6 +9,7 @@ use super::composition::{
     MetricsState, MetricsStore, ReadThroughStore, RoutedStore, TieredStore, VerifiedStore,
     WriteThroughStore,
 };
+use super::compressed_directory::CompressedDirectoryBlobBackend;
 use super::directory::DirectoryBlobBackend;
 use super::memory::MemoryBlobBackend;
 use super::packed::PackedBlobBackend;
@@ -93,6 +94,13 @@ pub enum StoreNodeSpec {
         /// Trusted operator-owned filesystem root.
         root: PathBuf,
     },
+    /// Crash-safe compressed loose-object directory leaf.
+    CompressedDirectory {
+        /// Trusted operator-owned filesystem root.
+        root: PathBuf,
+        /// Hard cap on one object's authenticated plaintext bytes.
+        maximum_logical_object_bytes: u64,
+    },
     /// Immutable physical packs with one crash-safe logical index.
     Packed {
         /// Trusted operator-owned pack and index root.
@@ -154,7 +162,10 @@ pub enum StoreNodeSpec {
 impl StoreNodeSpec {
     fn child_ids(&self) -> Vec<&StoreNodeId> {
         match self {
-            Self::Memory { .. } | Self::Directory { .. } | Self::Packed { .. } => Vec::new(),
+            Self::Memory { .. }
+            | Self::Directory { .. }
+            | Self::CompressedDirectory { .. }
+            | Self::Packed { .. } => Vec::new(),
             Self::Verified { child } => vec![child],
             Self::Routed { routes } => routes.values().collect(),
             Self::Tiered { tiers, .. } => tiers.iter().collect(),
@@ -173,6 +184,7 @@ impl StoreNodeSpec {
         match self {
             Self::Memory { .. } => StoreNodeKind::Memory,
             Self::Directory { .. } => StoreNodeKind::Directory,
+            Self::CompressedDirectory { .. } => StoreNodeKind::CompressedDirectory,
             Self::Packed { .. } => StoreNodeKind::Packed,
             Self::Verified { .. } => StoreNodeKind::Verified,
             Self::Routed { .. } => StoreNodeKind::Routed,
@@ -203,6 +215,8 @@ pub enum StoreNodeKind {
     Memory,
     /// Durable directory leaf.
     Directory,
+    /// Durable compressed directory leaf.
+    CompressedDirectory,
     /// Durable immutable-pack leaf.
     Packed,
     /// Verification facade.
@@ -630,6 +644,7 @@ fn validate_administrative_paths(config: &StoreGraphConfig) -> Result<(), StoreE
         .iter()
         .filter_map(|(id, node)| match node {
             StoreNodeSpec::Directory { root } => Some((id, root, false)),
+            StoreNodeSpec::CompressedDirectory { root, .. } => Some((id, root, true)),
             StoreNodeSpec::Packed { root, .. } => Some((id, root, true)),
             StoreNodeSpec::WriteBack { journal_root, .. } => Some((id, journal_root, true)),
             _ => None,
@@ -718,6 +733,13 @@ fn validate_local_shape(id: &StoreNodeId, node: &StoreNodeSpec) -> Result<(), St
             id.as_str(),
             GraphViolation::InvalidWriteBackBounds,
         )),
+        StoreNodeSpec::CompressedDirectory {
+            maximum_logical_object_bytes,
+            ..
+        } if *maximum_logical_object_bytes == 0 => Err(invalid_graph(
+            id.as_str(),
+            GraphViolation::InvalidCompressedObjectLimit,
+        )),
         _ => Ok(()),
     }
 }
@@ -738,6 +760,7 @@ fn validate_demands(config: &StoreGraphConfig) -> Result<(), StoreError> {
         match node {
             StoreNodeSpec::Memory { .. }
             | StoreNodeSpec::Directory { .. }
+            | StoreNodeSpec::CompressedDirectory { .. }
             | StoreNodeSpec::Packed { .. } => {}
             StoreNodeSpec::Verified { child } => {
                 extend_demand(child, &kinds, &mut demands, &mut queue);
@@ -824,6 +847,18 @@ fn instantiate(
         }
         StoreNodeSpec::Directory { root } => {
             let leaf = Arc::new(DirectoryBlobBackend::new(id.as_str(), root.clone()));
+            physical.insert(id.clone(), leaf.clone());
+            leaf
+        }
+        StoreNodeSpec::CompressedDirectory {
+            root,
+            maximum_logical_object_bytes,
+        } => {
+            let leaf = Arc::new(CompressedDirectoryBlobBackend::new(
+                id.as_str(),
+                root.clone(),
+                *maximum_logical_object_bytes,
+            )?);
             physical.insert(id.clone(), leaf.clone());
             leaf
         }

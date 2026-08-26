@@ -381,6 +381,29 @@ the exact node ID, staging child ID, destination child ID, and configured count
 and byte limits. Node IDs are stable configured-instance identities; changing a
 child's physical configuration requires a new child ID or a new journal root.
 
+The durable compressed-directory leaf places one private Zstandard frame below
+ordinary plaintext `ContentId` identity. Its admitted graph node carries a
+nonzero hard maximum for one logical object. A put rejects an oversized declared
+source before opening it, authenticates plaintext while streaming it through a
+fixed level-3, 8-MiB-window, checksummed encoder, syncs a same-filesystem staging
+file, conditionally links the complete physical record, and syncs the containing
+directory. A read checks the declared plaintext length and requires the physical
+frame length to fit Zstandard's compression bound before constructing a decoder,
+caps the decoder window at 8 MiB, streams through bounded buffers, and hashes the
+complete plaintext even when returning only a requested range. The private
+physical record is:
+
+```text
+"CRUCZ001" || logical_length:u64be || compressed_length:u64be
+|| one_complete_zstandard_frame[compressed_length]
+```
+
+The compressed directory reuses the directory leaf's crash-safe persistent
+inventory generation and separately held planned-deletion fence. Inventory
+reports authenticated logical lengths, not physical frame lengths. Compressed
+and plaintext directory roots must not overlap because their physical record
+grammars differ.
+
 The registered v1 journal encoding is:
 
 ```text
@@ -467,8 +490,11 @@ retain the same content-derived `StoreGraphConfigurationId`; GC accepts the
 administrative value itself and cannot pair independently supplied leaves with
 an unrelated graph hash.
 
-The registered `crucible.content-store.graph-configuration` schema v1 freezes
-that identity basis. Every persistent path is an absolute host-local Unix path;
+The registered `crucible.content-store.graph-configuration` schemas v1 and v2
+freeze that identity basis. New writers retain the byte-for-byte v1 body when
+the graph has no compressed-directory node and emit v2 when it does. A v2 body
+uses the same grammar and existing tags as v1, changes the magic suffix from
+`v1` to `v2`, and adds tag 11. Every persistent path is an absolute host-local Unix path;
 its opaque bytes, rather than a lossy Unicode rendering, enter the identity.
 Node IDs and counts use their bounds above, object-kind tags and routed entries
 are ordered by ascending ASCII tag, nodes by ascending node ID, and ordered
@@ -501,6 +527,8 @@ node tag 9  WriteBack:   staging:string_u16 || destination:string_u16
                          || maximum_pending_objects:u64be
                          || maximum_pending_bytes:u64be
 node tag 10 Metrics:     child:string_u16
+node tag 11 CompressedDirectory:
+                         root:path_u32 || maximum_logical_object_bytes:u64be
 ```
 
 Let `D` be `crucible.content-store.graph-configuration-id.v1` and `B` the

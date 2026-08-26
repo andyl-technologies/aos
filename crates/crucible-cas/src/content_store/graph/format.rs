@@ -6,13 +6,22 @@ use std::path::Path;
 use super::{StoreGraphConfig, StoreNodeId, StoreNodeSpec, invalid_graph};
 use crate::content_store::{GraphViolation, StoreError};
 
-const GRAPH_CONFIGURATION_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v1\0";
+const GRAPH_CONFIGURATION_V1_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v1\0";
+const GRAPH_CONFIGURATION_V2_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v2\0";
 
 pub(super) fn canonical_graph_configuration(
     config: &StoreGraphConfig,
 ) -> Result<Vec<u8>, StoreError> {
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(GRAPH_CONFIGURATION_MAGIC);
+    let has_compressed_directory = config
+        .nodes
+        .values()
+        .any(|node| matches!(node, StoreNodeSpec::CompressedDirectory { .. }));
+    bytes.extend_from_slice(if has_compressed_directory {
+        GRAPH_CONFIGURATION_V2_MAGIC
+    } else {
+        GRAPH_CONFIGURATION_V1_MAGIC
+    });
     encode_node_id(&mut bytes, &config.root)?;
     encode_count(&mut bytes, config.admitted_kinds.len())?;
     let mut admitted_kinds = config
@@ -35,6 +44,14 @@ pub(super) fn canonical_graph_configuration(
             StoreNodeSpec::Directory { root } => {
                 bytes.push(2);
                 encode_path(&mut bytes, root)?;
+            }
+            StoreNodeSpec::CompressedDirectory {
+                root,
+                maximum_logical_object_bytes,
+            } => {
+                bytes.push(11);
+                encode_path(&mut bytes, root)?;
+                bytes.extend_from_slice(&maximum_logical_object_bytes.to_be_bytes());
             }
             StoreNodeSpec::Packed {
                 root,

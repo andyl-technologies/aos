@@ -437,6 +437,217 @@ fn directory_backend_publishes_objects_and_refs_durably() {
 }
 
 #[test]
+fn compressed_directory_streams_plaintext_identity_ranges_and_inventory_across_restart() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = temp.path().join("compressed");
+    let store = CompressedDirectoryBlobBackend::new("compressed", &root, 4 * 1024 * 1024)
+        .expect("compressed directory");
+    let bytes = vec![0x5a; 2 * 1024 * 1024];
+    let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, &bytes);
+
+    let receipt = put_bytes(&store, id, &bytes).expect("compressed put");
+    assert!(receipt.is_durable());
+    assert_eq!(receipt.id, id);
+    let physical = object_path(&root, id);
+    assert!(
+        fs::metadata(&physical)
+            .expect("compressed object metadata")
+            .len()
+            < bytes.len() as u64 / 8
+    );
+    assert_eq!(
+        put_bytes(&store, id, &bytes).expect("idempotent compressed put"),
+        receipt
+    );
+
+    let reopened = CompressedDirectoryBlobBackend::new("compressed", &root, 4 * 1024 * 1024)
+        .expect("reopened compressed directory");
+    assert_eq!(
+        read_bytes(
+            &reopened,
+            id,
+            Some(ByteRange::new(1_048_571, 17).expect("valid compressed range")),
+        )
+        .expect("authenticated compressed range"),
+        vec![0x5a; 17]
+    );
+    assert_eq!(
+        reopened
+            .read(id, None)
+            .expect("restart handle")
+            .read_all(4 * 1024 * 1024)
+            .expect("restart read"),
+        bytes
+    );
+    let concurrent_handle = reopened.read(id, None).expect("concurrent restart handle");
+    let first_handle = concurrent_handle.clone();
+    let first_reader = thread::spawn(move || first_handle.read_all(4 * 1024 * 1024));
+    let second_reader = thread::spawn(move || concurrent_handle.read_all(4 * 1024 * 1024));
+    assert_eq!(
+        first_reader
+            .join()
+            .expect("join first compressed reader")
+            .expect("first compressed reader"),
+        bytes
+    );
+    assert_eq!(
+        second_reader
+            .join()
+            .expect("join second compressed reader")
+            .expect("second compressed reader"),
+        bytes
+    );
+
+    let mut fence = reopened
+        .acquire_inventory_fence()
+        .expect("compressed inventory fence");
+    let mut records = Vec::new();
+    let summary = fence
+        .visit_inventory(&mut |record| {
+            records.push(record);
+            Ok(())
+        })
+        .expect("compressed inventory");
+    assert_eq!(summary.objects(), 1);
+    assert_eq!(summary.logical_bytes(), bytes.len() as u64);
+    assert_eq!(
+        records,
+        vec![BlobInventoryRecord::new(id, bytes.len() as u64)]
+    );
+    assert_eq!(
+        fence
+            .delete_candidate(id)
+            .expect("planned compressed delete"),
+        PlannedDeleteDisposition::Deleted
+    );
+    assert_eq!(
+        fence
+            .delete_candidate(id)
+            .expect("repeated compressed delete"),
+        PlannedDeleteDisposition::AlreadyAbsent
+    );
+    drop(fence);
+    assert!(!reopened.contains(id).expect("deleted compressed object"));
+}
+
+#[test]
+fn compressed_directory_rejects_oversized_sources_and_corrupt_physical_records() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = temp.path().join("compressed");
+    let store =
+        CompressedDirectoryBlobBackend::new("compressed", &root, 64).expect("compressed directory");
+    let oversized_bytes = Arc::<[u8]>::from(vec![0x44; 65]);
+    let oversized_id = ContentId::for_bytes(ObjectKind::Trace, 1, &oversized_bytes);
+    let opens = Arc::new(AtomicUsize::new(0));
+    let oversized = BlobHandle::new(Arc::new(CountingSource {
+        bytes: Arc::clone(&oversized_bytes),
+        opens: Arc::clone(&opens),
+        bytes_read: Arc::new(AtomicUsize::new(0)),
+    }));
+    assert!(matches!(
+        store.put_if_absent(oversized_id, &oversized),
+        Err(StoreError::Quota)
+    ));
+    assert_eq!(opens.load(Ordering::SeqCst), 0);
+
+    let wrong_id = ContentId::for_bytes(ObjectKind::Trace, 1, b"expected");
+    assert!(matches!(
+        put_bytes(&store, wrong_id, b"different"),
+        Err(StoreError::Corrupt { .. })
+    ));
+    let wrong_path = object_path(&root, wrong_id);
+    assert!(!wrong_path.exists());
+    assert!(
+        fs::read_dir(wrong_path.parent().expect("wrong-ID parent"))
+            .expect("read wrong-ID parent")
+            .all(|entry| !entry
+                .expect("wrong-ID directory entry")
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".staging-"))
+    );
+
+    let bytes = vec![0x31; 64];
+    let id = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
+    put_bytes(&store, id, &bytes).expect("bounded compressed put");
+    let physical = object_path(&root, id);
+    let physical_length = fs::metadata(&physical)
+        .expect("compressed physical metadata")
+        .len();
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(&physical)
+        .expect("open compressed physical record");
+    file.set_len(physical_length - 1)
+        .expect("truncate compressed physical record");
+    assert!(matches!(
+        store.read(id, None),
+        Err(StoreError::Corrupt { .. })
+    ));
+
+    let symlink_id = ContentId::for_bytes(ObjectKind::Trace, 1, b"symlink");
+    let symlink_path = object_path(&root, symlink_id);
+    fs::create_dir_all(symlink_path.parent().expect("symlink object parent"))
+        .expect("create symlink parent");
+    std::os::unix::fs::symlink(&physical, &symlink_path).expect("create compressed symlink");
+    assert!(matches!(
+        store.read(symlink_id, None),
+        Err(StoreError::Io { .. })
+    ));
+
+    let oversized_frame_id = ContentId::for_bytes(ObjectKind::Trace, 1, b"x");
+    let oversized_frame_path = object_path(&root, oversized_frame_id);
+    fs::create_dir_all(
+        oversized_frame_path
+            .parent()
+            .expect("oversized frame parent"),
+    )
+    .expect("create oversized frame parent");
+    let oversized_frame_length = zstd::zstd_safe::compress_bound(1) + 1;
+    let mut oversized_frame_record = Vec::with_capacity(24 + oversized_frame_length);
+    oversized_frame_record.extend_from_slice(b"CRUCZ001");
+    oversized_frame_record.extend_from_slice(&1_u64.to_be_bytes());
+    oversized_frame_record.extend_from_slice(&(oversized_frame_length as u64).to_be_bytes());
+    oversized_frame_record.resize(24 + oversized_frame_length, 0);
+    fs::write(&oversized_frame_path, oversized_frame_record).expect("write oversized frame");
+    assert!(matches!(
+        store.read(oversized_frame_id, None),
+        Err(StoreError::Corrupt { .. })
+    ));
+
+    let range_root = temp.path().join("compressed-range");
+    let range_store =
+        CompressedDirectoryBlobBackend::new("compressed-range", &range_root, 128 * 1024)
+            .expect("compressed range directory");
+    let range_bytes = (0_u32..64 * 1024)
+        .map(|value| value.wrapping_mul(1_664_525).wrapping_add(1_013_904_223) as u8)
+        .collect::<Vec<_>>();
+    let range_id = ContentId::for_bytes(ObjectKind::RamExtent, 1, &range_bytes);
+    put_bytes(&range_store, range_id, &range_bytes).expect("compressed range put");
+    let range_path = object_path(&range_root, range_id);
+    let mut changed_plaintext = range_bytes.clone();
+    *changed_plaintext.last_mut().expect("plaintext tail") ^= 0x80;
+    let changed_frame = zstd::stream::encode_all(Cursor::new(&changed_plaintext), 3)
+        .expect("encode changed compressed frame");
+    let mut changed_record = Vec::with_capacity(24 + changed_frame.len());
+    changed_record.extend_from_slice(b"CRUCZ001");
+    changed_record.extend_from_slice(&(changed_plaintext.len() as u64).to_be_bytes());
+    changed_record.extend_from_slice(&(changed_frame.len() as u64).to_be_bytes());
+    changed_record.extend_from_slice(&changed_frame);
+    fs::write(&range_path, changed_record).expect("replace compressed frame plaintext");
+    let range = range_store
+        .read(
+            range_id,
+            Some(ByteRange::new(0, 16).expect("valid leading range")),
+        )
+        .expect("open compressed range with changed plaintext");
+    assert!(matches!(
+        range.read_all(1024),
+        Err(StoreError::Corrupt { .. })
+    ));
+}
+
+#[test]
 fn directory_ref_inventory_is_persistent_fenced_and_fail_closed() {
     let temp = TempDir::new().expect("temporary directory");
     let root = temp.path().join("authority");
@@ -1273,6 +1484,97 @@ fn store_graph_configuration_identity_is_canonical_and_complete() {
         encode_hex(&first.configuration_id().as_bytes()),
         "9054c4182515f09b43494c07f5bb3f8e93b62d6251b449ebf128d7142a8528d5"
     );
+}
+
+#[test]
+fn compressed_directory_is_a_bounded_versioned_graph_leaf() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = node_id("compressed");
+    let config = |maximum_logical_object_bytes| StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
+        nodes: BTreeMap::from([(
+            root.clone(),
+            StoreNodeSpec::CompressedDirectory {
+                root: temp.path().join("objects"),
+                maximum_logical_object_bytes,
+            },
+        )]),
+    };
+    let (graph, admin) =
+        StoreGraph::build_with_admin(config(1024 * 1024)).expect("compressed graph");
+    let restarted = StoreGraph::build(config(1024 * 1024)).expect("restarted compressed graph");
+    let changed = StoreGraph::build(config(2 * 1024 * 1024)).expect("changed compressed graph");
+
+    assert_eq!(graph.configuration_id(), admin.configuration_id());
+    assert_eq!(graph.configuration_id(), restarted.configuration_id());
+    assert_ne!(graph.configuration_id(), changed.configuration_id());
+    assert_eq!(graph.describe()[0].kind, StoreNodeKind::CompressedDirectory);
+    assert_eq!(admin.physical().len(), 1);
+    assert_eq!(admin.physical()[0].node(), &root);
+
+    let bytes = vec![0x77; 256 * 1024];
+    let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, &bytes);
+    put_bytes(&graph, id, &bytes).expect("compressed graph put");
+    assert_eq!(
+        read_bytes(&restarted, id, None).expect("graph restart read"),
+        bytes
+    );
+    let mut fence = admin.physical()[0]
+        .admin()
+        .acquire_inventory_fence()
+        .expect("graph compressed inventory fence");
+    assert_eq!(
+        fence
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("graph compressed inventory")
+            .objects(),
+        1
+    );
+
+    assert!(matches!(
+        StoreGraph::build(config(0)),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::InvalidCompressedObjectLimit,
+            ..
+        })
+    ));
+
+    let mirror = node_id("mirror");
+    let directory = node_id("directory");
+    let compressed = node_id("compressed-overlap");
+    let shared_root = temp.path().join("overlap");
+    assert!(matches!(
+        StoreGraph::build(StoreGraphConfig {
+            root: mirror.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
+            nodes: BTreeMap::from([
+                (
+                    mirror,
+                    StoreNodeSpec::WriteThrough {
+                        children: vec![directory.clone(), compressed.clone()],
+                    },
+                ),
+                (
+                    directory,
+                    StoreNodeSpec::Directory {
+                        root: shared_root.clone(),
+                    },
+                ),
+                (
+                    compressed,
+                    StoreNodeSpec::CompressedDirectory {
+                        root: shared_root,
+                        maximum_logical_object_bytes: 1024,
+                    },
+                ),
+            ]),
+        }),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::OverlappingAdministrativePath,
+            ..
+        })
+    ));
 }
 
 #[test]
