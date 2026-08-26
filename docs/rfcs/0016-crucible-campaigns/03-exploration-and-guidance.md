@@ -908,6 +908,12 @@ them only when they cause the exact `NextChoice` stop; continuing toward another
 stop discards them, and retained scheduler history is never emitted by a later
 quantum. A replay plan already naming the current frontier suppresses duplicate
 discovery and proceeds through the separately authenticated typed injection.
+Live promotion is an attempt-scoped opt-in: the fresh campaign runner enables it
+only for `NextChoice`, and only after the admitted start configuration has been
+materialized exactly. Frontiers encountered while replaying that start remain
+replay-only evidence. Terminal, marker, time, and event-count attempts execute
+through finite authored search frontiers without adding campaign-promotion
+pauses; those frontiers remain available only as scheduler replay evidence.
 
 One admitted configuration may contain at most 4,096 promoted signal-fault
 events. The executor resolves all of their selection closures in one bounded

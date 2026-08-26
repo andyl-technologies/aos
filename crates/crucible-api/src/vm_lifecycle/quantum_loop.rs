@@ -166,6 +166,15 @@ fn attempt_boundary_scheduler_error(context: &str, error: LifecycleApiError) -> 
 }
 
 impl ProductionVmLifecycleLoop {
+    /// Enables exact live signal-fault campaign promotion from this boundary.
+    ///
+    /// Callers activate promotion only after deterministic prefix
+    /// materialization reaches the attempt's admitted start. Previously
+    /// retained search frontiers remain replay evidence and are not emitted.
+    pub fn enable_signal_fault_campaign_promotion(&mut self) {
+        self.promote_signal_fault_campaign_choices = true;
+    }
+
     fn authenticate_signal_fault_campaign_branch(
         &self,
         branch: &crucible::SignalFaultCampaignBranch,
@@ -204,6 +213,9 @@ impl ProductionVmLifecycleLoop {
         &self,
         first: usize,
     ) -> Result<Vec<crucible::campaign::ChoiceDiscovery>, SchedulerError> {
+        if !self.promote_signal_fault_campaign_choices {
+            return Ok(Vec::new());
+        }
         let frontiers = self.inner.loop_impl().search_frontiers();
         let current = frontiers
             .get(first..)

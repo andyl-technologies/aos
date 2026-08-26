@@ -699,6 +699,7 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         initial_lifecycle_observations_pending: true,
         branch: None,
         signal_fault_branches: VecDeque::new(),
+        promote_signal_fault_campaign_choices: false,
         launch_configs: BTreeMap::new(),
         block_bindings: BTreeMap::new(),
         ninep_bindings: BTreeMap::new(),
@@ -972,6 +973,7 @@ fn promoted_signal_branch(
 fn production_lifecycle_pauses_on_a_new_live_signal_fault_frontier() {
     let source = finite_signal_replay_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
+    lifecycle.enable_signal_fault_campaign_promotion();
     lifecycle.initial_lifecycle_observations_pending = false;
     let parent = lifecycle.inner.loop_impl().configuration().clone();
     let at = lifecycle.inner.loop_impl().frontier();
@@ -998,6 +1000,24 @@ fn production_lifecycle_pauses_on_a_new_live_signal_fault_frontier() {
     )
     .unwrap_or_else(|error| panic!("live discovery must retain the producer contract: {error}"));
     assert_eq!(normalized.frontier(), at);
+}
+
+#[test]
+fn production_lifecycle_does_not_export_live_frontiers_without_promotion_opt_in() {
+    let source = finite_signal_replay_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    lifecycle.initial_lifecycle_observations_pending = false;
+    let parent = lifecycle.inner.loop_impl().configuration().clone();
+
+    let result = lifecycle.drive_quantum(QuantumRequest {
+        configuration: parent,
+        control: Vec::new(),
+    });
+
+    if let Ok(outcome) = result {
+        assert!(outcome.discovered_choices.is_empty());
+    }
+    assert_eq!(lifecycle.inner.loop_impl().search_frontiers().len(), 1);
 }
 
 #[test]

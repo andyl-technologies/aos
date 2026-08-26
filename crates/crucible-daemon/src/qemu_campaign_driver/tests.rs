@@ -41,6 +41,8 @@ struct PendingSelectableLifecycle {
 }
 
 impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
+    fn enable_signal_fault_campaign_promotion(&mut self) {}
+
     fn drive_quantum(
         &mut self,
         _request: QuantumRequest,
@@ -104,6 +106,8 @@ impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
 }
 
 impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
+    fn enable_signal_fault_campaign_promotion(&mut self) {}
+
     fn drive_quantum(
         &mut self,
         _request: QuantumRequest,

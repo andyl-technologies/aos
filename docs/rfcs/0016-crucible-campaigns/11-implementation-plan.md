@@ -996,8 +996,12 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   canonical choice material. The modeled driver retains that discovery only
   when it causes the exact `NextChoice` stop; later-stop observations cannot
   retrospectively publish it, and a queued replay branch suppresses duplicate
-  discovery. Bounded interesting-window policy and automatic signature-
-  preserving minimization remain open.
+  discovery. Promotion is now attempt-scoped: the fresh runner enables it only
+  for `NextChoice` after exact start materialization, so historical prefix
+  frontiers remain replay-only. Terminal, marker, time, and event-count
+  executions pass through finite authored search frontiers without campaign
+  pauses. Automatic planner selection of a bounded interesting suffix/window
+  and automatic signature-preserving minimization remain open.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy
   widening, additive finite branching, edge deduplication, live status,
   explanation, bounded pressure, pause/restart/resume, steering, and graceful

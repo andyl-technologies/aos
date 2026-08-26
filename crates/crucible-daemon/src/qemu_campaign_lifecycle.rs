@@ -98,6 +98,13 @@ pub struct QemuAttemptProductionVmLifecycleFactory<R> {
 /// Drivers receive only [`QemuFreshAttemptLifecycle`], which deliberately does
 /// not expose this terminal capability.
 pub trait QemuFreshAttemptLifecycleOwner {
+    /// Enables exact live signal-fault promotion from the current boundary.
+    ///
+    /// The fresh runner calls this only after the admitted start configuration
+    /// has been materialized. Previously retained signal-fault frontiers remain
+    /// replay-only evidence and cannot become discoveries retroactively.
+    fn enable_signal_fault_campaign_promotion(&mut self);
+
     /// Advances one scheduler quantum under the attempt resource guard.
     ///
     /// # Errors
@@ -195,6 +202,10 @@ pub trait QemuFreshAttemptLifecycleOwner {
 }
 
 impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
+    fn enable_signal_fault_campaign_promotion(&mut self) {
+        ProductionVmLifecycleLoop::enable_signal_fault_campaign_promotion(self);
+    }
+
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         QuantumLoop::drive_quantum(self, request)
     }
@@ -1079,6 +1090,9 @@ where
             .map_err(map_fresh_lifecycle_failure)?;
         let materialization = materialize_fresh_start(&mut lifecycle, input, start, context);
         let driven = materialization.and_then(|materialization| {
+            if input.attempt().stop() == &crucible_campaign::StopCondition::NextChoice {
+                lifecycle.enable_signal_fault_campaign_promotion();
+            }
             let mut facade = QemuFreshAttemptLifecycle::new(&mut lifecycle);
             let outcome = self
                 .driver
