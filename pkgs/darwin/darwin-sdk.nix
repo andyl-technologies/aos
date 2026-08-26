@@ -199,6 +199,7 @@ in
             "$out/usr/include/objc" \
             "$out/usr/include/os" \
             "$out/usr/include/rpc" \
+            "$out/usr/include/rpcsvc" \
             "$out/usr/include/servers" \
             "$out/usr/lib" \
             "$out/System/Library/Frameworks/ApplicationServices.framework/Headers" \
@@ -274,6 +275,14 @@ in
           cp "$libresolvRoot/arpa/nameser.h" "$out/usr/include/arpa/"
           cp "$libcRoot/include/arpa/nameser_compat.h" "$out/usr/include/arpa/"
           cp "$libinfoRoot"/rpc.subproj/*.h "$out/usr/include/rpc/"
+          # NIS remains part of Darwin's public Libinfo ABI and CPython 3.12
+          # builds its corresponding standard-library module when yp_match is
+          # available from libSystem. Install the matching canonical protocol
+          # and client declarations from the same pinned Apple source.
+          cp \
+            "$libinfoRoot/nis.subproj/yp_prot.h" \
+            "$libinfoRoot/nis.subproj/ypclnt.h" \
+            "$out/usr/include/rpcsvc/"
           cp "$libcRoot/include/fstab.h" "$out/usr/include/"
           # launchd publishes the userspace Mach bootstrap interface at the
           # traditional SDK path consumed by Kerberos KCM and other clients.

@@ -220,6 +220,20 @@
             "$CC" resolver-smoke.c -o "$c/bin/aos-darwin-resolver-smoke"
 
             printf '%s\n' \
+              '#include <rpcsvc/yp_prot.h>' \
+              '#include <rpcsvc/ypclnt.h>' \
+              'int main(void) {' \
+              '  char *domain = 0;' \
+              '  char *value = 0;' \
+              '  int valueLength = 0;' \
+              '  int domainStatus = yp_get_default_domain(&domain);' \
+              '  int matchStatus = yp_match("aos", "aos", "aos", 3, &value, &valueLength);' \
+              '  return domainStatus < 0 || matchStatus < 0 || valueLength < 0;' \
+              '}' \
+              > nis-smoke.c
+            "$CC" nis-smoke.c -o "$c/bin/aos-darwin-nis-smoke"
+
+            printf '%s\n' \
               '#include <iconv.h>' \
               'int main(void) {' \
               '  iconv_t converter = iconv_open("UTF-8", "UTF-8");' \
@@ -354,6 +368,7 @@
               "$c/bin/aos-darwin-framework-smoke" \
               "$c/bin/aos-darwin-iconv-smoke" \
               "$c/bin/aos-darwin-iokit-smoke" \
+              "$c/bin/aos-darwin-nis-smoke" \
               "$c/bin/aos-darwin-objective-c-smoke" \
               "$c/bin/aos-darwin-resolver-smoke" \
               "$c/lib/libaos-darwin-cmake-smoke.dylib" \
