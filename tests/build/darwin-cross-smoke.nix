@@ -64,6 +64,16 @@
               -o "$c/bin/aos-darwin-framework-smoke"
 
             printf '%s\n' \
+              '#include <arpa/nameser.h>' \
+              '#include <resolv.h>' \
+              'int main(void) {' \
+              '  unsigned char answer[NS_PACKETSZ];' \
+              '  return res_query("localhost", ns_c_in, ns_t_a, answer, sizeof(answer)) < -1;' \
+              '}' \
+              > resolver-smoke.c
+            "$CC" resolver-smoke.c -o "$c/bin/aos-darwin-resolver-smoke"
+
+            printf '%s\n' \
               '#include <objc/runtime.h>' \
               '__attribute__((objc_root_class)) @interface AosRoot @end' \
               '@implementation AosRoot @end' \
@@ -142,6 +152,7 @@
               "$c/bin/aos-darwin-framework-smoke" \
               "$c/bin/aos-darwin-iokit-smoke" \
               "$c/bin/aos-darwin-objective-c-smoke" \
+              "$c/bin/aos-darwin-resolver-smoke" \
               "$c/lib/libaos-darwin-cmake-smoke.dylib" \
               "$cxx/libaos-darwin-cmake-cxx-smoke.dylib" \
               "$cxx/aos-darwin-flat-namespace.bundle" \

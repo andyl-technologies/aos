@@ -20,6 +20,8 @@
   darlingIoKitUserRevision = "534684e6748dffbd875c6cd1942477a52b66a077";
   securityRevision = "db15acbe6a7f257a859ad9a3bb86097bfe0679d9";
   objcRevision = "fb265098298302243cd7eeaa1f63f0ba7786dd9a";
+  libcRevision = "71bbe350ab79eef58113991d817ccc6165061a64";
+  libresolvRevision = "e48cd914edc1cb14f8289b8e2dfdaac360481cd2";
 
   coreFoundationSrc = fetchurl {
     urls = [
@@ -83,6 +85,20 @@
     ];
     hash = "sha256-+DFg3gllkBpI+lr+AiPV+xBDvpry/iwr2oBJCfidsvU=";
   };
+
+  libcSrc = fetchurl {
+    urls = [
+      "https://github.com/apple-oss-distributions/Libc/archive/${libcRevision}.tar.gz"
+    ];
+    hash = "sha256-wjA85gC0Qm8yH6CWwDRvRknlQnnQK0BXor1uaCzlX7w=";
+  };
+
+  libresolvSrc = fetchurl {
+    urls = [
+      "https://github.com/apple-oss-distributions/libresolv/archive/${libresolvRevision}.tar.gz"
+    ];
+    hash = "sha256-K7ghDWDtbetG3Ns5Hvsz2ylybXXY6tkDW4ZseAazMu0=";
+  };
 in
   mkDerivation {
     pname = "darwin-sdk";
@@ -111,6 +127,8 @@ in
           tar xf ${darlingIoKitUserSrc}
           tar xf ${securitySrc}
           tar xf ${objcSrc}
+          tar xf ${libcSrc}
+          tar xf ${libresolvSrc}
           cd "zig-${version}"
         '';
       }
@@ -126,6 +144,8 @@ in
           darlingIoKitUserRoot="../darling-iokituser-${darlingIoKitUserRevision}"
           securityRoot="../Security-${securityRevision}"
           objcRoot="../objc4-${objcRevision}"
+          libcRoot="../Libc-${libcRevision}"
+          libresolvRoot="../libresolv-${libresolvRevision}"
 
           mkdir -p \
             "$out/usr/include/c++/v1" \
@@ -147,9 +167,18 @@ in
           cp lib/libc/darwin/libSystem.tbd "$out/usr/lib/libSystem.tbd"
           sed -i '$i\  - targets: [ x86_64-macos, arm64-macos ]\n    symbols: [ _iconv, _iconv_close, _iconv_open ]' \
             "$out/usr/lib/libSystem.tbd"
+          # Current Apple resolver headers bind the established public entry
+          # points to their BIND 9 symbol names. Zig's older libSystem surface
+          # describes only the unversioned aliases, so publish the matching
+          # ABI exported by modern Darwin libSystem as well.
+          sed -i '$i\  - targets: [ x86_64-macos, arm64-macos ]\n    symbols: [ _res_9_close, _res_9_init, _res_9_isourserver, _res_9_mkquery, _res_9_query, _res_9_querydomain, _res_9_search, _res_9_send, _res_9_sendsigned ]' \
+            "$out/usr/lib/libSystem.tbd"
           cp "$xnuRoot/bsd/netinet/tcp_fsm.h" "$out/usr/include/netinet/"
           cp "$xnuRoot/bsd/netinet/tcp_timer.h" "$out/usr/include/netinet/"
           cp "$xnuRoot/bsd/sys/ttydev.h" "$out/usr/include/sys/"
+          cp "$libresolvRoot/resolv.h" "$out/usr/include/"
+          cp "$libresolvRoot/arpa/nameser.h" "$out/usr/include/arpa/"
+          cp "$libcRoot/include/arpa/nameser_compat.h" "$out/usr/include/arpa/"
 
           # Newer Apple open-source framework headers describe bridgeOS API
           # availability, while Zig's open SDK snapshot omits that platform's
@@ -273,6 +302,10 @@ in
             "$out/usr/include/objc/"
           cp "$objcRoot/APPLE_LICENSE" \
             "$out/share/licenses/darwin-sdk/ObjectiveC-LICENSE"
+          cp "$libcRoot/APPLE_LICENSE" \
+            "$out/share/licenses/darwin-sdk/Libc-LICENSE"
+          cp "$libresolvRoot/APPLE_LICENSE" \
+            "$out/share/licenses/darwin-sdk/libresolv-LICENSE"
 
           cat > "$out/System/Library/Frameworks/Security.framework/Headers/Security.h" <<'EOF'
           #ifndef _SECURITY_H_
