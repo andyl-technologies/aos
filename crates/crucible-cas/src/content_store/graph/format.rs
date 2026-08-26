@@ -11,6 +11,7 @@ const GRAPH_CONFIGURATION_V2_MAGIC: &[u8] = b"crucible.content-store.graph-confi
 const GRAPH_CONFIGURATION_V3_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v3\0";
 const GRAPH_CONFIGURATION_V4_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v4\0";
 const GRAPH_CONFIGURATION_V5_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v5\0";
+const GRAPH_CONFIGURATION_V6_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v6\0";
 
 pub(super) fn canonical_graph_configuration(
     config: &StoreGraphConfig,
@@ -32,7 +33,13 @@ pub(super) fn canonical_graph_configuration(
         .nodes
         .values()
         .any(|node| matches!(node, StoreNodeSpec::CompressedEncryptedDirectory { .. }));
-    bytes.extend_from_slice(if has_compressed_encrypted_directory {
+    let has_durability_policy = config
+        .nodes
+        .values()
+        .any(|node| matches!(node, StoreNodeSpec::DurabilityPolicy { .. }));
+    bytes.extend_from_slice(if has_durability_policy {
+        GRAPH_CONFIGURATION_V6_MAGIC
+    } else if has_compressed_encrypted_directory {
         GRAPH_CONFIGURATION_V5_MAGIC
     } else if has_encrypted_directory {
         GRAPH_CONFIGURATION_V4_MAGIC
@@ -156,6 +163,22 @@ pub(super) fn canonical_graph_configuration(
                 encode_path(&mut bytes, journal_root)?;
                 bytes.extend_from_slice(&maximum_pending_objects.to_be_bytes());
                 bytes.extend_from_slice(&maximum_pending_bytes.to_be_bytes());
+            }
+            StoreNodeSpec::DurabilityPolicy {
+                child,
+                requirements,
+            } => {
+                bytes.push(15);
+                encode_node_id(&mut bytes, child)?;
+                encode_count(&mut bytes, requirements.len())?;
+                let mut requirements = requirements.iter().collect::<Vec<_>>();
+                requirements.sort_unstable_by_key(|(kind, _requirement)| kind.as_str());
+                for (kind, requirement) in requirements {
+                    encode_string(&mut bytes, kind.as_str())?;
+                    bytes
+                        .extend_from_slice(&requirement.minimum_durable_placements().to_be_bytes());
+                    bytes.push(u8::from(requirement.allows_deferred_write()));
+                }
             }
             StoreNodeSpec::Metrics { child } => {
                 bytes.push(10);

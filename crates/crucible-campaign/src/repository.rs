@@ -835,6 +835,7 @@ fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
         | StoreError::InvalidRange { .. }
         | StoreError::InvalidComposition { .. }
         | StoreError::InvalidGraph { .. }
+        | StoreError::DurabilityUnsatisfied { .. }
         | StoreError::Incompatible
         | StoreError::InvalidSourceLength { .. }
         | StoreError::Unsupported { .. } => ExecutorRejection::Incompatible,

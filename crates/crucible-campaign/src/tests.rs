@@ -611,7 +611,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             .get(schema)
             .unwrap_or_else(|| panic!("missing lower schema {schema}"));
         let expected_version = if schema == "crucible.content-store.graph-configuration" {
-            "5"
+            "6"
         } else {
             "1"
         };
