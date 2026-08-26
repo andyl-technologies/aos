@@ -30493,13 +30493,16 @@ impl RpcService {
             .desired
             .ok_or_else(|| RpcError::invalid("plan desired state is missing"))?;
         Self::canonicalize_retention_spec(&mut desired)?;
-        let selector_json = serde_json::to_string(
-            desired
-                .selector
-                .as_ref()
-                .ok_or_else(|| RpcError::invalid("selector is required"))?,
-        )
-        .map_err(RpcError::internal)?;
+        let selector = desired
+            .selector
+            .as_ref()
+            .ok_or_else(|| RpcError::invalid("selector is required"))?;
+        // The database binds the digest to the canonical JSON object form.
+        // Protobuf structs serialize in declaration order, which is not
+        // necessarily the map-key order produced when that document is read
+        // back as JSON. Normalize through `Value` before hashing and storing.
+        let selector_value = serde_json::to_value(selector).map_err(RpcError::internal)?;
+        let selector_json = serde_json::to_string(&selector_value).map_err(RpcError::internal)?;
         let state = self
             .db
             .cache_gc_topology_state(cache.id)
@@ -38003,6 +38006,28 @@ mod cache_upload_tests {
             selector.semver.unwrap().requirement,
             "<3.0.0,>=2.0.0||=1.0.0"
         );
+    }
+
+    #[test]
+    fn retention_selector_storage_json_is_canonical_object_order() {
+        let selector = pb::RetentionSelector {
+            current_catalog: true,
+            channel_targets: Some(pb::ChannelTargetSelector {
+                all: false,
+                names: vec!["stable".into()],
+            }),
+            recent_releases: None,
+            release_tags: vec!["1.0.0".into()],
+            semver: None,
+            all_releases: false,
+        };
+
+        let value = serde_json::to_value(&selector).unwrap();
+        let stored = serde_json::to_string(&value).unwrap();
+        let reparsed: serde_json::Value = serde_json::from_str(&stored).unwrap();
+
+        assert!(reparsed.is_object());
+        assert_eq!(serde_json::to_string(&reparsed).unwrap(), stored);
     }
 
     #[test]
