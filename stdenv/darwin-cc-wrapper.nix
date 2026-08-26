@@ -52,10 +52,15 @@
         set -eu
 
         linking=true
+        compiling=false
         exec_link=true
         for arg in "$@"; do
           case "$arg" in
-            -c|-S|-E|-fsyntax-only) linking=false ;;
+            -c|-S|-E|-fsyntax-only)
+              compiling=true
+              linking=false
+              ;;
+            -x|*.c|*.cc|*.cp|*.cpp|*.cxx|*.m|*.mm|*.s|*.S) compiling=true ;;
             -dynamiclib|-shared|-bundle|-r|--relocatable|-nostdlib|-nostartfiles|-ffreestanding) exec_link=false ;;
           esac
         done
@@ -71,6 +76,11 @@
         hardening_cflags=""
         hardening_post=""
         hardening_ldflags=""
+        reproducible_cflags=""
+
+        if [ "$compiling" = true ]; then
+          reproducible_cflags="-ffile-prefix-map=/build=. -fdebug-prefix-map=/build=. -fdebug-compilation-dir=."
+        fi
 
         if has stackprotector; then
           hardening_cflags="$hardening_cflags -fstack-protector-strong"
@@ -117,7 +127,10 @@
         toolchain_ldflags=""
         nix_ldflags=""
         if [ "$linking" = true ]; then
-          toolchain_ldflags="-fuse-ld=lld ${runtimeLinkerFlags}"
+          # ld64 records every linked object path in an N_OSO debug symbol.
+          # Rewrite the package build directory at link time so otherwise
+          # reproducible Mach-O libraries never retain a raw /build path.
+          toolchain_ldflags="-fuse-ld=lld -Wl,-oso_prefix,/build ${runtimeLinkerFlags}"
 
           # mkDerivation publishes ELF and Mach-O dependency search flags
           # through one variable.  ld64 has no -rpath-link equivalent; its
@@ -137,6 +150,7 @@
           -isysroot ${sdk} \
           -mmacosx-version-min=${deploymentTarget} \
           ${runtimeCompilerFlags} \
+          $reproducible_cflags \
           $hardening_cflags \
           "$@" \
           $hardening_post \

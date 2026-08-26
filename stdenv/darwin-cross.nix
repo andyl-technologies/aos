@@ -18,6 +18,7 @@
 
   sdk = import ../pkgs/darwin/darwin-sdk.nix {
     inherit (buildStdenv) mkDerivation fetchurl;
+    inherit buildPackages;
   };
 
   defaultHardeningFlags =
