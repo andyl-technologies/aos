@@ -43,7 +43,6 @@ let
     "bzip2"
     "coreutils"
     "cpio"
-    "darwin-runtimes"
     "diffutils"
     "editline"
     "expat"
@@ -89,6 +88,12 @@ let
     "zip"
     "zlib"
     "zstd"
+  ];
+
+  # Target runtime surfaces have no meaningful Linux-hosted package output,
+  # but are first-class publication roots for both Darwin architectures.
+  darwinOnly = [
+    "darwin-runtimes"
   ];
 
   # Wave 2: portable native libraries and conventional Unix tools.  Most need
@@ -147,6 +152,7 @@ let
     "nginx"
     "npth"
     "openldap"
+    "openpam"
     "openssh"
     "openssl"
     "perl"
@@ -457,6 +463,7 @@ let
   inventory =
     mkEntries "independent" 1 ["native-build-tools"] independentWave1
     // mkEntries "target" 1 ["darwin-sdk" "mach-o-fixup"] targetWave1
+    // mkEntries "darwin-only" 1 ["darwin-runtime"] darwinOnly
     // mkEntries "target" 2 ["cross-configure" "mach-o-fixup"] targetWave2
     // mkEntries "target" 3 ["build-host-target-splicing" "target-runtime-tests"] targetWave3
     // mkEntries "target" 4 ["language-cross-build" "target-runtime-tests"] targetWave4
@@ -609,10 +616,10 @@ in rec {
     entry = packageSupport name;
   in
     if isLinux system
-    then true
+    then entry.disposition != "darwin-only"
     else if isDarwin system
     then
-      builtins.elem entry.disposition ["target" "independent"]
+      builtins.elem entry.disposition ["target" "independent" "darwin-only"]
       && builtins.elem (systemCpu system) entry.architectures
     else throw "package platform support: unsupported target system '${system}'";
 
@@ -664,6 +671,7 @@ in rec {
     validDispositions = [
       "target"
       "independent"
+      "darwin-only"
       "build-only"
       "linux-only"
     ];
@@ -681,7 +689,7 @@ in rec {
           })
           entry.architectures
         );
-        publishesDarwin = builtins.elem entry.disposition ["target" "independent"];
+        publishesDarwin = builtins.elem entry.disposition ["target" "independent" "darwin-only"];
       in
         !(builtins.elem entry.disposition validDispositions)
         || !(builtins.isList entry.architectures)

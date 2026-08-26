@@ -114,6 +114,7 @@
   annotationProbe = support.annotate "rust" {
     meta = {license = "probe";};
   };
+  linuxPackages = support.targetPackageNames "x86_64-linux" packageNames;
 in
   assert support.validate packageNames;
   assert support.validateHelpers helperFiles;
@@ -121,6 +122,9 @@ in
   assert support.validateResources excludedResources;
   assert requiredPresent;
   assert rejectedAbsent;
+  assert builtins.elem "darwin-runtimes" x86Packages;
+  assert builtins.elem "darwin-runtimes" armPackages;
+  assert !(builtins.elem "darwin-runtimes" linuxPackages);
   assert selectionProbe == {rust = "included";};
   assert annotationProbe.meta.license == "probe";
   assert annotationProbe.meta.aos.platformSupport.disposition == "target";
