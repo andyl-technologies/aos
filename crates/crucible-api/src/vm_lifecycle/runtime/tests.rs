@@ -423,11 +423,14 @@ fn production_lifecycle_lends_generation_preparation_before_path_access() {
         tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
     let source = initially_violated_scenario();
     let scenario = source.scenario_def();
+    let root_image = root.path().join("root.img");
+    fs::write(&root_image, b"root image fixture")
+        .unwrap_or_else(|error| panic!("root image fixture should write: {error}"));
     let config = ProductionVmLifecycleConfig::new(
         "missing-qemu",
         "missing-plugin",
         "missing-kernel",
-        "missing-root",
+        root_image,
         root.path(),
     );
     let observations = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -442,7 +445,10 @@ fn production_lifecycle_lends_generation_preparation_before_path_access() {
     .err()
     .unwrap_or_else(|| panic!("preparation-boundary launcher should reject construction"));
 
-    assert!(error.to_string().contains("rejects before path access"));
+    assert!(
+        error.to_string().contains("rejects before path access"),
+        "unexpected lifecycle construction error: {error}"
+    );
     assert_eq!(
         *observations
             .lock()
@@ -483,11 +489,14 @@ fn production_lifecycle_derives_node_local_selectable_catalog_from_scenario() {
         .with_selectables(selectables)
         .unwrap_or_else(|error| panic!("scenario selectables should attach: {error}"));
     let scenario = source.scenario_def();
+    let root_image = root.path().join("root.img");
+    fs::write(&root_image, b"root image fixture")
+        .unwrap_or_else(|error| panic!("root image fixture should write: {error}"));
     let config = ProductionVmLifecycleConfig::new(
         "missing-qemu",
         "missing-plugin",
         "missing-kernel",
-        "missing-root",
+        root_image,
         root.path(),
     );
     let plans = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -502,7 +511,10 @@ fn production_lifecycle_derives_node_local_selectable_catalog_from_scenario() {
     .err()
     .unwrap_or_else(|| panic!("recording launcher should reject construction"));
 
-    assert!(error.to_string().contains("rejects process spawn"));
+    assert!(
+        error.to_string().contains("rejects process spawn"),
+        "unexpected lifecycle construction error: {error}"
+    );
     let plans = plans
         .lock()
         .unwrap_or_else(|_| panic!("selectable plan recorder should remain healthy"));

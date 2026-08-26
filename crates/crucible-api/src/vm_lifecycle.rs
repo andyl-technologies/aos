@@ -270,6 +270,8 @@ struct ProductionCheckpointArtifact {
     identity: ContentHash,
     length: u64,
     chunks: Vec<ContentHash>,
+    sparse: bool,
+    extents: Vec<checkpoint_store::ArtifactExtent>,
 }
 
 #[derive(Clone, Debug)]
@@ -329,12 +331,23 @@ fn copy_exact_checkpoint_artifact(
     role: &str,
 ) -> Result<(), LifecycleApiError> {
     checkpoint_store::materialize_checkpoint_artifact(source, destination, role)?;
+    if source.sparse {
+        // Sparse materialization authenticates every stored extent before it
+        // writes into a new empty staging file; omitted ranges are created as
+        // filesystem holes and therefore read as zeroes. Rehashing the dense
+        // logical file here would make restore work proportional to virtual
+        // disk size and would compare against the extent-map identity rather
+        // than a dense byte-stream hash.
+        return Ok(());
+    }
     validate_exact_checkpoint_artifact(
         &ProductionCheckpointArtifact {
             source: ProductionCheckpointArtifactSource::File(destination.to_path_buf()),
             identity: source.identity,
             length: source.length,
             chunks: Vec::new(),
+            sparse: false,
+            extents: Vec::new(),
         },
         role,
     )
@@ -603,7 +616,11 @@ pub struct ProductionVmNodeCheckpointArtifact<'a> {
 }
 
 impl ProductionVmNodeCheckpointArtifact<'_> {
-    /// Returns the exact content identity of the artifact.
+    /// Returns the exact authenticated identity of the artifact.
+    ///
+    /// Dense artifacts identify their complete byte stream. Sparse overlays
+    /// identify their logical length and canonical changed-chunk extent map;
+    /// omitted chunks have the authenticated meaning of zeroes.
     #[must_use]
     pub const fn identity(&self) -> ContentHash {
         self.artifact.identity
@@ -618,7 +635,7 @@ impl ProductionVmNodeCheckpointArtifact<'_> {
     /// Streams and authenticates the complete artifact into `destination`.
     ///
     /// The method bounds its temporary memory independently of artifact size
-    /// and validates both the declared length and content identity before
+    /// and validates both the declared length and authenticated identity before
     /// returning success. A destination may have received a partial prefix on
     /// failure; callers must use a fail-closed staging or linear materialization
     /// authority when partial output cannot be reused.
@@ -627,7 +644,7 @@ impl ProductionVmNodeCheckpointArtifact<'_> {
     ///
     /// Returns [`LifecycleApiError::LoopFactory`] when the retained source is
     /// unavailable or changed, a chunk closure is invalid, the destination
-    /// rejects a write, or the final length or content identity differs.
+    /// rejects a write, or the final length or authenticated identity differs.
     pub fn stream_into(
         &self,
         destination: &mut impl std::io::Write,
@@ -638,8 +655,8 @@ impl ProductionVmNodeCheckpointArtifact<'_> {
     /// Materializes and reauthenticates the artifact at `destination`.
     ///
     /// The destination must not already exist. The copy is staged under its
-    /// parent and durably published only after its length and content identity
-    /// match this capability.
+    /// parent and durably published only after its length and authenticated
+    /// identity match this capability.
     ///
     /// # Errors
     ///

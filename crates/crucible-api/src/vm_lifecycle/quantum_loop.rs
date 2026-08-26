@@ -3,6 +3,7 @@
 use super::checkpoint_store::{
     PersistExactCheckpointError, prepare_exact_checkpoint_set_with_boundary,
     stage_checkpoint_artifact_chunks_with_boundary,
+    stage_sparse_checkpoint_artifact_chunks_with_boundary,
 };
 use super::*;
 
@@ -84,6 +85,8 @@ fn checkpoint_artifact_from_stopped_file_with_boundary(
         identity,
         length,
         chunks: Vec::new(),
+        sparse: false,
+        extents: Vec::new(),
     })
 }
 
@@ -2049,7 +2052,7 @@ impl ProductionVmLifecycleLoop {
                                 "exact checkpoint capture owner disappeared after insertion",
                             ),
                         })?;
-                let overlay_artifact = stage_checkpoint_artifact_chunks_with_boundary(
+                let overlay_artifact = stage_sparse_checkpoint_artifact_chunks_with_boundary(
                     &source_overlay,
                     &staged_overlay_chunks,
                     "root overlay",

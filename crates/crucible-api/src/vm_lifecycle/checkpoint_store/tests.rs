@@ -30,10 +30,25 @@ fn manifest() -> ClosureManifest {
 }
 
 fn target(node: &str) -> TargetManifest {
-    let artifact = ArtifactManifest {
+    let chunk = ContentHash::from_bytes(b"artifact");
+    let overlay_extents = vec![ArtifactExtent {
+        start_chunk: 0,
+        chunks: vec![chunk],
+    }];
+    let overlay = ArtifactManifest {
+        identity: sparse_artifact_identity(8, &overlay_extents)
+            .expect("derive sparse artifact fixture identity"),
+        length: 8,
+        chunks: Vec::new(),
+        sparse: true,
+        extents: overlay_extents,
+    };
+    let vmstate = ArtifactManifest {
         identity: ContentHash::from_bytes(b"artifact"),
         length: 8,
-        chunks: vec![ContentHash::from_bytes(b"artifact")],
+        chunks: vec![chunk],
+        sparse: false,
+        extents: Vec::new(),
     };
     TargetManifest {
         node: String::from(node),
@@ -41,8 +56,8 @@ fn target(node: &str) -> TargetManifest {
         counter: 0,
         scheduler_time: 0,
         snapshot: ContentHash::from_bytes(node.as_bytes()),
-        overlay: artifact.clone(),
-        vmstate: artifact,
+        overlay,
+        vmstate,
         manifest_identity: ContentHash::default(),
     }
 }
@@ -240,14 +255,15 @@ fn publish_one_node_raw_checkpoint(
     let vmstate = run_state_root.join("raw-vmstate.bin");
     fs::write(&overlay, b"overlay fixture").expect("write overlay fixture");
     fs::write(&vmstate, b"vmstate fixture").expect("write VMState fixture");
-    let overlay_artifact = ProductionCheckpointArtifact {
-        source: ProductionCheckpointArtifactSource::File(overlay.clone()),
-        identity: hash_file(&overlay).expect("hash overlay fixture"),
-        length: fs::metadata(&overlay)
-            .expect("inspect overlay fixture")
-            .len(),
-        chunks: Vec::new(),
-    };
+    let overlay_artifact = stage_sparse_checkpoint_artifact_chunks_with_boundary(
+        &overlay,
+        &run_state_root.join("raw-overlay-chunks"),
+        "root overlay fixture",
+        0,
+        source.plan().fault_signals().resource_limits(),
+        &mut || Ok(()),
+    )
+    .expect("stage sparse overlay fixture");
     let vmstate_artifact = ProductionCheckpointArtifact {
         source: ProductionCheckpointArtifactSource::File(vmstate.clone()),
         identity: hash_file(&vmstate).expect("hash VMState fixture"),
@@ -255,6 +271,8 @@ fn publish_one_node_raw_checkpoint(
             .expect("inspect VMState fixture")
             .len(),
         chunks: Vec::new(),
+        sparse: false,
+        extents: Vec::new(),
     };
     let manifest_identity =
         exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
@@ -418,7 +436,7 @@ fn legacy_v4_closure_manifest_retains_its_identity_and_canonical_bytes() {
 }
 
 #[test]
-fn previous_v5_closure_manifest_retains_its_identity_and_canonical_bytes() {
+fn previous_v6_closure_manifest_retains_its_identity_and_canonical_bytes() {
     let mut previous = manifest();
     previous.format_version = PREVIOUS_MANIFEST_VERSION;
     previous.identity = closure_identity(&previous).expect("derive previous identity");
@@ -434,6 +452,57 @@ fn previous_v5_closure_manifest_retains_its_identity_and_canonical_bytes() {
     );
     assert_eq!(
         encode_manifest(&decoded).expect("re-encode previous manifest"),
+        bytes
+    );
+}
+
+#[test]
+fn previous_v6_dense_target_retains_its_identity_and_canonical_bytes() {
+    let chunk = ContentHash::from_bytes(b"artifact");
+    let dense = ArtifactManifest {
+        identity: chunk,
+        length: 8,
+        chunks: vec![chunk],
+        sparse: false,
+        extents: Vec::new(),
+    };
+    let mut previous = manifest();
+    previous.format_version = PREVIOUS_MANIFEST_VERSION;
+    let mut prior_target = target("a");
+    prior_target.overlay = dense.clone();
+    prior_target.vmstate = dense;
+    previous.targets.push(prior_target);
+    previous.node_generations.push((String::from("a"), 1));
+    previous.node_service_states.push((String::from("a"), 1));
+    previous.identity = closure_identity(&previous).expect("derive previous target identity");
+    let bytes = encode_manifest(&previous).expect("encode previous target manifest");
+
+    let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
+        .expect("decode previous target manifest");
+    assert!(decoded == previous);
+    assert_eq!(
+        encode_manifest(&decoded).expect("re-encode previous target manifest"),
+        bytes
+    );
+}
+
+#[test]
+fn older_v5_closure_manifest_retains_its_identity_and_canonical_bytes() {
+    let mut older = manifest();
+    older.format_version = OLDER_MANIFEST_VERSION;
+    older.identity = closure_identity(&older).expect("derive older identity");
+    let bytes = encode_manifest(&older).expect("encode older manifest");
+    assert!(bytes.starts_with(OLDER_MANIFEST_MAGIC));
+
+    let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
+        .expect("decode older manifest");
+    assert!(decoded == older);
+    assert_eq!(
+        closure_identity(&decoded).expect("derive decoded identity"),
+        older.identity
+    );
+    assert_eq!(
+        encode_manifest(&decoded).expect("re-encode older manifest"),
         bytes
     );
 }
@@ -490,10 +559,29 @@ fn closure_manifest_versions_enforce_backing_field_ownership() {
     let bytes = encode_manifest(&current_without_backing).expect("encode missing-backing fixture");
     assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
 
-    let mut previous_with_backing = manifest();
-    previous_with_backing.format_version = PREVIOUS_MANIFEST_VERSION;
-    previous_with_backing.targets.push(target("a"));
-    let bytes = encode_manifest(&previous_with_backing).expect("encode prior-backing fixture");
+    let mut older_with_backing = manifest();
+    older_with_backing.format_version = OLDER_MANIFEST_VERSION;
+    let mut older_target = target("a");
+    older_target.overlay = older_target.vmstate.clone();
+    older_with_backing.targets.push(older_target);
+    let bytes = encode_manifest(&older_with_backing).expect("encode prior-backing fixture");
+    assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
+}
+
+#[test]
+fn current_manifest_requires_sparse_overlay_and_dense_vmstate() {
+    let mut dense_overlay = manifest();
+    let mut dense_target = target("a");
+    dense_target.overlay = dense_target.vmstate.clone();
+    dense_overlay.targets.push(dense_target);
+    let bytes = encode_manifest(&dense_overlay).expect("encode dense-overlay fixture");
+    assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
+
+    let mut sparse_vmstate = manifest();
+    let mut sparse_target = target("a");
+    sparse_target.vmstate = sparse_target.overlay.clone();
+    sparse_vmstate.targets.push(sparse_target);
+    let bytes = encode_manifest(&sparse_vmstate).expect("encode sparse-VMState fixture");
     assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
 }
 
@@ -680,10 +768,7 @@ fn run_production_replay_oracle_promotion_test() {
         u64::try_from(overlay.len()).expect("overlay length"),
         replay_target.overlay().length()
     );
-    assert_eq!(
-        ContentHash::from_bytes(&overlay),
-        replay_target.overlay().identity()
-    );
+    assert_eq!(overlay, b"overlay fixture");
     let mut vmstate = Vec::new();
     replay_target
         .vmstate()
@@ -943,6 +1028,8 @@ fn file_artifact_materialization_streams_and_preserves_sparse_zero_extents() {
         identity,
         length,
         chunks: Vec::new(),
+        sparse: false,
+        extents: Vec::new(),
     };
     materialize_checkpoint_artifact(&artifact, &restored, "sparse test")
         .expect("materialize sparse source");
@@ -991,6 +1078,8 @@ fn chunked_artifact_materialization_recreates_sparse_zero_extents() {
         identity,
         length,
         chunks: Vec::new(),
+        sparse: false,
+        extents: Vec::new(),
     };
     let manifest = artifact_manifest(&source_artifact).expect("derive sparse chunk manifest");
     persist_chunked_artifact(&object_directory, &manifest, &source_artifact)
@@ -1000,6 +1089,8 @@ fn chunked_artifact_materialization_recreates_sparse_zero_extents() {
         identity,
         length,
         chunks: manifest.chunks,
+        sparse: manifest.sparse,
+        extents: manifest.extents,
     };
     materialize_checkpoint_artifact(&chunked, &restored, "sparse chunk test")
         .expect("materialize sparse chunks");
@@ -1025,6 +1116,8 @@ fn chunk_store_deduplicates_and_materializes_complete_artifacts() {
         identity: ContentHash::from_bytes(&bytes),
         length: u64::try_from(bytes.len()).expect("fixture length fits"),
         chunks: Vec::new(),
+        sparse: false,
+        extents: Vec::new(),
     };
     let manifest = artifact_manifest(&artifact).expect("derive chunk manifest");
 
@@ -1047,6 +1140,8 @@ fn chunk_store_deduplicates_and_materializes_complete_artifacts() {
         identity: manifest.identity,
         length: manifest.length,
         chunks: manifest.chunks.clone(),
+        sparse: manifest.sparse,
+        extents: manifest.extents.clone(),
     };
     let mut streamed = Vec::new();
     ProductionVmNodeCheckpointArtifact {
@@ -1133,6 +1228,174 @@ fn paused_artifact_staging_writes_only_deduplicated_chunks() {
     materialize_checkpoint_artifact(&artifact, &restored, "direct chunk staging")
         .expect("materialize directly staged chunks");
     assert_eq!(fs::read(restored).expect("read restored overlay"), bytes);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sparse_overlay_staging_persists_only_changed_chunks_and_reconstructs_holes() {
+    let root = tempfile::tempdir().expect("create sparse staging fixture");
+    let source = root.path().join("active-overlay.qcow2");
+    let object_directory = root.path().join("staged-objects");
+    let restored = root.path().join("restored-overlay.qcow2");
+    let length = 64 * 1024 * 1024_u64;
+    let mut source_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&source)
+        .expect("create sparse overlay");
+    source_file
+        .write_all(b"changed-head")
+        .expect("write changed head");
+    source_file
+        .seek(SeekFrom::Start(length - 12))
+        .expect("seek changed tail");
+    source_file
+        .write_all(b"changed-tail")
+        .expect("write changed tail");
+    source_file.sync_all().expect("flush sparse overlay");
+    drop(source_file);
+
+    let artifact = stage_sparse_checkpoint_artifact_chunks_with_boundary(
+        &source,
+        &object_directory,
+        "root overlay",
+        0,
+        FaultResourceLimits::compiled_maximum(),
+        &mut || Ok(()),
+    )
+    .expect("stage sparse overlay extents");
+    assert!(artifact.sparse);
+    assert!(artifact.chunks.is_empty());
+    assert_eq!(artifact.extents.len(), 2);
+    assert_eq!(artifact.extents[0].start_chunk, 0);
+    assert_eq!(artifact.extents[1].start_chunk, 15);
+    assert_eq!(
+        artifact
+            .extents
+            .iter()
+            .map(|extent| extent.chunks.len())
+            .sum::<usize>(),
+        2
+    );
+    assert_eq!(regular_file_count(&object_directory), 2);
+
+    let mut streamed = Vec::new();
+    stream_checkpoint_artifact(&artifact, &mut streamed, "sparse staged overlay")
+        .expect("stream sparse staged overlay");
+    assert_eq!(
+        streamed.len(),
+        usize::try_from(length).expect("fixture length fits")
+    );
+    assert_eq!(&streamed[..12], b"changed-head");
+    assert!(
+        streamed[12..streamed.len() - 12]
+            .iter()
+            .all(|byte| *byte == 0)
+    );
+    assert_eq!(&streamed[streamed.len() - 12..], b"changed-tail");
+
+    materialize_checkpoint_artifact(&artifact, &restored, "sparse staged overlay")
+        .expect("materialize sparse staged overlay");
+    let metadata = fs::metadata(&restored).expect("inspect materialized sparse overlay");
+    assert_eq!(metadata.len(), length);
+    assert!(metadata.blocks().saturating_mul(512) < length / 2);
+    assert_eq!(
+        fs::read(&restored).expect("read materialized overlay"),
+        streamed
+    );
+
+    let first = artifact.extents[0].chunks[0];
+    fs::write(
+        object_path(&object_directory, first),
+        vec![0x5a; ARTIFACT_CHUNK_BYTES],
+    )
+    .expect("corrupt sparse extent object");
+    assert!(validate_chunked_artifact(&object_directory, &artifact).is_err());
+    fs::remove_file(object_path(&object_directory, first)).expect("remove sparse extent object");
+    assert!(validate_chunked_artifact(&object_directory, &artifact).is_err());
+    fs::remove_file(&restored).expect("remove prior sparse materialization");
+    assert!(
+        materialize_checkpoint_artifact(&artifact, &restored, "corrupt sparse overlay").is_err()
+    );
+    assert!(!restored.exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn all_zero_sparse_overlay_has_no_stored_chunks() {
+    let root = tempfile::tempdir().expect("create all-zero sparse fixture");
+    let source = root.path().join("zero-overlay.qcow2");
+    let object_directory = root.path().join("staged-objects");
+    let length = 8 * 1024 * 1024_u64;
+    let source_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&source)
+        .expect("create all-zero sparse overlay");
+    source_file
+        .set_len(length)
+        .expect("size all-zero sparse overlay");
+    source_file
+        .sync_all()
+        .expect("flush all-zero sparse overlay");
+    drop(source_file);
+
+    let artifact = stage_sparse_checkpoint_artifact_chunks_with_boundary(
+        &source,
+        &object_directory,
+        "all-zero root overlay",
+        0,
+        FaultResourceLimits::compiled_maximum(),
+        &mut || Ok(()),
+    )
+    .expect("stage all-zero sparse overlay");
+    assert!(artifact.sparse);
+    assert!(artifact.extents.is_empty());
+    assert_eq!(regular_file_count(&object_directory), 0);
+    validate_chunked_artifact(&object_directory, &artifact)
+        .expect("authenticate all-zero sparse overlay");
+
+    let mut streamed = Vec::new();
+    stream_checkpoint_artifact(&artifact, &mut streamed, "all-zero sparse overlay")
+        .expect("stream all-zero sparse overlay");
+    assert_eq!(
+        streamed.len(),
+        usize::try_from(length).expect("fixture length fits")
+    );
+    assert!(streamed.iter().all(|byte| *byte == 0));
+}
+
+#[test]
+fn sparse_manifest_rejects_noncanonical_extent_geometry() {
+    let chunk = ContentHash::from_bytes(b"chunk");
+    let mut invalid = target("a").overlay;
+    invalid.length = 3 * ARTIFACT_CHUNK_BYTES_U64;
+    invalid.extents = vec![
+        ArtifactExtent {
+            start_chunk: 0,
+            chunks: vec![chunk],
+        },
+        ArtifactExtent {
+            start_chunk: 1,
+            chunks: vec![chunk],
+        },
+    ];
+    assert!(validate_sparse_artifact_shape(&invalid).is_err());
+
+    invalid.extents[1].start_chunk = 0;
+    assert!(validate_sparse_artifact_shape(&invalid).is_err());
+
+    invalid.extents = vec![ArtifactExtent {
+        start_chunk: 3,
+        chunks: vec![chunk],
+    }];
+    assert!(validate_sparse_artifact_shape(&invalid).is_err());
+
+    invalid.extents = vec![ArtifactExtent {
+        start_chunk: 0,
+        chunks: Vec::new(),
+    }];
+    assert!(validate_sparse_artifact_shape(&invalid).is_err());
 }
 
 #[test]
