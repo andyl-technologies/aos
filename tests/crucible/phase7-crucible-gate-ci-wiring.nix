@@ -416,7 +416,7 @@
       }
       {
         label = "fleet checks exposed with Crucible e2e surface";
-        needle = "fleet = discoverFleetTests // crucibleFleetChecks;";
+        needle = "base = discoverFleetTests // crucibleFleetChecks;";
       }
       {
         label = "distributed continuous exploration fleet wrapper defined";
@@ -522,7 +522,7 @@
     ++ failuresFor "flake.nix" flake [
       {
         label = "flake exposes fleet checks";
-        needle = ''// prefixAttrs "fleet" aos.checks.fleet'';
+        needle = ''// flattenAttrs "fleet" aos.checks.fleet'';
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

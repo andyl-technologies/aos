@@ -338,7 +338,7 @@
       }
       {
         label = "fleet checks exposed";
-        needle = "fleet = discoverFleetTests // crucibleFleetChecks;";
+        needle = "base = discoverFleetTests // crucibleFleetChecks;";
       }
       {
         label = "TCG-only fleet wrapper result";
@@ -352,7 +352,7 @@
     ++ failuresFor "flake.nix" flake [
       {
         label = "flake exposes fleet checks";
-        needle = ''// prefixAttrs "fleet" aos.checks.fleet'';
+        needle = ''// flattenAttrs "fleet" aos.checks.fleet'';
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [

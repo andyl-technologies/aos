@@ -17,7 +17,7 @@
   pkgs,
   lib,
 }: let
-  aos = import ../../. {};
+  aos = import ../../. {system = pkgs.stdenv.buildPlatform.system;};
 
   opKey = "ops:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAIJiuCf/fX/rsn5ODyT5ebEVtabAmZceKi2aD+cBWjWKL";
 
