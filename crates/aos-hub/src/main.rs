@@ -679,7 +679,14 @@ async fn main() -> Result<()> {
                     )
                     .with_credentials(Arc::clone(&app_state.secret_versions)),
                 ),
-            );
+            )
+            .with_writes(Arc::new(
+                aos_hub::coreports::HubSurfaceWriteProvider::new(
+                    Arc::clone(&app_state.db),
+                    app_state.http.clone(),
+                )
+                .with_credentials(Arc::clone(&app_state.secret_versions)),
+            ));
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
                 loop {
