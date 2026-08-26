@@ -712,6 +712,7 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         icount_shift: 0,
         node_indexes: BTreeMap::new(),
         node_run_directories: BTreeMap::new(),
+        immutable_root_images: BTreeMap::new(),
         node_generations: BTreeMap::new(),
         node_leases: BTreeMap::new(),
         node_lease_cleanup_failed: false,

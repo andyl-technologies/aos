@@ -818,7 +818,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   fail-closed. Legacy version-two roots remain readable but cannot resume a
   campaign attempt. The complete production lifecycle checkpoint store now
   also lends a read-only portable closure capability: it authenticates the
-  version-five production manifest and exact sorted object inventory under the
+  version-six production manifest and exact sorted object inventory under the
   scenario's aggregate checkpoint bound, keeps overlay and VMState artifacts
   chunked, and reauthenticates each object while streaming without exposing its
   directory. A matching production-store installer accepts that narrow source
@@ -1455,9 +1455,10 @@ it no longer copies both artifacts through an additional full-file staging
 tree. Direct-file and chunk-sequence restore now use one fixed 1 MiB buffer,
 authenticate length and whole-object identity during the copy, recreate zero
 runs as sparse extents, publish the destination atomically, and leave no partial
-destination after corrupt or missing input. Immutable backing plus
-changed-overlay manifests and `O(changed state)` capture remain open, so
-T-CAM-5.4 remains unchecked.
+destination after corrupt or missing input. Version-six targets now bind the
+actual immutable root-image byte identity and reject a different backing before
+QEMU launch. Changed-overlay manifests and `O(changed state)` capture remain
+open, so T-CAM-5.4 remains unchecked.
 
 **Gates:** `gate:campaign-store-equivalence`, `gate:campaign-store-composition`,
 `gate:exact-closure-streaming`, `gate:campaign-continuity-v2`.

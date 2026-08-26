@@ -372,23 +372,31 @@ all been observed. The first implementation streams the complete qcow2 object;
 extent manifests and changed-state capture remain the required hot-path
 optimization rather than a correctness precondition.
 
-The complete multi-node production continuation uses version five of the same
+The complete multi-node production continuation uses version six of the same
 typed root rather than flattening a potentially large object set into one
 generic envelope. The registered leaves are the canonical
-`crucible.production-exact-closure@device-state.5` manifest and exact opaque
+`crucible.production-exact-closure@device-state.6` manifest and exact opaque
 production objects under
 `crucible.executor.production-checkpoint-object@device-state.5`. Every object
 retains its production BLAKE3 identity and declared length in a registered
 `crucible.executor.production-checkpoint-index@exact-manifest.1` page. A page
 contains at most 4,096 objects and has this canonical body and child mapping:
 
-Version five adds the strictly node-ordered selectable catalog plans to the
+Version five added the strictly node-ordered selectable catalog plans to the
 bounded lifecycle-continuation object. Each plan remains the canonical
 `CRUCSCP2` process-neutral body, is at most 32 MiB, and must be frozen and bound
 to a live checkpoint target. The closure reader continues to accept a canonical
 version-four manifest as an exact legacy identity; such a closure has no
 selectable catalog plans and therefore cannot restore a selectable-bearing
 scenario.
+
+Version six additionally binds every live target to the BLAKE3 identity of
+the immutable root-image bytes supplied to QEMU. Lifecycle construction hashes
+the selected image, and capture includes that identity in both the target record
+and target-manifest identity. Restore rejects a mismatch before launching QEMU. Canonical
+version-four and version-five manifests remain readable with no backing claim;
+they retain their original bytes and identities, while only version-six targets
+make the backing proof.
 
 ```text
 "CRUCPIDX" || object_count:u32be

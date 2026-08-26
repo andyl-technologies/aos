@@ -5,6 +5,7 @@ use std::io::Read;
 
 pub(super) struct ExactCheckpointTargetManifestBasis<'a> {
     pub(super) configuration: ContentHash,
+    pub(super) immutable_backing: Option<ContentHash>,
     pub(super) node: &'a NodeId,
     pub(super) counter: u64,
     pub(super) scheduler_time: VirtualTime,
@@ -23,6 +24,7 @@ pub(super) fn validate_exact_checkpoint_target(
     validate_exact_checkpoint_artifact(&target.vmstate_artifact, "VMState")?;
     let observed = exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
         configuration: target.configuration.id(),
+        immutable_backing: target.immutable_backing,
         node,
         counter: target.counter,
         scheduler_time: target.scheduler_time,
@@ -45,6 +47,7 @@ pub(super) fn exact_checkpoint_target_manifest_identity(
 ) -> ContentHash {
     let ExactCheckpointTargetManifestBasis {
         configuration,
+        immutable_backing,
         node,
         counter,
         scheduler_time,
@@ -53,11 +56,15 @@ pub(super) fn exact_checkpoint_target_manifest_identity(
         overlay,
         vmstate,
     } = basis;
+    let backing = immutable_backing.map_or_else(String::new, |identity| {
+        format!("\nimmutable_backing={}", identity.to_hex())
+    });
     ContentHash::from_canonical_material(
         "crucible.production-vm-exact-checkpoint.v1",
         &format!(
-            "configuration={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\nvmstate={}",
+            "configuration={}{}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\nvmstate={}",
             configuration.to_hex(),
+            backing,
             node.name,
             counter,
             scheduler_time.ticks,

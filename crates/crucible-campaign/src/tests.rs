@@ -385,7 +385,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.production-exact-closure",
-            "5",
+            "6",
             "crucible-api::vm_lifecycle",
             "device-state",
         ),

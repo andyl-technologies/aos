@@ -255,6 +255,7 @@ struct ProductionVmDebugRuntimeEvidence {
 #[derive(Debug)]
 struct ProductionVmExactCheckpointTarget {
     configuration: Configuration,
+    immutable_backing: Option<ContentHash>,
     counter: u64,
     scheduler_time: VirtualTime,
     snapshot: ExactSnapshotHandle,
@@ -502,6 +503,7 @@ pub struct ProductionVmLifecycleLoop {
     icount_shift: u8,
     node_indexes: BTreeMap<NodeId, usize>,
     node_run_directories: BTreeMap<NodeId, PathBuf>,
+    immutable_root_images: BTreeMap<NodeId, ContentHash>,
     node_generations: BTreeMap<NodeId, u64>,
     node_leases: BTreeMap<NodeId, Box<dyn ProductionVmNodeLease>>,
     node_lease_cleanup_failed: bool,
@@ -1880,6 +1882,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
     let mut node_generations = BTreeMap::new();
     let mut node_leases = BTreeMap::new();
     let mut node_service_states = BTreeMap::new();
+    let mut immutable_root_images = BTreeMap::new();
     let mut debug_backend_paths = BTreeMap::new();
     let mut initial_ticks = None;
     let scenario_seed = scenario.seed().bytes();
@@ -1896,6 +1899,13 @@ fn build_production_vm_lifecycle_loop_with_restore(
         if config.validate_guest_asset_references {
             validate_guest_asset_references(vm, guest_assets)?;
         }
+        let immutable_root_image = hash_file(&guest_assets.root_image).map_err(|error| {
+            loop_factory_error(format!(
+                "hash immutable root image for production node `{}` from {}: {error}",
+                vm.id.name,
+                guest_assets.root_image.display()
+            ))
+        })?;
         let node_directory = run_directory.path().join(format!("node-{index}"));
         let restore_target = restore_checkpoint
             .as_ref()
@@ -1922,7 +1932,18 @@ fn build_production_vm_lifecycle_loop_with_restore(
                     loop_factory_error("exact checkpoint target lost its fault continuation")
                 })?;
             validate_exact_checkpoint_target(&vm.id, target, fault_identity)?;
+            if let Some(expected) = target.immutable_backing
+                && expected != immutable_root_image
+            {
+                return Err(loop_factory_error(format!(
+                    "production exact checkpoint for `{}` names immutable backing {} but the selected root image hashes to {}",
+                    vm.id.name,
+                    expected.to_hex(),
+                    immutable_root_image.to_hex()
+                )));
+            }
         }
+        immutable_root_images.insert(vm.id.clone(), immutable_root_image);
         let kernel_cmdline_prefix = production_kernel_cmdline_prefix(config, vm.arch, guest_assets);
         let kernel_cmdline = match kernel_cmdline_prefix {
             Some(prefix) if !prefix.trim().is_empty() => {
@@ -2678,6 +2699,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
         icount_shift: first.icount_shift,
         node_indexes,
         node_run_directories,
+        immutable_root_images,
         node_generations,
         node_leases,
         node_lease_cleanup_failed: false,

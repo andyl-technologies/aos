@@ -37,9 +37,11 @@ pub use retirement::{
     ProductionExactCheckpointRetirementReport, retire_production_exact_checkpoint_catalog,
 };
 
-const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v5\0";
+const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v6\0";
+const PREVIOUS_MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v5\0";
 const LEGACY_MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v4\0";
-const MANIFEST_VERSION: u8 = 5;
+const MANIFEST_VERSION: u8 = 6;
+const PREVIOUS_MANIFEST_VERSION: u8 = 5;
 const LEGACY_MANIFEST_VERSION: u8 = 4;
 const MANIFEST_FILE: &str = "manifest.cbor";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
@@ -96,6 +98,8 @@ struct ClosureManifest {
 #[serde(deny_unknown_fields)]
 struct TargetManifest {
     node: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    immutable_backing: Option<ContentHash>,
     counter: u64,
     scheduler_time: u64,
     snapshot: ContentHash,
@@ -727,6 +731,7 @@ fn load_exact_checkpoint_set_with_boundary(
         })?;
         let restored = ProductionVmExactCheckpointTarget {
             configuration: configuration.clone(),
+            immutable_backing: target.immutable_backing,
             counter: target.counter,
             scheduler_time: VirtualTime {
                 ticks: target.scheduler_time,
@@ -1692,6 +1697,7 @@ fn manifest_and_objects_with_boundary(
         snapshots.insert(node.clone(), bytes);
         targets.push(TargetManifest {
             node: node.name.clone(),
+            immutable_backing: target.immutable_backing,
             counter: target.counter,
             scheduler_time: target.scheduler_time.ticks,
             snapshot,
@@ -1764,6 +1770,7 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
             .iter()
             .map(|target| TargetManifest {
                 node: target.node.clone(),
+                immutable_backing: target.immutable_backing,
                 counter: target.counter,
                 scheduler_time: target.scheduler_time,
                 snapshot: target.snapshot,
@@ -1779,7 +1786,8 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
     let bytes = encode_manifest(&material)?;
     let domain = match manifest.format_version {
         LEGACY_MANIFEST_VERSION => "crucible.production-exact-closure.v4",
-        MANIFEST_VERSION => "crucible.production-exact-closure.v5",
+        PREVIOUS_MANIFEST_VERSION => "crucible.production-exact-closure.v5",
+        MANIFEST_VERSION => "crucible.production-exact-closure.v6",
         _ => return Err(store_error("unsupported exact checkpoint manifest version")),
     };
     Ok(ContentHash::from_canonical_material(
@@ -1799,6 +1807,7 @@ fn encode_manifest(manifest: &ClosureManifest) -> Result<Vec<u8>, SchedulerError
     }
     let magic = match manifest.format_version {
         LEGACY_MANIFEST_VERSION => LEGACY_MANIFEST_MAGIC,
+        PREVIOUS_MANIFEST_VERSION => PREVIOUS_MANIFEST_MAGIC,
         MANIFEST_VERSION => MANIFEST_MAGIC,
         _ => return Err(store_error("unsupported exact checkpoint manifest version")),
     };
@@ -1838,6 +1847,16 @@ fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
         ));
     }
     if manifest.targets.iter().any(|target| target.node.is_empty())
+        || (manifest.format_version == MANIFEST_VERSION
+            && manifest
+                .targets
+                .iter()
+                .any(|target| target.immutable_backing.is_none()))
+        || (manifest.format_version != MANIFEST_VERSION
+            && manifest
+                .targets
+                .iter()
+                .any(|target| target.immutable_backing.is_some()))
         || manifest.targets.iter().any(|target| {
             (target.overlay.length == 0) != target.overlay.chunks.is_empty()
                 || (target.vmstate.length == 0) != target.vmstate.chunks.is_empty()

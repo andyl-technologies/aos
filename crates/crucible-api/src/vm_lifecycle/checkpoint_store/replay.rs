@@ -32,7 +32,7 @@ impl ProductionExactCheckpointObject {
 /// Read-only portable view of one complete production exact-checkpoint closure.
 ///
 /// The value exposes no directory or mutation authority. Its manifest is the
-/// canonical `crucible.production-exact-closure.v5` body, and its object list
+/// canonical `crucible.production-exact-closure.v6` body, and its object list
 /// is the exact deduplicated set named by that manifest. Large overlay and
 /// VMState artifacts remain represented by their bounded content-addressed
 /// chunks rather than by RAM-sized buffers.
@@ -501,7 +501,7 @@ impl ProductionExactCheckpointClosure {
         self.configuration
     }
 
-    /// Returns the canonical version-four production closure manifest bytes.
+    /// Returns the canonical version-six production closure manifest bytes.
     #[must_use]
     pub fn manifest(&self) -> &[u8] {
         &self.manifest
@@ -1108,6 +1108,7 @@ fn prepare_production_replay_oracle_promotion_source(
         target.manifest_identity =
             exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
                 configuration,
+                immutable_backing: target.immutable_backing,
                 node: &node,
                 counter: target.counter,
                 scheduler_time: VirtualTime {
@@ -1201,6 +1202,7 @@ pub(super) fn authenticate_replay_oracle_source_pair(
         let expected_source_manifest =
             exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
                 configuration: source_manifest.configuration,
+                immutable_backing: source_target.immutable_backing,
                 node: &node,
                 counter: source_target.counter,
                 scheduler_time: VirtualTime {
@@ -1229,6 +1231,7 @@ pub(super) fn authenticate_replay_oracle_source_pair(
         let expected_promoted_manifest =
             exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
                 configuration: promoted_manifest.configuration,
+                immutable_backing: promoted_target.immutable_backing,
                 node: &node,
                 counter: promoted_target.counter,
                 scheduler_time: VirtualTime {
