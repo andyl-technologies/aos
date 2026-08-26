@@ -4,6 +4,8 @@
   fetchurl,
   gnumake,
   zlib,
+  xz,
+  lz4,
   stdenv,
 }: let
   version = "1.5.7";
@@ -20,7 +22,8 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [zlib];
+    # Keep the CLI's gzip, legacy lzma, and lz4 stream support enabled.
+    runtimeDeps = [zlib xz lz4];
     propagatedDeps = [];
 
     # The build machine's uname remains Linux during a cross build. Tell the

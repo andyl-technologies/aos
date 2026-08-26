@@ -46,8 +46,36 @@ in
           # GCC 13+ requires explicit stdbool.h include for bool type
           export CPPFLAGS="$CPPFLAGS -include stdbool.h"
 
+          ${
+            if stdenv.isCross && stdenv.hostPlatform.isDarwin
+            then ''
+              # ncurses compiles generators such as make_keys for the build
+              # machine. Isolate its native compiler from the target SDK and
+              # linker search paths exported by the cross stdenv.
+              native_cc="$BUILD_CC"
+              mkdir -p .aos-build-tools
+              cat > .aos-build-tools/cc <<EOF
+              #!$CONFIG_SHELL
+              unset AOS_HARDENING_ENABLE AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+              unset C_INCLUDE_PATH
+              unset CPLUS_INCLUDE_PATH LIBRARY_PATH MACOSX_DEPLOYMENT_TARGET
+              unset NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT
+              exec "$native_cc" "\$@"
+              EOF
+              chmod +x .aos-build-tools/cc
+              build_cc_flag="--with-build-cc=$PWD/.aos-build-tools/cc"
+              # Host-built generators include the target-generated curses.h,
+              # whose NCURSES_BOOL definition uses the C99 bool type.
+              export BUILD_CPPFLAGS="-include stdbool.h"
+            ''
+            else ''
+              build_cc_flag=
+            ''
+          }
+
           ./configure \
             $configureFlags \
+            $build_cc_flag \
             --prefix=$out \
             --with-shared \
             --without-debug \
