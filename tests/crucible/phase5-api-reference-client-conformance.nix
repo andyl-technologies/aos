@@ -16,7 +16,13 @@
     entry = ../../crates/crucible-api/tests/gate_control_client.rs;
   };
   abiTest = builtins.readFile ../../crates/crucible-api/tests/gate_abi_conformance.rs;
-  qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
+  qemuNode = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu/src/node.rs)
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/node_tests.rs;
+    })
+  ];
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -253,7 +259,7 @@
       }
       {
         label = "QemuNode backend restore coverage";
-        needle = "SimulationBackend::restore(&mut node";
+        needle = "SimulationBackend::restore(";
       }
       {
         label = "QemuNode backend shutdown coverage";
@@ -276,6 +282,7 @@ in
 
     buildDeps = [
       pkgs.coreutils
+      pkgs.grep
       pkgs.rust
       pkgs.sed
     ];
@@ -334,7 +341,15 @@ in
             --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
             -p crucible-api \
             --test gate_control_client \
-            reference_client_conformance_drives_full_lifecycle_across_transports_with_simdouble_backend \
+            -- --list \
+            | grep -Fxq 'contract_tests::transport_conformance::reference_client_conformance_drives_full_lifecycle_across_transports_with_simdouble_backend: test'
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
+            -p crucible-api \
+            --test gate_control_client \
+            contract_tests::transport_conformance::reference_client_conformance_drives_full_lifecycle_across_transports_with_simdouble_backend \
             -- --exact --test-threads=1
           cargo test \
             --frozen \
@@ -342,8 +357,24 @@ in
             --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
             -p crucible-api \
             --test gate_control_client \
-            rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants \
+            -- --list \
+            | grep -Fxq 'contract_tests::rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants: test'
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
+            -p crucible-api \
+            --test gate_control_client \
+            contract_tests::rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants \
             -- --exact --test-threads=1
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
+            -p crucible-api \
+            --test gate_abi_conformance \
+            -- --list \
+            | grep -Fxq 'rpc_golden_vectors_cover_requests_responses_events_and_payload_kinds: test'
           cargo test \
             --frozen \
             --offline \
@@ -357,7 +388,15 @@ in
             --offline \
             --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
             -p crucible-qemu \
-            node::tests::qemu_node_satisfies_simulation_backend_trait \
+            --lib \
+            -- --list \
+            | grep -Fxq 'node::tests::exact_lifecycle::qemu_node_satisfies_simulation_backend_trait: test'
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
+            -p crucible-qemu \
+            node::tests::exact_lifecycle::qemu_node_satisfies_simulation_backend_trait \
             -- --exact --test-threads=1
         '';
       }

@@ -11,6 +11,7 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
+  portableArtifacts = builtins.readFile ../../crates/crucible-cli/src/portable_artifact_constants.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -54,10 +55,6 @@
         needle = "fn load_triage_findings_ledger";
       }
       {
-        label = "signed findings schema";
-        needle = "crucible.failure-triage.findings-ledger.v2";
-      }
-      {
         label = "signed findings parser";
         needle = "fn parse_failure_findings_ledger_v2_bytes";
       }
@@ -87,7 +84,7 @@
       }
       {
         label = "artifact-only ledger blocker";
-        needle = "discovery-time signature evidence is not available in this ledger format";
+        needle = "discovery-time signature evidence is not available";
       }
       {
         label = "triage help test";
@@ -112,6 +109,12 @@
       {
         label = "triage exit-code test";
         needle = "cli_triage_is_offline_and_uses_uniform_failure_exit_code";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/src/portable_artifact_constants.rs" portableArtifacts [
+      {
+        label = "signed findings schema";
+        needle = "crucible.failure-triage.findings-ledger.v2";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

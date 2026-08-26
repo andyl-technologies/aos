@@ -13,7 +13,10 @@
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
   openSet = builtins.readFile ../../crates/crucible-api/src/open_set.rs;
-  rpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
+  rpcAbi = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/rpc_abi.rs;
+  };
   abiTest = builtins.readFile ../../crates/crucible-api/tests/gate_abi_conformance.rs;
   openSetTest = builtins.readFile ../../crates/crucible-api/tests/gate_open_set_payload.rs;
   controlClientTest = import ./_rust-module-source.nix {
@@ -125,8 +128,8 @@
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_abi_conformance.rs" abiTest [
       {
-        label = "ABI test expects open-set categories";
-        needle = "crucible.fault.*";
+        label = "ABI test expects the active non-imperative open-set categories";
+        needle = ''&["crucible.cmd.*", "crucible.bp.*", "crucible.event.*",]'';
       }
       {
         label = "ABI test expects signal-effect catalog event kind";

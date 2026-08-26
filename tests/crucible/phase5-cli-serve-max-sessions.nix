@@ -12,7 +12,10 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   lifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
-  apiServer = builtins.readFile ../../crates/crucible-api/src/server.rs;
+  apiServer = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/server.rs;
+  };
   cliMain = import ./_cli-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
