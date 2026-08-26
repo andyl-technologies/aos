@@ -225,10 +225,33 @@
         ${ln} -s ld "$out/bin/${targetTriple}-ld"
         ${ln} -s as "$out/bin/${targetTriple}-as"
 
-        for tool in ar ranlib nm objcopy size strings strip; do
+        for tool in ar ranlib nm objcopy size strings; do
           ${ln} -s "${llvm}/bin/llvm-$tool" "$out/bin/$tool"
           ${ln} -s "${llvm}/bin/llvm-$tool" "$out/bin/${targetTriple}-$tool"
         done
+
+        # llvm-strip rejects --strip-unneeded for Mach-O.  The generic AOS
+        # fixup phase uses that GNU spelling for shared libraries, and used to
+        # ignore the resulting failure.  Besides retaining debug symbols, an
+        # in-place ld64 link can then leave obsolete absolute object names in
+        # the Mach-O string table even after -oso_prefix normalized the live
+        # N_OSO entries.  Map the unsupported operation to Mach-O's canonical
+        # debug-symbol removal while preserving every other llvm-strip flag.
+        ${cat} > "$out/bin/strip" <<'WRAPPER_EOF'
+        #!${shell}
+        set -eu
+
+        translated=()
+        for arg in "$@"; do
+          case "$arg" in
+            --strip-unneeded) translated+=(-S) ;;
+            *) translated+=("$arg") ;;
+          esac
+        done
+        exec ${llvm}/bin/llvm-strip "''${translated[@]}"
+        WRAPPER_EOF
+        ${chmod} +x "$out/bin/strip"
+        ${ln} -s strip "$out/bin/${targetTriple}-strip"
 
         # llvm-objdump 22 prints some non-object diagnostics on stdout while
         # returning success.  The generic Mach-O validator relies on failure
