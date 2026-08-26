@@ -808,12 +808,15 @@ in
                 - _CFRunLoopWakeUp
                 - _CFStringCreateWithCString
                 - _CFStringCreateWithBytes
+                - _CFStringCreateCopy
+                - _CFStringCompare
                 - _CFStringGetBytes
                 - _CFStringGetCString
                 - _CFStringGetCStringPtr
                 - _CFStringGetLength
                 - _CFStringGetMaximumSizeForEncoding
                 - _CFStringGetTypeID
+                - _CFStringHasPrefix
                 - _CFTimeZoneCopyDefault
                 - _CFTimeZoneCopySystem
                 - _CFTimeZoneGetName
