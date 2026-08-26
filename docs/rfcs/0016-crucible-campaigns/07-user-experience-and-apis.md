@@ -285,23 +285,24 @@ use the distinct terms.
 ```text
 crucible campaign status NAME [--json]
 crucible campaign watch NAME [--after CURSOR]
-crucible campaign graph NAME --snapshot SNAPSHOT [--after HASH] [--limit N]
-crucible campaign choices NAME --snapshot SNAPSHOT [--after OPPORTUNITY] [--limit N]
-crucible campaign frontier NAME --snapshot SNAPSHOT [--after REQUEST] [--limit N]
+crucible campaign graph NAME --snapshot SNAPSHOT [--after HASH] [--limit N] [--pages N]
+crucible campaign choices NAME --snapshot SNAPSHOT [--after OPPORTUNITY] [--limit N] [--pages N]
+crucible campaign frontier NAME --snapshot SNAPSHOT [--after REQUEST] [--limit N] [--pages N]
 crucible campaign graph-object NAME --snapshot SNAPSHOT --key HASH
 crucible campaign choice-object NAME --snapshot SNAPSHOT --opportunity ID --kind declaration|domain
 crucible campaign frontier-object NAME --snapshot SNAPSHOT --request ID
 crucible campaign snapshot NAME --snapshot SNAPSHOT
 crucible campaign compare NAME --left SNAPSHOT --right SNAPSHOT
 crucible campaign explain NAME --snapshot SNAPSHOT --opportunity ID --request ID
-crucible campaign findings NAME --snapshot SNAPSHOT [--after HASH] [--limit N]
+crucible campaign findings NAME --snapshot SNAPSHOT [--after HASH] [--limit N] [--pages N]
 crucible campaign explain-finding NAME --snapshot SNAPSHOT --finding ID
 crucible campaign explain-attempt NAME --snapshot SNAPSHOT --attempt ID
 ```
 
 The read-only porcelain implements `status`, a one-shot resumable `watch`, and
-one immutable page of `graph`, `choices`, `frontier`, or `findings` over the authenticated
-local campaign-service Unix socket. Every command requires the socket path and
+bounded immutable-page traversal for `graph`, `choices`, `frontier`, or
+`findings` over the authenticated local campaign-service Unix socket. Every
+command requires the socket path and
 the principal expected from the daemon's peer policy, validates strict
 request-bound responses through the checked client, and renders table,
 Markdown, pretty JSON, or JSONL through the common CLI output selector. `watch
@@ -310,8 +311,14 @@ it with the returned snapshot cursor to follow a campaign without treating the
 transport as authoritative state. Each page command instead requires an exact
 immutable snapshot and accepts only the cursor type returned by that operation:
 a graph key hash, choice-opportunity ID, branch-request ID, or finding
-signature-index hash. The output echoes
-the exact snapshot and next cursor. Graph pages carry and verify the bounded
+signature-index hash. One page remains the default. `--pages` accepts
+`1..=256`; traversal also admits at most 65,536 aggregate entries and 128 MiB
+of aggregate canonical response bytes. Every response is independently checked
+against its exact request and immutable snapshot before its entries are
+accumulated, and a repeated cursor fails closed. The version-2 page report
+retains the starting cursor, per-page limit, page budget, pages and bytes
+consumed, authenticated entries, completion status, and either exact resume
+cursor or authenticated EOF. Graph pages carry and verify the bounded
 Merkle proof specified below before rendering; choice and frontier pages verify
 their snapshot-bound nested-index proofs through the same checked client.
 Snapshot inspection and comparison independently validate every requested

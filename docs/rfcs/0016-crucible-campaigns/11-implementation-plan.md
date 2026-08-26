@@ -1489,9 +1489,14 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   selector expressions remain open.
 - [ ] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
   queries with branch-point/source/provenance views, pagination, and versioned
-  JSON. The first snapshot-bound graph/frontier/choices page and its exact typed
-  cursor are now exposed through the checked local client in table, Markdown,
-  JSON, and JSONL. Exact graph configuration/opportunity bodies, choice
+  JSON. Snapshot-bound graph/frontier/choices/findings traversal is exposed
+  through the checked local client in table, Markdown, JSON, and JSONL. One
+  page remains the default; an explicit page budget follows at most 256 pages
+  while admitting at most 65,536 aggregate entries and 128 MiB of aggregate
+  canonical response bytes. Each page is independently proof- and
+  request-validated before accumulation, repeated cursors fail closed, and the
+  version-2 report preserves the start/resume cursor, authenticated EOF, and
+  exact page/byte accounting. Exact graph configuration/opportunity bodies, choice
   declaration/domain dependencies, and frontier branch requests are also
   exposed through their separately authorized proof-bearing operations with
   semantic source, budget, continuation, and provenance fields. Exact historical
