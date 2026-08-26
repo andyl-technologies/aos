@@ -2,8 +2,8 @@
 ##!
 ##! Rust bootstrap distinguishes the executable build compiler from the host
 ##! compiler being produced.  The stage-0 compiler and build-triple LLVM are
-##! native AOS packages; bootstrap then cross-builds its in-tree LLVM, rustc,
-##! standard library, Cargo, and requested tools for the Darwin host without
+##! native AOS packages; bootstrap cross-builds rustc, the standard library,
+##! Cargo, and requested tools against the equivalent target LLVM without
 ##! executing any resulting Mach-O program.
 {
   mkDerivation,
@@ -80,6 +80,80 @@ in
           chmod +x .fake-bin/git
           export PATH="$PWD/.fake-bin:$PATH"
 
+          # Rust's Python bootstrap uses the build-triple compiler for its own
+          # Cargo binary and stage-1 compiler.  Keep Darwin SDK paths and the
+          # arm64-only PAC token out of those Linux links while retaining the
+          # package's remaining native hardening policy.
+          write_build_compiler() {
+            native_compiler=$1
+            wrapper=$2
+            cat > "$wrapper" <<EOF
+          #!${buildPackages.bash}/bin/bash
+          native_hardening=
+          for token in \$AOS_HARDENING_ENABLE; do
+            case "\$token" in
+              pacret) ;;
+              *) native_hardening="\$native_hardening \$token" ;;
+            esac
+          done
+          export AOS_HARDENING_ENABLE="\$native_hardening"
+          unset AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+          unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
+          unset MACOSX_DEPLOYMENT_TARGET NIX_CFLAGS_COMPILE SDKROOT
+          # The stage-1 Linux rustc links the native shared LLVM, and x.py
+          # replaces LD_LIBRARY_PATH with its stage sysroot when executing it.
+          # Preserve only that native runtime search path in the executable;
+          # the inherited NIX_LDFLAGS points at Darwin libraries and ld64.
+          export NIX_LDFLAGS="-Wl,-rpath,${nativeLlvm}/lib"
+          exec "$native_compiler" "\$@"
+          EOF
+            chmod +x "$wrapper"
+          }
+          mkdir -p .aos-build-tools
+          write_build_compiler "${buildPackages.cc}/bin/cc" .aos-build-tools/cc-for-build
+          write_build_compiler "${buildPackages.cc}/bin/c++" .aos-build-tools/cxx-for-build
+
+          ${
+            if targetLlvm != null
+            then ''
+              # llvm-config must execute on the build platform, but its paths
+              # must describe the equivalent target LLVM.  Rust's own
+              # rustc_llvm build script explicitly supports this Canadian
+              # cross arrangement.  Translate only the package prefix; the
+              # native and target LLVM packages have identical components and
+              # link mode.
+              cat > .aos-build-tools/llvm-config-for-host <<EOF
+              #!${buildPackages.bash}/bin/bash
+              set -euo pipefail
+              "${nativeLlvm}/bin/llvm-config" "\$@" | sed 's|${nativeLlvm}|${targetLlvm}|g'
+              for arg in "\$@"; do
+                if [ "\$arg" = --cxxflags ]; then
+                  # The native query reports libstdc++, while the equivalent
+                  # Darwin LLVM was built against libc++.  rustc_llvm uses
+                  # this flag to select the target C++ runtime at link time.
+                  printf '%s\n' '-stdlib=libc++'
+                  break
+                fi
+              done
+              EOF
+              chmod +x .aos-build-tools/llvm-config-for-host
+
+              # For an external cross LLVM, x.py locates llvm-tools-preview
+              # binaries beside the configured llvm-config instead of asking
+              # the non-runnable target binary for its bindir.  Make that
+              # directory a complete target-tool view while keeping only the
+              # llvm-config entry Linux-executable.
+              for tool in \
+                llvm-cov llvm-nm llvm-objcopy llvm-objdump llvm-profdata \
+                llvm-readobj llvm-size llvm-strip llvm-ar llvm-as llvm-dis \
+                llvm-link llc opt
+              do
+                ln -s "${targetLlvm}/bin/$tool" ".aos-build-tools/$tool"
+              done
+            ''
+            else ""
+          }
+
           cat > ${configFileName} <<TOML
           change-id = ${toString changeId}
 
@@ -113,6 +187,7 @@ in
           codegen-units = 0
           rpath = true
           omit-git-hash = true
+          remap-debuginfo = true
           ${
             if needsDownloadRustc
             then "download-rustc = false"
@@ -125,9 +200,9 @@ in
           }
 
           [target.${buildTriple}]
-          cc = "${buildPackages.cc}/bin/cc"
-          cxx = "${buildPackages.cc}/bin/c++"
-          linker = "${buildPackages.cc}/bin/cc"
+          cc = "$PWD/.aos-build-tools/cc-for-build"
+          cxx = "$PWD/.aos-build-tools/cxx-for-build"
+          linker = "$PWD/.aos-build-tools/cc-for-build"
           ar = "${nativeLlvm}/bin/llvm-ar"
           ranlib = "${nativeLlvm}/bin/llvm-ranlib"
           llvm-config = "${nativeLlvm}/bin/llvm-config"
@@ -140,12 +215,33 @@ in
           ranlib = "$RANLIB"
           optimized-compiler-builtins = true
           split-debuginfo = "unpacked"
+          ${
+            if targetLlvm != null
+            then ''
+              llvm-config = "$PWD/.aos-build-tools/llvm-config-for-host"
+              rustflags = [
+                "-Lnative=${targetLlvm}/lib",
+                "-Lnative=${targetLlvm}/lib/darwin",
+                # The target LLVM's libc++ dylib loads libc++abi and libunwind
+                # at runtime but does not reexport them.  rustc links with the
+                # C driver and -nodefaultlibs, so make those direct C++ runtime
+                # dependencies visible while linking rustc_codegen_llvm.
+                "-Clink-arg=-lc++abi",
+                "-Clink-arg=-lunwind",
+              ]
+            ''
+            else ""
+          }
 
           ${
             if builtins.elem "wasm32-unknown-unknown" additionalTargets
             then ''
               [target.wasm32-unknown-unknown]
               optimized-compiler-builtins = false
+              # Bare wasm has no OS profiling runtime.  Leaving the global
+              # profiler setting enabled makes bootstrap compile compiler-rt's
+              # GCDA implementation, which requires POSIX headers.
+              profiler = false
             ''
             else ""
           }
@@ -157,6 +253,7 @@ in
         script = ''
           export PATH="$PWD/.fake-bin:$PATH"
           export RUST_BACKTRACE=1
+          export LD_LIBRARY_PATH="${nativeLlvm}/lib''${LD_LIBRARY_PATH:+:''${LD_LIBRARY_PATH}}"
 
           # Cargo and its native dependencies are host artifacts.  Their build
           # scripts run on Linux but link the resulting binaries to Darwin
@@ -177,6 +274,7 @@ in
         name = "install";
         script = ''
           export PATH="$PWD/.fake-bin:$PATH"
+          export LD_LIBRARY_PATH="${nativeLlvm}/lib''${LD_LIBRARY_PATH:+:''${LD_LIBRARY_PATH}}"
           export OPENSSL_DIR=${openssl}
           export OPENSSL_LIB_DIR=${openssl}/lib
           export OPENSSL_INCLUDE_DIR=${openssl}/include
