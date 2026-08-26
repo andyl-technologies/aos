@@ -919,6 +919,42 @@ fn campaign_status_and_watch_use_the_checked_loopback_transport() {
 }
 
 #[test]
+fn campaign_list_uses_the_checked_loopback_transport_across_pages() {
+    let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
+    let server = thread::spawn(move || {
+        for _page in 0..2 {
+            serve_loopback_campaign_once(&mut server_stream, &FixedHeadService)
+                .expect("serve one campaign list page");
+        }
+    });
+    let service = LoopbackCampaignService::new(client_stream).expect("loopback client");
+    let client = CampaignClient::new(service);
+    let report = query_campaign_list(
+        &client,
+        CampaignPrincipal::new("operator").expect("campaign principal"),
+        &CampaignListArgs {
+            after: None,
+            limit: 1,
+            pages: 2,
+        },
+    )
+    .expect("checked campaign list");
+    server.join().expect("campaign server thread");
+
+    assert!(report.complete);
+    assert_eq!(report.pages_scanned, 2);
+    assert_eq!(report.next_after, None);
+    assert_eq!(
+        report
+            .entries
+            .iter()
+            .map(|entry| entry.campaign.as_str())
+            .collect::<Vec<_>>(),
+        ["alpha", "middle"]
+    );
+}
+
+#[test]
 fn campaign_graph_page_uses_the_checked_proof_bearing_transport() {
     let (service, snapshot, _) = graph_page_service();
     let command = CampaignCommand::Graph(CampaignPageArgs {

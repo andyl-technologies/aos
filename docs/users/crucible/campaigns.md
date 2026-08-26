@@ -16,6 +16,7 @@ The checked local API currently provides:
 
 - verified scenario, configuration, and generator import;
 - named campaign creation and derivation;
+- explicitly authorized, bounded enumeration of current campaign heads;
 - resume, pause, stop, unseal, budget, steering, pin, and unpin mutations;
 - finite, generated, and exhaustive additive branch requests;
 - snapshot, graph, choice, frontier, finding, and comparison queries;
@@ -186,7 +187,25 @@ idempotent start against the exact returned genesis snapshot; the version-2
 acceptance report contains both results. The two mutations are retry-safe but
 not atomic, so retry the same create/start inputs if creation succeeds and the
 start response is indeterminate. Save exact IDs from JSON instead of scraping
-tables. Status and watch authenticate one exact head and lifecycle projection:
+tables.
+
+Enumerate the authenticated current heads visible to a principal with an
+explicit all-campaign grant:
+
+```sh
+./result/bin/crucible campaign --socket "$CAMPAIGN_SOCKET" \
+  --principal operator list --limit 32 --pages 8 --format json
+```
+
+An exact-name policy grant does not permit namespace discovery. Listing follows
+stable campaign-name pages and returns the exact resume cursor when the page
+budget ends before observed EOF. It admits at most 256 pages, 65,536 aggregate
+entries, and 128 MiB of canonical responses. Campaign refs may change between
+pages, so the result is a coalesced inventory rather than an immutable
+cross-page snapshot; every returned head and lifecycle projection is still
+authenticated independently.
+
+Status and watch authenticate one exact head and lifecycle projection:
 
 ```sh
 ./result/bin/crucible campaign --socket "$CAMPAIGN_SOCKET" \
