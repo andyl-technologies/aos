@@ -281,9 +281,14 @@
               'int main(void) {' \
               '  unsigned char answer[NS_PACKETSZ];' \
               '  char expanded[NS_MAXDNAME];' \
+              '  struct __res_state state = { 0 };' \
+              '  union res_sockaddr_union servers[1];' \
+              '  int initialized = res_ninit(&state);' \
+              '  int serverCount = res_getservers(&state, servers, 1);' \
+              '  res_ndestroy(&state);' \
               '  int query = res_query("localhost", ns_c_in, ns_t_a, answer, sizeof(answer));' \
               '  int expansion = dn_expand(answer, answer + sizeof(answer), answer, expanded, sizeof(expanded));' \
-              '  return query < -1 || expansion < -1;' \
+              '  return initialized < -1 || serverCount < 0 || query < -1 || expansion < -1;' \
               '}' \
               > resolver-smoke.c
             "$CC" resolver-smoke.c -o "$c/bin/aos-darwin-resolver-smoke"
