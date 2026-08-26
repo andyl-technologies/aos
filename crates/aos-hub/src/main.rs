@@ -686,7 +686,14 @@ async fn main() -> Result<()> {
                     )
                     .with_credentials(Arc::clone(&app_state.secret_versions)),
                 ),
-            );
+            )
+            .with_writes(Arc::new(
+                aos_hub::coreports::HubSurfaceWriteProvider::new(
+                    Arc::clone(&app_state.db),
+                    app_state.http.clone(),
+                )
+                .with_credentials(Arc::clone(&app_state.secret_versions)),
+            ));
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
                 loop {
@@ -1521,4 +1528,66 @@ fn tracing_subscriber_init() {
         fn exit(&self, _: &tracing::span::Id) {}
     }
     let _ = tracing::subscriber::set_global_default(StderrLogger);
+}
+
+#[cfg(test)]
+mod production_vm_coverage {
+    use std::fs;
+    use std::path::Path;
+
+    use clap::{Command as ClapCommand, CommandFactory as _};
+
+    use super::Cli;
+
+    fn collect_native_leaves(
+        command: &ClapCommand,
+        prefix: &mut Vec<String>,
+        leaves: &mut Vec<String>,
+    ) {
+        let visible = command
+            .get_subcommands()
+            .filter(|subcommand| {
+                !subcommand.is_hide_set()
+                    && !(prefix.is_empty() && subcommand.get_name() == "worker")
+            })
+            .collect::<Vec<_>>();
+        if visible.is_empty() {
+            leaves.push(prefix.join(" "));
+            return;
+        }
+
+        for subcommand in visible {
+            prefix.push(subcommand.get_name().to_string());
+            collect_native_leaves(subcommand, prefix, leaves);
+            prefix.pop();
+        }
+    }
+
+    #[test]
+    fn every_native_command_leaf_is_owned_by_the_native_vm_test() {
+        let mut leaves = Vec::new();
+        collect_native_leaves(&Cli::command(), &mut Vec::new(), &mut leaves);
+        leaves.sort();
+
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let source = fs::read_to_string(repository.join("tests/vm/hub-native-operations.nix"))
+            .expect("native Hub operation test must be readable")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let missing = leaves
+            .into_iter()
+            .filter(|leaf| !source.contains(leaf))
+            .collect::<Vec<_>>();
+
+        assert!(
+            missing.is_empty(),
+            "native aos-hub commands without executable VM ownership:\n{}",
+            missing.join("\n")
+        );
+    }
 }

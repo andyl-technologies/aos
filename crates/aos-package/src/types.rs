@@ -2047,12 +2047,18 @@ fn validate_image_verity_entry(image: &SysrootImageEntry) -> Result<()> {
     .filter(|field| field.is_some())
     .count();
     let verity_format = matches!(image.format.as_str(), "ext4-verity" | "erofs-verity");
+    // A production A/B disk is distributed as one raw GPT container while
+    // its authenticated update payload carries the root image and verity
+    // sidecars. Recovery metadata distinguishes that contract from an
+    // ordinary raw disk that must not claim standalone verity artifacts.
+    let raw_recovery_image = image.format == "raw" && !image.recovery_ukis.is_empty();
+    let supports_verity = verity_format || raw_recovery_image;
 
-    if verity_field_count == 0 && !verity_format {
+    if verity_field_count == 0 && !supports_verity {
         return Ok(());
     }
 
-    if !verity_format {
+    if !supports_verity {
         bail!(
             "image '{}' declares dm-verity fields but format '{}' is not a verity root format",
             image.store_path,
@@ -5212,6 +5218,32 @@ last_update = "2026-02-13T10:30:00Z"
 
         let err = validate_expose_meta(&expose).unwrap_err();
         assert!(format!("{err:#}").contains("is not a verity root format"));
+    }
+
+    #[test]
+    fn raw_recovery_image_accepts_complete_verity_metadata() {
+        let mut image = verity_image_entry();
+        image.format = "raw".into();
+        image.recovery_ukis.push(RecoveryUkiEntry {
+            copy: UkiSlot::A,
+            path: "recovery-a.efi".into(),
+            entry_path: "recovery-a.conf".into(),
+            byte_size: 1,
+            sha256: "b".repeat(64),
+            release: "test".into(),
+            recovery_abi: 1,
+            sb_signer_cert_sha256: "c".repeat(64),
+            sbat: vec![SbatEntry {
+                component: "aos".into(),
+                generation: 1,
+            }],
+        });
+
+        validate_image_verity_entry(&image).unwrap();
+
+        image.recovery_ukis.clear();
+        let error = validate_image_verity_entry(&image).unwrap_err();
+        assert!(error.to_string().contains("is not a verity root format"));
     }
 
     #[test]

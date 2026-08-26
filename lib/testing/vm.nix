@@ -469,8 +469,15 @@
             } > ptable.sfdisk
             sfdisk disk.img < ptable.sfdisk
 
-            dd if=root.img of=disk.img bs=512 seek="$ROOT_START" conv=notrunc status=none
-            ${lib.optionalString bakeVar ''dd if=var.img  of=disk.img bs=512 seek="$VAR_START"  conv=notrunc status=none''}
+            # Partition starts are MiB-aligned. Copy at that granularity so
+            # production-scale /var fixtures do not issue tens of millions of
+            # 512-byte writes during every fleet image build.
+            [ $((ROOT_START % 2048)) -eq 0 ]
+            dd if=root.img of=disk.img bs=1M seek="$((ROOT_START / 2048))" conv=notrunc status=none
+            ${lib.optionalString bakeVar ''
+              [ $((VAR_START % 2048)) -eq 0 ]
+              dd if=var.img of=disk.img bs=1M seek="$((VAR_START / 2048))" conv=notrunc status=none
+            ''}
 
             mkdir -p $out
             mv disk.img $out/disk.img
