@@ -2,8 +2,9 @@
 ##!
 ##! Zig maintains a redistributable aggregation of Apple open-source libc,
 ##! XNU, libdispatch, and related public headers together with a textual TAPI
-##! description of libSystem.  This derivation installs only those source/data
-##! inputs; it does not contain or extract an Xcode SDK.
+##! description of libSystem.  Additional framework headers come directly from
+##! Apple's open-source distributions.  This derivation installs only those
+##! source/data inputs; it does not contain or extract an Xcode SDK.
 {
   mkDerivation,
   fetchurl,
@@ -11,6 +12,12 @@
   version = "0.16.0";
   coreFoundationRevision = "761b621da93a856a48995efc29ed11028c283306";
   systemConfigurationRevision = "585b7f2fca293f4642d21d15c5daf187f63c4796";
+  ioKitUserRevision = "323ead896d04424f87184d8f6ff0cce811aab106";
+  xnuRevision = "f6217f891ac0bb64f3d375211650a4c1ff8ca1ea";
+  ioUsbFamilyRevision = "1398331b04a6bb9ea9b9f76248b8b584811ebcd0";
+  ioStorageFamilyRevision = "7edb88fbae296fb7c8ce2f64e115e116e566d51c";
+  darlingIoKitUserRevision = "534684e6748dffbd875c6cd1942477a52b66a077";
+  securityRevision = "db15acbe6a7f257a859ad9a3bb86097bfe0679d9";
 
   coreFoundationSrc = fetchurl {
     urls = [
@@ -24,6 +31,48 @@
       "https://github.com/apple-oss-distributions/configd/archive/${systemConfigurationRevision}.tar.gz"
     ];
     hash = "sha256-o6vraL6Go4N1dq1sXg5agwfFOMmdmCW0mObpcYmnfT8=";
+  };
+
+  ioKitUserSrc = fetchurl {
+    urls = [
+      "https://github.com/apple-oss-distributions/IOKitUser/archive/${ioKitUserRevision}.tar.gz"
+    ];
+    hash = "sha256-Gg76WBI81dEDJ1pd+vLXXjoKVjhHXS17tXPdBL/zD8w=";
+  };
+
+  xnuSrc = fetchurl {
+    urls = [
+      "https://github.com/apple-oss-distributions/xnu/archive/${xnuRevision}.tar.gz"
+    ];
+    hash = "sha256-B2MUbStUWbBw2AKqupUmzq1/sNVdDVG6AGmBgDAVCxU=";
+  };
+
+  ioUsbFamilySrc = fetchurl {
+    urls = [
+      "https://github.com/apple-oss-distributions/IOUSBFamily/archive/${ioUsbFamilyRevision}.tar.gz"
+    ];
+    hash = "sha256-tSgyOVFxykmfgkzhtegu3DLk9+Hr55l16PFqy3knWiI=";
+  };
+
+  ioStorageFamilySrc = fetchurl {
+    urls = [
+      "https://github.com/apple-oss-distributions/IOStorageFamily/archive/${ioStorageFamilyRevision}.tar.gz"
+    ];
+    hash = "sha256-KiuFwzUBV+XpP5Rchym4uJFf9dwmooS+3Ikq9DUZ9BM=";
+  };
+
+  darlingIoKitUserSrc = fetchurl {
+    urls = [
+      "https://github.com/darlinghq/darling-iokituser/archive/${darlingIoKitUserRevision}.tar.gz"
+    ];
+    hash = "sha256-KTUQGg7W4wGr2aCTipF3Fjn+KBJgu+AdzFRIQB0zz3M=";
+  };
+
+  securitySrc = fetchurl {
+    urls = [
+      "https://github.com/apple-oss-distributions/Security/archive/${securityRevision}.tar.gz"
+    ];
+    hash = "sha256-OQFd8WPEZSHROeg+yS+SFSf5Uv4WWeROGltFxqqkl9Y=";
   };
 in
   mkDerivation {
@@ -46,6 +95,12 @@ in
           tar xf "$src"
           tar xf ${coreFoundationSrc}
           tar xf ${systemConfigurationSrc}
+          tar xf ${ioKitUserSrc}
+          tar xf ${xnuSrc}
+          tar xf ${ioUsbFamilySrc}
+          tar xf ${ioStorageFamilySrc}
+          tar xf ${darlingIoKitUserSrc}
+          tar xf ${securitySrc}
           cd "zig-${version}"
         '';
       }
@@ -54,12 +109,22 @@ in
         script = ''
           coreFoundationRoot="../swift-corelibs-foundation-${coreFoundationRevision}"
           systemConfigurationRoot="../configd-${systemConfigurationRevision}"
+          ioKitUserRoot="../IOKitUser-${ioKitUserRevision}"
+          xnuRoot="../xnu-${xnuRevision}"
+          ioUsbFamilyRoot="../IOUSBFamily-${ioUsbFamilyRevision}"
+          ioStorageFamilyRoot="../IOStorageFamily-${ioStorageFamilyRevision}"
+          darlingIoKitUserRoot="../darling-iokituser-${darlingIoKitUserRevision}"
+          securityRoot="../Security-${securityRevision}"
 
           mkdir -p \
             "$out/usr/include/c++/v1" \
             "$out/usr/include/libunwind" \
             "$out/usr/lib" \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Headers" \
+            "$out/System/Library/Frameworks/IOKit.framework/Headers/storage/ata" \
+            "$out/System/Library/Frameworks/IOKit.framework/Headers/storage" \
+            "$out/System/Library/Frameworks/IOKit.framework/Headers/usb" \
+            "$out/System/Library/Frameworks/Security.framework/Headers" \
             "$out/System/Library/Frameworks/SystemConfiguration.framework/Headers" \
             "$out/share/licenses/darwin-sdk"
 
@@ -91,6 +156,94 @@ in
           cp "$systemConfigurationRoot/APPLE_LICENSE" \
             "$out/share/licenses/darwin-sdk/SystemConfiguration-LICENSE"
 
+          # IOKitUser and XNU publish the user-space framework API while the
+          # USB and storage families publish their framework subdirectories.
+          # Install only public headers needed by command-line consumers; the
+          # kernel-private source trees are not part of this SDK surface.
+          cp \
+            "$ioKitUserRoot/IOCFBundle.h" \
+            "$ioKitUserRoot/IOCFPlugIn.h" \
+            "$ioKitUserRoot/IOKitLib.h" \
+            "$xnuRoot/iokit/IOKit/IOBSD.h" \
+            "$xnuRoot/iokit/IOKit/IOKitKeys.h" \
+            "$xnuRoot/iokit/IOKit/IOMapTypes.h" \
+            "$xnuRoot/iokit/IOKit/IOReturn.h" \
+            "$xnuRoot/iokit/IOKit/IOTypes.h" \
+            "$xnuRoot/iokit/IOKit/OSMessageNotification.h" \
+            "$out/System/Library/Frameworks/IOKit.framework/Headers/"
+          cp \
+            "$ioUsbFamilyRoot/IOUSBFamily/Headers/USB.h" \
+            "$ioUsbFamilyRoot/IOUSBFamily/Headers/IOUSBLib.h" \
+            "$out/System/Library/Frameworks/IOKit.framework/Headers/usb/"
+          cp \
+            "$darlingIoKitUserRoot/darling/include/IOKit/usb/AppleUSBDefinitions.h" \
+            "$darlingIoKitUserRoot/darling/include/IOKit/usb/IOUSBHostFamilyDefinitions.h" \
+            "$darlingIoKitUserRoot/darling/include/IOKit/usb/USB.h" \
+            "$darlingIoKitUserRoot/darling/include/IOKit/usb/USBSpec.h" \
+            "$out/System/Library/Frameworks/IOKit.framework/Headers/usb/"
+          cp \
+            "$ioStorageFamilyRoot/IOBlockStorageDevice.h" \
+            "$ioStorageFamilyRoot/IOMedia.h" \
+            "$ioStorageFamilyRoot/IOStorage.h" \
+            "$ioStorageFamilyRoot/IOStorageControllerCharacteristics.h" \
+            "$ioStorageFamilyRoot/IOStorageDeviceCharacteristics.h" \
+            "$ioStorageFamilyRoot/IOStorageProtocolCharacteristics.h" \
+            "$out/System/Library/Frameworks/IOKit.framework/Headers/storage/"
+          cp \
+            "$darlingIoKitUserRoot/darling/include/IOKit/storage/ata/ATASMARTLib.h" \
+            "$darlingIoKitUserRoot/darling/include/IOKit/storage/ata/IOATAStorageDefines.h" \
+            "$out/System/Library/Frameworks/IOKit.framework/Headers/storage/ata/"
+          cp "$ioKitUserRoot/APPLE_LICENSE" \
+            "$out/share/licenses/darwin-sdk/IOKitUser-LICENSE"
+          cp "$xnuRoot/APPLE_LICENSE" \
+            "$out/share/licenses/darwin-sdk/XNU-LICENSE"
+          cp "$ioUsbFamilyRoot/APPLE_LICENSE" \
+            "$out/share/licenses/darwin-sdk/IOUSBFamily-LICENSE"
+          cp "$ioStorageFamilyRoot/APPLE_LICENSE" \
+            "$out/share/licenses/darwin-sdk/IOStorageFamily-LICENSE"
+          cp "$darlingIoKitUserRoot/APPLE_LICENSE" \
+            "$out/share/licenses/darwin-sdk/Darling-IOKitUser-LICENSE"
+
+          # The command-line packages in this tree use only Security's SecTask
+          # API to query their own entitlements.  Publish that documented ABI
+          # without pulling in the unrelated keychain, codesigning, and CDSA
+          # header graph from the full framework umbrella.
+          cp "$securityRoot/OSX/APPLE_LICENSE" \
+            "$out/share/licenses/darwin-sdk/Security-LICENSE"
+
+          cat > "$out/System/Library/Frameworks/Security.framework/Headers/Security.h" <<'EOF'
+          #ifndef _SECURITY_H_
+          #define _SECURITY_H_
+          #include <Security/SecTask.h>
+          #endif
+          EOF
+
+          cat > "$out/System/Library/Frameworks/Security.framework/Headers/SecTask.h" <<'EOF'
+          #ifndef _SECURITY_SECTASK_H_
+          #define _SECURITY_SECTASK_H_
+          #include <CoreFoundation/CoreFoundation.h>
+          #include <mach/message.h>
+          #include <sys/cdefs.h>
+          __BEGIN_DECLS
+          typedef struct __SecTask *SecTaskRef;
+          CFTypeID SecTaskGetTypeID(void);
+          SecTaskRef SecTaskCreateWithAuditToken(CFAllocatorRef allocator, audit_token_t token);
+          SecTaskRef SecTaskCreateFromSelf(CFAllocatorRef allocator);
+          CFTypeRef SecTaskCopyValueForEntitlement(
+            SecTaskRef task,
+            CFStringRef entitlement,
+            CFErrorRef *error
+          );
+          CFDictionaryRef SecTaskCopyValuesForEntitlements(
+            SecTaskRef task,
+            CFArrayRef entitlements,
+            CFErrorRef *error
+          );
+          CFStringRef SecTaskCopySigningIdentifier(SecTaskRef task, CFErrorRef *error);
+          __END_DECLS
+          #endif
+          EOF
+
           cat > "$out/System/Library/Frameworks/SystemConfiguration.framework/Headers/SystemConfiguration.h" <<'EOF'
           #ifndef _SYSTEMCONFIGURATION_H
           #define _SYSTEMCONFIGURATION_H
@@ -112,12 +265,100 @@ in
               symbols:
                 - _CFArrayGetCount
                 - _CFArrayGetValueAtIndex
+                - _CFBooleanGetTypeID
+                - _CFBooleanGetValue
+                - _CFDataGetBytes
+                - _CFDataGetLength
+                - _CFDataGetTypeID
+                - _CFDictionaryCreateMutable
                 - _CFDictionaryGetValue
+                - _CFDictionaryGetValueIfPresent
+                - _CFDictionarySetValue
+                - _CFGetTypeID
+                - _CFNumberCreate
+                - _CFNumberGetTypeID
                 - _CFNumberGetValue
                 - _CFRelease
+                - _CFRetain
+                - _CFRunLoopAddSource
+                - _CFRunLoopGetCurrent
+                - _CFRunLoopRemoveSource
+                - _CFRunLoopRun
+                - _CFRunLoopSourceCreate
+                - _CFRunLoopSourceSignal
+                - _CFRunLoopStop
+                - _CFRunLoopWakeUp
                 - _CFStringGetCString
                 - _CFStringGetCStringPtr
                 - _CFStringGetLength
+                - _CFUUIDGetConstantUUIDWithBytes
+                - _CFUUIDGetUUIDBytes
+                - ___CFConstantStringClassReference
+                - ___CFStringMakeConstantString
+                - _kCFAllocatorDefault
+                - _kCFAllocatorSystemDefault
+                - _kCFRunLoopCommonModes
+                - _kCFRunLoopDefaultMode
+                - _kCFTypeDictionaryKeyCallBacks
+                - _kCFTypeDictionaryValueCallBacks
+          ...
+          EOF
+
+          cat > "$out/System/Library/Frameworks/IOKit.framework/IOKit.tbd" <<'EOF'
+          --- !tapi-tbd
+          tbd-version: 4
+          targets: [ x86_64-macos, arm64-macos ]
+          install-name: '/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit'
+          current-version: 275.0.0
+          compatibility-version: 1.0.0
+          exports:
+            - targets: [ x86_64-macos, arm64-macos ]
+              symbols:
+                - _IOBSDNameMatching
+                - _IOCreatePlugInInterfaceForService
+                - _IODestroyPlugInInterface
+                - _IOIteratorNext
+                - _IOIteratorReset
+                - _IOKitWaitQuiet
+                - _IOMainPort
+                - _IONotificationPortCreate
+                - _IONotificationPortDestroy
+                - _IONotificationPortGetRunLoopSource
+                - _IOObjectConformsTo
+                - _IOObjectRelease
+                - _IOObjectRetain
+                - _IORegistryEntryCreateCFProperty
+                - _IORegistryEntryFromPath
+                - _IORegistryEntryGetChildEntry
+                - _IORegistryEntryGetParentEntry
+                - _IORegistryEntryGetPath
+                - _IORegistryEntrySetCFProperty
+                - _IOServiceAddMatchingNotification
+                - _IOServiceAuthorize
+                - _IOServiceGetMatchingService
+                - _IOServiceGetMatchingServices
+                - _IOServiceMatching
+                - _kIOMainPortDefault
+                - _kIOMasterPortDefault
+          ...
+          EOF
+
+          cat > "$out/System/Library/Frameworks/Security.framework/Security.tbd" <<'EOF'
+          --- !tapi-tbd
+          tbd-version: 4
+          targets: [ x86_64-macos, arm64-macos ]
+          install-name: '/System/Library/Frameworks/Security.framework/Versions/A/Security'
+          current-version: 61123.0.0
+          compatibility-version: 1.0.0
+          exports:
+            - targets: [ x86_64-macos, arm64-macos ]
+              symbols:
+                - _SecTaskCopySigningIdentifier
+                - _SecTaskCopyValueForEntitlement
+                - _SecTaskCopyValuesForEntitlements
+                - _SecTaskCreateFromSelf
+                - _SecTaskCreateWithAuditToken
+                - _SecTaskGetTypeID
           ...
           EOF
 

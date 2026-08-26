@@ -43,6 +43,28 @@
               -o "$c/bin/aos-darwin-framework-smoke"
 
             printf '%s\n' \
+              '#include <IOKit/IOKitLib.h>' \
+              '#include <IOKit/storage/IOBlockStorageDevice.h>' \
+              '#include <IOKit/storage/ata/ATASMARTLib.h>' \
+              '#include <IOKit/usb/IOUSBHostFamilyDefinitions.h>' \
+              '#include <IOKit/usb/IOUSBLib.h>' \
+              '#include <Security/Security.h>' \
+              'int main(void) {' \
+              '  SecTaskRef task = SecTaskCreateFromSelf(kCFAllocatorDefault);' \
+              '  if (task != NULL) CFRelease(task);' \
+              '  CFMutableDictionaryRef matching = IOServiceMatching(kIOUSBDeviceClassName);' \
+              '  io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, matching);' \
+              '  if (service != IO_OBJECT_NULL) IOObjectRelease(service);' \
+              '  return 0;' \
+              '}' \
+              > iokit-smoke.c
+            "$CC" iokit-smoke.c \
+              -framework IOKit \
+              -framework CoreFoundation \
+              -framework Security \
+              -o "$c/bin/aos-darwin-iokit-smoke"
+
+            printf '%s\n' \
               'extern "C" int puts(const char *);' \
               'constexpr int answer = 42;' \
               'int main() { return answer == 42 && puts("aos Darwin C++ smoke") >= 0 ? 0 : 1; }' \
@@ -52,6 +74,7 @@
             for executable in \
               "$c/bin/aos-darwin-c-smoke" \
               "$c/bin/aos-darwin-framework-smoke" \
+              "$c/bin/aos-darwin-iokit-smoke" \
               "$cxx/bin/aos-darwin-cxx-smoke"; do
               header=$("$OBJDUMP" --macho --private-header "$executable")
               if ! printf '%s\n' "$header" | grep -q '${expectedCpu}'; then
