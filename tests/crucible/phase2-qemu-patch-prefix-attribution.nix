@@ -515,6 +515,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0111-crucible-hot-fork-readiness.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

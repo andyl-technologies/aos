@@ -1713,6 +1713,11 @@ in rec {
     };
   };
   phase6 = {
+    qemuHotForkReadiness = import ./phase6-qemu-hot-fork-readiness.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase6.qemuHotForkReadiness";
+      taskIds = [];
+    };
     advancedDependencyLadder = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.advancedDependencyLadder";
       gate = import ./phase6-advanced-dependency-ladder.nix {

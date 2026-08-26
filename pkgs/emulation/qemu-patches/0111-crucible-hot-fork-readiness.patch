@@ -1,0 +1,128 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 17b283b0b..acf1396a4 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -20,6 +20,7 @@
+ #include "monitor/qdev.h"
+ #include "monitor/qmp-helpers.h"
+ #include "system/system.h"
++#include "system/cpu-timers.h"
+ #include "system/kvm.h"
+ #include "system/runstate.h"
+ #include "system/runstate-action.h"
+@@ -73,6 +74,60 @@ void qmp_stop(Error **errp)
+     }
+ }
+ 
++enum {
++    CRUCIBLE_HOT_FORK_PROOF_PRECISE_ICOUNT = 1U << 0,
++    CRUCIBLE_HOT_FORK_PROOF_SINGLE_THREADED_SIM_RR = 1U << 1,
++    CRUCIBLE_HOT_FORK_PROOF_EXACT_PAUSED_BOUNDARY = 1U << 2,
++    CRUCIBLE_HOT_FORK_PROOF_AIO_BH_TIMERS = 1U << 3,
++    CRUCIBLE_HOT_FORK_PROOF_RCU = 1U << 4,
++    CRUCIBLE_HOT_FORK_PROOF_BLOCK_SNAPSHOT = 1U << 5,
++    CRUCIBLE_HOT_FORK_PROOF_PLUGIN_RINGS = 1U << 6,
++    CRUCIBLE_HOT_FORK_PROOF_MAPPING_DESCRIPTORS = 1U << 7,
++    CRUCIBLE_HOT_FORK_PROOF_CHILD_REINITIALIZATION = 1U << 8,
++};
++
++#define CRUCIBLE_HOT_FORK_REQUIRED_PROOFS \
++    (CRUCIBLE_HOT_FORK_PROOF_PRECISE_ICOUNT | \
++     CRUCIBLE_HOT_FORK_PROOF_SINGLE_THREADED_SIM_RR | \
++     CRUCIBLE_HOT_FORK_PROOF_EXACT_PAUSED_BOUNDARY | \
++     CRUCIBLE_HOT_FORK_PROOF_AIO_BH_TIMERS | \
++     CRUCIBLE_HOT_FORK_PROOF_RCU | \
++     CRUCIBLE_HOT_FORK_PROOF_BLOCK_SNAPSHOT | \
++     CRUCIBLE_HOT_FORK_PROOF_PLUGIN_RINGS | \
++     CRUCIBLE_HOT_FORK_PROOF_MAPPING_DESCRIPTORS | \
++     CRUCIBLE_HOT_FORK_PROOF_CHILD_REINITIALIZATION)
++
++CrucibleHotForkReadiness *qmp_query_crucible_hot_fork_readiness(Error **errp)
++{
++    CrucibleHotForkReadiness *report = g_new0(CrucibleHotForkReadiness, 1);
++    uint64_t acknowledged = 0;
++
++    (void)errp;
++    if (icount_enabled() == ICOUNT_PRECISE) {
++        acknowledged |= CRUCIBLE_HOT_FORK_PROOF_PRECISE_ICOUNT;
++    }
++    if (qemu_plugin_crucible_single_threaded_rr()) {
++        acknowledged |= CRUCIBLE_HOT_FORK_PROOF_SINGLE_THREADED_SIM_RR;
++    }
++    if (runstate_check(RUN_STATE_PAUSED) &&
++        qemu_plugin_crucible_vmstop_pending() &&
++        !qemu_plugin_crucible_vmstop_admission_pending() &&
++        qemu_plugin_crucible_vmstop_flush_status() == 0) {
++        acknowledged |= CRUCIBLE_HOT_FORK_PROOF_EXACT_PAUSED_BOUNDARY;
++    }
++
++    /*
++     * The remaining proof classes deliberately stay clear until their
++     * subsystem-owned barriers and child reconstruction hooks land.  In
++     * particular, ordinary paused state is not evidence for any of them.
++     */
++    report->schema_version = 1;
++    report->required_proofs = CRUCIBLE_HOT_FORK_REQUIRED_PROOFS;
++    report->acknowledged_proofs = acknowledged;
++    report->ready = acknowledged == CRUCIBLE_HOT_FORK_REQUIRED_PROOFS;
++    return report;
++}
++
+ void qmp_cont(Error **errp)
+ {
+     BlockBackend *blk;
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index ce95cfa46..6e2024af3 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -132,6 +132,50 @@
+ { 'command': 'query-status', 'returns': 'StatusInfo',
+   'allow-preconfig': true }
+ 
++##
++# @CrucibleHotForkReadiness:
++#
++# Bounded readiness report for Crucible's local hot-fork coordinator.
++#
++# @schema-version: version of the proof-bit contract, currently 1
++#
++# @required-proofs: complete proof bitmap required before hot fork may be
++#     advertised
++#
++# @acknowledged-proofs: subset of @required-proofs that QEMU can attest at
++#     the current boundary
++#
++# @ready: true exactly when @acknowledged-proofs equals @required-proofs
++#
++# The version-1 proof bits are precise icount (bit 0), single-threaded sim
++# round-robin execution (bit 1), exact paused device-flush boundary (bit 2),
++# drained AIO/bottom-half/timer state (bit 3), drained RCU state (bit 4),
++# immutable block-snapshot boundary (bit 5), frozen plugin/protocol rings
++# (bit 6), closed mapping/descriptor disposition (bit 7), and complete child
++# reinitialization support (bit 8).  Unknown or incomplete proofs fail closed.
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkReadiness',
++  'data': { 'schema-version': 'uint32',
++            'required-proofs': 'uint64',
++            'acknowledged-proofs': 'uint64',
++            'ready': 'bool' } }
++
++##
++# @query-crucible-hot-fork-readiness:
++#
++# Query QEMU-owned hot-fork quiescence proofs at the current execution
++# boundary.  This command never pauses, forks, or mutates the VM.  Callers must
++# not infer readiness from ordinary paused status.
++#
++# Returns: @CrucibleHotForkReadiness
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'query-crucible-hot-fork-readiness',
++  'returns': 'CrucibleHotForkReadiness' }
++
+ ##
+ # @SHUTDOWN:
+ #

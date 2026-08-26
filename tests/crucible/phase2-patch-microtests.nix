@@ -34,6 +34,11 @@
     attrPath = "${attrPath}.haltedPartialRrTurn";
     taskIds = [];
   };
+  qemuHotForkReadiness = import ./phase6-qemu-hot-fork-readiness.nix {
+    inherit pkgs lib qemuPackage;
+    attrPath = "${attrPath}.hotForkReadiness";
+    taskIds = [];
+  };
   qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {
     inherit pkgs lib qemuPackage;
     patchStackRepository = qemuPatchStackRepository;
@@ -1416,6 +1421,20 @@
     {
       patch = "0110-crucible-release-halted-rr-turn.patch";
       check = qemuLivePluginQuantumSmp;
+    }
+    {
+      patch = "0111-crucible-hot-fork-readiness.patch";
+      check = certifyExactPatch {
+        patchName = "0111-crucible-hot-fork-readiness.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-owned-hot-fork-readiness";
+        liveEvidence = ''
+          grep -Fxq 'schema_version=1' "$live_result"
+          grep -Fxq 'required_proofs=511' "$live_result"
+          grep -Fxq 'ordinary_paused_exact_boundary_proof=false' "$live_result"
+          grep -Fxq 'stock_command_absent=true' "$live_result"
+        '';
+      };
     }
   ];
 

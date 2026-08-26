@@ -276,8 +276,8 @@ in
             check_scope=task-level
             related_gates=gate:control-responsive,gate:replay-oracle,gate:content-address
             rust_test=crucible-qemu::qmp
-            commands=qmp_capabilities,snapshot-save,snapshot-load,snapshot-delete,query-jobs,quit
-            public_api=connect,savevm,loadvm,delete_snapshot,quit
+            commands=qmp_capabilities,snapshot-save,snapshot-load,snapshot-delete,query-jobs,query-crucible-hot-fork-readiness,quit
+            public_api=connect,savevm,loadvm,delete_snapshot,query_hot_fork_readiness,quit
             async_events=skipped-until-return-or-error
             errors=typed-result
             snapshot_tag=checkpoint-content-address-derived
