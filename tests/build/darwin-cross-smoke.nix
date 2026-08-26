@@ -178,6 +178,11 @@
             "$CC" -dynamiclib coreservices-reexport.c -framework CoreServices \
               -Wl,-install_name,"$c/lib/libaos-darwin-coreservices-reexport.dylib" \
               -o "$c/lib/libaos-darwin-coreservices-reexport.dylib"
+            # The generic fixup phase uses the GNU --strip-unneeded spelling.
+            # Darwin's wrapper must translate it to a supported Mach-O
+            # operation and remove dead N_OSO/string-table build paths.
+            "$STRIP" --strip-unneeded \
+              "$c/lib/libaos-darwin-coreservices-reexport.dylib"
             printf '%s\n' \
               'extern int aos_core_services_reexport(void);' \
               'int aos_core_services_plugin(void) { return aos_core_services_reexport(); }' \
