@@ -21,8 +21,8 @@ The checked local API currently provides:
 - finite, generated, and exhaustive additive branch requests;
 - snapshot, graph, choice, frontier, finding, and comparison queries;
 - proof-bearing choice, finding, and attempt explanations; and
-- one packaged deterministic planner attached to one authenticated local
-  executor endpoint.
+- a bounded set of packaged deterministic planner runtimes, each attached to
+  one authenticated local executor endpoint.
 
 The daemon can either attach `--campaign-runtime` to an independently owned
 `--campaign-executor-socket` or own a packaged local QEMU executor at that
@@ -116,6 +116,13 @@ The executor socket must already be owned with the required strict permissions
 and must advertise a compatibility profile and resource ceiling that admit the
 campaign lineage. Attachment fails before planner-basis publication when those
 facts disagree.
+
+Embedded deployments may retain the service's bounded post-bind attachment
+handle and supply an already connected, authenticated executor stream. That
+handle carries neither repository nor component-authority access, closes with
+the service owner, and uses the same 256-runtime ceiling. The `crucible` CLI
+currently exposes only the startup-fixed arguments above; a public dynamic
+attachment command remains future work.
 
 To let the same daemon own that executor, add `--production-qemu` and an
 owner-only packaged-executor deployment file:

@@ -127,7 +127,7 @@ pub use campaign_attachment::{
 };
 pub use campaign_bootstrap::{
     CampaignLocalService, CampaignLocalServiceConfig, CampaignLocalServiceError,
-    CampaignLocalServiceMode, PreparedCampaignLocalService,
+    CampaignLocalServiceMode, CampaignRuntimeAttachmentHandle, PreparedCampaignLocalService,
 };
 pub use campaign_endpoint::{
     CampaignLoopbackEndpointConfig, CampaignLoopbackEndpointError, ExecutorLoopbackEndpointConfig,

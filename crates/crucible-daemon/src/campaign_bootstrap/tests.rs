@@ -7,24 +7,30 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, Permissions};
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
 use crucible_campaign::{
     AttemptResourceLimits, CampaignClient, CampaignClientError, CampaignLineage, CampaignMode,
     CampaignName, CampaignPolicy, CampaignPrincipal, CampaignSeed, CampaignServiceFailure,
-    CandidateGeneratorAlgorithm, CandidateGeneratorSpec, ConfigurationId, DaemonEpoch,
-    ExecutorCapabilitySet, ExecutorCompatibilityProfile, ExecutorMaterializationCapability,
-    ExplorerPolicy, FairnessPolicy, GetCampaignRequest, ProgressiveWideningPolicy, PuctPolicy,
-    RetentionPolicy, ScenarioDefId,
+    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse, CandidateGeneratorAlgorithm,
+    CandidateGeneratorSpec, CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse,
+    ConfigurationId, DaemonEpoch, ExecutorCapabilityService, ExecutorCapabilitySet,
+    ExecutorCapacityReport, ExecutorCompatibilityProfile, ExecutorControlService,
+    ExecutorDescription, ExecutorMaterializationCapability, ExecutorResumeService, ExecutorService,
+    ExecutorStatusService, ExplorerPolicy, FairnessPolicy, GetAttemptExecutionRequest,
+    GetAttemptExecutionResponse, GetCampaignRequest, ProgressiveWideningPolicy, PuctPolicy,
+    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, RetentionPolicy, ScenarioDefId,
+    SubmitAttemptRequest, SubmitAttemptResponse, WatchExecutorCapacityRequest,
 };
 use tempfile::tempdir;
 
 use crate::{
     AllowAllAttemptAdmission, CanonicalPlannerProcessConfig, ExecutorCapacity,
     LocalExecutorCapabilityService, LocalExecutorSupervisor, LoopbackCampaignService,
-    LoopbackCampaignTimeouts, LoopbackExecutorTimeouts, MemoryAssignmentLedger,
+    LoopbackCampaignTimeouts, LoopbackExecutorTimeouts, MAX_EXECUTOR_REQUESTS_PER_CONNECTION,
+    MemoryAssignmentLedger, serve_loopback_executor_component_connection_with_limits,
     serve_loopback_executor_component_once,
 };
 
@@ -159,8 +165,12 @@ fn create_runtime_campaign(repository: &Arc<CampaignRepository>, name: &str) -> 
     lineage
 }
 
-fn executor_pair(lineage: &CampaignLineage) -> (UnixStream, thread::JoinHandle<()>) {
-    let epoch = DaemonEpoch::from_bytes([0x41; 16]).expect("daemon epoch");
+fn executor_capability_service(
+    lineage: &CampaignLineage,
+    epoch_byte: u8,
+    store_label: &[u8],
+) -> LocalExecutorCapabilityService<MemoryAssignmentLedger, AllowAllAttemptAdmission> {
+    let epoch = DaemonEpoch::from_bytes([epoch_byte; 16]).expect("daemon epoch");
     let resources =
         AttemptResourceLimits::new(4, 1024 * 1024, 1024 * 1024, 10_000).expect("resources");
     let capabilities = ExecutorCapabilitySet::new(
@@ -170,7 +180,7 @@ fn executor_pair(lineage: &CampaignLineage) -> (UnixStream, thread::JoinHandle<(
         BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]),
         2,
         resources,
-        BTreeSet::from([CampaignHash::derive("test", b"store")]),
+        BTreeSet::from([CampaignHash::derive("test", store_label)]),
     )
     .expect("executor capabilities");
     let description = crucible_campaign::ExecutorDescription::new(epoch, capabilities)
@@ -181,8 +191,11 @@ fn executor_pair(lineage: &CampaignLineage) -> (UnixStream, thread::JoinHandle<(
         epoch,
         ExecutorCapacity::new(2, 4, 1024 * 1024, 1024 * 1024, 10_000).expect("executor capacity"),
     );
-    let mut service =
-        LocalExecutorCapabilityService::new(supervisor, description).expect("capability service");
+    LocalExecutorCapabilityService::new(supervisor, description).expect("capability service")
+}
+
+fn executor_pair(lineage: &CampaignLineage) -> (UnixStream, thread::JoinHandle<()>) {
+    let mut service = executor_capability_service(lineage, 0x41, b"store");
     let (client, mut server) = UnixStream::pair().expect("executor stream pair");
     let worker = thread::spawn(move || {
         serve_loopback_executor_component_once(
@@ -193,6 +206,92 @@ fn executor_pair(lineage: &CampaignLineage) -> (UnixStream, thread::JoinHandle<(
         .expect("serve executor description");
     });
     (client, worker)
+}
+
+fn executor_connection(lineage: &CampaignLineage) -> (UnixStream, thread::JoinHandle<()>) {
+    let mut service = executor_capability_service(lineage, 0x42, b"dynamic-store");
+    let (client, mut server) = UnixStream::pair().expect("executor stream pair");
+    let worker = thread::spawn(move || {
+        serve_loopback_executor_component_connection_with_limits(
+            &mut server,
+            &mut service,
+            LoopbackExecutorTimeouts::default(),
+            MAX_EXECUTOR_REQUESTS_PER_CONNECTION,
+        )
+        .expect("serve executor connection");
+    });
+    (client, worker)
+}
+
+type TestExecutorService =
+    LocalExecutorCapabilityService<MemoryAssignmentLedger, AllowAllAttemptAdmission>;
+
+struct BlockingDescribeExecutorService {
+    inner: TestExecutorService,
+    observed: Option<mpsc::Sender<()>>,
+    release: mpsc::Receiver<()>,
+}
+
+impl ExecutorService for BlockingDescribeExecutorService {
+    type Error = <TestExecutorService as ExecutorService>::Error;
+
+    fn submit_attempt(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitAttemptResponse, Self::Error> {
+        self.inner.submit_attempt(request)
+    }
+}
+
+impl ExecutorStatusService for BlockingDescribeExecutorService {
+    fn get_attempt_execution(
+        &mut self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        self.inner.get_attempt_execution(request)
+    }
+}
+
+impl ExecutorControlService for BlockingDescribeExecutorService {
+    fn checkpoint_attempt_execution(
+        &mut self,
+        request: &CheckpointAttemptExecutionRequest,
+    ) -> Result<CheckpointAttemptExecutionResponse, Self::Error> {
+        self.inner.checkpoint_attempt_execution(request)
+    }
+
+    fn cancel_attempt_execution(
+        &mut self,
+        request: &CancelAttemptExecutionRequest,
+    ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
+        self.inner.cancel_attempt_execution(request)
+    }
+}
+
+impl ExecutorResumeService for BlockingDescribeExecutorService {
+    fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        self.inner.resume_attempt_execution(request)
+    }
+}
+
+impl ExecutorCapabilityService for BlockingDescribeExecutorService {
+    fn describe_executor(&mut self) -> Result<ExecutorDescription, Self::Error> {
+        if let Some(observed) = self.observed.take() {
+            observed.send(()).expect("report blocked describe request");
+        }
+        self.release.recv().expect("release describe response");
+        self.inner.describe_executor()
+    }
+
+    fn watch_capacity(
+        &mut self,
+        request: &WatchExecutorCapacityRequest,
+    ) -> Result<ExecutorCapacityReport, Self::Error> {
+        self.inner.watch_capacity(request)
+    }
 }
 
 #[test]
@@ -227,6 +326,46 @@ fn runtime_attachment_requires_writable_component_authority_before_executor_io()
     ));
     peer.set_nonblocking(true).expect("nonblocking peer");
     assert_eq!(peer.read(&mut byte).expect("closed executor peer"), 0);
+}
+
+#[test]
+fn post_bind_attachment_rejects_missing_authority_and_read_only_before_executor_io() {
+    let (_directory, config) = fixture();
+    let service = config.open().expect("bind service without authorities");
+    let attachments = service.runtime_attachment_handle();
+    let (executor, mut peer) = UnixStream::pair().expect("executor stream pair");
+    assert!(matches!(
+        attachments.attach(executor, &runtime_config()),
+        Err(CampaignLocalServiceError::RuntimeAuthorityUnavailable)
+    ));
+    peer.set_nonblocking(true).expect("nonblocking peer");
+    let mut byte = [0_u8; 1];
+    assert_eq!(peer.read(&mut byte).expect("closed executor peer"), 0);
+    drop(service);
+    assert!(matches!(
+        attachments.attached_campaigns(),
+        Err(CampaignLocalServiceError::RuntimeAttachmentClosed)
+    ));
+
+    let (_directory, config) = fixture();
+    let read_only = CampaignLocalServiceConfig::new(
+        config.endpoint().clone(),
+        config.state_directory(),
+        config.policy_path(),
+        CampaignLocalServiceMode::ReadOnly,
+        config.server(),
+    )
+    .expect("read-only service configuration");
+    let service = read_only.open().expect("bind read-only service");
+    let attachments = service.runtime_attachment_handle();
+    let (executor, mut peer) = UnixStream::pair().expect("executor stream pair");
+    assert!(matches!(
+        attachments.attach(executor, &runtime_config()),
+        Err(CampaignLocalServiceError::RuntimeReadOnly)
+    ));
+    peer.set_nonblocking(true).expect("nonblocking peer");
+    assert_eq!(peer.read(&mut byte).expect("closed executor peer"), 0);
+    drop(service);
 }
 
 #[test]
@@ -274,9 +413,11 @@ fn multi_runtime_bind_sorts_unique_campaigns_and_joins_every_runtime() {
         .expect("bind runtime set");
     assert_eq!(
         service
-            .runtimes
+            .runtime_attachment_handle()
+            .attached_campaigns()
+            .expect("attached campaigns")
             .iter()
-            .map(|runtime| runtime.campaign().as_str())
+            .map(CampaignName::as_str)
             .collect::<Vec<_>>(),
         ["alpha", "beta"]
     );
@@ -313,6 +454,134 @@ fn multi_runtime_bind_rejects_duplicate_campaigns_before_endpoint_mutation() {
         Err(CampaignLocalServiceError::DuplicateRuntimeCampaign)
     ));
     assert!(!socket.exists());
+}
+
+#[test]
+fn post_bind_attachment_is_bounded_live_and_does_not_retain_service_ownership() {
+    let (directory, config) = fixture();
+    let authority = directory.path().join("component-authority.bin");
+    write_component_authorities(&authority, [0x31; 32], [0x73; 32]);
+    let config = config
+        .with_component_authority_path(&authority)
+        .expect("component authority path");
+    let prepared = config.prepare().expect("prepare service");
+    let lineage = create_runtime_campaign(&prepared.repository, "dynamic");
+    let service = prepared.bind().expect("bind service without runtimes");
+    let attachments = service.runtime_attachment_handle();
+    let shutdown = service.shutdown_handle();
+    let server = thread::spawn(move || service.serve().expect("serve dynamic runtime"));
+
+    let (executor, executor_server) = executor_connection(&lineage);
+    attachments
+        .attach(executor, &named_runtime_config("dynamic"))
+        .expect("attach runtime after bind");
+    assert_eq!(
+        attachments
+            .attached_campaigns()
+            .expect("attached campaign inventory"),
+        [CampaignName::new("dynamic").expect("campaign name")]
+    );
+
+    let (duplicate, mut duplicate_peer) = UnixStream::pair().expect("duplicate executor pair");
+    assert!(matches!(
+        attachments.attach(duplicate, &named_runtime_config("dynamic")),
+        Err(CampaignLocalServiceError::DuplicateRuntimeCampaign)
+    ));
+    duplicate_peer
+        .set_nonblocking(true)
+        .expect("nonblocking duplicate peer");
+    let mut byte = [0_u8; 1];
+    assert_eq!(
+        duplicate_peer
+            .read(&mut byte)
+            .expect("duplicate executor closed before I/O"),
+        0
+    );
+
+    shutdown.shutdown();
+    server.join().expect("join campaign service");
+    executor_server.join().expect("join executor server");
+    assert!(matches!(
+        attachments.attached_campaigns(),
+        Err(CampaignLocalServiceError::RuntimeAttachmentClosed)
+    ));
+
+    let restarted = config
+        .open()
+        .expect("weak handle does not retain state lock");
+    restarted.shutdown_handle().shutdown();
+    restarted.serve().expect("serve restarted owner");
+}
+
+#[test]
+fn service_shutdown_waits_for_reserved_attachment_and_rejects_its_late_install() {
+    let (directory, config) = fixture();
+    let authority = directory.path().join("component-authority.bin");
+    write_component_authorities(&authority, [0x31; 32], [0x73; 32]);
+    let config = config
+        .with_component_authority_path(&authority)
+        .expect("component authority path");
+    let prepared = config.prepare().expect("prepare service");
+    let lineage = create_runtime_campaign(&prepared.repository, "closing");
+    let service = prepared.bind().expect("bind service without runtimes");
+    let attachments = service.runtime_attachment_handle();
+    let shutdown = service.shutdown_handle();
+    let (service_finished, service_result) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let result = service.serve();
+        service_finished
+            .send(result)
+            .expect("report campaign service result");
+    });
+
+    let (executor, mut executor_peer) = UnixStream::pair().expect("executor stream pair");
+    let (request_observed, request_ready) = mpsc::channel();
+    let (release_executor, executor_released) = mpsc::channel();
+    let mut executor_service = BlockingDescribeExecutorService {
+        inner: executor_capability_service(&lineage, 0x43, b"delayed-store"),
+        observed: Some(request_observed),
+        release: executor_released,
+    };
+    let executor_server = thread::spawn(move || {
+        serve_loopback_executor_component_connection_with_limits(
+            &mut executor_peer,
+            &mut executor_service,
+            LoopbackExecutorTimeouts::default(),
+            MAX_EXECUTOR_REQUESTS_PER_CONNECTION,
+        )
+        .expect("serve delayed executor connection");
+    });
+    let attach_handle = attachments.clone();
+    let attach =
+        thread::spawn(move || attach_handle.attach(executor, &named_runtime_config("closing")));
+    request_ready
+        .recv_timeout(Duration::from_secs(1))
+        .expect("attachment reserved before shutdown");
+
+    shutdown.shutdown();
+    assert!(matches!(
+        service_result.recv_timeout(Duration::from_millis(50)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    release_executor
+        .send(())
+        .expect("release delayed executor response");
+    assert!(matches!(
+        attach.join().expect("join attachment call"),
+        Err(CampaignLocalServiceError::RuntimeAttachmentClosed)
+    ));
+    service_result
+        .recv_timeout(Duration::from_secs(1))
+        .expect("service exits after attachment settles")
+        .expect("service result");
+    server.join().expect("join campaign service thread");
+    executor_server
+        .join()
+        .expect("join delayed executor server");
+    assert!(matches!(
+        attachments.attached_campaigns(),
+        Err(CampaignLocalServiceError::RuntimeAttachmentClosed)
+    ));
 }
 
 #[test]

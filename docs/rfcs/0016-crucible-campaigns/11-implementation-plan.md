@@ -1047,9 +1047,15 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   daemon-owned long-lived coordinator runtime is implemented. Process startup
   can now attach a bounded fixed set of up to 256 such runtimes to unique
   explicitly named existing campaigns, each with the packaged planner and a
-  matched authenticated local executor. Automatic campaign discovery, dynamic
-  attachment, shared packaged-executor allocation, and additional opaque
-  non-finite model-prior adapters remain open. The first `CampaignService`
+  matched authenticated local executor. An embedded owner may also attach a
+  runtime after bind through a weak bounded capability: it reserves the unique
+  name and slot before I/O, prepares outside the registry mutex, fails closed
+  across concurrent shutdown, and cannot retain the repository lock after the
+  service owner exits. Shutdown waits for bounded in-flight preparation and
+  cancels the complete installed set before joining it. Authenticated public
+  operator transport/CLI attachment, automatic campaign discovery, shared
+  packaged-executor allocation, and additional opaque non-finite model-prior
+  adapters remain open. The first `CampaignService`
   checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
   bounded by-value creation, authenticated current-head reads,

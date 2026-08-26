@@ -283,8 +283,17 @@ quiescent wait, and prevents the
 runtime from beginning another component operation. A repository, planner, or
 executor failure terminates the runtime and remains observable to its daemon
 owner; it is not converted into an unbounded retry loop. Process startup still
-needs to enumerate/configure the campaigns to attach and couple runtime failure
-to the user-facing service lifecycle.
+accepts an enumerated fixed attachment set. After bind, the embedded deployment
+owner may use a weak bounded attachment capability to add another explicitly
+named existing campaign without acquiring repository or component-authority
+access. The owner reserves the unique campaign and one of 256 slots before
+executor or repository I/O, prepares outside the registry mutex, and installs
+only while that exact service incarnation remains live. Shutdown closes
+admission, waits for bounded in-flight preparations, requests cancellation for
+the complete attached set before joining any runtime, and retains repository
+namespace ownership through the final join. An authenticated public operator
+transport and CLI for that capability remain open; callers currently supply an
+already connected and authenticated executor stream.
 
 The real-node realization boundary now has an executor-owned exact-capture
 primitive for that checkpoint path. It seals the unified event

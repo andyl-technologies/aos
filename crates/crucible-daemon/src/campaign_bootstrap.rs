@@ -4,7 +4,10 @@
 //! listener, and directory-backed campaign repository behind one lifecycle.
 //! The state root is an operator-owned namespace with a lifetime exclusive
 //! lock, preventing two cooperating daemon incarnations from claiming the sole
-//! writer repository through different socket paths.
+//! writer repository through different socket paths. Startup may install a
+//! fixed runtime set; an embedded owner can also retain a weak bounded handle
+//! for post-bind attachment without exposing repository or component-authority
+//! capabilities.
 
 use std::fs::{self, File, Permissions};
 use std::io::{self, Read};
@@ -42,7 +45,11 @@ const MAX_DEPLOYMENT_PATH_BYTES: usize = 4_095;
 const COMPONENT_AUTHORITY_MAGIC: &[u8; 8] = b"CRUCCA01";
 const COMPONENT_AUTHORITY_FILE_BYTES: usize = 8 + 32 + 32;
 
+mod runtime_registry;
 mod service;
+
+pub use runtime_registry::CampaignRuntimeAttachmentHandle;
+use runtime_registry::CampaignRuntimeRegistryOwner;
 
 /// Complete deployment contract for one durable local campaign service.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -455,13 +462,13 @@ impl PreparedCampaignLocalService {
     fn bind_inner(
         self,
         runtimes: Vec<PreparedCanonicalCampaignRuntime>,
-        executor: Option<AttachedPackagedQemuExecutor>,
+        mut executor: Option<AttachedPackagedQemuExecutor>,
     ) -> Result<CampaignLocalService, CampaignLocalServiceError> {
         let Self {
             endpoint,
             server: server_config,
             repository,
-            planner_authority: _,
+            planner_authority,
             policy,
             mode,
             state,
@@ -469,20 +476,36 @@ impl PreparedCampaignLocalService {
         let listener = endpoint.bind()?;
         let server = CampaignLoopbackServer::from_managed_listener(
             listener,
-            repository,
+            Arc::clone(&repository),
             Arc::clone(&policy),
             Arc::new(CampaignLocalAuthorizer { policy, mode }),
             server_config,
         )?;
-        let runtimes = runtimes
-            .into_iter()
-            .map(PreparedCanonicalCampaignRuntime::start)
-            .collect::<Result<Vec<_>, _>>()?;
+        let runtime_registry = CampaignRuntimeRegistryOwner::new(
+            repository,
+            planner_authority,
+            mode,
+            server.shutdown_handle(),
+            state,
+        );
+        for runtime in runtimes {
+            if let Err(source) = runtime_registry.attach_prepared(runtime) {
+                let runtime_result = runtime_registry.close_and_join();
+                let executor_result = executor
+                    .take()
+                    .map(AttachedPackagedQemuExecutor::shutdown_and_join)
+                    .transpose()
+                    .map(|_| ())
+                    .map_err(CampaignLocalServiceError::PackagedExecutorJoin);
+                executor_result?;
+                runtime_result?;
+                return Err(source);
+            }
+        }
         Ok(CampaignLocalService {
             server,
-            runtimes,
+            runtime_registry,
             executor,
-            _state: state,
         })
     }
 
@@ -522,9 +545,23 @@ impl PreparedCampaignLocalService {
 /// Exclusive owner of one durable local CampaignService incarnation.
 pub struct CampaignLocalService {
     server: CampaignLoopbackServer<UnixPeerCampaignPolicy, CampaignLocalAuthorizer>,
-    runtimes: Vec<AttachedCanonicalCampaignRuntime>,
     executor: Option<AttachedPackagedQemuExecutor>,
-    _state: CampaignStateOwner,
+    // This owner is last so its repository lock outlives runtime and executor
+    // cleanup even when the containing service is dropped without `serve`.
+    runtime_registry: CampaignRuntimeRegistryOwner,
+}
+
+impl CampaignLocalService {
+    /// Returns a weak capability for bounded post-bind runtime attachment.
+    ///
+    /// The handle exposes no repository or component-authority access and
+    /// becomes permanently closed when this service begins shutdown or is
+    /// dropped. An attachment already in progress is allowed to finish or fail
+    /// before repository namespace ownership is released.
+    #[must_use]
+    pub fn runtime_attachment_handle(&self) -> CampaignRuntimeAttachmentHandle {
+        self.runtime_registry.handle()
+    }
 }
 
 struct CampaignLocalAuthorizer {
@@ -618,6 +655,12 @@ pub enum CampaignLocalServiceError {
     /// More than one runtime named the same campaign.
     #[error("campaign runtime attachments contain a duplicate campaign")]
     DuplicateRuntimeCampaign,
+    /// Runtime attachment was attempted after the service began shutdown.
+    #[error("campaign runtime attachment owner is closed")]
+    RuntimeAttachmentClosed,
+    /// A runtime-registry invariant panic poisoned shared operational state.
+    #[error("campaign runtime attachment registry is poisoned")]
+    RuntimeRegistryPoisoned,
     /// Canonical planner/executor runtime preparation, start, or execution failed.
     #[error(transparent)]
     Runtime(#[from] CanonicalCampaignRuntimeError),
