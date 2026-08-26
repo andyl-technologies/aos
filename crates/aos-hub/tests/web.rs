@@ -437,6 +437,17 @@ async fn registry_home_carries_setup_snippets_and_fingerprints() {
     // ran moments before this request).
     assert!(body.contains("indexed "), "{body}");
     assert!(body.contains("s ago"), "{body}");
+
+    let (status, _, package) = get(&app, "/demo/-/packages/curl").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        package.contains("apr add http://127.0.0.1:8420/demo/"),
+        "{package}"
+    );
+    assert!(
+        package.contains("substituters = https://cache.example.com"),
+        "{package}"
+    );
 }
 
 #[tokio::test]

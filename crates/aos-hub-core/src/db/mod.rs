@@ -3280,40 +3280,42 @@ impl Database {
             .context("surface has no reconciled read placement")
     }
 
-    /// Returns the object path of the complete, reconciled placement on the
+    /// Returns the object path of the canonical-slug placement on the
     /// instance-default binding that may use derived public delivery.
+    ///
+    /// Derived delivery never exposes an arbitrary physical placement prefix.
+    /// The placement itself must use the registry's globally unique canonical
+    /// slug; other complete placements remain available through explicit
+    /// delivery topology.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure or malformed persisted data.
-    pub async fn default_public_delivery_path(
+    pub async fn default_public_slug_delivery_path(
         &self,
         surface: SurfaceTarget,
+        canonical_slug: &str,
     ) -> Result<Option<String>> {
         let (registry_id, cache_id) = surface.ids();
         self.backend
             .query_opt(
-                "SELECT binding.object_prefix, placement.prefix
+                "SELECT placement.prefix
                  FROM surface_placement_effective placement
                  JOIN bindings binding ON binding.id = placement.binding_id
                  WHERE (placement.registry_id = ?1 OR placement.cache_id = ?2)
                    AND placement.kind = 'complete'
                    AND placement.effective_read_enabled = 1
                    AND binding.is_instance_default = 1
+                   AND (binding.object_prefix IS NULL OR binding.object_prefix = '')
+                   AND placement.prefix = ?3
                  ORDER BY placement.read_order, placement.name, placement.id
                  LIMIT 1",
-                &vals![registry_id, cache_id],
+                &vals![registry_id, cache_id, canonical_slug.trim_matches('/')],
             )
             .await?
             .map(|row| {
-                let binding_prefix: Option<String> = row.get(0)?;
-                let placement_prefix: String = row.get(1)?;
-                Ok([binding_prefix.as_deref().unwrap_or(""), &placement_prefix]
-                    .into_iter()
-                    .map(|value| value.trim_matches('/'))
-                    .filter(|value| !value.is_empty())
-                    .collect::<Vec<_>>()
-                    .join("/"))
+                let placement_prefix: String = row.get(0)?;
+                Ok(placement_prefix.trim_matches('/').to_string())
             })
             .transpose()
     }
@@ -11747,7 +11749,7 @@ impl Database {
             .collect()
     }
 
-    /// Lists placement scans eligible for a controller claim.
+    /// Lists physical placement operations eligible for a controller claim.
     ///
     /// # Errors
     ///
@@ -11764,7 +11766,8 @@ impl Database {
             .query(
                 &format!(
                     "SELECT {OPERATION_COLUMNS} FROM topology_operations operation
-                     WHERE operation.operation_kind = 'scan_placement'
+                     WHERE operation.operation_kind IN
+                       ('scan_placement', 'replicate_placement', 'repair_placement')
                        AND (operation.state = 'pending'
                          OR (operation.state = 'running' AND (
                            NOT EXISTS (SELECT 1 FROM placement_scan_claims claim
@@ -12379,7 +12382,7 @@ impl Database {
         self.topology_operation(operation_id).await
     }
 
-    /// Claims one pending or stale-running physical placement scan under CAS.
+    /// Claims one pending or stale-running physical placement operation under CAS.
     ///
     /// # Errors
     ///
@@ -12411,7 +12414,9 @@ impl Database {
                          started_at = CASE WHEN state = 'pending' THEN ?3 ELSE started_at END,
                          finished_at = NULL, error = NULL,
                          resource_version = resource_version + 1
-                     WHERE operation_id = ?1 AND operation_kind = 'scan_placement'
+                     WHERE operation_id = ?1
+                       AND operation_kind IN
+                         ('scan_placement', 'replicate_placement', 'repair_placement')
                        AND resource_version = ?2
                        AND (state = 'pending' OR (state = 'running' AND (
                          NOT EXISTS (SELECT 1 FROM placement_scan_claims claim
@@ -12526,7 +12531,7 @@ impl Database {
             .await
     }
 
-    /// Terminalizes one live physical-placement scan under its exact claim.
+    /// Terminalizes one live physical-placement operation under its exact claim.
     ///
     /// Returns `false` without mutation when the claim expired or was replaced.
     ///
@@ -12568,7 +12573,9 @@ impl Database {
                      detail_json = ?7, error = ?8, finished_at = ?9,
                      resource_version = resource_version + 1
                  WHERE operation_id = ?1 AND resource_version = ?2
-                   AND operation_kind = 'scan_placement' AND state = 'running'
+                   AND operation_kind IN
+                     ('scan_placement', 'replicate_placement', 'repair_placement')
+                   AND state = 'running'
                    AND EXISTS (SELECT 1 FROM placement_scan_claims claim
                      WHERE claim.operation_id = topology_operations.operation_id
                        AND claim.operation_resource_version = ?2
