@@ -13,6 +13,10 @@
       version = "0";
       src = null;
       outputs = ["c" "cxx"];
+      buildDeps = [
+        cross.buildPackages.cmake
+        cross.buildPackages.ninja
+      ];
       runtimeDeps = [cross.stdenv.darwinRuntimes];
       dontNukeRefs = true;
 
@@ -20,7 +24,7 @@
         {
           name = "build-and-verify";
           script = ''
-            mkdir -p "$c/bin" "$cxx/bin"
+            mkdir -p "$c/bin" "$c/lib" "$cxx/bin"
 
             printf '%s\n' \
               'extern int puts(const char *);' \
@@ -31,6 +35,8 @@
             printf '%s\n' \
               '#include <CoreFoundation/CoreFoundation.h>' \
               '#include <netinet/tcp_fsm.h>' \
+              '#include <netinet/tcp_timer.h>' \
+              '#include <sys/ttydev.h>' \
               '#include <SystemConfiguration/SystemConfiguration.h>' \
               'int main(void) {' \
               '  CFStringRef label = CFSTR("aos Darwin SDK");' \
@@ -88,11 +94,33 @@
             "$CXX" -c smoke.cc -o smoke.o
             "$CXX" smoke.o -o "$cxx/bin/aos-darwin-cxx-smoke"
 
+            test "$(sw_vers -productVersion)" = "11.0"
+            mkdir cmake-smoke
+            printf '%s\n' \
+              'cmake_minimum_required(VERSION 3.20)' \
+              'project(aos_darwin_cmake_smoke LANGUAGES C CXX)' \
+              'add_library(aos-darwin-cmake-smoke SHARED ../smoke.c)' \
+              'set_target_properties(aos-darwin-cmake-smoke PROPERTIES INSTALL_NAME_DIR "@rpath")' \
+              'add_library(aos-darwin-cmake-cxx-smoke SHARED ../smoke.cc)' \
+              'set_target_properties(aos-darwin-cmake-cxx-smoke PROPERTIES INSTALL_NAME_DIR "@rpath")' \
+              'target_link_libraries(aos-darwin-cmake-cxx-smoke PRIVATE aos-darwin-cmake-smoke)' \
+              'install(TARGETS aos-darwin-cmake-smoke aos-darwin-cmake-cxx-smoke LIBRARY DESTINATION lib)' \
+              > cmake-smoke/CMakeLists.txt
+            cmake -S cmake-smoke -B cmake-build -G Ninja \
+              -DCMAKE_INSTALL_PREFIX="$PWD/cmake-installed" $cmakeFlags
+            ninja -C cmake-build install
+            cp cmake-installed/lib/libaos-darwin-cmake-smoke.dylib \
+              "$c/lib/aos-darwin-cmake-smoke.dylib"
+            cp cmake-installed/lib/libaos-darwin-cmake-cxx-smoke.dylib \
+              "$cxx/libaos-darwin-cmake-cxx-smoke.dylib"
+
             for executable in \
               "$c/bin/aos-darwin-c-smoke" \
               "$c/bin/aos-darwin-framework-smoke" \
               "$c/bin/aos-darwin-iokit-smoke" \
               "$c/bin/aos-darwin-objective-c-smoke" \
+              "$c/lib/aos-darwin-cmake-smoke.dylib" \
+              "$cxx/libaos-darwin-cmake-cxx-smoke.dylib" \
               "$cxx/bin/aos-darwin-cxx-smoke"; do
               header=$("$OBJDUMP" --macho --private-header "$executable")
               if ! printf '%s\n' "$header" | grep -q '${expectedCpu}'; then

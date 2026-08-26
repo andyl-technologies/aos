@@ -146,6 +146,8 @@ in
           cp -R lib/libunwind/include/. "$out/usr/include/libunwind/"
           cp lib/libc/darwin/libSystem.tbd "$out/usr/lib/libSystem.tbd"
           cp "$xnuRoot/bsd/netinet/tcp_fsm.h" "$out/usr/include/netinet/"
+          cp "$xnuRoot/bsd/netinet/tcp_timer.h" "$out/usr/include/netinet/"
+          cp "$xnuRoot/bsd/sys/ttydev.h" "$out/usr/include/sys/"
 
           # Newer Apple open-source framework headers describe bridgeOS API
           # availability, while Zig's open SDK snapshot omits that platform's
