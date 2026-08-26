@@ -550,8 +550,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   remains a campaign-specific one-runtime composition.
   The authenticated service now enumerates campaign refs through an explicit
   all-campaign grant using bounded stable ref pages and validates every returned
-  head closure. CLI listing, dynamic attachment, a shared packaged-executor
-  allocator, and richer operational tuning remain open.
+  head closure. The nested CLI follows those checked pages under explicit page,
+  entry, and response-byte budgets and emits resumable structured or human
+  reports. Dynamic attachment, a shared packaged-executor allocator, and richer
+  operational tuning remain open.
   The QEMU realization executor now exposes only a borrowed already-realized
   live-backend facade without generic VMState/process authority, and the daemon
   composes that capability with a pre-launch exact resource guard and mandatory

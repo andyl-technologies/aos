@@ -46,9 +46,34 @@ impl CampaignService for FixedHeadService {
 
     fn list_campaigns(
         &self,
-        _request: &crucible_campaign::ListCampaignsRequest,
+        request: &crucible_campaign::ListCampaignsRequest,
     ) -> Result<crucible_campaign::ListCampaignsResponse, Self::Error> {
-        unreachable!("fixed-head service does not list campaigns")
+        let (name, next_after) = match request.after().map(CampaignName::as_str) {
+            None => ("alpha", Some(CampaignName::new("alpha").expect("cursor"))),
+            Some("alpha") => ("middle", None),
+            _ => {
+                return Ok(crucible_campaign::ListCampaignsResponse::new(
+                    request,
+                    Vec::new(),
+                    None,
+                    0,
+                )
+                .expect("empty list response"));
+            }
+        };
+        Ok(crucible_campaign::ListCampaignsResponse::new(
+            request,
+            vec![crucible_campaign::CampaignListEntry::new(
+                CampaignName::new(name).expect("campaign name"),
+                snapshot(name),
+                lineage("lineage"),
+                policy("policy"),
+                CampaignState::Running,
+            )],
+            next_after,
+            1,
+        )
+        .expect("list response"))
     }
 
     fn create_campaign(
@@ -972,6 +997,78 @@ fn campaign_graph_aggregation_follows_checked_pages_to_authenticated_eof() {
             campaign_page_entry_row(first_entry, "\0") != campaign_page_entry_row(entry, "\0")
         })
     }));
+}
+
+#[test]
+fn campaign_list_follows_checked_pages_to_authenticated_eof() {
+    let client = CampaignClient::new(FixedHeadService);
+    let args = CampaignListArgs {
+        after: None,
+        limit: 1,
+        pages: 2,
+    };
+    let report = query_campaign_list(
+        &client,
+        CampaignPrincipal::new("operator:alice").expect("principal"),
+        &args,
+    )
+    .expect("campaign list");
+
+    assert!(report.complete);
+    assert_eq!(report.pages_scanned, 2);
+    assert_eq!(report.next_after, None);
+    assert_eq!(
+        report
+            .entries
+            .iter()
+            .map(|entry| entry.campaign.as_str())
+            .collect::<Vec<_>>(),
+        ["alpha", "middle"]
+    );
+    let rendered = render_campaign_list(&report, OutputFormat::Json).expect("render list");
+    assert!(rendered.contains("crucible.cli.campaign-list.v1"));
+    assert!(rendered.contains("\"campaign\": \"middle\""));
+    assert!(
+        render_campaign_list(&report, OutputFormat::Table)
+            .expect("render list table")
+            .contains("middle")
+    );
+    assert!(
+        render_campaign_list(&report, OutputFormat::Markdown)
+            .expect("render list markdown")
+            .contains("| middle |")
+    );
+
+    let truncated = query_campaign_list(
+        &client,
+        CampaignPrincipal::new("operator:alice").expect("principal"),
+        &CampaignListArgs {
+            after: None,
+            limit: 1,
+            pages: 1,
+        },
+    )
+    .expect("truncated campaign list");
+    assert!(!truncated.complete);
+    assert_eq!(truncated.next_after.as_deref(), Some("alpha"));
+    assert_eq!(truncated.entries.len(), 1);
+
+    assert!(
+        validate_campaign_list(&CampaignListArgs {
+            after: None,
+            limit: 0,
+            pages: 1,
+        })
+        .is_err()
+    );
+    assert!(
+        validate_campaign_list(&CampaignListArgs {
+            after: None,
+            limit: 1,
+            pages: MAX_CAMPAIGN_PAGE_FOLLOW_PAGES + 1,
+        })
+        .is_err()
+    );
 }
 
 #[test]
@@ -1970,7 +2067,7 @@ fn campaign_inputs_fail_before_transport_setup() {
 }
 
 #[test]
-fn campaign_status_and_watch_parse_under_the_nested_cli() {
+fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
     let fixture = Cli::try_parse_from([
         "crucible",
         "campaign",
@@ -2062,6 +2159,34 @@ fn campaign_status_and_watch_parse_under_the_nested_cli() {
             command: CampaignCommand::Watch(CampaignWatchArgs { after: Some(_), .. }),
             ..
         })
+    ));
+
+    let list = Cli::try_parse_from([
+        "crucible",
+        "campaign",
+        "--socket",
+        "/run/crucible/campaign.sock",
+        "--principal",
+        "operator",
+        "list",
+        "--after",
+        "alpha",
+        "--limit",
+        "4",
+        "--pages",
+        "2",
+    ])
+    .expect("campaign list arguments");
+    assert!(matches!(
+        list.command,
+        Commands::Campaign(CampaignArgs {
+            command: CampaignCommand::List(CampaignListArgs {
+                after: Some(ref after),
+                limit: 4,
+                pages: 2,
+            }),
+            ..
+        }) if after == "alpha"
     ));
 
     let left_snapshot = snapshot("left").to_string();

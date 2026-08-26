@@ -310,6 +310,8 @@ enum CampaignCommand {
     ValidateImport(CampaignValidateImportArgs),
     /// Create a named campaign from canonical imported lineage and policy records.
     Create(CampaignCreateArgs),
+    /// List authenticated current campaign heads.
+    List(CampaignListArgs),
     /// Derive a new named campaign from one exact source snapshot.
     Derive(CampaignDeriveArgs),
     /// Submit one finite additive operator branch request.
@@ -362,6 +364,19 @@ enum CampaignCommand {
     Pin(CampaignPinArgs),
     /// Remove one semantic configuration pin.
     Unpin(CampaignUnpinArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignListArgs {
+    /// Exclusive campaign-name cursor returned by the preceding page.
+    #[arg(long, value_name = "NAME")]
+    after: Option<String>,
+    /// Maximum campaign heads returned in each page.
+    #[arg(long, value_name = "COUNT", default_value_t = 32)]
+    limit: u32,
+    /// Maximum authenticated pages followed from the supplied cursor.
+    #[arg(long, value_name = "COUNT", default_value_t = 1)]
+    pages: u32,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
