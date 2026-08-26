@@ -873,6 +873,25 @@ in
 
           CF_EXTERN_C_BEGIN
 
+          Boolean UTTypeEqual(CFStringRef inUTI1, CFStringRef inUTI2);
+          Boolean UTTypeConformsTo(CFStringRef inUTI, CFStringRef inConformsToUTI);
+          CFStringRef UTTypeCopyDescription(CFStringRef inUTI);
+          CFStringRef UTTypeCreatePreferredIdentifierForTag(
+            CFStringRef inTagClass,
+            CFStringRef inTag,
+            CFStringRef inConformingToUTI
+          );
+          CFStringRef UTTypeCopyPreferredTagWithClass(
+            CFStringRef inUTI,
+            CFStringRef inTagClass
+          );
+          CF_EXPORT const CFStringRef kUTTypeApplication;
+          CF_EXPORT const CFStringRef kUTTypeVolume;
+          CF_EXPORT const CFStringRef kUTTypeFolder;
+          CF_EXPORT const CFStringRef kUTTypeXML;
+          CF_EXPORT const CFStringRef kUTTagClassMIMEType;
+          CF_EXPORT const CFStringRef kUTTagClassFilenameExtension;
+
           typedef uint64_t FSEventStreamEventId;
           typedef uint32_t FSEventStreamCreateFlags;
           typedef uint32_t FSEventStreamEventFlags;
@@ -1018,26 +1037,80 @@ in
                                               count:(NSUInteger)len;
           @end
 
+          @class NSData;
+          typedef NSUInteger NSStringEncoding;
+          enum { NSUTF8StringEncoding = 4 };
+
           @interface NSString : NSObject
+          + (instancetype)stringWithUTF8String:(const char *)bytes;
           - (instancetype)initWithUTF8String:(const char *)bytes;
+          - (instancetype)initWithData:(NSData *)data encoding:(NSStringEncoding)encoding;
           - (const char *)UTF8String;
-          - (const char *)cStringUsingEncoding:(NSUInteger)encoding;
+          - (const char *)cStringUsingEncoding:(NSStringEncoding)encoding;
+          - (NSData *)dataUsingEncoding:(NSStringEncoding)encoding;
           - (NSComparisonResult)compare:(NSString *)string;
           @end
 
-          typedef NSUInteger NSStringEncoding;
-          enum { NSUTF8StringEncoding = 4 };
+          @interface NSData : NSObject
+          @end
+
+          @interface NSNumber : NSObject
+          + (NSNumber *)numberWithBool:(BOOL)value;
+          + (NSNumber *)numberWithUnsignedChar:(unsigned char)value;
+          + (NSNumber *)numberWithShort:(short)value;
+          + (NSNumber *)numberWithUnsignedShort:(unsigned short)value;
+          + (NSNumber *)numberWithLong:(long)value;
+          + (NSNumber *)numberWithUnsignedLong:(unsigned long)value;
+          + (NSNumber *)numberWithLongLong:(long long)value;
+          + (NSNumber *)numberWithUnsignedLongLong:(unsigned long long)value;
+          + (NSNumber *)numberWithDouble:(double)value;
+          - (BOOL)boolValue;
+          - (unsigned char)unsignedCharValue;
+          - (short)shortValue;
+          - (unsigned short)unsignedShortValue;
+          - (long)longValue;
+          - (unsigned long)unsignedLongValue;
+          - (long long)longLongValue;
+          - (unsigned long long)unsignedLongLongValue;
+          - (double)doubleValue;
+          @end
+
+          @interface NSEnumerator<ObjectType> : NSObject
+          - (ObjectType)nextObject;
+          @end
 
           @interface NSArray<ObjectType> : NSObject <NSFastEnumeration>
           @property(readonly) ObjectType firstObject;
           @end
 
+          @interface NSMutableArray<ObjectType> : NSArray<ObjectType>
+          + (instancetype)arrayWithCapacity:(NSUInteger)numItems;
+          - (void)addObject:(ObjectType)anObject;
+          @end
+
           @interface NSDictionary<KeyType, ObjectType> : NSObject
+          - (ObjectType)objectForKey:(KeyType)aKey;
           - (ObjectType)objectForKeyedSubscript:(KeyType)key;
+          - (NSEnumerator<KeyType> *)objectEnumerator;
           @end
 
           @interface NSMutableDictionary<KeyType, ObjectType> : NSDictionary<KeyType, ObjectType>
+          + (instancetype)dictionaryWithCapacity:(NSUInteger)numItems;
+          - (void)setObject:(ObjectType)anObject forKey:(KeyType)aKey;
           - (void)setObject:(ObjectType)object forKeyedSubscript:(KeyType)key;
+          @end
+
+          @interface NSAutoreleasePool : NSObject
+          - (instancetype)init;
+          - (void)drain;
+          @end
+
+          @interface NSUserDefaults : NSObject
+          + (NSUserDefaults *)standardUserDefaults;
+          - (id)objectForKey:(NSString *)defaultName;
+          - (void)setObject:(id)value forKey:(NSString *)defaultName;
+          - (void)removeObjectForKey:(NSString *)defaultName;
+          - (BOOL)synchronize;
           @end
 
           @interface NSURL : NSObject
@@ -1166,12 +1239,18 @@ in
               symbols:
                 - _NSSearchPathForDirectoriesInDomains
                 - '_OBJC_CLASS_$_NSArray'
+                - '_OBJC_CLASS_$_NSData'
                 - '_OBJC_CLASS_$_NSBundle'
                 - '_OBJC_CLASS_$_NSDictionary'
+                - '_OBJC_CLASS_$_NSEnumerator'
+                - '_OBJC_CLASS_$_NSAutoreleasePool'
+                - '_OBJC_CLASS_$_NSMutableArray'
                 - '_OBJC_CLASS_$_NSMutableDictionary'
+                - '_OBJC_CLASS_$_NSNumber'
                 - '_OBJC_CLASS_$_NSObject'
                 - '_OBJC_CLASS_$_NSString'
                 - '_OBJC_CLASS_$_NSURL'
+                - '_OBJC_CLASS_$_NSUserDefaults'
                 - '_OBJC_METACLASS_$_NSObject'
           ...
           EOF
@@ -1321,6 +1400,17 @@ in
                 - _LSFindApplicationForInfo
                 - _LSOpenCFURLRef
                 - _LSOpenFromURLSpec
+                - _UTTypeConformsTo
+                - _UTTypeCopyDescription
+                - _UTTypeCopyPreferredTagWithClass
+                - _UTTypeCreatePreferredIdentifierForTag
+                - _UTTypeEqual
+                - _kUTTagClassFilenameExtension
+                - _kUTTagClassMIMEType
+                - _kUTTypeApplication
+                - _kUTTypeFolder
+                - _kUTTypeVolume
+                - _kUTTypeXML
           ...
           EOF
           ln -s ../../ApplicationServices.tbd \
@@ -1467,6 +1557,7 @@ in
                 - _method_getImplementation
                 - _method_getName
                 - _objc_alloc
+                - _objc_alloc_init
                 - _objc_allocateClassPair
                 - _objc_autorelease
                 - _objc_autoreleasePoolPop

@@ -214,12 +214,28 @@
 
             printf '%s\n' \
               '#import <ApplicationServices/ApplicationServices.h>' \
+              '#import <CoreServices/CoreServices.h>' \
               '#import <Foundation/Foundation.h>' \
               '#import <AppKit/AppKit.h>' \
               'int main(void) {' \
               '  NSSearchPathDirectory mediaDirectories[] = { NSMoviesDirectory, NSMusicDirectory, NSPicturesDirectory, NSSharedPublicDirectory };' \
               '  NSArray<NSString *> *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, true);' \
               '  NSString *path = paths.firstObject;' \
+              '  NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];' \
+              '  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];' \
+              '  [defaults setObject:path forKey:@"aos"];' \
+              '  id defaultValue = [defaults objectForKey:@"aos"];' \
+              '  [defaults removeObjectForKey:@"aos"];' \
+              '  BOOL synchronized = [defaults synchronize];' \
+              '  NSData *pathData = [path dataUsingEncoding:NSUTF8StringEncoding];' \
+              '  NSString *decodedPath = [[NSString alloc] initWithData:pathData encoding:NSUTF8StringEncoding];' \
+              '  NSNumber *number = [NSNumber numberWithUnsignedLongLong:42];' \
+              '  NSMutableArray *values = [NSMutableArray arrayWithCapacity:2];' \
+              '  [values addObject:number];' \
+              '  NSMutableDictionary *dictionary = [NSMutableDictionary dictionaryWithCapacity:1];' \
+              '  [dictionary setObject:number forKey:@"aos"];' \
+              '  NSEnumerator *enumerator = [dictionary objectEnumerator];' \
+              '  id enumeratedValue = [enumerator nextObject];' \
               '  NSImage *image = [[NSImage alloc] initByReferencingFile:path];' \
               '  NSURL *url = [NSURL fileURLWithPath:path];' \
               '  NSBundle *bundle = [NSBundle bundleWithURL:url];' \
@@ -229,12 +245,18 @@
               '  CFURLRef application = LSCopyDefaultApplicationURLForContentType(CFSTR("public.data"), kLSRolesAll, NULL);' \
               '  CFStringRef roleHandler = LSCopyDefaultRoleHandlerForContentType(CFSTR("public.data"), kLSRolesAll);' \
               '  CFStringRef schemeHandler = LSCopyDefaultHandlerForURLScheme(CFSTR("aos"));' \
+              '  CFStringRef uti = UTTypeCreatePreferredIdentifierForTag(kUTTagClassMIMEType, CFSTR("application/xml"), kUTTypeXML);' \
+              '  CFStringRef tag = UTTypeCopyPreferredTagWithClass(uti, kUTTagClassFilenameExtension);' \
+              '  CFStringRef utiDescription = UTTypeCopyDescription(kUTTypeApplication);' \
+              '  Boolean utiMatches = UTTypeEqual(kUTTypeFolder, kUTTypeVolume);' \
+              '  Boolean utiConforms = UTTypeConformsTo(uti, kUTTypeXML);' \
               '  CFArrayRef applications = LSCopyApplicationURLsForBundleIdentifier(CFSTR("com.andyl.aos"), NULL);' \
               '  LSLaunchURLSpec spec = { application, applications, NULL, kLSLaunchDefaults, NULL };' \
               '  OSStatus launchStatus = LSOpenFromURLSpec(&spec, NULL);' \
               '  FSRef legacyApplication;' \
               '  OSStatus findStatus = LSFindApplicationForInfo(kLSUnknownCreator, CFSTR("com.andyl.aos"), NULL, &legacyApplication, NULL);' \
-              '  return image == nil || path.UTF8String == NULL || bundlePath == NULL || mediaDirectories[0] == 0 || handlers == NULL || roleHandlers == NULL || roleHandler == NULL || schemeHandler == NULL || launchStatus == -1 || findStatus < kLSApplicationNotFoundErr;' \
+              '  [pool drain];' \
+              '  return image == nil || defaultValue == nil || !synchronized || decodedPath == nil || number.unsignedLongLongValue != 42 || enumeratedValue == nil || path.UTF8String == NULL || bundlePath == NULL || mediaDirectories[0] == 0 || handlers == NULL || roleHandlers == NULL || roleHandler == NULL || schemeHandler == NULL || uti == NULL || tag == NULL || utiDescription == NULL || utiMatches || !utiConforms || launchStatus == -1 || findStatus < kLSApplicationNotFoundErr;' \
               '}' \
               > foundation-appkit-smoke.m
             "$CC" foundation-appkit-smoke.m \
