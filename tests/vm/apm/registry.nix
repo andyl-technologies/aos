@@ -1691,11 +1691,11 @@ in {
       export AOS_NIX_STATE_DIR=/nix/var/nix
       SYSTEM_REG_CONFIG="$AOS_ROOT/var/lib/apm/config/registries.d/override-reg.toml"
       USER_REG_CONFIG="$HOME/.config/apm/registries.d/override-reg.toml"
-      # A --sysroot package installed with `--system` lands as a numbered system
-      # generation under /var/lib/profiles/system (gen-N/toplevel -> store path,
-      # current -> gen-N), not a user-scope tool profile.
+      # This fixture deliberately has no authenticated image-generation state:
+      # it emulates registry administration from a non-AOS host. A sysroot
+      # download may populate the Nix store, but it must not recreate the
+      # retired single-axis system-generation authority.
       SYSTEM_PROFILE="/var/lib/profiles/system"
-      PROFILE_ROOT="$SYSTEM_PROFILE/current/toplevel/bin/closure-root"
       mkdir -p "$HOME"
 
       if [ -e "$USER_REG_CONFIG" ]; then
@@ -1810,30 +1810,40 @@ in {
         pass "override dependency missing before install"
       fi
 
-      $APM install override-root --system --registry override-reg --yes \
-        > /tmp/override-install.out 2>&1 || {
+      if $APM install override-root --system --registry override-reg --yes \
+        > /tmp/override-install.out 2>&1; then
         cat /tmp/override-install.out
-        fail "apm install downloads redirected system registry package"
-      }
+        fail "apm install must reject sysroot activation without image-generation authority"
+      else
+        pass "apm install rejects sysroot activation without image-generation authority"
+      fi
       cat /tmp/override-install.out
       assert_file_contains /tmp/override-install.out "Downloading" \
         "apm install downloads from redirected system registry cache"
-      assert_file_contains /tmp/override-install.out "System generation 1 active" \
-        "apm install activates a system generation from redirected system registry"
-      if [ "$(readlink "$SYSTEM_PROFILE/current")" = "gen-1" ]; then
-        pass "redirected system install points current at gen-1"
+      assert_file_contains /tmp/override-install.out \
+        "image generation state is absent" \
+        "apm install explains missing image-generation authority"
+      if nix-store --check-validity "$ROOT_STORE" >/tmp/override-root-imported.out 2>&1; then
+        pass "redirected system install imports the downloaded sysroot"
       else
-        fail "redirected system install should point current at gen-1"
+        cat /tmp/override-root-imported.out
+        fail "redirected system install should import the downloaded sysroot"
       fi
-      if [ "$(readlink "$SYSTEM_PROFILE/gen-1/toplevel")" = "$ROOT_STORE" ]; then
-        pass "redirected system gen-1 toplevel points at installed sysroot"
+      if nix-store --check-validity "$LEAF_STORE" >/tmp/override-leaf-imported.out 2>&1; then
+        pass "redirected system install imports the downloaded dependency"
       else
-        fail "redirected system gen-1 toplevel should point at installed sysroot"
+        cat /tmp/override-leaf-imported.out
+        fail "redirected system install should import the downloaded dependency"
       fi
-      "$PROFILE_ROOT" > /tmp/override-run.out
+      if [ -e "$SYSTEM_PROFILE/current" ] || [ -e "$SYSTEM_PROFILE/state.json" ]; then
+        fail "rejected non-AOS sysroot activation must not create system generations"
+      else
+        pass "rejected non-AOS sysroot activation creates no system generation"
+      fi
+      "$ROOT_STORE/bin/closure-root" > /tmp/override-run.out
       assert_file_contains /tmp/override-run.out \
         "^closure-root 1.0.0 via closure-leaf 1.0.0$" \
-        "installed redirected system registry executable runs"
+        "downloaded redirected system registry closure runs"
 
       $APM --json registry --system disable override-reg \
         > /tmp/override-disable.json 2>&1 || {
@@ -1914,10 +1924,10 @@ in {
         "apm registry remove deletes redirected system registry config"
       assert_file_not_exists "$USER_REG_CONFIG" \
         "apm registry remove leaves user registry config absent"
-      "$PROFILE_ROOT" > /tmp/override-run-after-remove.out
+      "$ROOT_STORE/bin/closure-root" > /tmp/override-run-after-remove.out
       assert_file_contains /tmp/override-run-after-remove.out \
         "^closure-root 1.0.0 via closure-leaf 1.0.0$" \
-        "installed redirected system registry package still runs after registry removal"
+        "downloaded redirected system registry closure still runs after registry removal"
 
       kill "$CACHE_PID" 2>/dev/null || true
       wait "$CACHE_PID" 2>/dev/null || true
