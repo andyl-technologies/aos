@@ -290,14 +290,15 @@
         effectiveSystem = mkEffectiveSystem {inherit m hostsEntries sshAuthorizedKey;};
         compressedImage = effectiveSystem.config.system.build.image.raw;
         compressedImageName = "aos-${effectiveSystem.config.aos.system.name}.img.zst";
-        imageDisk = pkgs.runCommand "aos-fleet-${m.name}-image-disk" {
-          buildDeps = [pkgs.zstd];
-        } ''
-          mkdir -p "$out"
-          zstd -d --sparse --no-progress \
-            ${compressedImage}/${compressedImageName} \
-            -o "$out/disk.img"
-        '';
+        imageDisk =
+          pkgs.runCommand "aos-fleet-${m.name}-image-disk" {
+            buildDeps = [pkgs.zstd];
+          } ''
+            mkdir -p "$out"
+            zstd -d --sparse --no-progress \
+              ${compressedImage}/${compressedImageName} \
+              -o "$out/disk.img"
+          '';
         metadataNames = builtins.attrNames m.metadata;
         invalidMetadataNames =
           builtins.filter

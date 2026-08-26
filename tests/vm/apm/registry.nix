@@ -5813,93 +5813,93 @@ in {
     rootfsDeps = fixtures.commonDeps ++ [pkgs.jq];
     memory = 512;
     testScript = ''
-      ${fixtures.setupPreamble}
+            ${fixtures.setupPreamble}
 
-      echo "==> Test: APR lists, reviews, and promotes a Hub change request"
+            echo "==> Test: APR lists, reviews, and promotes a Hub change request"
 
-      $APR keys generate maintainer --registry change-reg \
-        > /tmp/change-key.out 2>&1
-      TRUST_KEY=$(grep -o 'change-reg:Ed25519:[A-Za-z0-9+/=]*' \
-        /tmp/change-key.out | head -1)
-      KEY_PATH="$HOME/.config/apm/keys/change-reg-maintainer.key"
-      $APR create change-reg --trust-key "$TRUST_KEY" \
-        --trust-key-id maintainer --key "$KEY_PATH"
-      REG_DIR="$REG_STORAGE/change-reg"
-      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+            $APR keys generate maintainer --registry change-reg \
+              > /tmp/change-key.out 2>&1
+            TRUST_KEY=$(grep -o 'change-reg:Ed25519:[A-Za-z0-9+/=]*' \
+              /tmp/change-key.out | head -1)
+            KEY_PATH="$HOME/.config/apm/keys/change-reg-maintainer.key"
+            $APR create change-reg --trust-key "$TRUST_KEY" \
+              --trust-key-id maintainer --key "$KEY_PATH"
+            REG_DIR="$REG_STORAGE/change-reg"
+            DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
 
-      git init --bare --object-format=sha256 /tmp/change-origin.git
-      git --git-dir=/tmp/change-origin.git symbolic-ref HEAD \
-        "refs/heads/$DEFAULT_BRANCH"
-      git -C "$REG_DIR" remote add origin /tmp/change-origin.git
-      $APR add file:///tmp/change-origin.git --name change-reg --no-clone \
-        --trust-key "$TRUST_KEY"
-      $APR keys register maintainer --key "$KEY_PATH" --registry change-reg
-      git -C "$REG_DIR" push --set-upstream origin "$DEFAULT_BRANCH"
+            git init --bare --object-format=sha256 /tmp/change-origin.git
+            git --git-dir=/tmp/change-origin.git symbolic-ref HEAD \
+              "refs/heads/$DEFAULT_BRANCH"
+            git -C "$REG_DIR" remote add origin /tmp/change-origin.git
+            $APR add file:///tmp/change-origin.git --name change-reg --no-clone \
+              --trust-key "$TRUST_KEY"
+            $APR keys register maintainer --key "$KEY_PATH" --registry change-reg
+            git -C "$REG_DIR" push --set-upstream origin "$DEFAULT_BRANCH"
 
-      BASE_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
-      printf '%s\n' '# reviewed Hub configuration fixture' \
-        >> "$REG_DIR/registry.toml"
-      git -C "$REG_DIR" add registry.toml
-      git -C "$REG_DIR" commit -m \
-        'hub: propose registry configuration
+            BASE_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
+            printf '%s\n' '# reviewed Hub configuration fixture' \
+              >> "$REG_DIR/registry.toml"
+            git -C "$REG_DIR" add registry.toml
+            git -C "$REG_DIR" commit -m \
+              'hub: propose registry configuration
 
-AOS-Change-Id: change-001'
-      DRAFT_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
-      git -C "$REG_DIR" push origin \
-        "$DRAFT_COMMIT:refs/hub/changes/change-001"
-      git -C "$REG_DIR" reset --hard "$BASE_COMMIT"
+      AOS-Change-Id: change-001'
+            DRAFT_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
+            git -C "$REG_DIR" push origin \
+              "$DRAFT_COMMIT:refs/hub/changes/change-001"
+            git -C "$REG_DIR" reset --hard "$BASE_COMMIT"
 
-      $APR --json change list --registry change-reg \
-        > /tmp/change-list.json 2> /tmp/change-list.err || {
-        cat /tmp/change-list.err
-        fail "apr change list reads Hub change refs from the configured remote"
-      }
-      ${pkgs.jq}/bin/jq -e --arg commit "$DRAFT_COMMIT" \
-        '.change_requests | length == 1
-          and .[0].id == "change-001"
-          and .[0].commit == $commit
-          and .[0].change_id == "change-001"' \
-        /tmp/change-list.json >/dev/null
-      $APR change show change-001 --registry change-reg \
-        > /tmp/change-show.out 2>&1
-      assert_file_contains /tmp/change-show.out \
-        'reviewed Hub configuration fixture' \
-        "apr change show displays the proposed configuration"
-      $APR --json change show change-001 --stat --registry change-reg \
-        > /tmp/change-show-stat.json
-      ${pkgs.jq}/bin/jq -e \
-        '.id == "change-001" and .stat == true and (.output | contains("registry.toml"))' \
-        /tmp/change-show-stat.json >/dev/null
+            $APR --json change list --registry change-reg \
+              > /tmp/change-list.json 2> /tmp/change-list.err || {
+              cat /tmp/change-list.err
+              fail "apr change list reads Hub change refs from the configured remote"
+            }
+            ${pkgs.jq}/bin/jq -e --arg commit "$DRAFT_COMMIT" \
+              '.change_requests | length == 1
+                and .[0].id == "change-001"
+                and .[0].commit == $commit
+                and .[0].change_id == "change-001"' \
+              /tmp/change-list.json >/dev/null
+            $APR change show change-001 --registry change-reg \
+              > /tmp/change-show.out 2>&1
+            assert_file_contains /tmp/change-show.out \
+              'reviewed Hub configuration fixture' \
+              "apr change show displays the proposed configuration"
+            $APR --json change show change-001 --stat --registry change-reg \
+              > /tmp/change-show-stat.json
+            ${pkgs.jq}/bin/jq -e \
+              '.id == "change-001" and .stat == true and (.output | contains("registry.toml"))' \
+              /tmp/change-show-stat.json >/dev/null
 
-      $APR --json change merge change-001 --key-id maintainer \
-        --registry change-reg > /tmp/change-merge.json
-      ${pkgs.jq}/bin/jq -e \
-        --arg draft "$DRAFT_COMMIT" --arg branch "$DEFAULT_BRANCH" \
-        '.id == "change-001"
-          and .branch == $branch
-          and .promoted_from == $draft
-          and (.commit | length == 64)' \
-        /tmp/change-merge.json >/dev/null
-      assert_file_contains "$REG_DIR/registry.toml" \
-        'reviewed Hub configuration fixture' \
-        "apr change merge promotes the reviewed tree"
-      LOCAL_HEAD=$(git -C "$REG_DIR" rev-parse HEAD)
-      REMOTE_HEAD=$(git --git-dir=/tmp/change-origin.git \
-        rev-parse "refs/heads/$DEFAULT_BRANCH")
-      test "$LOCAL_HEAD" = "$REMOTE_HEAD" || \
-        fail "apr change merge must push the promoted commit"
-      git -C "$REG_DIR" cat-file commit HEAD > /tmp/change-commit.out
-      assert_file_contains /tmp/change-commit.out 'gpgsig-sha256 ' \
-        "promoted change carries a maintainer signature"
+            $APR --json change merge change-001 --key-id maintainer \
+              --registry change-reg > /tmp/change-merge.json
+            ${pkgs.jq}/bin/jq -e \
+              --arg draft "$DRAFT_COMMIT" --arg branch "$DEFAULT_BRANCH" \
+              '.id == "change-001"
+                and .branch == $branch
+                and .promoted_from == $draft
+                and (.commit | length == 64)' \
+              /tmp/change-merge.json >/dev/null
+            assert_file_contains "$REG_DIR/registry.toml" \
+              'reviewed Hub configuration fixture' \
+              "apr change merge promotes the reviewed tree"
+            LOCAL_HEAD=$(git -C "$REG_DIR" rev-parse HEAD)
+            REMOTE_HEAD=$(git --git-dir=/tmp/change-origin.git \
+              rev-parse "refs/heads/$DEFAULT_BRANCH")
+            test "$LOCAL_HEAD" = "$REMOTE_HEAD" || \
+              fail "apr change merge must push the promoted commit"
+            git -C "$REG_DIR" cat-file commit HEAD > /tmp/change-commit.out
+            assert_file_contains /tmp/change-commit.out 'gpgsig-sha256 ' \
+              "promoted change carries a maintainer signature"
 
-      if $APR change show missing --registry change-reg \
-        > /tmp/change-show-missing.out 2>&1; then
-        fail "apr change show should reject an unknown change id"
-      else
-        pass "apr change show rejects an unknown change id"
-      fi
+            if $APR change show missing --registry change-reg \
+              > /tmp/change-show-missing.out 2>&1; then
+              fail "apr change show should reject an unknown change id"
+            else
+              pass "apr change show rejects an unknown change id"
+            fi
 
-      check_fail
+            check_fail
     '';
   };
 
