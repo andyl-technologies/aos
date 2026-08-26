@@ -593,7 +593,6 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
         assert_contains(&aggregate, patch);
         assert_contains(&aggregate, "grep -q '^patch=${test.patch}$' \"$result\"");
         assert_contains(&aggregate, "grep -q '^patched_fixture_exercised=true$'");
-        assert_contains(&aggregate, "grep -q '^stock_negative_control=true$'");
     }
 
     Ok(())

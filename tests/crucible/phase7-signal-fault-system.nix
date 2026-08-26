@@ -782,7 +782,7 @@ in
           grep -Fxq PASS "$patch_result"
           grep -Fxq 'gate=gate:patch-microtests' "$patch_result"
           grep -Fxq 'every_carried_patch_has_microtest=true' "$patch_result"
-          grep -Fxq 'every_microtest_has_stock_negative_control=true' "$patch_result"
+          grep -Fxq 'every_microtest_has_executable_negative_control=true' "$patch_result"
           grep -Fxq 'diagnostic_only_patches_excluded_from_shipped_qemu=true' "$patch_result"
           grep -Fxq 'patch=0110-crucible-release-halted-rr-turn.patch' \
             "${patchMicrotests}/per-patch/0110-crucible-release-halted-rr-turn.patch.result"

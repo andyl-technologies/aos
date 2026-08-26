@@ -274,8 +274,14 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
     assert_contains(&aggregate, "every_carried_patch_has_microtest=true");
     assert_contains(
         &aggregate,
-        "every_microtest_has_stock_negative_control=true",
+        "every_microtest_has_executable_negative_control=true",
     );
+    assert_contains(&aggregate, "grep -q '^stock_negative_control=true$'");
+    assert_contains(
+        &aggregate,
+        "grep -q '^exact_drop_one_negative_control=true$'",
+    );
+    assert_contains(&aggregate, "missing executable negative control");
     assert_contains(&aggregate, "no_patch_decision_has_microtest_gate=true");
     assert_contains(
         &aggregate,
