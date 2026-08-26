@@ -692,52 +692,29 @@ in {
     testScript = ''
       ${setupRealSystemInstallWorkflow}
 
-      echo "==> Test: apm install server --system downloads, imports, and activates"
+      echo "==> Test: apm install server --system downloads then fails closed"
 
-      $APM install server --system --registry system-reg --yes \
-        > /tmp/system-install.out 2>&1 || {
+      if $APM install server --system --registry system-reg --yes \
+        > /tmp/system-install.out 2>&1; then
         cat /tmp/system-install.out
-        fail "apm install --system succeeds from downloaded sysroot cache"
-      }
+        fail "apm install --system must reject missing image-generation authority"
+      else
+        pass "apm install --system rejects missing image-generation authority"
+      fi
       cat /tmp/system-install.out
       assert_file_contains /tmp/system-install.out "Downloading" \
         "system install downloads the missing toplevel NAR"
+      assert_file_contains /tmp/system-install.out "image generation state is absent" \
+        "system install explains the missing image-generation authority"
       assert_store_valid "$TOPLEVEL_STORE" "system toplevel after apm install"
 
-      # Verify generation state was created
-      if [ ! -f /var/lib/profiles/system/state.json ]; then
-        fail "state.json not created"
-      fi
-
-      STATE=$(cat /var/lib/profiles/system/state.json)
-      echo "State: $STATE"
-
-      # Verify current generation is 1
-      CURRENT=$(echo "$STATE" | ${pkgs.jq}/bin/jq '.current')
-      if [ "$CURRENT" != "1" ]; then
-        fail "expected current=1, got $CURRENT"
-      fi
-
-      # Verify generation directory exists
-      if [ ! -d /var/lib/profiles/system/gen-1 ]; then
-        fail "gen-1 directory not created"
-      fi
-      if [ "$(readlink /var/lib/profiles/system/gen-1/toplevel)" != "$TOPLEVEL_STORE" ]; then
-        fail "gen-1 toplevel does not point at downloaded sysroot"
-      fi
-
-      # Verify current symlink
-      if [ ! -L /var/lib/profiles/system/current ]; then
-        fail "current symlink not created"
-      elif [ "$(readlink /var/lib/profiles/system/current)" != "gen-1" ]; then
-        fail "current symlink should point at gen-1"
-      fi
-
-      # Verify activation ran
-      if [ -f /tmp/activated-2026.03 ]; then
-        pass "activation script executed for v1"
+      if [ -e /var/lib/profiles/system/state.json ] || \
+        [ -e /var/lib/profiles/system/current ] || \
+        [ -e /var/lib/profiles/system/gen-1 ] || \
+        [ -e /tmp/activated-2026.03 ]; then
+        fail "rejected system activation must not create generation state"
       else
-        fail "activation marker not found after system install"
+        pass "rejected system activation leaves generation state untouched"
       fi
 
       if kill "$CACHE_PID" 2>/dev/null; then
@@ -769,20 +746,32 @@ in {
       endpoint = "http://127.0.0.1:9/user-cache"
       REGEOF
 
-      HOME="$BAD_HOME" $APM install server --system --registry system-reg --yes \
-        > /tmp/system-mirror-scope-install.out 2>&1 || {
+      if HOME="$BAD_HOME" $APM install server --system --registry system-reg --yes \
+        > /tmp/system-mirror-scope-install.out 2>&1; then
         cat /tmp/system-mirror-scope-install.out
-        fail "apm install --system downloads via system-scope registry clone"
-      }
+        fail "scoped system install must reject missing image-generation authority"
+      else
+        pass "scoped system install rejects missing image-generation authority"
+      fi
       cat /tmp/system-mirror-scope-install.out
       assert_file_contains /tmp/system-mirror-scope-install.out "Downloading" \
         "system-scope mirror install downloads the missing sysroot"
+      assert_file_contains /tmp/system-mirror-scope-install.out \
+        "image generation state is absent" \
+        "scoped system install explains the missing image-generation authority"
       if grep -q "user-cache" /tmp/system-mirror-scope-install.out; then
         fail "system install should not use the user-scope registry clone"
       else
         pass "system install ignores user-scope registry clone"
       fi
       assert_store_valid "$TOPLEVEL_STORE" "system toplevel after scoped mirror install"
+      if [ -e /var/lib/profiles/system/state.json ] || \
+        [ -e /var/lib/profiles/system/current ] || \
+        [ -e /tmp/activated-2026.03 ]; then
+        fail "rejected scoped system install must not activate the sysroot"
+      else
+        pass "rejected scoped system install leaves generation state untouched"
+      fi
 
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "system static cache HTTP server stopped"
