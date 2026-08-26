@@ -440,6 +440,18 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     assert_eq!(campaign_loopback[2], "crucible-daemon::campaign_loopback");
     assert_eq!(campaign_loopback[3], "component-message");
     owned_campaign_schemas.insert("crucible.campaign.loopback-frame");
+    for schema in [
+        "crucible.campaign.attach-runtime-request",
+        "crucible.campaign.attach-runtime-response",
+    ] {
+        let message = rows
+            .get(schema)
+            .unwrap_or_else(|| panic!("missing campaign runtime control schema {schema}"));
+        assert_eq!(message[1], "1");
+        assert_eq!(message[2], "crucible-daemon::campaign_runtime_control");
+        assert_eq!(message[3], "component-message");
+        owned_campaign_schemas.insert(schema);
+    }
     let campaign_policy = rows
         .get("crucible.campaign-local-policy")
         .unwrap_or_else(|| panic!("missing local campaign policy schema"));

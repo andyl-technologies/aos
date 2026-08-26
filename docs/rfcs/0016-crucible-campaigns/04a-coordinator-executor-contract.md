@@ -993,7 +993,8 @@ wildcard. The closed operation labels are `create-campaign`,
 `get-campaign-planner-rankings`, `get-campaign-graph-object`,
 `query-campaign-choices`, `query-campaign-frontier`,
 `get-campaign-frontier-object`, `get-campaign-choice-object`,
-`apply-campaign-command`, `pin-campaign`, and `submit-branch-request`.
+`apply-campaign-command`, `pin-campaign`, `submit-branch-request`, and
+`attach-campaign-runtime`.
 
 The production filesystem endpoint accepts one absolute pathname of at most
 107 bytes, with no NUL or dot components. Its existing parent must be a real
@@ -1072,15 +1073,43 @@ startup's bounded pathname, secure parent namespace, exact socket owner/mode,
 before/after device-and-inode, and `SO_PEERCRED` checks. Connect itself is
 nonblocking under a 30-second absolute default deadline and a one-hour hard
 configuration ceiling. The connector is invoked only after the registry
-reserves the campaign and slot. Public operator transport/CLI attachment,
-repository-wide automatic campaign discovery, and a shared multi-campaign
-packaged-executor allocator remain future work.
+reserves the campaign and slot.
+
+The public-operator attachment checkpoint defines a separate daemon-
+operational component-message basis. It is not a campaign semantic record and
+its endpoint path MUST NOT enter any snapshot, artifact, modeled event, or
+content identity:
+
+```text
+AttachCampaignRuntimeRequestV1 = version:u32be | principal:string |
+    campaign:string | executor_endpoint:bytes
+AttachCampaignRuntimeResponseV1 = version:u32be | request_digest:[u8;32] |
+    campaign:string | disposition:u8 | attached_runtime_count:u32be
+disposition = 1 (Attached) | 2 (Replayed)
+string = length:u32be | utf8[length]
+bytes = length:u32be | octets[length]
+```
+
+Both bodies are at most 4 KiB. `principal` and `campaign` use the existing
+campaign-service grammars. `executor_endpoint` is an absolute, dot-free,
+NUL-free Linux pathname-socket address of at most 107 bytes. The complete
+request binding is
+`H("crucible.campaign.attach-runtime-request.v1", canonical_request_bytes)`.
+The response MUST repeat that digest and campaign exactly; its count is in
+`1..=256`. `AttachCampaignRuntime` is a distinct per-campaign policy operation
+and is always denied by read-only service mode. The closed bodies, digest, and
+authorization label are implemented and registered in this checkpoint.
+Routing them over the authenticated local listener, exact-replay retention,
+and CLI porcelain remain the next implementation slice. Repository-wide
+automatic campaign discovery and a shared multi-campaign packaged-executor
+allocator remain future work.
 
 SIGINT,
 SIGTERM, lifecycle-server failure, or CampaignService failure shuts down both
 services and joins the campaign workers before releasing either lock.
 `--read-only` also wraps the campaign authorizer and denies Create, Derive,
-ApplyCommand, Pin, and SubmitBranch even if the policy file grants them.
+ApplyCommand, Pin, SubmitBranch, and AttachCampaignRuntime even if the policy
+file grants them.
 Repeatable pre-bind import manifests require the complete local campaign
 profile and conflict with `--read-only`; the prepared repository owner is
 consumed by endpoint binding, so this bootstrap API cannot retain import

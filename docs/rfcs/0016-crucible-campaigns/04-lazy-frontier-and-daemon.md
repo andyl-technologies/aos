@@ -291,9 +291,11 @@ executor or repository I/O, prepares outside the registry mutex, and installs
 only while that exact service incarnation remains live. Shutdown closes
 admission, waits for bounded in-flight preparations, requests cancellation for
 the complete attached set before joining any runtime, and retains repository
-namespace ownership through the final join. An authenticated public operator
-transport and CLI for that capability remain open; callers currently supply an
-already connected and authenticated executor stream.
+namespace ownership through the final join. The public-operator attachment
+message contract is now strict, bounded, request-bound, and separately
+authorized without making its executor path semantic. Listener routing and CLI
+porcelain remain open; callers currently supply an already connected and
+authenticated executor stream.
 
 The real-node realization boundary now has an executor-owned exact-capture
 primitive for that checkpoint path. It seals the unified event

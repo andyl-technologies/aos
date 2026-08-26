@@ -177,6 +177,8 @@ pub enum CampaignServiceOperation {
     PinCampaign,
     /// Submit one additive operator branch request.
     SubmitBranchRequest,
+    /// Attach one daemon runtime to a local executor endpoint.
+    AttachCampaignRuntime,
 }
 
 /// Stable fail-closed authorization failure.

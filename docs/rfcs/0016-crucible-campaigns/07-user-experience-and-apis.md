@@ -592,9 +592,11 @@ the named source history, authorizes both names, leaves the source unchanged,
 and exactly replays by target name after later target mutations or restart. The
 initial nested CLI now exposes explicitly authorized campaign enumeration,
 authenticated current status, one-shot resumable watch, exact-precondition
-lifecycle mutation, and semantic pin/unpin mutation; dynamic runtime attachment
-and remaining paged inspection are still required before the service is
-complete. Repeated bounded
+lifecycle mutation, and semantic pin/unpin mutation. The daemon now owns the
+strict 4-KiB operational request/response contract and distinct policy label
+for dynamic runtime attachment; authenticated listener routing and CLI
+porcelain, plus remaining paged inspection, are still required before the
+service is complete. Repeated bounded
 `WatchCampaign` calls provide
 the initial resumable, coalesced current-head stream. The bounded versioned
 Unix-stream loopback binding is now

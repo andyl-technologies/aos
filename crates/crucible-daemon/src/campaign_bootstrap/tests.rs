@@ -636,6 +636,15 @@ fn read_only_mode_denies_policy_granted_mutation() {
         ),
         Err(CampaignAuthorizationError::Unauthorized)
     );
+    assert_eq!(
+        authorizer.authorize(
+            &principal,
+            CampaignServiceOperation::AttachCampaignRuntime,
+            &campaign,
+            digest,
+        ),
+        Err(CampaignAuthorizationError::Unauthorized)
+    );
 }
 
 #[test]
