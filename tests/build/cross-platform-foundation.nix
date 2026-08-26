@@ -21,19 +21,30 @@
   armSplicesPython =
     (arm.pkgs.spliceBuildDependency arm.pkgs.python3).drvPath
     == arm.buildPackages.python3.drvPath;
+  selectedBuildOutputsRemainSelected =
+    (x86.pkgs.spliceBuildDependency x86.pkgs.glib.dev).drvPath
+    == x86.buildPackages.glib.dev.drvPath
+    && (x86.pkgs.spliceBuildDependency x86.pkgs.glib.dev).outputName == "dev"
+    && (arm.pkgs.spliceBuildDependency arm.pkgs.glib.tools).drvPath
+    == arm.buildPackages.glib.tools.drvPath
+    && (arm.pkgs.spliceBuildDependency arm.pkgs.glib.tools).outputName == "tools";
   targetPackagesRemainDarwin =
-    x86.pkgs.cmake.platforms.host.system == x86Darwin.system
+    x86.pkgs.cmake.platforms.host.system
+    == x86Darwin.system
     && arm.pkgs.python3.platforms.host.system == armDarwin.system;
   sdkPublicationIsTargeted =
-    x86.pkgs.darwin-sdk.platforms.host.system == x86Darwin.system
+    x86.pkgs.darwin-sdk.platforms.host.system
+    == x86Darwin.system
     && arm.pkgs.darwin-sdk.platforms.host.system == armDarwin.system
     && x86.pkgs.darwin-sdk.drvPath != x86.stdenv.sdk.drvPath
     && arm.pkgs.darwin-sdk.drvPath != arm.stdenv.sdk.drvPath;
   runtimesComeFromCrossStdenv =
-    x86.pkgs.darwin-runtimes.drvPath == x86.stdenv.darwinRuntimes.drvPath
+    x86.pkgs.darwin-runtimes.drvPath
+    == x86.stdenv.darwinRuntimes.drvPath
     && arm.pkgs.darwin-runtimes.drvPath == arm.stdenv.darwinRuntimes.drvPath;
   baseToolsAreTargetPackages =
-    x86.pkgs.bash.platforms.host.system == x86Darwin.system
+    x86.pkgs.bash.platforms.host.system
+    == x86Darwin.system
     && x86.pkgs.coreutils.platforms.host.system == x86Darwin.system
     && arm.pkgs.gnumake.platforms.host.system == armDarwin.system
     && arm.pkgs.sed.platforms.host.system == armDarwin.system;
@@ -43,7 +54,8 @@
     && builtins.elem (toString arm.buildPackages.gnumake) arm.pkgs.bash.nativeBuildInputs
     && !(builtins.elem (toString arm.pkgs.gnumake) arm.pkgs.bash.nativeBuildInputs);
   publicToolchainsAreDarwin =
-    x86.pkgs.cc.platforms.host.system == x86Darwin.system
+    x86.pkgs.cc.platforms.host.system
+    == x86Darwin.system
     && x86.pkgs.gcc.platforms.host.system == x86Darwin.system
     && x86.pkgs.binutils.platforms.host.system == x86Darwin.system
     && arm.pkgs.cc.platforms.host.system == armDarwin.system
@@ -134,6 +146,7 @@
 in
   assert x86SplicesCmake;
   assert armSplicesPython;
+  assert selectedBuildOutputsRemainSelected;
   assert targetPackagesRemainDarwin;
   assert sdkPublicationIsTargeted;
   assert runtimesComeFromCrossStdenv;

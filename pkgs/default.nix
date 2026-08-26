@@ -88,9 +88,17 @@
             || version == candidate.version
         )
         candidates;
+      selectedOutput = dep.outputName or null;
+      selectedCandidate =
+        if matchingCandidates != []
+        then builtins.head matchingCandidates
+        else null;
     in
-      if matchingCandidates != []
-      then builtins.head matchingCandidates
+      if selectedCandidate != null
+      then
+        if selectedOutput != null && builtins.hasAttr selectedOutput selectedCandidate
+        then builtins.getAttr selectedOutput selectedCandidate
+        else selectedCandidate
       else dep;
 
   # Raw stdenv.mkDerivation, without nuke-references injected. Used by
@@ -382,8 +390,21 @@
           ln -s "$payload" "$out"
         ''
       else null;
+    secondaryOutputAttrs = builtins.listToAttrs (
+      builtins.map (outputName: {
+        name = outputName;
+        value =
+          (builtins.getAttr outputName drv)
+          // {
+            pname = args.pname or packageName;
+            meta = drv.meta or {};
+          }
+          // lib.optionalAttrs (args ? version) {inherit (args) version;};
+      }) (builtins.filter (outputName: outputName != drv.outputName) drv.outputs)
+    );
     result =
       drv
+      // secondaryOutputAttrs
       // configModuleAttrs
       // (
         if args ? expose
