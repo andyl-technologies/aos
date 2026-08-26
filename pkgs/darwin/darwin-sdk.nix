@@ -219,6 +219,7 @@ in
           cp "$xnuRoot/libkern/os/log.h" "$out/usr/include/os/"
           cp \
             "$libcRoot/include/readpassphrase.h" \
+            "$libcRoot/include/utmp.h" \
             "$libcRoot/include/util.h" \
             "$out/usr/include/"
           cp \
@@ -277,8 +278,12 @@ in
               printf '#line 1 "%s"\n' "$xnuRoot/osfmk/mach/mach_vm.defs"
               cat "$xnuRoot/osfmk/mach/mach_vm.defs"
             } > mach_vm.defs.c
+            # Match Apple's userspace header mode. It gives the modern routine
+            # its private compatibility name so mach_vm.h can be included
+            # after mach.h's legacy vm_map interface.
             runBuildCC -E -x c \
               -D__MACH30__ \
+              -DLIBSYSCALL_INTERFACE=1 \
               -I "$xnuRoot/osfmk" \
               -I "$xnuRoot" \
               mach_vm.defs.c \
