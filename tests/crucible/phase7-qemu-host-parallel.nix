@@ -92,6 +92,30 @@ in
             -- \
             --exact
 
+          fingerprint_test='supervision::host_parallel_gate::tests::host_parallel_gate_enables_fingerprinting_before_launch'
+          fingerprint_test_list="$TMPDIR/host-parallel-fingerprint.tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-host-parallel-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib \
+            -- \
+            --list > "$fingerprint_test_list"
+          grep -Fxq "$fingerprint_test: test" "$fingerprint_test_list"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-host-parallel-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib \
+            "$fingerprint_test" \
+            -- \
+            --exact \
+            --include-ignored
+
           cargo build \
             --frozen \
             --offline \
