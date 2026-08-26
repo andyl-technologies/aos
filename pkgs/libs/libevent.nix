@@ -26,15 +26,16 @@ in
       gnumake
       pkg-config
     ];
-    runtimeDeps = [
-      openssl
-      zlib
-    ]
-    ++ (
-      if stdenv.hostPlatform.isDarwin
-      then [python3]
-      else []
-    );
+    runtimeDeps =
+      [
+        openssl
+        zlib
+      ]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [python3]
+        else []
+      );
     propagatedDeps = [];
 
     phases = [

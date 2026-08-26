@@ -37,19 +37,20 @@ in
     };
 
     buildDeps = [gnumake pkg-config];
-    runtimeDeps = [
-      zlib
-      acl
-      attr
-      readline
-      libburn
-      libisofs
-    ]
-    ++ (
-      if stdenv.hostPlatform.isDarwin
-      then [bash]
-      else []
-    );
+    runtimeDeps =
+      [
+        zlib
+        acl
+        attr
+        readline
+        libburn
+        libisofs
+      ]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [bash]
+        else []
+      );
     propagatedDeps = [];
 
     phases = [
