@@ -106,7 +106,9 @@
               '#include <CoreServices/CoreServices.h>' \
               'static void aos_fsevent_callback(ConstFSEventStreamRef stream, void *info, size_t count, void *paths, const FSEventStreamEventFlags flags[], const FSEventStreamEventId ids[]) { (void)stream; (void)info; (void)count; (void)paths; (void)flags; (void)ids; }' \
               'int main(void) {' \
-              '  const void *values[] = { CFSTR("aos") };' \
+              '  const UInt8 textBytes[] = { 97, 111, 115 };' \
+              '  CFStringRef text = CFStringCreateWithBytes(kCFAllocatorDefault, textBytes, 3, kCFStringEncodingUTF8, false);' \
+              '  const void *values[] = { text };' \
               '  CFArrayRef immutable = CFArrayCreate(kCFAllocatorDefault, values, 1, &kCFTypeArrayCallBacks);' \
               '  CFMutableArrayRef mutable = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);' \
               '  CFArrayAppendValue(mutable, values[0]);' \
@@ -140,13 +142,39 @@
               '  if (base != NULL) CFRelease(base);' \
               '  if (mutable != NULL) CFRelease(mutable);' \
               '  if (immutable != NULL) CFRelease(immutable);' \
+              '  if (text != NULL) CFRelease(text);' \
               '  return reachable && started && purged && current == 0;' \
               '}' \
               > coreservices-smoke.c
-            "$CC" coreservices-smoke.c \
-              -framework CoreFoundation \
-              -framework CoreServices \
+            # CoreServices is an umbrella and must carry its CoreFoundation
+            # reexport without consumers repeating the underlying framework.
+            "$CC" coreservices-smoke.c -framework CoreServices \
               -o "$c/bin/aos-darwin-coreservices-smoke"
+
+            # Match Clang's plugin topology: a dylib records the versioned
+            # CoreServices install name, then a flat-namespace bundle links
+            # that dylib and makes ld64 follow the transitive framework edge.
+            printf '%s\n' \
+              '#include <CoreFoundation/CoreFoundation.h>' \
+              '#include <CoreServices/CoreServices.h>' \
+              'int aos_core_services_reexport(void) {' \
+              '  const UInt8 textBytes[] = { 97, 111, 115 };' \
+              '  CFStringRef text = CFStringCreateWithBytes(kCFAllocatorDefault, textBytes, 3, kCFStringEncodingUTF8, false);' \
+              '  if (text != NULL) CFRelease(text);' \
+              '  return text == NULL;' \
+              '}' \
+              > coreservices-reexport.c
+            "$CC" -dynamiclib coreservices-reexport.c -framework CoreServices \
+              -Wl,-install_name,"$c/lib/libaos-darwin-coreservices-reexport.dylib" \
+              -o "$c/lib/libaos-darwin-coreservices-reexport.dylib"
+            printf '%s\n' \
+              'extern int aos_core_services_reexport(void);' \
+              'int aos_core_services_plugin(void) { return aos_core_services_reexport(); }' \
+              > coreservices-plugin.c
+            "$CC" -bundle coreservices-plugin.c \
+              -Wl,-flat_namespace -Wl,-undefined -Wl,dynamic_lookup \
+              "$c/lib/libaos-darwin-coreservices-reexport.dylib" \
+              -o "$c/lib/aos-darwin-coreservices-plugin.bundle"
 
             printf '%s\n' \
               '#import <Cocoa/Cocoa.h>' \
