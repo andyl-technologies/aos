@@ -6,6 +6,18 @@
   gnumake,
 }: let
   version = "1.2.2";
+  benchmarkSrc = fetchurl {
+    urls = [
+      "https://github.com/google/benchmark/archive/d572f4777349d43653b21d6c2fc63020ab326db2.tar.gz"
+    ];
+    hash = "sha256-VGfKowJ1Lh9JEbCHWTZMfVcjJdS/OJO9a54JrneJdw0=";
+  };
+  googletestSrc = fetchurl {
+    urls = [
+      "https://github.com/google/googletest/archive/b796f7d44681514f58a683a3a71ff17c94edb0c1.tar.gz"
+    ];
+    hash = "sha256-JoHejAkwsGENxSomAvrUHQ2vo9f/EDDaZXXVb8H0ykY=";
+  };
 in
   mkDerivation {
     pname = "snappy";
@@ -27,16 +39,24 @@ in
         name = "unpack";
         script = ''
           tar xf $src
+          mkdir -p snappy-${version}/third_party/benchmark
+          tar xf ${benchmarkSrc} \
+            --strip-components=1 \
+            -C snappy-${version}/third_party/benchmark
+          mkdir -p snappy-${version}/third_party/googletest
+          tar xf ${googletestSrc} \
+            --strip-components=1 \
+            -C snappy-${version}/third_party/googletest
           cd snappy-${version}
         '';
       }
       {
         name = "configure";
         script = ''
-          mkdir build
-          cd build
-          cmake .. \
+          cmake -S . -B build \
+            $cmakeFlags \
             -DCMAKE_INSTALL_PREFIX=$out \
+            -DCMAKE_INSTALL_LIBDIR=lib \
             -DBUILD_SHARED_LIBS=ON \
             -DSNAPPY_BUILD_TESTS=ON \
             -DSNAPPY_BUILD_BENCHMARKS=ON \
@@ -46,15 +66,13 @@ in
       {
         name = "build";
         script = ''
-          cd build
-          make -j$NIX_BUILD_CORES
+          cmake --build build -j$NIX_BUILD_CORES
         '';
       }
       {
         name = "install";
         script = ''
-          cd build
-          make install
+          cmake --install build
         '';
       }
     ];
