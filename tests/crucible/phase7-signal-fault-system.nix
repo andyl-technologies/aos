@@ -428,6 +428,8 @@ in
           run_exact_api_test \
             vm_lifecycle::checkpoint_store::publication::tests::published_checkpoint_count_ignores_transaction_staging_directories
           run_exact_api_test \
+            vm_lifecycle::checkpoint_store::publication::tests::new_checkpoint_count_is_admitted_before_publication_with_exact_coordinates
+          run_exact_api_test \
             vm_lifecycle::checkpoint_store::read_budget::tests::checkpoint_read_budget_rejects_manifest_before_file_allocation
           run_exact_api_test \
             vm_lifecycle::checkpoint_store::read_budget::tests::checkpoint_read_allocation_failure_keeps_pre_reservation_coordinates

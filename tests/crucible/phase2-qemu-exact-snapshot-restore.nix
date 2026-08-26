@@ -233,16 +233,23 @@ in
               vmlinuz=$(ls "$GUEST_KERNEL"/boot/vmlinuz-* | head -1)
             fi
             test -n "$vmlinuz"
+            qemu_lib_tests="$TMPDIR/crucible-qemu-lib-tests"
             cargo test --frozen --offline \
               --target-dir "$TMPDIR/exact-snapshot-target" \
-              --manifest-path crates/Cargo.toml -p crucible-qemu \
-              qemu_node_captures_one_identity_bound_vmstate_and_host_io_pair \
-              -- --test-threads=1
-            cargo test --frozen --offline \
-              --target-dir "$TMPDIR/exact-snapshot-target" \
-              --manifest-path crates/Cargo.toml -p crucible-qemu \
-              factory_restores_vmstate_before_exposing_exact_snapshot_control \
-              -- --test-threads=1
+              --manifest-path crates/Cargo.toml -p crucible-qemu --lib \
+              -- --list > "$qemu_lib_tests"
+            run_exact_qemu_test() {
+              test_name="$1"
+              grep -Fqx "$test_name: test" "$qemu_lib_tests"
+              cargo test --frozen --offline \
+                --target-dir "$TMPDIR/exact-snapshot-target" \
+                --manifest-path crates/Cargo.toml -p crucible-qemu --lib \
+                "$test_name" -- --exact --include-ignored --test-threads=1
+            }
+            run_exact_qemu_test \
+              node::tests::exact_lifecycle::qemu_node_captures_one_identity_bound_vmstate_and_host_io_pair
+            run_exact_qemu_test \
+              node_factory::tests::restore_continuation::factory_restores_vmstate_before_exposing_exact_snapshot_control
             cargo build --frozen --offline \
               --target-dir "$TMPDIR/exact-snapshot-target" \
               --manifest-path crates/Cargo.toml -p crucible-qemu \
