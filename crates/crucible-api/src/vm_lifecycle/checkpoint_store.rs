@@ -14,7 +14,8 @@ use paths::{closure_parent, object_parent};
 mod publication;
 pub(super) use publication::PersistExactCheckpointError;
 use publication::{
-    enforce_published_checkpoint_count, finalize_published_checkpoint, scheduler_resource_limit,
+    admit_new_checkpoint_publication, enforce_published_checkpoint_count,
+    finalize_published_checkpoint, scheduler_resource_limit,
 };
 mod read_budget;
 use read_budget::CheckpointReadBudget;
@@ -191,6 +192,7 @@ pub(super) fn persist_exact_checkpoint_set(
             &destination,
             &object_directory,
             &manifest,
+            &manifest_bytes,
             &objects,
             checkpoint,
         )
@@ -759,28 +761,8 @@ fn enforce_persist_limits(
 ) -> Result<(), SchedulerError> {
     let parent = closure_parent(run_state_root, scenario);
     let destination = parent.join(manifest.identity.to_hex());
-    if !destination.exists() && parent.exists() {
-        let count = fs::read_dir(&parent)
-            .map_err(|error| store_error(format!("count exact checkpoint closures: {error}")))?
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                entry.file_type().is_ok_and(|kind| kind.is_dir())
-                    && entry.file_name().to_str().is_some_and(|name| {
-                        name.len() == 64
-                            && name
-                                .bytes()
-                                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-                    })
-            })
-            .count();
-        limits
-            .reserve(
-                "checkpoint_count",
-                u64::try_from(count)
-                    .map_err(|_| store_error("checkpoint count is not representable"))?,
-                1,
-            )
-            .map_err(|error| store_error(error.to_string()))?;
+    if !destination.exists() {
+        admit_new_checkpoint_publication(&parent, limits)?;
     }
 
     let mut identities = BTreeSet::new();
@@ -865,13 +847,15 @@ fn authenticate_existing_publication(
     destination: &Path,
     object_directory: &Path,
     expected: &ClosureManifest,
+    expected_bytes: &[u8],
     objects: &ClosureObjects,
     checkpoint: &ProductionVmExactCheckpointSet,
 ) -> Result<(), SchedulerError> {
-    let bytes = read_bounded_file(&destination.join(MANIFEST_FILE), MAX_MANIFEST_BYTES_U64)
+    let expected_length = u64::try_from(expected_bytes.len())
+        .map_err(|_| store_error("expected checkpoint manifest size is not representable"))?;
+    let observed_bytes = read_bounded_file(&destination.join(MANIFEST_FILE), expected_length)
         .map_err(|error| store_error(format!("read existing checkpoint manifest: {error}")))?;
-    let observed = decode_manifest(&bytes).map_err(store_error)?;
-    if &observed != expected {
+    if observed_bytes != expected_bytes {
         return Err(store_error(
             "existing exact checkpoint publication has different authenticated content",
         ));
@@ -1285,24 +1269,6 @@ fn encode_manifest(manifest: &ClosureManifest) -> Result<Vec<u8>, SchedulerError
     bytes.extend_from_slice(MANIFEST_MAGIC);
     bytes.extend_from_slice(&payload);
     Ok(bytes)
-}
-
-// crucible-lint: allow stringly-error -- the private canonical decoder returns bounded diagnostics that the store boundary immediately wraps in CheckpointStoreError.
-fn decode_manifest(bytes: &[u8]) -> Result<ClosureManifest, String> {
-    let payload = bytes
-        .strip_prefix(MANIFEST_MAGIC)
-        .ok_or_else(|| String::from("unsupported closure manifest version"))?;
-    if payload.len() > MAX_MANIFEST_BYTES {
-        return Err(String::from("closure manifest exceeds its size limit"));
-    }
-    let manifest: ClosureManifest = ciborium::de::from_reader(payload)
-        .map_err(|_| String::from("malformed closure manifest"))?;
-    let canonical = encode_manifest(&manifest).map_err(|error| error.to_string())?;
-    if canonical != bytes {
-        return Err(String::from("noncanonical closure manifest"));
-    }
-    validate_manifest_shape(&manifest)?;
-    Ok(manifest)
 }
 
 // crucible-lint: allow stringly-error -- the private shape validator returns bounded diagnostics that the store boundary immediately wraps in CheckpointStoreError.
@@ -1933,7 +1899,8 @@ mod tests {
         original.node_service_states = vec![(String::from("a"), 1), (String::from("b"), 2)];
 
         let bytes = encode_manifest(&original).expect("encode canonical closure manifest");
-        let decoded = decode_manifest(&bytes).expect("decode canonical closure manifest");
+        let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
+            .expect("decode canonical closure manifest");
 
         assert_eq!(
             encode_manifest(&decoded).expect("re-encode canonical closure manifest"),
@@ -1946,11 +1913,15 @@ mod tests {
         let mut unsorted = manifest();
         unsorted.targets = vec![target("b"), target("a")];
         let bytes = encode_manifest(&unsorted).expect("encode fixture");
-        assert!(decode_manifest(&bytes).is_err());
+        assert!(
+            decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err()
+        );
 
         let mut trailing = encode_manifest(&manifest()).expect("encode fixture");
         trailing.push(0);
-        assert!(decode_manifest(&trailing).is_err());
+        assert!(
+            decode::decode_manifest_with_limits(&trailing, FaultResourceLimits::default()).is_err()
+        );
     }
 
     #[test]
