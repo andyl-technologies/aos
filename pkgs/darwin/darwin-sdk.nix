@@ -580,13 +580,16 @@ in
                 - _CFRunLoopStop
                 - _CFRunLoopWakeUp
                 - _CFStringCreateWithCString
+                - _CFStringGetBytes
                 - _CFStringGetCString
                 - _CFStringGetCStringPtr
                 - _CFStringGetLength
                 - _CFStringGetMaximumSizeForEncoding
                 - _CFStringGetTypeID
                 - _CFTimeZoneCopyDefault
+                - _CFTimeZoneCopySystem
                 - _CFTimeZoneGetName
+                - _CFTimeZoneResetSystem
                 - _CFURLCreateFromFileSystemRepresentation
                 - _CFURLCreateWithFileSystemPath
                 - _CFURLGetFileSystemRepresentation

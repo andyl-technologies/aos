@@ -52,7 +52,12 @@
               '  CFStringRef label = CFSTR("aos Darwin SDK");' \
               '  CFStringRef canonicalLanguage = CFLocaleCreateCanonicalLanguageIdentifierFromString(kCFAllocatorDefault, label);' \
               '  CFIndex maximum = CFStringGetMaximumSizeForEncoding(CFStringGetLength(label), kCFStringEncodingUTF8);' \
+              '  UInt8 stringBuffer[32];' \
+              '  CFIndex usedStringBytes = 0;' \
+              '  CFIndex convertedCharacters = CFStringGetBytes(label, CFRangeMake(0, CFStringGetLength(label)), kCFStringEncodingUTF8, 0, false, stringBuffer, sizeof(stringBuffer), &usedStringBytes);' \
               '  CFTimeZoneRef zone = CFTimeZoneCopyDefault();' \
+              '  CFTimeZoneRef systemZone = CFTimeZoneCopySystem();' \
+              '  CFTimeZoneResetSystem();' \
               '  CFStringRef zoneName = zone == NULL ? NULL : CFTimeZoneGetName(zone);' \
               '  CFStringRef path = CFStringCreateWithCString(kCFAllocatorDefault, ".", kCFStringEncodingUTF8);' \
               '  CFURLRef pathURL = path == NULL ? NULL : CFURLCreateWithFileSystemPath(kCFAllocatorDefault, path, kCFURLPOSIXPathStyle, true);' \
@@ -82,9 +87,10 @@
               '  if (url != NULL) CFRelease(url);' \
               '  if (pathURL != NULL) CFRelease(pathURL);' \
               '  if (path != NULL) CFRelease(path);' \
+              '  if (systemZone != NULL) CFRelease(systemZone);' \
               '  if (zone != NULL) CFRelease(zone);' \
               '  if (canonicalLanguage != NULL) CFRelease(canonicalLanguage);' \
-              '  return label == NULL || canonicalLanguage == NULL || maximum < 0 || zoneName == NULL || identifier == value || !represented || launchStatus == -1 || attributeSize < -1 || attributeListSize < -1 || attributeSetStatus < -1 || attributeRemoveStatus < -1 || XATTR_CREATE != 0x0002 || XATTR_REPLACE != 0x0004;' \
+              '  return label == NULL || canonicalLanguage == NULL || maximum < 0 || convertedCharacters < 0 || usedStringBytes < 0 || zoneName == NULL || systemZone == NULL || identifier == value || !represented || launchStatus == -1 || attributeSize < -1 || attributeListSize < -1 || attributeSetStatus < -1 || attributeRemoveStatus < -1 || XATTR_CREATE != 0x0002 || XATTR_REPLACE != 0x0004;' \
               '}' \
               > framework-smoke.c
             "$CC" framework-smoke.c \
