@@ -24,20 +24,21 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [
-      (
+    runtimeDeps =
+      [
+        (
+          if stdenv.hostPlatform.isDarwin
+          then openpam
+          else linux-pam
+        )
+        openssl
+        zlib
+      ]
+      ++ (
         if stdenv.hostPlatform.isDarwin
-        then openpam
-        else linux-pam
-      )
-      openssl
-      zlib
-    ]
-    ++ (
-      if stdenv.hostPlatform.isDarwin
-      then [bash]
-      else []
-    );
+        then [bash]
+        else []
+      );
     propagatedDeps = [];
 
     phases = [
@@ -99,6 +100,13 @@ in
             # Flatten $out/$out/... back to $out (DESTDIR concatenates).
             cp -a $out$out/. $out/
             rm -rf $out/nix
+
+            # Portable OpenSSH keeps ssh-copy-id in contrib and does not add
+            # it to install-nokeys. Install the client helper explicitly so
+            # the Darwin package has the complete command-line tool set.
+            mkdir -p "$out/share/man/man1"
+            install -m 0755 contrib/ssh-copy-id "$out/bin/ssh-copy-id"
+            install -m 0644 contrib/ssh-copy-id.1 "$out/share/man/man1/ssh-copy-id.1"
             sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/ssh-copy-id"
           ''
           else ''
