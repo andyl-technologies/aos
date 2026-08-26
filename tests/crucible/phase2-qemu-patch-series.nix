@@ -769,6 +769,13 @@
       enforces = "DET-1,PLUG-24,QEMU-43";
       capability = "a vCPU that executes HLT before exhausting its serialized RR turn leaves the execution loop when no alternative vCPU is runnable; a helper-marked multi-vCPU guest PAUSE fences control-boundary acknowledgement until it commits a cursor-zero early handoff immediately after icount accounting and before callbacks or host-work exits, so a released spin lock cannot be reacquired before a waiting peer runs; and that exact completed-turn handoff admits safe register capture while other owner mismatches fail closed";
     }
+    {
+      file = "0111-crucible-hot-fork-readiness.patch";
+      catalogName = "crucible-hot-fork-readiness";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "a bounded versioned QMP query reports QEMU-owned precise-icount, single-threaded sim RR, and exact paused/device-flush proofs while keeping every unimplemented subsystem, mapping, and child-reinitialization proof clear so ordinary paused state can never advertise hot fork";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

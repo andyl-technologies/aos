@@ -122,7 +122,45 @@ template itself.
 
 ## 05.5 Control protocol
 
-The Apache host and GPL QEMU process communicate through new versioned messages:
+The Apache host and GPL QEMU process communicate through new versioned messages.
+Before template preparation exists, the host uses the bounded
+`query-crucible-hot-fork-readiness` QMP command to read QEMU's own proof state;
+it never infers readiness from launch arguments or ordinary paused status. The
+version-1 response is:
+
+```text
+CrucibleHotForkReadiness {
+    schema-version: u32 = 1,
+    required-proofs: u64 = 0x01ff,
+    acknowledged-proofs: u64,
+    ready: bool,
+}
+```
+
+The nine low-order proof bits have this fixed meaning:
+
+| Bit | QEMU-owned proof |
+| --- | --- |
+| 0 | precise icount is active |
+| 1 | deterministic `sim` uses one round-robin TCG thread |
+| 2 | QEMU is paused at an exact boundary and device flush completed |
+| 3 | AIO contexts, bottom halves, and timers are drained or parked |
+| 4 | relevant RCU callbacks and read-side sections are quiescent |
+| 5 | writable block roots are at immutable external-snapshot boundaries |
+| 6 | plugin command/event channels and shared-memory rings are frozen |
+| 7 | every mapping and descriptor has a closed child disposition |
+| 8 | every omitted thread and process-private resource has a child reinitializer |
+
+`required-proofs` MUST equal `0x01ff`, `acknowledged-proofs` MUST be a
+subset, and `ready` MUST equal exact bitmap equality. An unknown version,
+changed required bitmap, unknown acknowledged bit, or contradictory boolean is
+a protocol failure. The first QEMU-side checkpoint acknowledges only proofs it
+can already derive from precise sim RR plus the authenticated VM-stop/device
+flush boundary. Bits 3 through 8 remain clear, so hot fork remains unavailable,
+until their subsystem-owned barriers and reinitializers land. The query is
+observational and does not itself pause, prepare, fork, or mutate the VM.
+
+Template realization then adds the following operations:
 
 ```text
 PrepareForkTemplate

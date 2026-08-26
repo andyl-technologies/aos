@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **76 patches**. This count is checked against
+The carried series contains **77 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -279,6 +279,9 @@ SIGNAL-DRIVEN FAULT EXECUTION                          class  enforces
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse
+
+CAMPAIGN HOT FORK (RFC-0016)                           class  enforces
+  crucible-hot-fork-readiness QEMU-owned proof bitmap   F    HFORK-3, HFORK-4
 
 DIAGNOSTIC-ONLY (dev, NOT shipped)                     class  enforces
   crucible-tcg-exec-diag ........ per-exec icount trace      dev  divergence debug
@@ -1579,6 +1582,31 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   before any control callback or host-work exit and is not VMState. Every
   ordinary QEMU accelerator retains its prior behavior.
 - **Risk:** D.
+
+### crucible-hot-fork-readiness — report QEMU-owned quiescence proofs
+
+- **Patch:** `0111-crucible-hot-fork-readiness.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4].
+- **Mechanism:** a fixed version-1 QMP query reports the complete nine-bit
+  hot-fork proof contract and the exact subset QEMU can attest at the current
+  boundary. Precise icount, single-threaded sim RR, and an authenticated exact
+  paused/device-flush boundary are derived from live QEMU state. AIO/BH/timer,
+  RCU, block-snapshot, plugin-ring, mapping/descriptor, and child-reinit bits
+  remain clear until their subsystem-owned coordinators land, so the response
+  cannot optimistically advertise hot fork.
+- **Micro-test:** the typed Apache client accepts the exact incomplete bitmap,
+  exposes every missing proof class, and rejects an unknown schema, changed
+  required set, unknown acknowledgement, or contradictory ready flag. A live
+  patched-QEMU gate requires the exact incomplete report under precise
+  single-threaded sim RR, proves that ordinary QMP pause cannot acknowledge the
+  exact-boundary bit, and proves that stock QEMU does not expose the command.
+  QAPI generation and the patched-QEMU build gate compile the matching GPL-side
+  command and response structure.
+- **Inertness:** the command is observational and performs no stop, resume,
+  fork, timer, I/O, or guest-state operation. Outside the exact deterministic
+  profile it returns fewer acknowledgements and remains not ready. Existing QMP
+  commands and non-Crucible execution are unchanged.
+- **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 

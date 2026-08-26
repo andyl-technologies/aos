@@ -12,11 +12,12 @@ use std::time::Duration;
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT,
-    QMP_QUERY_CPUS_FAST_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
+    QMP_HOT_FORK_REQUIRED_PROOFS, QMP_QUERY_CPUS_FAST_COMMAND,
+    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
     QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND,
     QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient,
-    QmpCommandKind, QmpError, QmpGreeting, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind,
-    QmpSnapshotTag, QmpTimeoutStream,
+    QmpCommandKind, QmpError, QmpGreeting, QmpHotForkProof, QmpIoTimeoutPolicy, QmpJobPollPolicy,
+    QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -192,6 +193,81 @@ fn query_status_and_cpus_fast_are_typed_and_bounded() -> Result<(), Box<dyn Erro
     );
     assert_timeout_budget(&audit.read_timeouts, QMP_COMMAND_TIMEOUT);
     assert_timeout_budget(&audit.write_timeouts, QMP_COMMAND_TIMEOUT);
+    Ok(())
+}
+
+#[test]
+fn hot_fork_readiness_is_exact_versioned_and_fail_closed() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"required-proofs":511,"acknowledged-proofs":7,"ready":false}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let readiness = client.query_hot_fork_readiness()?;
+    assert!(!readiness.ready());
+    assert!(readiness.acknowledges(QmpHotForkProof::PreciseIcount));
+    assert!(readiness.acknowledges(QmpHotForkProof::SingleThreadedSimRoundRobin));
+    assert!(readiness.acknowledges(QmpHotForkProof::ExactPausedBoundary));
+    assert_eq!(
+        readiness.missing_proofs().collect::<Vec<_>>(),
+        vec![
+            QmpHotForkProof::AioBottomHalvesAndTimers,
+            QmpHotForkProof::Rcu,
+            QmpHotForkProof::BlockSnapshot,
+            QmpHotForkProof::PluginRings,
+            QmpHotForkProof::MappingAndDescriptors,
+            QmpHotForkProof::ChildReinitialization,
+        ]
+    );
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    assert_eq!(
+        execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_HOT_FORK_READINESS_COMMAND)
+    );
+    assert_eq!(QMP_HOT_FORK_REQUIRED_PROOFS, 511);
+    Ok(())
+}
+
+#[test]
+fn hot_fork_readiness_accepts_only_the_complete_exact_bitmap() -> Result<(), Box<dyn Error>> {
+    let mut client = QmpClient::connect(scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"required-proofs":511,"acknowledged-proofs":511,"ready":true}}"#,
+    ]))?;
+
+    let readiness = client.query_hot_fork_readiness()?;
+    assert!(readiness.ready());
+    assert_eq!(readiness.missing_proofs().next(), None);
+    Ok(())
+}
+
+#[test]
+fn hot_fork_readiness_rejects_unknown_or_contradictory_proofs() -> Result<(), Box<dyn Error>> {
+    for response in [
+        r#"{"return":{"schema-version":2,"required-proofs":511,"acknowledged-proofs":511,"ready":true}}"#,
+        r#"{"return":{"schema-version":1,"required-proofs":1023,"acknowledged-proofs":1023,"ready":true}}"#,
+        r#"{"return":{"schema-version":1,"required-proofs":511,"acknowledged-proofs":512,"ready":false}}"#,
+        r#"{"return":{"schema-version":1,"required-proofs":511,"acknowledged-proofs":7,"ready":true}}"#,
+    ] {
+        let mut client = QmpClient::connect(scripted_qmp([
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            response,
+        ]))?;
+        assert!(matches!(
+            client.query_hot_fork_readiness(),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::QueryHotForkReadiness,
+                ..
+            })
+        ));
+    }
     Ok(())
 }
 

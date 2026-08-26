@@ -1,8 +1,8 @@
 //! Minimal typed QMP client.
 //!
 //! RFC-0010 QEMU-19 limits QMP use to capability negotiation, typed VM
-//! status/topology observation, VM snapshot save/load/delete, snapshot job polling,
-//! and graceful quit. The client parses
+//! status/topology and hot-fork-readiness observation, VM snapshot
+//! save/load/delete, snapshot job polling, and graceful quit. The client parses
 //! JSON-line QMP responses internally, skips asynchronous event objects while
 //! waiting for a command response, and exposes no public arbitrary-command
 //! execution path.
@@ -19,11 +19,17 @@ use thiserror::Error;
 
 use crate::{QemuLoadvmCommandAuthorization, QemuNodeChannelError};
 
+mod hot_fork;
 mod snapshot_tag;
 #[cfg(target_os = "linux")]
 mod unix_socket;
 mod vmstate_control;
 
+use hot_fork::parse_hot_fork_readiness;
+pub use hot_fork::{
+    QMP_HOT_FORK_READINESS_SCHEMA_VERSION, QMP_HOT_FORK_REQUIRED_PROOFS,
+    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QmpHotForkProof, QmpHotForkReadiness,
+};
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
 
@@ -427,6 +433,24 @@ where
             });
         }
         Ok(QmpCpuTopology { cpu_indexes })
+    }
+
+    /// Returns QEMU's exact versioned hot-fork readiness proof bitmap.
+    ///
+    /// This query is observational. It does not pause, prepare, or fork QEMU.
+    /// A caller may treat hot fork as available only when
+    /// [`QmpHotForkReadiness::ready`] is true; ordinary paused state is
+    /// deliberately insufficient.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request or response fails, or when QEMU
+    /// reports an unknown schema, changes the required proof set, acknowledges
+    /// an unknown proof, or contradicts the relationship between its bitmap and
+    /// readiness flag.
+    pub fn query_hot_fork_readiness(&mut self) -> Result<QmpHotForkReadiness, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryHotForkReadiness)?;
+        parse_hot_fork_readiness(&response.value)
     }
 
     fn read_greeting(&mut self) -> Result<QmpGreeting, QmpError> {
@@ -910,6 +934,8 @@ pub enum QmpCommandKind {
     CompleteTerminalLifecycle,
     /// Configured vCPU topology query.
     QueryCpusFast,
+    /// QEMU-owned hot-fork readiness query.
+    QueryHotForkReadiness,
     /// Graceful QEMU quit.
     Quit,
 }
@@ -928,6 +954,7 @@ impl QmpCommandKind {
             Self::Cont => QMP_CONT_COMMAND,
             Self::CompleteTerminalLifecycle => QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND,
             Self::QueryCpusFast => QMP_QUERY_CPUS_FAST_COMMAND,
+            Self::QueryHotForkReadiness => QMP_QUERY_HOT_FORK_READINESS_COMMAND,
             Self::Quit => QMP_QUIT_COMMAND_NAME,
         }
     }
@@ -978,6 +1005,7 @@ enum QmpCommand<'a> {
         process_generation: u64,
     },
     QueryCpusFast,
+    QueryHotForkReadiness,
     Quit,
 }
 
@@ -995,6 +1023,7 @@ impl QmpCommand<'_> {
             Self::Cont => QmpCommandKind::Cont,
             Self::CompleteTerminalLifecycle { .. } => QmpCommandKind::CompleteTerminalLifecycle,
             Self::QueryCpusFast => QmpCommandKind::QueryCpusFast,
+            Self::QueryHotForkReadiness => QmpCommandKind::QueryHotForkReadiness,
             Self::Quit => QmpCommandKind::Quit,
         }
     }
@@ -1048,6 +1077,9 @@ impl QmpCommand<'_> {
             }),
             Self::QueryCpusFast => json!({
                 "execute": QMP_QUERY_CPUS_FAST_COMMAND,
+            }),
+            Self::QueryHotForkReadiness => json!({
+                "execute": QMP_QUERY_HOT_FORK_READINESS_COMMAND,
             }),
             Self::Quit => json!({
                 "execute": QMP_QUIT_COMMAND_NAME,

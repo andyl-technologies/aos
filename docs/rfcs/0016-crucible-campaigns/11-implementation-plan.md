@@ -1409,6 +1409,17 @@ the public protocol. The spike is not a production feature.
   mappings, descriptors, private rings/disks, dirty-page growth, resource leaks,
   rejection paths, and exact/thin fallback using the representative product.
 
+The first Phase 6 protocol checkpoint is implemented without claiming the
+spike complete. Patched QEMU owns a fixed, versioned readiness bitmap exposed
+through typed QMP, and the Apache client rejects unknown schemas, changed proof
+sets, unknown acknowledgements, and contradictory readiness. QEMU currently
+acknowledges only precise icount, single-threaded sim RR, and an authenticated
+exact paused/device-flush boundary. It deliberately leaves the AIO/BH/timer,
+RCU, block-snapshot, plugin-ring, mapping/descriptor, and child-reinitialization
+proofs clear, so no hot-fork capability can be advertised yet. The remaining
+T-CAM-6.1 inventory and T-CAM-6.2 coordinator work must move those bits through
+subsystem-owned barriers rather than weakening this fail-closed query.
+
 **Exit:** either the spike satisfies the structural and minimum-speedup targets,
 its manual lab evidence is accepted, or hot fork remains rejected and the RFC is
 revised around another measured local-COW mechanism. No optimistic partial

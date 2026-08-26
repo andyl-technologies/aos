@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "084451a706f4a5568abc5525a2b9de3825328a3bdc4797934468f235c6ddac58";
+  patchBranchBundleSha256 = "bcd50d7c441cd7155255ea0c075e098841edad1a7f857913fe6ce25271a75fb2";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "34dfbf156f5768c9725fb0ae6d5138174fa032f0";
+  patchBranchHeadCommit = "3196464e9afced68cc07e8e2056e8e2481239dde";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1035,6 +1035,16 @@ let
       class = "D";
       enforces = "DET-1,PLUG-24,QEMU-43";
       capability = "a vCPU that executes HLT before exhausting its serialized RR turn leaves the execution loop when no alternative vCPU is runnable; a helper-marked multi-vCPU guest PAUSE fences control-boundary acknowledgement until it commits a cursor-zero early handoff immediately after icount accounting and before callbacks or host-work exits, so a released spin lock cannot be reacquired before a waiting peer runs; and that exact completed-turn handoff admits safe register capture while other owner mismatches fail closed";
+    }
+    {
+      file = "0111-crucible-hot-fork-readiness.patch";
+      branchSubject = "crucible: report hot-fork readiness proofs";
+      branchCommit = "3196464e9afced68cc07e8e2056e8e2481239dde";
+      branchTree = "a533c90c6066376ddae73c9eeae1c405cd68db49";
+      catalogName = "crucible-hot-fork-readiness";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "a bounded versioned QMP query reports QEMU-owned precise-icount, single-threaded sim RR, and exact paused/device-flush proofs while keeping every unimplemented subsystem, mapping, and child-reinitialization proof clear so ordinary paused state can never advertise hot fork";
     }
   ];
   catalogOnlyCapabilities = [
