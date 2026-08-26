@@ -977,6 +977,16 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   current selections, and revalidates the exact root manifest before apply.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
+  The execution-model bridge now normalizes one bounded, homogeneous
+  signal-fault runtime frontier into exact campaign declaration, integer
+  domain, and opportunity records. It reauthenticates those records and a
+  campaign branch selection to reconstruct the exact selection plus optional
+  override prefix, including the unmodified-result sentinel. Campaign attempt
+  decoding recognizes this standardized adapter and retains the opaque
+  validated replay plan. Live pause-at-frontier admission, production QEMU
+  prefix injection, bounded interesting-window policy, and automatic
+  signature-preserving minimization remain open; retrospective frontiers are
+  deliberately not published as later observation discoveries.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy
   widening, additive finite branching, edge deduplication, live status,
   explanation, bounded pressure, pause/restart/resume, steering, and graceful

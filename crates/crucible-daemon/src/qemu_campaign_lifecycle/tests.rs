@@ -7,12 +7,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crucible::model::{BindingSearchChoice, SearchChoiceId};
 use crucible::{
     AppRandomDecision, AppRandomSelectable, Checkpoint, CheckpointKind, Configuration, Decision,
     Icount, NodeId, NodeTemplate, Plan, Properties, ReadyPoint, RngDecision, RngStreamId,
     ScenarioDef, ScenarioDefForm, ScenarioSelectableLimits, ScenarioSelectables,
-    SchedulerEventLogEntry, Seed, SelectionDecision, VirtualTime, WhiteBoxPolicy, World, WorldNode,
-    step,
+    SchedulerEventLogEntry, SearchFrontierChoices, SearchRuntimeFrontier, Seed, SelectionDecision,
+    SignalFaultSelectable, VirtualTime, WhiteBoxPolicy, World, WorldNode, step,
 };
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
@@ -102,6 +103,45 @@ fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
                 && entry.selection_id()
                     == selection.id().expect("selection id").content_id().digest()
     ));
+}
+
+#[test]
+fn promoted_signal_fault_branch_remains_fail_closed_before_live_injection() {
+    let scenario = ScenarioDef::from_canonical_material(
+        "crucible.test.campaign.signal-fault-branch",
+        "signal fault branch",
+    );
+    let parent = Configuration::genesis(scenario);
+    let choice = BindingSearchChoice {
+        id: SearchChoiceId::from_content_hash(crucible::ContentHash::from_bytes(b"choice")),
+        candidates_digest: crucible::ContentHash::from_bytes(b"candidates"),
+        candidate_count: 2,
+        selected_index: None,
+        overridden: false,
+    };
+    let frontier = SearchRuntimeFrontier {
+        configuration: parent.clone(),
+        at: VirtualTime { ticks: 91 },
+        choices: SearchFrontierChoices::from_decisions(
+            choice
+                .override_decisions(parent.id())
+                .into_iter()
+                .map(Decision::Override),
+        ),
+    };
+    let selectable = SignalFaultSelectable::from_frontier(&frontier)
+        .expect("signal-fault frontier should normalize");
+    let selection = selectable
+        .branch_selection(&parent, 1)
+        .expect("candidate should select");
+    let branch = selectable
+        .resolve_branch(&selection)
+        .expect("candidate should reconstruct");
+
+    assert_eq!(
+        unsupported_fresh_replay_decision(branch.selected()),
+        Some(1)
+    );
 }
 
 #[test]

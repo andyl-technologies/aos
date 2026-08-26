@@ -6,9 +6,12 @@
 //! hot-fork, exact-restore, and thin-replay selection remain operational runner
 //! policy and cannot alter the canonical attempt.
 
-use crucible::{Configuration, Decision, ScenarioDefForm, SelectionDecision, step};
+use crucible::{
+    Configuration, Decision, ScenarioDefForm, SelectionDecision, SignalFaultCampaignBranch,
+    SignalFaultSelectable, step,
+};
 use crucible_campaign::{
-    Attempt, BranchPath, CampaignExecutorStore, CampaignLineage, ExecutorRejection,
+    Attempt, BranchPath, CampaignExecutorStore, CampaignLineage, ChoiceSource, ExecutorRejection,
     ResolvedSelection,
 };
 
@@ -18,7 +21,7 @@ use crate::{
     decode_crucible_configuration_artifact_with_selections, decode_crucible_scenario_artifact,
 };
 
-/// Authenticated Crucible discovery or one-selection branch start.
+/// Authenticated Crucible discovery or typed branch start.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CrucibleResolvedAttemptStart {
     /// Continues one exact existing Crucible configuration.
@@ -32,7 +35,10 @@ pub enum CrucibleResolvedAttemptStart {
         parent: Configuration,
         /// Campaign selection, opportunity, and effective domain authenticated together.
         selection: Box<ResolvedSelection>,
-        /// Exact canonical prefix after recording the selected branch edge.
+        /// Validated promoted signal-fault prefix, when this branch targets that adapter.
+        signal_fault: Option<Box<SignalFaultCampaignBranch>>,
+        /// Exact canonical prefix after recording the branch selection and any
+        /// producer-specific decision certified by the typed bridge.
         selected: Configuration,
     },
 }
@@ -139,7 +145,7 @@ impl CrucibleAttemptExecution {
         &self.path
     }
 
-    /// Returns the decoded discovery or one-selection branch start.
+    /// Returns the decoded discovery or typed branch start.
     #[must_use]
     pub const fn start(&self) -> &CrucibleResolvedAttemptStart {
         &self.start
@@ -191,13 +197,33 @@ pub fn decode_crucible_attempt_execution(
                     ),
                 )
                 .map_err(CrucibleArtifactError::Campaign)?;
-            let selected = step(
-                &parent,
-                Decision::Selection(SelectionDecision::new(recorded)),
+            let signal_fault = match selection.opportunity().source() {
+                ChoiceSource::Environment { adapter, .. }
+                    if adapter == crucible::SIGNAL_FAULT_CAMPAIGN_ADAPTER =>
+                {
+                    let selectable = SignalFaultSelectable::from_records(
+                        &parent,
+                        selection.declaration(),
+                        selection.opportunity(),
+                        selection.domain(),
+                    )?;
+                    Some(Box::new(selectable.resolve_branch(recorded)?))
+                }
+                _ => None,
+            };
+            let selected = signal_fault.as_ref().map_or_else(
+                || {
+                    step(
+                        &parent,
+                        Decision::Selection(SelectionDecision::new(recorded)),
+                    )
+                },
+                |branch| branch.selected().clone(),
             );
             CrucibleResolvedAttemptStart::Branch {
                 parent,
                 selection: selection.clone(),
+                signal_fault,
                 selected,
             }
         }

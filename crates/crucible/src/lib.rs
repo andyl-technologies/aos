@@ -57,7 +57,9 @@ pub use backend::{
 pub use crucible_device::{ResolvedNetworkFrameEffects, ResolvedNetworkFrameEffectsError};
 pub use decision::{
     AppRandomSelectable, AppRandomSelectableError, DecisionRecordError, DecisionRecorder,
-    app_random_stream_belongs_to_node, validate_app_random_model_selection,
+    MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES, SIGNAL_FAULT_CAMPAIGN_ADAPTER, SignalFaultCampaignBranch,
+    SignalFaultSelectable, SignalFaultSelectableError, app_random_stream_belongs_to_node,
+    validate_app_random_model_selection,
 };
 pub use device::{LinkEmitDecisionRecord, NetworkLinkDirection, device_overlay, device_stream_id};
 pub use device_subnode::{

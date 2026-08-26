@@ -7,6 +7,7 @@
 
 mod app_random_selectable;
 mod reseed;
+mod signal_fault_selectable;
 
 pub use app_random_selectable::{
     AppRandomSelectable, AppRandomSelectableError, app_random_stream_belongs_to_node,
@@ -14,6 +15,10 @@ pub use app_random_selectable::{
 };
 pub(crate) use app_random_selectable::{
     is_app_random_model_selection, is_app_random_schedule_decision,
+};
+pub use signal_fault_selectable::{
+    MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES, SIGNAL_FAULT_CAMPAIGN_ADAPTER, SignalFaultCampaignBranch,
+    SignalFaultSelectable, SignalFaultSelectableError,
 };
 
 use std::collections::BTreeMap;
