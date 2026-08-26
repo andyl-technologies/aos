@@ -32,6 +32,11 @@
               > smoke.c
             "$CC" smoke.c -o "$c/bin/aos-darwin-c-smoke"
 
+            # Dependency-only preprocessing must not receive Darwin linker
+            # flags; configure probes commonly combine this mode with -Werror.
+            "$CC" -Werror -MM smoke.c > smoke.d
+            grep -Fq 'smoke.o: smoke.c' smoke.d
+
             printf '%s\n' \
               '#include <CoreFoundation/CoreFoundation.h>' \
               '#include <netinet/tcp_fsm.h>' \
