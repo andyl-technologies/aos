@@ -11,6 +11,8 @@
   zlib,
   nghttp2,
   ca-certificates,
+  bash,
+  stdenv,
 }: let
   version = "8.12.1";
 in
@@ -35,7 +37,12 @@ in
       zlib
       nghttp2
       ca-certificates
-    ];
+    ]
+    ++ (
+      if stdenv.hostPlatform.isDarwin
+      then [bash]
+      else []
+    );
     propagatedDeps = [
       openssl
       zlib
@@ -63,6 +70,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --with-openssl=${openssl} \
             --with-zlib=${zlib} \
@@ -89,11 +97,19 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-          # Create curl.pc symlink (some consumers look for "curl" not "libcurl")
-          ln -sf libcurl.pc $out/lib/pkgconfig/curl.pc
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/curl-config"
+            # Create curl.pc symlink (some consumers look for "curl" not "libcurl")
+            ln -sf libcurl.pc $out/lib/pkgconfig/curl.pc
+          ''
+          else ''
+            make install
+            # Create curl.pc symlink (some consumers look for "curl" not "libcurl")
+            ln -sf libcurl.pc $out/lib/pkgconfig/curl.pc
+          '';
       }
     ];
 

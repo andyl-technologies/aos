@@ -5,8 +5,19 @@
   gnumake,
   zlib,
   perl,
+  stdenv,
 }: let
   version = "3.4.1";
+  isDarwin = stdenv.hostPlatform.isDarwin;
+  configureTarget =
+    if isDarwin
+    then
+      if stdenv.hostPlatform.isAarch64
+      then "darwin64-arm64-cc"
+      else "darwin64-x86_64-cc"
+    else if stdenv.hostPlatform.isAarch64
+    then "linux-aarch64"
+    else "linux-x86_64";
 in
   mkDerivation {
     pname = "openssl";
@@ -23,7 +34,10 @@ in
       gnumake
       perl
     ];
-    runtimeDeps = [zlib];
+    runtimeDeps =
+      if isDarwin
+      then [zlib perl]
+      else [zlib];
     propagatedDeps = [];
 
     phases = [
@@ -41,7 +55,7 @@ in
             --prefix=$out \
             --libdir=lib \
             --openssldir=$out/etc/ssl \
-            linux-x86_64 \
+            ${configureTarget} \
             no-ssl2 \
             no-ssl3 \
             no-dtls \
@@ -61,26 +75,34 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install_sw install_ssldirs
+        script =
+          ''
+            make install_sw install_ssldirs
 
-          # OpenSSL's build embeds the full compile command line as a
-          # .rodata string so `openssl version -a` can print it — including
-          # the absolute /nix/store path of the cc-wrapper. That .rodata
-          # entry is application data, not debug info, so the fixup phase's
-          # strip leaves it intact; the result is a closure edge from
-          # libcrypto to the cc-wrapper (and through it, ~230 MB of gcc
-          # toolchain) purely so `openssl version -a` can echo a build-time
-          # detail. Scrub the wrapper's 32-char hash in-place (length-
-          # preserving replacement with `eeeee…`): the "compiler:" string
-          # stays printable but no longer registers as a closure reference.
-          _ccwrap=$(dirname "$(dirname "$CC")")
-          _hash=$(echo "$_ccwrap" | sed -n 's|^/nix/store/\([a-z0-9]\{32\}\)-.*|\1|p')
-          if [ -n "$_hash" ]; then
-            find "$out" -type f \( -name '*.so*' -o -name '*.a' -o -perm -u+x \) \
-              -exec sed -i "s|$_hash|eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|g" {} + 2>/dev/null || true
-          fi
-        '';
+            # OpenSSL's build embeds the full compile command line as a
+            # .rodata string so `openssl version -a` can print it — including
+            # the absolute /nix/store path of the cc-wrapper. That .rodata
+            # entry is application data, not debug info, so the fixup phase's
+            # strip leaves it intact; the result is a closure edge from
+            # libcrypto to the cc-wrapper (and through it, ~230 MB of gcc
+            # toolchain) purely so `openssl version -a` can echo a build-time
+            # detail. Scrub the wrapper's 32-char hash in-place (length-
+            # preserving replacement with `eeeee…`): the "compiler:" string
+            # stays printable but no longer registers as a closure reference.
+            _ccwrap=$(dirname "$(dirname "$CC")")
+            _hash=$(echo "$_ccwrap" | sed -n 's|^/nix/store/\([a-z0-9]\{32\}\)-.*|\1|p')
+            if [ -n "$_hash" ]; then
+              find "$out" -type f \( -name '*.so*' -o -name '*.dylib*' -o -name '*.a' -o -perm -u+x \) \
+                -exec sed -i "s|$_hash|eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|g" {} + 2>/dev/null || true
+            fi
+          ''
+          + (
+            if isDarwin
+            then ''
+              sed -i "1s|^#!.*|#!${perl}/bin/perl|" "$out/bin/c_rehash"
+            ''
+            else ""
+          );
       }
     ];
 

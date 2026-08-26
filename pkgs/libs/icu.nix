@@ -4,6 +4,8 @@
   fetchurl,
   gnumake,
   python3,
+  buildPackages,
+  stdenv,
 }: let
   version = "77.1";
   sourceVersion = builtins.replaceStrings ["."] ["_"] version;
@@ -11,6 +13,7 @@ in
   mkDerivation {
     pname = "icu";
     inherit version;
+    outputs = ["out" "cross"];
 
     src = fetchurl {
       urls = [
@@ -38,6 +41,12 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
+            ${
+            if stdenv.isCross
+            then "--with-cross-build=${buildPackages.icu.cross}"
+            else ""
+          } \
             --prefix=$out \
             --enable-shared \
             --enable-static
@@ -53,6 +62,13 @@ in
         name = "install";
         script = ''
           make install
+
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            mkdir -p "$cross"
+          else
+            mkdir -p "$cross"
+            cp -R . "$cross/source"
+          fi
         '';
       }
     ];

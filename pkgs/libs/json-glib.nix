@@ -9,6 +9,7 @@
   glib,
   util-linux,
   zlib,
+  stdenv,
 }: let
   version = "1.10.6";
   majorMinor = "1.10";
@@ -37,8 +38,20 @@ in
     # util-linux); pkg-config 0.29 resolves private deps too, so those must
     # be reachable or `dependency('gio-2.0')` fails. glib lists util-linux
     # only in runtimeDeps (not propagated), so name them here directly.
-    runtimeDeps = [glib util-linux zlib];
-    propagatedDeps = [glib util-linux zlib];
+    runtimeDeps =
+      [glib zlib]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then []
+        else [util-linux]
+      );
+    propagatedDeps =
+      [glib zlib]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then []
+        else [util-linux]
+      );
 
     phases = [
       {
@@ -51,8 +64,8 @@ in
       {
         name = "configure";
         script = ''
-          export PYTHONPATH="${meson}/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
           meson setup build \
+            $mesonFlags \
             --prefix=$out \
             --buildtype=release \
             -Dintrospection=disabled \

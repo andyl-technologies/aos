@@ -6,8 +6,13 @@
   openssl,
   pcre2,
   zlib,
+  stdenv,
 }: let
   version = "1.30.4";
+  linkerOptions =
+    if stdenv.hostPlatform.isDarwin
+    then "-L${openssl}/lib -L${pcre2}/lib -L${zlib}/lib -Wl,-rpath,${openssl}/lib -Wl,-rpath,${pcre2}/lib -Wl,-rpath,${zlib}/lib"
+    else "-L${openssl}/lib -L${pcre2}/lib -L${zlib}/lib -Wl,-rpath,${openssl}/lib:${pcre2}/lib:${zlib}/lib";
 in
   mkDerivation {
     pname = "nginx";
@@ -39,7 +44,25 @@ in
       {
         name = "configure";
         script = ''
+          ${
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              # Nginx's crossbuild option selects the target OS, but its
+              # feature harness still attempts to execute probe binaries.
+              # Darwin capabilities are compile/link probes here; the one
+              # explicit historical kqueue bug probe remains conservative.
+              sed -i '0,/ngx_feature_run=yes/s//ngx_feature_run=no/' auto/cc/name
+              sed -i 's/ngx_feature_run=yes/ngx_feature_run=no/g' auto/os/darwin auto/unix
+              sed -i "s|/bin/sh|$CONFIG_SHELL|g" auto/feature
+            ''
+            else ""
+          }
           ./configure \
+            ${
+            if stdenv.hostPlatform.isDarwin
+            then "--crossbuild=Darwin:23.0:${stdenv.hostPlatform.darwinArch}"
+            else ""
+          } \
             --prefix=$out \
             --sbin-path=$out/bin/nginx \
             --modules-path=$out/lib/nginx/modules \
@@ -81,7 +104,7 @@ in
             --with-stream_ssl_preread_module \
             --with-pcre-jit \
             --with-cc-opt="-I${openssl}/include -I${pcre2}/include -I${zlib}/include" \
-            --with-ld-opt="-L${openssl}/lib -L${pcre2}/lib -L${zlib}/lib -Wl,-rpath,${openssl}/lib:${pcre2}/lib:${zlib}/lib"
+            --with-ld-opt="${linkerOptions}"
         '';
       }
       {

@@ -46,6 +46,7 @@ in
             -DSQLITE_SECURE_DELETE \
             -DSQLITE_MAX_VARIABLE_NUMBER=250000"
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-shared \
             --disable-static \

@@ -39,6 +39,7 @@ in
         name = "configure";
         script = ''
           cmake -S . -B build -G Ninja \
+            $cmakeFlags \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=$out \
             -DCMAKE_INSTALL_LIBDIR=lib \

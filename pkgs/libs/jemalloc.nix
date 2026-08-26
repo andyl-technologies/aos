@@ -3,6 +3,9 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  bash,
+  perl,
+  stdenv,
 }: let
   version = "5.3.0";
 in
@@ -18,7 +21,10 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [];
+    runtimeDeps =
+      if stdenv.hostPlatform.isDarwin
+      then [bash perl]
+      else [];
     propagatedDeps = [];
 
     phases = [
@@ -33,6 +39,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-shared \
             --enable-static
@@ -46,9 +53,18 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            for script in "$out/bin/jemalloc-config" "$out/bin/jemalloc.sh"; do
+              sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$script"
+            done
+            sed -i "1s|^#!.*|#!${perl}/bin/perl|" "$out/bin/jeprof"
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 

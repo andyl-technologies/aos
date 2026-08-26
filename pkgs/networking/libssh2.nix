@@ -40,6 +40,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --with-crypto=openssl \
             --with-libssl-prefix=${openssl} \

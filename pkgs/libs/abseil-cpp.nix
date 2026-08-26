@@ -39,6 +39,7 @@ in
           mkdir build
           cd build
           cmake .. \
+            $cmakeFlags \
             -DCMAKE_INSTALL_PREFIX=$out \
             -DCMAKE_INSTALL_LIBDIR=lib \
             -DCMAKE_BUILD_TYPE=Release \

@@ -9,6 +9,7 @@
   gnumake,
   flex,
   bison,
+  stdenv,
 }: let
   version = "R2025_04_04";
 in
@@ -43,6 +44,11 @@ in
         name = "build";
         script = ''
           make -j$NIX_BUILD_CORES iasl \
+            ${
+            if stdenv.hostPlatform.isDarwin
+            then "ACPI_HOST=_APPLE"
+            else ""
+          } \
             YACC=bison \
             LEX=flex \
             NOWERROR=TRUE \

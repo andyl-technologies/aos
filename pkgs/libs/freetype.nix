@@ -4,6 +4,8 @@
   fetchurl,
   gnumake,
   zlib,
+  bash,
+  stdenv,
 }: let
   version = "2.13.3";
 in
@@ -19,7 +21,13 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [zlib];
+    runtimeDeps =
+      [zlib]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [bash]
+        else []
+      );
     propagatedDeps = [];
 
     phases = [
@@ -34,6 +42,7 @@ in
         name = "build";
         script = ''
           $CONFIG_SHELL ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-freetype-config \
             --with-zlib=yes \
@@ -46,9 +55,15 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/freetype-config"
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 

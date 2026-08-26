@@ -14,6 +14,8 @@
   bzip2,
   readline,
   sqlite,
+  bash,
+  stdenv,
 }: let
   version = "2.5.20";
 in
@@ -48,7 +50,12 @@ in
       bzip2
       readline
       sqlite
-    ];
+    ]
+    ++ (
+      if stdenv.hostPlatform.isDarwin
+      then [bash]
+      else []
+    );
     propagatedDeps = [];
 
     # GnuPG's secure-memory pool and several internal structures use trailing
@@ -91,6 +98,7 @@ in
         script = ''
           export CPPFLAGS="-I${libusb1}/include/libusb-1.0 $CPPFLAGS"
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --sysconfdir=$out/etc \
             --enable-large-secmem \
@@ -112,9 +120,23 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            for script in \
+              "$out/bin/gpg-authcode-sign.sh" \
+              "$out/libexec/gpg-wks-client" \
+              "$out/sbin/addgnupghome" \
+              "$out/sbin/applygnupgdefaults"
+            do
+              [ -f "$script" ] || continue
+              sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$script"
+            done
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 

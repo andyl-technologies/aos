@@ -7,6 +7,8 @@
   coreutils,
   util-linux,
   libcap,
+  bash,
+  stdenv,
 }: let
   version = "1.37.2";
 in
@@ -32,7 +34,17 @@ in
     # and coreutils store paths. These must be in runtimeDeps so the
     # scrubPhase nuke-refs pass keeps the hashes — otherwise the wrapper
     # script invokes /nix/store/eeeee.../bin/getopt and aborts.
-    runtimeDeps = [libcap util-linux sed coreutils];
+    runtimeDeps =
+      [
+        bash
+        sed
+        coreutils
+      ]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then []
+        else [libcap util-linux]
+      );
     propagatedDeps = [];
 
     phases = [
@@ -48,8 +60,12 @@ in
         script = ''
           # Hardcode paths to runtime tools in the fakeroot wrapper script
           # so it doesn't rely on PATH resolution at runtime.
+          ${
+            if stdenv.hostPlatform.isDarwin
+            then ""
+            else ''sed -i 's|getopt|${util-linux}/bin/getopt|g' scripts/fakeroot.in''
+          }
           sed -i \
-            -e 's|getopt|${util-linux}/bin/getopt|g' \
             -e 's|sed |${sed}/bin/sed |g' \
             -e 's|kill |${coreutils}/bin/kill |g' \
             -e 's|/bin/ls|${coreutils}/bin/ls|g' \
@@ -61,6 +77,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --with-ipc=sysv
         '';
@@ -75,6 +92,7 @@ in
         name = "install";
         script = ''
           make install
+          sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/fakeroot"
         '';
       }
     ];

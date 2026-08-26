@@ -46,6 +46,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --disable-maintainer-mode \
             --with-oniguruma

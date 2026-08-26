@@ -3,6 +3,8 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  buildPackages,
+  stdenv,
 }: let
   version = "5.46";
 in
@@ -17,7 +19,13 @@ in
       hash = "sha256-ycx3x8VgxUMTXtxVWvYJ1WGdvvARmX6YjOQKPXXYYIg=";
     };
 
-    buildDeps = [gnumake];
+    buildDeps =
+      [gnumake]
+      ++ (
+        if stdenv.isCross
+        then [buildPackages.file]
+        else []
+      );
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -32,7 +40,7 @@ in
       {
         name = "build";
         script = ''
-          $CONFIG_SHELL ./configure --prefix=$out
+          $CONFIG_SHELL ./configure $configureFlags --prefix=$out
           make -j$NIX_BUILD_CORES
         '';
       }

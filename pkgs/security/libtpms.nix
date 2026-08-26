@@ -42,9 +42,12 @@ in
         # TPM 2.0 personality swtpm drives.
         name = "configure";
         script = ''
-          export ACLOCAL_PATH="${pkg-config}/share/aclocal:${libtool}/share/aclocal''${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
+          nativePkgConfig=$(dirname "$(dirname "$(command -v pkg-config)")")
+          nativeLibtool=$(dirname "$(dirname "$(command -v libtoolize)")")
+          export ACLOCAL_PATH="$nativePkgConfig/share/aclocal:$nativeLibtool/share/aclocal''${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
           NOCONFIGURE=1 ./autogen.sh
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --disable-static \
             --with-openssl \

@@ -50,6 +50,7 @@ in
           FREETYPE_CFLAGS="-I${freetype}/include/freetype2" \
           FREETYPE_LIBS="-L${freetype}/lib -lfreetype" \
           $CONFIG_SHELL ./configure \
+            $configureFlags \
             --prefix=$out \
             --sysconfdir=$out/etc \
             --localstatedir=$out/var \

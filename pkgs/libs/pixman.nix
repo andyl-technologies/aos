@@ -41,8 +41,8 @@ in
       {
         name = "configure";
         script = ''
-          export PYTHONPATH="${meson}/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
           meson setup build \
+            $mesonFlags \
             --prefix=$out \
             --buildtype=release \
             -Dgtk=disabled \

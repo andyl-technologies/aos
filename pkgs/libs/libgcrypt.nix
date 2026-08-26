@@ -4,6 +4,8 @@
   fetchurl,
   gnumake,
   libgpg-error,
+  bash,
+  stdenv,
 }: let
   version = "1.12.2";
 in
@@ -20,7 +22,13 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [libgpg-error];
+    runtimeDeps =
+      [libgpg-error]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [bash]
+        else []
+      );
     propagatedDeps = [libgpg-error];
 
     # The CPU Jitter RNG (cipher/rndjent.c) must be built without optimization
@@ -42,6 +50,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --disable-static \
             --with-libgpg-error-prefix=${libgpg-error}
@@ -55,9 +64,15 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/libgcrypt-config"
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 

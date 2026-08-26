@@ -3,6 +3,8 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  bash,
+  stdenv,
 }: let
   version = "1.61";
 in
@@ -19,7 +21,10 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [];
+    runtimeDeps =
+      if stdenv.hostPlatform.isDarwin
+      then [bash]
+      else [];
     propagatedDeps = [];
 
     # libgpg-error ships and installs the yat2m man-page generator
@@ -43,6 +48,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --disable-static \
             --disable-nls
@@ -56,9 +62,15 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/gpgrt-config"
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 

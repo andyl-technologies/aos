@@ -6,6 +6,8 @@
   pkg-config,
   perl,
   openssl,
+  bash,
+  stdenv,
 }: let
   version = "1.22.1";
 in
@@ -21,7 +23,13 @@ in
     };
 
     buildDeps = [gnumake pkg-config perl];
-    runtimeDeps = [openssl];
+    runtimeDeps =
+      [openssl]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [bash]
+        else []
+      );
     propagatedDeps = [];
 
     phases = [
@@ -36,6 +44,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-shared \
             --with-crypto-impl=openssl \
@@ -50,9 +59,18 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            for script in compile_et k5srvutil krb5-send-pr; do
+              [ -f "$out/bin/$script" ] || continue
+              sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/$script"
+            done
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 

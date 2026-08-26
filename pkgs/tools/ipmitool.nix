@@ -9,6 +9,7 @@
   pkg-config,
   openssl,
   readline,
+  stdenv,
 }: let
   version = "1.8.19";
 in
@@ -38,14 +39,20 @@ in
       {
         name = "configure";
         script = ''
-          export ACLOCAL_PATH="${libtool}/share/aclocal''${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
+          nativeLibtool=$(dirname "$(dirname "$(command -v libtoolize)")")
+          export ACLOCAL_PATH="$nativeLibtool/share/aclocal''${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
           sed -i '/AM_CONDITIONAL(\[DOWNLOAD\]/d' configure.ac
           sed -i '/AC_MSG_WARN(\[\*\* Download is:\])/i AM_CONDITIONAL([DOWNLOAD], [test "x$DOWNLOAD" != "x"])' configure.ac
           libtoolize --copy --force
           ./bootstrap
           ./configure \
+            $configureFlags \
             --prefix="$out" \
-            --enable-intf-open=yes \
+            --enable-intf-open=${
+            if stdenv.hostPlatform.isDarwin
+            then "no"
+            else "yes"
+          } \
             --enable-intf-lan=yes \
             --enable-intf-lanplus=yes \
             --enable-intf-free=no \

@@ -4,6 +4,8 @@
   fetchurl,
   gnumake,
   zlib,
+  buildPackages,
+  stdenv,
 }: let
   version = "9.0.2";
 in
@@ -18,7 +20,13 @@ in
       hash = "sha256-4HTGqNm6LN35FLqXtmd6VS16UqPKECkkOJoFzLJJtSA=";
     };
 
-    buildDeps = [gnumake];
+    buildDeps =
+      [gnumake]
+      ++ (
+        if stdenv.isCross
+        then [buildPackages.tcl]
+        else []
+      );
     runtimeDeps = [zlib];
     propagatedDeps = [];
 
@@ -33,7 +41,13 @@ in
       {
         name = "configure";
         script = ''
+          ${
+            if stdenv.isCross
+            then ''export ac_cv_path_tclsh="${buildPackages.tcl}/bin/tclsh9.0"''
+            else ""
+          }
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-shared \
             --enable-threads \

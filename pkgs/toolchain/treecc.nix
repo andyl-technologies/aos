@@ -4,6 +4,8 @@
   fetchurl,
   bash,
   gnumake,
+  buildPackages,
+  stdenv,
 }: let
   version = "0.3.10";
 in
@@ -18,7 +20,13 @@ in
       hash = "sha256-Xp0gppOODG/t/tDKvH6emEAk5IgbdI0Hbox18a627+c=";
     };
 
-    buildDeps = [bash gnumake];
+    buildDeps =
+      [bash gnumake]
+      ++ (
+        if stdenv.isCross
+        then [buildPackages.treecc]
+        else []
+      );
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -29,36 +37,49 @@ in
           tar xf $src
           cd treecc-${version}
           test "$(head -n 1 tests/run_tests)" = '#!/bin/sh'
-          sed -i '1c #!${bash}/bin/bash' tests/run_tests
+          sed -i "1c #!$CONFIG_SHELL" tests/run_tests
         '';
       }
       {
         name = "configure";
         script = ''
-          "$CONFIG_SHELL" ./configure --prefix=$out
+          "$CONFIG_SHELL" ./configure $configureFlags --prefix=$out
+          ${
+            if stdenv.isCross
+            then ''sed -i "s|\$(top_builddir)/treecc|${buildPackages.treecc}/bin/treecc|g" examples/Makefile''
+            else ""
+          }
         '';
       }
       {
         name = "build";
         script = ''
-          make SHELL=${bash}/bin/bash -j$NIX_BUILD_CORES
+          make SHELL="$CONFIG_SHELL" -j$NIX_BUILD_CORES
         '';
       }
       {
         name = "check";
         script = ''
-          make SHELL=${bash}/bin/bash -j$NIX_BUILD_CORES check
+          ${
+            if stdenv.isCross
+            then ''echo "skipping target execution tests while cross-compiling for $AOS_TARGET_PLATFORM"''
+            else ''make SHELL="$CONFIG_SHELL" -j$NIX_BUILD_CORES check''
+          }
         '';
       }
       {
         name = "install";
         script = ''
-          make SHELL=${bash}/bin/bash install
+          make SHELL="$CONFIG_SHELL" install
           test -x "$out/bin/treecc"
 
           sourceDir=$PWD
           cd "$TMPDIR"
-          "$out/bin/treecc" \
+          ${
+            if stdenv.isCross
+            then "${buildPackages.treecc}/bin/treecc"
+            else ''"$out/bin/treecc"''
+          } \
             -o expr_c.c \
             -h expr_c.h \
             "$sourceDir/examples/expr_c.tc"

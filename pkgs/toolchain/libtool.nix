@@ -19,6 +19,7 @@
   xz,
   gzip,
   bash,
+  stdenv,
 }: let
   version = "2.5.4";
 in
@@ -36,6 +37,14 @@ in
     buildDeps = [
       gnumake
       m4
+      sed
+      grep
+      gawk
+      coreutils
+      bzip2
+      xz
+      gzip
+      bash
     ];
     # libtool's `./configure` bakes the absolute paths of the build-time
     # sed/grep/awk/coreutils/etc. into both the installed `bin/libtool`
@@ -69,7 +78,7 @@ in
       {
         name = "configure";
         script = ''
-          ./configure --prefix=$out
+          ./configure $configureFlags --prefix=$out
         '';
       }
       {
@@ -88,11 +97,41 @@ in
         # bash path from libtool's own `./configure`.)
         script = ''
           make install
-          for f in $out/bin/libtoolize \
+          for f in $out/bin/libtool \
+                   $out/bin/libtoolize \
                    $out/share/libtool/build-aux/ltmain.sh; do
             [ -f "$f" ] || continue
-            ${sed}/bin/sed -i "1c #! ${bash}/bin/bash" "$f"
+            sed -i "1c #!${bash}/bin/bash" "$f"
           done
+
+          # Configure must execute native tools on the Linux builder, but its
+          # generated scripts record their absolute paths.  Retarget those
+          # references to the corresponding Darwin tools after installation.
+          retarget_tool_root() {
+            nativeTool=$(command -v "$1")
+            nativeRoot=$(dirname "$(dirname "$nativeTool")")
+            targetRoot=$2
+            [ "$nativeRoot" = "$targetRoot" ] && return
+            grep -IrlZ -F "$nativeRoot" "$out" 2>/dev/null \
+              | xargs -0 -r sed -i "s|$nativeRoot|$targetRoot|g"
+          }
+          retarget_tool_root m4 ${m4}
+          retarget_tool_root sed ${sed}
+          retarget_tool_root grep ${grep}
+          retarget_tool_root gawk ${gawk}
+          retarget_tool_root dirname ${coreutils}
+          retarget_tool_root bzip2 ${bzip2}
+          retarget_tool_root xz ${xz}
+          retarget_tool_root gzip ${gzip}
+
+          nativeBashRoot=$(dirname "$(dirname "$CONFIG_SHELL")")
+          grep -IrlZ -F "$nativeBashRoot" "$out" 2>/dev/null \
+            | xargs -0 -r sed -i "s|$nativeBashRoot|${bash}|g"
+
+          # The standalone installed libtool must select the compiler present
+          # on Darwin rather than retaining the Linux cross-wrapper executable.
+          grep -IrlZ -F "${stdenv.cc}/bin/" "$out" 2>/dev/null \
+            | xargs -0 -r sed -i "s|${stdenv.cc}/bin/||g"
         '';
       }
     ];
