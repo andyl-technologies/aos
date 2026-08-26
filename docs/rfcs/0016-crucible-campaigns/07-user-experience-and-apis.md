@@ -283,6 +283,7 @@ use the distinct terms.
 ## 07.4 Inspection
 
 ```text
+crucible campaign list [--after NAME] [--limit N] [--pages N]
 crucible campaign status NAME [--json]
 crucible campaign watch NAME [--after CURSOR]
 crucible campaign graph NAME --snapshot SNAPSHOT [--after HASH] [--limit N] [--pages N]
@@ -299,23 +300,32 @@ crucible campaign explain-finding NAME --snapshot SNAPSHOT --finding ID
 crucible campaign explain-attempt NAME --snapshot SNAPSHOT --attempt ID
 ```
 
-The read-only porcelain implements `status`, a one-shot resumable `watch`, and
-bounded immutable-page traversal for `graph`, `choices`, `frontier`, or
-`findings` over the authenticated local campaign-service Unix socket. Every
-command requires the socket path and
+The read-only porcelain implements namespace-wide `list`, `status`, a one-shot
+resumable `watch`, and bounded immutable-page traversal for `graph`, `choices`,
+`frontier`, or `findings` over the authenticated local campaign-service Unix
+socket. Every command requires the socket path and
 the principal expected from the daemon's peer policy, validates strict
 request-bound responses through the checked client, and renders table,
-Markdown, pretty JSON, or JSONL through the common CLI output selector. `watch
---after` returns the latest coalesced head and an `advanced` flag; callers repeat
-it with the returned snapshot cursor to follow a campaign without treating the
-transport as authoritative state. Each page command instead requires an exact
-immutable snapshot and accepts only the cursor type returned by that operation:
-a graph key hash, choice-opportunity ID, branch-request ID, or finding
-signature-index hash. One page remains the default. `--pages` accepts
+Markdown, pretty JSON, or JSONL through the common CLI output selector. `list`
+requires the service's explicit all-campaign grant; an exact-name grant does not
+permit namespace discovery. It follows stable campaign-name pages from an
+optional exclusive `--after` cursor and renders each authenticated current head,
+lineage, policy, and lifecycle projection. Because mutable refs may change
+between calls, this is a coalesced inventory rather than an immutable
+cross-page transaction. `watch --after` returns the latest coalesced head and an
+`advanced` flag; callers repeat it with the returned snapshot cursor to follow a
+campaign without treating the transport as authoritative state. Each immutable
+page command instead requires an exact snapshot and accepts only the cursor type
+returned by that operation: a graph key hash, choice-opportunity ID,
+branch-request ID, or finding signature-index hash. One page remains the
+default. `--pages` accepts
 `1..=256`; traversal also admits at most 65,536 aggregate entries and 128 MiB
 of aggregate canonical response bytes. Every response is independently checked
-against its exact request and immutable snapshot before its entries are
-accumulated, and a repeated cursor fails closed. The version-2 page report
+against its exact request (and, for immutable page operations, exact snapshot)
+before its entries are accumulated, and a repeated cursor fails closed. The
+version-1 list report retains its starting campaign-name cursor, page and byte
+usage, authenticated entries, completion status, and exact resume cursor or
+observed EOF. The version-2 immutable-page report
 retains the starting cursor, per-page limit, page budget, pages and bytes
 consumed, authenticated entries, completion status, and either exact resume
 cursor or authenticated EOF. Graph pages carry and verify the bounded
@@ -580,10 +590,11 @@ those immutable objects do not travel in the campaign control message.
 Derivation creates an audited successor rooted at an authenticated snapshot in
 the named source history, authorizes both names, leaves the source unchanged,
 and exactly replays by target name after later target mutations or restart. The
-initial nested CLI now exposes authenticated current status, one-shot resumable
-watch, exact-precondition lifecycle mutation, and semantic pin/unpin mutation;
-automatic campaign discovery, dynamic attachment, and remaining paged
-inspection are still required before the service is complete. Repeated bounded
+initial nested CLI now exposes explicitly authorized campaign enumeration,
+authenticated current status, one-shot resumable watch, exact-precondition
+lifecycle mutation, and semantic pin/unpin mutation; dynamic runtime attachment
+and remaining paged inspection are still required before the service is
+complete. Repeated bounded
 `WatchCampaign` calls provide
 the initial resumable, coalesced current-head stream. The bounded versioned
 Unix-stream loopback binding is now

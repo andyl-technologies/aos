@@ -47,18 +47,19 @@ use crucible_campaign::{
     CandidateSource, ChoiceDomain, ChoiceDomainId, ChoiceOpportunityId, ChoiceValue,
     ConfigurationArtifactId, ConfigurationId, ContinuationState, ControlRequest,
     CreateCampaignRequest, DeriveCampaignRequest, FindingKind, GetCampaignChoiceObjectRequest,
-    GetCampaignRequest, IntegerValue, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
+    GetCampaignRequest, IntegerValue, ListCampaignsRequest, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
     MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest,
-    PinChange, PinRequest, PinRetention, QueryCampaignChoicesRequest, QueryCampaignFindingsRequest,
-    QueryCampaignFrontierRequest, QueryCampaignGraphRequest,
-    STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION, SelectableDeclaration, SelectableId,
-    StopCondition, SubmitCampaignBranchRequest, WatchCampaignRequest,
+    MAX_CAMPAIGN_LIST_PAGE_ITEMS, MAX_CAMPAIGN_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest, PinChange, PinRequest, PinRetention,
+    QueryCampaignChoicesRequest, QueryCampaignFindingsRequest, QueryCampaignFrontierRequest,
+    QueryCampaignGraphRequest, STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION, SelectableDeclaration,
+    SelectableId, StopCondition, SubmitCampaignBranchRequest, WatchCampaignRequest,
 };
 use crucible_daemon::LoopbackCampaignService;
 use serde::Serialize;
 
 const CAMPAIGN_HEAD_REPORT_SCHEMA: &str = "crucible.cli.campaign-head.v1";
+const CAMPAIGN_LIST_REPORT_SCHEMA: &str = "crucible.cli.campaign-list.v1";
 const CAMPAIGN_MUTATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-mutation.v1";
 const CAMPAIGN_PAGE_REPORT_SCHEMA: &str = "crucible.cli.campaign-page.v2";
 const CAMPAIGN_ACCEPTANCE_REPORT_SCHEMA: &str = "crucible.cli.campaign-acceptance.v2";
@@ -79,6 +80,31 @@ struct CampaignHeadReport {
     state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     advanced: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct CampaignListReport {
+    schema: &'static str,
+    operation: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_after: Option<String>,
+    page_limit: u32,
+    page_budget: u32,
+    pages_scanned: u32,
+    response_bytes: u64,
+    complete: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_after: Option<String>,
+    entries: Vec<CampaignListReportEntry>,
+}
+
+#[derive(Serialize)]
+struct CampaignListReportEntry {
+    campaign: String,
+    snapshot: String,
+    lineage: String,
+    policy: String,
+    state: &'static str,
 }
 
 #[derive(Serialize)]
@@ -302,6 +328,10 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             let report = apply_campaign_acceptance(&client, prepared)?;
             render_campaign_acceptance(&report, cli.output_format())?
         }
+        CampaignCommand::List(list) => {
+            let report = query_campaign_list(&client, principal, list)?;
+            render_campaign_list(&report, cli.output_format())?
+        }
         CampaignCommand::Branch(branch) => {
             let report = if !branch.selector.is_empty() {
                 apply_campaign_selector_branch(&client, principal.clone(), branch)?
@@ -408,6 +438,10 @@ fn prepare_campaign_command(
                 Some(command) => PreparedCampaignCommand::CreateAndStart(request, command),
                 None => PreparedCampaignCommand::Create(request),
             }))
+        }
+        CampaignCommand::List(list) => {
+            validate_campaign_list(list)?;
+            Ok(None)
         }
         CampaignCommand::Derive(derive) => {
             let source = campaign_name(&derive.source)?;
@@ -1217,6 +1251,117 @@ fn validate_campaign_page_aggregation(page: &CampaignPageArgs, kind: &str) -> Re
     Ok(())
 }
 
+fn validate_campaign_list(list: &CampaignListArgs) -> Result<(), CliError> {
+    if let Some(after) = list.after.as_deref() {
+        campaign_name(after)?;
+    }
+    if list.limit == 0 || list.limit > MAX_CAMPAIGN_LIST_PAGE_ITEMS {
+        return Err(usage_error(format!(
+            "campaign list page limit must be between 1 and {MAX_CAMPAIGN_LIST_PAGE_ITEMS}"
+        )));
+    }
+    if list.pages == 0 || list.pages > MAX_CAMPAIGN_PAGE_FOLLOW_PAGES {
+        return Err(usage_error(format!(
+            "campaign list page budget must be between 1 and {MAX_CAMPAIGN_PAGE_FOLLOW_PAGES}"
+        )));
+    }
+    let entries = usize::try_from(list.limit)
+        .ok()
+        .and_then(|limit| {
+            usize::try_from(list.pages)
+                .ok()
+                .and_then(|pages| limit.checked_mul(pages))
+        })
+        .ok_or_else(|| usage_error("campaign list aggregate entry count overflows"))?;
+    if entries > MAX_CAMPAIGN_PAGE_AGGREGATE_ENTRIES {
+        return Err(usage_error(format!(
+            "campaign list request exceeds the {MAX_CAMPAIGN_PAGE_AGGREGATE_ENTRIES}-entry aggregate bound"
+        )));
+    }
+    Ok(())
+}
+
+fn query_campaign_list<S>(
+    client: &CampaignClient<S>,
+    principal: CampaignPrincipal,
+    list: &CampaignListArgs,
+) -> Result<CampaignListReport, CliError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
+    validate_campaign_list(list)?;
+    let start_after = list.after.clone();
+    let mut after = list.after.as_deref().map(campaign_name).transpose()?;
+    let mut seen = BTreeSet::new();
+    let mut entries = Vec::new();
+    let mut pages_scanned = 0_u32;
+    let mut response_bytes = 0_u64;
+    let mut complete = false;
+
+    for _ in 0..list.pages {
+        let request = ListCampaignsRequest::new(principal.clone(), after.clone(), list.limit)
+            .map_err(|error| usage_error(format!("invalid campaign list request: {error}")))?;
+        let response = client
+            .list_campaigns(&request)
+            .map_err(|error| backend_error(format!("campaign list failed: {error}")))?;
+        pages_scanned = pages_scanned
+            .checked_add(1)
+            .ok_or_else(|| backend_error("campaign list page count overflowed"))?;
+        response_bytes = response_bytes
+            .checked_add(
+                u64::try_from(response.canonical_bytes().len())
+                    .map_err(|_| backend_error("campaign list response size overflowed"))?,
+            )
+            .ok_or_else(|| backend_error("campaign list response bytes overflowed"))?;
+        if response_bytes > MAX_CAMPAIGN_PAGE_AGGREGATE_RESPONSE_BYTES {
+            return Err(backend_error(format!(
+                "campaign list responses exceed the {MAX_CAMPAIGN_PAGE_AGGREGATE_RESPONSE_BYTES}-byte aggregate bound"
+            )));
+        }
+        for entry in response.entries() {
+            if entries.len() >= MAX_CAMPAIGN_PAGE_AGGREGATE_ENTRIES {
+                return Err(backend_error(format!(
+                    "campaign list exceeds the {MAX_CAMPAIGN_PAGE_AGGREGATE_ENTRIES}-entry aggregate bound"
+                )));
+            }
+            entries.push(CampaignListReportEntry {
+                campaign: entry.name().as_str().to_owned(),
+                snapshot: entry.snapshot().to_string(),
+                lineage: entry.lineage().to_string(),
+                policy: entry.policy().to_string(),
+                state: campaign_state_label(entry.state()),
+            });
+        }
+        match response.next_after().cloned() {
+            Some(next) => {
+                if !seen.insert(next.clone()) {
+                    return Err(backend_error("campaign list cursor cycle detected"));
+                }
+                after = Some(next);
+            }
+            None => {
+                after = None;
+                complete = true;
+                break;
+            }
+        }
+    }
+
+    Ok(CampaignListReport {
+        schema: CAMPAIGN_LIST_REPORT_SCHEMA,
+        operation: "list",
+        start_after,
+        page_limit: list.limit,
+        page_budget: list.pages,
+        pages_scanned,
+        response_bytes,
+        complete,
+        next_after: after.map(|name| name.as_str().to_owned()),
+        entries,
+    })
+}
+
 fn query_campaign_head<S>(
     client: &CampaignClient<S>,
     principal: CampaignPrincipal,
@@ -1897,6 +2042,7 @@ fn campaign_mutation_spec(
         CampaignCommand::ValidateImport(_)
         | CampaignCommand::Fixture(_)
         | CampaignCommand::Create(_)
+        | CampaignCommand::List(_)
         | CampaignCommand::Derive(_)
         | CampaignCommand::Branch(_)
         | CampaignCommand::Status(_)
@@ -1951,6 +2097,67 @@ const fn campaign_state_label(state: CampaignState) -> &'static str {
         CampaignState::Paused => "paused",
         CampaignState::Completed => "completed",
         CampaignState::Sealed => "sealed",
+    }
+}
+
+fn render_campaign_list(
+    report: &CampaignListReport,
+    format: OutputFormat,
+) -> Result<String, CliError> {
+    match format {
+        OutputFormat::Jsonl => serde_json::to_string(report)
+            .map_err(|error| backend_error(format!("campaign JSON encoding failed: {error}"))),
+        OutputFormat::Json => serde_json::to_string_pretty(report)
+            .map_err(|error| backend_error(format!("campaign JSON encoding failed: {error}"))),
+        OutputFormat::Table => {
+            let mut lines = vec![
+                format!(
+                    "{:<12} {}",
+                    "start_after",
+                    report.start_after.as_deref().unwrap_or("-")
+                ),
+                format!("{:<12} {}", "page_limit", report.page_limit),
+                format!("{:<12} {}", "page_budget", report.page_budget),
+                format!("{:<12} {}", "pages", report.pages_scanned),
+                format!("{:<12} {}", "bytes", report.response_bytes),
+                format!("{:<12} {}", "complete", report.complete),
+                format!(
+                    "{:<12} {}",
+                    "next_after",
+                    report.next_after.as_deref().unwrap_or("-")
+                ),
+                format!("{:<12} {}", "entries", report.entries.len()),
+                String::new(),
+                String::from("campaign\tsnapshot\tlineage\tpolicy\tstate"),
+            ];
+            lines.extend(report.entries.iter().map(|entry| {
+                format!(
+                    "{}\t{}\t{}\t{}\t{}",
+                    entry.campaign, entry.snapshot, entry.lineage, entry.policy, entry.state
+                )
+            }));
+            Ok(lines.join("\n"))
+        }
+        OutputFormat::Markdown => {
+            let mut output = format!(
+                "| Field | Value |\n| --- | --- |\n| start_after | {} |\n| page_limit | {} |\n| page_budget | {} |\n| pages | {} |\n| response_bytes | {} |\n| complete | {} |\n| next_after | {} |\n| entries | {} |\n\n| Campaign | Snapshot | Lineage | Policy | State |\n| --- | --- | --- | --- | --- |\n",
+                report.start_after.as_deref().unwrap_or("-"),
+                report.page_limit,
+                report.page_budget,
+                report.pages_scanned,
+                report.response_bytes,
+                report.complete,
+                report.next_after.as_deref().unwrap_or("-"),
+                report.entries.len(),
+            );
+            for entry in &report.entries {
+                output.push_str(&format!(
+                    "| {} | {} | {} | {} | {} |\n",
+                    entry.campaign, entry.snapshot, entry.lineage, entry.policy, entry.state
+                ));
+            }
+            Ok(output.trim_end().to_owned())
+        }
     }
 }
 
