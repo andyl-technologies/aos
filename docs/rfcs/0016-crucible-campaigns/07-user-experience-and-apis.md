@@ -179,6 +179,18 @@ existing campaigns; the two argument lists are paired in command-line order.
 Attachment fails closed unless the component authority is present and the
 service is writable. The packaged local QEMU executor option remains limited
 to one campaign-specific attachment.
+After bind, an authorized local operator can attach another existing campaign:
+
+```text
+crucible campaign --socket CAMPAIGN_SOCKET --principal PRINCIPAL \
+  attach CAMPAIGN --executor-socket EXECUTOR_SOCKET
+```
+
+The endpoint is validated before connecting to the campaign service. A
+successful response reports `attached` or `replayed`, the exact request digest,
+and the live attached-runtime count. Exact replay performs no second executor
+connection; changing the endpoint for an already attached campaign is a
+nonretryable command-reuse conflict.
 `start` changes desired state through the same recorded `Resume` transition as
 `resume`, but reports the operator's initial-start intent distinctly. Both
 require the exact expected snapshot and an idempotency key. `pause` stops new
@@ -593,10 +605,10 @@ and exactly replays by target name after later target mutations or restart. The
 initial nested CLI now exposes explicitly authorized campaign enumeration,
 authenticated current status, one-shot resumable watch, exact-precondition
 lifecycle mutation, and semantic pin/unpin mutation. The daemon now owns the
-strict 4-KiB operational request/response contract and distinct policy label
-for dynamic runtime attachment; authenticated listener routing and CLI
-porcelain, plus remaining paged inspection, are still required before the
-service is complete. Repeated bounded
+strict 4-KiB operational request/response contract, distinct policy label,
+authenticated listener route, and CLI porcelain for dynamic runtime
+attachment. Remaining paged inspection is still required before the service is
+complete. Repeated bounded
 `WatchCampaign` calls provide
 the initial resumable, coalesced current-head stream. The bounded versioned
 Unix-stream loopback binding is now

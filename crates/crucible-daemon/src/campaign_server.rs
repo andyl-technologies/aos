@@ -19,12 +19,13 @@ use std::time::Duration;
 
 use crucible_campaign::{CampaignPrincipalAuthorizer, CampaignRepository};
 
+use crate::CampaignRuntimeControlService;
 use crate::campaign_endpoint::{LocalEndpointGuard, ManagedCampaignLoopbackListener};
 use crate::campaign_loopback::{
     DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION, LoopbackCampaignServerError,
     LoopbackCampaignTimeouts, MAX_CAMPAIGN_REQUESTS_PER_CONNECTION,
     UnixPeerCampaignPrincipalResolver,
-    serve_authenticated_repository_campaign_connection_with_limits,
+    serve_authenticated_repository_campaign_connection_with_runtime_control_limits,
 };
 
 const DEFAULT_CONNECTION_WORKERS: usize = 8;
@@ -220,6 +221,7 @@ pub struct CampaignLoopbackServer<R: ?Sized, A: ?Sized> {
     repository: Arc<CampaignRepository>,
     principal_resolver: Arc<R>,
     authorizer: Arc<A>,
+    runtime_control: Option<Arc<dyn CampaignRuntimeControlService>>,
     config: CampaignLoopbackServerConfig,
     state: Arc<CampaignLoopbackServerState>,
 }
@@ -301,6 +303,7 @@ where
             repository,
             principal_resolver,
             authorizer,
+            runtime_control: None,
             config,
             state: Arc::new(CampaignLoopbackServerState::default()),
         })
@@ -312,6 +315,19 @@ where
         CampaignLoopbackServerShutdown {
             state: Arc::clone(&self.state),
         }
+    }
+
+    /// Installs one narrow operational runtime-attachment capability.
+    ///
+    /// The capability is shared only with the fixed authenticated connection
+    /// workers. It carries no repository or component-authority accessor.
+    #[must_use]
+    pub fn with_runtime_control(
+        mut self,
+        runtime_control: Arc<dyn CampaignRuntimeControlService>,
+    ) -> Self {
+        self.runtime_control = Some(runtime_control);
+        self
     }
 
     /// Serves connections until sticky shutdown or a listener/worker failure.
@@ -334,15 +350,19 @@ where
         }
         let mut workers: Vec<JoinHandle<Result<(), ()>>> =
             Vec::with_capacity(self.config.connection_workers);
+        let worker_context = Arc::new(ConnectionWorkerContext {
+            repository: Arc::clone(&self.repository),
+            principal_resolver: Arc::clone(&self.principal_resolver),
+            authorizer: Arc::clone(&self.authorizer),
+            runtime_control: self.runtime_control.as_ref().map(Arc::clone),
+            config: self.config,
+            state: Arc::clone(&self.state),
+        });
         for slot in 0..self.config.connection_workers {
             let worker = match spawn_connection_worker(
                 slot,
                 Arc::clone(&connections),
-                Arc::clone(&self.repository),
-                Arc::clone(&self.principal_resolver),
-                Arc::clone(&self.authorizer),
-                self.config,
-                Arc::clone(&self.state),
+                Arc::clone(&worker_context),
             ) {
                 Ok(worker) => worker,
                 Err(error) => {
@@ -497,14 +517,19 @@ impl Drop for ActiveConnection {
     }
 }
 
-fn spawn_connection_worker<R, A>(
-    slot: usize,
-    connections: Arc<ConnectionQueue>,
+struct ConnectionWorkerContext<R: ?Sized, A: ?Sized> {
     repository: Arc<CampaignRepository>,
     principal_resolver: Arc<R>,
     authorizer: Arc<A>,
+    runtime_control: Option<Arc<dyn CampaignRuntimeControlService>>,
     config: CampaignLoopbackServerConfig,
     state: Arc<CampaignLoopbackServerState>,
+}
+
+fn spawn_connection_worker<R, A>(
+    slot: usize,
+    connections: Arc<ConnectionQueue>,
+    context: Arc<ConnectionWorkerContext<R, A>>,
 ) -> io::Result<JoinHandle<Result<(), ()>>>
 where
     R: UnixPeerCampaignPrincipalResolver + Send + Sync + 'static + ?Sized,
@@ -514,18 +539,10 @@ where
         .name(format!("crucible-campaign-{slot}"))
         .spawn(move || {
             let result = catch_unwind(AssertUnwindSafe(|| {
-                connection_worker_loop(
-                    slot,
-                    &connections,
-                    &repository,
-                    principal_resolver.as_ref(),
-                    authorizer.as_ref(),
-                    config,
-                    &state,
-                );
+                connection_worker_loop(slot, &connections, &context);
             }));
             if result.is_err() {
-                state.shutdown();
+                context.state.shutdown();
                 return Err(());
             }
             Ok(())
@@ -535,17 +552,14 @@ where
 fn connection_worker_loop<R, A>(
     slot: usize,
     connections: &ConnectionQueue,
-    repository: &CampaignRepository,
-    principal_resolver: &R,
-    authorizer: &A,
-    config: CampaignLoopbackServerConfig,
-    state: &Arc<CampaignLoopbackServerState>,
+    context: &ConnectionWorkerContext<R, A>,
 ) where
     R: UnixPeerCampaignPrincipalResolver + ?Sized,
     A: CampaignPrincipalAuthorizer + ?Sized,
 {
+    let state = &context.state;
     while !state.stopped.load(Ordering::Acquire) {
-        let mut stream = match connections.pop(config.accept_poll_interval) {
+        let mut stream = match connections.pop(context.config.accept_poll_interval) {
             Some(stream) => stream,
             None if state.stopped.load(Ordering::Acquire) || connections.is_closed() => return,
             None => continue,
@@ -558,13 +572,14 @@ fn connection_worker_loop<R, A>(
                 continue;
             }
         };
-        let result = serve_authenticated_repository_campaign_connection_with_limits(
+        let result = serve_authenticated_repository_campaign_connection_with_runtime_control_limits(
             &mut stream,
-            repository,
-            principal_resolver,
-            authorizer,
-            config.exchange_timeouts,
-            config.maximum_requests_per_connection,
+            &context.repository,
+            context.principal_resolver.as_ref(),
+            context.authorizer.as_ref(),
+            context.runtime_control.as_deref(),
+            context.config.exchange_timeouts,
+            context.config.maximum_requests_per_connection,
         );
         match result {
             Ok(()) if state.stopped.load(Ordering::Acquire) => {}

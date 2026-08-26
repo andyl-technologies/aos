@@ -302,7 +302,7 @@ view; its selected branch point and source MUST equal the proposal, and its
 issued-proposal set MUST contain the exact proposal ID. Operator, exhaustive,
 and debugger proposals carry neither field. Response version 1 remains
 structurally readable for offline compatibility but does not carry
-planner-decision evidence; the version-19 loopback endpoint writes only version
+planner-decision evidence; the version-20 loopback endpoint writes only version
 2.
 
 MerkleLookupProofV1 = node_count:u64 |
@@ -865,7 +865,7 @@ The strict
 local transport frames exactly one canonical request or response as:
 
 ```text
-CampaignLoopbackFrameV19 = "CRUCCS19" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV20 = "CRUCCS20" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -905,10 +905,12 @@ kind = 1 (GetCampaignRequestV1) |
       36 (GetCampaignPlannerRankingsRequestV1) |
       37 (GetCampaignPlannerRankingsResponseV1) |
       38 (ListCampaignsRequestV1) |
-      39 (ListCampaignsResponseV1)
+      39 (ListCampaignsResponseV1) |
+      40 (AttachCampaignRuntimeRequestV1) |
+      41 (AttachCampaignRuntimeResponseV1)
 ```
 
-Loopback frame versions 1 through 18 are rejected rather than reinterpreted
+Loopback frame versions 1 through 19 are rejected rather than reinterpreted
 under the expanded kind table.
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB
@@ -1098,11 +1100,16 @@ request binding is
 The response MUST repeat that digest and campaign exactly; its count is in
 `1..=256`. `AttachCampaignRuntime` is a distinct per-campaign policy operation
 and is always denied by read-only service mode. The closed bodies, digest, and
-authorization label are implemented and registered in this checkpoint.
-Routing them over the authenticated local listener, exact-replay retention,
-and CLI porcelain remain the next implementation slice. Repository-wide
-automatic campaign discovery and a shared multi-campaign packaged-executor
-allocator remain future work.
+authorization label are implemented and registered in this checkpoint. The
+authenticated local listener verifies the kernel-resolved principal and exact
+per-campaign grant before runtime-registry reservation or executor I/O. One
+accepted request installs the runtime; an exact replay returns `Replayed` and
+the current count without reconnecting to the executor. A concurrent exact
+request returns retryable unavailability while preparation is in flight, and a
+different endpoint for the same campaign returns nonretryable command reuse.
+`crucible campaign ... attach CAMPAIGN --executor-socket PATH` is the checked
+operator porcelain. Repository-wide automatic campaign discovery and a shared
+multi-campaign packaged-executor allocator remain future work.
 
 SIGINT,
 SIGTERM, lifecycle-server failure, or CampaignService failure shuts down both

@@ -29,6 +29,24 @@ const REQUEST_DIGEST_DOMAIN: &str = "crucible.campaign.attach-runtime-request.v1
 /// Maximum canonical bytes in one runtime-control component message.
 pub const MAX_CAMPAIGN_RUNTIME_CONTROL_MESSAGE_BYTES: usize = 4 * 1024;
 
+/// Operational service that accepts exact runtime-attachment requests.
+///
+/// Implementations own only the narrow attachment capability. Repository,
+/// component-authority, listener, and semantic mutation access are not part of
+/// this interface.
+pub trait CampaignRuntimeControlService: Send + Sync {
+    /// Attaches or exactly replays one campaign runtime request.
+    ///
+    /// # Errors
+    ///
+    /// Returns one stable [`crucible_campaign::CampaignServiceFailure`] after
+    /// caller authentication and authorization have completed.
+    fn attach_campaign_runtime(
+        &self,
+        request: &AttachCampaignRuntimeRequest,
+    ) -> Result<AttachCampaignRuntimeResponse, crucible_campaign::CampaignServiceFailure>;
+}
+
 /// Canonical request to attach one campaign runtime to a local executor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttachCampaignRuntimeRequest {

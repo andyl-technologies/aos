@@ -27,9 +27,10 @@ use crucible_campaign::{
 use tempfile::tempdir;
 
 use crate::{
-    AllowAllAttemptAdmission, CanonicalPlannerProcessConfig, ExecutorCapacity,
-    ExecutorLoopbackEndpointConfig, LocalExecutorCapabilityService, LocalExecutorSupervisor,
-    LoopbackCampaignService, LoopbackCampaignTimeouts, LoopbackExecutorTimeouts,
+    AllowAllAttemptAdmission, AttachCampaignRuntimeRequest, CampaignRuntimeAttachmentDisposition,
+    CanonicalPlannerProcessConfig, ExecutorCapacity, ExecutorLoopbackEndpointConfig,
+    LocalExecutorCapabilityService, LocalExecutorSupervisor, LoopbackCampaignService,
+    LoopbackCampaignServiceError, LoopbackCampaignTimeouts, LoopbackExecutorTimeouts,
     MAX_EXECUTOR_REQUESTS_PER_CONNECTION, MemoryAssignmentLedger,
     serve_loopback_executor_component_connection_with_limits,
     serve_loopback_executor_component_once,
@@ -62,6 +63,11 @@ campaign = "*"
 [[grants]]
 principal = "operator"
 operation = "create-campaign"
+campaign = "*"
+
+[[grants]]
+principal = "operator"
+operation = "attach-campaign-runtime"
 campaign = "*"
 "#,
             metadata.uid(),
@@ -527,6 +533,98 @@ fn post_bind_attachment_is_bounded_live_and_does_not_retain_service_ownership() 
         .expect("weak handle does not retain state lock");
     restarted.shutdown_handle().shutdown();
     restarted.serve().expect("serve restarted owner");
+}
+
+#[test]
+fn authenticated_post_bind_attachment_replays_without_executor_io() {
+    let (directory, config) = fixture();
+    let authority = directory.path().join("component-authority.bin");
+    write_component_authorities(&authority, [0x31; 32], [0x73; 32]);
+    let config = config
+        .with_component_authority_path(&authority)
+        .expect("component authority path");
+    let socket = config.endpoint().path().to_owned();
+    let prepared = config.prepare().expect("prepare service");
+    let lineage = create_runtime_campaign(&prepared.repository, "dynamic");
+    let prepared = prepared
+        .with_runtime_control(named_runtime_config("dynamic").planner_process().clone())
+        .expect("enable runtime control");
+    let service = prepared.bind().expect("bind service without runtimes");
+    let attachments = service.runtime_attachment_handle();
+    let shutdown = service.shutdown_handle();
+    let server = thread::spawn(move || service.serve().expect("serve dynamic runtime"));
+
+    let metadata = fs::metadata(directory.path()).expect("runtime endpoint directory metadata");
+    let endpoint = ExecutorLoopbackEndpointConfig::new(
+        directory.path().join("dynamic-control-executor.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("runtime executor endpoint");
+    let managed = endpoint.bind().expect("bind runtime executor endpoint");
+    let (listener, endpoint_guard) = managed.into_parts();
+    let mut executor_service = executor_capability_service(&lineage, 0x44, b"control-store");
+    let executor_server = thread::spawn(move || {
+        let _endpoint_guard = endpoint_guard;
+        let (mut stream, _) = listener.accept().expect("accept runtime executor");
+        serve_loopback_executor_component_connection_with_limits(
+            &mut stream,
+            &mut executor_service,
+            LoopbackExecutorTimeouts::default(),
+            MAX_EXECUTOR_REQUESTS_PER_CONNECTION,
+        )
+        .expect("serve runtime executor connection");
+    });
+    let request = AttachCampaignRuntimeRequest::new(
+        CampaignPrincipal::new("operator").expect("principal"),
+        CampaignName::new("dynamic").expect("campaign"),
+        endpoint.path(),
+    )
+    .expect("runtime request");
+    let loopback = LoopbackCampaignService::new(
+        UnixStream::connect(&socket).expect("connect campaign service"),
+    )
+    .expect("campaign loopback");
+    let attached = loopback
+        .attach_campaign_runtime(&request)
+        .expect("attach runtime");
+    assert_eq!(
+        attached.disposition(),
+        CampaignRuntimeAttachmentDisposition::Attached
+    );
+    assert_eq!(attached.attached_runtime_count(), 1);
+
+    let replayed = loopback
+        .attach_campaign_runtime(&request)
+        .expect("replay runtime attachment");
+    assert_eq!(
+        replayed.disposition(),
+        CampaignRuntimeAttachmentDisposition::Replayed
+    );
+    assert_eq!(replayed.attached_runtime_count(), 1);
+    let conflicting = AttachCampaignRuntimeRequest::new(
+        request.principal().clone(),
+        request.campaign().clone(),
+        directory.path().join("other-executor.sock"),
+    )
+    .expect("conflicting request");
+    assert!(matches!(
+        loopback.attach_campaign_runtime(&conflicting),
+        Err(LoopbackCampaignServiceError::Remote(
+            CampaignServiceFailure::CommandReuse
+        ))
+    ));
+    assert_eq!(
+        attachments
+            .attached_campaigns()
+            .expect("attached campaign inventory"),
+        [CampaignName::new("dynamic").expect("campaign")]
+    );
+
+    shutdown.shutdown();
+    server.join().expect("join campaign service");
+    executor_server.join().expect("join executor server");
 }
 
 #[test]

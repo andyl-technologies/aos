@@ -293,9 +293,13 @@ admission, waits for bounded in-flight preparations, requests cancellation for
 the complete attached set before joining any runtime, and retains repository
 namespace ownership through the final join. The public-operator attachment
 message contract is now strict, bounded, request-bound, and separately
-authorized without making its executor path semantic. Listener routing and CLI
-porcelain remain open; callers currently supply an already connected and
-authenticated executor stream.
+authorized without making its executor path semantic. The authenticated local
+listener routes that operation only after exact peer-principal and per-campaign
+policy checks. It reserves before executor I/O, uses the same authenticated
+endpoint connector as startup, and exactly replays an installed request without
+reconnecting to the executor. The CLI exposes that path through `campaign
+attach`; automatic campaign discovery and a shared packaged-executor allocator
+remain open.
 
 The real-node realization boundary now has an executor-owned exact-capture
 primitive for that checkpoint path. It seals the unified event
