@@ -9,6 +9,8 @@
   python3,
   zlib,
   bootstrapTools,
+  stdenv,
+  buildPackages,
 }: {
   version,
   srcHash,
@@ -35,8 +37,20 @@
   needsArc4randomFix ? true,
   extraCmakeFlags ? [],
 }: let
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  versionMatch = builtins.match "([0-9]+)\\..*" version;
+  versionMajor = builtins.elemAt versionMatch 0;
+  nativeLlvm = buildPackages."llvm-${versionMajor}";
+  enabledRuntimes =
+    if isDarwinCross
+    then []
+    else runtimes;
+  zlibLibrary =
+    if isDarwinCross
+    then "${zlib}/lib/libz.dylib"
+    else "${zlib}/lib/libz.so";
   projectsStr = builtins.concatStringsSep ";" projects;
-  runtimesStr = builtins.concatStringsSep ";" runtimes;
+  runtimesStr = builtins.concatStringsSep ";" enabledRuntimes;
   targetsStr = builtins.concatStringsSep ";" targets;
   extraFlagsStr = builtins.concatStringsSep " " extraCmakeFlags;
 in
@@ -57,7 +71,13 @@ in
       ninja
       python3
     ];
-    runtimeDeps = [zlib];
+    runtimeDeps =
+      [zlib]
+      ++ (
+        if isDarwinCross
+        then [stdenv.darwinRuntimes]
+        else []
+      );
 
     # Builds LLVM, clang, lld, compiler-rt, libunwind, libcxxabi and libcxx
     # together. Keep Fortify at level 2 and avoid x86 shadow stack for the
@@ -90,7 +110,7 @@ in
             else ""
           }
           ${
-            if runtimes != []
+            if enabledRuntimes != []
             then ''
               # Create clang config file so the just-built clang finds AOS
               # GCC toolchain and libraries when building runtimes.
@@ -127,16 +147,28 @@ in
             -DCMAKE_INSTALL_PREFIX=$out \
             -DLLVM_ENABLE_PROJECTS="${projectsStr}" \
             ${
-            if runtimes != []
+            if enabledRuntimes != []
             then ''-DLLVM_ENABLE_RUNTIMES="${runtimesStr}"''
             else ""
           } \
             -DLLVM_TARGETS_TO_BUILD="${targetsStr}" \
+            ${
+            if isDarwinCross
+            then ''
+              -DLLVM_DEFAULT_TARGET_TRIPLE=${stdenv.hostPlatform.config} \
+              -DLLVM_HOST_TRIPLE=${stdenv.hostPlatform.config} \
+              -DLLVM_NATIVE_TOOL_DIR=${nativeLlvm}/bin \
+              -DLLVM_TABLEGEN=${nativeLlvm}/bin/llvm-tblgen \
+              -DCLANG_TABLEGEN=${nativeLlvm}/bin/clang-tblgen \
+              -DLLVM_USE_HOST_TOOLS=ON \
+            ''
+            else ""
+          } \
             -DLLVM_LINK_LLVM_DYLIB=ON \
             -DLLVM_INSTALL_UTILS=ON \
             -DLLVM_ENABLE_ZLIB=FORCE_ON \
             -DZLIB_INCLUDE_DIR=${zlib}/include \
-            -DZLIB_LIBRARY=${zlib}/lib/libz.so \
+            -DZLIB_LIBRARY=${zlibLibrary} \
             -DLLVM_ENABLE_TERMINFO=OFF \
             -DLLVM_ENABLE_LIBXML2=OFF \
             -DLLVM_ENABLE_LIBEDIT=OFF \
@@ -146,7 +178,7 @@ in
             -DLLVM_INCLUDE_DOCS=OFF \
             -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON \
             ${
-            if runtimes != []
+            if enabledRuntimes != []
             then ''
               -DDEFAULT_SYSROOT=/ \
               -DCLANG_CONFIG_FILE_SYSTEM_DIR=$PWD/build/clang-cfg \
@@ -158,7 +190,8 @@ in
             then "-DHAVE_DECL_ARC4RANDOM=0"
             else ""
           } \
-            ${extraFlagsStr}
+            ${extraFlagsStr} \
+            $cmakeFlags
         '';
       }
       {
@@ -171,6 +204,19 @@ in
         name = "install";
         script = ''
           ninja -C build install
+
+          ${
+            if isDarwinCross
+            then ''
+              # compiler-rt, libc++, libc++abi and libunwind were bootstrapped
+              # before this target LLVM so no Darwin executable has to run
+              # while cross-compiling.  Install that exact runtime surface as
+              # part of the complete Darwin LLVM toolchain.
+              cp -a ${stdenv.darwinRuntimes}/include/. "$out/include/"
+              cp -a ${stdenv.darwinRuntimes}/lib/. "$out/lib/"
+            ''
+            else ""
+          }
 
           # LLVM 22 moved PassPlugin.h from llvm/Passes/ to llvm/Plugins/.
           # Create backward-compat symlink for consumers expecting the old path

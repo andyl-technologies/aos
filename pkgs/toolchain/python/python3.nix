@@ -10,8 +10,11 @@
   openssl,
   xz,
   libffi,
+  stdenv,
+  buildPackages,
 }: let
   version = "3.14.3";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 
   markupsafeSrc = fetchurl {
     urls = [
@@ -38,10 +41,16 @@ in
       hash = "sha256-qX1VSemtgf4XFZ7QLGh3StXSZscvjZoLWpw3H+hdkCs=";
     };
 
-    buildDeps = [
-      gnumake
-      pkg-config
-    ];
+    buildDeps =
+      [
+        gnumake
+        pkg-config
+      ]
+      ++ (
+        if isDarwinCross
+        then [buildPackages.python3]
+        else []
+      );
     runtimeDeps = [
       zlib
       openssl
@@ -67,12 +76,20 @@ in
     # Guard: scrubPhase's nuke-refs pass should keep these out of the
     # closure. Fails the build if a future regression re-introduces a
     # _sysconfigdata*.py(c) or Makefile reference to the build toolchain.
-    disallowedReferences = [
-      gnumake
-      pkg-config
-      patch
-      patchelf
-    ];
+    disallowedReferences =
+      if isDarwinCross
+      then [
+        buildPackages.gnumake
+        buildPackages.pkg-config
+        buildPackages.patch
+        buildPackages.patchelf
+      ]
+      else [
+        gnumake
+        pkg-config
+        patch
+        patchelf
+      ];
 
     phases = [
       {
@@ -85,27 +102,53 @@ in
       {
         name = "configure";
         script = ''
-          LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib" \
-          ./configure \
+          ${
+            if isDarwinCross
+            then ''
+              export PYTHON_FOR_BUILD=${buildPackages.python3}/bin/python3
+            ''
+            else ""
+          }
+          LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib" ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-shared \
             --with-system-expat=no \
             --with-ensurepip=no \
             --without-static-libpython \
             --disable-test-modules \
-            --with-openssl=${openssl}
+            --with-openssl=${openssl} \
+            ${
+            if isDarwinCross
+            then ''--with-build-python=${buildPackages.python3}/bin/python3''
+            else ""
+          }
         '';
       }
       {
         name = "build";
         script = ''
-          make -j$NIX_BUILD_CORES
+          ${
+            if isDarwinCross
+            then ''
+              make -j$NIX_BUILD_CORES \
+                PYTHON_FOR_BUILD=${buildPackages.python3}/bin/python3
+            ''
+            else "make -j$NIX_BUILD_CORES"
+          }
         '';
       }
       {
         name = "install";
         script = ''
-          make install
+          ${
+            if isDarwinCross
+            then ''
+              make install \
+                PYTHON_FOR_BUILD=${buildPackages.python3}/bin/python3
+            ''
+            else "make install"
+          }
           # Ensure 'python' symlink exists alongside 'python3'
           if [ ! -e $out/bin/python ]; then
             ln -sf python3 $out/bin/python
