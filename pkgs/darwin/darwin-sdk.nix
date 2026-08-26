@@ -330,6 +330,10 @@ in
                 - _CFArrayGetValueAtIndex
                 - _CFBooleanGetTypeID
                 - _CFBooleanGetValue
+                - _CFBundleCreate
+                - _CFBundleGetIdentifier
+                - _CFBundleGetValueForInfoDictionaryKey
+                - _CFCopyTypeIDDescription
                 - _CFDataGetBytes
                 - _CFDataGetLength
                 - _CFDataGetTypeID
@@ -355,8 +359,10 @@ in
                 - _CFStringGetCStringPtr
                 - _CFStringGetLength
                 - _CFStringGetMaximumSizeForEncoding
+                - _CFStringGetTypeID
                 - _CFTimeZoneCopyDefault
                 - _CFTimeZoneGetName
+                - _CFURLCreateFromFileSystemRepresentation
                 - _CFUUIDGetConstantUUIDWithBytes
                 - _CFUUIDGetUUIDBytes
                 - ___CFConstantStringClassReference

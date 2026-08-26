@@ -43,10 +43,18 @@
               '  CFIndex maximum = CFStringGetMaximumSizeForEncoding(CFStringGetLength(label), kCFStringEncodingUTF8);' \
               '  CFTimeZoneRef zone = CFTimeZoneCopyDefault();' \
               '  CFStringRef zoneName = zone == NULL ? NULL : CFTimeZoneGetName(zone);' \
+              '  CFURLRef url = CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault, (const UInt8 *)".", 1, false);' \
+              '  CFBundleRef bundle = url == NULL ? NULL : CFBundleCreate(kCFAllocatorDefault, url);' \
+              '  CFStringRef identifier = bundle == NULL ? NULL : CFBundleGetIdentifier(bundle);' \
+              '  CFTypeRef value = bundle == NULL ? NULL : CFBundleGetValueForInfoDictionaryKey(bundle, CFSTR("CFBundleIdentifier"));' \
+              '  CFStringRef typeDescription = CFCopyTypeIDDescription(CFStringGetTypeID());' \
               '  CFDictionaryRef proxies = SCDynamicStoreCopyProxies(NULL);' \
               '  if (proxies != NULL) CFRelease(proxies);' \
+              '  if (typeDescription != NULL) CFRelease(typeDescription);' \
+              '  if (bundle != NULL) CFRelease(bundle);' \
+              '  if (url != NULL) CFRelease(url);' \
               '  if (zone != NULL) CFRelease(zone);' \
-              '  return label == NULL || maximum < 0 || zoneName == NULL;' \
+              '  return label == NULL || maximum < 0 || zoneName == NULL || identifier == value;' \
               '}' \
               > framework-smoke.c
             "$CC" framework-smoke.c \
