@@ -114,17 +114,29 @@
               -DCMAKE_INSTALL_PREFIX="$PWD/cmake-installed" $cmakeFlags
             ninja -C cmake-build install
             cp cmake-installed/lib/libaos-darwin-cmake-smoke.dylib \
-              "$c/lib/aos-darwin-cmake-smoke.dylib"
+              "$c/lib/libaos-darwin-cmake-smoke.dylib"
             cp cmake-installed/lib/libaos-darwin-cmake-cxx-smoke.dylib \
               "$cxx/libaos-darwin-cmake-cxx-smoke.dylib"
+
+            printf '%s\n' \
+              'extern "C" int aos_darwin_plugin(void) { return 0; }' \
+              > plugin.cc
+            "$CXX" -c plugin.cc -o plugin.o
+            "$CXX" -bundle \
+              -Wl,-flat_namespace \
+              -Wl,-undefined,dynamic_lookup \
+              -Wl,-rpath,"$c/lib" \
+              plugin.o "$cxx/libaos-darwin-cmake-cxx-smoke.dylib" \
+              -o "$cxx/aos-darwin-flat-namespace.bundle"
 
             for executable in \
               "$c/bin/aos-darwin-c-smoke" \
               "$c/bin/aos-darwin-framework-smoke" \
               "$c/bin/aos-darwin-iokit-smoke" \
               "$c/bin/aos-darwin-objective-c-smoke" \
-              "$c/lib/aos-darwin-cmake-smoke.dylib" \
+              "$c/lib/libaos-darwin-cmake-smoke.dylib" \
               "$cxx/libaos-darwin-cmake-cxx-smoke.dylib" \
+              "$cxx/aos-darwin-flat-namespace.bundle" \
               "$cxx/bin/aos-darwin-cxx-smoke"; do
               header=$("$OBJDUMP" --macho --private-header "$executable")
               if ! printf '%s\n' "$header" | grep -q '${expectedCpu}'; then
