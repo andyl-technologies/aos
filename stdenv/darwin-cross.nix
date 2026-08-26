@@ -65,6 +65,12 @@
       "-DCMAKE_SYSTEM_PROCESSOR=${hostPlatform.cmakeProcessor}"
       "-DCMAKE_C_COMPILER=${compiler}/bin/cc"
       "-DCMAKE_CXX_COMPILER=${compiler}/bin/c++"
+      "-DCMAKE_ASM_COMPILER=${compiler}/bin/cc"
+      # CMake cannot infer Clang's logical target from a Linux-hosted wrapper.
+      # Compiler-rt also requires this explicitly in default-target-only mode.
+      "-DCMAKE_C_COMPILER_TARGET=${hostPlatform.config}"
+      "-DCMAKE_CXX_COMPILER_TARGET=${hostPlatform.config}"
+      "-DCMAKE_ASM_COMPILER_TARGET=${hostPlatform.config}"
       "-DCMAKE_AR=${compiler}/bin/ar"
       "-DCMAKE_RANLIB=${compiler}/bin/ranlib"
       "-DCMAKE_STRIP=${compiler}/bin/strip"
