@@ -607,7 +607,7 @@ in {
   };
 
   # ---------------------------------------------------------------------------
-  # Test 2: e2e-system-lifecycle -- system sysroot install/upgrade/rollback
+  # Test 2: e2e-system-lifecycle -- non-image hosts reject sysroot activation
   # ---------------------------------------------------------------------------
   e2e-system-lifecycle = testing.mkVMTest {
     name = "e2e-system-lifecycle";
@@ -618,7 +618,7 @@ in {
       ${setupNixEnv}
       ${shellHelpers}
 
-      echo "==> Test: APR/APM system sysroot lifecycle with real downloads"
+      echo "==> Test: APR/APM sysroot downloads fail closed without image authority"
 
       SYSTEM_V1_STORE="${systemV1}"
       SYSTEM_V2_STORE="${systemV2}"
@@ -657,18 +657,6 @@ in {
         git -C "$REG_DIR" commit -m "release: server $version"
       }
 
-      assert_system_current() {
-        expected="$1"
-        state=$(cat /var/lib/profiles/system/state.json)
-        current=$(echo "$state" | ${pkgs.jq}/bin/jq -r '.current')
-        if [ "$current" = "$expected" ]; then
-          pass "system current generation is $expected"
-        else
-          echo "$state"
-          fail "expected system current generation $expected, got $current"
-        fi
-      }
-
       $APR create e2e-system-reg
       REG_DIR="$REG_STORAGE/e2e-system-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
@@ -705,19 +693,27 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$SYSTEM_V1_STORE" "system-v1"
-      run_logged /tmp/e2e-system-install.out "$APM" install server --system --registry e2e-system-reg --yes || {
-        fail "apm install --system downloads system v1"
-      }
+      if run_logged /tmp/e2e-system-install.out "$APM" install server --system \
+        --registry e2e-system-reg --yes; then
+        fail "apm install --system must reject a host without image-generation authority"
+      else
+        pass "apm install --system rejects a host without image-generation authority"
+      fi
       assert_file_contains /tmp/e2e-system-install.out "Downloading" \
         "apm install --system downloads v1 sysroot"
-      assert_system_current 1
+      assert_file_contains /tmp/e2e-system-install.out "image generation state is absent" \
+        "apm install --system explains the missing image-generation authority"
       assert_store_valid "$SYSTEM_V1_STORE" "system-v1"
-      /var/lib/profiles/system/current/toplevel/bin/e2e-system-version \
-        > /tmp/e2e-system-run-v1.out
+      "$SYSTEM_V1_STORE/bin/e2e-system-version" > /tmp/e2e-system-run-v1.out
       assert_file_contains /tmp/e2e-system-run-v1.out "e2e system 2026.03" \
-        "installed system v1 executable runs"
-      assert_file_contains /tmp/e2e-system-activated-current "2026.03" \
-        "system install activation ran v1"
+        "downloaded system v1 closure runs directly"
+      if [ -e /var/lib/profiles/system/current ] || \
+        [ -e /var/lib/profiles/system/state.json ] || \
+        [ -e /tmp/e2e-system-activated-current ]; then
+        fail "rejected v1 activation must not create or activate a system generation"
+      else
+        pass "rejected v1 activation leaves system generation state untouched"
+      fi
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
@@ -731,34 +727,38 @@ in {
       }
 
       delete_store_path "$SYSTEM_V2_STORE" "system-v2"
-      run_logged /tmp/e2e-system-upgrade.out "$APM" upgrade --system || {
-        fail "apm upgrade --system downloads system v2"
-      }
-      assert_file_contains /tmp/e2e-system-upgrade.out "Upgrade available" \
-        "apm upgrade --system finds v2"
-      assert_file_contains /tmp/e2e-system-upgrade.out "Downloading" \
-        "apm upgrade --system downloads v2 sysroot"
-      assert_system_current 2
+      if run_logged /tmp/e2e-system-install-v2.out "$APM" install server --system \
+        --registry e2e-system-reg --yes; then
+        fail "apm install --system must reject v2 without image-generation authority"
+      else
+        pass "apm install --system rejects v2 without image-generation authority"
+      fi
+      assert_file_contains /tmp/e2e-system-install-v2.out "Downloading" \
+        "apm install --system downloads v2 sysroot before activation"
+      assert_file_contains /tmp/e2e-system-install-v2.out "image generation state is absent" \
+        "v2 activation reports the same image-generation authority boundary"
       assert_store_valid "$SYSTEM_V2_STORE" "system-v2"
-      /var/lib/profiles/system/current/toplevel/bin/e2e-system-version \
-        > /tmp/e2e-system-run-v2.out
+      "$SYSTEM_V2_STORE/bin/e2e-system-version" > /tmp/e2e-system-run-v2.out
       assert_file_contains /tmp/e2e-system-run-v2.out "e2e system 2026.04" \
-        "upgraded system v2 executable runs"
-      assert_file_contains /tmp/e2e-system-activated-current "2026.04" \
-        "system upgrade activation ran v2"
+        "downloaded system v2 closure runs directly"
 
-      run_logged /tmp/e2e-system-rollback.out "$APM" rollback --system || {
-        fail "apm rollback --system returns to v1"
-      }
-      assert_file_contains /tmp/e2e-system-rollback.out "Rolled back to system generation 1" \
-        "apm rollback --system selects v1 generation"
-      assert_system_current 1
-      /var/lib/profiles/system/current/toplevel/bin/e2e-system-version \
-        > /tmp/e2e-system-run-rollback.out
-      assert_file_contains /tmp/e2e-system-run-rollback.out "e2e system 2026.03" \
-        "rolled-back system v1 executable runs"
-      assert_file_contains /tmp/e2e-system-activated-current "2026.03" \
-        "system rollback activation ran v1"
+      if run_logged /tmp/e2e-system-upgrade.out "$APM" upgrade --system; then
+        fail "apm upgrade --system must reject a host with no image generation"
+      else
+        pass "apm upgrade --system rejects a host with no image generation"
+      fi
+      if run_logged /tmp/e2e-system-rollback.out "$APM" rollback --system; then
+        fail "apm rollback --system must reject a host with no image generation"
+      else
+        pass "apm rollback --system rejects a host with no image generation"
+      fi
+      if [ -e /var/lib/profiles/system/current ] || \
+        [ -e /var/lib/profiles/system/state.json ] || \
+        [ -e /tmp/e2e-system-activated-current ]; then
+        fail "rejected legacy lifecycle commands must not create system state"
+      else
+        pass "rejected legacy lifecycle commands leave system state untouched"
+      fi
 
       stop_static_cache
       check_fail
