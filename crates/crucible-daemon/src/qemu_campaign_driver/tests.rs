@@ -735,6 +735,118 @@ fn next_choice_retains_the_complete_discovery_bundle() {
 }
 
 #[test]
+fn next_choice_publishes_the_live_signal_fault_frontier_at_its_exact_parent() {
+    let input = input(StopCondition::NextChoice);
+    let configuration = starting_configuration(&input);
+    let discovery = signal_fault_choice_discovery(&configuration, 1);
+    let opportunity = discovery.opportunity().id().expect("opportunity id");
+    let mut quantum = outcome(
+        configuration.clone(),
+        Vec::new(),
+        EventLogOffset::default(),
+        1,
+    );
+    quantum.discovered_choices.push(discovery);
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([Ok(quantum)]),
+        terminal: None,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+    let mut driver = QemuFreshModeledDriver::new();
+
+    let pending = expect_observation(
+        driver
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("live signal-fault choice stop"),
+    );
+    let product = driver
+        .seal(pending, Vec::new())
+        .expect("live signal-fault candidate");
+    let AttemptExecutionProduct::Observation(candidate) = product else {
+        panic!("fresh modeled driver must return an observation")
+    };
+
+    assert_eq!(
+        candidate.child().configuration(),
+        configuration_id(&configuration)
+    );
+    assert_eq!(
+        candidate.observation().stop(),
+        &StopOutcome::Reached(StopCondition::NextChoice)
+    );
+    assert_eq!(
+        candidate.observation().discovered_choices(),
+        &BTreeSet::from([opportunity])
+    );
+    let [discovery] = candidate.discovered_choices() else {
+        panic!("exactly one signal-fault choice must be published")
+    };
+    assert!(matches!(
+        discovery.opportunity().source(),
+        ChoiceSource::Environment { adapter, .. }
+            if adapter == crucible::SIGNAL_FAULT_CAMPAIGN_ADAPTER
+    ));
+}
+
+#[test]
+fn signal_fault_frontier_is_not_published_after_execution_passes_it() {
+    let input = input(StopCondition::NamedBoundary(String::from("target")));
+    let configuration = starting_configuration(&input);
+    let mut first = outcome(
+        configuration.clone(),
+        Vec::new(),
+        EventLogOffset::default(),
+        1,
+    );
+    first
+        .discovered_choices
+        .push(signal_fault_choice_discovery(&configuration, 1));
+    let mut log = EventLog::new();
+    let target = log
+        .append_observable_events([ObservableEvent::guest_marker(
+            Icount { retired: 2 },
+            node("node-a"),
+            MarkerId::from_name("target"),
+        )])
+        .expect("target marker segment");
+    let second = outcome(configuration, target.entries, target.offset, 2);
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([Ok(first), Ok(second)]),
+        terminal: None,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+    let mut driver = QemuFreshModeledDriver::new();
+
+    let pending = expect_observation(
+        driver
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("later named boundary"),
+    );
+    let product = driver
+        .seal(pending, Vec::new())
+        .expect("non-retrospective candidate");
+    let AttemptExecutionProduct::Observation(candidate) = product else {
+        panic!("fresh modeled driver must return an observation")
+    };
+
+    assert_eq!(owner.drives, 2);
+    assert!(candidate.discovered_choices().is_empty());
+    assert!(candidate.observation().discovered_choices().is_empty());
+}
+
+#[test]
 fn pending_guest_choice_stops_without_reply_and_retains_scenario_discovery() {
     let (input, node) = input_with_guest_selectable(StopCondition::NextChoice);
     let configuration = starting_configuration(&input);
@@ -1231,6 +1343,31 @@ fn choice_discovery_named(scenario: ScenarioDefId, instance: &str) -> ChoiceDisc
     )
     .expect("choice opportunity");
     ChoiceDiscovery::new(declaration, domain, opportunity).expect("choice discovery")
+}
+
+fn signal_fault_choice_discovery(parent: &Configuration, ticks: u64) -> ChoiceDiscovery {
+    let choice = crucible::model::BindingSearchChoice {
+        id: crucible::model::SearchChoiceId::from_content_hash(crucible::ContentHash::from_bytes(
+            b"fresh-driver-signal-choice",
+        )),
+        candidates_digest: crucible::ContentHash::from_bytes(b"fresh-driver-signal-candidates"),
+        candidate_count: 2,
+        selected_index: None,
+        overridden: false,
+    };
+    let frontier = crucible::SearchRuntimeFrontier {
+        configuration: parent.clone(),
+        at: VirtualTime { ticks },
+        choices: crucible::SearchFrontierChoices::from_decisions(
+            choice
+                .override_decisions(parent.id())
+                .into_iter()
+                .map(crucible::Decision::Override),
+        ),
+    };
+    crucible::SignalFaultSelectable::from_frontier(&frontier)
+        .and_then(|selectable| selectable.discovery())
+        .expect("signal-fault discovery")
 }
 
 fn starting_configuration(input: &CrucibleAttemptExecution) -> Configuration {

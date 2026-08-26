@@ -969,6 +969,38 @@ fn promoted_signal_branch(
 }
 
 #[test]
+fn production_lifecycle_pauses_on_a_new_live_signal_fault_frontier() {
+    let source = finite_signal_replay_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    lifecycle.initial_lifecycle_observations_pending = false;
+    let parent = lifecycle.inner.loop_impl().configuration().clone();
+    let at = lifecycle.inner.loop_impl().frontier();
+
+    let outcome = lifecycle
+        .drive_quantum(QuantumRequest {
+            configuration: parent.clone(),
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("live signal-fault frontier should pause: {error}"));
+
+    assert_eq!(outcome.configuration, parent);
+    assert_eq!(outcome.frontier, at);
+    assert!(outcome.advanced_node.is_none());
+    assert!(outcome.decisions.is_empty());
+    let [discovery] = outcome.discovered_choices.as_slice() else {
+        panic!("the exact live producer frontier must yield one campaign discovery")
+    };
+    let normalized = crucible::SignalFaultSelectable::from_records(
+        &outcome.configuration,
+        discovery.declaration(),
+        discovery.opportunity(),
+        discovery.domain(),
+    )
+    .unwrap_or_else(|error| panic!("live discovery must retain the producer contract: {error}"));
+    assert_eq!(normalized.frontier(), at);
+}
+
+#[test]
 fn production_lifecycle_authenticates_typed_signal_branch_before_checkpointing() {
     let source = finite_signal_replay_scenario();
     let mut discovery = production_loop_without_backends(&source);
@@ -1015,12 +1047,13 @@ fn production_lifecycle_authenticates_typed_signal_branch_before_checkpointing()
     assert_eq!(lifecycle.exact_checkpoint_ready(), Ok(false));
     let outcome = lifecycle
         .drive_quantum(QuantumRequest {
-            configuration: parent,
+            configuration: parent.clone(),
             control: Vec::new(),
         })
         .unwrap_or_else(|error| panic!("observed sentinel branch should inject: {error}"));
     assert_eq!(outcome.configuration, *branch.selected());
     assert_eq!(outcome.decisions, branch.decisions());
+    assert!(outcome.discovered_choices.is_empty());
     assert!(lifecycle.signal_fault_branches.is_empty());
 }
 

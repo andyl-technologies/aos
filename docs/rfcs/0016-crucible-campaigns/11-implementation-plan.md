@@ -989,10 +989,15 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   proves the exact producer choice through a consumed override or matching
   unmodified runtime frontier, injects only the typed selection-plus-optional-
   override prefix, prevents checkpoint capture while a prefix remains, and
-  reconstructs the plan from immutable input after restart. Live pause-and-
-  publication admission, bounded interesting-window policy, and automatic
-  signature-preserving minimization remain open; retrospective frontiers are
-  deliberately not published as later observation discoveries.
+  reconstructs the plan from immutable input after restart. Live publication
+  now snapshots frontier history before each quantum, admits only newly recorded
+  frontiers still at the exact current parent/time boundary, and returns a
+  zero-node-progress result bounded to 4,096 frontiers and 128 MiB of unique
+  canonical choice material. The modeled driver retains that discovery only
+  when it causes the exact `NextChoice` stop; later-stop observations cannot
+  retrospectively publish it, and a queued replay branch suppresses duplicate
+  discovery. Bounded interesting-window policy and automatic signature-
+  preserving minimization remain open.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy
   widening, additive finite branching, edge deduplication, live status,
   explanation, bounded pressure, pause/restart/resume, steering, and graceful

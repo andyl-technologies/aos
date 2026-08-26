@@ -896,6 +896,19 @@ paused at the frontier's exact parent before publishing the opportunity or
 using the reconstructed prefix for QEMU injection. Retrospective search
 frontiers MUST NOT be mislabeled as discoveries at a later observation child.
 
+The production lifecycle implements that live boundary by snapshotting the
+retained frontier count before each scheduler quantum. Only a frontier first
+recorded during that call whose parent and virtual time still equal the current
+scheduler boundary is eligible. The lifecycle returns it through a zero-node-
+progress quantum result before further guest execution; decisions already
+settled at that same pre-quantum boundary remain in the result. At most 4,096
+such frontiers and 128 MiB of unique canonical declaration, domain, and
+opportunity material are admitted in one result. The modeled driver publishes
+them only when they cause the exact `NextChoice` stop; continuing toward another
+stop discards them, and retained scheduler history is never emitted by a later
+quantum. A replay plan already naming the current frontier suppresses duplicate
+discovery and proceeds through the separately authenticated typed injection.
+
 One admitted configuration may contain at most 4,096 promoted signal-fault
 events. The executor resolves all of their selection closures in one bounded
 batch, requires each reconstructed prefix at the exact target-schedule

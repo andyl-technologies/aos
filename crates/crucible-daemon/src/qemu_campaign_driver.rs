@@ -338,12 +338,17 @@ fn drive_modeled_attempt(
                     limit: "fresh-campaign-event-log-entry-count",
                 },
             ))?;
+        let retain_signal_fault_discoveries = matches!(
+            stop.as_ref(),
+            Some(ModeledStop::Reached(StopCondition::NextChoice))
+        );
         configuration = append_quantum(
             &mut event_log,
             &mut event_log_bytes,
             &mut discoveries,
             &mut terminal_quiescence,
             &mut terminal_at,
+            retain_signal_fault_discoveries,
             outcome,
         )?;
         let Some(stop) = stop else {
@@ -492,6 +497,7 @@ fn append_quantum(
     discoveries: &mut RetainedChoiceDiscoveries,
     terminal_quiescence: &mut Option<SchedulerQuiescence>,
     terminal_at: &mut VirtualTime,
+    retain_signal_fault_discoveries: bool,
     outcome: QuantumOutcome,
 ) -> Result<crucible::Configuration, AttemptWorkerFailure<QemuFreshModeledDriverError>> {
     let QuantumOutcome {
@@ -505,6 +511,9 @@ fn append_quantum(
     append_event_entries(event_log, event_log_bytes, event_log_entries)
         .map_err(AttemptWorkerFailure::Terminal)?;
     for discovery in discovered_choices {
+        if is_signal_fault_discovery(&discovery) && !retain_signal_fault_discoveries {
+            continue;
+        }
         discoveries
             .insert(discovery)
             .map_err(AttemptWorkerFailure::Terminal)?;
@@ -512,6 +521,14 @@ fn append_quantum(
     *terminal_quiescence = scheduler_quiescence;
     *terminal_at = (*terminal_at).max(frontier);
     Ok(configuration)
+}
+
+fn is_signal_fault_discovery(discovery: &ChoiceDiscovery) -> bool {
+    matches!(
+        discovery.opportunity().source(),
+        crucible_campaign::ChoiceSource::Environment { adapter, .. }
+            if adapter == crucible::SIGNAL_FAULT_CAMPAIGN_ADAPTER
+    )
 }
 
 fn append_event_entries(
