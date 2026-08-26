@@ -31,6 +31,7 @@
   needsDownloadRustc ? false,
   disableLld ? false,
   description,
+  buildTool ? null,
 }: let
   buildTriple = stdenv.buildPlatform.config;
   hostTriple = stdenv.hostPlatform.config;
@@ -52,7 +53,13 @@ in
       nativeRust
       nativeLlvm
     ];
-    runtimeDeps = [zlib openssl] ++ (if targetLlvm != null then [targetLlvm] else []);
+    runtimeDeps =
+      [zlib openssl]
+      ++ (
+        if targetLlvm != null
+        then [targetLlvm]
+        else []
+      );
 
     phases = [
       {
@@ -89,7 +96,11 @@ in
           extended = true
           tools = ${toolList}
           vendor = true
-          profiler = ${if profiler then "true" else "false"}
+          profiler = ${
+            if profiler
+            then "true"
+            else "false"
+          }
           cargo = "${nativeRust}/bin/cargo"
           rustc = "${nativeRust}/bin/rustc"
 
@@ -127,7 +138,6 @@ in
           linker = "$CC"
           ar = "$AR"
           ranlib = "$RANLIB"
-          llvm-has-rust-patches = true
           optimized-compiler-builtins = true
           split-debuginfo = "unpacked"
 
@@ -157,7 +167,10 @@ in
           export OPENSSL_NO_VENDOR=1
           export OPENSSL_STATIC=0
 
-          python3 x.py build -j "$NIX_BUILD_CORES"
+          # A Canadian cross produces the Darwin compiler at stage 2. Stage 1
+          # is the Linux compiler that can execute here and build both the
+          # Darwin standard library and the stage-2 Darwin compiler.
+          python3 x.py build --stage 2 -j "$NIX_BUILD_CORES"
         '';
       }
       {
@@ -170,7 +183,9 @@ in
           export OPENSSL_NO_VENDOR=1
           export OPENSSL_STATIC=0
 
-          python3 x.py install
+          # Stage 2 is still built entirely by the Linux stage-1 compiler; no
+          # Mach-O executable is run during installation.
+          python3 x.py install --stage 2
 
           test -x "$out/bin/rustc"
           test -x "$out/bin/cargo"
@@ -241,4 +256,9 @@ in
       homepage = "https://www.rust-lang.org";
       license = "MIT OR Apache-2.0";
     };
+
+    passthru =
+      if buildTool != null
+      then {inherit buildTool;}
+      else {};
   }

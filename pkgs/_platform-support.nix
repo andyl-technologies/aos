@@ -560,6 +560,7 @@ let
     "toolchain/go/_go-darwin.nix" = "cross-build-helper";
     "toolchain/java/_openjdk-bootstrap.nix" = "native-build-helper";
     "toolchain/llvm/_llvm.nix" = "cross-build-helper";
+    "toolchain/rust/_rust-darwin-build-tool.nix" = "cross-build-helper";
     "toolchain/rust/_rust-darwin.nix" = "cross-build-helper";
     "toolchain/rust/_rust-bootstrap.nix" = "native-build-helper";
     "tools/aos/_tests.nix" = "native-test-helper";
