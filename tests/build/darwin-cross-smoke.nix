@@ -83,11 +83,13 @@
             "$CC" resolver-smoke.c -o "$c/bin/aos-darwin-resolver-smoke"
 
             printf '%s\n' \
+              '#include <mach/mach.h>' \
               '#include <mach/mach_vm.h>' \
               '#include <membership.h>' \
               '#include <os/log.h>' \
               '#include <readpassphrase.h>' \
               '#include <sys/socket.h>' \
+              '#include <utmp.h>' \
               '#include <util.h>' \
               'static const void *const aos_darwin_symbols[] = {' \
               '  (const void *)&mach_vm_read_overwrite,' \
@@ -103,7 +105,7 @@
               '};' \
               'int main(void) {' \
               '  os_log(OS_LOG_DEFAULT, "aos Darwin command-line SDK smoke");' \
-              '  return aos_darwin_symbols[0] == 0;' \
+              '  return sizeof(struct utmp) == 0 || aos_darwin_symbols[0] == 0;' \
               '}' \
               > command-line-sdk-smoke.c
             "$CC" command-line-sdk-smoke.c \
