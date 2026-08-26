@@ -65,8 +65,13 @@ in
         rootfsDeps = [
           self
           pkgs.automake
+          pkgs.findutils
+          pkgs.gawk
           pkgs.gnumake
+          pkgs.grep
           pkgs.m4
+          pkgs.sed
+          pkgs.tar
         ];
         testScript = ''
           mkdir -p /tmp/proj
