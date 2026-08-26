@@ -78,6 +78,8 @@
             script = ''
               cmake -S . -B build \
                 -DCMAKE_INSTALL_PREFIX=$out \
+                -DCMAKE_C_FLAGS="-ffile-prefix-map=$PWD=. -fdebug-prefix-map=$PWD=." \
+                -DCMAKE_CXX_FLAGS="-ffile-prefix-map=$PWD=. -fdebug-prefix-map=$PWD=." \
                 -DBUILD_CONFIG=mysql_release \
                 -DFEATURE_SET=small \
                 -DWITH_SSL=system \
