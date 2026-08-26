@@ -765,6 +765,12 @@ fn campaign_page_reports_render_all_query_shapes() {
             operation: "graph",
             campaign: "example".to_owned(),
             snapshot: snapshot.clone(),
+            start_after: None,
+            page_limit: 1,
+            page_budget: 1,
+            pages_scanned: 1,
+            response_bytes: 1,
+            complete: false,
             next_after: Some(hash("cursor").to_hex()),
             entries: vec![CampaignPageEntry::Graph {
                 key: hash("graph-key").to_hex(),
@@ -776,6 +782,12 @@ fn campaign_page_reports_render_all_query_shapes() {
             operation: "choices",
             campaign: "example".to_owned(),
             snapshot: snapshot.clone(),
+            start_after: None,
+            page_limit: 1,
+            page_budget: 1,
+            pages_scanned: 1,
+            response_bytes: 1,
+            complete: true,
             next_after: None,
             entries: vec![CampaignPageEntry::Choice {
                 opportunity: "choice".to_owned(),
@@ -786,6 +798,12 @@ fn campaign_page_reports_render_all_query_shapes() {
             operation: "frontier",
             campaign: "example".to_owned(),
             snapshot: snapshot.clone(),
+            start_after: None,
+            page_limit: 1,
+            page_budget: 1,
+            pages_scanned: 1,
+            response_bytes: 1,
+            complete: true,
             next_after: None,
             entries: vec![CampaignPageEntry::Frontier {
                 request: "request".to_owned(),
@@ -800,6 +818,12 @@ fn campaign_page_reports_render_all_query_shapes() {
             operation: "findings",
             campaign: "example".to_owned(),
             snapshot,
+            start_after: None,
+            page_limit: 1,
+            page_budget: 1,
+            pages_scanned: 1,
+            response_bytes: 1,
+            complete: false,
             next_after: Some(hash("finding-cursor").to_hex()),
             entries: vec![CampaignPageEntry::Finding {
                 finding: "finding".to_owned(),
@@ -821,13 +845,17 @@ fn campaign_page_reports_render_all_query_shapes() {
         let decoded: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(decoded["schema"], CAMPAIGN_PAGE_REPORT_SCHEMA);
         assert_eq!(decoded["operation"], report.operation);
+        assert_eq!(decoded["pages_scanned"], 1);
+        assert_eq!(decoded["response_bytes"], 1);
         assert_eq!(decoded["entries"].as_array().map(Vec::len), Some(1));
 
         let table = render_campaign_page(&report, OutputFormat::Table).expect("table page");
         assert!(table.contains("campaign    example"));
+        assert!(table.contains("page_budget 1"));
         let markdown =
             render_campaign_page(&report, OutputFormat::Markdown).expect("Markdown page");
         assert!(markdown.contains("| entries | 1 |"));
+        assert!(markdown.contains("| pages | 1 |"));
     }
 }
 
@@ -859,6 +887,7 @@ fn campaign_graph_page_uses_the_checked_proof_bearing_transport() {
         snapshot: snapshot.to_string(),
         after: None,
         limit: 1,
+        pages: 1,
     });
     let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
     let server = thread::spawn(move || {
@@ -883,6 +912,114 @@ fn campaign_graph_page_uses_the_checked_proof_bearing_transport() {
 }
 
 #[test]
+fn campaign_graph_aggregation_follows_checked_pages_to_authenticated_eof() {
+    let (service, snapshot, _) = graph_page_service();
+    let client = CampaignClient::new(service);
+    let principal = CampaignPrincipal::new("operator").expect("campaign principal");
+    let first = CampaignCommand::Graph(CampaignPageArgs {
+        name: "example".to_owned(),
+        snapshot: snapshot.to_string(),
+        after: None,
+        limit: 1,
+        pages: 1,
+    });
+    let first_report =
+        query_campaign_page(&client, principal.clone(), &first).expect("checked first graph page");
+    let cursor = first_report
+        .next_after
+        .clone()
+        .expect("first page continuation");
+    assert!(!first_report.complete);
+    assert_eq!(first_report.pages_scanned, 1);
+
+    let remainder = CampaignCommand::Graph(CampaignPageArgs {
+        name: "example".to_owned(),
+        snapshot: snapshot.to_string(),
+        after: Some(cursor.clone()),
+        limit: 1,
+        pages: MAX_CAMPAIGN_PAGE_FOLLOW_PAGES,
+    });
+    let remainder_report =
+        query_campaign_page(&client, principal, &remainder).expect("checked graph remainder");
+
+    assert_eq!(
+        remainder_report.start_after.as_deref(),
+        Some(cursor.as_str())
+    );
+    assert_eq!(remainder_report.page_limit, 1);
+    assert_eq!(remainder_report.page_budget, MAX_CAMPAIGN_PAGE_FOLLOW_PAGES);
+    assert!(remainder_report.pages_scanned > 1);
+    assert!(remainder_report.response_bytes > 0);
+    assert!(remainder_report.complete);
+    assert!(remainder_report.next_after.is_none());
+    assert!(remainder_report.entries.len() > 1);
+    assert!(first_report.entries.iter().all(|first_entry| {
+        remainder_report.entries.iter().all(|entry| {
+            campaign_page_entry_row(first_entry, "\0") != campaign_page_entry_row(entry, "\0")
+        })
+    }));
+}
+
+#[test]
+fn campaign_page_aggregation_rejects_byte_overflow_before_an_extra_fetch() {
+    let page = CampaignPageArgs {
+        name: "example".to_owned(),
+        snapshot: snapshot("page-byte-bound").to_string(),
+        after: None,
+        limit: 1,
+        pages: 3,
+    };
+    let calls = std::cell::Cell::new(0_u32);
+    let result = collect_campaign_pages(
+        &page,
+        "graph",
+        None::<u32>,
+        |cursor| cursor.to_string(),
+        |cursor| {
+            calls.set(calls.get() + 1);
+            Ok(CampaignPageBatch {
+                entries: Vec::new(),
+                next_after: Some(cursor.unwrap_or(0) + 1),
+                response_bytes: usize::try_from(MAX_CAMPAIGN_PAGE_AGGREGATE_RESPONSE_BYTES / 2 + 1)
+                    .expect("test response byte bound"),
+            })
+        },
+    );
+
+    assert!(matches!(result, Err(CliError::Backend(_))));
+    assert_eq!(calls.get(), 2);
+}
+
+#[test]
+fn campaign_page_aggregation_rejects_a_repeated_cursor() {
+    let page = CampaignPageArgs {
+        name: "example".to_owned(),
+        snapshot: snapshot("page-cursor-cycle").to_string(),
+        after: None,
+        limit: 1,
+        pages: 2,
+    };
+    let calls = std::cell::Cell::new(0_u32);
+    let result = collect_campaign_pages(
+        &page,
+        "graph",
+        None::<u32>,
+        |cursor| cursor.to_string(),
+        |_| {
+            calls.set(calls.get() + 1);
+            Ok(CampaignPageBatch {
+                entries: Vec::new(),
+                next_after: Some(1),
+                response_bytes: 1,
+            })
+        },
+    );
+
+    assert!(matches!(result, Err(CliError::Backend(_))));
+    assert_eq!(calls.get(), 2);
+}
+
+#[test]
 fn campaign_findings_page_uses_the_checked_proof_bearing_transport() {
     let (service, snapshot, _) = graph_page_service();
     let command = CampaignCommand::Findings(CampaignPageArgs {
@@ -890,6 +1027,7 @@ fn campaign_findings_page_uses_the_checked_proof_bearing_transport() {
         snapshot: snapshot.to_string(),
         after: None,
         limit: 1,
+        pages: 1,
     });
     let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
     let server = thread::spawn(move || {
@@ -1694,6 +1832,7 @@ fn campaign_inputs_fail_before_transport_setup() {
         snapshot: snapshot("current").to_string(),
         after: Some("not-a-hash".to_owned()),
         limit: 8,
+        pages: 1,
     });
     assert!(validate_campaign_command(&bad_graph_cursor).is_err());
     let empty_choices_page = CampaignCommand::Choices(CampaignPageArgs {
@@ -1701,6 +1840,7 @@ fn campaign_inputs_fail_before_transport_setup() {
         snapshot: snapshot("current").to_string(),
         after: None,
         limit: 0,
+        pages: 1,
     });
     assert!(validate_campaign_command(&empty_choices_page).is_err());
     let oversized_graph_page = CampaignCommand::Graph(CampaignPageArgs {
@@ -1708,13 +1848,31 @@ fn campaign_inputs_fail_before_transport_setup() {
         snapshot: snapshot("current").to_string(),
         after: None,
         limit: MAX_CAMPAIGN_QUERY_PAGE_ITEMS + 1,
+        pages: 1,
     });
     assert!(validate_campaign_command(&oversized_graph_page).is_err());
+    let empty_graph_page_budget = CampaignCommand::Graph(CampaignPageArgs {
+        name: "example".to_owned(),
+        snapshot: snapshot("current").to_string(),
+        after: None,
+        limit: 1,
+        pages: 0,
+    });
+    assert!(validate_campaign_command(&empty_graph_page_budget).is_err());
+    let oversized_graph_page_budget = CampaignCommand::Graph(CampaignPageArgs {
+        name: "example".to_owned(),
+        snapshot: snapshot("current").to_string(),
+        after: None,
+        limit: 1,
+        pages: MAX_CAMPAIGN_PAGE_FOLLOW_PAGES + 1,
+    });
+    assert!(validate_campaign_command(&oversized_graph_page_budget).is_err());
     let bad_frontier_cursor = CampaignCommand::Frontier(CampaignPageArgs {
         name: "example".to_owned(),
         snapshot: snapshot("current").to_string(),
         after: Some("not-a-branch-request".to_owned()),
         limit: 8,
+        pages: 1,
     });
     assert!(validate_campaign_command(&bad_frontier_cursor).is_err());
     let bad_finding_cursor = CampaignCommand::Findings(CampaignPageArgs {
@@ -1722,6 +1880,7 @@ fn campaign_inputs_fail_before_transport_setup() {
         snapshot: snapshot("current").to_string(),
         after: Some("not-a-hash".to_owned()),
         limit: 1,
+        pages: 1,
     });
     assert!(validate_campaign_command(&bad_finding_cursor).is_err());
     let bad_graph_object = CampaignCommand::GraphObject(CampaignGraphObjectArgs {
@@ -2036,15 +2195,30 @@ fn campaign_status_and_watch_parse_under_the_nested_cli() {
             &snapshot("page").to_string(),
             "--limit",
             "3",
+            "--pages",
+            "2",
         ])
         .expect("campaign page arguments");
         assert!(matches!(
             page.command,
             Commands::Campaign(CampaignArgs {
-                command: CampaignCommand::Graph(CampaignPageArgs { limit: 3, .. })
-                    | CampaignCommand::Choices(CampaignPageArgs { limit: 3, .. })
-                    | CampaignCommand::Frontier(CampaignPageArgs { limit: 3, .. })
-                    | CampaignCommand::Findings(CampaignPageArgs { limit: 3, .. }),
+                command: CampaignCommand::Graph(CampaignPageArgs {
+                    limit: 3,
+                    pages: 2,
+                    ..
+                }) | CampaignCommand::Choices(CampaignPageArgs {
+                    limit: 3,
+                    pages: 2,
+                    ..
+                }) | CampaignCommand::Frontier(CampaignPageArgs {
+                    limit: 3,
+                    pages: 2,
+                    ..
+                }) | CampaignCommand::Findings(CampaignPageArgs {
+                    limit: 3,
+                    pages: 2,
+                    ..
+                }),
                 ..
             })
         ));

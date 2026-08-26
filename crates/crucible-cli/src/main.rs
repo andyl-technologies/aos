@@ -625,6 +625,9 @@ struct CampaignPageArgs {
     /// Maximum entries returned in this page.
     #[arg(long, value_name = "COUNT", default_value_t = 8)]
     limit: u32,
+    /// Maximum authenticated pages followed from the supplied cursor.
+    #[arg(long, value_name = "COUNT", default_value_t = 1)]
+    pages: u32,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

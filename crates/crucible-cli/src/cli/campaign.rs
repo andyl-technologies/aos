@@ -60,10 +60,13 @@ use serde::Serialize;
 
 const CAMPAIGN_HEAD_REPORT_SCHEMA: &str = "crucible.cli.campaign-head.v1";
 const CAMPAIGN_MUTATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-mutation.v1";
-const CAMPAIGN_PAGE_REPORT_SCHEMA: &str = "crucible.cli.campaign-page.v1";
+const CAMPAIGN_PAGE_REPORT_SCHEMA: &str = "crucible.cli.campaign-page.v2";
 const CAMPAIGN_ACCEPTANCE_REPORT_SCHEMA: &str = "crucible.cli.campaign-acceptance.v2";
 const MAX_CAMPAIGN_SELECTOR_SCAN_ITEMS: u32 = 4_096;
 const MAX_CAMPAIGN_SELECTOR_PREDICATES: usize = 16;
+const MAX_CAMPAIGN_PAGE_FOLLOW_PAGES: u32 = 256;
+const MAX_CAMPAIGN_PAGE_AGGREGATE_ENTRIES: usize = 65_536;
+const MAX_CAMPAIGN_PAGE_AGGREGATE_RESPONSE_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Serialize)]
 struct CampaignHeadReport {
@@ -96,6 +99,28 @@ struct CampaignPageReport {
     campaign: String,
     snapshot: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    start_after: Option<String>,
+    page_limit: u32,
+    page_budget: u32,
+    pages_scanned: u32,
+    response_bytes: u64,
+    complete: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_after: Option<String>,
+    entries: Vec<CampaignPageEntry>,
+}
+
+struct CampaignPageBatch<C> {
+    entries: Vec<CampaignPageEntry>,
+    next_after: Option<C>,
+    response_bytes: usize,
+}
+
+struct CampaignPageAggregation {
+    start_after: Option<String>,
+    pages_scanned: u32,
+    response_bytes: u64,
+    complete: bool,
     next_after: Option<String>,
     entries: Vec<CampaignPageEntry>,
 }
@@ -1167,6 +1192,28 @@ where
             "campaign {kind} page limit must be between 1 and {maximum}"
         )));
     }
+    validate_campaign_page_aggregation(page, kind)
+}
+
+fn validate_campaign_page_aggregation(page: &CampaignPageArgs, kind: &str) -> Result<(), CliError> {
+    if page.pages == 0 || page.pages > MAX_CAMPAIGN_PAGE_FOLLOW_PAGES {
+        return Err(usage_error(format!(
+            "campaign {kind} page budget must be between 1 and {MAX_CAMPAIGN_PAGE_FOLLOW_PAGES}"
+        )));
+    }
+    let aggregate_entries = usize::try_from(page.limit)
+        .ok()
+        .and_then(|limit| {
+            usize::try_from(page.pages)
+                .ok()
+                .and_then(|pages| limit.checked_mul(pages))
+        })
+        .ok_or_else(|| usage_error("campaign page aggregate entry count overflows"))?;
+    if aggregate_entries > MAX_CAMPAIGN_PAGE_AGGREGATE_ENTRIES {
+        return Err(usage_error(format!(
+            "campaign {kind} page request exceeds the {MAX_CAMPAIGN_PAGE_AGGREGATE_ENTRIES}-entry aggregate bound"
+        )));
+    }
     Ok(())
 }
 
@@ -1248,32 +1295,46 @@ where
                 .map(CampaignHash::parse)
                 .transpose()
                 .map_err(|error| usage_error(format!("invalid campaign graph cursor: {error}")))?;
-            let request = QueryCampaignGraphRequest::new(
-                principal,
-                campaign.clone(),
-                snapshot,
+            let aggregation = collect_campaign_pages(
+                page,
+                "graph",
                 after,
-                page.limit,
-            )
-            .map_err(|error| usage_error(format!("invalid campaign graph query: {error}")))?;
-            let response = client
-                .query_campaign_graph(&request)
-                .map_err(|error| backend_error(format!("campaign graph query failed: {error}")))?;
-            Ok(CampaignPageReport {
-                schema: CAMPAIGN_PAGE_REPORT_SCHEMA,
-                operation: "graph",
-                campaign: campaign.as_str().to_owned(),
-                snapshot: snapshot.to_string(),
-                next_after: response.next_after().map(|cursor| cursor.to_hex()),
-                entries: response
-                    .entries()
-                    .iter()
-                    .map(|entry| CampaignPageEntry::Graph {
-                        key: entry.key().to_hex(),
-                        object: entry.object().to_string(),
+                |cursor| cursor.to_hex(),
+                |cursor| {
+                    let request = QueryCampaignGraphRequest::new(
+                        principal.clone(),
+                        campaign.clone(),
+                        snapshot,
+                        cursor,
+                        page.limit,
+                    )
+                    .map_err(|error| {
+                        usage_error(format!("invalid campaign graph query: {error}"))
+                    })?;
+                    let response = client.query_campaign_graph(&request).map_err(|error| {
+                        backend_error(format!("campaign graph query failed: {error}"))
+                    })?;
+                    Ok(CampaignPageBatch {
+                        response_bytes: response.canonical_bytes().len(),
+                        next_after: response.next_after(),
+                        entries: response
+                            .entries()
+                            .iter()
+                            .map(|entry| CampaignPageEntry::Graph {
+                                key: entry.key().to_hex(),
+                                object: entry.object().to_string(),
+                            })
+                            .collect(),
                     })
-                    .collect(),
-            })
+                },
+            )?;
+            Ok(campaign_page_report(
+                "graph",
+                &campaign,
+                snapshot,
+                page,
+                aggregation,
+            ))
         }
         CampaignCommand::Choices(page) => {
             let (campaign, snapshot) = campaign_page_basis(page)?;
@@ -1283,31 +1344,40 @@ where
                 .map(ChoiceOpportunityId::parse)
                 .transpose()
                 .map_err(|error| usage_error(format!("invalid campaign choice cursor: {error}")))?;
-            let request = QueryCampaignChoicesRequest::new(
-                principal,
-                campaign.clone(),
-                snapshot,
-                after,
-                page.limit,
-            )
-            .map_err(|error| usage_error(format!("invalid campaign choices query: {error}")))?;
-            let response = client.query_campaign_choices(&request).map_err(|error| {
-                backend_error(format!("campaign choices query failed: {error}"))
-            })?;
-            Ok(CampaignPageReport {
-                schema: CAMPAIGN_PAGE_REPORT_SCHEMA,
-                operation: "choices",
-                campaign: campaign.as_str().to_owned(),
-                snapshot: snapshot.to_string(),
-                next_after: response.next_after().map(|cursor| cursor.to_string()),
-                entries: response
-                    .entries()
-                    .iter()
-                    .map(|entry| CampaignPageEntry::Choice {
-                        opportunity: entry.opportunity().to_string(),
+            let aggregation =
+                collect_campaign_pages(page, "choice", after, ToString::to_string, |cursor| {
+                    let request = QueryCampaignChoicesRequest::new(
+                        principal.clone(),
+                        campaign.clone(),
+                        snapshot,
+                        cursor,
+                        page.limit,
+                    )
+                    .map_err(|error| {
+                        usage_error(format!("invalid campaign choices query: {error}"))
+                    })?;
+                    let response = client.query_campaign_choices(&request).map_err(|error| {
+                        backend_error(format!("campaign choices query failed: {error}"))
+                    })?;
+                    Ok(CampaignPageBatch {
+                        response_bytes: response.canonical_bytes().len(),
+                        next_after: response.next_after(),
+                        entries: response
+                            .entries()
+                            .iter()
+                            .map(|entry| CampaignPageEntry::Choice {
+                                opportunity: entry.opportunity().to_string(),
+                            })
+                            .collect(),
                     })
-                    .collect(),
-            })
+                })?;
+            Ok(campaign_page_report(
+                "choices",
+                &campaign,
+                snapshot,
+                page,
+                aggregation,
+            ))
         }
         CampaignCommand::Frontier(page) => {
             let (campaign, snapshot) = campaign_page_basis(page)?;
@@ -1319,39 +1389,48 @@ where
                 .map_err(|error| {
                     usage_error(format!("invalid campaign frontier cursor: {error}"))
                 })?;
-            let request = QueryCampaignFrontierRequest::new(
-                principal,
-                campaign.clone(),
-                snapshot,
-                after,
-                page.limit,
-            )
-            .map_err(|error| usage_error(format!("invalid campaign frontier query: {error}")))?;
-            let response = client.query_campaign_frontier(&request).map_err(|error| {
-                backend_error(format!("campaign frontier query failed: {error}"))
-            })?;
-            Ok(CampaignPageReport {
-                schema: CAMPAIGN_PAGE_REPORT_SCHEMA,
-                operation: "frontier",
-                campaign: campaign.as_str().to_owned(),
-                snapshot: snapshot.to_string(),
-                next_after: response.next_after().map(|cursor| cursor.to_string()),
-                entries: response
-                    .entries()
-                    .iter()
-                    .map(|projection| {
-                        let (state, completed_visits, required_visits) =
-                            continuation_state_report(projection.state());
-                        CampaignPageEntry::Frontier {
-                            request: projection.request().to_string(),
-                            branch_point: projection.branch_point().to_string(),
-                            state,
-                            completed_visits,
-                            required_visits,
-                        }
+            let aggregation =
+                collect_campaign_pages(page, "frontier", after, ToString::to_string, |cursor| {
+                    let request = QueryCampaignFrontierRequest::new(
+                        principal.clone(),
+                        campaign.clone(),
+                        snapshot,
+                        cursor,
+                        page.limit,
+                    )
+                    .map_err(|error| {
+                        usage_error(format!("invalid campaign frontier query: {error}"))
+                    })?;
+                    let response = client.query_campaign_frontier(&request).map_err(|error| {
+                        backend_error(format!("campaign frontier query failed: {error}"))
+                    })?;
+                    Ok(CampaignPageBatch {
+                        response_bytes: response.canonical_bytes().len(),
+                        next_after: response.next_after(),
+                        entries: response
+                            .entries()
+                            .iter()
+                            .map(|projection| {
+                                let (state, completed_visits, required_visits) =
+                                    continuation_state_report(projection.state());
+                                CampaignPageEntry::Frontier {
+                                    request: projection.request().to_string(),
+                                    branch_point: projection.branch_point().to_string(),
+                                    state,
+                                    completed_visits,
+                                    required_visits,
+                                }
+                            })
+                            .collect(),
                     })
-                    .collect(),
-            })
+                })?;
+            Ok(campaign_page_report(
+                "frontier",
+                &campaign,
+                snapshot,
+                page,
+                aggregation,
+            ))
         }
         CampaignCommand::Findings(page) => {
             let (campaign, snapshot) = campaign_page_basis(page)?;
@@ -1363,49 +1442,161 @@ where
                 .map_err(|error| {
                     usage_error(format!("invalid campaign finding cursor: {error}"))
                 })?;
-            let request = QueryCampaignFindingsRequest::new(
-                principal,
-                campaign.clone(),
-                snapshot,
+            let aggregation = collect_campaign_pages(
+                page,
+                "finding",
                 after,
-                page.limit,
-            )
-            .map_err(|error| usage_error(format!("invalid campaign findings query: {error}")))?;
-            let response = client.query_campaign_findings(&request).map_err(|error| {
-                backend_error(format!("campaign findings query failed: {error}"))
-            })?;
-            Ok(CampaignPageReport {
-                schema: CAMPAIGN_PAGE_REPORT_SCHEMA,
-                operation: "findings",
-                campaign: campaign.as_str().to_owned(),
-                snapshot: snapshot.to_string(),
-                next_after: response.next_after().map(|cursor| cursor.to_hex()),
-                entries: response
-                    .entries()
-                    .iter()
-                    .map(|finding| {
-                        let finding_id = finding.id().map_err(|error| {
-                            backend_error(format!("validated finding identity failed: {error}"))
-                        })?;
-                        Ok(CampaignPageEntry::Finding {
-                            finding: finding_id.to_string(),
-                            cluster: finding.signature().cluster_key().to_hex(),
-                            finding_kind: finding_kind_label(finding.signature().kind()),
-                            fingerprint: finding.signature().fingerprint().to_hex(),
-                            property: finding.signature().property().map(str::to_owned),
-                            failure_class: finding.signature().failure_class().to_owned(),
-                            observation: finding.observation().to_string(),
-                            occurrences: finding.occurrence_count(),
-                            reproduction: finding.reproduction().to_string(),
-                            minimized: finding.minimized().map(|id| id.to_string()),
+                |cursor| cursor.to_hex(),
+                |cursor| {
+                    let request = QueryCampaignFindingsRequest::new(
+                        principal.clone(),
+                        campaign.clone(),
+                        snapshot,
+                        cursor,
+                        page.limit,
+                    )
+                    .map_err(|error| {
+                        usage_error(format!("invalid campaign findings query: {error}"))
+                    })?;
+                    let response = client.query_campaign_findings(&request).map_err(|error| {
+                        backend_error(format!("campaign findings query failed: {error}"))
+                    })?;
+                    let entries = response
+                        .entries()
+                        .iter()
+                        .map(|finding| {
+                            let finding_id = finding.id().map_err(|error| {
+                                backend_error(format!("validated finding identity failed: {error}"))
+                            })?;
+                            Ok(CampaignPageEntry::Finding {
+                                finding: finding_id.to_string(),
+                                cluster: finding.signature().cluster_key().to_hex(),
+                                finding_kind: finding_kind_label(finding.signature().kind()),
+                                fingerprint: finding.signature().fingerprint().to_hex(),
+                                property: finding.signature().property().map(str::to_owned),
+                                failure_class: finding.signature().failure_class().to_owned(),
+                                observation: finding.observation().to_string(),
+                                occurrences: finding.occurrence_count(),
+                                reproduction: finding.reproduction().to_string(),
+                                minimized: finding.minimized().map(|id| id.to_string()),
+                            })
                         })
+                        .collect::<Result<Vec<_>, CliError>>()?;
+                    Ok(CampaignPageBatch {
+                        response_bytes: response.canonical_bytes().len(),
+                        next_after: response.next_after(),
+                        entries,
                     })
-                    .collect::<Result<Vec<_>, CliError>>()?,
-            })
+                },
+            )?;
+            Ok(campaign_page_report(
+                "findings",
+                &campaign,
+                snapshot,
+                page,
+                aggregation,
+            ))
         }
         _ => Err(backend_error(
             "non-page campaign command reached the page query path",
         )),
+    }
+}
+
+fn collect_campaign_pages<C, E, F>(
+    page: &CampaignPageArgs,
+    kind: &str,
+    initial_after: Option<C>,
+    encode_cursor: E,
+    mut fetch: F,
+) -> Result<CampaignPageAggregation, CliError>
+where
+    C: Clone,
+    E: Fn(&C) -> String,
+    F: FnMut(Option<C>) -> Result<CampaignPageBatch<C>, CliError>,
+{
+    validate_campaign_page_aggregation(page, kind)?;
+
+    let start_after = initial_after.as_ref().map(&encode_cursor);
+    let mut seen = BTreeSet::new();
+    if let Some(cursor) = &start_after {
+        seen.insert(cursor.clone());
+    }
+    let mut cursor = initial_after;
+    let mut pages_scanned = 0_u32;
+    let mut response_bytes = 0_u64;
+    let mut entries = Vec::new();
+
+    for _ in 0..page.pages {
+        let mut batch = fetch(cursor.clone())?;
+        pages_scanned = pages_scanned
+            .checked_add(1)
+            .ok_or_else(|| backend_error("campaign page counter overflow"))?;
+        let batch_bytes = u64::try_from(batch.response_bytes)
+            .map_err(|_| backend_error("campaign page response byte count overflows"))?;
+        response_bytes = response_bytes
+            .checked_add(batch_bytes)
+            .ok_or_else(|| backend_error("campaign page response byte count overflows"))?;
+        if response_bytes > MAX_CAMPAIGN_PAGE_AGGREGATE_RESPONSE_BYTES {
+            return Err(backend_error(format!(
+                "campaign {kind} scan exceeds the {MAX_CAMPAIGN_PAGE_AGGREGATE_RESPONSE_BYTES}-byte aggregate response bound"
+            )));
+        }
+        let next_entry_count = entries
+            .len()
+            .checked_add(batch.entries.len())
+            .ok_or_else(|| backend_error("campaign page aggregate entry count overflows"))?;
+        if next_entry_count > MAX_CAMPAIGN_PAGE_AGGREGATE_ENTRIES {
+            return Err(backend_error(format!(
+                "campaign {kind} scan exceeds the {MAX_CAMPAIGN_PAGE_AGGREGATE_ENTRIES}-entry aggregate bound"
+            )));
+        }
+        entries.append(&mut batch.entries);
+
+        let next = batch.next_after;
+        if let Some(encoded) = next.as_ref().map(&encode_cursor)
+            && !seen.insert(encoded)
+        {
+            return Err(backend_error(format!(
+                "campaign {kind} scan returned a repeated cursor"
+            )));
+        }
+        cursor = next;
+        if cursor.is_none() {
+            break;
+        }
+    }
+
+    Ok(CampaignPageAggregation {
+        start_after,
+        pages_scanned,
+        response_bytes,
+        complete: cursor.is_none(),
+        next_after: cursor.as_ref().map(encode_cursor),
+        entries,
+    })
+}
+
+fn campaign_page_report(
+    operation: &'static str,
+    campaign: &CampaignName,
+    snapshot: CampaignSnapshotId,
+    page: &CampaignPageArgs,
+    aggregation: CampaignPageAggregation,
+) -> CampaignPageReport {
+    CampaignPageReport {
+        schema: CAMPAIGN_PAGE_REPORT_SCHEMA,
+        operation,
+        campaign: campaign.as_str().to_owned(),
+        snapshot: snapshot.to_string(),
+        start_after: aggregation.start_after,
+        page_limit: page.limit,
+        page_budget: page.pages,
+        pages_scanned: aggregation.pages_scanned,
+        response_bytes: aggregation.response_bytes,
+        complete: aggregation.complete,
+        next_after: aggregation.next_after,
+        entries: aggregation.entries,
     }
 }
 
@@ -1951,6 +2142,16 @@ fn render_campaign_page_table(report: &CampaignPageReport) -> Result<String, Cli
         format!("{:<11} {}", "snapshot", report.snapshot),
         format!(
             "{:<11} {}",
+            "start_after",
+            report.start_after.as_deref().unwrap_or("-")
+        ),
+        format!("{:<11} {}", "page_limit", report.page_limit),
+        format!("{:<11} {}", "page_budget", report.page_budget),
+        format!("{:<11} {}", "pages", report.pages_scanned),
+        format!("{:<11} {}", "bytes", report.response_bytes),
+        format!("{:<11} {}", "complete", report.complete),
+        format!(
+            "{:<11} {}",
             "next_after",
             report.next_after.as_deref().unwrap_or("-")
         ),
@@ -1976,9 +2177,15 @@ fn render_campaign_page_table(report: &CampaignPageReport) -> Result<String, Cli
 
 fn render_campaign_page_markdown(report: &CampaignPageReport) -> String {
     let mut output = format!(
-        "| Field | Value |\n| --- | --- |\n| campaign | {} |\n| snapshot | {} |\n| next_after | {} |\n| entries | {} |\n\n",
+        "| Field | Value |\n| --- | --- |\n| campaign | {} |\n| snapshot | {} |\n| start_after | {} |\n| page_limit | {} |\n| page_budget | {} |\n| pages | {} |\n| response_bytes | {} |\n| complete | {} |\n| next_after | {} |\n| entries | {} |\n\n",
         report.campaign,
         report.snapshot,
+        report.start_after.as_deref().unwrap_or("-"),
+        report.page_limit,
+        report.page_budget,
+        report.pages_scanned,
+        report.response_bytes,
+        report.complete,
         report.next_after.as_deref().unwrap_or("-"),
         report.entries.len()
     );
