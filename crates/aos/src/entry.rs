@@ -140,6 +140,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Build {
             package,
             all,
+            target,
             remote,
             view,
             token,
@@ -149,13 +150,14 @@ async fn run(cli: &Cli) -> Result<()> {
                     &nix,
                     &printer,
                     package.as_deref(),
+                    target.as_deref(),
                     url,
                     view,
                     token.as_deref(),
                 )
                 .await;
             }
-            commands::build::run(&nix, &printer, package.as_deref(), *all)
+            commands::build::run(&nix, &printer, package.as_deref(), *all, target.as_deref())
         }
         Commands::System { command } => commands::system::run(&nix, &printer, command),
         Commands::Show { package } => commands::show::run(&nix, &printer, package),

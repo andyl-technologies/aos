@@ -102,7 +102,7 @@ pub struct VersionEntry {
     #[serde(default)]
     pub previous: Option<String>,
     /// Per-platform artifacts, keyed by platform triple
-    /// (e.g. `x86_64-linux`).
+    /// (e.g. `x86_64-linux` or `aarch64-darwin`).
     #[serde(default)]
     pub platforms: HashMap<String, PlatformEntry>,
 }
