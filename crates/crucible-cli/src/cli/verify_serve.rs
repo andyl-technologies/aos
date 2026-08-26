@@ -1110,6 +1110,19 @@ pub(super) fn open_local_campaign_service(
     let prepared = config
         .prepare()
         .map_err(|error| serve_error(format!("campaign service bootstrap error: {error}")))?;
+    let runtime_control_planner = if args.campaign_component_authority.is_some() && !args.read_only
+    {
+        Some(
+            crucible_daemon::CanonicalPlannerProcessConfig::for_current_executable(
+                Duration::from_secs(30),
+            )
+            .map_err(|error| {
+                serve_error(format!("campaign planner configuration error: {error}"))
+            })?,
+        )
+    } else {
+        None
+    };
     apply_campaign_import_manifests(&prepared, &args.campaign_import_manifest)?;
     let packaged_executor = match args.campaign_packaged_executor.as_deref() {
         Some(deployment) => {
@@ -1140,10 +1153,9 @@ pub(super) fn open_local_campaign_service(
         .enumerate()
     {
         let stream = connect_campaign_executor(executor_socket)?;
-        let planner = crucible_daemon::CanonicalPlannerProcessConfig::for_current_executable(
-            Duration::from_secs(30),
-        )
-        .map_err(|error| serve_error(format!("campaign planner configuration error: {error}")))?;
+        let planner = runtime_control_planner.clone().ok_or_else(|| {
+            serve_error("campaign runtime attachment requires the planner control profile")
+        })?;
         let runtime_config = crucible_daemon::CanonicalCampaignRuntimeConfig::canonical_defaults(
             crucible_campaign::CampaignName::new(campaign).map_err(|error| {
                 serve_error(format!("campaign runtime {index} name error: {error}"))
@@ -1161,6 +1173,12 @@ pub(super) fn open_local_campaign_service(
                 })?,
         );
     }
+    let prepared = match runtime_control_planner {
+        Some(planner) => prepared
+            .with_runtime_control(planner)
+            .map_err(|error| serve_error(format!("campaign runtime control error: {error}")))?,
+        None => prepared,
+    };
     let service = if let Some(executor) = packaged_executor {
         let runtime = runtimes
             .pop()

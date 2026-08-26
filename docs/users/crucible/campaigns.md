@@ -124,8 +124,21 @@ the secure parent namespace, socket owner/mode and before/after inode, and peer
 credentials under a finite absolute connect deadline after reserving the
 campaign and one of 256 runtime slots. The handle carries neither repository
 nor component-authority access and closes with the service owner. The
-`crucible` CLI currently exposes only the startup-fixed arguments above; a
-public dynamic attachment command remains future work.
+authenticated local listener exposes the same bounded capability to an exact
+authorized principal. Attach after bind with:
+
+```sh
+crucible campaign \
+  --socket /run/user/1000/crucible/campaign.sock \
+  --principal operator \
+  attach CAMPAIGN \
+  --executor-socket /run/user/1000/crucible/executor.sock
+```
+
+The result reports whether the request installed a runtime or exactly replayed
+one, the request digest, and the current attached-runtime count. Exact replay
+does not reconnect to the executor. A changed endpoint for an already attached
+campaign fails as command reuse rather than replacing the live runtime.
 
 To let the same daemon own that executor, add `--production-qemu` and an
 owner-only packaged-executor deployment file:

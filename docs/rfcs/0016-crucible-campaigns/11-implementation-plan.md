@@ -1058,10 +1058,13 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   a finite absolute connect deadline. A separate registered version-1 daemon-
   operational message now binds principal, campaign, and the bounded executor
   path under one digest, exact response, and distinct read-write-only policy
-  operation without admitting the path into campaign identities. Authenticated
-  listener routing/CLI attachment, automatic campaign discovery, shared
-  packaged-executor allocation, and additional opaque non-finite model-prior
-  adapters remain open. The first `CampaignService`
+  operation without admitting the path into campaign identities. The
+  authenticated listener now routes that request only after peer-principal and
+  per-campaign policy checks; the bounded registry provides exact replay without
+  repeated executor I/O, and `crucible campaign attach` reports attachment or
+  replay status. Automatic campaign discovery, shared packaged-executor
+  allocation, and additional opaque non-finite model-prior adapters remain
+  open. The first `CampaignService`
   checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
   bounded by-value creation, authenticated current-head reads,
@@ -1191,7 +1194,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   executor-description negotiation. CampaignService/runtime failure and
   SIGINT/SIGTERM trigger shared shutdown and worker join. Process read-only mode
   also denies every campaign mutation after policy resolution. Structured
-  diagnostic routing and richer creation/attach porcelain remain open; message
+  diagnostic routing and richer creation porcelain remain open; message
   framing or listener construction alone is not authentication.
   Checked
   request/response acceptance now retains the

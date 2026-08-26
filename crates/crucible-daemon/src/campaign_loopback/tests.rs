@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 use std::convert::Infallible;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 
@@ -42,7 +43,7 @@ use crucible_campaign::{
 use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
 
 use super::*;
-use crate::CrucibleCampaignArtifactStore;
+use crate::{CampaignRuntimeAttachmentDisposition, CrucibleCampaignArtifactStore};
 
 #[derive(Clone, Copy)]
 struct FixedCampaignService;
@@ -654,7 +655,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
     .expect("write frame");
     let mut bytes = [0_u8; 19];
     reader.read_exact(&mut bytes).expect("read frame");
-    assert_eq!(&bytes, b"CRUCCS19\x01\0\0\0\0\0\0\x03abc");
+    assert_eq!(&bytes, b"CRUCCS20\x01\0\0\0\0\0\0\x03abc");
 
     for (kind, reserved, length, reason) in [
         (
@@ -1129,6 +1130,25 @@ struct RecordingPeerResolver {
     observed: mpsc::Sender<UnixPeerCampaignCredentials>,
 }
 
+struct RecordingRuntimeControl {
+    calls: Arc<AtomicUsize>,
+}
+
+impl CampaignRuntimeControlService for RecordingRuntimeControl {
+    fn attach_campaign_runtime(
+        &self,
+        request: &AttachCampaignRuntimeRequest,
+    ) -> Result<AttachCampaignRuntimeResponse, CampaignServiceFailure> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        AttachCampaignRuntimeResponse::new(
+            request,
+            CampaignRuntimeAttachmentDisposition::Attached,
+            1,
+        )
+        .map_err(|_| CampaignServiceFailure::IntegrityFailure)
+    }
+}
+
 impl UnixPeerCampaignPrincipalResolver for RecordingPeerResolver {
     fn resolve_campaign_principal(
         &self,
@@ -1199,6 +1219,74 @@ fn authenticated_loopback_binds_kernel_peer_to_the_claimed_principal() {
     assert_ne!(first.process_id(), 0);
     assert_eq!(first.user_id(), rustix::process::geteuid().as_raw());
     assert_eq!(first.group_id(), rustix::process::getegid().as_raw());
+    server.join().expect("server thread");
+}
+
+#[test]
+fn authenticated_runtime_control_binds_peer_policy_and_exact_response() {
+    let mismatched = AttachCampaignRuntimeRequest::new(
+        CampaignPrincipal::new("operator:bob").expect("mismatched principal"),
+        CampaignName::new("campaign").expect("campaign"),
+        "/run/aos/executor.sock",
+    )
+    .expect("mismatched request");
+    let matched = AttachCampaignRuntimeRequest::new(
+        CampaignPrincipal::new("operator:alice").expect("principal"),
+        CampaignName::new("campaign").expect("campaign"),
+        "/run/aos/executor.sock",
+    )
+    .expect("matched request");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let control = RecordingRuntimeControl {
+        calls: Arc::clone(&calls),
+    };
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
+    let server = thread::spawn(move || {
+        let repository = CampaignRepository::new(
+            Arc::new(MemoryBlobBackend::new(
+                "campaign-loopback-runtime-control",
+                u64::MAX,
+            )),
+            Arc::new(MemoryRefBackend::new()),
+        );
+        let resolver = RecordingPeerResolver {
+            observed: observed_tx,
+        };
+        serve_authenticated_repository_campaign_connection_with_runtime_control_limits(
+            &mut server_stream,
+            &repository,
+            &resolver,
+            &AllowAll,
+            Some(&control),
+            LoopbackCampaignTimeouts::default(),
+            2,
+        )
+        .expect("serve runtime control");
+    });
+    let loopback = LoopbackCampaignService::new(client_stream).expect("loopback service");
+
+    assert!(matches!(
+        loopback.attach_campaign_runtime(&mismatched),
+        Err(LoopbackCampaignServiceError::Remote(
+            CampaignServiceFailure::Unauthorized
+        ))
+    ));
+    let response = loopback
+        .attach_campaign_runtime(&matched)
+        .expect("attached response");
+    assert_eq!(
+        response.disposition(),
+        CampaignRuntimeAttachmentDisposition::Attached
+    );
+    assert_eq!(response.attached_runtime_count(), 1);
+    response.validate_for(&matched).expect("response binding");
+
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        observed_rx.recv().expect("peer credential").user_id(),
+        rustix::process::geteuid().as_raw()
+    );
     server.join().expect("server thread");
 }
 

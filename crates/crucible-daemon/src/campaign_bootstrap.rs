@@ -30,8 +30,8 @@ use crate::{
     AttachedCanonicalCampaignRuntime, AttachedPackagedQemuExecutor, CampaignLoopbackEndpointConfig,
     CampaignLoopbackEndpointError, CampaignLoopbackListenerError, CampaignLoopbackServer,
     CampaignLoopbackServerConfig, CampaignLoopbackServerReport, CampaignLoopbackServerShutdown,
-    CanonicalCampaignRuntimeConfig, CanonicalCampaignRuntimeError, CrucibleArtifactError,
-    CrucibleCampaignArtifactStore, MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES,
+    CanonicalCampaignRuntimeConfig, CanonicalCampaignRuntimeError, CanonicalPlannerProcessConfig,
+    CrucibleArtifactError, CrucibleCampaignArtifactStore, MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES,
     MAX_CAMPAIGN_POLICY_BYTES, PackagedQemuExecutor, PackagedQemuExecutorConfig,
     PackagedQemuExecutorError, PackagedQemuExecutorJoinError, PackagedQemuExecutorStartError,
     PreparedCanonicalCampaignRuntime, UnixPeerCampaignPolicy, UnixPeerCampaignPolicyLoadError,
@@ -49,7 +49,7 @@ mod runtime_registry;
 mod service;
 
 pub use runtime_registry::CampaignRuntimeAttachmentHandle;
-use runtime_registry::CampaignRuntimeRegistryOwner;
+use runtime_registry::{CampaignRuntimeRegistryOwner, CanonicalCampaignRuntimeController};
 
 /// Complete deployment contract for one durable local campaign service.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -261,6 +261,7 @@ impl CampaignLocalServiceConfig {
             policy,
             mode: self.mode,
             state,
+            runtime_control_planner: None,
         })
     }
 
@@ -292,9 +293,35 @@ pub struct PreparedCampaignLocalService {
     policy: Arc<UnixPeerCampaignPolicy>,
     mode: CampaignLocalServiceMode,
     state: CampaignStateOwner,
+    runtime_control_planner: Option<CanonicalPlannerProcessConfig>,
 }
 
 impl PreparedCampaignLocalService {
+    /// Enables authenticated post-bind runtime attachment with one planner.
+    ///
+    /// The planner process contract is deployment state and is never encoded
+    /// in the runtime-control request or campaign semantic state. The public
+    /// request selects only the campaign and exact local executor endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError::RuntimeReadOnly`] for a read-only
+    /// service or [`CampaignLocalServiceError::RuntimeAuthorityUnavailable`]
+    /// when component authorities were not configured.
+    pub fn with_runtime_control(
+        mut self,
+        planner_process: CanonicalPlannerProcessConfig,
+    ) -> Result<Self, CampaignLocalServiceError> {
+        if self.mode == CampaignLocalServiceMode::ReadOnly {
+            return Err(CampaignLocalServiceError::RuntimeReadOnly);
+        }
+        if self.planner_authority.is_none() {
+            return Err(CampaignLocalServiceError::RuntimeAuthorityUnavailable);
+        }
+        self.runtime_control_planner = Some(planner_process);
+        Ok(self)
+    }
+
     /// Prepares one packaged QEMU executor against this exact repository.
     ///
     /// No executor thread is created. The returned owner binds its managed
@@ -473,9 +500,12 @@ impl PreparedCampaignLocalService {
             policy,
             mode,
             state,
+            runtime_control_planner,
         } = self;
+        let endpoint_owner_user_id = endpoint.owner_user_id();
+        let endpoint_owner_group_id = endpoint.owner_group_id();
         let listener = endpoint.bind()?;
-        let server = CampaignLoopbackServer::from_managed_listener(
+        let mut server = CampaignLoopbackServer::from_managed_listener(
             listener,
             Arc::clone(&repository),
             Arc::clone(&policy),
@@ -489,6 +519,15 @@ impl PreparedCampaignLocalService {
             server.shutdown_handle(),
             state,
         );
+        if let Some(planner_process) = runtime_control_planner {
+            let controller = CanonicalCampaignRuntimeController::new(
+                runtime_registry.handle(),
+                planner_process,
+                endpoint_owner_user_id,
+                endpoint_owner_group_id,
+            );
+            server = server.with_runtime_control(Arc::new(controller));
+        }
         for runtime in runtimes {
             if let Err(source) = runtime_registry.attach_prepared(runtime) {
                 let runtime_result = runtime_registry.close_and_join();
@@ -659,6 +698,9 @@ pub enum CampaignLocalServiceError {
     /// Runtime attachment was attempted after the service began shutdown.
     #[error("campaign runtime attachment owner is closed")]
     RuntimeAttachmentClosed,
+    /// The exact runtime request is already being prepared.
+    #[error("campaign runtime attachment request is already in flight")]
+    RuntimeAttachmentInFlight,
     /// A runtime-registry invariant panic poisoned shared operational state.
     #[error("campaign runtime attachment registry is poisoned")]
     RuntimeRegistryPoisoned,

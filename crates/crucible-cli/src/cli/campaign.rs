@@ -55,7 +55,9 @@ use crucible_campaign::{
     QueryCampaignGraphRequest, STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION, SelectableDeclaration,
     SelectableId, StopCondition, SubmitCampaignBranchRequest, WatchCampaignRequest,
 };
-use crucible_daemon::LoopbackCampaignService;
+use crucible_daemon::{
+    AttachCampaignRuntimeRequest, CampaignRuntimeAttachmentDisposition, LoopbackCampaignService,
+};
 use serde::Serialize;
 
 const CAMPAIGN_HEAD_REPORT_SCHEMA: &str = "crucible.cli.campaign-head.v1";
@@ -63,6 +65,8 @@ const CAMPAIGN_LIST_REPORT_SCHEMA: &str = "crucible.cli.campaign-list.v1";
 const CAMPAIGN_MUTATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-mutation.v1";
 const CAMPAIGN_PAGE_REPORT_SCHEMA: &str = "crucible.cli.campaign-page.v2";
 const CAMPAIGN_ACCEPTANCE_REPORT_SCHEMA: &str = "crucible.cli.campaign-acceptance.v2";
+const CAMPAIGN_RUNTIME_ATTACHMENT_REPORT_SCHEMA: &str =
+    "crucible.cli.campaign-runtime-attachment.v1";
 const MAX_CAMPAIGN_SELECTOR_SCAN_ITEMS: u32 = 4_096;
 const MAX_CAMPAIGN_SELECTOR_PREDICATES: usize = 16;
 const MAX_CAMPAIGN_PAGE_FOLLOW_PAGES: u32 = 256;
@@ -116,6 +120,16 @@ struct CampaignMutationReport {
     prior_snapshot: String,
     new_snapshot: String,
     replayed: bool,
+}
+
+#[derive(Serialize)]
+struct CampaignRuntimeAttachmentReport {
+    schema: &'static str,
+    operation: &'static str,
+    campaign: String,
+    request_digest: String,
+    disposition: &'static str,
+    attached_runtime_count: u32,
 }
 
 #[derive(Serialize)]
@@ -191,6 +205,7 @@ enum PreparedCampaignCommand {
     CreateAndStart(CreateCampaignRequest, CampaignCommandId),
     Derive(DeriveCampaignRequest),
     Branch(SubmitCampaignBranchRequest),
+    Attach(AttachCampaignRuntimeRequest),
 }
 
 #[derive(Serialize)]
@@ -297,7 +312,7 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
     })?;
     let principal = CampaignPrincipal::new(principal.clone())
         .map_err(|error| usage_error(format!("invalid campaign principal: {error}")))?;
-    let prepared = prepare_campaign_command(&args.command, &principal)?;
+    let mut prepared = prepare_campaign_command(&args.command, &principal)?;
     let stream = UnixStream::connect(socket).map_err(|error| {
         CliError::Io(io::Error::new(
             error.kind(),
@@ -309,6 +324,32 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
     })?;
     let service = LoopbackCampaignService::new(stream)
         .map_err(|error| backend_error(format!("campaign transport setup failed: {error}")))?;
+    if matches!(args.command, CampaignCommand::Attach(_)) {
+        let Some(PreparedCampaignCommand::Attach(request)) = prepared.take() else {
+            return Err(backend_error(
+                "campaign runtime attachment was not prepared before connection",
+            ));
+        };
+        let response = service.attach_campaign_runtime(&request).map_err(|error| {
+            backend_error(format!("campaign runtime attachment failed: {error}"))
+        })?;
+        let report = CampaignRuntimeAttachmentReport {
+            schema: CAMPAIGN_RUNTIME_ATTACHMENT_REPORT_SCHEMA,
+            operation: "attach-runtime",
+            campaign: response.campaign().as_str().to_owned(),
+            request_digest: response.request_digest().to_hex(),
+            disposition: match response.disposition() {
+                CampaignRuntimeAttachmentDisposition::Attached => "attached",
+                CampaignRuntimeAttachmentDisposition::Replayed => "replayed",
+            },
+            attached_runtime_count: response.attached_runtime_count(),
+        };
+        println!(
+            "{}",
+            render_campaign_runtime_attachment(&report, cli.output_format())?
+        );
+        return Ok(());
+    }
     let client = CampaignClient::new(service);
     let rendered = match &args.command {
         CampaignCommand::ValidateImport(_) => {
@@ -331,6 +372,11 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         CampaignCommand::List(list) => {
             let report = query_campaign_list(&client, principal, list)?;
             render_campaign_list(&report, cli.output_format())?
+        }
+        CampaignCommand::Attach(_) => {
+            return Err(backend_error(
+                "campaign runtime attachment reached semantic campaign dispatch",
+            ));
         }
         CampaignCommand::Branch(branch) => {
             let report = if !branch.selector.is_empty() {
@@ -442,6 +488,17 @@ fn prepare_campaign_command(
         CampaignCommand::List(list) => {
             validate_campaign_list(list)?;
             Ok(None)
+        }
+        CampaignCommand::Attach(attach) => {
+            let request = AttachCampaignRuntimeRequest::new(
+                principal.clone(),
+                campaign_name(&attach.name)?,
+                attach.executor_socket.clone(),
+            )
+            .map_err(|error| {
+                usage_error(format!("invalid campaign runtime attachment: {error}"))
+            })?;
+            Ok(Some(PreparedCampaignCommand::Attach(request)))
         }
         CampaignCommand::Derive(derive) => {
             let source = campaign_name(&derive.source)?;
@@ -1810,6 +1867,9 @@ where
                 replayed: response.replayed(),
             })
         }
+        PreparedCampaignCommand::Attach(_) => Err(backend_error(
+            "campaign runtime attachment reached semantic acceptance dispatch",
+        )),
     }
 }
 
@@ -2043,6 +2103,7 @@ fn campaign_mutation_spec(
         | CampaignCommand::Fixture(_)
         | CampaignCommand::Create(_)
         | CampaignCommand::List(_)
+        | CampaignCommand::Attach(_)
         | CampaignCommand::Derive(_)
         | CampaignCommand::Branch(_)
         | CampaignCommand::Status(_)
@@ -2158,6 +2219,43 @@ fn render_campaign_list(
             }
             Ok(output.trim_end().to_owned())
         }
+    }
+}
+
+fn render_campaign_runtime_attachment(
+    report: &CampaignRuntimeAttachmentReport,
+    format: OutputFormat,
+) -> Result<String, CliError> {
+    match format {
+        OutputFormat::Jsonl => serde_json::to_string(report).map_err(|error| {
+            backend_error(format!(
+                "campaign runtime-attachment JSON encoding failed: {error}"
+            ))
+        }),
+        OutputFormat::Json => serde_json::to_string_pretty(report).map_err(|error| {
+            backend_error(format!(
+                "campaign runtime-attachment JSON encoding failed: {error}"
+            ))
+        }),
+        OutputFormat::Table => Ok([
+            format!("{:<18} {}", "campaign", report.campaign),
+            format!("{:<18} {}", "operation", report.operation),
+            format!("{:<18} {}", "request_digest", report.request_digest),
+            format!("{:<18} {}", "disposition", report.disposition),
+            format!(
+                "{:<18} {}",
+                "attached_runtimes", report.attached_runtime_count
+            ),
+        ]
+        .join("\n")),
+        OutputFormat::Markdown => Ok(format!(
+            "| Field | Value |\n| --- | --- |\n| campaign | {} |\n| operation | {} |\n| request_digest | {} |\n| disposition | {} |\n| attached_runtimes | {} |",
+            report.campaign,
+            report.operation,
+            report.request_digest,
+            report.disposition,
+            report.attached_runtime_count,
+        )),
     }
 }
 

@@ -312,6 +312,8 @@ enum CampaignCommand {
     Create(CampaignCreateArgs),
     /// List authenticated current campaign heads.
     List(CampaignListArgs),
+    /// Attach one live runtime to a local executor endpoint.
+    Attach(CampaignAttachArgs),
     /// Derive a new named campaign from one exact source snapshot.
     Derive(CampaignDeriveArgs),
     /// Submit one finite additive operator branch request.
@@ -377,6 +379,16 @@ struct CampaignListArgs {
     /// Maximum authenticated pages followed from the supplied cursor.
     #[arg(long, value_name = "COUNT", default_value_t = 1)]
     pages: u32,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignAttachArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Absolute pathname of the authenticated local executor socket.
+    #[arg(long, value_name = "PATH", required = true)]
+    executor_socket: PathBuf,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

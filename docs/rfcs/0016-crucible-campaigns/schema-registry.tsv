@@ -116,7 +116,7 @@ crucible.executor.exact-checkpoint-root	4	crucible-daemon::exact_checkpoint_stor
 crucible.executor.loopback-frame	5	crucible-daemon::executor_loopback	component-message	gate:component-contract
 crucible.planner.loopback-frame	1	crucible-daemon::planner_loopback	component-message	gate:component-contract
 crucible.planner.process-frame	1	crucible-daemon::planner_process	component-message	gate:component-contract
-crucible.campaign.loopback-frame	19	crucible-daemon::campaign_loopback	component-message	gate:component-contract
+crucible.campaign.loopback-frame	20	crucible-daemon::campaign_loopback	component-message	gate:component-contract
 crucible.campaign.attach-runtime-request	1	crucible-daemon::campaign_runtime_control	component-message	gate:component-contract
 crucible.campaign.attach-runtime-response	1	crucible-daemon::campaign_runtime_control	component-message	gate:component-contract
 crucible.campaign-local-policy	1	crucible-daemon::campaign_policy	deployment-config	gate:component-contract

@@ -154,6 +154,7 @@ pub use campaign_loopback::{
     UnixPeerCampaignCredentials, UnixPeerCampaignPrincipalResolver,
     serve_authenticated_repository_campaign_connection,
     serve_authenticated_repository_campaign_connection_with_limits,
+    serve_authenticated_repository_campaign_connection_with_runtime_control_limits,
     serve_authenticated_repository_campaign_connection_with_timeouts,
     serve_authenticated_repository_campaign_once,
     serve_authenticated_repository_campaign_once_with_timeouts, serve_loopback_campaign_once,
@@ -179,7 +180,7 @@ pub use campaign_runtime::{
 pub use campaign_runtime_control::{
     AttachCampaignRuntimeRequest, AttachCampaignRuntimeResponse,
     CampaignRuntimeAttachmentDisposition, CampaignRuntimeControlCodecError,
-    MAX_CAMPAIGN_RUNTIME_CONTROL_MESSAGE_BYTES,
+    CampaignRuntimeControlService, MAX_CAMPAIGN_RUNTIME_CONTROL_MESSAGE_BYTES,
 };
 pub use campaign_server::{
     CampaignLoopbackListenerError, CampaignLoopbackServer, CampaignLoopbackServerConfig,

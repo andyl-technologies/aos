@@ -3,7 +3,7 @@
 //! The protocol contains only bounded canonical component messages:
 //!
 //! ```text
-//! CampaignLoopbackFrameV19 = magic[8] | kind:u8 | reserved[3] |
+//! CampaignLoopbackFrameV20 = magic[8] | kind:u8 | reserved[3] |
 //!                           body_length:u32be | canonical_body[body_length]
 //! kind = 1 (GetCampaignRequestV1) |
 //!        2 (GetCampaignResponseV1) |
@@ -43,8 +43,10 @@
 //!       36 (GetCampaignPlannerRankingsRequestV1) |
 //!       37 (GetCampaignPlannerRankingsResponseV1) |
 //!       38 (ListCampaignsRequestV1) |
-//!       39 (ListCampaignsResponseV1)
-//! magic = "CRUCCS19"
+//!       39 (ListCampaignsResponseV1) |
+//!       40 (AttachCampaignRuntimeRequestV1) |
+//!       41 (AttachCampaignRuntimeResponseV1)
+//! magic = "CRUCCS20"
 //! ```
 //!
 //! One mutex serializes complete request/response exchanges so concurrent
@@ -87,7 +89,12 @@ use crucible_campaign::{
     WatchCampaignRequest, WatchCampaignResponse,
 };
 
-const FRAME_MAGIC: &[u8; 8] = b"CRUCCS19";
+use crate::{
+    AttachCampaignRuntimeRequest, AttachCampaignRuntimeResponse, CampaignRuntimeControlCodecError,
+    CampaignRuntimeControlService,
+};
+
+const FRAME_MAGIC: &[u8; 8] = b"CRUCCS20";
 const FRAME_HEADER_BYTES: usize = 16;
 const GET_CAMPAIGN_REQUEST_KIND: u8 = 1;
 const GET_CAMPAIGN_RESPONSE_KIND: u8 = 2;
@@ -128,6 +135,8 @@ const GET_CAMPAIGN_PLANNER_RANKINGS_REQUEST_KIND: u8 = 36;
 const GET_CAMPAIGN_PLANNER_RANKINGS_RESPONSE_KIND: u8 = 37;
 const LIST_CAMPAIGNS_REQUEST_KIND: u8 = 38;
 const LIST_CAMPAIGNS_RESPONSE_KIND: u8 = 39;
+const ATTACH_CAMPAIGN_RUNTIME_REQUEST_KIND: u8 = 40;
+const ATTACH_CAMPAIGN_RUNTIME_RESPONSE_KIND: u8 = 41;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub(crate) const DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION: usize = 4_096;
@@ -220,6 +229,35 @@ impl LoopbackCampaignService {
         self.stream
             .into_inner()
             .map_err(|_| LoopbackCampaignProtocolError::ConnectionPoisoned)
+    }
+
+    /// Requests one authenticated operational campaign-runtime attachment.
+    ///
+    /// This operation shares campaign framing, peer authentication, policy,
+    /// request binding, deadlines, and connection poisoning, but remains
+    /// outside the semantic [`CampaignService`] trait because its executor
+    /// path is daemon deployment state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoopbackCampaignServiceError`] for a stable remote failure or
+    /// any framing, codec, request-binding, deadline, or connection failure.
+    pub fn attach_campaign_runtime(
+        &self,
+        request: &AttachCampaignRuntimeRequest,
+    ) -> Result<AttachCampaignRuntimeResponse, LoopbackCampaignServiceError> {
+        self.exchange(
+            ATTACH_CAMPAIGN_RUNTIME_REQUEST_KIND,
+            ATTACH_CAMPAIGN_RUNTIME_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |response| {
+                let response = AttachCampaignRuntimeResponse::from_canonical_bytes(response)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            CampaignServiceFailure::validate_for_attach_campaign_runtime,
+        )
     }
 
     fn exchange<T>(
@@ -732,6 +770,49 @@ where
     }
 }
 
+trait RuntimeControlDispatch {
+    fn attach_campaign_runtime(
+        &self,
+        request: &AttachCampaignRuntimeRequest,
+    ) -> Result<AttachCampaignRuntimeResponse, CampaignServiceFailure>;
+}
+
+struct AuthorizedRuntimeControlDispatch<'a, A: ?Sized> {
+    principal: &'a CampaignPrincipal,
+    authorizer: &'a A,
+    service: Option<&'a dyn CampaignRuntimeControlService>,
+}
+
+impl<A> RuntimeControlDispatch for AuthorizedRuntimeControlDispatch<'_, A>
+where
+    A: CampaignPrincipalAuthorizer + ?Sized,
+{
+    fn attach_campaign_runtime(
+        &self,
+        request: &AttachCampaignRuntimeRequest,
+    ) -> Result<AttachCampaignRuntimeResponse, CampaignServiceFailure> {
+        if request.principal() != self.principal {
+            return Err(CampaignServiceFailure::Unauthorized);
+        }
+        self.authorizer
+            .authorize(
+                request.principal(),
+                CampaignServiceOperation::AttachCampaignRuntime,
+                request.campaign(),
+                request.request_digest(),
+            )
+            .map_err(|error| match error {
+                CampaignAuthorizationError::Unauthorized => CampaignServiceFailure::Unauthorized,
+                CampaignAuthorizationError::Unavailable => {
+                    CampaignServiceFailure::AuthorizationUnavailable
+                }
+            })?;
+        self.service
+            .ok_or(CampaignServiceFailure::Unavailable)?
+            .attach_campaign_runtime(request)
+    }
+}
+
 /// Serves one repository request after binding Linux peer credentials.
 ///
 /// This is the production connected-stream authorization boundary. It reads
@@ -887,6 +968,44 @@ where
     R: UnixPeerCampaignPrincipalResolver + ?Sized,
     A: CampaignPrincipalAuthorizer + ?Sized,
 {
+    serve_authenticated_repository_campaign_connection_with_runtime_control_limits(
+        stream,
+        repository,
+        principal_resolver,
+        authorizer,
+        None,
+        timeouts,
+        maximum_requests,
+    )
+}
+
+/// Serves one authenticated connection with optional runtime control.
+///
+/// The runtime capability is invoked only after exact peer-principal binding
+/// and the ordinary per-campaign authorization policy grant the distinct
+/// [`CampaignServiceOperation::AttachCampaignRuntime`] operation. `None`
+/// preserves the same protocol vocabulary but returns a request-bound
+/// unavailable failure without exposing repository or component authority.
+///
+/// # Errors
+///
+/// Returns the same failures as
+/// [`serve_authenticated_repository_campaign_connection_with_limits`].
+// crucible-lint: allow rust-allow -- the explicit arguments expose every security boundary.
+#[allow(clippy::too_many_arguments)]
+pub fn serve_authenticated_repository_campaign_connection_with_runtime_control_limits<R, A>(
+    stream: &mut UnixStream,
+    repository: &CampaignRepository,
+    principal_resolver: &R,
+    authorizer: &A,
+    runtime_control: Option<&dyn CampaignRuntimeControlService>,
+    timeouts: LoopbackCampaignTimeouts,
+    maximum_requests: usize,
+) -> Result<(), LoopbackCampaignServerError>
+where
+    R: UnixPeerCampaignPrincipalResolver + ?Sized,
+    A: CampaignPrincipalAuthorizer + ?Sized,
+{
     if maximum_requests == 0 || maximum_requests > MAX_CAMPAIGN_REQUESTS_PER_CONNECTION {
         let _ = stream.shutdown(Shutdown::Both);
         return Err(LoopbackCampaignProtocolError::InvalidRequestLimit.into());
@@ -901,13 +1020,23 @@ where
         };
         let principal = principal_resolver.resolve_campaign_principal(credentials)?;
         let peer_authorizer = PeerBoundCampaignAuthorizer {
-            principal,
+            principal: principal.clone(),
             inner: authorizer,
         };
         let service = RepositoryCampaignService::new(repository, peer_authorizer);
+        let runtime_dispatch = AuthorizedRuntimeControlDispatch {
+            principal: &principal,
+            authorizer,
+            service: runtime_control,
+        };
 
         for _ in 0..maximum_requests {
-            match serve_loopback_campaign_inner(stream, &service, timeouts) {
+            match serve_loopback_campaign_inner_with_runtime_control(
+                stream,
+                &service,
+                Some(&runtime_dispatch),
+                timeouts,
+            ) {
                 Ok(()) => {}
                 Err(LoopbackCampaignServerError::Protocol(
                     LoopbackCampaignProtocolError::ConnectionClosed,
@@ -977,9 +1106,58 @@ where
     S: CampaignService,
     S::Error: CampaignServiceFailureSource,
 {
+    serve_loopback_campaign_inner_with_runtime_control(stream, service, None, timeouts)
+}
+
+fn serve_loopback_campaign_inner_with_runtime_control<S>(
+    stream: &mut UnixStream,
+    service: &S,
+    runtime_control: Option<&dyn RuntimeControlDispatch>,
+    timeouts: LoopbackCampaignTimeouts,
+) -> Result<(), LoopbackCampaignServerError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
     configure_stream(stream, timeouts)?;
     let (kind, body) = read_frame_any(stream, timeouts.read)?;
     let (response_kind, response) = match kind {
+        ATTACH_CAMPAIGN_RUNTIME_REQUEST_KIND => {
+            let request = AttachCampaignRuntimeRequest::from_canonical_bytes(&body)?;
+            let runtime_control =
+                runtime_control.ok_or(LoopbackCampaignProtocolError::InvalidFrame {
+                    reason: "runtime-control-unavailable",
+                })?;
+            match runtime_control.attach_campaign_runtime(&request) {
+                Ok(response) => {
+                    if response.validate_for(&request).is_err() {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            CampaignCodecError::InvalidValue {
+                                reason: "runtime attachment response basis mismatch",
+                            },
+                            timeouts.write,
+                        );
+                    }
+                    (
+                        ATTACH_CAMPAIGN_RUNTIME_RESPONSE_KIND,
+                        response.canonical_bytes(),
+                    )
+                }
+                Err(failure) => {
+                    if let Err(error) = failure.validate_for_attach_campaign_runtime() {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
         LIST_CAMPAIGNS_REQUEST_KIND => {
             let request = ListCampaignsRequest::from_canonical_bytes(&body)?;
             match service.list_campaigns(&request) {
@@ -1627,6 +1805,12 @@ impl From<CampaignCodecError> for LoopbackCampaignServiceError {
     }
 }
 
+impl From<CampaignRuntimeControlCodecError> for LoopbackCampaignServiceError {
+    fn from(error: CampaignRuntimeControlCodecError) -> Self {
+        Self::Protocol(LoopbackCampaignProtocolError::RuntimeControlCodec(error))
+    }
+}
+
 impl CampaignServiceFailureSource for LoopbackCampaignServiceError {
     fn campaign_service_failure(&self) -> CampaignServiceFailure {
         match self {
@@ -1639,6 +1823,7 @@ impl CampaignServiceFailureSource for LoopbackCampaignServiceError {
             }
             Self::Protocol(
                 LoopbackCampaignProtocolError::Codec(_)
+                | LoopbackCampaignProtocolError::RuntimeControlCodec(_)
                 | LoopbackCampaignProtocolError::InvalidFrame { .. },
             ) => CampaignServiceFailure::ProtocolViolation,
             Self::Protocol(
@@ -1662,6 +1847,9 @@ pub enum LoopbackCampaignProtocolError {
     /// Canonical request or response bytes failed strict validation.
     #[error(transparent)]
     Codec(#[from] CampaignCodecError),
+    /// Canonical runtime-control bytes failed strict validation.
+    #[error(transparent)]
+    RuntimeControlCodec(#[from] CampaignRuntimeControlCodecError),
     /// A caller attempted to disable the required finite deadlines.
     #[error("campaign loopback read/write timeout must be between 1ns and 1h")]
     InvalidTimeout,
@@ -1699,6 +1887,12 @@ pub enum LoopbackCampaignServerError {
 impl From<CampaignCodecError> for LoopbackCampaignServerError {
     fn from(error: CampaignCodecError) -> Self {
         Self::Protocol(LoopbackCampaignProtocolError::Codec(error))
+    }
+}
+
+impl From<CampaignRuntimeControlCodecError> for LoopbackCampaignServerError {
+    fn from(error: CampaignRuntimeControlCodecError) -> Self {
+        Self::Protocol(LoopbackCampaignProtocolError::RuntimeControlCodec(error))
     }
 }
 

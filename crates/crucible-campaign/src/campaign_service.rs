@@ -595,6 +595,24 @@ impl CampaignServiceFailure {
             _ => Ok(()),
         }
     }
+
+    /// Validates a failure for one operational runtime attachment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a creation-, snapshot-, or
+    /// lifecycle-only failure that runtime attachment cannot produce.
+    pub fn validate_for_attach_campaign_runtime(self) -> Result<(), CampaignCodecError> {
+        match self {
+            Self::AlreadyExists
+            | Self::Stale { .. }
+            | Self::ConcurrentUpdate
+            | Self::InvalidTransition { .. } => Err(CampaignCodecError::InvalidValue {
+                reason: "campaign service failure is invalid for runtime attachment",
+            }),
+            _ => Ok(()),
+        }
+    }
 }
 
 impl Canonical for CampaignServiceFailure {
@@ -2203,6 +2221,12 @@ impl CampaignServiceFailureSource for RepositoryCampaignServiceError {
             Self::Repository(error) => repository_service_failure(error),
             Self::Codec(_) => CampaignServiceFailure::IntegrityFailure,
         }
+    }
+}
+
+impl CampaignServiceFailureSource for CampaignRepositoryError {
+    fn campaign_service_failure(&self) -> CampaignServiceFailure {
+        repository_service_failure(self)
     }
 }
 

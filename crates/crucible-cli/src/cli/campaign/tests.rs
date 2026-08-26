@@ -919,6 +919,44 @@ fn campaign_status_and_watch_use_the_checked_loopback_transport() {
 }
 
 #[test]
+fn campaign_runtime_attachment_validates_before_connect_and_renders_status() {
+    let valid = CampaignCommand::Attach(CampaignAttachArgs {
+        name: "example".to_owned(),
+        executor_socket: PathBuf::from("/run/crucible/executor.sock"),
+    });
+    validate_campaign_command(&valid).expect("absolute runtime attachment");
+
+    let relative = CampaignCommand::Attach(CampaignAttachArgs {
+        name: "example".to_owned(),
+        executor_socket: PathBuf::from("executor.sock"),
+    });
+    assert!(
+        validate_campaign_command(&relative)
+            .expect_err("relative executor path")
+            .to_string()
+            .contains("executor endpoint is invalid")
+    );
+
+    let report = CampaignRuntimeAttachmentReport {
+        schema: CAMPAIGN_RUNTIME_ATTACHMENT_REPORT_SCHEMA,
+        operation: "attach-runtime",
+        campaign: "example".to_owned(),
+        request_digest: hash("runtime-attachment").to_hex(),
+        disposition: "replayed",
+        attached_runtime_count: 2,
+    };
+    let json = render_campaign_runtime_attachment(&report, OutputFormat::Json)
+        .expect("runtime attachment JSON");
+    let decoded: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert_eq!(decoded["schema"], CAMPAIGN_RUNTIME_ATTACHMENT_REPORT_SCHEMA);
+    assert_eq!(decoded["disposition"], "replayed");
+    assert_eq!(decoded["attached_runtime_count"], 2);
+    let table = render_campaign_runtime_attachment(&report, OutputFormat::Table)
+        .expect("runtime attachment table");
+    assert!(table.contains("attached_runtimes  2"));
+}
+
+#[test]
 fn campaign_list_uses_the_checked_loopback_transport_across_pages() {
     let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
     let server = thread::spawn(move || {
@@ -2173,6 +2211,30 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
             command: CampaignCommand::Status(CampaignStatusArgs { ref name }),
             ..
         }) if name == "example"
+    ));
+
+    let attach = Cli::try_parse_from([
+        "crucible",
+        "campaign",
+        "--socket",
+        "/run/crucible/campaign.sock",
+        "--principal",
+        "operator",
+        "attach",
+        "example",
+        "--executor-socket",
+        "/run/crucible/executor.sock",
+    ])
+    .expect("campaign runtime attachment arguments");
+    assert!(matches!(
+        attach.command,
+        Commands::Campaign(CampaignArgs {
+            command: CampaignCommand::Attach(CampaignAttachArgs {
+                ref name,
+                ref executor_socket,
+            }),
+            ..
+        }) if name == "example" && executor_socket == &PathBuf::from("/run/crucible/executor.sock")
     ));
 
     let cursor = snapshot("cursor").to_string();

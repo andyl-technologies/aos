@@ -7,14 +7,21 @@
 //! attached runtimes before joining any one of them, and retains the repository
 //! namespace lock through the final join.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 
-use crucible_campaign::{CampaignName, CampaignRepository, PlannerAuthorityKey};
+use crucible_campaign::{
+    CampaignHash, CampaignName, CampaignRepository, CampaignServiceFailure,
+    CampaignServiceFailureSource, PlannerAuthorityKey,
+};
 
-use crate::ExecutorLoopbackEndpointConfig;
+use crate::{
+    AttachCampaignRuntimeRequest, AttachCampaignRuntimeResponse,
+    CampaignRuntimeAttachmentDisposition, CampaignRuntimeControlService,
+    CanonicalCampaignRuntimeError, CanonicalPlannerProcessConfig, ExecutorLoopbackEndpointConfig,
+};
 
 use super::{
     AttachedCanonicalCampaignRuntime, CampaignLocalServiceError, CampaignLocalServiceMode,
@@ -58,7 +65,7 @@ impl CampaignRuntimeAttachmentHandle {
             .shared
             .upgrade()
             .ok_or(CampaignLocalServiceError::RuntimeAttachmentClosed)?;
-        let reservation = shared.reserve(config.campaign().clone(), true)?;
+        let reservation = shared.reserve(config.campaign().clone(), true, None)?;
         let planner_authority = shared
             .planner_authority
             .as_ref()
@@ -70,7 +77,7 @@ impl CampaignRuntimeAttachmentHandle {
             executor_stream,
             config,
         )?;
-        reservation.install(prepared)
+        reservation.install(prepared).map(|_| ())
     }
 
     /// Connects through an exact executor endpoint and attaches one runtime.
@@ -94,7 +101,7 @@ impl CampaignRuntimeAttachmentHandle {
             .shared
             .upgrade()
             .ok_or(CampaignLocalServiceError::RuntimeAttachmentClosed)?;
-        let reservation = shared.reserve(config.campaign().clone(), true)?;
+        let reservation = shared.reserve(config.campaign().clone(), true, None)?;
         let planner_authority = shared
             .planner_authority
             .as_ref()
@@ -107,7 +114,7 @@ impl CampaignRuntimeAttachmentHandle {
             executor_stream,
             config,
         )?;
-        reservation.install(prepared)
+        reservation.install(prepared).map(|_| ())
     }
 
     /// Returns the currently attached campaign names in canonical order.
@@ -131,6 +138,92 @@ impl CampaignRuntimeAttachmentHandle {
             return Err(CampaignLocalServiceError::RuntimeAttachmentClosed);
         }
         Ok(state.runtimes.keys().cloned().collect())
+    }
+}
+
+pub(super) struct CanonicalCampaignRuntimeController {
+    attachment: CampaignRuntimeAttachmentHandle,
+    planner_process: CanonicalPlannerProcessConfig,
+    executor_owner_user_id: u32,
+    executor_owner_group_id: u32,
+}
+
+impl CanonicalCampaignRuntimeController {
+    pub(super) fn new(
+        attachment: CampaignRuntimeAttachmentHandle,
+        planner_process: CanonicalPlannerProcessConfig,
+        executor_owner_user_id: u32,
+        executor_owner_group_id: u32,
+    ) -> Self {
+        Self {
+            attachment,
+            planner_process,
+            executor_owner_user_id,
+            executor_owner_group_id,
+        }
+    }
+}
+
+impl CampaignRuntimeControlService for CanonicalCampaignRuntimeController {
+    fn attach_campaign_runtime(
+        &self,
+        request: &AttachCampaignRuntimeRequest,
+    ) -> Result<AttachCampaignRuntimeResponse, CampaignServiceFailure> {
+        let shared = self
+            .attachment
+            .shared
+            .upgrade()
+            .ok_or(CampaignServiceFailure::Unavailable)?;
+        let reservation = match shared
+            .reserve_control(request.campaign().clone(), request.request_digest())
+            .map_err(|error| runtime_control_failure(&error))?
+        {
+            RuntimeControlReservation::Replay(attached_runtime_count) => {
+                return AttachCampaignRuntimeResponse::new(
+                    request,
+                    CampaignRuntimeAttachmentDisposition::Replayed,
+                    attached_runtime_count,
+                )
+                .map_err(|_| CampaignServiceFailure::IntegrityFailure);
+            }
+            RuntimeControlReservation::Reserved(reservation) => reservation,
+        };
+        let planner_authority = shared
+            .planner_authority
+            .as_ref()
+            .ok_or(CampaignServiceFailure::Unauthorized)?
+            .clone();
+        let endpoint = ExecutorLoopbackEndpointConfig::new(
+            request.executor_endpoint().to_owned(),
+            self.executor_owner_user_id,
+            self.executor_owner_group_id,
+            0o600,
+        )
+        .map_err(|_| CampaignServiceFailure::InvalidRequest)?;
+        let config = CanonicalCampaignRuntimeConfig::canonical_defaults(
+            request.campaign().clone(),
+            self.planner_process.clone(),
+        )
+        .map_err(|_| CampaignServiceFailure::IntegrityFailure)?;
+        let executor_stream = endpoint
+            .connect()
+            .map_err(|_| CampaignServiceFailure::Unavailable)?;
+        let prepared = prepare_canonical_campaign_runtime(
+            Arc::clone(&shared.repository),
+            planner_authority,
+            executor_stream,
+            &config,
+        )
+        .map_err(|error| runtime_control_runtime_failure(&error))?;
+        let attached_runtime_count = reservation
+            .install(prepared)
+            .map_err(|error| runtime_control_failure(&error))?;
+        AttachCampaignRuntimeResponse::new(
+            request,
+            CampaignRuntimeAttachmentDisposition::Attached,
+            attached_runtime_count,
+        )
+        .map_err(|_| CampaignServiceFailure::IntegrityFailure)
     }
 }
 
@@ -201,14 +294,15 @@ impl CampaignRuntimeRegistry {
         if !prepared.uses_repository(&self.repository) {
             return Err(CampaignLocalServiceError::RuntimeRepositoryMismatch);
         }
-        let reservation = self.reserve(prepared.campaign().clone(), false)?;
-        reservation.install(prepared)
+        let reservation = self.reserve(prepared.campaign().clone(), false, None)?;
+        reservation.install(prepared).map(|_| ())
     }
 
     fn reserve(
         self: &Arc<Self>,
         campaign: CampaignName,
         require_dynamic_authority: bool,
+        request_digest: Option<CampaignHash>,
     ) -> Result<RuntimeReservation, CampaignLocalServiceError> {
         let mut state = self.lock_state()?;
         if !state.accepting {
@@ -222,7 +316,7 @@ impl CampaignRuntimeRegistry {
                 return Err(CampaignLocalServiceError::RuntimeAuthorityUnavailable);
             }
         }
-        if state.reserved.contains(&campaign) || state.runtimes.contains_key(&campaign) {
+        if state.reserved.contains_key(&campaign) || state.runtimes.contains_key(&campaign) {
             return Err(CampaignLocalServiceError::DuplicateRuntimeCampaign);
         }
         let occupied = state
@@ -237,14 +331,68 @@ impl CampaignRuntimeRegistry {
             .in_flight
             .checked_add(1)
             .ok_or(CampaignLocalServiceError::InvalidRuntimeCount)?;
-        state.reserved.insert(campaign.clone());
+        state.reserved.insert(campaign.clone(), request_digest);
         state.in_flight = next_in_flight;
         drop(state);
         Ok(RuntimeReservation {
             shared: Arc::clone(self),
             campaign,
+            request_digest,
             active: true,
         })
+    }
+
+    fn reserve_control(
+        self: &Arc<Self>,
+        campaign: CampaignName,
+        request_digest: CampaignHash,
+    ) -> Result<RuntimeControlReservation, CampaignLocalServiceError> {
+        let state = self.lock_state()?;
+        if !state.accepting {
+            return Err(CampaignLocalServiceError::RuntimeAttachmentClosed);
+        }
+        if self.mode == CampaignLocalServiceMode::ReadOnly {
+            return Err(CampaignLocalServiceError::RuntimeReadOnly);
+        }
+        if self.planner_authority.is_none() {
+            return Err(CampaignLocalServiceError::RuntimeAuthorityUnavailable);
+        }
+        if let Some(entry) = state.runtimes.get(&campaign) {
+            if entry.request_digest == Some(request_digest) {
+                let count = u32::try_from(state.runtimes.len())
+                    .map_err(|_| CampaignLocalServiceError::InvalidRuntimeCount)?;
+                return Ok(RuntimeControlReservation::Replay(count));
+            }
+            return Err(CampaignLocalServiceError::DuplicateRuntimeCampaign);
+        }
+        if let Some(pending_digest) = state.reserved.get(&campaign) {
+            return if *pending_digest == Some(request_digest) {
+                Err(CampaignLocalServiceError::RuntimeAttachmentInFlight)
+            } else {
+                Err(CampaignLocalServiceError::DuplicateRuntimeCampaign)
+            };
+        }
+        drop(state);
+        match self.reserve(campaign.clone(), true, Some(request_digest)) {
+            Ok(reservation) => Ok(RuntimeControlReservation::Reserved(reservation)),
+            Err(CampaignLocalServiceError::DuplicateRuntimeCampaign) => {
+                let state = self.lock_state()?;
+                if state
+                    .runtimes
+                    .get(&campaign)
+                    .is_some_and(|entry| entry.request_digest == Some(request_digest))
+                {
+                    let count = u32::try_from(state.runtimes.len())
+                        .map_err(|_| CampaignLocalServiceError::InvalidRuntimeCount)?;
+                    Ok(RuntimeControlReservation::Replay(count))
+                } else if state.reserved.get(&campaign) == Some(&Some(request_digest)) {
+                    Err(CampaignLocalServiceError::RuntimeAttachmentInFlight)
+                } else {
+                    Err(CampaignLocalServiceError::DuplicateRuntimeCampaign)
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub(super) fn close_and_join(&self) -> Result<(), CampaignLocalServiceError> {
@@ -299,6 +447,7 @@ impl Drop for CampaignRuntimeRegistry {
 struct RuntimeReservation {
     shared: Arc<CampaignRuntimeRegistry>,
     campaign: CampaignName,
+    request_digest: Option<CampaignHash>,
     active: bool,
 }
 
@@ -306,7 +455,7 @@ impl RuntimeReservation {
     fn install(
         mut self,
         prepared: PreparedCanonicalCampaignRuntime,
-    ) -> Result<(), CampaignLocalServiceError> {
+    ) -> Result<u32, CampaignLocalServiceError> {
         if prepared.campaign() != &self.campaign
             || !prepared.uses_repository(&self.shared.repository)
         {
@@ -342,11 +491,17 @@ impl RuntimeReservation {
         };
         state.runtimes.insert(
             self.campaign.clone(),
-            AttachedRuntimeEntry { runtime, monitor },
+            AttachedRuntimeEntry {
+                runtime,
+                monitor,
+                request_digest: self.request_digest,
+            },
         );
         release_reservation(&self.shared, &mut state, &self.campaign);
+        let attached_runtime_count = u32::try_from(state.runtimes.len())
+            .map_err(|_| CampaignLocalServiceError::InvalidRuntimeCount)?;
         self.active = false;
-        Ok(())
+        Ok(attached_runtime_count)
     }
 }
 
@@ -368,7 +523,7 @@ struct RegistryState {
     accepting: bool,
     in_flight: usize,
     next_monitor_id: u64,
-    reserved: BTreeSet<CampaignName>,
+    reserved: BTreeMap<CampaignName, Option<CampaignHash>>,
     runtimes: BTreeMap<CampaignName, AttachedRuntimeEntry>,
 }
 
@@ -384,6 +539,7 @@ impl RegistryState {
 struct AttachedRuntimeEntry {
     runtime: AttachedCanonicalCampaignRuntime,
     monitor: JoinHandle<()>,
+    request_digest: Option<CampaignHash>,
 }
 
 fn release_reservation(
@@ -391,7 +547,7 @@ fn release_reservation(
     state: &mut RegistryState,
     campaign: &CampaignName,
 ) {
-    if state.reserved.remove(campaign) {
+    if state.reserved.remove(campaign).is_some() {
         state.in_flight -= 1;
         shared.changed.notify_all();
     }
@@ -407,7 +563,11 @@ fn shutdown_entries(
     let mut first_runtime_error = None;
     let mut monitors = Vec::with_capacity(entries.len());
     for entry in entries.drain(..) {
-        let AttachedRuntimeEntry { runtime, monitor } = entry;
+        let AttachedRuntimeEntry {
+            runtime,
+            monitor,
+            request_digest: _,
+        } = entry;
         if let Err(source) = runtime.shutdown_and_join()
             && first_runtime_error.is_none()
         {
@@ -426,5 +586,70 @@ fn shutdown_entries(
         Err(CampaignLocalServiceError::RuntimeMonitorPanicked)
     } else {
         Ok(())
+    }
+}
+
+enum RuntimeControlReservation {
+    Replay(u32),
+    Reserved(RuntimeReservation),
+}
+
+fn runtime_control_failure(error: &CampaignLocalServiceError) -> CampaignServiceFailure {
+    match error {
+        CampaignLocalServiceError::RuntimeReadOnly
+        | CampaignLocalServiceError::RuntimeAuthorityUnavailable => {
+            CampaignServiceFailure::Unauthorized
+        }
+        CampaignLocalServiceError::DuplicateRuntimeCampaign => CampaignServiceFailure::CommandReuse,
+        CampaignLocalServiceError::RuntimeAttachmentInFlight
+        | CampaignLocalServiceError::RuntimeAttachmentClosed
+        | CampaignLocalServiceError::RuntimeMonitorSpawn { .. } => {
+            CampaignServiceFailure::Unavailable
+        }
+        CampaignLocalServiceError::InvalidRuntimeCount => CampaignServiceFailure::ResourceExhausted,
+        CampaignLocalServiceError::RuntimeRepositoryMismatch
+        | CampaignLocalServiceError::RuntimeRegistryPoisoned
+        | CampaignLocalServiceError::RuntimeMonitorPanicked => {
+            CampaignServiceFailure::IntegrityFailure
+        }
+        CampaignLocalServiceError::Runtime(error) => runtime_control_runtime_failure(error),
+        CampaignLocalServiceError::Endpoint(_) => CampaignServiceFailure::Unavailable,
+        CampaignLocalServiceError::InvalidStatePath
+        | CampaignLocalServiceError::InvalidPolicyPath
+        | CampaignLocalServiceError::InvalidComponentAuthorityPath
+        | CampaignLocalServiceError::InvalidStateDirectory
+        | CampaignLocalServiceError::StateInUse
+        | CampaignLocalServiceError::InvalidStateLock
+        | CampaignLocalServiceError::InvalidStateSubdirectory
+        | CampaignLocalServiceError::InvalidPolicyFile
+        | CampaignLocalServiceError::InvalidComponentAuthorityFile
+        | CampaignLocalServiceError::Policy(_)
+        | CampaignLocalServiceError::ArtifactImportReadOnly
+        | CampaignLocalServiceError::Artifact(_)
+        | CampaignLocalServiceError::PackagedExecutor(_)
+        | CampaignLocalServiceError::PackagedExecutorStart(_)
+        | CampaignLocalServiceError::PackagedExecutorJoin(_)
+        | CampaignLocalServiceError::PackagedExecutorMonitorSpawn { .. }
+        | CampaignLocalServiceError::PackagedExecutorMonitorPanicked
+        | CampaignLocalServiceError::Listener(_)
+        | CampaignLocalServiceError::Io { .. } => CampaignServiceFailure::IntegrityFailure,
+    }
+}
+
+fn runtime_control_runtime_failure(
+    error: &CanonicalCampaignRuntimeError,
+) -> CampaignServiceFailure {
+    match error {
+        CanonicalCampaignRuntimeError::Repository(error) => error.campaign_service_failure(),
+        CanonicalCampaignRuntimeError::ExecutorIncompatible
+        | CanonicalCampaignRuntimeError::ExecutorResourcesExceedCeiling
+        | CanonicalCampaignRuntimeError::ExecutorSlotsExceedCeiling
+        | CanonicalCampaignRuntimeError::PlannerDriver(_)
+        | CanonicalCampaignRuntimeError::ExecutorDriver(_)
+        | CanonicalCampaignRuntimeError::Supervisor(_) => CampaignServiceFailure::InvalidRequest,
+        CanonicalCampaignRuntimeError::ExecutorProtocol(_)
+        | CanonicalCampaignRuntimeError::ExecutorDescription(_)
+        | CanonicalCampaignRuntimeError::RuntimeStart(_)
+        | CanonicalCampaignRuntimeError::Runtime(_) => CampaignServiceFailure::Unavailable,
     }
 }
