@@ -61,18 +61,24 @@ in
       gettext
       python3
     ];
-    runtimeDeps = [
-      bash
-      python3
-      gmp
-      mpfr
-      expat
-      readline
-      ncurses
-      zlib
-      xz
-      zstd
-    ];
+    runtimeDeps =
+      [
+        bash
+        python3
+        gmp
+        mpfr
+        expat
+        readline
+        ncurses
+        zlib
+        xz
+        zstd
+      ]
+      ++ (
+        if isDarwinCross
+        then [gettext.lib]
+        else []
+      );
     propagatedDeps = [];
     disallowedReferences =
       if isDarwinCross
