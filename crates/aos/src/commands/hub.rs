@@ -2425,6 +2425,41 @@ async fn cache_retention(printer: &Printer, command: &HubCacheRetentionCmd) -> R
 
 async fn cache_root(printer: &Printer, command: &HubCacheRootCmd) -> Result<()> {
     match command {
+        HubCacheRootCmd::List {
+            access,
+            cache,
+            pagination,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read::<_, hub_types::ListRetentionRootsResponse>(
+                printer,
+                &client,
+                HubTopologyMethod::ListRetentionRoots,
+                &hub_types::ListRetentionRootsRequest {
+                    cache_id: cache.clone(),
+                    page_size: pagination.page_size.unwrap_or_default(),
+                    page_token: pagination.page_token.clone().unwrap_or_default(),
+                },
+            )
+            .await
+        }
+        HubCacheRootCmd::Show {
+            access,
+            cache,
+            root_id,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read::<_, hub_types::RetentionRootResponse>(
+                printer,
+                &client,
+                HubTopologyMethod::GetRetentionRoot,
+                &hub_types::GetRetentionRootRequest {
+                    cache_id: cache.clone(),
+                    root_id: root_id.clone(),
+                },
+            )
+            .await
+        }
         HubCacheRootCmd::Create {
             access,
             cache,
