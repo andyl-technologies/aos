@@ -7,8 +7,10 @@
   nettle,
   gnutls,
   pkg-config,
+  stdenv,
 }: let
   version = "4.8";
+  isDarwin = stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
     pname = "chrony";
@@ -25,16 +27,21 @@ in
       gnumake
       pkg-config
     ];
-    runtimeDeps = [
-      libcap
-      # nettle: SECHASH backend (SHA-1/2/3 + AES-CMAC) for symmetric-key NTP
-      # auth, and AES-SIV for NTS cookie encryption.
-      nettle
-      # gnutls: TLS 1.3 for NTS-KE (RFC 8915). chrony verifies NTS servers
-      # against gnutls's system trust store, which AOS wires to the Mozilla CA
-      # bundle in pkgs/security/gnutls.nix.
-      gnutls
-    ];
+    runtimeDeps =
+      (
+        if isDarwin
+        then []
+        else [libcap]
+      )
+      ++ [
+        # nettle: SECHASH backend (SHA-1/2/3 + AES-CMAC) for symmetric-key NTP
+        # auth, and AES-SIV for NTS cookie encryption.
+        nettle
+        # gnutls: TLS 1.3 for NTS-KE (RFC 8915). chrony verifies NTS servers
+        # against gnutls's system trust store, which AOS wires to the Mozilla CA
+        # bundle in pkgs/security/gnutls.nix.
+        gnutls
+      ];
     propagatedDeps = [];
 
     phases = [
@@ -47,24 +54,47 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            --prefix=$out \
-            --sysconfdir=/etc \
-            --localstatedir=$out/var \
-            --with-pidfile=/run/chrony/chronyd.pid \
-            --without-editline \
-            --without-readline
+        script =
+          if isDarwin
+          then ''
+            ./configure \
+              --prefix=$out \
+              --sysconfdir=/etc \
+              --localstatedir=$out/var \
+              --with-pidfile=/run/chrony/chronyd.pid \
+              --host-system=Darwin \
+              --host-release=20.0.0 \
+              --host-machine=${stdenv.hostPlatform.darwinArch} \
+              --without-editline \
+              --without-readline
 
-          # NTS (RFC 8915) is on by default in chrony's configure, but it
-          # silently disables itself if no TLS library is detected. Fail the
-          # build loudly if gnutls was not picked up, so a broken NTS build is
-          # never shipped as a "successful" one.
-          grep -q '#define FEAT_NTS' config.h || {
-            echo "ERROR: chrony configured without NTS (gnutls not detected)" >&2
-            exit 1
-          }
-        '';
+            # NTS (RFC 8915) is on by default in chrony's configure, but it
+            # silently disables itself if no TLS library is detected. Fail the
+            # build loudly if gnutls was not picked up, so a broken NTS build is
+            # never shipped as a "successful" one.
+            grep -q '#define FEAT_NTS' config.h || {
+              echo "ERROR: chrony configured without NTS (gnutls not detected)" >&2
+              exit 1
+            }
+          ''
+          else ''
+            ./configure \
+              --prefix=$out \
+              --sysconfdir=/etc \
+              --localstatedir=$out/var \
+              --with-pidfile=/run/chrony/chronyd.pid \
+              --without-editline \
+              --without-readline
+
+            # NTS (RFC 8915) is on by default in chrony's configure, but it
+            # silently disables itself if no TLS library is detected. Fail the
+            # build loudly if gnutls was not picked up, so a broken NTS build is
+            # never shipped as a "successful" one.
+            grep -q '#define FEAT_NTS' config.h || {
+              echo "ERROR: chrony configured without NTS (gnutls not detected)" >&2
+              exit 1
+            }
+          '';
       }
       {
         name = "build";
