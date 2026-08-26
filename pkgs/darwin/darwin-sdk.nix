@@ -200,7 +200,7 @@ in
           # points to their BIND 9 symbol names. Zig's older libSystem surface
           # describes only the unversioned aliases, so publish the matching
           # ABI exported by modern Darwin libSystem as well.
-          sed -i '$i\  - targets: [ x86_64-macos, arm64-macos ]\n    symbols: [ _res_9_close, _res_9_init, _res_9_isourserver, _res_9_mkquery, _res_9_query, _res_9_querydomain, _res_9_search, _res_9_send, _res_9_sendsigned ]' \
+          sed -i '$i\  - targets: [ x86_64-macos, arm64-macos ]\n    symbols: [ _res_9_close, _res_9_dn_expand, _res_9_init, _res_9_isourserver, _res_9_mkquery, _res_9_query, _res_9_querydomain, _res_9_search, _res_9_send, _res_9_sendsigned ]' \
             "$out/usr/lib/libSystem.tbd"
           cp "$xnuRoot/bsd/netinet/tcp_fsm.h" "$out/usr/include/netinet/"
           cp "$xnuRoot/bsd/netinet/tcp_timer.h" "$out/usr/include/netinet/"
@@ -490,6 +490,7 @@ in
                 - _CFArrayGetValueAtIndex
                 - _CFBooleanGetTypeID
                 - _CFBooleanGetValue
+                - _CFBundleCopyExecutableURL
                 - _CFBundleCreate
                 - _CFBundleGetIdentifier
                 - _CFBundleGetValueForInfoDictionaryKey
@@ -515,6 +516,7 @@ in
                 - _CFRunLoopSourceSignal
                 - _CFRunLoopStop
                 - _CFRunLoopWakeUp
+                - _CFStringCreateWithCString
                 - _CFStringGetCString
                 - _CFStringGetCStringPtr
                 - _CFStringGetLength
@@ -523,6 +525,10 @@ in
                 - _CFTimeZoneCopyDefault
                 - _CFTimeZoneGetName
                 - _CFURLCreateFromFileSystemRepresentation
+                - _CFURLCreateWithFileSystemPath
+                - _CFURLGetFileSystemRepresentation
+                - _CFUUIDCreate
+                - _CFUUIDCreateString
                 - _CFUUIDGetConstantUUIDWithBytes
                 - _CFUUIDGetUUIDBytes
                 - ___CFConstantStringClassReference
