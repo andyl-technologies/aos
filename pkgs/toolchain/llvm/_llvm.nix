@@ -256,6 +256,15 @@ in
               cp -a ${stdenv.darwinRuntimes}/include/. "$out/include/"
               cp -a ${stdenv.darwinRuntimes}/lib/. "$out/lib/"
 
+              # Installed llvm-config discovers its real prefix relative to
+              # argv[0], but retains the configured source and object roots as
+              # binary fallback strings. Normalize only the sandbox prefix
+              # with an equal-length replacement so Mach-O offsets stay valid
+              # and the target toolchain does not expose an ephemeral build
+              # directory.
+              stable_source=$(printf '%s\n' "$PWD" | sed 's|^/build|/.aos_|')
+              sed -i "s|$PWD|$stable_source|g" "$out/bin/llvm-config"
+
               # LLVM and the copied runtime install some directories without
               # owner write permission. The following scrub phase creates an
               # adjacent temporary file for each Mach-O before atomically
