@@ -25,8 +25,36 @@
   lowdown,
   bzip2,
   zlib,
+  stdenv,
+  buildPackages,
 }: let
   version = "2.24.12";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  buildMeson =
+    if isDarwinCross
+    then buildPackages.meson
+    else meson;
+  mesonSetupFlags =
+    if isDarwinCross
+    then ''      --buildtype=release \
+            $mesonFlags''
+    else "--buildtype=release";
+  darwinGitCacheFix =
+    if isDarwinCross
+    then
+      "\n"
+      + ''
+        # Clang 22 correctly diagnoses discarded libc++ nodiscard results,
+        # which Nix promotes to errors.  The unique_ptr::get() call has no
+        # side effect, while extract() is intentionally used for its erase.
+        sed -i \
+          's|lookupCache.emplace(path2, std::move(copy)).first->second.get();|lookupCache.emplace(path2, std::move(copy));|' \
+          src/libfetchers/git-utils.cc
+        sed -i \
+          's|goal->waiters.extract(shared_from_this());|static_cast<void>(goal->waiters.extract(shared_from_this()));|' \
+          src/libstore/build/goal.cc
+      ''
+    else "";
 in
   mkDerivation {
     pname = "nix";
@@ -88,7 +116,7 @@ in
       {
         name = "configure";
         script = ''
-          export PYTHONPATH="${meson}/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
+          export PYTHONPATH="${buildMeson}/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
           # Strip meson.build to only core libraries + nix executable
           # Remove docs, tests, perl bindings, C wrappers we don't need
           sed -i '/internal-api-docs/d' meson.build
@@ -104,17 +132,21 @@ in
           # ("linux") instead of the full system pair ("x86_64-linux"). Fixed
           # upstream in 2.28.0 (commit 6a1a3fa1c).
           sed -i "s|configdata.set_quoted('SYSTEM', host_machine.system())|configdata.set_quoted('SYSTEM', host_machine.cpu_family() + '-' + host_machine.system())|" \
-            src/libstore/meson.build
+            src/libstore/meson.build${darwinGitCacheFix}
           # Boost is split across two outputs (headers in boost.dev, libs in
           # boost). Point meson's Boost finder at each explicitly — these
           # split-aware vars work where BOOST_ROOT (single prefix) would not.
           export BOOST_INCLUDEDIR=${boost.dev}/include
           export BOOST_LIBRARYDIR=${boost}/lib
+          # toml11 is header-only and publishes only a CMake package.  Meson's
+          # CMake dependency backend does not derive prefix roots from the
+          # compiler include path, so expose the AOS package explicitly.
+          export CMAKE_PREFIX_PATH=${toml11}''${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}
 
           mkdir -p build && cd build
           meson setup .. \
             --prefix=$out \
-            --buildtype=release
+            ${mesonSetupFlags}
         '';
       }
       {
