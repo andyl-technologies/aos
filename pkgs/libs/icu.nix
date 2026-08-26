@@ -32,25 +32,55 @@ in
     phases = [
       {
         name = "unpack";
-        script = ''
-          tar xf $src
-          cd icu/source
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            tar xf $src
+            cd icu/source
+
+            # Modern public Darwin SDKs no longer install tzfile.h. ICU
+            # ships the matching IANA header for its tzcode tools.
+            sed -i \
+              's|#include <tzfile.h>|#include "../tools/tzcode/tzfile.h"|' \
+              common/putil.cpp
+          ''
+          else ''
+            tar xf $src
+            cd icu/source
+          '';
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            ${
-            if stdenv.isCross
-            then "--with-cross-build=${buildPackages.icu.cross}"
-            else ""
-          } \
-            --prefix=$out \
-            --enable-shared \
-            --enable-static
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            # ICU otherwise records bare dylib basenames. Its rpath mode uses
+            # the configured libdir as the install name, which keeps every
+            # consumer resolvable directly from the immutable store output.
+            ./configure \
+              $configureFlags \
+              ${
+              if stdenv.isCross
+              then "--with-cross-build=${buildPackages.icu.cross}/source"
+              else ""
+            } \
+              --enable-rpath \
+              --prefix=$out \
+              --enable-shared \
+              --enable-static
+          ''
+          else ''
+            ./configure \
+              $configureFlags \
+              ${
+              if stdenv.isCross
+              then "--with-cross-build=${buildPackages.icu.cross}/source"
+              else ""
+            } \
+              --prefix=$out \
+              --enable-shared \
+              --enable-static
+          '';
       }
       {
         name = "build";
