@@ -386,6 +386,8 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("cache_multipart_creation.sql"),
     include_str!("publication_object_evidence.sql"),
     include_str!("gateway_revision_event_history.sql"),
+    include_str!("placement_policy_build_event_history.sql"),
+    include_str!("placement_policy_publication_history.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -25367,6 +25369,128 @@ source_nar_hash = ""
         assert!(backend_columns
             .iter()
             .any(|column| column == "completion_etag"));
+    }
+
+    #[test]
+    fn placement_policy_build_event_migration_preserves_history_across_versions() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.contains("placement_policy_build_events_legacy"))
+            .unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 CREATE TABLE placement_policy_revisions(
+                   id TEXT PRIMARY KEY,
+                   build_version INTEGER NOT NULL,
+                   state TEXT NOT NULL,
+                   UNIQUE(id, build_version, state)
+                 );
+                 CREATE TABLE placement_policy_build_events(
+                   event_id TEXT PRIMARY KEY,
+                   policy_revision_id TEXT NOT NULL,
+                   build_version INTEGER NOT NULL,
+                   revision_state TEXT NOT NULL,
+                   mutation_kind TEXT NOT NULL,
+                   created_at INTEGER NOT NULL,
+                   UNIQUE(policy_revision_id, build_version),
+                   FOREIGN KEY(policy_revision_id, build_version, revision_state)
+                   REFERENCES placement_policy_revisions(id, build_version, state)
+                 );
+                 INSERT INTO placement_policy_revisions
+                   (id, build_version, state) VALUES ('revision-1', 1, 'building');
+                 INSERT INTO placement_policy_build_events
+                   (event_id, policy_revision_id, build_version, revision_state,
+                    mutation_kind, created_at)
+                   VALUES ('event-1', 'revision-1', 1, 'building', 'add_group', 1);",
+            )
+            .unwrap();
+
+        connection.execute_batch(migration).unwrap();
+        connection
+            .execute(
+                "UPDATE placement_policy_revisions SET build_version = 2 WHERE id = 'revision-1'",
+                [],
+            )
+            .unwrap();
+
+        let retained: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM placement_policy_build_events
+                 WHERE event_id = 'event-1' AND build_version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, 1);
+    }
+
+    #[test]
+    fn placement_policy_publication_migration_preserves_history_across_head_versions() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.contains("placement_policy_publications_legacy"))
+            .unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 CREATE TABLE placement_policy_revisions(
+                   id TEXT PRIMARY KEY,
+                   policy_id TEXT NOT NULL,
+                   state TEXT NOT NULL,
+                   UNIQUE(id, policy_id, state)
+                 );
+                 CREATE TABLE placement_policy_heads(
+                   policy_id TEXT PRIMARY KEY,
+                   resource_version INTEGER NOT NULL,
+                   UNIQUE(policy_id, resource_version)
+                 );
+                 CREATE TABLE placement_policy_publications(
+                   publication_id TEXT PRIMARY KEY,
+                   policy_revision_id TEXT NOT NULL UNIQUE,
+                   policy_id TEXT NOT NULL,
+                   revision_state TEXT NOT NULL,
+                   policy_resource_version INTEGER NOT NULL,
+                   content_digest TEXT NOT NULL,
+                   published_by TEXT NOT NULL,
+                   published_at INTEGER NOT NULL,
+                   FOREIGN KEY(policy_revision_id, policy_id, revision_state)
+                   REFERENCES placement_policy_revisions(id, policy_id, state),
+                   FOREIGN KEY(policy_id, policy_resource_version)
+                   REFERENCES placement_policy_heads(policy_id, resource_version)
+                 );
+                 INSERT INTO placement_policy_revisions
+                   (id, policy_id, state) VALUES ('revision-1', 'policy-1', 'published');
+                 INSERT INTO placement_policy_heads
+                   (policy_id, resource_version) VALUES ('policy-1', 2);
+                 INSERT INTO placement_policy_publications
+                   (publication_id, policy_revision_id, policy_id, revision_state,
+                    policy_resource_version, content_digest, published_by, published_at)
+                   VALUES ('publication-1', 'revision-1', 'policy-1', 'published',
+                           2, 'digest-1', 'operator', 1);",
+            )
+            .unwrap();
+
+        connection.execute_batch(migration).unwrap();
+        connection
+            .execute(
+                "UPDATE placement_policy_heads SET resource_version = 3
+                 WHERE policy_id = 'policy-1'",
+                [],
+            )
+            .unwrap();
+
+        let retained: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM placement_policy_publications
+                 WHERE publication_id = 'publication-1' AND policy_resource_version = 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, 1);
     }
 
     #[test]
