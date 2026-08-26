@@ -57,6 +57,17 @@ in
           # Large file support + no lchmod
           sed -i 's/^CF = /CF = -DLARGE_FILE_SUPPORT -D_FILE_OFFSET_BITS=64 -DNO_LCHMOD /' unix/Makefile 2>/dev/null || true
 
+          ${
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              # BSD4_4 uses tm_gmtoff rather than the obsolete ftime API, so
+              # its configuration must not include Darwin's removed timeb.h.
+              sed -i '/#  include <sys\/timeb.h>/i\#  ifndef BSD4_4' unix/unxcfg.h
+              sed -i '/#  include <sys\/timeb.h>/a\#  endif' unix/unxcfg.h
+            ''
+            else ""
+          }
+
           # Fix directory attribute bookkeeping allocation: defer_dir_attribs()
           # stores strlen(filename) plus the trailing NUL in uxdirattr.fnbuf.
           sed -i 's/malloc(sizeof(uxdirattr) + strlen(G.filename))/malloc(sizeof(uxdirattr) + strlen(G.filename) + 1)/' unix/unix.c
@@ -70,12 +81,22 @@ in
       {
         name = "build";
         script = ''
-          make -f unix/Makefile ${
+          ${
             if stdenv.hostPlatform.isDarwin
-            then "macosx"
-            else "linux_noasm"
-          } -j$NIX_BUILD_CORES \
-            LFLAGS2="$NIX_LDFLAGS"
+            then ''
+              # The upstream macosx preset predates modern Darwin headers, and
+              # its configure script executes target programs and misdetects
+              # declared POSIX functions with modern Clang. Select the known
+              # Darwin feature surface directly without disabling APIs.
+              make -f unix/Makefile unzips -j$NIX_BUILD_CORES \
+                CFLAGS="-O3 -Wall -DBSD4_4 -DUNICODE_SUPPORT -DUTF8_MAYBE_NATIVE" \
+                LFLAGS2="$NIX_LDFLAGS"
+            ''
+            else ''
+              make -f unix/Makefile linux_noasm -j$NIX_BUILD_CORES \
+                LFLAGS2="$NIX_LDFLAGS"
+            ''
+          }
         '';
       }
       {

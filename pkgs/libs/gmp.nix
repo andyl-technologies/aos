@@ -4,7 +4,7 @@
   fetchurl,
   gnumake,
   m4,
-  cc,
+  stdenv,
 }: let
   version = "6.3.0";
 in
@@ -27,7 +27,7 @@ in
     ];
     runtimeDeps = [];
     propagatedDeps = [];
-    disallowedReferences = [cc];
+    disallowedReferences = [stdenv.cc];
 
     phases = [
       {
@@ -40,6 +40,39 @@ in
       {
         name = "configure";
         script = ''
+          ${
+            if stdenv.isCross && stdenv.hostPlatform.isDarwin
+            then ''
+              # GMP compiles configure helpers for the build machine. Keep
+              # the native compiler isolated from target-only SDK, linker,
+              # and hardening flags exported by the cross stdenv.
+              native_cc="$BUILD_CC"
+              mkdir -p .aos-build-tools
+              cat > .aos-build-tools/cc <<EOF
+              #!$CONFIG_SHELL
+              unset AOS_HARDENING_ENABLE AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+              unset C_INCLUDE_PATH
+              unset CPLUS_INCLUDE_PATH LIBRARY_PATH MACOSX_DEPLOYMENT_TARGET
+              unset NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT
+              exec "$native_cc" "\$@"
+              EOF
+              chmod +x .aos-build-tools/cc
+              export CC_FOR_BUILD="$PWD/.aos-build-tools/cc"
+            ''
+            else ""
+          }
+
+          ${
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              # Apple libtool's fallback partial link uses ld64 -r, which
+              # ld64.lld does not implement. Its single-module form links
+              # the same objects directly into the shared library.
+              export lt_cv_apple_cc_single_mod=yes
+            ''
+            else ""
+          }
+
           ./configure \
             $configureFlags \
             --prefix=$out \
