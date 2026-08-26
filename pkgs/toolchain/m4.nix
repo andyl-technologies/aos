@@ -25,10 +25,23 @@ in
     phases = [
       {
         name = "unpack";
-        script = ''
-          tar xf $src
-          cd m4-${version}
-        '';
+        script =
+          ''
+            tar xf $src
+            cd m4-${version}
+          ''
+          + (
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              # Gnulib still uses obsolete flat Darwin header names in its
+              # Mach VM implementation. Every declaration formerly supplied
+              # by libc.h is in the public Mach headers included afterward;
+              # modern SDKs expose nlist through mach-o/nlist.h.
+              sed -i '/^#include <libc\.h>$/d' lib/stackvma.c
+              sed -i 's|^#include <nlist\.h>$|#include <mach-o/nlist.h>|' lib/stackvma.c
+            ''
+            else ""
+          );
       }
       {
         name = "configure";
