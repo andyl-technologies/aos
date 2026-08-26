@@ -1361,6 +1361,14 @@ compressed-directory leaf streams a fixed private Zstandard representation
 below plaintext identity, enforces a per-object plaintext bound before source
 or decoder work, authenticates complete plaintext for range reads, survives
 restart, and participates in generation-bound physical inventory and deletion.
+The graph now also admits a restart-safe aggregate logical-quota node around
+one exclusively owned physical leaf. A durable dirty/clean state transaction
+repairs commit-indeterminate puts and deletes from a bounded fenced child
+inventory, and graph administration exposes the quota boundary rather than a
+deletion-capable child escape. Tests cover count/byte rejection, idempotent
+puts, GC reclamation, clean restart, dirty restart recovery,
+independent-instance admission serialization, and fail-closed
+shared/non-leaf/path admission.
 Read-through falls through only on exact
 absence,
 treats promotion as non-semantic, and never reports cache durability as
@@ -1374,10 +1382,10 @@ therefore cannot collect a children-before-journal publication. Tests cover
 restart, torn-tail recovery, corrupt-journal rejection, count/byte limits,
 durable-child and non-overlapping-path admission, lifecycle exclusion,
 single-pass staging authentication, transfer completion, and stale GC plans.
-Destination-specific durability policy plumbing,
-encryption below plaintext identity, restart-safe aggregate quota,
-namespaced authorization, S3, and composed administrative inventory/GC remain
-open; therefore T-CAM-5.5 is not checked by this checkpoint.
+Destination-specific durability policy plumbing, encryption below plaintext
+identity, physical-filesystem quota, namespaced authorization, S3, and broader
+transform composition remain open; therefore T-CAM-5.5 is not checked by this
+checkpoint.
 
 The packed leaf now provides immutable bounded multi-object pack files, a
 checksummed persistent logical index with monotonic generations, full logical
@@ -1397,10 +1405,13 @@ admission, and physical configuration mismatch. Phase 5's composed-tier, S3,
 global-GC, archival, and realistic operator flights remain under T-CAM-5.7
 through T-CAM-5.9 rather than weakening this completed leaf contract.
 
-The memory, directory, and packed blob leaves now expose separately held,
-exclusive administrative fences for physical logical-object inventory. The
-memory and directory ref leaves separately fence the complete authoritative ref
-namespace. Object inventory streams exact placements under a
+The memory, directory, compressed-directory, and packed blob leaves now expose
+separately held, exclusive administrative fences for physical logical-object
+inventory. A logical-quota node exclusively owns one such leaf's fence and
+re-exports the same generation under its quota boundary so GC deletion updates
+the durable aggregate accounting. The memory and directory ref leaves
+separately fence the complete authoritative ref namespace. Object inventory
+streams exact placements under a
 backend-instance generation and supports idempotent deletion of an already
 planned candidate. Ref inventory streams exact name bindings under its own
 monotonic generation; every accepted replacement advances it, so same-value ABA

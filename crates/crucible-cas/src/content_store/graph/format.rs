@@ -8,6 +8,7 @@ use crate::content_store::{GraphViolation, StoreError};
 
 const GRAPH_CONFIGURATION_V1_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v1\0";
 const GRAPH_CONFIGURATION_V2_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v2\0";
+const GRAPH_CONFIGURATION_V3_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v3\0";
 
 pub(super) fn canonical_graph_configuration(
     config: &StoreGraphConfig,
@@ -17,7 +18,13 @@ pub(super) fn canonical_graph_configuration(
         .nodes
         .values()
         .any(|node| matches!(node, StoreNodeSpec::CompressedDirectory { .. }));
-    bytes.extend_from_slice(if has_compressed_directory {
+    let has_logical_quota = config
+        .nodes
+        .values()
+        .any(|node| matches!(node, StoreNodeSpec::LogicalQuota { .. }));
+    bytes.extend_from_slice(if has_logical_quota {
+        GRAPH_CONFIGURATION_V3_MAGIC
+    } else if has_compressed_directory {
         GRAPH_CONFIGURATION_V2_MAGIC
     } else {
         GRAPH_CONFIGURATION_V1_MAGIC
@@ -119,6 +126,18 @@ pub(super) fn canonical_graph_configuration(
             StoreNodeSpec::Metrics { child } => {
                 bytes.push(10);
                 encode_node_id(&mut bytes, child)?;
+            }
+            StoreNodeSpec::LogicalQuota {
+                child,
+                state_root,
+                maximum_objects,
+                maximum_logical_bytes,
+            } => {
+                bytes.push(12);
+                encode_node_id(&mut bytes, child)?;
+                encode_path(&mut bytes, state_root)?;
+                bytes.extend_from_slice(&maximum_objects.to_be_bytes());
+                bytes.extend_from_slice(&maximum_logical_bytes.to_be_bytes());
             }
         }
     }

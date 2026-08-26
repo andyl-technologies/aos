@@ -13,6 +13,7 @@ use super::compressed_directory::CompressedDirectoryBlobBackend;
 use super::directory::DirectoryBlobBackend;
 use super::memory::MemoryBlobBackend;
 use super::packed::PackedBlobBackend;
+use super::quota::{LogicalQuotaStore, MAXIMUM_LOGICAL_QUOTA_OBJECTS};
 use super::write_back::{
     StoreGraphWriteBackFence, WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackStore,
 };
@@ -152,6 +153,17 @@ pub enum StoreNodeSpec {
         /// Hard aggregate logical-byte bound for pending transfer roots.
         maximum_pending_bytes: u64,
     },
+    /// Enforces a restart-safe aggregate logical quota around one owned leaf.
+    LogicalQuota {
+        /// Exclusively owned physical child leaf.
+        child: StoreNodeId,
+        /// Trusted operator-owned quota state directory.
+        state_root: PathBuf,
+        /// Hard aggregate logical-object count.
+        maximum_objects: u64,
+        /// Hard aggregate authenticated logical bytes.
+        maximum_logical_bytes: u64,
+    },
     /// Emits bounded operational counters around one child.
     Metrics {
         /// Child node whose synchronous operations are observed.
@@ -176,6 +188,7 @@ impl StoreNodeSpec {
                 destination,
                 ..
             } => vec![staging, destination],
+            Self::LogicalQuota { child, .. } => vec![child],
             Self::Metrics { child } => vec![child],
         }
     }
@@ -192,6 +205,7 @@ impl StoreNodeSpec {
             Self::ReadThrough { .. } => StoreNodeKind::ReadThrough,
             Self::WriteThrough { .. } => StoreNodeKind::WriteThrough,
             Self::WriteBack { .. } => StoreNodeKind::WriteBack,
+            Self::LogicalQuota { .. } => StoreNodeKind::LogicalQuota,
             Self::Metrics { .. } => StoreNodeKind::Metrics,
         }
     }
@@ -231,6 +245,8 @@ pub enum StoreNodeKind {
     WriteThrough,
     /// Durable deferred write-back transfer.
     WriteBack,
+    /// Restart-safe aggregate logical quota.
+    LogicalQuota,
     /// Operational metrics facade.
     Metrics,
 }
@@ -315,12 +331,14 @@ impl StoreWriteBackFlushSummary {
     }
 }
 
-/// Separate physical-leaf administration returned during graph construction.
+/// Separate physical-placement administration returned during graph construction.
 ///
 /// This capability is not retained by [`StoreGraph`]. A campaign repository
 /// that receives only the ordinary graph therefore cannot inventory or delete
 /// physical placements. The daemon maintenance owner may retain this value and
-/// lend individual leaf capabilities to a generation-bound GC operation.
+/// lend individual administrative boundaries to a generation-bound GC
+/// operation. A logical-quota boundary owns and replaces its child leaf's
+/// otherwise direct capability.
 pub struct StoreGraphAdmin {
     configuration: StoreGraphConfigurationId,
     physical: BTreeMap<StoreNodeId, Arc<dyn BlobStoreAdmin>>,
@@ -333,7 +351,7 @@ impl StoreGraphAdmin {
         self.configuration
     }
 
-    /// Returns physical leaf capabilities in canonical node-ID order.
+    /// Returns physical administration boundaries in canonical node-ID order.
     #[must_use]
     pub fn physical(&self) -> Vec<StoreGraphPhysicalAdmin<'_>> {
         self.physical
@@ -346,7 +364,7 @@ impl StoreGraphAdmin {
     }
 }
 
-/// Borrowed administration capability for one exact admitted physical leaf.
+/// Borrowed administration capability for one exact admitted physical boundary.
 #[derive(Clone, Copy)]
 pub struct StoreGraphPhysicalAdmin<'a> {
     node: &'a StoreNodeId,
@@ -354,7 +372,7 @@ pub struct StoreGraphPhysicalAdmin<'a> {
 }
 
 impl<'a> StoreGraphPhysicalAdmin<'a> {
-    /// Returns the physical leaf's exact graph node ID.
+    /// Returns the administrative boundary's exact graph node ID.
     #[must_use]
     pub const fn node(self) -> &'a StoreNodeId {
         self.node
@@ -397,9 +415,10 @@ impl StoreGraph {
     /// Validates a graph and separately returns physical maintenance authority.
     ///
     /// The graph value carries only ordinary immutable-object operations. The
-    /// second return value owns every physical leaf's inventory/delete
-    /// capability in canonical node-ID order and should be retained only by the
-    /// daemon maintenance owner.
+    /// second return value owns every physical inventory/delete boundary in
+    /// canonical node-ID order and should be retained only by the daemon
+    /// maintenance owner. A logical quota replaces its exclusively owned
+    /// child's direct boundary.
     ///
     /// # Errors
     ///
@@ -417,6 +436,7 @@ impl StoreGraph {
         let mut metrics = BTreeMap::new();
         let mut write_back = BTreeMap::new();
         let root = instantiate(
+            configuration,
             &config.root,
             &config.nodes,
             &mut built,
@@ -623,6 +643,7 @@ fn validate_structure(config: &StoreGraphConfig) -> Result<(), StoreError> {
         ));
     }
     validate_administrative_paths(config)?;
+    validate_logical_quota_ownership(config)?;
 
     let mut visiting = BTreeSet::new();
     let mut visited = BTreeSet::new();
@@ -647,6 +668,7 @@ fn validate_administrative_paths(config: &StoreGraphConfig) -> Result<(), StoreE
             StoreNodeSpec::CompressedDirectory { root, .. } => Some((id, root, true)),
             StoreNodeSpec::Packed { root, .. } => Some((id, root, true)),
             StoreNodeSpec::WriteBack { journal_root, .. } => Some((id, journal_root, true)),
+            StoreNodeSpec::LogicalQuota { state_root, .. } => Some((id, state_root, true)),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -676,6 +698,38 @@ fn validate_administrative_paths(config: &StoreGraphConfig) -> Result<(), StoreE
                     GraphViolation::OverlappingAdministrativePath,
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_logical_quota_ownership(config: &StoreGraphConfig) -> Result<(), StoreError> {
+    let mut inbound = BTreeMap::<StoreNodeId, u32>::new();
+    for node in config.nodes.values() {
+        for child in node.child_ids() {
+            let count = inbound.entry(child.clone()).or_default();
+            *count = count.checked_add(1).ok_or_else(|| {
+                invalid_graph("<graph>", GraphViolation::InvalidLogicalQuotaChild)
+            })?;
+        }
+    }
+    for (id, node) in &config.nodes {
+        let StoreNodeSpec::LogicalQuota { child, .. } = node else {
+            continue;
+        };
+        let owned_leaf = matches!(
+            config.nodes.get(child),
+            Some(
+                StoreNodeSpec::Directory { .. }
+                    | StoreNodeSpec::CompressedDirectory { .. }
+                    | StoreNodeSpec::Packed { .. }
+            )
+        );
+        if !owned_leaf || inbound.get(child).copied() != Some(1) {
+            return Err(invalid_graph(
+                id.as_str(),
+                GraphViolation::InvalidLogicalQuotaChild,
+            ));
         }
     }
     Ok(())
@@ -740,6 +794,19 @@ fn validate_local_shape(id: &StoreNodeId, node: &StoreNodeSpec) -> Result<(), St
             id.as_str(),
             GraphViolation::InvalidCompressedObjectLimit,
         )),
+        StoreNodeSpec::LogicalQuota {
+            maximum_objects,
+            maximum_logical_bytes,
+            ..
+        } if *maximum_objects == 0
+            || *maximum_objects > MAXIMUM_LOGICAL_QUOTA_OBJECTS
+            || *maximum_logical_bytes == 0 =>
+        {
+            Err(invalid_graph(
+                id.as_str(),
+                GraphViolation::InvalidLogicalQuotaBounds,
+            ))
+        }
         _ => Ok(()),
     }
 }
@@ -795,6 +862,9 @@ fn validate_demands(config: &StoreGraphConfig) -> Result<(), StoreError> {
                 extend_demand(staging, &kinds, &mut demands, &mut queue);
                 extend_demand(destination, &kinds, &mut demands, &mut queue);
             }
+            StoreNodeSpec::LogicalQuota { child, .. } => {
+                extend_demand(child, &kinds, &mut demands, &mut queue);
+            }
             StoreNodeSpec::Metrics { child } => {
                 extend_demand(child, &kinds, &mut demands, &mut queue);
             }
@@ -826,6 +896,7 @@ fn extend_demand(
 }
 
 fn instantiate(
+    configuration: StoreGraphConfigurationId,
     id: &StoreNodeId,
     nodes: &BTreeMap<StoreNodeId, StoreNodeSpec>,
     built: &mut BTreeMap<StoreNodeId, Arc<dyn ImmutableBlobBackend>>,
@@ -876,7 +947,15 @@ fn instantiate(
         }
         StoreNodeSpec::Verified { child } => Arc::new(VerifiedStore::new(
             id.as_str(),
-            instantiate(child, nodes, built, physical, metrics, write_back)?,
+            instantiate(
+                configuration,
+                child,
+                nodes,
+                built,
+                physical,
+                metrics,
+                write_back,
+            )?,
         )),
         StoreNodeSpec::Routed { routes } => {
             let routes = routes
@@ -884,7 +963,15 @@ fn instantiate(
                 .map(|(kind, child)| {
                     Ok((
                         *kind,
-                        instantiate(child, nodes, built, physical, metrics, write_back)?,
+                        instantiate(
+                            configuration,
+                            child,
+                            nodes,
+                            built,
+                            physical,
+                            metrics,
+                            write_back,
+                        )?,
                     ))
                 })
                 .collect::<Result<BTreeMap<_, _>, StoreError>>()?;
@@ -897,7 +984,17 @@ fn instantiate(
         } => {
             let tiers = tiers
                 .iter()
-                .map(|child| instantiate(child, nodes, built, physical, metrics, write_back))
+                .map(|child| {
+                    instantiate(
+                        configuration,
+                        child,
+                        nodes,
+                        built,
+                        physical,
+                        metrics,
+                        write_back,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(TieredStore::new(
                 id.as_str(),
@@ -908,13 +1005,39 @@ fn instantiate(
         }
         StoreNodeSpec::ReadThrough { cache, source } => Arc::new(ReadThroughStore::new(
             id.as_str(),
-            instantiate(cache, nodes, built, physical, metrics, write_back)?,
-            instantiate(source, nodes, built, physical, metrics, write_back)?,
+            instantiate(
+                configuration,
+                cache,
+                nodes,
+                built,
+                physical,
+                metrics,
+                write_back,
+            )?,
+            instantiate(
+                configuration,
+                source,
+                nodes,
+                built,
+                physical,
+                metrics,
+                write_back,
+            )?,
         )),
         StoreNodeSpec::WriteThrough { children } => {
             let children = children
                 .iter()
-                .map(|child| instantiate(child, nodes, built, physical, metrics, write_back))
+                .map(|child| {
+                    instantiate(
+                        configuration,
+                        child,
+                        nodes,
+                        built,
+                        physical,
+                        metrics,
+                        write_back,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(WriteThroughStore::new(id.as_str(), children)?)
         }
@@ -927,8 +1050,24 @@ fn instantiate(
         } => {
             let store = Arc::new(WriteBackStore::new(
                 id.as_str(),
-                instantiate(staging, nodes, built, physical, metrics, write_back)?,
-                instantiate(destination, nodes, built, physical, metrics, write_back)?,
+                instantiate(
+                    configuration,
+                    staging,
+                    nodes,
+                    built,
+                    physical,
+                    metrics,
+                    write_back,
+                )?,
+                instantiate(
+                    configuration,
+                    destination,
+                    nodes,
+                    built,
+                    physical,
+                    metrics,
+                    write_back,
+                )?,
                 journal_root.clone(),
                 *maximum_pending_objects,
                 *maximum_pending_bytes,
@@ -937,10 +1076,48 @@ fn instantiate(
             store
         }
         StoreNodeSpec::Metrics { child } => {
-            let child = instantiate(child, nodes, built, physical, metrics, write_back)?;
+            let child = instantiate(
+                configuration,
+                child,
+                nodes,
+                built,
+                physical,
+                metrics,
+                write_back,
+            )?;
             let (backend, state) = MetricsStore::new(id.as_str(), child);
             metrics.insert(id.clone(), state);
             Arc::new(backend)
+        }
+        StoreNodeSpec::LogicalQuota {
+            child,
+            state_root,
+            maximum_objects,
+            maximum_logical_bytes,
+        } => {
+            let child_backend = instantiate(
+                configuration,
+                child,
+                nodes,
+                built,
+                physical,
+                metrics,
+                write_back,
+            )?;
+            let child_admin = physical.remove(child).ok_or_else(|| {
+                invalid_graph(id.as_str(), GraphViolation::InvalidLogicalQuotaChild)
+            })?;
+            let store = Arc::new(LogicalQuotaStore::open(
+                id.as_str(),
+                state_root.clone(),
+                *maximum_objects,
+                *maximum_logical_bytes,
+                configuration,
+                child_backend,
+                child_admin,
+            )?);
+            physical.insert(id.clone(), store.clone());
+            store
         }
     };
     built.insert(id.clone(), backend.clone());

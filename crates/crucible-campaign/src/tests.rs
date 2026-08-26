@@ -572,6 +572,11 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             "physical-record",
         ),
         (
+            "crucible.content-store.logical-quota-state",
+            "crucible-cas::content_store",
+            "administrative-record",
+        ),
+        (
             "crucible.content-store.pack",
             "crucible-cas::content_store",
             "physical-record",
@@ -591,7 +596,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             .get(schema)
             .unwrap_or_else(|| panic!("missing lower schema {schema}"));
         let expected_version = if schema == "crucible.content-store.graph-configuration" {
-            "2"
+            "3"
         } else {
             "1"
         };

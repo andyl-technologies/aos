@@ -344,7 +344,7 @@ WriteBackStore      stage locally and expose archival progress without claiming 
 PackedStore         map many logical small objects into immutable physical packs
 CompressedStore     encode/decode without changing logical identity
 EncryptedStore      authenticated physical encryption outside plaintext identity
-QuotaStore          enforce bounded physical and logical accounting
+LogicalQuotaStore   enforce bounded aggregate logical accounting
 MetricsStore        emit operation/stream/byte/error/latency counters without changing results
 NamespacedStore     isolate deployments and authorization domains
 ```
@@ -404,6 +404,50 @@ reports authenticated logical lengths, not physical frame lengths. Compressed
 and plaintext directory roots must not overlap because their physical record
 grammars differ.
 
+The initial `LogicalQuota` composition owns exactly one durable directory,
+compressed-directory, or packed leaf. Admission rejects an ephemeral memory or
+non-leaf child and any second incoming edge to that child. Construction transfers the child's
+separate inventory/delete capability into the quota node, and
+`StoreGraphAdmin` exposes the quota node instead of its child. Consequently a
+cooperating GC deletion cannot bypass reclamation accounting. The quota has a
+nonzero aggregate object-count ceiling no greater than 67,108,864 and a nonzero
+authenticated-logical-byte ceiling. It is deliberately a logical quota:
+physical filesystem allocation, pack slack,
+compression overhead, and aggregate writable storage require the leaf's
+filesystem/backend quota and are not inferred from logical lengths.
+
+One exclusive cross-process state lock serializes every admitted put, inventory
+fence, and deletion. Before a child mutation the quota durably publishes a
+dirty state record. A clean completion durably replaces it with the new exact
+count and logical-byte usage. On restart, or after a commit-indeterminate child
+operation left the record dirty, the wrapper acquires the owned child inventory
+fence, streams at most the configured count and byte ceilings, and publishes a
+repaired clean state before admitting more work. A missing state record uses
+the same bounded inventory initialization. A malformed, wrong-binding, or
+over-quota state fails closed. Reusing the same quota state root with a changed
+graph configuration also fails closed.
+
+The private registered v1 state is exactly:
+
+```text
+"CRUCQ001"
+graph_and_node_binding[32]
+objects:u64be
+logical_bytes:u64be
+dirty:u8                         # exactly 0 or 1
+checksum[32]
+```
+
+`graph_and_node_binding =
+BLAKE3("crucible.content-store.logical-quota-binding.v1" ||
+BE64(len(node_id)) || node_id || graph_configuration_id ||
+maximum_objects:u64be || maximum_logical_bytes:u64be)`.
+`checksum =
+BLAKE3("crucible.content-store.logical-quota-state.v1" || all preceding state
+bytes)`. Same-directory staging, file sync, atomic rename, and directory sync
+make each acknowledged state transition restart-safe. The state root is an
+absolute, non-overlapping administrative path in the graph identity.
+
 The registered v1 journal encoding is:
 
 ```text
@@ -451,6 +495,8 @@ demand propagation before constructing the root:
   streaming stores that do not themselves defer transfer, pending count/byte
   bounds are nonzero and bounded, and journal directories do not lexically
   overlap a blob directory or another journal directory;
+- a logical quota has nonzero count/byte bounds, exclusively owns one durable
+  physical leaf, and uses a non-overlapping absolute state directory;
 - public introspection returns only node ID, built-in kind, and derived
   capabilities, never a directory root, endpoint, or credential.
 
@@ -482,20 +528,24 @@ bypass these checks.
 `StoreGraph::build_with_admin` returns the ordinary immutable graph and a
 separate, non-cloneable `StoreGraphAdmin`. The graph does not retain or expose
 physical inventory/delete authority. The administrative value retains exactly
-one capability for every admitted memory, directory, or packed leaf and lends
-them in canonical node-ID order to the daemon maintenance owner. Shared graph
-paths therefore do not duplicate a leaf inventory, and a campaign repository
-that receives only `StoreGraph` cannot construct a deletion fence. Both values
-retain the same content-derived `StoreGraphConfigurationId`; GC accepts the
-administrative value itself and cannot pair independently supplied leaves with
-an unrelated graph hash.
+one capability for every admitted memory, directory, compressed-directory, or
+packed leaf except that a logical-quota node owns and replaces its child's
+direct capability. It lends those boundaries in canonical node-ID order to the
+daemon maintenance owner. Shared graph paths therefore do not duplicate a leaf
+inventory, and a campaign repository that receives only `StoreGraph` cannot
+construct a deletion fence. Both values retain the same content-derived
+`StoreGraphConfigurationId`; GC accepts the administrative value itself and
+cannot pair independently supplied leaves with an unrelated graph hash.
 
-The registered `crucible.content-store.graph-configuration` schemas v1 and v2
-freeze that identity basis. New writers retain the byte-for-byte v1 body when
-the graph has no compressed-directory node and emit v2 when it does. A v2 body
-uses the same grammar and existing tags as v1, changes the magic suffix from
-`v1` to `v2`, and adds tag 11. Every persistent path is an absolute host-local Unix path;
-its opaque bytes, rather than a lossy Unicode rendering, enter the identity.
+The registered `crucible.content-store.graph-configuration` schemas v1 through
+v3 freeze that identity basis. New writers retain the byte-for-byte v1 body
+when the graph has neither compressed-directory nor logical-quota nodes, emit
+v2 when it has a compressed-directory node but no logical quota, and emit v3
+when it has any logical-quota node. V2 uses the same grammar and existing tags
+as v1, changes the magic suffix from `v1` to `v2`, and adds tag 11. V3 changes
+the suffix to `v3`, retains tags 1 through 11, and adds tag 12. Every persistent
+path is an absolute host-local Unix path; its opaque bytes, rather than a lossy
+Unicode rendering, enter the identity.
 Node IDs and counts use their bounds above, object-kind tags and routed entries
 are ordered by ascending ASCII tag, nodes by ascending node ID, and ordered
 child lists retain their configured order. The canonical body is:
@@ -529,6 +579,9 @@ node tag 9  WriteBack:   staging:string_u16 || destination:string_u16
 node tag 10 Metrics:     child:string_u16
 node tag 11 CompressedDirectory:
                          root:path_u32 || maximum_logical_object_bytes:u64be
+node tag 12 LogicalQuota: child:string_u16 || state_root:path_u32
+                         || maximum_objects:u64be
+                         || maximum_logical_bytes:u64be
 ```
 
 Let `D` be `crucible.content-store.graph-configuration-id.v1` and `B` the
@@ -1128,3 +1181,7 @@ logs, or placement receipts returned to ordinary operators.
 - **[CSTORE-22]** Driver credentials, endpoints, local roots, bucket names,
   encryption randomness, placement latency, and cache behavior MUST remain
   operational and MUST NOT affect modeled time, guidance, or canonical identity.
+- **[CSTORE-23]** An aggregate logical-quota boundary MUST durably mark every
+  child mutation indeterminate before it begins, recover exact count/byte usage
+  from a bounded fenced inventory, and own the child's deletion capability so
+  reclamation cannot bypass accounting.
