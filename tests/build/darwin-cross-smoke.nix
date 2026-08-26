@@ -52,19 +52,31 @@
               '  CFIndex maximum = CFStringGetMaximumSizeForEncoding(CFStringGetLength(label), kCFStringEncodingUTF8);' \
               '  CFTimeZoneRef zone = CFTimeZoneCopyDefault();' \
               '  CFStringRef zoneName = zone == NULL ? NULL : CFTimeZoneGetName(zone);' \
+              '  CFStringRef path = CFStringCreateWithCString(kCFAllocatorDefault, ".", kCFStringEncodingUTF8);' \
+              '  CFURLRef pathURL = path == NULL ? NULL : CFURLCreateWithFileSystemPath(kCFAllocatorDefault, path, kCFURLPOSIXPathStyle, true);' \
+              '  UInt8 pathBuffer[32];' \
+              '  Boolean represented = pathURL != NULL && CFURLGetFileSystemRepresentation(pathURL, true, pathBuffer, sizeof(pathBuffer));' \
               '  CFURLRef url = CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault, (const UInt8 *)".", 1, false);' \
               '  CFBundleRef bundle = url == NULL ? NULL : CFBundleCreate(kCFAllocatorDefault, url);' \
+              '  CFURLRef executable = bundle == NULL ? NULL : CFBundleCopyExecutableURL(bundle);' \
               '  CFStringRef identifier = bundle == NULL ? NULL : CFBundleGetIdentifier(bundle);' \
               '  CFTypeRef value = bundle == NULL ? NULL : CFBundleGetValueForInfoDictionaryKey(bundle, CFSTR("CFBundleIdentifier"));' \
+              '  CFUUIDRef uuid = CFUUIDCreate(kCFAllocatorDefault);' \
+              '  CFStringRef uuidString = uuid == NULL ? NULL : CFUUIDCreateString(kCFAllocatorDefault, uuid);' \
               '  CFStringRef typeDescription = CFCopyTypeIDDescription(CFStringGetTypeID());' \
               '  CFDictionaryRef proxies = SCDynamicStoreCopyProxies(NULL);' \
               '  OSStatus launchStatus = LSOpenCFURLRef(url, NULL);' \
               '  if (proxies != NULL) CFRelease(proxies);' \
               '  if (typeDescription != NULL) CFRelease(typeDescription);' \
+              '  if (uuidString != NULL) CFRelease(uuidString);' \
+              '  if (uuid != NULL) CFRelease(uuid);' \
+              '  if (executable != NULL) CFRelease(executable);' \
               '  if (bundle != NULL) CFRelease(bundle);' \
               '  if (url != NULL) CFRelease(url);' \
+              '  if (pathURL != NULL) CFRelease(pathURL);' \
+              '  if (path != NULL) CFRelease(path);' \
               '  if (zone != NULL) CFRelease(zone);' \
-              '  return label == NULL || maximum < 0 || zoneName == NULL || identifier == value || launchStatus == -1;' \
+              '  return label == NULL || maximum < 0 || zoneName == NULL || identifier == value || !represented || launchStatus == -1;' \
               '}' \
               > framework-smoke.c
             "$CC" framework-smoke.c \
@@ -79,7 +91,10 @@
               '#include <resolv.h>' \
               'int main(void) {' \
               '  unsigned char answer[NS_PACKETSZ];' \
-              '  return res_query("localhost", ns_c_in, ns_t_a, answer, sizeof(answer)) < -1;' \
+              '  char expanded[NS_MAXDNAME];' \
+              '  int query = res_query("localhost", ns_c_in, ns_t_a, answer, sizeof(answer));' \
+              '  int expansion = dn_expand(answer, answer + sizeof(answer), answer, expanded, sizeof(expanded));' \
+              '  return query < -1 || expansion < -1;' \
               '}' \
               > resolver-smoke.c
             "$CC" resolver-smoke.c -o "$c/bin/aos-darwin-resolver-smoke"
