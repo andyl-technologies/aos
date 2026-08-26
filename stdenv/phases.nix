@@ -83,6 +83,8 @@ let
   fixupPhase = {
     name = "fixup";
     script = ''
+      object_format="''${AOS_OBJECT_FORMAT:-elf}"
+
       # Strip debug info. --strip-unneeded on .so removes debug sections
       # (including DWARF .debug_line that embeds gcc include paths as
       # /nix/store/<hash>-gcc-stage2/...) while preserving the dynamic
@@ -91,7 +93,7 @@ let
       # gcc-stage2 into its runtime closure via Nix's reference scanner.
       if [ -z "''${dontStrip:-}" ]; then
         echo "stripping..."
-        find "$out" -type f -name '*.so*' -exec strip --strip-unneeded {} \; 2>/dev/null || true
+        find "$out" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) -exec strip --strip-unneeded {} \; 2>/dev/null || true
         find "$out" -type f -name '*.a' -exec strip -S {} \; 2>/dev/null || true
         if [ -d "$out/bin" ]; then
           find "$out/bin" -type f -exec strip -s {} \; 2>/dev/null || true
@@ -134,7 +136,7 @@ let
       fi
 
       # Shrink ELF RPATHs
-      if [ -z "''${dontPatchELF:-}" ] && command -v patchelf >/dev/null 2>&1; then
+      if [ "$object_format" = elf ] && [ -z "''${dontPatchELF:-}" ] && command -v patchelf >/dev/null 2>&1; then
         echo "shrinking ELF RPATHs..."
         find "$out" -type f \( -name '*.so*' -o -perm -u+x \) | while read f; do
           patchelf --shrink-rpath "$f" 2>/dev/null || true
@@ -142,7 +144,7 @@ let
       fi
 
       # Validate runpaths
-      if [ -z "''${dontValidateRunpath:-}" ] && command -v patchelf >/dev/null 2>&1; then
+      if [ "$object_format" = elf ] && [ -z "''${dontValidateRunpath:-}" ] && command -v patchelf >/dev/null 2>&1; then
         echo "validating ELF runpaths..."
         find "$out" -type f -perm -u+x | while read f; do
           file "$f" 2>/dev/null | grep -q ELF || continue
@@ -166,6 +168,29 @@ let
               echo "WARNING: $f needs $lib but it's not in RPATH"
             fi
           done
+        done
+      fi
+
+      # Cross builds cannot execute their Darwin outputs. Validate every
+      # Mach-O candidate structurally and fail if it has the wrong CPU type.
+      if [ "$object_format" = macho ] && [ -z "''${dontValidateMachO:-}" ]; then
+        echo "validating Mach-O outputs for ''${AOS_TARGET_PLATFORM:-Darwin}..."
+        case "''${AOS_TARGET_ARCH:-}" in
+          x86_64) expected_cpu=X86_64 ;;
+          arm64) expected_cpu=ARM64 ;;
+          *)
+            echo "unknown Darwin target architecture: ''${AOS_TARGET_ARCH:-unset}" >&2
+            exit 1
+            ;;
+        esac
+
+        find "$out" -type f \( -name '*.dylib' -o -name '*.dylib.*' -o -name '*.so' -o -perm -u+x \) | while read f; do
+          header=$(objdump --macho --private-header "$f" 2>/dev/null) || continue
+          if ! echo "$header" | grep -q "$expected_cpu"; then
+            echo "Mach-O architecture mismatch in $f: expected $expected_cpu" >&2
+            echo "$header" >&2
+            exit 1
+          fi
         done
       fi
 
@@ -228,7 +253,11 @@ in rec {
         {
           name = "check";
           script = ''
-            make ${checkTarget} -j$NIX_BUILD_CORES
+            if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+              echo "skipping target runtime checks while cross-compiling for $AOS_TARGET_PLATFORM"
+            else
+              make ${checkTarget} -j$NIX_BUILD_CORES
+            fi
           '';
         }
       ]
@@ -274,7 +303,11 @@ in rec {
         {
           name = "check";
           script = ''
-            cd build && ctest --output-on-failure -j$NIX_BUILD_CORES
+            if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+              echo "skipping target runtime checks while cross-compiling for $AOS_TARGET_PLATFORM"
+            else
+              cd build && ctest --output-on-failure -j$NIX_BUILD_CORES
+            fi
           '';
         }
       ]
@@ -321,7 +354,11 @@ in rec {
         {
           name = "check";
           script = ''
-            meson test -C build --no-rebuild ${mesonTestFlags}
+            if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+              echo "skipping target runtime checks while cross-compiling for $AOS_TARGET_PLATFORM"
+            else
+              meson test -C build --no-rebuild ${mesonTestFlags}
+            fi
           '';
         }
       ]
@@ -370,6 +407,12 @@ in rec {
             }
             export GONOSUMDB="*"
             export GONOSUMCHECK="*"
+            if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+              export GOOS="$AOS_GOOS"
+              export GOARCH="$AOS_GOARCH"
+              export CC="''${CC}"
+              export CXX="''${CXX}"
+            fi
             mkdir -p "$GOPATH" "$GOCACHE"
 
           ''
@@ -407,16 +450,20 @@ in rec {
         {
           name = "check";
           script = ''
-            go test \
-              -v \
-              ${
+            if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+              echo "skipping target runtime checks while cross-compiling for $AOS_TARGET_PLATFORM"
+            else
+              go test \
+                -v \
+                ${
               if !doParallelCheck
               then "-p 1"
               else ""
             } \
-              ${tagsFlag} \
-              ${goTestFlags}
-            go vet ${goTestFlags}
+                ${tagsFlag} \
+                ${goTestFlags}
+              go vet ${goTestFlags}
+            fi
           '';
         }
       ]
@@ -507,6 +554,9 @@ in rec {
         script = ''
           export CARGO_HOME="$TMPDIR/cargo"
           export CARGO_INCREMENTAL=0
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            export CARGO_BUILD_TARGET="$AOS_RUST_TARGET"
+          fi
           ${cargoEnvExports}
           mkdir -p "$CARGO_HOME"
           mkdir -p .cargo
@@ -559,7 +609,10 @@ in rec {
         {
           name = "check";
           script = ''
-            ${
+            if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+              echo "skipping target runtime checks while cross-compiling for $AOS_TARGET_PLATFORM"
+            else
+              ${
               if cargoNextest != null
               then ''
                 cargo nextest run \
@@ -588,6 +641,7 @@ in rec {
                   ${cargoTestFlags}
               ''
             }
+            fi
           '';
         }
       ]
