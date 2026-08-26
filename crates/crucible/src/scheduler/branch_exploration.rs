@@ -1,8 +1,8 @@
 //! Explorer-selected scheduler branch admission and replay choices.
 
 use super::*;
-use crate::SelectionDecision;
 use crate::model::{BindingSearchChoice, FaultCoordinate};
+use crate::{SelectionDecision, SignalFaultCampaignBranch};
 use crucible_protocol::app_random_branch_plan::MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES;
 
 impl SingleScheduler {
@@ -246,6 +246,48 @@ impl SingleScheduler {
             nanos: self.frontier.ticks,
         };
         let append = self.emit_quantum_event_log(&[], &decisions, &[], at, true)?;
+        self.configuration = configuration.clone();
+        self.quanta = self.quanta.saturating_add(1);
+        self.yield_to_control_inbox();
+        Ok((configuration, append))
+    }
+
+    /// Appends one authenticated promoted signal-fault campaign branch.
+    ///
+    /// Unlike [`Self::append_branch_prefix_overrides`], this path admits the
+    /// typed campaign `Selection` and its optional producer override together.
+    /// The opaque branch can only be constructed from the standardized
+    /// signal-fault producer contract, and must name this scheduler's exact
+    /// configuration and frontier before any decision is recorded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when the branch names a
+    /// different parent or virtual-time boundary, or when event-log recording
+    /// fails.
+    pub fn append_signal_fault_campaign_branch(
+        &mut self,
+        branch: &SignalFaultCampaignBranch,
+    ) -> Result<(Configuration, SchedulerEventLogAppend), SchedulerError> {
+        if self.configuration != *branch.parent() || self.frontier != branch.frontier() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "signal-fault campaign branch does not match the current scheduler boundary",
+                ),
+            });
+        }
+        let configuration = self.step_quantum(branch.decisions());
+        if configuration != *branch.selected() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "signal-fault campaign branch selected configuration is inconsistent",
+                ),
+            });
+        }
+        let at = SimInstant {
+            nanos: self.frontier.ticks,
+        };
+        let append = self.emit_quantum_event_log(&[], branch.decisions(), &[], at, true)?;
         self.configuration = configuration.clone();
         self.quanta = self.quanta.saturating_add(1);
         self.yield_to_control_inbox();

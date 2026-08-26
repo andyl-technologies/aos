@@ -3,7 +3,7 @@
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
 #![allow(clippy::expect_used)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -106,7 +106,7 @@ fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
 }
 
 #[test]
-fn promoted_signal_fault_branch_remains_fail_closed_before_live_injection() {
+fn promoted_signal_fault_branch_is_admitted_only_by_its_typed_plan() {
     let scenario = ScenarioDef::from_canonical_material(
         "crucible.test.campaign.signal-fault-branch",
         "signal fault branch",
@@ -138,9 +138,19 @@ fn promoted_signal_fault_branch_remains_fail_closed_before_live_injection() {
         .resolve_branch(&selection)
         .expect("candidate should reconstruct");
 
+    let empty = crucible::SignalFaultCampaignReplayPlan::empty(branch.selected().clone());
     assert_eq!(
-        unsupported_fresh_replay_decision(branch.selected()),
+        unsupported_fresh_replay_decision(branch.selected(), &empty),
         Some(1)
+    );
+    let plan = crucible::SignalFaultCampaignReplayPlan::new(
+        branch.selected().clone(),
+        vec![branch.clone()],
+    )
+    .expect("typed replay plan");
+    assert_eq!(
+        unsupported_fresh_replay_decision(branch.selected(), &plan),
+        None
     );
 }
 
@@ -476,6 +486,7 @@ struct FakeFreshLifecycle {
     cleanup_error: bool,
     pending: Vec<crucible_qemu::QemuNodeSelectablePendingRequest>,
     replies: Arc<Mutex<Vec<crucible_protocol::SelectionReply>>>,
+    signal_fault_branches: VecDeque<crucible::SignalFaultCampaignBranch>,
 }
 
 impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
@@ -487,6 +498,25 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
             .lock()
             .expect("fresh lifecycle order")
             .push("replay");
+        if let Some(branch) = self.signal_fault_branches.front().cloned()
+            && branch.parent() == &request.configuration
+        {
+            self.signal_fault_branches.pop_front();
+            return Ok(crucible::QuantumOutcome {
+                configuration: branch.selected().clone(),
+                frontier: branch.frontier(),
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: branch.decisions().to_vec(),
+                discovered_choices: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: crucible::EventLogOffset::default(),
+                scheduler_quiescence: None,
+            });
+        }
         let configuration = step(
             &request.configuration,
             Decision::RngDraw(RngDecision {
@@ -593,6 +623,7 @@ impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
         _scenario: &ScenarioDef,
         _source: &crucible::ScenarioDefForm,
         _start: &Configuration,
+        signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
         _context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
         self.order
@@ -604,6 +635,7 @@ impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
             cleanup_error: self.cleanup_error,
             pending: Vec::new(),
             replies: Arc::new(Mutex::new(Vec::new())),
+            signal_fault_branches: signal_fault_replay.branches().iter().cloned().collect(),
         })
     }
 }
@@ -721,6 +753,7 @@ impl QemuFreshAttemptLifecycleFactory for FakeGenesisCheckpointLifecycleFactory 
         _scenario: &ScenarioDef,
         source: &crucible::ScenarioDefForm,
         start: &Configuration,
+        _signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
         _context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
         self.order
@@ -1168,6 +1201,74 @@ fn fresh_runner_replays_supported_non_genesis_start_before_driver() {
 }
 
 #[test]
+fn fresh_runner_replays_authenticated_signal_fault_plan_before_driver() {
+    let base = fresh_runner_input();
+    let CrucibleResolvedAttemptStart::Discover {
+        configuration: parent,
+    } = base.start()
+    else {
+        panic!("fresh runner fixture should discover genesis");
+    };
+    let choice = BindingSearchChoice {
+        id: SearchChoiceId::from_content_hash(crucible::ContentHash::from_bytes(
+            b"fresh-runner-signal-choice",
+        )),
+        candidates_digest: crucible::ContentHash::from_bytes(b"fresh-runner-signal-candidates"),
+        candidate_count: 2,
+        selected_index: None,
+        overridden: false,
+    };
+    let selectable = SignalFaultSelectable::from_frontier(&SearchRuntimeFrontier {
+        configuration: parent.clone(),
+        at: VirtualTime::default(),
+        choices: SearchFrontierChoices::from_decisions(
+            choice
+                .override_decisions(parent.id())
+                .into_iter()
+                .map(Decision::Override),
+        ),
+    })
+    .expect("fresh runner signal selectable");
+    let selection = selectable
+        .branch_selection(parent, 1)
+        .expect("fresh runner signal selection");
+    let branch = selectable
+        .resolve_branch(&selection)
+        .expect("fresh runner signal branch");
+    let replay = crucible::SignalFaultCampaignReplayPlan::new(
+        branch.selected().clone(),
+        vec![branch.clone()],
+    )
+    .expect("fresh runner signal replay plan");
+    let input = non_genesis_fresh_runner_input_with_decisions(branch.decisions().to_vec())
+        .with_test_signal_fault_replay(replay);
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+
+    let outcome = runner
+        .execute(&input, &fresh_runner_context())
+        .expect("typed signal-fault replay should reach the modeled driver");
+
+    assert!(matches!(
+        outcome.product(),
+        AttemptExecutionProduct::ExactCheckpoint(_)
+    ));
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "replay", "drive", "shutdown", "seal"]
+    );
+}
+
+#[test]
 fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
     let node = NodeId {
         name: String::from("router-a"),
@@ -1236,7 +1337,10 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         Decision::Selection(SelectionDecision::new(&default_selection)),
     );
     assert_eq!(
-        unsupported_fresh_replay_decision(&default_target),
+        unsupported_fresh_replay_decision(
+            &default_target,
+            &crucible::SignalFaultCampaignReplayPlan::empty(default_target.clone()),
+        ),
         None,
         "the runner prefilter must admit default guest replay"
     );
@@ -1260,6 +1364,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
             crucible_qemu::QemuNodeSelectablePendingRequest::from_test_parts(node, pending),
         ],
         replies: Arc::clone(&replies),
+        signal_fault_branches: VecDeque::new(),
     };
     let mut current = parent;
 

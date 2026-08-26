@@ -160,6 +160,7 @@ fn production_search_choices_must_cross_scheduler_boundary_before_checkpoint() {
         direction: FaultDirection::AToB,
     };
     let plan = finite_search_plan(&target);
+    let replay_plan = plan.clone();
     let mut nodes = QemuNodeSet::new();
     let mut runtime = ProductionFaultRuntime::new(
         plan,
@@ -193,6 +194,35 @@ fn production_search_choices_must_cross_scheduler_boundary_before_checkpoint() {
     runtime
         .checkpoint(&mut nodes)
         .unwrap_or_else(|error| panic!("drained search choice should checkpoint: {error}"));
+
+    let choice = evaluation.search_choices[0].clone();
+    let expected = SearchOverride {
+        candidate_index: 1,
+        candidates_digest: choice.candidates_digest,
+        parent_branch: Some(ContentHash::from_bytes(b"campaign-parent")),
+    };
+    let mut replay = ProductionFaultRuntime::new_with_search_overrides(
+        replay_plan,
+        Some(Arc::new(NoArtifacts)),
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"production-search-choice"),
+        test_host_manifests(),
+        &nodes,
+        BTreeMap::from([(choice.id, expected.clone())]),
+    )
+    .unwrap_or_else(|error| panic!("search replay runtime should initialize: {error}"));
+    assert!(!replay.search_override_consumed(choice.id, &expected));
+    replay
+        .evaluate_boundary(
+            FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            0,
+            &mut nodes,
+        )
+        .unwrap_or_else(|error| panic!("search replay boundary should evaluate: {error}"));
+    assert!(replay.search_override_consumed(choice.id, &expected));
 }
 
 #[test]

@@ -654,9 +654,15 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         .into_event_graph();
     let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
     let nodes = ProductionNodeSet::new();
+    let artifacts = (!source.plan().fault_signals().programs().is_empty()).then(|| {
+        let store: Arc<dyn crucible::model::DagStore> =
+            Arc::new(crucible::model::MemoryDagStore::new());
+        Arc::new(crucible::model::OwnedDagSignalArtifactProvider::new(store))
+            as Arc<dyn crucible::model::SignalArtifactProvider>
+    });
     let fault_runtime = ProductionFaultRuntime::new(
         source.plan().fault_signals().clone(),
-        None,
+        artifacts,
         SignalBoundarySnapshot::default(),
         scenario.id(),
         super::super::fault_implementation::test_host_manifests(),
@@ -692,6 +698,7 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         checkpoint_terminal_cause: None,
         initial_lifecycle_observations_pending: true,
         branch: None,
+        signal_fault_branches: VecDeque::new(),
         launch_configs: BTreeMap::new(),
         block_bindings: BTreeMap::new(),
         ninep_bindings: BTreeMap::new(),
@@ -747,6 +754,304 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         .reserve_lifecycle_state_encoding(source.plan().fault_signals().resource_limits(), 0, 0)
         .unwrap_or_else(|error| panic!("test lifecycle state should reserve: {error}"));
     lifecycle
+}
+
+fn nonterminal_signal_replay_scenario() -> ScenarioDefForm {
+    let base = crucible::crash_restart_scenario()
+        .unwrap_or_else(|error| panic!("built-in scenario should validate: {error}"))
+        .scenario;
+    ScenarioDefForm::from_components(
+        base.world(),
+        &crucible::Plan::empty(),
+        &crucible::Properties::empty(),
+        Seed::from_u64(7),
+    )
+    .unwrap_or_else(|error| panic!("nonterminal signal replay scenario should validate: {error}"))
+}
+
+fn finite_signal_replay_scenario() -> ScenarioDefForm {
+    let base = crucible::crash_restart_scenario()
+        .unwrap_or_else(|error| panic!("built-in scenario should validate: {error}"))
+        .scenario;
+    let signal_id = |value: &str| {
+        crucible::model::SignalId::parse(value)
+            .unwrap_or_else(|error| panic!("signal ID should validate: {error}"))
+    };
+    let world = base
+        .world()
+        .clone()
+        .with_fault_topology(crucible::model::WorldFaultTopology {
+            network_interfaces: vec![
+                crucible::model::WorldNetworkInterface {
+                    id: signal_id("campaign-if-a"),
+                    endpoint: signal_id("db-0"),
+                    technology: crucible::model::WorldNetworkTechnology::Ethernet,
+                    addresses: Vec::new(),
+                    fault_domains: Vec::new(),
+                },
+                crucible::model::WorldNetworkInterface {
+                    id: signal_id("campaign-if-b"),
+                    endpoint: signal_id("db-1"),
+                    technology: crucible::model::WorldNetworkTechnology::Ethernet,
+                    addresses: Vec::new(),
+                    fault_domains: Vec::new(),
+                },
+                crucible::model::WorldNetworkInterface {
+                    id: signal_id("campaign-if-c"),
+                    endpoint: signal_id("db-2"),
+                    technology: crucible::model::WorldNetworkTechnology::Ethernet,
+                    addresses: Vec::new(),
+                    fault_domains: Vec::new(),
+                },
+            ],
+            network_segments: [
+                ("campaign-segment-ab", "campaign-if-a", "campaign-if-b"),
+                ("campaign-segment-bc", "campaign-if-b", "campaign-if-c"),
+                ("campaign-segment-ac", "campaign-if-a", "campaign-if-c"),
+            ]
+            .into_iter()
+            .map(
+                |(segment, interface_a, interface_b)| crucible::model::WorldNetworkSegment {
+                    id: signal_id(segment),
+                    kind: crucible::model::WorldNetworkSegmentKind::Ethernet,
+                    interface_a: signal_id(interface_a),
+                    interface_b: signal_id(interface_b),
+                    minimum_latency_nanos: 1,
+                    mtu_bytes: 1_500,
+                    medium: None,
+                    forwarders: Vec::new(),
+                    fault_domains: Vec::new(),
+                },
+            )
+            .collect(),
+            ..crucible::model::WorldFaultTopology::default()
+        })
+        .unwrap_or_else(|error| panic!("test fault topology should validate: {error}"));
+    let segment = world
+        .fault_topology()
+        .network_segments
+        .first()
+        .unwrap_or_else(|| panic!("built-in scenario should retain a network segment"));
+    let target = crucible::model::ResolvedFaultTarget::NetworkSegment {
+        segment: crucible::model::FaultObjectId::parse(segment.id.as_str())
+            .unwrap_or_else(|error| panic!("network segment should be a fault object: {error}")),
+        direction: crucible::model::FaultDirection::AToB,
+    };
+    let output = crucible::model::SignalId::parse("campaign-signal-output")
+        .unwrap_or_else(|error| panic!("signal ID should validate: {error}"));
+    let program = crucible::model::SignalProgram::new(
+        vec![crucible::model::SignalNode {
+            id: output.clone(),
+            domain: crucible::model::SignalDomain::VirtualTime,
+            output: crucible::model::SignalShape::new(
+                crucible::model::SignalValueType::U64,
+                crucible::model::SignalUnit::VirtualNanoseconds,
+                0,
+            )
+            .unwrap_or_else(|error| panic!("signal shape should validate: {error}")),
+            inputs: Vec::new(),
+            kind: crucible::model::SignalNodeKind::Constant {
+                value: crucible::model::SignalValue::U64(5),
+            },
+        }],
+        vec![output],
+        crucible::model::SignalResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("signal program should validate: {error}"));
+    let targets = crucible::model::ResolvedTargetSet::new(vec![target], false)
+        .unwrap_or_else(|error| panic!("fault target should validate: {error}"));
+    let effect = crucible::model::EffectRequest::new(
+        crucible::model::EFFECT_SEMANTIC_VERSION,
+        crucible::model::EffectLifetime::Persistent,
+        crucible::model::EffectSpecification::Network(
+            crucible::model::NetworkEffectSpecification::PropagationDelay {
+                delay_nanos: Some(
+                    crucible::model::PositiveU64::new("delay_nanos", 1)
+                        .unwrap_or_else(|error| panic!("delay should validate: {error}")),
+                ),
+                distance_velocity_lookup: None,
+            },
+        ),
+    )
+    .unwrap_or_else(|error| panic!("fault effect should validate: {error}"));
+    let binding = crucible::model::FaultBinding::new(
+        crucible::model::FaultObjectId::parse("campaign-signal-binding")
+            .unwrap_or_else(|error| panic!("binding ID should validate: {error}")),
+        program.exported_outputs().to_vec(),
+        crucible::model::BindingSampling::AtBoundary,
+        crucible::model::BindingMapping::PiecewiseParameter {
+            parameter: crucible::model::MappedEffectParameter::DurationNanos,
+            points: vec![
+                crucible::model::BindingMapPoint {
+                    input: crucible::model::SignalValue::U64(0),
+                    output: crucible::model::SignalValue::DurationNanos(10),
+                },
+                crucible::model::BindingMapPoint {
+                    input: crucible::model::SignalValue::U64(10),
+                    output: crucible::model::SignalValue::DurationNanos(30),
+                },
+            ],
+            rounding: crucible::model::SignalRounding::NearestTiesToEven,
+            overflow: crucible::model::SignalOverflow::Error,
+        },
+        crucible::model::TargetSelector::Exact(targets),
+        [crucible::model::FaultPhase::Resolve].into_iter().collect(),
+        effect,
+        None,
+        crucible::model::BindingSearchPolicy::BranchParameter {
+            parameter: crucible::model::MappedEffectParameter::DurationNanos,
+            candidates: vec![
+                crucible::model::SignalValue::DurationNanos(10),
+                crucible::model::SignalValue::DurationNanos(20),
+            ],
+        },
+        crucible::model::BindingObservabilityPolicy {
+            samples: crucible::model::SampleObservation::ChangesAndEffects,
+            record_inactive_opportunities: false,
+            retain_mapped_values: true,
+        },
+        &program,
+    )
+    .unwrap_or_else(|error| panic!("fault binding should validate: {error}"));
+    let faults = crucible::model::FaultSignalPlan::new(
+        vec![program],
+        vec![binding],
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("fault plan should validate: {error}"));
+    let plan = crucible::Plan::empty()
+        .with_fault_signals_for_world(&world, faults)
+        .unwrap_or_else(|error| panic!("fault plan should match the world: {error}"));
+
+    ScenarioDefForm::from_components(
+        &world,
+        &plan,
+        &crucible::Properties::empty(),
+        Seed::from_u64(7),
+    )
+    .unwrap_or_else(|error| panic!("finite signal scenario should validate: {error}"))
+}
+
+fn promoted_signal_branch(
+    parent: &Configuration,
+    frontier: VirtualTime,
+    label: &[u8],
+    selected_index: u32,
+) -> crucible::SignalFaultCampaignBranch {
+    let choice = crucible::model::BindingSearchChoice {
+        id: crucible::model::SearchChoiceId::from_content_hash(ContentHash::from_bytes(label)),
+        candidates_digest: ContentHash::from_canonical_material(
+            "crucible.test.production-signal-branch-candidates",
+            &String::from_utf8_lossy(label),
+        ),
+        candidate_count: 2,
+        selected_index: None,
+        overridden: false,
+    };
+    let runtime = crucible::SearchRuntimeFrontier {
+        configuration: parent.clone(),
+        at: frontier,
+        choices: crucible::SearchFrontierChoices::from_decisions(
+            choice
+                .override_decisions(parent.id())
+                .into_iter()
+                .map(Decision::Override),
+        ),
+    };
+    let selectable = crucible::SignalFaultSelectable::from_frontier(&runtime)
+        .unwrap_or_else(|error| panic!("promoted signal fixture should normalize: {error}"));
+    let selection = selectable
+        .branch_selection(parent, selected_index)
+        .unwrap_or_else(|error| panic!("promoted signal fixture should select: {error}"));
+    selectable
+        .resolve_branch(&selection)
+        .unwrap_or_else(|error| panic!("promoted signal fixture should resolve: {error}"))
+}
+
+#[test]
+fn production_lifecycle_authenticates_typed_signal_branch_before_checkpointing() {
+    let source = finite_signal_replay_scenario();
+    let mut discovery = production_loop_without_backends(&source);
+    discovery.initial_lifecycle_observations_pending = false;
+    let parent = discovery.inner.loop_impl().configuration().clone();
+    discovery
+        .evaluate_signal_fault_boundary()
+        .unwrap_or_else(|error| panic!("finite producer boundary should evaluate: {error}"));
+    let choices = discovery
+        .fault_runtime
+        .lock()
+        .unwrap_or_else(|_| panic!("fault runtime should remain healthy"))
+        .drain_search_choices();
+    discovery
+        .inner
+        .loop_impl_mut()
+        .record_pending_signal_fault_search_frontiers(choices)
+        .unwrap_or_else(|error| panic!("runtime frontier should record: {error}"));
+    let frontier = discovery
+        .inner
+        .loop_impl()
+        .search_frontiers()
+        .first()
+        .cloned()
+        .unwrap_or_else(|| panic!("finite producer should expose one search frontier"));
+    let selectable = crucible::SignalFaultSelectable::from_frontier(&frontier)
+        .unwrap_or_else(|error| panic!("runtime frontier should normalize: {error}"));
+    let selection = selectable
+        .branch_selection(&parent, selectable.candidate_count())
+        .unwrap_or_else(|error| panic!("sentinel branch should select: {error}"));
+    let branch = selectable
+        .resolve_branch(&selection)
+        .unwrap_or_else(|error| panic!("sentinel branch should resolve: {error}"));
+
+    let mut lifecycle = production_loop_without_backends(&source);
+    lifecycle.initial_lifecycle_observations_pending = false;
+    lifecycle.signal_fault_branches = VecDeque::from([branch.clone()]);
+    lifecycle
+        .inner
+        .loop_impl_mut()
+        .set_branch_frontier_cap(branch.frontier())
+        .unwrap_or_else(|error| panic!("promoted frontier should cap replay: {error}"));
+
+    assert_eq!(lifecycle.exact_checkpoint_ready(), Ok(false));
+    let outcome = lifecycle
+        .drive_quantum(QuantumRequest {
+            configuration: parent,
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("observed sentinel branch should inject: {error}"));
+    assert_eq!(outcome.configuration, *branch.selected());
+    assert_eq!(outcome.decisions, branch.decisions());
+    assert!(lifecycle.signal_fault_branches.is_empty());
+}
+
+#[test]
+fn production_lifecycle_rejects_typed_signal_branch_without_producer_choice() {
+    let source = nonterminal_signal_replay_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    lifecycle.initial_lifecycle_observations_pending = false;
+    let parent = lifecycle.inner.loop_impl().configuration().clone();
+    let frontier = lifecycle.inner.loop_impl().frontier();
+    let branch = promoted_signal_branch(&parent, frontier, b"missing-promoted-signal", 2);
+    lifecycle.signal_fault_branches = VecDeque::from([branch.clone()]);
+    lifecycle
+        .inner
+        .loop_impl_mut()
+        .set_branch_frontier_cap(branch.frontier())
+        .unwrap_or_else(|error| panic!("promoted frontier should cap replay: {error}"));
+
+    let error = lifecycle
+        .drive_quantum(QuantumRequest {
+            configuration: parent,
+            control: Vec::new(),
+        })
+        .err()
+        .unwrap_or_else(|| panic!("missing producer choice should fail closed"));
+    assert!(
+        error
+            .to_string()
+            .contains("no exact observed producer choice")
+    );
+    assert_eq!(lifecycle.signal_fault_branches, VecDeque::from([branch]));
 }
 #[test]
 fn lifecycle_reports_launch_authority_cleanup_after_backend_shutdown() {

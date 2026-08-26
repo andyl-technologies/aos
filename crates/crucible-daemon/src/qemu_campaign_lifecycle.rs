@@ -9,6 +9,8 @@
 //! after those final events are available. The fresh path never silently
 //! substitutes for an exact-checkpoint resume.
 
+use std::collections::BTreeSet;
+
 use crucible::{
     Configuration, ContentHash, Decision, QuantumLoop, QuantumOutcome, QuantumRequest,
     QuantumTerminalVerdict, ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
@@ -78,6 +80,9 @@ pub enum QemuAttemptProductionVmLifecycleError {
     /// The resolved start configuration does not form an executable branch plan.
     #[error("derive exact app-random branch replay: {0}")]
     InvalidAppRandomBranchReplay(String),
+    /// The authenticated promoted signal-fault plan names a different start.
+    #[error("derive exact signal-fault branch replay: {0}")]
+    InvalidSignalFaultBranchReplay(String),
 }
 
 /// Factory that binds one admitted attempt to the guarded production lifecycle.
@@ -364,6 +369,7 @@ pub trait QemuFreshAttemptLifecycleFactory {
         scenario: &ScenarioDef,
         source: &ScenarioDefForm,
         start: &Configuration,
+        signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>>;
 }
@@ -735,8 +741,9 @@ where
 {
     let scenario = source.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
+    let signal_fault_replay = crucible::SignalFaultCampaignReplayPlan::empty(genesis.clone());
     let mut lifecycle = factory
-        .start_fresh_lifecycle(&scenario, source, &genesis, context)
+        .start_fresh_lifecycle(&scenario, source, &genesis, &signal_fault_replay, context)
         .map_err(QemuFreshGenesisCheckpointError::Start)?;
 
     let captured = match lifecycle.exact_checkpoint_ready() {
@@ -890,8 +897,12 @@ where
             context.cancellation(),
         )
         .map_err(QemuAttemptProductionVmLifecycleError::CheckpointRestore)?;
-        let config =
-            production_lifecycle_config_for_start(&self.config, source, installed.configuration())?;
+        let config = production_lifecycle_config_for_start(
+            &self.config,
+            source,
+            installed.configuration(),
+            None,
+        )?;
         let closure = installed.closure().identity();
         self.with_attempt_launcher(context, maximum_nodes, |launcher| {
             build_production_vm_lifecycle_loop_from_exact_closure_with_launcher(
@@ -970,10 +981,16 @@ where
         scenario: &ScenarioDef,
         source: &ScenarioDefForm,
         start: &Configuration,
+        signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
-        let config = production_lifecycle_config_for_start(&self.config, source, start)
-            .map_err(AttemptWorkerFailure::Terminal)?;
+        let config = production_lifecycle_config_for_start(
+            &self.config,
+            source,
+            start,
+            Some(signal_fault_replay),
+        )
+        .map_err(AttemptWorkerFailure::Terminal)?;
         self.begin_fresh_with_config(scenario, source, context, config)
             .map_err(classify_production_lifecycle_failure)
     }
@@ -983,6 +1000,7 @@ fn production_lifecycle_config_for_start(
     config: &ProductionVmLifecycleConfig,
     source: &ScenarioDefForm,
     start: &Configuration,
+    signal_fault_replay: Option<&crucible::SignalFaultCampaignReplayPlan>,
 ) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
     let (selections, plans) = app_random_branch_replay(start)
         .map_err(QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay)?;
@@ -999,9 +1017,22 @@ fn production_lifecycle_config_for_start(
             )),
         );
     }
-    Ok(config
+    let mut config = config
         .clone()
-        .with_app_random_branch_replay(selections, plans))
+        .with_app_random_branch_replay(selections, plans);
+    if let Some(replay) = signal_fault_replay {
+        if replay.target() != start {
+            return Err(
+                QemuAttemptProductionVmLifecycleError::InvalidSignalFaultBranchReplay(
+                    String::from(
+                        "signal-fault replay target differs from the admitted start configuration",
+                    ),
+                ),
+            );
+        }
+        config = config.with_signal_fault_campaign_replay(replay.clone());
+    }
+    Ok(config)
 }
 
 impl<F, D> CrucibleExecutionRunner for QemuFreshExecutionRunner<F, D>
@@ -1026,7 +1057,9 @@ where
             crate::CrucibleResolvedAttemptStart::Discover { configuration } => configuration,
             crate::CrucibleResolvedAttemptStart::Branch { selected, .. } => selected,
         };
-        if let Some(decision) = unsupported_fresh_replay_decision(start) {
+        if let Some(decision) =
+            unsupported_fresh_replay_decision(start, input.signal_fault_replay())
+        {
             return Err(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::StartDecisionUnsupported {
                     configuration: start.id(),
@@ -1036,7 +1069,13 @@ where
         }
         let mut lifecycle = self
             .lifecycles
-            .start_fresh_lifecycle(&scenario, input.scenario(), start, context)
+            .start_fresh_lifecycle(
+                &scenario,
+                input.scenario(),
+                start,
+                input.signal_fault_replay(),
+                context,
+            )
             .map_err(map_fresh_lifecycle_failure)?;
         let materialization = materialize_fresh_start(&mut lifecycle, input, start, context);
         let driven = materialization.and_then(|materialization| {
@@ -1097,18 +1136,35 @@ where
     }
 }
 
-fn unsupported_fresh_replay_decision(target: &Configuration) -> Option<usize> {
+fn unsupported_fresh_replay_decision(
+    target: &Configuration,
+    signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
+) -> Option<usize> {
+    if signal_fault_replay.target() != target {
+        return Some(0);
+    }
+    let covered_signal_fault_overrides = signal_fault_replay
+        .branches()
+        .iter()
+        .filter(|branch| branch.decisions().len() == 2)
+        .map(|branch| branch.parent().schedule.len() + 1)
+        .collect::<BTreeSet<_>>();
     target
         .schedule
         .decisions()
         .iter()
-        .position(|decision| match decision {
-            Decision::Override(_) | Decision::AppRandom(_) => true,
-            Decision::Selection(selection) => selection.selection().map_or(true, |decoded| {
-                matches!(decoded.origin(), SelectionOrigin::ModelSample(_))
-                    && !selection.is_app_random_model_sample()
-            }),
-            Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Preemption(_) => false,
+        .enumerate()
+        .find_map(|(index, decision)| match decision {
+            Decision::Override(_) if covered_signal_fault_overrides.contains(&index) => None,
+            Decision::Override(_) | Decision::AppRandom(_) => Some(index),
+            Decision::Selection(selection) => selection
+                .selection()
+                .map_or(true, |decoded| {
+                    matches!(decoded.origin(), SelectionOrigin::ModelSample(_))
+                        && !selection.is_app_random_model_sample()
+                })
+                .then_some(index),
+            Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Preemption(_) => None,
         })
 }
 
@@ -1388,6 +1444,7 @@ pub(crate) fn classify_production_lifecycle_failure(
         | QemuAttemptProductionVmLifecycleError::ScenarioIdentityMismatch
         | QemuAttemptProductionVmLifecycleError::InvalidNodeCount(_)
         | QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay(_)
+        | QemuAttemptProductionVmLifecycleError::InvalidSignalFaultBranchReplay(_)
         | QemuAttemptProductionVmLifecycleError::ResourceInstallation(_)
         | QemuAttemptProductionVmLifecycleError::ResourceContractMismatch
         | QemuAttemptProductionVmLifecycleError::ResourceContractCleanup(_)

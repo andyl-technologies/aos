@@ -81,6 +81,7 @@ impl ProductionVmLifecycleConfig {
             debug_gateway_executable: None,
             debug: None,
             branch: None,
+            signal_fault_replay: None,
             branch_network_choices: Vec::new(),
             app_random_branch_selections: BTreeMap::new(),
             app_random_branch_plans: BTreeMap::new(),
@@ -269,6 +270,22 @@ impl ProductionVmLifecycleConfig {
             decisions: Vec::new(),
             seed: Some(seed),
         });
+        self
+    }
+
+    /// Returns this configuration with exact promoted signal-fault replay.
+    ///
+    /// The plan must already have been reconstructed from repository-
+    /// authenticated campaign records. Production construction checks that its
+    /// target is the admitted start configuration, installs every finite
+    /// producer override before launch, and injects each typed branch at its
+    /// exact parent and virtual-time boundary.
+    #[must_use]
+    pub fn with_signal_fault_campaign_replay(
+        mut self,
+        replay: SignalFaultCampaignReplayPlan,
+    ) -> Self {
+        self.signal_fault_replay = Some(replay);
         self
     }
 

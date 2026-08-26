@@ -7,7 +7,7 @@
 //! policy and cannot alter the canonical attempt.
 
 use crucible::{
-    Configuration, Decision, ScenarioDefForm, SelectionDecision, SignalFaultCampaignBranch,
+    Configuration, Decision, ScenarioDefForm, SelectionDecision, SignalFaultCampaignReplayPlan,
     SignalFaultSelectable, step,
 };
 use crucible_campaign::{
@@ -18,7 +18,7 @@ use crucible_campaign::{
 use crate::{
     AttemptExecutionContext, AttemptExecutionInput, AttemptExecutionModel, AttemptExecutionProduct,
     AttemptWorkerFailure, CrucibleArtifactError, ResolvedAttemptStart,
-    decode_crucible_configuration_artifact_with_selections, decode_crucible_scenario_artifact,
+    decode_crucible_scenario_artifact,
 };
 
 /// Authenticated Crucible discovery or typed branch start.
@@ -35,8 +35,6 @@ pub enum CrucibleResolvedAttemptStart {
         parent: Configuration,
         /// Campaign selection, opportunity, and effective domain authenticated together.
         selection: Box<ResolvedSelection>,
-        /// Validated promoted signal-fault prefix, when this branch targets that adapter.
-        signal_fault: Option<Box<SignalFaultCampaignBranch>>,
         /// Exact canonical prefix after recording the branch selection and any
         /// producer-specific decision certified by the typed bridge.
         selected: Configuration,
@@ -101,6 +99,7 @@ pub struct CrucibleAttemptExecution {
     attempt: Attempt,
     path: BranchPath,
     start: CrucibleResolvedAttemptStart,
+    signal_fault_replay: SignalFaultCampaignReplayPlan,
 }
 
 impl CrucibleAttemptExecution {
@@ -112,13 +111,32 @@ impl CrucibleAttemptExecution {
         path: BranchPath,
         start: CrucibleResolvedAttemptStart,
     ) -> Self {
+        let target = match &start {
+            CrucibleResolvedAttemptStart::Discover { configuration } => configuration.clone(),
+            CrucibleResolvedAttemptStart::Branch { selected, .. } => selected.clone(),
+        };
         Self {
             lineage,
             scenario,
             attempt,
             path,
             start,
+            signal_fault_replay: SignalFaultCampaignReplayPlan::empty(target),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_signal_fault_replay(
+        mut self,
+        replay: SignalFaultCampaignReplayPlan,
+    ) -> Self {
+        let target = match &self.start {
+            CrucibleResolvedAttemptStart::Discover { configuration } => configuration,
+            CrucibleResolvedAttemptStart::Branch { selected, .. } => selected,
+        };
+        assert_eq!(replay.target(), target);
+        self.signal_fault_replay = replay;
+        self
     }
 
     /// Returns the exact compatibility lineage admitted for this execution.
@@ -150,6 +168,12 @@ impl CrucibleAttemptExecution {
     pub const fn start(&self) -> &CrucibleResolvedAttemptStart {
         &self.start
     }
+
+    /// Returns the authenticated promoted signal-fault replay for this start.
+    #[must_use]
+    pub const fn signal_fault_replay(&self) -> &SignalFaultCampaignReplayPlan {
+        &self.signal_fault_replay
+    }
 }
 
 /// Strictly decodes one repository-resolved input into Crucible model values.
@@ -168,23 +192,28 @@ pub fn decode_crucible_attempt_execution(
     input: &AttemptExecutionInput,
 ) -> Result<CrucibleAttemptExecution, CrucibleArtifactError> {
     let scenario = decode_crucible_scenario_artifact(input.scenario())?;
-    let start = match input.start() {
+    let (start, signal_fault_replay) = match input.start() {
         ResolvedAttemptStart::Discover { configuration } => {
-            let configuration = decode_crucible_configuration_artifact_with_selections(
-                &scenario,
-                input.scenario(),
-                configuration,
-                store,
-            )?;
-            CrucibleResolvedAttemptStart::Discover { configuration }
+            let (configuration, replay) =
+                crate::decode_crucible_configuration_artifact_with_signal_fault_replay(
+                    &scenario,
+                    input.scenario(),
+                    configuration,
+                    store,
+                )?;
+            (
+                CrucibleResolvedAttemptStart::Discover { configuration },
+                replay,
+            )
         }
         ResolvedAttemptStart::Branch { parent, selection } => {
-            let parent = decode_crucible_configuration_artifact_with_selections(
-                &scenario,
-                input.scenario(),
-                parent,
-                store,
-            )?;
+            let (parent, parent_replay) =
+                crate::decode_crucible_configuration_artifact_with_signal_fault_replay(
+                    &scenario,
+                    input.scenario(),
+                    parent,
+                    store,
+                )?;
             let recorded = selection.selection();
             recorded
                 .validate_branch_replay(
@@ -220,12 +249,19 @@ pub fn decode_crucible_attempt_execution(
                 },
                 |branch| branch.selected().clone(),
             );
-            CrucibleResolvedAttemptStart::Branch {
-                parent,
-                selection: selection.clone(),
-                signal_fault,
-                selected,
+            let (_, mut branches) = parent_replay.into_parts();
+            if let Some(branch) = signal_fault.as_deref() {
+                branches.push(branch.clone());
             }
+            let replay = SignalFaultCampaignReplayPlan::new(selected.clone(), branches)?;
+            (
+                CrucibleResolvedAttemptStart::Branch {
+                    parent,
+                    selection: selection.clone(),
+                    selected,
+                },
+                replay,
+            )
         }
     };
 
@@ -235,6 +271,7 @@ pub fn decode_crucible_attempt_execution(
         attempt: input.attempt().clone(),
         path: input.path().clone(),
         start,
+        signal_fault_replay,
     })
 }
 

@@ -28,8 +28,9 @@ use crucible::{
     QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RuntimeState, ScenarioDef,
     ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerQuiescence, SchedulerState,
-    SearchFrontierChoices, Seed, Shift, SimDuration, SimInstant, SimulationBackend,
-    SingleScheduler, SingleSchedulerCheckpoint, VirtualTime, VmArchitecture, World,
+    SearchFrontierChoices, Seed, Shift, SignalFaultCampaignReplayPlan, SimDuration, SimInstant,
+    SimulationBackend, SingleScheduler, SingleSchedulerCheckpoint, VirtualTime, VmArchitecture,
+    World,
 };
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
@@ -42,7 +43,7 @@ use quantum_loop::{
     DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
     decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::net::SocketAddr;
@@ -117,6 +118,7 @@ pub struct ProductionVmLifecycleConfig {
     debug_gateway_executable: Option<PathBuf>,
     debug: Option<ProductionVmDebugConfig>,
     branch: Option<ProductionVmBranchConfig>,
+    signal_fault_replay: Option<SignalFaultCampaignReplayPlan>,
     branch_network_choices: Vec<crucible::OverrideDecision>,
     app_random_branch_selections: BTreeMap<ContentHash, crucible::SelectionDecision>,
     app_random_branch_plans:
@@ -144,6 +146,13 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
             .field("coverage", &self.coverage)
             .field("debug", &self.debug)
             .field("branch", &self.branch)
+            .field(
+                "signal_fault_replay_branch_count",
+                &self
+                    .signal_fault_replay
+                    .as_ref()
+                    .map_or(0, |plan| plan.branches().len()),
+            )
             .field("branch_network_choices", &self.branch_network_choices)
             .field(
                 "app_random_branch_selection_count",
@@ -185,33 +194,44 @@ struct ProductionVmBranchConfig {
 
 fn production_fault_search_overrides(
     branch: Option<&ProductionVmBranchConfig>,
+    signal_fault_replay: Option<&SignalFaultCampaignReplayPlan>,
 ) -> Result<
     BTreeMap<crucible::model::SearchChoiceId, crucible::model::SearchOverride>,
     LifecycleApiError,
 > {
     let mut overrides = BTreeMap::new();
-    let Some(branch) = branch else {
-        return Ok(overrides);
+    let mut insert_decisions = |parent: &Configuration,
+                                decisions: &[Decision]|
+     -> Result<(), LifecycleApiError> {
+        for decision in decisions {
+            let Decision::Override(decision) = decision else {
+                continue;
+            };
+            if !decision.point.key.starts_with("signal-fault/") {
+                continue;
+            }
+            let (id, search_override) =
+                crucible::model::SearchOverride::from_override_decision(decision)
+                    .ok_or_else(|| loop_factory_error("malformed signal-fault branch override"))?;
+            if search_override.parent_branch != Some(parent.id()) {
+                return Err(loop_factory_error(
+                    "signal-fault branch override names a different parent configuration",
+                ));
+            }
+            if overrides.insert(id, search_override).is_some() {
+                return Err(loop_factory_error(
+                    "signal-fault branch repeats one search-choice identity",
+                ));
+            }
+        }
+        Ok(())
     };
-    for decision in &branch.decisions {
-        let Decision::Override(decision) = decision else {
-            continue;
-        };
-        if !decision.point.key.starts_with("signal-fault/") {
-            continue;
-        }
-        let (id, search_override) =
-            crucible::model::SearchOverride::from_override_decision(decision)
-                .ok_or_else(|| loop_factory_error("malformed signal-fault branch override"))?;
-        if search_override.parent_branch != Some(branch.base.id()) {
-            return Err(loop_factory_error(
-                "signal-fault branch override names a different parent configuration",
-            ));
-        }
-        if overrides.insert(id, search_override).is_some() {
-            return Err(loop_factory_error(
-                "signal-fault branch repeats one search-choice identity",
-            ));
+    if let Some(branch) = branch {
+        insert_decisions(&branch.base, &branch.decisions)?;
+    }
+    if let Some(replay) = signal_fault_replay {
+        for branch in replay.branches() {
+            insert_decisions(branch.parent(), branch.decisions())?;
         }
     }
     Ok(overrides)
@@ -466,6 +486,7 @@ pub struct ProductionVmLifecycleLoop {
     checkpoint_terminal_cause: Option<CheckpointTerminalCause>,
     initial_lifecycle_observations_pending: bool,
     branch: Option<ProductionVmBranchConfig>,
+    signal_fault_branches: VecDeque<crucible::SignalFaultCampaignBranch>,
     launch_configs: BTreeMap<NodeId, ProductionLiveNodeStepGateConfig>,
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
     ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
@@ -1702,6 +1723,33 @@ fn build_production_vm_lifecycle_loop_with_restore(
     mut restore_checkpoint: Option<ProductionVmExactCheckpointSet>,
     mut node_launcher: Box<dyn ProductionVmNodeLauncher>,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
+    if config.branch.is_some()
+        && config
+            .signal_fault_replay
+            .as_ref()
+            .is_some_and(|replay| !replay.branches().is_empty())
+    {
+        return Err(loop_factory_error(
+            "raw production branch configuration cannot coexist with typed signal-fault replay",
+        ));
+    }
+    if let Some(replay) = &config.signal_fault_replay
+        && replay.target().def.id() != scenario.id()
+    {
+        return Err(loop_factory_error(
+            "signal-fault replay target names a different scenario",
+        ));
+    }
+    if restore_checkpoint.is_some()
+        && config
+            .signal_fault_replay
+            .as_ref()
+            .is_some_and(|replay| !replay.branches().is_empty())
+    {
+        return Err(loop_factory_error(
+            "exact-checkpoint restore cannot install a fresh signal-fault replay plan",
+        ));
+    }
     let network_implementations = fault_implementation::network_effect_implementation_registry()
         .map_err(|error| {
             loop_factory_error(format!(
@@ -2335,9 +2383,20 @@ fn build_production_vm_lifecycle_loop_with_restore(
                 loop_factory_error(format!("restore exact scheduler continuation: {error}"))
             })?;
     } else {
-        if let Some(branch) = &config.branch {
+        if let Some(frontier) = config
+            .branch
+            .as_ref()
+            .map(|branch| branch.frontier)
+            .or_else(|| {
+                config
+                    .signal_fault_replay
+                    .as_ref()
+                    .and_then(|replay| replay.branches().first())
+                    .map(crucible::SignalFaultCampaignBranch::frontier)
+            })
+        {
             scheduler
-                .set_branch_frontier_cap(branch.frontier)
+                .set_branch_frontier_cap(frontier)
                 .map_err(|error| {
                     loop_factory_error(format!("cap QEMU branch frontier: {error}"))
                 })?;
@@ -2364,7 +2423,10 @@ fn build_production_vm_lifecycle_loop_with_restore(
         .map_err(|error| loop_factory_error(format!("lower scenario trigger plan: {error}")))?
         .into_event_graph();
     let signal_plan = source.plan().fault_signals().clone();
-    let fault_search_overrides = production_fault_search_overrides(config.branch.as_ref())?;
+    let fault_search_overrides = production_fault_search_overrides(
+        config.branch.as_ref(),
+        config.signal_fault_replay.as_ref(),
+    )?;
     let signal_artifact_objects = if signal_plan.programs().is_empty() {
         BTreeMap::new()
     } else if let Some(checkpoint) = &restore_checkpoint {
@@ -2552,6 +2614,16 @@ fn build_production_vm_lifecycle_loop_with_restore(
         || config.branch.clone(),
         |checkpoint| checkpoint.branch.clone(),
     );
+    let signal_fault_branches = if restore_checkpoint.is_some() {
+        VecDeque::new()
+    } else {
+        config
+            .signal_fault_replay
+            .as_ref()
+            .map_or_else(VecDeque::new, |replay| {
+                replay.branches().iter().cloned().collect()
+            })
+    };
     let inner = if restore_checkpoint.is_some() {
         BackendQuantumLoop::from_restored_network_state(
             scheduler,
@@ -2589,6 +2661,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
             .as_ref()
             .is_none_or(|checkpoint| checkpoint.initial_lifecycle_observations_pending),
         branch: active_branch,
+        signal_fault_branches,
         launch_configs,
         block_bindings,
         ninep_bindings,

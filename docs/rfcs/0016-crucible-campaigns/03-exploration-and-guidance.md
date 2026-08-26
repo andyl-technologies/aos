@@ -896,6 +896,29 @@ paused at the frontier's exact parent before publishing the opportunity or
 using the reconstructed prefix for QEMU injection. Retrospective search
 frontiers MUST NOT be mislabeled as discoveries at a later observation child.
 
+One admitted configuration may contain at most 4,096 promoted signal-fault
+events. The executor resolves all of their selection closures in one bounded
+batch, requires each reconstructed prefix at the exact target-schedule
+position, requires nondecreasing virtual-time frontiers, and rejects every raw
+`signal-fault/...` override not covered by that typed plan. Production replay
+installs all finite producer overrides before launch, caps the scheduler at the
+next promoted frontier, and records only the plan's opaque typed branch when
+the scheduler has reached both its exact parent and time. Parent/time equality
+alone is insufficient: a candidate branch additionally requires the exact
+finite override to have been consumed by the signal runtime, while the
+unmodified sentinel requires a matching runtime search frontier with the same
+choice ID, candidate-set digest, and candidate count. Arbitrary raw override
+admission remains a separate, narrower legacy API and cannot be used to inject
+campaign selections.
+
+Pending promoted branches are not exact-checkpoint-ready. The campaign runner
+finishes deterministic start materialization before it can honor a checkpoint
+request; after all branches are consumed, ordinary exact capture is available.
+If the daemon restarts during start materialization, the durable attempt is
+requeued and the complete plan is reconstructed from the immutable selection,
+opportunity, declaration, domain, and configuration records before replaying
+from genesis. No process-local plan is a restart trust root.
+
 ## 03.8 Probabilistic exploration and statistical validity
 
 Three modes are explicit:

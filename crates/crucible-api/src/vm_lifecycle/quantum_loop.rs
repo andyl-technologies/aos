@@ -165,6 +165,36 @@ fn attempt_boundary_scheduler_error(context: &str, error: LifecycleApiError) -> 
     }
 }
 
+impl ProductionVmLifecycleLoop {
+    fn authenticate_signal_fault_campaign_branch(
+        &self,
+        branch: &crucible::SignalFaultCampaignBranch,
+    ) -> Result<(), SchedulerError> {
+        let authenticated = if let Some((choice, expected)) = branch.expected_search_override() {
+            self.fault_runtime
+                .lock()
+                .map_err(|_| SchedulerError::BoundaryViolation {
+                    message: String::from("production fault runtime lock is poisoned"),
+                })?
+                .search_override_consumed(choice, &expected)
+        } else {
+            self.inner
+                .loop_impl()
+                .search_frontiers()
+                .iter()
+                .any(|frontier| branch.matches_runtime_frontier(frontier))
+        };
+        if !authenticated {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "signal-fault campaign branch has no exact observed producer choice",
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
 impl QuantumLoop for ProductionVmLifecycleLoop {
     fn drive_quantum(
         &mut self,
@@ -201,6 +231,16 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                     ),
                 });
             }
+            let boundary_search_choices = self
+                .fault_runtime
+                .lock()
+                .map_err(|_| SchedulerError::BoundaryViolation {
+                    message: String::from("production fault runtime lock is poisoned"),
+                })?
+                .drain_search_choices();
+            self.inner
+                .loop_impl_mut()
+                .record_pending_signal_fault_search_frontiers(boundary_search_choices)?;
             if self.terminal_verdict.is_some() {
                 let scheduler = self.inner.loop_impl();
                 let mut outcome = QuantumOutcome {
@@ -230,6 +270,15 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                     ),
                 });
             }
+            if self.signal_fault_branches.front().is_some_and(|branch| {
+                branch.parent() == &request.configuration && !request.control.is_empty()
+            }) {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "signal-fault branch admission cannot discard simultaneous control",
+                    ),
+                });
+            }
             if !request.control.is_empty() {
                 let mut node_times = BTreeMap::new();
                 for node in self.source.world().vm_nodes() {
@@ -244,6 +293,90 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                     node_times,
                     control: request.control.clone(),
                 });
+            }
+            if let Some(branch) = self.signal_fault_branches.front().cloned() {
+                let frontier = self.inner.loop_impl().frontier();
+                if frontier > branch.frontier() {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "signal-fault branch frontier {} was passed at {}",
+                            branch.frontier().ticks,
+                            frontier.ticks
+                        ),
+                    });
+                }
+                if frontier == branch.frontier() && request.configuration != *branch.parent() {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "signal-fault branch reached frontier {} with configuration {}, expected {}",
+                            frontier.ticks,
+                            request.configuration.id().to_hex(),
+                            branch.parent().id().to_hex(),
+                        ),
+                    });
+                }
+                if frontier == branch.frontier() && request.configuration == *branch.parent() {
+                    if !request.control.is_empty() {
+                        return Err(SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "signal-fault branch admission cannot discard simultaneous control",
+                            ),
+                        });
+                    }
+                    self.authenticate_signal_fault_campaign_branch(&branch)?;
+                    let branch_decisions = branch.decisions().to_vec();
+                    let (configuration, append) = self
+                        .inner
+                        .loop_impl_mut()
+                        .append_signal_fault_campaign_branch(&branch)?;
+                    let consumed = self.signal_fault_branches.pop_front();
+                    if consumed.as_ref() != Some(&branch) {
+                        return Err(SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "signal-fault branch queue changed during exact injection",
+                            ),
+                        });
+                    }
+                    if let Some(next) = self.signal_fault_branches.front() {
+                        self.inner
+                            .loop_impl_mut()
+                            .set_branch_frontier_cap(next.frontier())?;
+                    } else {
+                        self.inner.loop_impl_mut().clear_branch_frontier_cap();
+                    }
+                    let frontier = self.inner.loop_impl().frontier();
+                    let scheduler_quiescence = Some(self.inner.loop_impl().quiescence()?);
+                    let mut decisions = pre_quantum_decisions;
+                    decisions.extend(branch_decisions);
+                    let mut outcome = QuantumOutcome {
+                        configuration,
+                        frontier,
+                        advanced_node: None,
+                        resolved_events: Vec::new(),
+                        decisions,
+                        discovered_choices: Vec::new(),
+                        event_log_entries: append.entries,
+                        event_log_segment_bytes: append.segment_bytes,
+                        event_log_segment_text: append.segment_text,
+                        event_log_segment_hash: append.segment_hash,
+                        event_log_offset: append.offset,
+                        scheduler_quiescence,
+                    };
+                    prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                    self.capture_debug_runtime_evidence()?;
+                    return Ok(outcome);
+                }
+                if request.configuration.schedule.len() > branch.parent().schedule.len()
+                    || (request.configuration.schedule.len() == branch.parent().schedule.len()
+                        && request.configuration != *branch.parent())
+                {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "signal-fault replay bypassed parent configuration {}",
+                            branch.parent().id().to_hex()
+                        ),
+                    });
+                }
             }
             if let Some(branch) = self.branch.as_ref() {
                 let frontier = self.inner.loop_impl().frontier();
@@ -701,6 +834,13 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 "production lifecycle stopped with {pending} unconsumed branch effect choices"
             ),
         });
+        let signal_fault_branch_error =
+            (!self.signal_fault_branches.is_empty()).then(|| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "production lifecycle stopped with {} unconsumed signal-fault branches",
+                    self.signal_fault_branches.len()
+                ),
+            });
         let replay_error = if self.fault_replay_installed {
             let runtime =
                 self.fault_runtime
@@ -783,6 +923,9 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             failures.push(error);
         }
         if let Some(error) = pending_error {
+            failures.push(error);
+        }
+        if let Some(error) = signal_fault_branch_error {
             failures.push(error);
         }
         if let Some(error) = replay_error {
@@ -1837,7 +1980,7 @@ impl ProductionVmLifecycleLoop {
 
     /// Evaluates the signal program exactly once in the ordered sequence of
     /// scheduler visits to the current virtual-time coordinate.
-    fn evaluate_signal_fault_boundary(
+    pub(super) fn evaluate_signal_fault_boundary(
         &mut self,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         let coordinate = self

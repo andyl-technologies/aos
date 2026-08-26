@@ -1669,6 +1669,30 @@ worker join before releasing the endpoint namespace. The strict packaged
 deployment now wires that owner to the concrete fresh/thin-replay QEMU worker;
 exact-resume worker selection remains separate and fail-closed.
 
+Selection-bearing Crucible configuration artifacts also carry an executor-
+derived, process-local signal-fault replay plan. The executor MUST resolve the
+complete selection closure before launch and MUST reject a configuration when
+any standardized signal-fault selection is not followed by its exact optional
+producer override, when a raw signal-fault override lacks such a selection, or
+when more than 4,096 promoted events are retained. Plan entries MUST be in
+target-schedule order, name exact configuration prefixes, and have
+nondecreasing virtual-time frontiers. The production lifecycle installs every
+finite search override before QEMU launch, caps progress at the next frontier,
+and admits the selection and override only through the typed signal-fault
+branch method after exact parent/time equality. Candidate injection MUST also
+prove that the signal runtime consumed the exact choice ID, candidate digest,
+and candidate index. Sentinel injection MUST instead prove that the scheduler
+recorded the matching unmodified runtime frontier with the exact choice ID,
+candidate digest, and candidate count. It MUST NOT widen the generic raw-
+override method to accept selections.
+
+An execution with pending promoted branches is not exact-checkpoint-ready.
+Fresh materialization consumes the complete plan before the modeled driver may
+request capture. A process restart discards the process-local plan and rebuilds
+it from the durable attempt and immutable authenticated campaign records; it
+does not trust or serialize an unresolved typed plan as an exact-checkpoint
+continuation.
+
 The single-host daemon persists two bounded operational record families:
 
 ```text

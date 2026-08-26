@@ -25,6 +25,9 @@ pub const SIGNAL_FAULT_CAMPAIGN_ADAPTER: &str = "crucible.signal-fault-search.v1
 /// Maximum finite candidates promoted from one signal-fault event.
 pub const MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES: usize = 4_096;
 
+/// Maximum promoted signal-fault events retained in one replay plan.
+pub const MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES: usize = 4_096;
+
 const SIGNAL_FAULT_DOMAIN_VERSION: u32 = 1;
 const SIGNAL_FAULT_DECLARATION_NAME: &str = "signal-fault-event-outcome";
 const SIGNAL_FAULT_INSTANCE_PREFIX: &str = "frontier-";
@@ -361,6 +364,10 @@ impl SignalFaultSelectable {
         Ok(SignalFaultCampaignBranch {
             parent: self.parent.clone(),
             frontier: self.frontier,
+            choice: self.choice,
+            candidates_digest: self.candidates_digest,
+            candidate_count: self.candidate_count,
+            selected_candidate: (index < self.candidate_count).then_some(index),
             decisions,
             selected,
         })
@@ -372,8 +379,104 @@ impl SignalFaultSelectable {
 pub struct SignalFaultCampaignBranch {
     parent: Configuration,
     frontier: VirtualTime,
+    choice: SearchChoiceId,
+    candidates_digest: crate::ContentHash,
+    candidate_count: u32,
+    selected_candidate: Option<u32>,
     decisions: Vec<Decision>,
     selected: Configuration,
+}
+
+/// Authenticated promoted signal-fault branches required by one configuration.
+///
+/// Branches remain in target-schedule order. Each branch names the exact
+/// configuration and virtual-time boundary before its selection is injected;
+/// the target contains the branch's selection and optional producer override
+/// at that exact schedule position. This type is the only multi-event input
+/// admitted by the production signal-fault replay path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignalFaultCampaignReplayPlan {
+    target: Configuration,
+    branches: Vec<SignalFaultCampaignBranch>,
+}
+
+impl SignalFaultCampaignReplayPlan {
+    /// Builds a bounded exact replay plan for `target`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignalFaultSelectableError`] when the plan exceeds the event
+    /// cap, branches are not in target-schedule order, a branch parent is not
+    /// an exact target prefix, or its selected decisions differ from the
+    /// target at that prefix.
+    pub fn new(
+        target: Configuration,
+        branches: Vec<SignalFaultCampaignBranch>,
+    ) -> Result<Self, SignalFaultSelectableError> {
+        if branches.len() > MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES {
+            return Err(SignalFaultSelectableError::ReplayPlanLimitExceeded);
+        }
+
+        let target_decisions = target.schedule.decisions();
+        let mut prior_selected: Option<&Configuration> = None;
+        let mut prior_frontier = None;
+        for branch in &branches {
+            if branch.parent.def != target.def {
+                return Err(SignalFaultSelectableError::ReplayPlanMismatch);
+            }
+            if prior_frontier.is_some_and(|frontier| branch.frontier < frontier) {
+                return Err(SignalFaultSelectableError::ReplayPlanMismatch);
+            }
+            let parent_len = branch.parent.schedule.len();
+            let selected_len = branch.selected.schedule.len();
+            if selected_len != parent_len.saturating_add(branch.decisions.len())
+                || selected_len > target_decisions.len()
+                || branch.parent.schedule.decisions() != &target_decisions[..parent_len]
+                || branch.decisions.as_slice() != &target_decisions[parent_len..selected_len]
+                || branch.selected.schedule.decisions() != &target_decisions[..selected_len]
+            {
+                return Err(SignalFaultSelectableError::ReplayPlanMismatch);
+            }
+            if let Some(prior) = prior_selected
+                && (prior.schedule.len() > parent_len
+                    || prior.schedule.decisions()
+                        != &branch.parent.schedule.decisions()[..prior.schedule.len()])
+            {
+                return Err(SignalFaultSelectableError::ReplayPlanMismatch);
+            }
+            prior_selected = Some(&branch.selected);
+            prior_frontier = Some(branch.frontier);
+        }
+
+        Ok(Self { target, branches })
+    }
+
+    /// Builds the empty replay plan for a target without promoted branches.
+    #[must_use]
+    pub const fn empty(target: Configuration) -> Self {
+        Self {
+            target,
+            branches: Vec::new(),
+        }
+    }
+
+    /// Returns the exact configuration reconstructed by the plan.
+    #[must_use]
+    pub const fn target(&self) -> &Configuration {
+        &self.target
+    }
+
+    /// Returns promoted branches in exact target-schedule order.
+    #[must_use]
+    pub fn branches(&self) -> &[SignalFaultCampaignBranch] {
+        &self.branches
+    }
+
+    /// Consumes the plan into its target and ordered branches.
+    #[must_use]
+    pub fn into_parts(self) -> (Configuration, Vec<SignalFaultCampaignBranch>) {
+        (self.target, self.branches)
+    }
 }
 
 impl SignalFaultCampaignBranch {
@@ -387,6 +490,80 @@ impl SignalFaultCampaignBranch {
     #[must_use]
     pub const fn frontier(&self) -> VirtualTime {
         self.frontier
+    }
+
+    /// Returns whether one runtime choice proves this branch's producer event.
+    ///
+    /// Candidate branches require the exact installed override to have been
+    /// consumed. The sentinel branch instead requires an unmodified producer
+    /// result and deliberately accepts whichever model-selected candidate the
+    /// binding reports.
+    #[must_use]
+    pub fn matches_runtime_choice(
+        &self,
+        coordinate: crate::model::FaultCoordinate,
+        choice: &BindingSearchChoice,
+    ) -> bool {
+        coordinate.virtual_nanos == self.frontier.ticks
+            && choice.id == self.choice
+            && choice.candidates_digest == self.candidates_digest
+            && choice.candidate_count == self.candidate_count
+            && match self.selected_candidate {
+                Some(index) => choice.overridden && choice.selected_index == Some(index),
+                None => !choice.overridden,
+            }
+    }
+
+    /// Returns whether one scheduler frontier proves the unmodified producer event.
+    ///
+    /// Candidate branches are authenticated through their consumed runtime
+    /// override instead and therefore never match this sentinel-only helper.
+    #[must_use]
+    pub fn matches_runtime_frontier(&self, frontier: &SearchRuntimeFrontier) -> bool {
+        self.selected_candidate.is_none()
+            && Self::runtime_frontier_basis(frontier).is_some_and(
+                |(parent, at, choice, candidates_digest, candidate_count)| {
+                    parent == self.parent
+                        && at == self.frontier
+                        && choice == self.choice
+                        && candidates_digest == self.candidates_digest
+                        && candidate_count == self.candidate_count
+                },
+            )
+    }
+
+    /// Returns the exact finite override required by a candidate branch.
+    #[must_use]
+    pub fn expected_search_override(&self) -> Option<(SearchChoiceId, SearchOverride)> {
+        self.selected_candidate.map(|candidate_index| {
+            (
+                self.choice,
+                SearchOverride {
+                    candidate_index,
+                    candidates_digest: self.candidates_digest,
+                    parent_branch: Some(self.parent.id()),
+                },
+            )
+        })
+    }
+
+    fn runtime_frontier_basis(
+        frontier: &SearchRuntimeFrontier,
+    ) -> Option<(
+        Configuration,
+        VirtualTime,
+        SearchChoiceId,
+        crate::ContentHash,
+        u32,
+    )> {
+        let selectable = SignalFaultSelectable::from_frontier(frontier).ok()?;
+        Some((
+            selectable.parent,
+            selectable.frontier,
+            selectable.choice,
+            selectable.candidates_digest,
+            selectable.candidate_count,
+        ))
     }
 
     /// Returns the validated selection and optional override decisions.
@@ -432,6 +609,12 @@ pub enum SignalFaultSelectableError {
     /// The selected integer is outside the candidate plus sentinel domain.
     #[error("signal-fault campaign candidate is outside its domain")]
     CandidateOutsideDomain,
+    /// One configuration retained too many promoted signal-fault events.
+    #[error("signal-fault campaign replay plan exceeds its event cap")]
+    ReplayPlanLimitExceeded,
+    /// A promoted branch is not an exact ordered prefix of its target.
+    #[error("signal-fault campaign replay plan is inconsistent with its target")]
+    ReplayPlanMismatch,
     /// Canonical campaign record validation failed.
     #[error(transparent)]
     Campaign(#[from] CampaignCodecError),
@@ -554,6 +737,30 @@ mod tests {
             branch.decisions()[1],
             Decision::Override(choice.override_decisions(frontier.configuration.id())[1].clone())
         );
+        let observed_candidate = BindingSearchChoice {
+            selected_index: Some(1),
+            overridden: true,
+            ..choice.clone()
+        };
+        assert!(branch.matches_runtime_choice(
+            crate::model::FaultCoordinate {
+                virtual_nanos: frontier.at.ticks,
+                retired_instructions: Some(99),
+            },
+            &observed_candidate,
+        ));
+        assert!(!branch.matches_runtime_frontier(&frontier));
+        assert_eq!(
+            branch.expected_search_override(),
+            Some((
+                choice.id,
+                SearchOverride {
+                    candidate_index: 1,
+                    candidates_digest: choice.candidates_digest,
+                    parent_branch: Some(frontier.configuration.id()),
+                },
+            ))
+        );
 
         let selection = selectable
             .branch_selection(&frontier.configuration, 3)
@@ -563,6 +770,98 @@ mod tests {
             .expect("resolve default");
         assert_eq!(branch.decisions().len(), 1);
         assert_eq!(branch.selected().schedule.len(), 1);
+        assert!(branch.matches_runtime_frontier(&frontier));
+        assert!(branch.matches_runtime_choice(
+            crate::model::FaultCoordinate {
+                virtual_nanos: frontier.at.ticks,
+                retired_instructions: None,
+            },
+            &choice,
+        ));
+        assert_eq!(branch.expected_search_override(), None);
+    }
+
+    #[test]
+    fn replay_plan_binds_nested_branches_to_exact_target_prefixes() {
+        let (first_frontier, _) = fixture(2);
+        let first_selectable =
+            SignalFaultSelectable::from_frontier(&first_frontier).expect("first selectable");
+        let first_selection = first_selectable
+            .branch_selection(&first_frontier.configuration, 0)
+            .expect("first selection");
+        let first = first_selectable
+            .resolve_branch(&first_selection)
+            .expect("first branch");
+
+        let between = step(
+            first.selected(),
+            Decision::RngDraw(crate::RngDecision {
+                stream: crate::RngStreamId::from_name("between-promoted-frontiers"),
+                value: 7,
+            }),
+        );
+        let second_choice = BindingSearchChoice {
+            id: SearchChoiceId::from_content_hash(crate::ContentHash::from_bytes(b"second-choice")),
+            candidates_digest: crate::ContentHash::from_bytes(b"second-candidates"),
+            candidate_count: 2,
+            selected_index: None,
+            overridden: false,
+        };
+        let second_frontier = SearchRuntimeFrontier {
+            configuration: between.clone(),
+            at: VirtualTime { ticks: 0x5678 },
+            choices: SearchFrontierChoices::from_decisions(
+                second_choice
+                    .override_decisions(between.id())
+                    .into_iter()
+                    .map(Decision::Override),
+            ),
+        };
+        let second_selectable =
+            SignalFaultSelectable::from_frontier(&second_frontier).expect("second selectable");
+        let second_selection = second_selectable
+            .branch_selection(&second_frontier.configuration, 2)
+            .expect("unmodified second selection");
+        let second = second_selectable
+            .resolve_branch(&second_selection)
+            .expect("second branch");
+
+        let plan = SignalFaultCampaignReplayPlan::new(
+            second.selected().clone(),
+            vec![first.clone(), second.clone()],
+        )
+        .expect("nested plan");
+        assert_eq!(plan.target(), second.selected());
+        assert_eq!(plan.branches(), &[first.clone(), second.clone()]);
+        assert_eq!(
+            SignalFaultCampaignReplayPlan::new(
+                second.selected().clone(),
+                vec![second.clone(), first],
+            ),
+            Err(SignalFaultSelectableError::ReplayPlanMismatch)
+        );
+
+        let missing_second = second.parent().clone();
+        assert_eq!(
+            SignalFaultCampaignReplayPlan::new(missing_second, vec![second]),
+            Err(SignalFaultSelectableError::ReplayPlanMismatch)
+        );
+    }
+
+    #[test]
+    fn replay_plan_rejects_more_than_the_configuration_event_cap() {
+        let (frontier, _) = fixture(1);
+        let selectable = SignalFaultSelectable::from_frontier(&frontier).expect("selectable");
+        let selection = selectable
+            .branch_selection(&frontier.configuration, 1)
+            .expect("default selection");
+        let branch = selectable.resolve_branch(&selection).expect("branch");
+        let branches = vec![branch.clone(); MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES + 1];
+
+        assert_eq!(
+            SignalFaultCampaignReplayPlan::new(branch.selected().clone(), branches),
+            Err(SignalFaultSelectableError::ReplayPlanLimitExceeded)
+        );
     }
 
     #[test]
