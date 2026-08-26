@@ -37,13 +37,29 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --enable-shared \
-            --enable-static
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            # jemalloc's C++ allocator API hard-codes GNU libstdc++ for its
+            # link probe and shared library. Darwin's ABI uses libc++, and
+            # its C++ driver supplies the target runtime search path.
+            sed -i 's|-lstdc++|-lc++|g' configure
+            sed -i \
+              's|^\t$(CC) $(DSO_LDFLAGS)|\t$(CXX) $(DSO_LDFLAGS)|' \
+              Makefile.in
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --enable-shared \
+              --enable-static
+          ''
+          else ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --enable-shared \
+              --enable-static
+          '';
       }
       {
         name = "build";
