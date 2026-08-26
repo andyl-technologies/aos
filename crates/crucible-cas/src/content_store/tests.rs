@@ -126,6 +126,61 @@ fn memory_blob_and_ref_contracts_are_idempotent() {
     );
 }
 
+fn assert_bounded_ref_scan_contract(refs: &dyn MutableRefBackend) {
+    let namespace = RefName::new("campaigns").expect("campaign namespace");
+    let alpha = RefName::new("campaigns/alpha").expect("alpha ref");
+    let zeta = RefName::new("campaigns/zeta").expect("zeta ref");
+    let unrelated = RefName::new("other/ignored").expect("unrelated ref");
+    let alpha_target = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, b"alpha");
+    let zeta_target = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, b"zeta");
+    let unrelated_target = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, b"unrelated");
+    refs.compare_exchange(&zeta, None, zeta_target)
+        .expect("create zeta ref");
+    refs.compare_exchange(&unrelated, None, unrelated_target)
+        .expect("create unrelated ref");
+    refs.compare_exchange(&alpha, None, alpha_target)
+        .expect("create alpha ref");
+
+    let first = refs
+        .scan_refs(&namespace, None, 1)
+        .expect("scan first campaign ref page");
+    assert_eq!(first.entries().len(), 1);
+    assert_eq!(first.entries()[0].name(), &alpha);
+    assert_eq!(first.entries()[0].target(), alpha_target);
+    assert_eq!(first.next_after(), Some(&alpha));
+    assert!(first.visited() > 0);
+
+    let second = refs
+        .scan_refs(&namespace, Some(&alpha), 1)
+        .expect("scan second campaign ref page");
+    assert_eq!(second.entries().len(), 1);
+    assert_eq!(second.entries()[0].name(), &zeta);
+    assert_eq!(second.entries()[0].target(), zeta_target);
+    assert_eq!(second.next_after(), None);
+
+    assert!(matches!(
+        refs.scan_refs(&namespace, Some(&unrelated), 1),
+        Err(StoreError::InvalidComposition {
+            reason: "authoritative ref scan cursor is outside its namespace"
+        })
+    ));
+    assert!(matches!(
+        refs.scan_refs(&namespace, None, 0),
+        Err(StoreError::Quota)
+    ));
+}
+
+#[test]
+fn memory_ref_scan_is_bounded_ordered_and_namespaced() {
+    assert_bounded_ref_scan_contract(&MemoryRefBackend::new());
+}
+
+#[test]
+fn directory_ref_scan_is_bounded_ordered_and_namespaced() {
+    let temp = TempDir::new().expect("temporary directory");
+    assert_bounded_ref_scan_contract(&DirectoryRefBackend::new(temp.path()));
+}
+
 #[test]
 fn memory_ref_inventory_is_exclusive_and_aba_bound() {
     let refs = Arc::new(MemoryRefBackend::new());

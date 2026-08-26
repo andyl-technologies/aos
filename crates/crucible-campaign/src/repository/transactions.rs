@@ -456,6 +456,62 @@ impl CampaignRepository {
         })
     }
 
+    /// Returns one bounded ordered page of authenticated named campaign heads.
+    ///
+    /// The mutable-ref backend holds its ordinary shared namespace fence for
+    /// the scan, so every returned binding comes from one stable ref view. Head
+    /// bodies remain immutable after that fence is released and are completely
+    /// authenticated before this method returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid cursor or limit, excessive ref scan,
+    /// malformed campaign ref, invalid snapshot target, or incomplete head.
+    pub fn list_heads(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<CampaignHeadPage, CampaignRepositoryError> {
+        let namespace = RefName::new("campaigns")?;
+        let after_ref = after.map(campaign_ref).transpose()?;
+        let page = self.refs.scan_refs(&namespace, after_ref.as_ref(), limit)?;
+        let mut heads = Vec::with_capacity(page.entries().len());
+        for entry in page.entries() {
+            let name = entry
+                .name()
+                .as_str()
+                .strip_prefix("campaigns/")
+                .ok_or_else(|| integrity("campaign-ref-scan-namespace-mismatch"))?
+                .to_owned();
+            if campaign_ref(&name)?.as_str() != entry.name().as_str() {
+                return Err(integrity("campaign-ref-scan-name-is-not-canonical"));
+            }
+            let snapshot_id = CampaignSnapshotId::from_content_id(entry.target())?;
+            let loaded = self.read_snapshot(entry.target())?;
+            self.validate_complete_head(entry.target())?;
+            heads.push(CampaignHead {
+                name,
+                snapshot_id,
+                snapshot: loaded.snapshot,
+            });
+        }
+        let next_after = page
+            .next_after()
+            .map(|cursor| {
+                cursor
+                    .as_str()
+                    .strip_prefix("campaigns/")
+                    .ok_or_else(|| integrity("campaign-ref-scan-cursor-namespace-mismatch"))
+                    .map(str::to_owned)
+            })
+            .transpose()?;
+        Ok(CampaignHeadPage {
+            heads,
+            next_after,
+            visited_refs: page.visited(),
+        })
+    }
+
     /// Loads one exact snapshot from the authenticated history of `name`.
     ///
     /// The lookup validates the named current head before walking immutable

@@ -101,6 +101,15 @@ impl MutableRefBackend for ConflictAfterCreateRefBackend {
         self.inner.read_ref(name)
     }
 
+    fn scan_refs(
+        &self,
+        namespace: &RefName,
+        after: Option<&RefName>,
+        limit: usize,
+    ) -> Result<crucible_cas::content_store::RefScanPage, StoreError> {
+        self.inner.scan_refs(namespace, after, limit)
+    }
+
     fn compare_exchange(
         &self,
         name: &RefName,

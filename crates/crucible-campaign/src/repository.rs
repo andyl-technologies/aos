@@ -88,6 +88,34 @@ pub struct CampaignHead {
     snapshot: CampaignSnapshot,
 }
 
+/// One bounded, stable page of authenticated named campaign heads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignHeadPage {
+    heads: Vec<CampaignHead>,
+    next_after: Option<String>,
+    visited_refs: u64,
+}
+
+impl CampaignHeadPage {
+    /// Returns campaign heads in strict canonical name order.
+    #[must_use]
+    pub fn heads(&self) -> &[CampaignHead] {
+        &self.heads
+    }
+
+    /// Returns the exclusive campaign-name cursor for another page.
+    #[must_use]
+    pub fn next_after(&self) -> Option<&str> {
+        self.next_after.as_deref()
+    }
+
+    /// Returns authoritative reference entries inspected by the backend scan.
+    #[must_use]
+    pub const fn visited_refs(&self) -> u64 {
+        self.visited_refs
+    }
+}
+
 /// Authenticated lifecycle intent projected from one exact campaign snapshot.
 ///
 /// The active-attempt policy is present after a `Pause` command until a later

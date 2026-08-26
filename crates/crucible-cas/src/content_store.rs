@@ -54,6 +54,12 @@ mod tests;
 
 const CONTENT_ID_DOMAIN: &[u8] = b"crucible.content-object.v1";
 
+/// Maximum authoritative references returned by one ordinary namespace scan.
+pub const MAX_REF_SCAN_PAGE_ITEMS: usize = 256;
+
+/// Maximum authoritative namespace entries inspected by one scan operation.
+pub const MAX_REF_SCAN_VISITS: u64 = 65_536;
+
 /// Identifies the semantic kind of one logical content object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ObjectKind {
@@ -632,6 +638,71 @@ impl RefName {
     }
 }
 
+/// One exact authoritative binding returned by a bounded namespace scan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefScanEntry {
+    name: RefName,
+    target: ContentId,
+}
+
+impl RefScanEntry {
+    pub(crate) const fn new(name: RefName, target: ContentId) -> Self {
+        Self { name, target }
+    }
+
+    /// Returns the canonical authoritative name.
+    #[must_use]
+    pub const fn name(&self) -> &RefName {
+        &self.name
+    }
+
+    /// Returns the exact content identity named by the reference.
+    #[must_use]
+    pub const fn target(&self) -> ContentId {
+        self.target
+    }
+}
+
+/// One lexicographically ordered bounded page below an authoritative namespace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefScanPage {
+    entries: Vec<RefScanEntry>,
+    next_after: Option<RefName>,
+    visited: u64,
+}
+
+impl RefScanPage {
+    pub(crate) const fn new(
+        entries: Vec<RefScanEntry>,
+        next_after: Option<RefName>,
+        visited: u64,
+    ) -> Self {
+        Self {
+            entries,
+            next_after,
+            visited,
+        }
+    }
+
+    /// Returns bindings in strict canonical name order.
+    #[must_use]
+    pub fn entries(&self) -> &[RefScanEntry] {
+        &self.entries
+    }
+
+    /// Returns the exclusive cursor for another page, or `None` at EOF.
+    #[must_use]
+    pub const fn next_after(&self) -> Option<&RefName> {
+        self.next_after.as_ref()
+    }
+
+    /// Returns the number of namespace entries inspected for this page.
+    #[must_use]
+    pub const fn visited(&self) -> u64 {
+        self.visited
+    }
+}
+
 /// Result of one authoritative mutable-ref compare-and-swap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RefCasOutcome {
@@ -867,6 +938,25 @@ pub trait MutableRefBackend: Send + Sync {
     /// Returns a backend or record-validation error.
     fn read_ref(&self, name: &RefName) -> Result<Option<ContentId>, StoreError>;
 
+    /// Returns one stable ordered page of descendants below `namespace`.
+    ///
+    /// The exclusive cursor, when present, must itself be a descendant of the
+    /// namespace. Implementations hold the same namespace fence used by
+    /// conditional replacement for the complete scan, inspect no more than
+    /// [`MAX_REF_SCAN_VISITS`] entries, and return no more than
+    /// [`MAX_REF_SCAN_PAGE_ITEMS`] bindings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] for an invalid cursor or limit, excessive scan
+    /// work, malformed namespace state, or backend failure.
+    fn scan_refs(
+        &self,
+        namespace: &RefName,
+        after: Option<&RefName>,
+        limit: usize,
+    ) -> Result<RefScanPage, StoreError>;
+
     /// Conditionally replaces one named ref.
     ///
     /// # Errors
@@ -879,6 +969,30 @@ pub trait MutableRefBackend: Send + Sync {
         expected: Option<ContentId>,
         next: ContentId,
     ) -> Result<RefCasOutcome, StoreError>;
+}
+
+pub(crate) fn validate_ref_scan_basis(
+    namespace: &RefName,
+    after: Option<&RefName>,
+    limit: usize,
+) -> Result<(), StoreError> {
+    if limit == 0 || limit > MAX_REF_SCAN_PAGE_ITEMS {
+        return Err(StoreError::Quota);
+    }
+    if let Some(after) = after
+        && !ref_name_is_descendant(namespace, after)
+    {
+        return Err(StoreError::InvalidComposition {
+            reason: "authoritative ref scan cursor is outside its namespace",
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn ref_name_is_descendant(namespace: &RefName, name: &RefName) -> bool {
+    name.as_str()
+        .strip_prefix(namespace.as_str())
+        .is_some_and(|suffix| suffix.starts_with('/') && suffix.len() > 1)
 }
 
 pub(crate) fn validate_bytes(id: ContentId, bytes: &[u8]) -> Result<(), StoreError> {

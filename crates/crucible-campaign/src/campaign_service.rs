@@ -22,6 +22,7 @@ use crate::{
 mod create;
 mod derive;
 mod get_snapshot;
+mod list;
 mod pin;
 mod query;
 mod ranking;
@@ -33,6 +34,9 @@ pub use create::{
 };
 pub use derive::{DeriveCampaignRequest, DeriveCampaignResponse};
 pub use get_snapshot::{GetCampaignSnapshotRequest, GetCampaignSnapshotResponse};
+pub use list::{
+    CampaignListEntry, ListCampaignsRequest, ListCampaignsResponse, MAX_CAMPAIGN_LIST_PAGE_ITEMS,
+};
 pub use pin::{PinCampaignRequest, PinCampaignResponse};
 pub use query::{
     CampaignChoiceEntry, CampaignChoiceObject, CampaignChoiceObjectKind, CampaignFindingObject,
@@ -135,6 +139,8 @@ impl Canonical for CampaignName {
 /// Closed authorization operation presented to a campaign principal policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CampaignServiceOperation {
+    /// Enumerate authenticated current heads across the campaign namespace.
+    ListCampaigns,
     /// Create one named campaign at its canonical genesis snapshot.
     CreateCampaign,
     /// Derive a new named campaign from an authenticated source snapshot.
@@ -327,6 +333,26 @@ impl CampaignServiceFailure {
             | Self::ConcurrentUpdate
             | Self::InvalidTransition { .. } => Err(CampaignCodecError::InvalidValue {
                 reason: "campaign service failure is invalid for get campaign",
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// Validates that this failure is meaningful for `ListCampaigns`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a name- or mutation-specific failure
+    /// because a catalog scan cannot produce that outcome.
+    pub fn validate_for_list_campaigns(self) -> Result<(), CampaignCodecError> {
+        match self {
+            Self::NotFound
+            | Self::AlreadyExists
+            | Self::Stale { .. }
+            | Self::CommandReuse
+            | Self::ConcurrentUpdate
+            | Self::InvalidTransition { .. } => Err(CampaignCodecError::InvalidValue {
+                reason: "campaign service failure is invalid for list campaigns",
             }),
             _ => Ok(()),
         }
@@ -646,6 +672,24 @@ impl CampaignServiceFailureSource for std::convert::Infallible {
 
 /// Principal policy required by the repository-backed campaign adapter.
 pub trait CampaignPrincipalAuthorizer {
+    /// Authenticates and authorizes one all-campaign namespace request.
+    ///
+    /// The default denies access so existing authorizers cannot accidentally
+    /// grant catalog discovery through a campaign-specific capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignAuthorizationError`] on denial or when authorization
+    /// cannot be decided. Both outcomes fail before repository access.
+    fn authorize_all_campaigns(
+        &self,
+        _principal: &CampaignPrincipal,
+        _operation: CampaignServiceOperation,
+        _request_digest: CampaignHash,
+    ) -> Result<(), CampaignAuthorizationError> {
+        Err(CampaignAuthorizationError::Unauthorized)
+    }
+
     /// Authenticates and authorizes one exact principal and request digest.
     ///
     /// A direct adapter may close over an already-authenticated caller
@@ -1378,6 +1422,17 @@ pub trait CampaignService {
     /// Implementation-specific operational failure.
     type Error;
 
+    /// Returns one ordered page of authenticated current campaign heads.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when all-campaign
+    /// authorization, repository access, or response construction fails.
+    fn list_campaigns(
+        &self,
+        request: &ListCampaignsRequest,
+    ) -> Result<ListCampaignsResponse, Self::Error>;
+
     /// Creates one canonical named campaign or replays its exact genesis.
     ///
     /// The lineage's scenario and genesis artifacts must first be present in
@@ -1615,6 +1670,32 @@ where
     #[must_use]
     pub const fn new(service: S) -> Self {
         Self { service }
+    }
+
+    /// Lists campaigns and validates exact response, order, cursor, and bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different or malformed catalog request.
+    pub fn list_campaigns(
+        &self,
+        request: &ListCampaignsRequest,
+    ) -> Result<ListCampaignsResponse, CampaignClientError> {
+        let response = match self.service.list_campaigns(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_list_campaigns()
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
     }
 
     /// Creates one campaign and validates exact response binding.
@@ -2191,6 +2272,43 @@ where
     A: CampaignPrincipalAuthorizer,
 {
     type Error = RepositoryCampaignServiceError;
+
+    fn list_campaigns(
+        &self,
+        request: &ListCampaignsRequest,
+    ) -> Result<ListCampaignsResponse, Self::Error> {
+        self.authorizer.authorize_all_campaigns(
+            request.principal(),
+            CampaignServiceOperation::ListCampaigns,
+            request.request_digest(),
+        )?;
+        let limit = usize::try_from(request.limit()).map_err(|_| {
+            CampaignRepositoryError::InvalidRequest {
+                reason: "campaign-list-page-size-is-invalid",
+            }
+        })?;
+        let page = self
+            .repository
+            .list_heads(request.after().map(CampaignName::as_str), limit)?;
+        let mut entries = Vec::with_capacity(page.heads().len());
+        for head in page.heads() {
+            let state = self.repository.state_at_snapshot(head.snapshot_id())?;
+            entries.push(CampaignListEntry::new(
+                CampaignName::new(head.name())?,
+                head.snapshot_id(),
+                head.snapshot().lineage(),
+                head.snapshot().active_policy(),
+                state,
+            ));
+        }
+        let next_after = page.next_after().map(CampaignName::new).transpose()?;
+        Ok(ListCampaignsResponse::new(
+            request,
+            entries,
+            next_after,
+            page.visited_refs(),
+        )?)
+    }
 
     fn create_campaign(
         &self,

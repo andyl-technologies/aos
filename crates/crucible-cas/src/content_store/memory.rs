@@ -272,6 +272,44 @@ impl MutableRefBackend for MemoryRefBackend {
         Ok(state.refs.get(name).copied())
     }
 
+    fn scan_refs(
+        &self,
+        namespace: &RefName,
+        after: Option<&RefName>,
+        limit: usize,
+    ) -> Result<RefScanPage, StoreError> {
+        validate_ref_scan_basis(namespace, after, limit)?;
+        let state = self.state.lock().map_err(|_| StoreError::Poisoned {
+            operation: "memory-scan-refs",
+        })?;
+        let mut visited = 0_u64;
+        let mut entries = Vec::with_capacity(limit.saturating_add(1));
+        for (name, target) in &state.refs {
+            visited = visited.checked_add(1).ok_or(StoreError::Quota)?;
+            if visited > MAX_REF_SCAN_VISITS {
+                return Err(StoreError::Quota);
+            }
+            if !ref_name_is_descendant(namespace, name)
+                || after.is_some_and(|cursor| name <= cursor)
+            {
+                continue;
+            }
+            entries.push(RefScanEntry::new(name.clone(), *target));
+            if entries.len() > limit {
+                break;
+            }
+        }
+
+        let has_more = entries.len() > limit;
+        if has_more {
+            entries.pop();
+        }
+        let next_after = has_more
+            .then(|| entries.last().map(|entry| entry.name().clone()))
+            .flatten();
+        Ok(RefScanPage::new(entries, next_after, visited))
+    }
+
     fn compare_exchange(
         &self,
         name: &RefName,

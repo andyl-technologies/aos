@@ -908,6 +908,16 @@ impl MutableRefBackend for DirectoryRefBackend {
         self.read_unlocked(name)
     }
 
+    fn scan_refs(
+        &self,
+        namespace: &RefName,
+        after: Option<&RefName>,
+        limit: usize,
+    ) -> Result<RefScanPage, StoreError> {
+        let _inventory_lock = self.acquire_ref_inventory_lock(FlockOperation::LockShared)?;
+        ref_admin::scan_ref_namespace(self, namespace, after, limit)
+    }
+
     fn compare_exchange(
         &self,
         name: &RefName,

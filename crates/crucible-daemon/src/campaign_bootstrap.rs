@@ -74,7 +74,8 @@ impl CampaignLocalServiceMode {
                 | CampaignServiceOperation::ApplyCampaignCommand
                 | CampaignServiceOperation::PinCampaign
                 | CampaignServiceOperation::SubmitBranchRequest => false,
-                CampaignServiceOperation::GetCampaign
+                CampaignServiceOperation::ListCampaigns
+                | CampaignServiceOperation::GetCampaign
                 | CampaignServiceOperation::GetCampaignSnapshot
                 | CampaignServiceOperation::WatchCampaign
                 | CampaignServiceOperation::QueryCampaignGraph
@@ -532,6 +533,19 @@ struct CampaignLocalAuthorizer {
 }
 
 impl CampaignPrincipalAuthorizer for CampaignLocalAuthorizer {
+    fn authorize_all_campaigns(
+        &self,
+        principal: &CampaignPrincipal,
+        operation: CampaignServiceOperation,
+        request_digest: CampaignHash,
+    ) -> Result<(), CampaignAuthorizationError> {
+        if !self.mode.permits(operation) {
+            return Err(CampaignAuthorizationError::Unauthorized);
+        }
+        self.policy
+            .authorize_all_campaigns(principal, operation, request_digest)
+    }
+
     fn authorize(
         &self,
         principal: &CampaignPrincipal,

@@ -44,6 +44,13 @@ struct GraphPageService {
 impl CampaignService for FixedHeadService {
     type Error = Infallible;
 
+    fn list_campaigns(
+        &self,
+        _request: &crucible_campaign::ListCampaignsRequest,
+    ) -> Result<crucible_campaign::ListCampaignsResponse, Self::Error> {
+        unreachable!("fixed-head service does not list campaigns")
+    }
+
     fn create_campaign(
         &self,
         request: &CreateCampaignRequest,
@@ -239,6 +246,13 @@ impl CampaignService for FixedHeadService {
 
 impl CampaignService for GraphPageService {
     type Error = Infallible;
+
+    fn list_campaigns(
+        &self,
+        _request: &crucible_campaign::ListCampaignsRequest,
+    ) -> Result<crucible_campaign::ListCampaignsResponse, Self::Error> {
+        unreachable!("graph-page service does not list campaigns")
+    }
 
     fn create_campaign(
         &self,

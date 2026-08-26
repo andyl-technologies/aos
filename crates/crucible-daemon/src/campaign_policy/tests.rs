@@ -80,6 +80,16 @@ fn policy_requires_exact_operation_and_campaign_scope() {
                 CampaignServiceOperation::GetCampaignSnapshot,
                 CampaignAccessScope::AllCampaigns,
             ),
+            CampaignAccessGrant::new(
+                operator.clone(),
+                CampaignServiceOperation::ListCampaigns,
+                CampaignAccessScope::Campaign(first.clone()),
+            ),
+            CampaignAccessGrant::new(
+                auditor.clone(),
+                CampaignServiceOperation::ListCampaigns,
+                CampaignAccessScope::AllCampaigns,
+            ),
         ],
     )
     .expect("policy");
@@ -120,8 +130,24 @@ fn policy_requires_exact_operation_and_campaign_scope() {
         ),
         Ok(())
     );
+    assert_eq!(
+        policy.authorize_all_campaigns(
+            &operator,
+            CampaignServiceOperation::ListCampaigns,
+            CampaignHash::derive("campaign-policy-test", b"operator-list"),
+        ),
+        Err(CampaignAuthorizationError::Unauthorized)
+    );
+    assert_eq!(
+        policy.authorize_all_campaigns(
+            &auditor,
+            CampaignServiceOperation::ListCampaigns,
+            CampaignHash::derive("campaign-policy-test", b"auditor-list"),
+        ),
+        Ok(())
+    );
     assert_eq!(policy.binding_count(), 2);
-    assert_eq!(policy.grant_count(), 2);
+    assert_eq!(policy.grant_count(), 4);
 }
 
 #[test]
@@ -325,6 +351,7 @@ campaign = "*"
 #[test]
 fn policy_operation_labels_cover_the_closed_service_vocabulary() {
     let labels = [
+        ("list-campaigns", CampaignServiceOperation::ListCampaigns),
         ("create-campaign", CampaignServiceOperation::CreateCampaign),
         ("derive-campaign", CampaignServiceOperation::DeriveCampaign),
         ("get-campaign", CampaignServiceOperation::GetCampaign),

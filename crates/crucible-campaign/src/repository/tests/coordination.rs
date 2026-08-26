@@ -5,6 +5,19 @@ use super::*;
 struct PermitAlice;
 
 impl crate::CampaignPrincipalAuthorizer for PermitAlice {
+    fn authorize_all_campaigns(
+        &self,
+        principal: &crate::CampaignPrincipal,
+        _operation: crate::CampaignServiceOperation,
+        _request_digest: CampaignHash,
+    ) -> Result<(), crate::CampaignAuthorizationError> {
+        if principal.as_str() == "operator:alice" {
+            Ok(())
+        } else {
+            Err(crate::CampaignAuthorizationError::Unauthorized)
+        }
+    }
+
     fn authorize(
         &self,
         principal: &crate::CampaignPrincipal,
@@ -388,6 +401,68 @@ fn concurrent_creation_replays_equal_basis_and_rejects_different_basis() {
             assert!(checkpoints.contains_key(&authoritative));
         }
     }
+}
+
+#[test]
+fn campaign_head_pages_are_bounded_ordered_and_resumable() {
+    let (repository, lineage, policy) = fixture();
+    for name in ["zeta", "alpha", "middle"] {
+        repository
+            .create(name, &lineage, &policy, &BTreeMap::new())
+            .expect("create listed campaign");
+    }
+
+    let first = repository.list_heads(None, 1).expect("first head page");
+    assert_eq!(first.heads().len(), 1);
+    assert_eq!(first.heads()[0].name(), "alpha");
+    assert_eq!(first.next_after(), Some("alpha"));
+    assert_eq!(first.visited_refs(), 2);
+
+    let alpha = first.heads()[0].snapshot_id();
+    repository
+        .apply_control(
+            "alpha",
+            &command("advance-listed-alpha", alpha, CampaignControlAction::Resume),
+        )
+        .expect("advance first listed campaign");
+
+    let second = repository
+        .list_heads(first.next_after(), 2)
+        .expect("resumed head page");
+    assert_eq!(
+        second
+            .heads()
+            .iter()
+            .map(CampaignHead::name)
+            .collect::<Vec<_>>(),
+        ["middle", "zeta"]
+    );
+    assert_eq!(second.next_after(), None);
+    assert_eq!(second.visited_refs(), 3);
+
+    assert!(repository.list_heads(None, 0).is_err());
+    assert!(repository.list_heads(Some("bad:name"), 1).is_err());
+
+    let request = crate::ListCampaignsRequest::new(
+        crate::CampaignPrincipal::new("operator:alice").expect("principal"),
+        Some(crate::CampaignName::new("alpha").expect("cursor")),
+        2,
+    )
+    .expect("service list request");
+    let response = crate::CampaignClient::new(crate::RepositoryCampaignService::new(
+        &repository,
+        PermitAlice,
+    ))
+    .list_campaigns(&request)
+    .expect("checked service list");
+    assert_eq!(
+        response
+            .entries()
+            .iter()
+            .map(|entry| entry.name().as_str())
+            .collect::<Vec<_>>(),
+        ["middle", "zeta"]
+    );
 }
 
 #[test]

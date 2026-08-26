@@ -307,6 +307,19 @@ impl UnixPeerCampaignPolicy {
         );
         self.grants.contains(&all) || self.grants.contains(&exact)
     }
+
+    fn permits_all_campaigns(
+        &self,
+        principal: &CampaignPrincipal,
+        operation: CampaignServiceOperation,
+    ) -> bool {
+        self.known_principals.contains(principal)
+            && self.grants.contains(&CampaignAccessGrant::new(
+                principal.clone(),
+                operation,
+                CampaignAccessScope::AllCampaigns,
+            ))
+    }
 }
 
 #[derive(Deserialize)]
@@ -338,6 +351,7 @@ struct CampaignPolicyGrant {
 
 fn parse_operation(operation: &str) -> Option<CampaignServiceOperation> {
     match operation {
+        "list-campaigns" => Some(CampaignServiceOperation::ListCampaigns),
         "create-campaign" => Some(CampaignServiceOperation::CreateCampaign),
         "derive-campaign" => Some(CampaignServiceOperation::DeriveCampaign),
         "get-campaign" => Some(CampaignServiceOperation::GetCampaign),
@@ -378,6 +392,19 @@ impl UnixPeerCampaignPrincipalResolver for UnixPeerCampaignPolicy {
 }
 
 impl CampaignPrincipalAuthorizer for UnixPeerCampaignPolicy {
+    fn authorize_all_campaigns(
+        &self,
+        principal: &CampaignPrincipal,
+        operation: CampaignServiceOperation,
+        _request_digest: CampaignHash,
+    ) -> Result<(), CampaignAuthorizationError> {
+        if self.permits_all_campaigns(principal, operation) {
+            Ok(())
+        } else {
+            Err(CampaignAuthorizationError::Unauthorized)
+        }
+    }
+
     fn authorize(
         &self,
         principal: &CampaignPrincipal,
