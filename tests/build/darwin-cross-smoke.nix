@@ -40,6 +40,7 @@
             printf '%s\n' \
               '#include <ApplicationServices/ApplicationServices.h>' \
               '#include <CoreFoundation/CoreFoundation.h>' \
+              '#include <CoreServices/CoreServices.h>' \
               '#include <netinet/tcp_fsm.h>' \
               '#include <netinet/tcp_timer.h>' \
               '#include <rpc/pmap_prot.h>' \
@@ -99,6 +100,82 @@
               -framework SystemConfiguration \
               -lobjc \
               -o "$c/bin/aos-darwin-framework-smoke"
+
+            printf '%s\n' \
+              '#include <CoreFoundation/CoreFoundation.h>' \
+              '#include <CoreServices/CoreServices.h>' \
+              'static void aos_fsevent_callback(ConstFSEventStreamRef stream, void *info, size_t count, void *paths, const FSEventStreamEventFlags flags[], const FSEventStreamEventId ids[]) { (void)stream; (void)info; (void)count; (void)paths; (void)flags; (void)ids; }' \
+              'int main(void) {' \
+              '  const void *values[] = { CFSTR("aos") };' \
+              '  CFArrayRef immutable = CFArrayCreate(kCFAllocatorDefault, values, 1, &kCFTypeArrayCallBacks);' \
+              '  CFMutableArrayRef mutable = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);' \
+              '  CFArrayAppendValue(mutable, values[0]);' \
+              '  CFArrayInsertValueAtIndex(mutable, 0, values[0]);' \
+              '  CFURLRef base = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, CFSTR("."), kCFURLPOSIXPathStyle, true);' \
+              '  CFURLRef child = CFURLCreateCopyAppendingPathComponent(kCFAllocatorDefault, base, CFSTR("aos"), false);' \
+              '  CFURLRef parent = CFURLCreateCopyDeletingLastPathComponent(kCFAllocatorDefault, child);' \
+              '  CFURLRef absolute = CFURLCopyAbsoluteURL(parent);' \
+              '  CFStringRef path = CFURLCopyFileSystemPath(absolute, kCFURLPOSIXPathStyle);' \
+              '  CFStringRef last = CFURLCopyLastPathComponent(child);' \
+              '  CFURLRef reference = CFURLCreateFileReferenceURL(kCFAllocatorDefault, child, NULL);' \
+              '  CFURLRef filePath = CFURLCreateFilePathURL(kCFAllocatorDefault, reference, NULL);' \
+              '  Boolean reachable = CFURLResourceIsReachable(filePath, NULL);' \
+              '  FSEventStreamContext context = { 0, NULL, NULL, NULL, NULL };' \
+              '  FSEventStreamRef stream = FSEventStreamCreate(kCFAllocatorDefault, aos_fsevent_callback, &context, immutable, kFSEventStreamEventIdSinceNow, 0.1, kFSEventStreamCreateFlagFileEvents);' \
+              '  FSEventStreamSetDispatchQueue(stream, NULL);' \
+              '  Boolean started = FSEventStreamStart(stream);' \
+              '  dev_t device = FSEventStreamGetDeviceBeingWatched(stream);' \
+              '  FSEventStreamEventId current = FSEventsGetCurrentEventId();' \
+              '  Boolean purged = FSEventsPurgeEventsForDeviceUpToEventId(device, current);' \
+              '  FSEventStreamStop(stream);' \
+              '  FSEventStreamInvalidate(stream);' \
+              '  FSEventStreamRelease(stream);' \
+              '  if (filePath != NULL) CFRelease(filePath);' \
+              '  if (reference != NULL) CFRelease(reference);' \
+              '  if (last != NULL) CFRelease(last);' \
+              '  if (path != NULL) CFRelease(path);' \
+              '  if (absolute != NULL) CFRelease(absolute);' \
+              '  if (parent != NULL) CFRelease(parent);' \
+              '  if (child != NULL) CFRelease(child);' \
+              '  if (base != NULL) CFRelease(base);' \
+              '  if (mutable != NULL) CFRelease(mutable);' \
+              '  if (immutable != NULL) CFRelease(immutable);' \
+              '  return reachable && started && purged && current == 0;' \
+              '}' \
+              > coreservices-smoke.c
+            "$CC" coreservices-smoke.c \
+              -framework CoreFoundation \
+              -framework CoreServices \
+              -o "$c/bin/aos-darwin-coreservices-smoke"
+
+            printf '%s\n' \
+              '#import <Cocoa/Cocoa.h>' \
+              '@interface AosNotificationDelegate : NSObject<NSUserNotificationCenterDelegate> @end' \
+              '@implementation AosNotificationDelegate @end' \
+              'int main(void) {' \
+              '  NSString *text = [[NSString alloc] initWithUTF8String:"aos"];' \
+              '  NSMutableDictionary *info = [NSMutableDictionary new];' \
+              '  info[@"aos"] = text;' \
+              '  NSImage *image = [[NSImage alloc] initByReferencingFile:text];' \
+              '  NSUserNotification *notification = [NSUserNotification new];' \
+              '  notification.title = text;' \
+              '  notification.informativeText = text;' \
+              '  notification.identifier = text;' \
+              '  notification.contentImage = image;' \
+              '  notification.userInfo = info;' \
+              '  AosNotificationDelegate *delegate = [AosNotificationDelegate new];' \
+              '  NSUserNotificationCenter *center = [NSUserNotificationCenter defaultUserNotificationCenter];' \
+              '  center.delegate = delegate;' \
+              '  [center deliverNotification:notification];' \
+              '  NSBundle *bundle = [NSBundle mainBundle];' \
+              '  return bundle.bundleIdentifier == nil || notification.activationType < NSUserNotificationActivationTypeNone;' \
+              '}' \
+              > cocoa-smoke.m
+            "$CC" cocoa-smoke.m \
+              -framework Cocoa \
+              -framework CoreFoundation \
+              -lobjc \
+              -o "$c/bin/aos-darwin-cocoa-smoke"
 
             printf '%s\n' \
               '#include <arpa/nameser.h>' \
@@ -244,6 +321,8 @@
             for executable in \
               "$c/bin/aos-darwin-c-smoke" \
               "$c/bin/aos-darwin-command-line-sdk-smoke" \
+              "$c/bin/aos-darwin-coreservices-smoke" \
+              "$c/bin/aos-darwin-cocoa-smoke" \
               "$c/bin/aos-darwin-framework-smoke" \
               "$c/bin/aos-darwin-iconv-smoke" \
               "$c/bin/aos-darwin-iokit-smoke" \
