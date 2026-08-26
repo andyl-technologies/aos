@@ -5,6 +5,7 @@
   gnumake,
   openssl,
   zlib,
+  stdenv,
 }: let
   version = "1.11.1";
 in
@@ -28,40 +29,57 @@ in
     ];
     propagatedDeps = [openssl];
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd libssh2-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --with-crypto=openssl \
-            --with-libssl-prefix=${openssl} \
-            --with-libz \
-            --enable-shared \
-            --disable-static
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install
-        '';
-      }
-    ];
+    phases =
+      [
+        {
+          name = "unpack";
+          script = ''
+            tar xf $src
+            cd libssh2-${version}
+          '';
+        }
+      ]
+      ++ (
+        if stdenv.isCross && stdenv.hostPlatform.isDarwin
+        then [
+          {
+            name = "darwin-build-paths";
+            script = ''
+              export CFLAGS="$CFLAGS \
+                -ffile-prefix-map=$PWD=. \
+                -fdebug-prefix-map=$PWD=."
+            '';
+          }
+        ]
+        else []
+      )
+      ++ [
+        {
+          name = "configure";
+          script = ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --with-crypto=openssl \
+              --with-libssl-prefix=${openssl} \
+              --with-libz \
+              --enable-shared \
+              --disable-static
+          '';
+        }
+        {
+          name = "build";
+          script = ''
+            make -j$NIX_BUILD_CORES
+          '';
+        }
+        {
+          name = "install";
+          script = ''
+            make install
+          '';
+        }
+      ];
 
     meta = {
       description = "libssh2 — client-side C library implementing the SSH2 protocol";

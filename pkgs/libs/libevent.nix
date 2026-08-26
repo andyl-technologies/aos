@@ -48,14 +48,32 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --enable-shared \
-            --enable-static \
-            --with-openssl=${openssl}
-        '';
+        script =
+          if stdenv.isCross && stdenv.hostPlatform.isDarwin
+          then ''
+            # Darwin's linker requires the pthread and OpenSSL companion
+            # dylibs to resolve their libevent-core references at link time.
+            # Treat Darwin like libevent's other no-undefined platforms so
+            # Automake also records the correct parallel-build dependency.
+            sed -i \
+              's/if test x$bwin32 = xtrue || test x$cygwin = xtrue || test x$midipix = xtrue; then/if test x$host_os = xdarwin || test x$bwin32 = xtrue || test x$cygwin = xtrue || test x$midipix = xtrue; then/' \
+              configure
+
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --enable-shared \
+              --enable-static \
+              --with-openssl=${openssl}
+          ''
+          else ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --enable-shared \
+              --enable-static \
+              --with-openssl=${openssl}
+          '';
       }
       {
         name = "build";
