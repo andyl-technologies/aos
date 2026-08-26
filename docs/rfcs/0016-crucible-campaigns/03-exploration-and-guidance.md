@@ -879,6 +879,23 @@ mapping mutation seams without turning every signal sample into a branch.
   high-rate opportunities is to select model parameters and sample keyed
   outcomes, then promote a bounded interesting window for exact branching.
 
+The implemented promotion-normalization boundary accepts at most 4,096 exact
+signal-fault candidates from one `SearchRuntimeFrontier`. The candidates MUST
+be the dense ordered sequence for one search-choice ID, candidate-set digest,
+parent configuration, and virtual-time coordinate. It represents candidate
+indexes as an unsigned integer campaign domain and adds one final sentinel for
+the unmodified model result. The standardized environment adapter is
+`crucible.signal-fault-search.v1`; the opportunity coordinate retains the exact
+parent and candidate-set digest, while its instance retains the frontier time.
+
+Repository-authenticated records reconstruct either a typed campaign
+`Selection` followed by the exact `signal-fault/.../candidate/N` override, or a
+selection-only unmodified branch. This pure conversion does not itself admit a
+historical frontier. A live promotion owner MUST still prove that execution is
+paused at the frontier's exact parent before publishing the opportunity or
+using the reconstructed prefix for QEMU injection. Retrospective search
+frontiers MUST NOT be mislabeled as discoveries at a later observation child.
+
 ## 03.8 Probabilistic exploration and statistical validity
 
 Three modes are explicit:

@@ -450,6 +450,9 @@ pub enum CrucibleArtifactError {
     /// Campaign envelope construction rejected a newly encoded artifact.
     #[error(transparent)]
     Campaign(#[from] CampaignCodecError),
+    /// A promoted signal-fault selection did not match its standardized records.
+    #[error(transparent)]
+    SignalFaultSelection(#[from] crucible::SignalFaultSelectableError),
 }
 
 /// Encodes one validated Crucible scenario form as a campaign artifact.
