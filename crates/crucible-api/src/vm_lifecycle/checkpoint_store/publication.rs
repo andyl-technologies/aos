@@ -48,6 +48,27 @@ pub(super) fn scheduler_resource_limit(error: FaultResourceLimitError) -> Schedu
     }
 }
 
+/// Admits one new closure against the currently published checkpoint count.
+///
+/// Transaction-staging directories do not consume the durable closure count.
+/// Every directory entry and file type is inspected fail-closed before the
+/// publication transaction begins.
+///
+/// # Errors
+///
+/// Returns an exact resource-limit error when the additional closure would
+/// exceed the authored or compiled ceiling, or a store error when directory
+/// inspection fails.
+pub(super) fn admit_new_checkpoint_publication(
+    parent: &Path,
+    limits: FaultResourceLimits,
+) -> Result<(), SchedulerError> {
+    let count = published_checkpoint_count(parent)?;
+    limits
+        .reserve("checkpoint_count", count, 1)
+        .map_err(scheduler_resource_limit)
+}
+
 /// Counts authenticated-name closure directories without discarding I/O errors.
 ///
 /// # Errors
@@ -57,10 +78,28 @@ pub(super) fn enforce_published_checkpoint_count(
     parent: &Path,
     limits: FaultResourceLimits,
 ) -> Result<(), SchedulerError> {
-    let mut count = 0_usize;
-    for entry in fs::read_dir(parent)
-        .map_err(|error| store_error(format!("count published checkpoint closures: {error}")))?
-    {
+    let count = published_checkpoint_count(parent)?;
+    limits
+        .reserve(
+            "checkpoint_count",
+            count.saturating_sub(1),
+            u64::from(count != 0),
+        )
+        .map_err(scheduler_resource_limit)
+}
+
+fn published_checkpoint_count(parent: &Path) -> Result<u64, SchedulerError> {
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => {
+            return Err(store_error(format!(
+                "count published checkpoint closures: {error}"
+            )));
+        }
+    };
+    let mut count = 0_u64;
+    for entry in entries {
         let entry = entry.map_err(|error| {
             store_error(format!("enumerate published checkpoint closures: {error}"))
         })?;
@@ -81,15 +120,7 @@ pub(super) fn enforce_published_checkpoint_count(
                 .ok_or_else(|| store_error("published checkpoint count is not representable"))?;
         }
     }
-    let count = u64::try_from(count)
-        .map_err(|_| store_error("published checkpoint count is not representable"))?;
-    limits
-        .reserve(
-            "checkpoint_count",
-            count.saturating_sub(1),
-            u64::from(count != 0),
-        )
-        .map_err(scheduler_resource_limit)
+    Ok(count)
 }
 
 /// Finalizes count admission and parent durability after the manifest rename.
@@ -148,6 +179,33 @@ mod tests {
                 configured: 1,
                 hard,
             }) if hard == FaultResourceLimits::compiled_maximum().checkpoint_count
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn new_checkpoint_count_is_admitted_before_publication_with_exact_coordinates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        fs::create_dir(root.path().join(".closure-incomplete"))?;
+        fs::create_dir(root.path().join("0".repeat(64)))?;
+        let limits = FaultResourceLimits {
+            checkpoint_count: 1,
+            ..FaultResourceLimits::default()
+        };
+
+        let error = admit_new_checkpoint_publication(root.path(), limits)
+            .expect_err("a second publication must fail before rename");
+
+        assert!(matches!(
+            error,
+            SchedulerError::ResourceLimit {
+                field: "checkpoint_count",
+                current: 1,
+                requested: 1,
+                configured: 1,
+                hard,
+            } if hard == FaultResourceLimits::compiled_maximum().checkpoint_count
         ));
         Ok(())
     }
