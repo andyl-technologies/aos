@@ -4588,7 +4588,9 @@ fn verify_embedded_uki(image: &PublishedImage) -> Result<()> {
     let source = format!("::/{}", image.delivery.uki.esp_path);
     let status = Command::new(mcopy)
         .env("MTOOLS_SKIP_CHECK", "1")
-        .args(["-o", "-i"])
+        // The pinned procfd is an existing Unix destination. `-n` prevents
+        // mcopy from reading the maintainer's terminal for overwrite consent.
+        .args(["-n", "-i"])
         .arg(image_spec)
         .arg(source)
         .arg(&extracted_path)
