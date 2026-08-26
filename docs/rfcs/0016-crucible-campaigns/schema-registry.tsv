@@ -1,12 +1,14 @@
 # schema-name	version	owner	object-kind	compatibility-gates
 crucible.content-envelope	1	crucible-cas::content_envelope	envelope	gate:content-address,gate:campaign-store-equivalence
 crucible.content-id-text	1	crucible-cas::content_store	identity	gate:content-address,gate:campaign-store-equivalence
-crucible.content-store.graph-configuration	3	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
+crucible.content-store.graph-configuration	4	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
 crucible.directory-ref	1	crucible-cas::content_store	mutable-ref	gate:campaign-store-composition
 crucible.content-store.directory-inventory-state	1	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
 crucible.content-store.directory-ref-inventory-state	1	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
 crucible.content-store.write-back-transfer-journal	1	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
 crucible.content-store.compressed-object	1	crucible-cas::content_store	physical-record	gate:campaign-store-composition
+crucible.content-store.encrypted-object	1	crucible-cas::content_store	physical-record	gate:campaign-store-composition
+crucible.content-store.encryption-key-state	1	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
 crucible.content-store.logical-quota-state	1	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
 crucible.content-store.pack	1	crucible-cas::content_store	physical-record	gate:campaign-store-composition
 crucible.content-store.pack-index	1	crucible-cas::content_store	administrative-record	gate:campaign-store-composition

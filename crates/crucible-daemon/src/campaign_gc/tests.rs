@@ -14,7 +14,8 @@ use crucible_cas::content_store::{
     BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
     ContentId, DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend, MemoryBlobBackend,
     MemoryRefBackend, MutableRefBackend, ObjectKind, PackedBlobBackend, PlannedDeleteDisposition,
-    RefCasOutcome, RefName, StoreError, StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
+    RefCasOutcome, RefName, StoreEncryptionKey, StoreEncryptionKeyId, StoreError, StoreGraph,
+    StoreGraphConfig, StoreGraphKeyring, StoreNodeId, StoreNodeSpec,
 };
 
 use super::apply::CampaignGcApplySources;
@@ -974,6 +975,132 @@ fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
             .expect("read retained compressed object")
             .read_all(1024 * 1024)
             .expect("authenticate retained compressed object"),
+        live_bytes
+    );
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Complete);
+}
+
+#[test]
+fn encrypted_graph_admin_drives_plaintext_accounted_gc_across_restart() {
+    let temp = tempfile::TempDir::new().expect("temporary encrypted GC root");
+    let blob_root = temp.path().join("encrypted");
+    let ref_root = temp.path().join("refs");
+    let ledger_root = temp.path().join("ledger");
+    let journal_root = temp.path().join("journal");
+    let encrypted_node = StoreNodeId::new("encrypted-primary").expect("encrypted node");
+    let key_id = StoreEncryptionKeyId::new("gc-key-1").expect("GC key ID");
+    let graph_config = || StoreGraphConfig {
+        root: encrypted_node.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::RamExtent, ObjectKind::Trace]),
+        nodes: BTreeMap::from([(
+            encrypted_node.clone(),
+            StoreNodeSpec::EncryptedDirectory {
+                root: blob_root.clone(),
+                maximum_logical_object_bytes: 1024 * 1024,
+                key_id: key_id.clone(),
+            },
+        )]),
+    };
+    let graph_keys = || {
+        let mut keys = StoreGraphKeyring::new();
+        keys.insert(
+            key_id.clone(),
+            StoreEncryptionKey::new([0x6d; 32]).expect("GC key"),
+        )
+        .expect("insert GC key");
+        keys
+    };
+
+    let keys = graph_keys();
+    let (graph, admin) =
+        StoreGraph::build_with_admin_and_keys(graph_config(), &keys).expect("encrypted graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let live = ContentEnvelope::new(
+        "crucible.test.gc-encrypted-live",
+        1,
+        BTreeSet::new(),
+        vec![b'L'; 64 * 1024],
+    )
+    .expect("live envelope");
+    let live_bytes = live.canonical_bytes();
+    let live_id = live.content_id(ObjectKind::RamExtent);
+    graph
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes.clone()))
+        .expect("store live encrypted object");
+    refs.compare_exchange(
+        &RefName::new("retained/encrypted-gc").expect("encrypted ref"),
+        None,
+        live_id,
+    )
+    .expect("publish encrypted root");
+    let orphan_bytes = vec![b'O'; 128 * 1024];
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, &orphan_bytes);
+    graph
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes.clone()))
+        .expect("store encrypted orphan");
+
+    let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("open encrypted ledger");
+    let prepared = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect("plan encrypted GC");
+    assert_eq!(prepared.plan().physical()[0].objects(), 2);
+    assert_eq!(
+        prepared.plan().physical()[0].logical_bytes(),
+        u64::try_from(live_bytes.len() + orphan_bytes.len()).expect("logical byte total")
+    );
+    assert_eq!(prepared.candidates().len(), 1);
+    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
+        .expect("create encrypted GC journal");
+    drop(journal);
+    drop(ledger);
+    drop(repository);
+    drop(refs);
+    drop(graph);
+    drop(admin);
+    drop(keys);
+
+    let keys = graph_keys();
+    let (graph, admin) = StoreGraph::build_with_admin_and_keys(graph_config(), &keys)
+        .expect("restart encrypted graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let mut ledger =
+        DirectoryAssignmentLedger::open(&ledger_root).expect("reopen encrypted ledger");
+    let mut journal =
+        DirectoryCampaignGcJournal::open(&journal_root).expect("reopen encrypted GC journal");
+    let report = super::apply_single_host_campaign_gc(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect("apply encrypted GC after restart");
+    assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
+    assert_eq!(report.candidates(), 1);
+    assert_eq!(
+        report.logical_bytes(),
+        u64::try_from(orphan_bytes.len()).expect("reported orphan bytes")
+    );
+    assert!(graph.contains(live_id).expect("live encrypted placement"));
+    assert!(!graph.contains(orphan).expect("orphan encrypted placement"));
+    assert_eq!(
+        graph
+            .read(live_id, None)
+            .expect("read retained encrypted object")
+            .read_all(1024 * 1024)
+            .expect("authenticate retained encrypted object"),
         live_bytes
     );
     assert_eq!(journal.phase(), CampaignGcJournalPhase::Complete);
