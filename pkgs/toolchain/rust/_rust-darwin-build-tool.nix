@@ -77,6 +77,10 @@ in
           channel = "stable"
           codegen-units = 0
           omit-git-hash = true
+          # Target standard libraries are copied into downstream compiler
+          # sysroots, so absolute bootstrap source paths would otherwise be
+          # reproduced in every Darwin Rust binary built from them.
+          remap-debuginfo = true
           download-rustc = false
           lld = false
           use-lld = false
