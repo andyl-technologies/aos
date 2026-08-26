@@ -42,6 +42,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --with-gmp=${gmp} \
             --with-mpfr=${mpfr} \

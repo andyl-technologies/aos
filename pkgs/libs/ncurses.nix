@@ -3,6 +3,8 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  buildPackages,
+  stdenv,
 }: let
   version = "6.6";
 in
@@ -18,7 +20,15 @@ in
       hash = "sha256-NVtMu+2ICwOBoExGYXt2VuNiWF1S6c+Epn4gCbdJ/xE=";
     };
 
-    buildDeps = [gnumake];
+    # Cross installs compile the terminfo database with a native tic rather
+    # than attempting to execute the freshly built target program.
+    buildDeps =
+      [gnumake]
+      ++ (
+        if stdenv.isCross
+        then [buildPackages.ncurses]
+        else []
+      );
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -37,6 +47,7 @@ in
           export CPPFLAGS="$CPPFLAGS -include stdbool.h"
 
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --with-shared \
             --without-debug \
@@ -70,16 +81,19 @@ in
 
           # Create non-wide-char compatibility symlinks
           for lib in ncurses form panel menu; do
-            ln -sf lib''${lib}w.so $out/lib/lib''${lib}.so
+            ln -sf lib''${lib}w.${stdenv.hostPlatform.sharedLibraryExtension} \
+              $out/lib/lib''${lib}.${stdenv.hostPlatform.sharedLibraryExtension}
             ln -sf ''${lib}w.pc $out/lib/pkgconfig/''${lib}.pc
           done
 
           # tinfo compatibility
-          ln -sf libncursesw.so $out/lib/libtinfo.so
+          ln -sf libncursesw.${stdenv.hostPlatform.sharedLibraryExtension} \
+            $out/lib/libtinfo.${stdenv.hostPlatform.sharedLibraryExtension}
           ln -sf ncursesw.pc $out/lib/pkgconfig/tinfo.pc
 
           # curses compatibility
-          ln -sf libncursesw.so $out/lib/libcurses.so
+          ln -sf libncursesw.${stdenv.hostPlatform.sharedLibraryExtension} \
+            $out/lib/libcurses.${stdenv.hostPlatform.sharedLibraryExtension}
 
           # Patch curses.h to include stdbool.h for GCC 13+ compatibility.
           # Must happen BEFORE creating symlinks so both ncursesw/curses.h
