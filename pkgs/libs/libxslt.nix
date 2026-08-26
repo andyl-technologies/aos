@@ -29,46 +29,63 @@ in
         else []
       );
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd libxslt-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --disable-static \
-            --enable-shared \
-            --with-libxml-prefix=${libxml2} \
-            --without-python \
-            --without-crypto
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script =
-          if stdenv.hostPlatform.isDarwin
-          then ''
-            make install
-            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/xslt-config"
-          ''
-          else ''
-            make install
+    phases =
+      [
+        {
+          name = "unpack";
+          script = ''
+            tar xf $src
+            cd libxslt-${version}
           '';
-      }
-    ];
+        }
+      ]
+      ++ (
+        if stdenv.isCross && stdenv.hostPlatform.isDarwin
+        then [
+          {
+            name = "darwin-build-paths";
+            script = ''
+              export CFLAGS="$CFLAGS \
+                -ffile-prefix-map=$PWD=. \
+                -fdebug-prefix-map=$PWD=."
+            '';
+          }
+        ]
+        else []
+      )
+      ++ [
+        {
+          name = "configure";
+          script = ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --disable-static \
+              --enable-shared \
+              --with-libxml-prefix=${libxml2} \
+              --without-python \
+              --without-crypto
+          '';
+        }
+        {
+          name = "build";
+          script = ''
+            make -j$NIX_BUILD_CORES
+          '';
+        }
+        {
+          name = "install";
+          script =
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              make install
+              sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/xslt-config"
+            ''
+            else ''
+              make install
+            '';
+        }
+      ];
 
     meta = {
       description = "libxslt — XSLT C library (includes xsltproc)";

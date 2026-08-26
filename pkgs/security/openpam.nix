@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   pkg-config,
+  stdenv,
 }: let
   version = "20250531";
 in
@@ -25,43 +26,60 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd openpam-${version}
+    phases =
+      [
+        {
+          name = "unpack";
+          script = ''
+            tar xf $src
+            cd openpam-${version}
 
-          # The release configures OPENPAM_MODULES_DIR, while the runtime
-          # lookup checks the older OPENPAM_MODULES_DIRECTORY spelling.
-          # Keep the installed modules in the hermetic package closure.
-          sed -i 's/OPENPAM_MODULES_DIRECTORY/OPENPAM_MODULES_DIR/g' \
-            lib/libpam/openpam_constants.c
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --with-localbase=$out \
-            --with-modules-dir=$out/lib/security
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install
-        '';
-      }
-    ];
+            # The release configures OPENPAM_MODULES_DIR, while the runtime
+            # lookup checks the older OPENPAM_MODULES_DIRECTORY spelling.
+            # Keep the installed modules in the hermetic package closure.
+            sed -i 's/OPENPAM_MODULES_DIRECTORY/OPENPAM_MODULES_DIR/g' \
+              lib/libpam/openpam_constants.c
+          '';
+        }
+      ]
+      ++ (
+        if stdenv.isCross && stdenv.hostPlatform.isDarwin
+        then [
+          {
+            name = "darwin-build-paths";
+            script = ''
+              export CFLAGS="$CFLAGS \
+                -ffile-prefix-map=$PWD=. \
+                -fdebug-prefix-map=$PWD=."
+            '';
+          }
+        ]
+        else []
+      )
+      ++ [
+        {
+          name = "configure";
+          script = ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --with-localbase=$out \
+              --with-modules-dir=$out/lib/security
+          '';
+        }
+        {
+          name = "build";
+          script = ''
+            make -j$NIX_BUILD_CORES
+          '';
+        }
+        {
+          name = "install";
+          script = ''
+            make install
+          '';
+        }
+      ];
 
     meta = {
       description = "Portable Pluggable Authentication Modules implementation";

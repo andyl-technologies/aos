@@ -52,13 +52,45 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --disable-static \
-            --with-libgpg-error-prefix=${libgpg-error}
-        '';
+        script =
+          if stdenv.isCross && stdenv.hostPlatform.isDarwin
+          then ''
+            # asn1-gentables executes on the Linux build machine. Preserve
+            # this package's flexible-array hardening workaround, but remove
+            # the target-only arm PAC token and every target SDK/compiler flag.
+            native_cc="$BUILD_CC"
+            mkdir -p .aos-build-tools
+            cat > .aos-build-tools/cc-for-build <<EOF
+            #!$CONFIG_SHELL
+            native_hardening=
+            for token in \$AOS_HARDENING_ENABLE; do
+              case "\$token" in
+                pacret) ;;
+                *) native_hardening="\$native_hardening \$token" ;;
+              esac
+            done
+            export AOS_HARDENING_ENABLE="\$native_hardening"
+            unset AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+            unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
+            unset MACOSX_DEPLOYMENT_TARGET NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT
+            exec "$native_cc" "\$@"
+            EOF
+            chmod +x .aos-build-tools/cc-for-build
+            export CC_FOR_BUILD="$PWD/.aos-build-tools/cc-for-build"
+
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --disable-static \
+              --with-libgpg-error-prefix=${libgpg-error}
+          ''
+          else ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --disable-static \
+              --with-libgpg-error-prefix=${libgpg-error}
+          '';
       }
       {
         name = "build";
