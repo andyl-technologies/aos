@@ -5254,7 +5254,7 @@ fn parse_sbat_csv(text: &str) -> Result<Vec<SbatEntry>> {
 ///
 /// Returns an error if the PE/COFF headers, section table, or selected raw-data
 /// range is malformed, or if the image contains duplicate selected sections.
-fn pe_section<'a>(pe: &'a [u8], section: &str) -> Result<Option<&'a [u8]>> {
+pub(crate) fn pe_section<'a>(pe: &'a [u8], section: &str) -> Result<Option<&'a [u8]>> {
     if section.is_empty() || section.len() > 8 || !section.is_ascii() {
         bail!("PE section name must contain one to eight ASCII bytes");
     }

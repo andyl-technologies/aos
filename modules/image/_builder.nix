@@ -139,8 +139,8 @@
         text = certificate;
       })
     activeRegistryDbCerts;
-  activeRecoveryDbCerts =
-    if recoveryEnabled
+  activeImageDbCerts =
+    if sb.enable
     then
       pkgs.mkDerivation {
         pname = "aos-recovery-active-db-certs";
@@ -176,6 +176,25 @@
       extraClosures = system.config.aos.image.hostConfigClosures;
       kernelModulePackages = system.config.aos.kernel.modulePackages;
       firmwarePackages = system.config.aos.kernel.firmwarePackages;
+      # Preserve the image-owned Secure Boot authority outside /nix/store.
+      # The baked toplevel ceases to be a GC root after host configuration is
+      # activated, while this copy remains protected by the immutable root.
+      postPopulate = ''
+        ${lib.optionalString sb.enable ''
+          mkdir -p rootfs/usr/lib/aos/image-trust
+          cp ${activeImageDbCerts}/active-db-certs.pem \
+            rootfs/usr/lib/aos/image-trust/active-db-certs.pem
+        ''}
+        ${lib.optionalString (system.config.aos.apm.drainScript != null) ''
+          # Draining belongs to the system that is currently serving
+          # workloads, not the image selected as the next boot. Keep the hook
+          # in the immutable root so host re-evaluation and store GC cannot
+          # replace or remove that image-owned transition policy.
+          mkdir -p rootfs/usr/lib/aos
+          cp ${system.config.aos.apm.drainScript} rootfs/usr/lib/aos/drain
+          chmod 0555 rootfs/usr/lib/aos/drain
+        ''}
+      '';
       shrinkToFit = true;
       headroomMiB = 64;
     }
@@ -298,7 +317,7 @@
       kernel = system.config.system.build.kernel;
       loadModules = system.config.aos.boot.initrd.loadModules;
       dbCert = sb.dbCert;
-      authorizedDbCerts = "${activeRecoveryDbCerts}/active-db-certs.pem";
+      authorizedDbCerts = "${activeImageDbCerts}/active-db-certs.pem";
       slotManifest = recoverySlotManifest;
       recoveryCopy = lib.toUpper copy;
       recoveryAbi = recovery.abi;
