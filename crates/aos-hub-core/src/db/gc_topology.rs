@@ -7783,7 +7783,7 @@ impl Database {
         let subscription_id: i64 = refresh.get(3)?;
         let mut statements = vec![
             Statement::new(
-                "UPDATE cache_retention_refreshes
+                "UPDATE cache_retention_refreshes AS refresh
                  SET state = 'complete', actual_reason_count = (
                        SELECT COUNT(*) FROM cache_root_reasons
                        WHERE refresh_id = ?1),
@@ -7792,24 +7792,25 @@ impl Database {
                        FROM cache_retention_subscriptions
                        WHERE id = subscription_id),
                      finished_at = ?2
-                 WHERE refresh_id = ?1 AND state = 'building'
-                   AND expected_reason_count = (SELECT COUNT(*)
+                 WHERE refresh.refresh_id = ?1 AND refresh.state = 'building'
+                   AND refresh.expected_reason_count = (SELECT COUNT(*)
                      FROM cache_root_reasons WHERE refresh_id = ?1)
                    AND EXISTS (SELECT 1 FROM cache_retention_subscriptions sub
                      LEFT JOIN cache_retention_refresh_heads head
                        ON head.subscription_id = sub.id
                      JOIN registry_index idx ON idx.registry_id = sub.registry_id
-                     WHERE sub.id = subscription_id
-                       AND sub.cache_id = cache_id AND sub.registry_id = registry_id
-                       AND sub.resource_version = expected_subscription_version
-                       AND sub.selector_digest = selector_digest
-                       AND idx.last_indexed_commit = registry_source_revision
-                       AND idx.generation = registry_index_generation
-                       AND idx.content_digest = registry_index_digest
+                     WHERE sub.id = refresh.subscription_id
+                       AND sub.cache_id = refresh.cache_id
+                       AND sub.registry_id = refresh.registry_id
+                       AND sub.resource_version = refresh.expected_subscription_version
+                       AND sub.selector_digest = refresh.selector_digest
+                       AND idx.last_indexed_commit = refresh.registry_source_revision
+                       AND idx.generation = refresh.registry_index_generation
+                       AND idx.content_digest = refresh.registry_index_digest
                        AND sub.enabled = 1 AND sub.retired_at IS NULL
-                       AND (head.current_refresh_id = expected_parent_refresh_id
+                       AND (head.current_refresh_id = refresh.expected_parent_refresh_id
                          OR (head.current_refresh_id IS NULL
-                           AND expected_parent_refresh_id IS NULL)))",
+                           AND refresh.expected_parent_refresh_id IS NULL)))",
                 vals![refresh_id, activated_at],
             )
             .expecting(1),
@@ -12257,6 +12258,101 @@ mod tests {
             .get(0)
             .unwrap();
         assert_eq!(state, "building");
+    }
+
+    #[tokio::test]
+    async fn completing_retention_refresh_uses_captured_subscription_and_index() {
+        let db = gc_fixture().await;
+        db.backend
+            .batch(&[
+                Statement::new(
+                    "INSERT INTO authorization_scopes
+                     (scope_key, kind, org_id, parent_scope_key, resource_stable_id, created_at)
+                     VALUES ('registry:00000000000000000000000000000007', 'registry',
+                             NULL, 'instance',
+                             'registry:00000000000000000000000000000007', 1)",
+                    vec![],
+                ),
+                Statement::new(
+                    "INSERT INTO authorization_scope_ancestors
+                     (descendant_scope_key, ancestor_scope_key, depth)
+                     VALUES
+                       ('registry:00000000000000000000000000000007',
+                        'registry:00000000000000000000000000000007', 0),
+                       ('registry:00000000000000000000000000000007', 'instance', 1)",
+                    vec![],
+                ),
+                Statement::new(
+                    "INSERT INTO registries
+                     (id, stable_id, slug, created_at, scope_key, owner_scope_key)
+                     VALUES (7, 'registry:00000000000000000000000000000007',
+                             'source', 1,
+                             'registry:00000000000000000000000000000007', 'instance')",
+                    vec![],
+                ),
+                Statement::new(
+                    "INSERT INTO registry_index
+                     (registry_id, state, last_indexed_commit, indexed_at,
+                      generation, content_digest)
+                     VALUES (7, 'fresh', 'commit-1', 2, 1, 'index-digest-1')",
+                    vec![],
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let selector_json = "{}".to_string();
+        let selector_digest = digest_text(&selector_json);
+        let subscription = db
+            .set_cache_retention_subscription_topology(&SetCacheRetentionSubscriptionTopology {
+                cache_id: 1,
+                registry_id: 7,
+                selector_json,
+                selector_digest: selector_digest.clone(),
+                removal_grace_secs: 100,
+                exposure_acknowledged_at: None,
+                enabled: true,
+                expected_resource_version: None,
+                expected_cache_epoch: 0,
+                mutation_id: "subscription-create".into(),
+                now: 10,
+            })
+            .await
+            .unwrap();
+        db.begin_retention_refresh_topology(&BeginRetentionRefresh {
+            refresh_id: "refresh-1".into(),
+            subscription_id: subscription.id,
+            expected_subscription_version: subscription.resource_version,
+            expected_cache_epoch: 1,
+            selector_digest,
+            registry_source_revision: "commit-1".into(),
+            registry_index_generation: 1,
+            registry_index_digest: "index-digest-1".into(),
+            expected_reason_count: 0,
+            started_at: 20,
+        })
+        .await
+        .unwrap();
+
+        db.complete_retention_refresh_topology("refresh-1", "refresh-complete", 30)
+            .await
+            .unwrap();
+
+        let refresh = db
+            .backend
+            .query_opt(
+                "SELECT refresh.state, head.current_refresh_id
+                 FROM cache_retention_refreshes refresh
+                 JOIN cache_retention_refresh_heads head
+                   ON head.subscription_id = refresh.subscription_id
+                 WHERE refresh.refresh_id = 'refresh-1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(refresh.get::<String>(0).unwrap(), "complete");
+        assert_eq!(refresh.get::<String>(1).unwrap(), "refresh-1");
     }
 
     #[tokio::test]
