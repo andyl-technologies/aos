@@ -1067,9 +1067,14 @@ still accepts attachments. Shutdown closes admission, waits for every bounded
 preparation already in flight, requests cancellation for every installed
 runtime before joining any one, and retains the repository lock through the
 final join. A caller must supply an already connected and authenticated local
-executor stream. Public operator transport/CLI attachment, repository-wide
-automatic campaign discovery, and a shared multi-campaign packaged-executor
-allocator remain future work.
+executor stream or the daemon's exact endpoint capability. The latter shares
+startup's bounded pathname, secure parent namespace, exact socket owner/mode,
+before/after device-and-inode, and `SO_PEERCRED` checks. Connect itself is
+nonblocking under a 30-second absolute default deadline and a one-hour hard
+configuration ceiling. The connector is invoked only after the registry
+reserves the campaign and slot. Public operator transport/CLI attachment,
+repository-wide automatic campaign discovery, and a shared multi-campaign
+packaged-executor allocator remain future work.
 
 SIGINT,
 SIGTERM, lifecycle-server failure, or CampaignService failure shuts down both

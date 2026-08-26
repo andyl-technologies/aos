@@ -118,11 +118,14 @@ campaign lineage. Attachment fails before planner-basis publication when those
 facts disagree.
 
 Embedded deployments may retain the service's bounded post-bind attachment
-handle and supply an already connected, authenticated executor stream. That
-handle carries neither repository nor component-authority access, closes with
-the service owner, and uses the same 256-runtime ceiling. The `crucible` CLI
-currently exposes only the startup-fixed arguments above; a public dynamic
-attachment command remains future work.
+handle and supply either an already connected, authenticated executor stream or
+the same exact endpoint capability used at startup. The latter authenticates
+the secure parent namespace, socket owner/mode and before/after inode, and peer
+credentials under a finite absolute connect deadline after reserving the
+campaign and one of 256 runtime slots. The handle carries neither repository
+nor component-authority access and closes with the service owner. The
+`crucible` CLI currently exposes only the startup-fixed arguments above; a
+public dynamic attachment command remains future work.
 
 To let the same daemon own that executor, add `--production-qemu` and an
 owner-only packaged-executor deployment file:
