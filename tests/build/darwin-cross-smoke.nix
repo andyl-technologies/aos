@@ -110,6 +110,7 @@
               'int main(void) {' \
               '  const UInt8 textBytes[] = { 97, 111, 115 };' \
               '  CFStringRef text = CFStringCreateWithBytes(kCFAllocatorDefault, textBytes, 3, kCFStringEncodingUTF8, false);' \
+              '  const UInt8 *dataBytes = CFDataGetBytePtr(NULL);' \
               '  const void *values[] = { text };' \
               '  CFArrayRef immutable = CFArrayCreate(kCFAllocatorDefault, values, 1, &kCFTypeArrayCallBacks);' \
               '  CFMutableArrayRef mutable = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);' \
@@ -124,6 +125,7 @@
               '  CFURLRef reference = CFURLCreateFileReferenceURL(kCFAllocatorDefault, child, NULL);' \
               '  CFURLRef filePath = CFURLCreateFilePathURL(kCFAllocatorDefault, reference, NULL);' \
               '  Boolean reachable = CFURLResourceIsReachable(filePath, NULL);' \
+              '  Boolean propertySet = CFURLSetResourcePropertyForKey(filePath, CFSTR("aos"), kCFBooleanTrue, NULL);' \
               '  FSEventStreamContext context = { 0, NULL, NULL, NULL, NULL };' \
               '  FSEventStreamRef stream = FSEventStreamCreate(kCFAllocatorDefault, aos_fsevent_callback, &context, immutable, kFSEventStreamEventIdSinceNow, 0.1, kFSEventStreamCreateFlagFileEvents);' \
               '  CFRunLoopRef runLoop = CFRunLoopGetCurrent();' \
@@ -148,7 +150,7 @@
               '  if (mutable != NULL) CFRelease(mutable);' \
               '  if (immutable != NULL) CFRelease(immutable);' \
               '  if (text != NULL) CFRelease(text);' \
-              '  return reachable && started && purged && waiting && current == 0;' \
+              '  return reachable && propertySet && started && purged && waiting && current == 0 && dataBytes == NULL;' \
               '}' \
               > coreservices-smoke.c
             # CoreServices is an umbrella and must carry its CoreFoundation
@@ -211,6 +213,7 @@
               -o "$c/bin/aos-darwin-cocoa-smoke"
 
             printf '%s\n' \
+              '#import <ApplicationServices/ApplicationServices.h>' \
               '#import <Foundation/Foundation.h>' \
               '#import <AppKit/AppKit.h>' \
               'int main(void) {' \
@@ -218,7 +221,20 @@
               '  NSArray<NSString *> *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, true);' \
               '  NSString *path = paths.firstObject;' \
               '  NSImage *image = [[NSImage alloc] initByReferencingFile:path];' \
-              '  return image == nil || path.UTF8String == NULL || mediaDirectories[0] == 0;' \
+              '  NSURL *url = [NSURL fileURLWithPath:path];' \
+              '  NSBundle *bundle = [NSBundle bundleWithURL:url];' \
+              '  const char *bundlePath = [bundle.bundlePath cStringUsingEncoding:NSUTF8StringEncoding];' \
+              '  CFArrayRef handlers = LSCopyAllHandlersForURLScheme(CFSTR("aos"));' \
+              '  CFArrayRef roleHandlers = LSCopyAllRoleHandlersForContentType(CFSTR("public.data"), kLSRolesAll);' \
+              '  CFURLRef application = LSCopyDefaultApplicationURLForContentType(CFSTR("public.data"), kLSRolesAll, NULL);' \
+              '  CFStringRef roleHandler = LSCopyDefaultRoleHandlerForContentType(CFSTR("public.data"), kLSRolesAll);' \
+              '  CFStringRef schemeHandler = LSCopyDefaultHandlerForURLScheme(CFSTR("aos"));' \
+              '  CFArrayRef applications = LSCopyApplicationURLsForBundleIdentifier(CFSTR("com.andyl.aos"), NULL);' \
+              '  LSLaunchURLSpec spec = { application, applications, NULL, kLSLaunchDefaults, NULL };' \
+              '  OSStatus launchStatus = LSOpenFromURLSpec(&spec, NULL);' \
+              '  FSRef legacyApplication;' \
+              '  OSStatus findStatus = LSFindApplicationForInfo(kLSUnknownCreator, CFSTR("com.andyl.aos"), NULL, &legacyApplication, NULL);' \
+              '  return image == nil || path.UTF8String == NULL || bundlePath == NULL || mediaDirectories[0] == 0 || handlers == NULL || roleHandlers == NULL || roleHandler == NULL || schemeHandler == NULL || launchStatus == -1 || findStatus < kLSApplicationNotFoundErr;' \
               '}' \
               > foundation-appkit-smoke.m
             "$CC" foundation-appkit-smoke.m \
@@ -310,9 +326,17 @@
 
             printf '%s\n' \
               '#include <objc/runtime.h>' \
+              'extern void *objc_autoreleasePoolPush(void);' \
+              'extern void objc_autoreleasePoolPop(void *context);' \
               '__attribute__((objc_root_class)) @interface AosRoot @end' \
               '@implementation AosRoot @end' \
-              'int main(void) { return objc_getClass("AosRoot") == 0; }' \
+              'int main(void) {' \
+              '  void *pool = objc_autoreleasePoolPush();' \
+              '  Class root = objc_getClass("AosRoot");' \
+              '  int isMeta = class_isMetaClass(objc_getMetaClass("AosRoot"));' \
+              '  objc_autoreleasePoolPop(pool);' \
+              '  return root == 0 || isMeta < 0;' \
+              '}' \
               > objective-c-smoke.m
             "$CC" objective-c-smoke.m -lobjc \
               -o "$c/bin/aos-darwin-objective-c-smoke"
@@ -358,6 +382,16 @@
               '  if (trust != NULL) SecTrustEvaluate(trust, &trustResult);' \
               '  SecCertificateRef certificate = trust == NULL ? NULL : SecTrustGetCertificateAtIndex(trust, 0);' \
               '  CFDataRef certificateData = certificate == NULL ? NULL : SecCertificateCopyData(certificate);' \
+              '  SecKeychainRef keychain = NULL;' \
+              '  SecKeychainItemRef item = NULL;' \
+              '  UInt32 passwordLength = 0;' \
+              '  void *passwordData = NULL;' \
+              '  OSStatus copiedKeychain = SecKeychainCopyDefault(&keychain);' \
+              '  OSStatus addedPassword = SecKeychainAddGenericPassword(keychain, 3, "aos", 4, "user", 4, "pass", &item);' \
+              '  OSStatus foundPassword = SecKeychainFindGenericPassword(keychain, 3, "aos", 4, "user", &passwordLength, &passwordData, &item);' \
+              '  OSStatus modifiedPassword = SecKeychainItemModifyAttributesAndData(item, NULL, 4, "next");' \
+              '  OSStatus freedPassword = SecKeychainItemFreeContent(NULL, passwordData);' \
+              '  OSStatus deletedPassword = SecKeychainItemDelete(item);' \
               '  CFStringRef error = SecCopyErrorMessageString(handshake, NULL);' \
               '  size_t processed = 0;' \
               '  SSLWrite(context, "aos", 3, &processed);' \
@@ -367,7 +401,7 @@
               '  if (certificateData != NULL) CFRelease(certificateData);' \
               '  if (trust != NULL) CFRelease(trust);' \
               '  if (context != NULL) CFRelease(context);' \
-              '  return trustResult == kSecTrustResultOtherError && processed == (size_t)-1;' \
+              '  return trustResult == kSecTrustResultOtherError && processed == (size_t)-1 && copiedKeychain == addedPassword && foundPassword == modifiedPassword && freedPassword == deletedPassword;' \
               '}' \
               > security-smoke.c
             "$CC" security-smoke.c \
