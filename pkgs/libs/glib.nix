@@ -13,6 +13,7 @@
   util-linux,
   bash,
   stdenv,
+  buildPackages,
 }: let
   version = "2.82.4";
   majorMinor = builtins.concatStringsSep "." (
@@ -106,13 +107,17 @@ in
       {
         name = "build";
         script = ''
-          ninja -C build -j$NIX_BUILD_CORES
+          # Meson records its Python module invocation in build.ninja, not the
+          # environment-setting launcher used during setup.
+          PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
+            ninja -C build -j$NIX_BUILD_CORES
         '';
       }
       {
         name = "install";
         script = ''
-          ninja -C build install
+          PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
+            ninja -C build install
 
           # Keep the default output library-only. Python-backed generators
           # are build tools, while headers, static archives, and package
@@ -182,9 +187,15 @@ in
             "$dev/lib/pkgconfig/gio-2.0.pc"
 
           nativePythonRoot=$(dirname "$(dirname "$(command -v python3)")")
+          pythonRefs=$PWD/glib-python-refs
           for root in "$out" "$dev" "$tools"; do
-            grep -IrlZ -F "$nativePythonRoot" "$root" 2>/dev/null \
-              | xargs -0 -r sed -i "s|$nativePythonRoot|${python3}|g"
+            : > "$pythonRefs"
+            grep -IrlZ -F "$nativePythonRoot" "$root" \
+              > "$pythonRefs" 2>/dev/null || true
+            if [ -s "$pythonRefs" ]; then
+              xargs -0 -r sed -i "s|$nativePythonRoot|${python3}|g" \
+                < "$pythonRefs"
+            fi
           done
           ${
             if stdenv.hostPlatform.isDarwin
