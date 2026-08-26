@@ -1946,6 +1946,12 @@ pub enum CacheCommand {
         /// Nix narinfo signing key file in `name:base64-secret` form
         #[arg(long)]
         key: Option<PathBuf>,
+        /// OpenSSH private key used to sign a cache-pointer commit
+        #[arg(long = "registry-key", conflicts_with = "registry_key_id")]
+        registry_key: Option<String>,
+        /// Active roster key id used to sign a cache-pointer commit
+        #[arg(long = "registry-key-id", conflicts_with = "registry_key")]
+        registry_key_id: Option<String>,
         /// Public cache URL to add to the committed registry cache stack.
         #[arg(long)]
         cache_url: Option<String>,
