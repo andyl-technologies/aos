@@ -29,6 +29,20 @@
             "$CC" smoke.c -o "$c/bin/aos-darwin-c-smoke"
 
             printf '%s\n' \
+              '#include <CoreFoundation/CoreFoundation.h>' \
+              '#include <SystemConfiguration/SystemConfiguration.h>' \
+              'int main(void) {' \
+              '  CFDictionaryRef proxies = SCDynamicStoreCopyProxies(NULL);' \
+              '  if (proxies != NULL) CFRelease(proxies);' \
+              '  return 0;' \
+              '}' \
+              > framework-smoke.c
+            "$CC" framework-smoke.c \
+              -framework SystemConfiguration \
+              -framework CoreFoundation \
+              -o "$c/bin/aos-darwin-framework-smoke"
+
+            printf '%s\n' \
               'extern "C" int puts(const char *);' \
               'constexpr int answer = 42;' \
               'int main() { return answer == 42 && puts("aos Darwin C++ smoke") >= 0 ? 0 : 1; }' \
@@ -37,6 +51,7 @@
 
             for executable in \
               "$c/bin/aos-darwin-c-smoke" \
+              "$c/bin/aos-darwin-framework-smoke" \
               "$cxx/bin/aos-darwin-cxx-smoke"; do
               header=$("$OBJDUMP" --macho --private-header "$executable")
               if ! printf '%s\n' "$header" | grep -q '${expectedCpu}'; then

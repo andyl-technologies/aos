@@ -250,6 +250,7 @@
           find "$p" \( \
                -path "*/bin/*" -o -path "*/sbin/*" -o -path "*/libexec/*" \
             -o -name "*.so" -o -name "*.so.*" \
+            -o -name "*.dylib" -o -name "*.dylib.*" \
             -o -name "*.pc"  -o -name "*.la" \
             -o -name "Makefile" \
             -o -name "_sysconfigdata*.py"  -o -name "_sysconfigdata*.pyc" \
