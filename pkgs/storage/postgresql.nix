@@ -59,6 +59,7 @@ in
         perl
         python3
         llvm
+        buildPackages.tcl
         docbook-xml
         docbook-xsl
         gettext
@@ -73,6 +74,7 @@ in
         perl
         python3
         llvm
+        tcl
         docbook-xml
         docbook-xsl
         gettext
@@ -84,6 +86,7 @@ in
       if isDarwin
       then [
         curl
+        gettext
         icu
         krb5
         libxml2
@@ -144,7 +147,7 @@ in
             # must compile and link against the Darwin LLVM headers and dylib.
             mkdir -p .aos-native-tools
             cat > .aos-native-tools/llvm-config <<'LLVM_CONFIG_WRAPPER'
-            #!$CONFIG_SHELL
+            #!${buildPackages.bash}/bin/bash
             case "$1" in
               --bindir)
                 printf '%s\n' '${buildPackages.llvm}/bin'
@@ -158,6 +161,7 @@ in
             chmod +x .aos-native-tools/llvm-config
             export LLVM_CONFIG=$PWD/.aos-native-tools/llvm-config
             export CLANG="${buildPackages.llvm}/bin/clang --target=${stdenv.hostPlatform.config} --sysroot=${stdenv.sdk}"
+            export TCLSH=${buildPackages.tcl}/bin/tclsh9.0
 
             # Query the Darwin Perl configuration using the native interpreter.
             # Config.pm is pure Perl and the versions are identical across the
@@ -173,7 +177,7 @@ in
             # answers. The wrapper delegates every other operation to the
             # native interpreter used for source generation.
             cat > .aos-native-tools/python3 <<'PYTHON_CONFIG_WRAPPER'
-            #!$CONFIG_SHELL
+            #!${buildPackages.bash}/bin/bash
             if [ "$1" = -c ]; then
               case "$2" in
                 *"get_config_vars('LIBPL')"*)
@@ -242,7 +246,10 @@ in
           ''
           else ''
             export LLVM_CONFIG=${llvm}/bin/llvm-config
-            export CLANG=${llvm}/bin/clang
+            # PostgreSQL invokes Clang directly for LLVM bitcode, so retain
+            # the libc header path normally injected by the AOS GCC wrapper.
+            export CLANG="${llvm}/bin/clang -idirafter ${stdenv.cc.libc.dev}/include"
+            export TCLSH=${tcl}/bin/tclsh9.0
             export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
             ./configure \
               --prefix=$out \
@@ -291,7 +298,7 @@ in
           then ''
             export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
             make install-world
-            test -f "$out/share/doc/postgresql/html/index.html"
+            test -f "$out/share/doc/html/index.html"
             test -f "$out/share/man/man1/postgres.1"
             test -n "$(find "$out/share/locale" -name '*.mo' -print -quit)"
 
@@ -302,14 +309,20 @@ in
               -e 's|${buildPackages.python3}|${python3}|g' \
               -e 's|${buildPackages.llvm}|${llvm}|g' \
               -e "s|$CC|${llvm}/bin/clang|g" \
+              -e "s|^abs_top_builddir = .*|abs_top_builddir = $out/lib/pgxs/src|" \
+              -e "s|^abs_top_srcdir = .*|abs_top_srcdir = $out/lib/pgxs/src|" \
               {} +
           ''
           else ''
             export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
             make install-world
-            test -f "$out/share/doc/postgresql/html/index.html"
+            test -f "$out/share/doc/html/index.html"
             test -f "$out/share/man/man1/postgres.1"
             test -n "$(find "$out/share/locale" -name '*.mo' -print -quit)"
+            sed -i \
+              -e "s|^abs_top_builddir = .*|abs_top_builddir = $out/lib/pgxs/src|" \
+              -e "s|^abs_top_srcdir = .*|abs_top_srcdir = $out/lib/pgxs/src|" \
+              "$out/lib/pgxs/src/Makefile.global"
           '';
       }
     ];
@@ -346,7 +359,7 @@ in
             --with-ssl=openssl; do
             grep -- "$flag" /tmp/postgresql-configure
           done
-          test -f ${self}/share/doc/postgresql/html/index.html
+          test -f ${self}/share/doc/html/index.html
           test -f ${self}/share/man/man1/postgres.1
           test -n "$(find ${self}/share/locale -name '*.mo' -print -quit)"
         '';
