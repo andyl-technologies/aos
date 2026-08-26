@@ -48,6 +48,27 @@ in
             $configureFlags \
             --prefix=$out
 
+          # rpcgen otherwise searches /lib/cpp and then PATH for a standalone
+          # cpp binary. The AOS compiler is intentionally exposed through its
+          # wrapper instead, so provide a build-local preprocessor launcher.
+          build_cpp="$CC"
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            build_cpp="$CC_FOR_BUILD"
+          fi
+          mkdir -p build-tools
+          cat > build-tools/cpp <<EOF
+          #!$CONFIG_SHELL
+          AOS_HARDENING_ENABLE= \
+          C_INCLUDE_PATH= \
+          CPLUS_INCLUDE_PATH= \
+          LIBRARY_PATH= \
+            exec "$build_cpp" -E "\$@"
+          EOF
+          chmod +x build-tools/cpp
+          sed -i \
+            's| -h -o| -Y $(top_builddir)/build-tools -h -o|' \
+            rpcsvc/Makefile
+
           ${
             if stdenv.isCross
             then ''

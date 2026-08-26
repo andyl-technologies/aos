@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "3.51.2";
   # SQLite uses a year+version encoding for the download filename
@@ -33,25 +34,57 @@ in
       }
       {
         name = "configure";
-        script = ''
-          export CFLAGS="$CFLAGS \
-            -DSQLITE_ENABLE_COLUMN_METADATA \
-            -DSQLITE_ENABLE_FTS3 \
-            -DSQLITE_ENABLE_FTS3_PARENTHESIS \
-            -DSQLITE_ENABLE_FTS4 \
-            -DSQLITE_ENABLE_FTS5 \
-            -DSQLITE_ENABLE_RTREE \
-            -DSQLITE_ENABLE_UNLOCK_NOTIFY \
-            -DSQLITE_ENABLE_DBSTAT_VTAB \
-            -DSQLITE_SECURE_DELETE \
-            -DSQLITE_MAX_VARIABLE_NUMBER=250000"
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --enable-shared \
-            --disable-static \
-            --enable-fts5
-        '';
+        script =
+          if stdenv.isCross
+          then ''
+            # Autosetup must execute jimsh while configuring. Build that
+            # helper with the native compiler in an isolated environment;
+            # the surrounding variables intentionally describe Darwin.
+            C_INCLUDE_PATH= \
+            CPLUS_INCLUDE_PATH= \
+            LIBRARY_PATH= \
+            NIX_CFLAGS_COMPILE= \
+            NIX_LDFLAGS= \
+            AOS_HARDENING_ENABLE= \
+              "$BUILD_CC" -o jimsh0 autosetup/jimsh0.c
+
+            export CFLAGS="$CFLAGS \
+              -DSQLITE_ENABLE_COLUMN_METADATA \
+              -DSQLITE_ENABLE_FTS3 \
+              -DSQLITE_ENABLE_FTS3_PARENTHESIS \
+              -DSQLITE_ENABLE_FTS4 \
+              -DSQLITE_ENABLE_FTS5 \
+              -DSQLITE_ENABLE_RTREE \
+              -DSQLITE_ENABLE_UNLOCK_NOTIFY \
+              -DSQLITE_ENABLE_DBSTAT_VTAB \
+              -DSQLITE_SECURE_DELETE \
+              -DSQLITE_MAX_VARIABLE_NUMBER=250000"
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --enable-shared \
+              --disable-static \
+              --enable-fts5
+          ''
+          else ''
+            export CFLAGS="$CFLAGS \
+              -DSQLITE_ENABLE_COLUMN_METADATA \
+              -DSQLITE_ENABLE_FTS3 \
+              -DSQLITE_ENABLE_FTS3_PARENTHESIS \
+              -DSQLITE_ENABLE_FTS4 \
+              -DSQLITE_ENABLE_FTS5 \
+              -DSQLITE_ENABLE_RTREE \
+              -DSQLITE_ENABLE_UNLOCK_NOTIFY \
+              -DSQLITE_ENABLE_DBSTAT_VTAB \
+              -DSQLITE_SECURE_DELETE \
+              -DSQLITE_MAX_VARIABLE_NUMBER=250000"
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --enable-shared \
+              --disable-static \
+              --enable-fts5
+          '';
       }
       {
         name = "build";
