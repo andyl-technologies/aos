@@ -360,6 +360,25 @@
               'extern void *objc_autoreleasePoolPush(void);' \
               'extern void objc_autoreleasePoolPop(void *context);' \
               'extern void objc_enumerationMutation(id object);' \
+              'static const void *aos_objc_runtime_symbols[] = {' \
+              '  (const void *)&protocol_copyProtocolList,' \
+              '  (const void *)&objc_copyProtocolList,' \
+              '  (const void *)&class_getInstanceVariable,' \
+              '  (const void *)&method_copyReturnType,' \
+              '  (const void *)&method_copyArgumentType,' \
+              '  (const void *)&method_setImplementation,' \
+              '  (const void *)&class_copyProtocolList,' \
+              '  (const void *)&objc_copyClassList,' \
+              '  (const void *)&protocol_getName,' \
+              '  (const void *)&ivar_getTypeEncoding,' \
+              '  (const void *)&ivar_getOffset,' \
+              '  (const void *)&ivar_getName,' \
+              '  (const void *)&method_getTypeEncoding,' \
+              '  (const void *)&protocol_addProtocol,' \
+              '  (const void *)&protocol_addMethodDescription,' \
+              '  (const void *)&objc_registerProtocol,' \
+              '  (const void *)&class_respondsToSelector,' \
+              '};' \
               '__attribute__((objc_root_class)) @interface AosRoot @end' \
               '@implementation AosRoot @end' \
               'int main(void) {' \
@@ -368,7 +387,7 @@
               '  int isMeta = class_isMetaClass(objc_getMetaClass("AosRoot"));' \
               '  if (root == Nil) objc_enumerationMutation(nil);' \
               '  objc_autoreleasePoolPop(pool);' \
-              '  return root == 0 || isMeta < 0;' \
+              '  return root == 0 || isMeta < 0 || aos_objc_runtime_symbols[0] == 0;' \
               '}' \
               > objective-c-smoke.m
             "$CC" objective-c-smoke.m -lobjc \

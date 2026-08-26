@@ -1550,15 +1550,25 @@ in
                 - _class_copyIvarList
                 - _class_copyMethodList
                 - _class_copyPropertyList
+                - _class_copyProtocolList
                 - _class_getClassMethod
                 - _class_getInstanceMethod
                 - _class_getInstanceSize
+                - _class_getInstanceVariable
                 - _class_getName
                 - _class_getProperty
                 - _class_getSuperclass
                 - _class_isMetaClass
+                - _class_respondsToSelector
+                - _ivar_getName
+                - _ivar_getOffset
+                - _ivar_getTypeEncoding
+                - _method_copyArgumentType
+                - _method_copyReturnType
                 - _method_getImplementation
                 - _method_getName
+                - _method_getTypeEncoding
+                - _method_setImplementation
                 - _objc_alloc
                 - _objc_alloc_init
                 - _objc_allocateClassPair
@@ -1566,6 +1576,8 @@ in
                 - _objc_autoreleasePoolPop
                 - _objc_autoreleasePoolPush
                 - _objc_autoreleaseReturnValue
+                - _objc_copyClassList
+                - _objc_copyProtocolList
                 - _objc_copyWeak
                 - _objc_destroyWeak
                 - _objc_disposeClassPair
@@ -1581,6 +1593,7 @@ in
                 - _objc_msgSendSuper2
                 - _objc_moveWeak
                 - _objc_registerClassPair
+                - _objc_registerProtocol
                 - _objc_release
                 - _objc_retain
                 - _objc_retainAutoreleaseReturnValue
@@ -1589,6 +1602,10 @@ in
                 - _objc_storeWeak
                 - _object_getClass
                 - _object_setClass
+                - _protocol_addMethodDescription
+                - _protocol_addProtocol
+                - _protocol_copyProtocolList
+                - _protocol_getName
                 - _sel_getName
                 - _sel_getUid
                 - _sel_registerName
