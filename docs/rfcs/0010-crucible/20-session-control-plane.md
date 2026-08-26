@@ -1212,9 +1212,10 @@ pub enum SessionError {
   - Completed by `checks.crucible.phase5.sessionSimulationBackend`:
     `SimulationBackend` is the shared backend boundary for scheduler-supplied
     `step_to`, boundary-applied effects, backend snapshots/restores,
-    scheduler-mirrored `now`, fingerprint sampling, and shutdown. The pure
-    mock, `SimBackend`, in-process `SimDouble`, and QEMU `QemuNode` implement the
-    same trait, with focused tests covering object-safe mock dispatch,
+    scheduler-mirrored `now`, fingerprint sampling, and shutdown. The test-only
+    pure mock, `SimBackend`, in-process `SimDouble`, and QEMU `QemuNode`
+    implement the same trait; default production builds do not export or
+    compile the mock. Focused tests cover object-safe mock dispatch,
     scheduler-owned time rejection, full-state SimDouble snapshot/restore,
     rejection of trait-level SimDouble outbound sends without scheduler
     authorization, and QEMU channel routing plus restore-time mirror updates
