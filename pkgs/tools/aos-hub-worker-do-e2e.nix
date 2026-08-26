@@ -55,7 +55,7 @@
   removedManagementPaths = ../../crates/aos-hub/tests/fixtures/removed-management-paths-v1.json;
   removedManagementPosts = ../../crates/aos-hub/tests/fixtures/removed-management-posts-v1.json;
 
-  # The workerd config: a module worker (shim.mjs + index.wasm) with the two DO
+  # The workerd config: a module worker (shim.mjs + index.wasm) with the six DO
   # classes, `enableSql = true` on the SQLite-backed `HubDb`, the direct-Fetch
   # outbound contract fixture, and the secrets/vars the DO reads. Open-source
   # workerd has no R2/KV/rate-limit
@@ -87,11 +87,19 @@
       durableObjectNamespaces = [
         (className = "HubDb", uniqueKey = "hubdb-key", enableSql = true),
         (className = "CoordinatorObject", uniqueKey = "coord-key"),
+        (className = "HubControlShard", uniqueKey = "control-shard-key"),
+        (className = "HubTenantShard", uniqueKey = "tenant-shard-key"),
+        (className = "HubRegistryShard", uniqueKey = "registry-shard-key"),
+        (className = "HubCacheShard", uniqueKey = "cache-shard-key"),
       ],
       durableObjectStorage = (localDisk = "do-disk"),
       bindings = [
         (name = "HUB_DB", durableObjectNamespace = "HubDb"),
         (name = "COORDINATOR", durableObjectNamespace = "CoordinatorObject"),
+        (name = "HUB_CONTROL_SHARDS", durableObjectNamespace = "HubControlShard"),
+        (name = "HUB_TENANT_SHARDS", durableObjectNamespace = "HubTenantShard"),
+        (name = "HUB_REGISTRY_SHARDS", durableObjectNamespace = "HubRegistryShard"),
+        (name = "HUB_CACHE_SHARDS", durableObjectNamespace = "HubCacheShard"),
         (name = "HUB_JWT_SECRET", text = "e2e-jwt-secret"),
         (name = "HUB_SEAL_KEY", text = "0000000000000000000000000000000000000000000000000000000000000000"),
         (name = "HUB_EXTERNAL_URL", text = "http://127.0.0.1:8799"),

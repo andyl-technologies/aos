@@ -2497,6 +2497,21 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     );
     r = rpc_route!(
         r,
+        "/aos.hub.v1.PublishService/BeginRegistryPublicationManifest",
+        begin_registry_publication_manifest
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/AppendRegistryPublicationManifest",
+        append_registry_publication_manifest
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/SealRegistryPublicationManifest",
+        seal_registry_publication_manifest
+    );
+    r = rpc_route!(
+        r,
         "/aos.hub.v1.PublishService/BeginRegistryPublicationMultipartUpload",
         begin_registry_publication_multipart_upload
     );
@@ -2799,6 +2814,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         r,
         "/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
         create_cache_object_uploads
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/RegisterCacheNarinfos",
+        register_cache_narinfos
     );
     r = r.route(
         "/aos.hub.v1.BinaryCacheService/UploadObject/{cache_id}/{ticket_id}/{encoded_path}",
