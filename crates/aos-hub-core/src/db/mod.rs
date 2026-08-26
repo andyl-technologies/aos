@@ -7535,6 +7535,10 @@ impl Database {
 
     /// Reports whether every required placement has exact evidence for a class.
     ///
+    /// An empty object class is complete. This lets a minimal loose-object Git
+    /// publication advance directly to its pointer phase while retaining the
+    /// same all-placements requirement for every class member that exists.
+    ///
     /// # Errors
     ///
     /// Returns an error for invalid class vocabulary or database failure.
@@ -7551,9 +7555,6 @@ impl Database {
             .query_opt(
                 "SELECT 1 FROM registry_publications pub
                  WHERE pub.publication_id = ?1
-                   AND EXISTS (SELECT 1 FROM registry_publication_objects po
-                     WHERE po.publication_id = pub.publication_id
-                       AND po.object_kind = ?2)
                    AND EXISTS (SELECT 1 FROM registry_publication_placements pp
                      WHERE pp.publication_id = pub.publication_id
                        AND pp.required = 1)
@@ -30914,6 +30915,59 @@ source_nar_hash = ""
             .is_none());
         assert!(!db
             .registry_publication_class_is_complete(publication_id, "immutable")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn empty_registry_publication_object_class_is_complete() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db
+            .create_org("minimal-publish", "Minimal publish")
+            .await
+            .unwrap();
+        let binding_id =
+            create_test_binding(&db, org_id, "minimal-publish", "/tmp/minimal-publish").await;
+        let registry_id = db
+            .create_managed_registry(org_id, "", "registry", "private", &[], false)
+            .await
+            .unwrap();
+        let mut placement = topology_placement(
+            SurfaceTarget::Registry(registry_id),
+            "primary",
+            "minimal-publish",
+            0,
+        );
+        placement.binding_id = binding_id;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+        let publication_id = "minimalpublication00000000000000001";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "minimal-generation".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(64)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: publication_id.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: 1,
+        })
+        .await
+        .unwrap();
+
+        assert!(db
+            .registry_publication_class_is_complete(publication_id, "immutable")
+            .await
+            .unwrap());
+        assert!(db
+            .registry_publication_class_is_complete(publication_id, "mutable_pointer")
             .await
             .unwrap());
     }

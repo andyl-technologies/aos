@@ -125,12 +125,10 @@ fn canonical_registry_publication_manifest_digest(
         }
     }
     canonical.sort();
-    if !canonical.iter().any(|object| object.3 == "immutable")
-        || !canonical.iter().any(|object| object.3 == "mutable_pointer")
-    {
-        return Err(RpcError::invalid(
-            "publication requires immutable objects and mutable pointers",
-        ));
+    // Initial APR registries contain replaceable loose Git encodings but may
+    // not have a pack, NAR, or another immutable transport object yet.
+    if !canonical.iter().any(|object| object.3 == "mutable_pointer") {
+        return Err(RpcError::invalid("publication requires mutable pointers"));
     }
     Ok(hex::encode(Sha256::digest(
         serde_json::to_vec(&canonical).map_err(RpcError::internal)?,
