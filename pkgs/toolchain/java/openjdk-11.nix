@@ -51,12 +51,17 @@ in
     build = "9";
     srcHash = "sha256-pmnvno57buWNPlFZ31f9Eqp0KBn7voYvKLncdJ9H8E4=";
     prevJdk = openjdk-10;
-    # JDK 10's module reader is not safe under highly parallel javac batches.
-    # Keep native compilation parallel while bounding the number of concurrent
-    # boot-compiler invocations used to construct JDK 11.
-    buildJobs = 16;
+    # JDK 10's module reader is not safe when multiple javac batches traverse
+    # its JRT index concurrently. Keep this one bootstrap transition serial;
+    # later JDK stages use their normal parallel builds again.
+    buildJobs = 1;
     # JDK 10's javac server has a ConcurrentModificationException bug in
     # jrtfs when multiple threads access the module system simultaneously.
-    # Disable the javac server to avoid the race condition.
-    extraConfigureFlags = ["--enable-javac-server=no"];
+    # Its old optimizing VM also crashes while compiling JDK 11's large Graal
+    # module on current CPUs. Keep the bootstrap tools interpreted and
+    # single-processor; this affects only tools executed by the boot JDK.
+    extraConfigureFlags = [
+      "--enable-javac-server=no"
+      ''--with-boot-jdk-jvmargs="-Xint -XX:+UseSerialGC -XX:ActiveProcessorCount=1"''
+    ];
   }
