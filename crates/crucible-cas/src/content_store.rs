@@ -27,6 +27,7 @@ mod directory;
 mod graph;
 mod memory;
 mod packed;
+mod quota;
 mod write_back;
 
 pub use admin::{
@@ -853,6 +854,10 @@ pub enum GraphViolation {
     InvalidWriteBackBounds,
     /// A compressed directory leaf has a zero plaintext-object bound.
     InvalidCompressedObjectLimit,
+    /// A logical quota has a zero aggregate bound.
+    InvalidLogicalQuotaBounds,
+    /// A logical quota does not exclusively own one physical leaf.
+    InvalidLogicalQuotaChild,
     /// A journal and another persistent graph path overlap lexically.
     OverlappingAdministrativePath,
     /// A persistent graph path is relative to ambient process state.
@@ -878,6 +883,8 @@ impl fmt::Display for GraphViolation {
             Self::UnsupportedChild => "unsupported child capability",
             Self::InvalidWriteBackBounds => "invalid write-back bounds",
             Self::InvalidCompressedObjectLimit => "invalid compressed-object limit",
+            Self::InvalidLogicalQuotaBounds => "invalid logical-quota bounds",
+            Self::InvalidLogicalQuotaChild => "logical quota must exclusively own a physical leaf",
             Self::OverlappingAdministrativePath => "overlapping administrative path",
             Self::RelativeAdministrativePath => "relative administrative path",
             Self::AdministrativePathTooLong => "administrative path is too long",

@@ -1578,6 +1578,414 @@ fn compressed_directory_is_a_bounded_versioned_graph_leaf() {
 }
 
 #[test]
+fn logical_quota_reclaims_accounting_through_graph_admin_and_survives_restart() {
+    let temp = TempDir::new().expect("temporary directory");
+    let quota = node_id("quota");
+    let directory = node_id("directory");
+    let state_root = temp.path().join("quota-state");
+    let object_root = temp.path().join("objects");
+    let config = || StoreGraphConfig {
+        root: quota.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                quota.clone(),
+                StoreNodeSpec::LogicalQuota {
+                    child: directory.clone(),
+                    state_root: state_root.clone(),
+                    maximum_objects: 2,
+                    maximum_logical_bytes: 10,
+                },
+            ),
+            (
+                directory.clone(),
+                StoreNodeSpec::CompressedDirectory {
+                    root: object_root.clone(),
+                    maximum_logical_object_bytes: 1_024,
+                },
+            ),
+        ]),
+    };
+    let (graph, admin) = StoreGraph::build_with_admin(config()).expect("logical quota graph");
+    assert_eq!(graph.describe().len(), 2);
+    assert!(
+        graph
+            .describe()
+            .iter()
+            .any(|node| node.kind == StoreNodeKind::LogicalQuota)
+    );
+    assert_eq!(admin.physical().len(), 1);
+    assert_eq!(admin.physical()[0].node(), &quota);
+
+    let first_bytes = b"four";
+    let first = ContentId::for_bytes(ObjectKind::Trace, 1, first_bytes);
+    let first_receipt = put_bytes(&graph, first, first_bytes).expect("first quota put");
+    assert_eq!(first_receipt.placements[0].backend, "quota");
+    put_bytes(&graph, first, first_bytes).expect("idempotent quota put");
+    let second_bytes = b"second";
+    let second = ContentId::for_bytes(ObjectKind::Trace, 1, second_bytes);
+    put_bytes(&graph, second, second_bytes).expect("second quota put");
+    let rejected_bytes = b"more";
+    let rejected = ContentId::for_bytes(ObjectKind::Trace, 1, rejected_bytes);
+    let rejected_opens = Arc::new(AtomicUsize::new(0));
+    let rejected_source = BlobHandle::new(Arc::new(CountingSource {
+        bytes: Arc::from(rejected_bytes.as_slice()),
+        opens: Arc::clone(&rejected_opens),
+        bytes_read: Arc::new(AtomicUsize::new(0)),
+    }));
+    assert!(matches!(
+        graph.put_if_absent(rejected, &rejected_source),
+        Err(StoreError::Quota)
+    ));
+    assert_eq!(rejected_opens.load(Ordering::SeqCst), 0);
+
+    let mut fence = admin.physical()[0]
+        .admin()
+        .acquire_inventory_fence()
+        .expect("logical quota inventory fence");
+    let summary = fence
+        .visit_inventory(&mut |_| Ok(()))
+        .expect("logical quota inventory");
+    assert_eq!(summary.backend(), "quota");
+    assert_eq!(summary.objects(), 2);
+    assert_eq!(summary.logical_bytes(), 10);
+    assert_eq!(
+        fence
+            .delete_candidate(first)
+            .expect("delete quota candidate"),
+        PlannedDeleteDisposition::Deleted
+    );
+    assert_eq!(
+        fence
+            .delete_candidate(first)
+            .expect("repeat quota candidate deletion"),
+        PlannedDeleteDisposition::AlreadyAbsent
+    );
+    drop(fence);
+    put_bytes(&graph, rejected, rejected_bytes).expect("reclaimed quota put");
+    drop(admin);
+    drop(graph);
+
+    let (restarted, restarted_admin) =
+        StoreGraph::build_with_admin(config()).expect("restart logical quota graph");
+    assert!(!restarted.contains(first).expect("deleted object absent"));
+    assert!(restarted.contains(second).expect("second object retained"));
+    assert!(restarted.contains(rejected).expect("replacement retained"));
+    let mut fence = restarted_admin.physical()[0]
+        .admin()
+        .acquire_inventory_fence()
+        .expect("restarted logical quota fence");
+    let summary = fence
+        .visit_inventory(&mut |_| Ok(()))
+        .expect("restarted logical quota inventory");
+    assert_eq!(summary.objects(), 2);
+    assert_eq!(summary.logical_bytes(), 10);
+}
+
+#[test]
+fn dirty_logical_quota_state_recovers_from_the_owned_child_inventory() {
+    let temp = TempDir::new().expect("temporary directory");
+    let quota = node_id("quota");
+    let directory = node_id("directory");
+    let state_root = temp.path().join("quota-state");
+    let object_root = temp.path().join("objects");
+    let config = || StoreGraphConfig {
+        root: quota.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                quota.clone(),
+                StoreNodeSpec::LogicalQuota {
+                    child: directory.clone(),
+                    state_root: state_root.clone(),
+                    maximum_objects: 2,
+                    maximum_logical_bytes: 16,
+                },
+            ),
+            (
+                directory.clone(),
+                StoreNodeSpec::Directory {
+                    root: object_root.clone(),
+                },
+            ),
+        ]),
+    };
+    let graph = StoreGraph::build(config()).expect("logical quota graph");
+    let first_bytes = b"first";
+    let first = ContentId::for_bytes(ObjectKind::Trace, 1, first_bytes);
+    put_bytes(&graph, first, first_bytes).expect("first quota put");
+    super::quota::mark_quota_state_dirty(&state_root).expect("mark interrupted quota state");
+
+    let child = DirectoryBlobBackend::new("directory", &object_root);
+    let second_bytes = b"second";
+    let second = ContentId::for_bytes(ObjectKind::Trace, 1, second_bytes);
+    put_bytes(&child, second, second_bytes).expect("simulate committed child put");
+    drop(graph);
+
+    let (restarted, admin) =
+        StoreGraph::build_with_admin(config()).expect("recover logical quota graph");
+    let third_bytes = b"third";
+    let third = ContentId::for_bytes(ObjectKind::Trace, 1, third_bytes);
+    assert!(matches!(
+        put_bytes(&restarted, third, third_bytes),
+        Err(StoreError::Quota)
+    ));
+    let mut fence = admin.physical()[0]
+        .admin()
+        .acquire_inventory_fence()
+        .expect("recovered quota fence");
+    let summary = fence
+        .visit_inventory(&mut |_| Ok(()))
+        .expect("recovered quota inventory");
+    assert_eq!(summary.objects(), 2);
+    assert_eq!(summary.logical_bytes(), 11);
+    drop(fence);
+    drop(admin);
+    drop(restarted);
+
+    let changed = StoreGraphConfig {
+        root: quota.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                quota,
+                StoreNodeSpec::LogicalQuota {
+                    child: directory.clone(),
+                    state_root,
+                    maximum_objects: 3,
+                    maximum_logical_bytes: 16,
+                },
+            ),
+            (directory, StoreNodeSpec::Directory { root: object_root }),
+        ]),
+    };
+    assert!(matches!(
+        StoreGraph::build(changed),
+        Err(StoreError::InvalidComposition {
+            reason: "logical quota state belongs to another graph configuration"
+        })
+    ));
+}
+
+#[test]
+fn concurrent_logical_quota_instances_share_one_durable_admission_lock() {
+    let temp = TempDir::new().expect("temporary directory");
+    let quota = node_id("quota");
+    let directory = node_id("directory");
+    let config = || StoreGraphConfig {
+        root: quota.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                quota.clone(),
+                StoreNodeSpec::LogicalQuota {
+                    child: directory.clone(),
+                    state_root: temp.path().join("quota-state"),
+                    maximum_objects: 1,
+                    maximum_logical_bytes: 16,
+                },
+            ),
+            (
+                directory.clone(),
+                StoreNodeSpec::Directory {
+                    root: temp.path().join("objects"),
+                },
+            ),
+        ]),
+    };
+    let first = Arc::new(StoreGraph::build(config()).expect("first quota instance"));
+    let second = Arc::new(StoreGraph::build(config()).expect("second quota instance"));
+    let barrier = Arc::new(Barrier::new(3));
+    let launch = |graph: Arc<StoreGraph>, byte| {
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            let bytes = [byte; 8];
+            let id = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
+            barrier.wait();
+            graph.put_if_absent(id, &BlobHandle::from_bytes(bytes))
+        })
+    };
+    let first_put = launch(first, 0x31);
+    let second_put = launch(second, 0x32);
+    barrier.wait();
+    let results = [
+        first_put.join().expect("first quota writer"),
+        second_put.join().expect("second quota writer"),
+    ];
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Err(StoreError::Quota)))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn logical_quota_admission_rejects_unbounded_shared_and_nonleaf_children() {
+    let temp = TempDir::new().expect("temporary directory");
+    let quota = node_id("quota");
+    let directory = node_id("directory");
+    let config = |maximum_objects, maximum_logical_bytes| StoreGraphConfig {
+        root: quota.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                quota.clone(),
+                StoreNodeSpec::LogicalQuota {
+                    child: directory.clone(),
+                    state_root: temp.path().join("quota-state"),
+                    maximum_objects,
+                    maximum_logical_bytes,
+                },
+            ),
+            (
+                directory.clone(),
+                StoreNodeSpec::Directory {
+                    root: temp.path().join("objects"),
+                },
+            ),
+        ]),
+    };
+    for invalid in [config(0, 1), config(1, 0), config(u64::MAX, 1)] {
+        assert!(matches!(
+            StoreGraph::build(invalid),
+            Err(StoreError::InvalidGraph {
+                violation: GraphViolation::InvalidLogicalQuotaBounds,
+                ..
+            })
+        ));
+    }
+
+    assert!(matches!(
+        StoreGraph::build(StoreGraphConfig {
+            root: quota.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+            nodes: BTreeMap::from([
+                (
+                    quota.clone(),
+                    StoreNodeSpec::LogicalQuota {
+                        child: directory.clone(),
+                        state_root: temp.path().join("memory-state"),
+                        maximum_objects: 1,
+                        maximum_logical_bytes: 1,
+                    },
+                ),
+                (
+                    directory.clone(),
+                    StoreNodeSpec::Memory {
+                        max_logical_bytes: 1,
+                    },
+                ),
+            ]),
+        }),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::InvalidLogicalQuotaChild,
+            ..
+        })
+    ));
+
+    let metrics = node_id("metrics");
+    assert!(matches!(
+        StoreGraph::build(StoreGraphConfig {
+            root: quota.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+            nodes: BTreeMap::from([
+                (
+                    quota.clone(),
+                    StoreNodeSpec::LogicalQuota {
+                        child: metrics.clone(),
+                        state_root: temp.path().join("nonleaf-state"),
+                        maximum_objects: 1,
+                        maximum_logical_bytes: 1,
+                    },
+                ),
+                (
+                    metrics,
+                    StoreNodeSpec::Metrics {
+                        child: directory.clone(),
+                    },
+                ),
+                (
+                    directory.clone(),
+                    StoreNodeSpec::Directory {
+                        root: temp.path().join("nonleaf-objects"),
+                    },
+                ),
+            ]),
+        }),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::InvalidLogicalQuotaChild,
+            ..
+        })
+    ));
+
+    assert!(matches!(
+        StoreGraph::build(StoreGraphConfig {
+            root: quota.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+            nodes: BTreeMap::from([
+                (
+                    quota.clone(),
+                    StoreNodeSpec::LogicalQuota {
+                        child: directory.clone(),
+                        state_root: temp.path().join("overlap"),
+                        maximum_objects: 1,
+                        maximum_logical_bytes: 1,
+                    },
+                ),
+                (
+                    directory.clone(),
+                    StoreNodeSpec::Directory {
+                        root: temp.path().join("overlap").join("objects"),
+                    },
+                ),
+            ]),
+        }),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::OverlappingAdministrativePath,
+            ..
+        })
+    ));
+
+    let mirror = node_id("mirror");
+    assert!(matches!(
+        StoreGraph::build(StoreGraphConfig {
+            root: mirror.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+            nodes: BTreeMap::from([
+                (
+                    mirror,
+                    StoreNodeSpec::WriteThrough {
+                        children: vec![quota.clone(), directory.clone()],
+                    },
+                ),
+                (
+                    quota,
+                    StoreNodeSpec::LogicalQuota {
+                        child: directory.clone(),
+                        state_root: temp.path().join("shared-state"),
+                        maximum_objects: 1,
+                        maximum_logical_bytes: 1,
+                    },
+                ),
+                (
+                    directory,
+                    StoreNodeSpec::Directory {
+                        root: temp.path().join("shared-objects"),
+                    },
+                ),
+            ]),
+        }),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::InvalidLogicalQuotaChild,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn durable_write_back_survives_restart_and_exposes_exact_retention_roots() {
     let temp = TempDir::new().expect("temporary directory");
     let graph = write_back_graph(temp.path(), 8, 1_024).expect("write-back graph");

@@ -980,6 +980,124 @@ fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
 }
 
 #[test]
+fn logical_quota_graph_gc_reclaims_admission_capacity_across_restart() {
+    let temp = tempfile::TempDir::new().expect("temporary quota GC root");
+    let blob_root = temp.path().join("objects");
+    let quota_root = temp.path().join("quota");
+    let ref_root = temp.path().join("refs");
+    let ledger_root = temp.path().join("ledger");
+    let journal_root = temp.path().join("journal");
+    let quota_node = StoreNodeId::new("quota-primary").expect("quota node");
+    let directory_node = StoreNodeId::new("directory-child").expect("directory child");
+    let graph_config = || StoreGraphConfig {
+        root: quota_node.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::RamExtent, ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                quota_node.clone(),
+                StoreNodeSpec::LogicalQuota {
+                    child: directory_node.clone(),
+                    state_root: quota_root.clone(),
+                    maximum_objects: 2,
+                    maximum_logical_bytes: 1024 * 1024,
+                },
+            ),
+            (
+                directory_node.clone(),
+                StoreNodeSpec::Directory {
+                    root: blob_root.clone(),
+                },
+            ),
+        ]),
+    };
+
+    let (graph, admin) = StoreGraph::build_with_admin(graph_config()).expect("quota GC graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let live = ContentEnvelope::new(
+        "crucible.test.gc-quota-live",
+        1,
+        BTreeSet::new(),
+        b"quota live".to_vec(),
+    )
+    .expect("quota live envelope");
+    let live_id = live.content_id(ObjectKind::RamExtent);
+    graph
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live.canonical_bytes()))
+        .expect("store quota live object");
+    refs.compare_exchange(
+        &RefName::new("retained/quota-gc").expect("quota ref"),
+        None,
+        live_id,
+    )
+    .expect("publish quota root");
+    let orphan_bytes = b"quota orphan";
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
+    graph
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes))
+        .expect("store quota orphan");
+    let rejected_bytes = b"quota initially full";
+    let rejected = ContentId::for_bytes(ObjectKind::Trace, 1, rejected_bytes);
+    assert!(matches!(
+        graph.put_if_absent(rejected, &BlobHandle::from_bytes(rejected_bytes)),
+        Err(StoreError::Quota)
+    ));
+
+    assert_eq!(admin.physical().len(), 1);
+    assert_eq!(admin.physical()[0].node(), &quota_node);
+    let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("open quota GC ledger");
+    let prepared = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect("plan quota GC");
+    assert_eq!(prepared.candidates().len(), 1);
+    assert_eq!(
+        prepared.candidates().iter().next().expect("orphan").id(),
+        orphan
+    );
+    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
+        .expect("create quota GC journal");
+    drop(journal);
+    drop(ledger);
+    drop(repository);
+    drop(refs);
+    drop(graph);
+    drop(admin);
+
+    let (graph, admin) =
+        StoreGraph::build_with_admin(graph_config()).expect("restart quota GC graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("reopen quota GC ledger");
+    let mut journal =
+        DirectoryCampaignGcJournal::open(&journal_root).expect("reopen quota GC journal");
+    let report = super::apply_single_host_campaign_gc(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect("apply quota GC after restart");
+    assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
+    assert!(graph.contains(live_id).expect("quota live placement"));
+    assert!(!graph.contains(orphan).expect("quota orphan placement"));
+    graph
+        .put_if_absent(rejected, &BlobHandle::from_bytes(rejected_bytes))
+        .expect("GC reclaimed quota admission capacity");
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Complete);
+}
+
+#[test]
 fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_bytes() {
     let temp = tempfile::TempDir::new().expect("temporary packed GC root");
     let pack_root = temp.path().join("packs");
