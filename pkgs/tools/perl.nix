@@ -12,8 +12,26 @@
   gcc,
   gccUnwrapped,
   glibc,
+  stdenv,
 }: let
   version = "5.40.1";
+  isDarwin = stdenv.hostPlatform.isDarwin;
+  targetCpu = stdenv.hostPlatform.constraints.cpu;
+  archDirectory =
+    if isDarwin
+    then "${targetCpu}-darwin"
+    else "x86_64-linux";
+  longDoubleSize =
+    if stdenv.hostPlatform.isAarch64
+    then "8"
+    else "16";
+  perlCrossVersion = "1.6.4";
+  perlCrossSrc = fetchurl {
+    urls = [
+      "https://github.com/arsv/perl-cross/archive/refs/tags/${perlCrossVersion}.tar.gz"
+    ];
+    hash = "sha256-sXZSK86x/DUz64XkQ15asG90c2M5eRIqj1sYorT8hlo=";
+  };
 in
   mkDerivation {
     pname = "perl";
@@ -49,34 +67,134 @@ in
     phases = [
       {
         name = "unpack";
-        script = ''
-          tar xf $src
-          cd perl-${version}
-        '';
+        script =
+          if isDarwin
+          then ''
+            tar xf $src
+            cd perl-${version}
+
+              # perl-cross replaces target execution probes with compile/link
+              # tests and a Linux miniperl used only for source generation.
+              chmod -R u+w .
+              tar xf ${perlCrossSrc} --strip-components=1
+
+              # Every helper must execute with the hermetic AOS build shell.
+              for script in \
+                configure miniperl_top 0pack.sh modclean Makefile.config.SH \
+                cnf/configure cnf/*.sh
+              do
+                [ -f "$script" ] || continue
+                sed -i "1s|^#!/bin/sh$|#!$CONFIG_SHELL|" "$script"
+              done
+          ''
+          else ''
+            tar xf $src
+            cd perl-${version}
+          '';
       }
       {
         name = "configure";
-        script = ''
-          ./Configure \
-            -des \
-            -Dprefix=$out \
-            -Dvendorprefix=$out \
-            -Dprivlib=$out/lib/perl5/${version} \
-            -Darchlib=$out/lib/perl5/${version}/x86_64-linux \
-            -Dvendorlib=$out/lib/perl5/${version} \
-            -Dvendorarch=$out/lib/perl5/${version}/x86_64-linux \
-            -Dman1dir=$out/share/man/man1 \
-            -Dman3dir=$out/share/man/man3 \
-            -Dusethreads \
-            -Duseshrplib \
-            -Dlibs='-lpthread -ldl -lm -lutil -lc'
-        '';
+        script =
+          if isDarwin
+          then ''
+            # perl-cross still names an ELF-only inspection tool even when
+            # every ABI size is supplied.  A no-op keeps that unused lookup
+            # hermetic; Mach-O byte order is pinned below as well.
+            export READELF=true
+
+            ./configure \
+              --build=${stdenv.buildPlatform.config} \
+              --target=${stdenv.hostPlatform.config} \
+              --with-cc="$CC" \
+              --with-ranlib="$RANLIB" \
+              --with-objdump="$OBJDUMP" \
+              --host-cc="$CC_FOR_BUILD" \
+              --sysroot="$SDKROOT" \
+              --prefix="$out" \
+              --man1dir="$out/share/man/man1" \
+              --man3dir="$out/share/man/man3" \
+              --libs=pthread,dl,m,util,c \
+              -Dar="$AR" \
+              -Dnm="$NM" \
+              -Dosname=darwin \
+              -Dosvers=20.0.0 \
+              -Darchname=darwin-thread-multi-2level \
+              -Dprivlib="$out/lib/perl5/${version}" \
+              -Darchlib="$out/lib/perl5/${version}/${archDirectory}" \
+              -Dvendorprefix="$out" \
+              -Dvendorlib="$out/lib/perl5/${version}" \
+              -Dvendorarch="$out/lib/perl5/${version}/${archDirectory}" \
+              -Dusethreads \
+              -Duseshrplib \
+              -Dlibperl=libperl.dylib \
+              -Dso=dylib \
+              -Ddlext=bundle \
+              -Dusedl=define \
+              -Ddlsrc=dl_dlopen.xs \
+              -Dcccdlflags=' ' \
+              -Dccdlflags=' ' \
+              -Dlddlflags='-bundle -undefined dynamic_lookup' \
+              -Dldlibpthname=DYLD_LIBRARY_PATH \
+              -Dusenm=false \
+              -Dusevfork=true \
+              -Dusemymalloc=n \
+              -Dd_nanosleep=define \
+              -Dd_thread_local=undef \
+              -Dd_syscall=undef \
+              -Di_dbm=undef \
+              -Dcharsize=1 \
+              -Dshortsize=2 \
+              -Dintsize=4 \
+              -Dlongsize=8 \
+              -Ddoublesize=8 \
+              -Dptrsize=8 \
+              -Dlongdblsize=${longDoubleSize} \
+              -Dlonglongsize=8 \
+              -Dsizesize=8 \
+              -Dfpossize=8 \
+              -Dlseeksize=8 \
+              -Duidsize=4 \
+              -Dgidsize=4 \
+              -Dtimesize=8 \
+              -Dbyteorder=12345678
+          ''
+          else ''
+            ./Configure \
+              -des \
+              -Dprefix=$out \
+              -Dvendorprefix=$out \
+              -Dprivlib=$out/lib/perl5/${version} \
+              -Darchlib=$out/lib/perl5/${version}/${archDirectory} \
+              -Dvendorlib=$out/lib/perl5/${version} \
+              -Dvendorarch=$out/lib/perl5/${version}/${archDirectory} \
+              -Dman1dir=$out/share/man/man1 \
+              -Dman3dir=$out/share/man/man3 \
+              -Dusethreads \
+              -Duseshrplib \
+              -Dlibs='-lpthread -ldl -lm -lutil -lc'
+          '';
       }
       {
         name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
+        script =
+          if isDarwin
+          then ''
+            # Modules are Mach-O bundles, while libperl itself is a dylib.
+            # perl-cross uses one linker variable for both, so separate the
+            # shared-library rule exactly as upstream Makefile.SH does.
+            sed -i '/^perl\$x: LDFLAGS += -Wl,-E$/d' Makefile
+            sed -i \
+              's|$(CC) $(LDDLFLAGS) -o $@ $(filter %$o,$^) $(LIBS)|$(CC) $(SHRPLDFLAGS) -o $@ $(filter %$o,$^) $(LIBS)|' \
+              Makefile
+
+            # perl-cross's generated module graph races source generation
+            # against XS compilation under parallel make.
+            make -j1 \
+              SHRPLDFLAGS='-dynamiclib -Wl,-compatibility_version,${version} -Wl,-current_version,${version} -Wl,-install_name,@rpath/libperl.dylib'
+          ''
+          else ''
+            make -j$NIX_BUILD_CORES
+          '';
       }
       {
         name = "install";

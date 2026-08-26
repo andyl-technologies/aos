@@ -39,19 +39,23 @@ in
 
           verify_output ${x86.pkgs.llvm} x86_64-darwin
           verify_output ${x86.pkgs.nodejs} x86_64-darwin
+          verify_output ${x86.pkgs.perl} x86_64-darwin
           verify_output ${x86.pkgs.python3} x86_64-darwin
           verify_output ${x86.pkgs.python3-3_12} x86_64-darwin
           verify_macho ${x86.pkgs.llvm}/bin/clang X86_64
           verify_macho ${x86.pkgs.nodejs}/bin/node X86_64
+          verify_macho ${x86.pkgs.perl}/bin/perl X86_64
           verify_macho ${x86.pkgs.python3}/bin/python3 X86_64
           verify_macho ${x86.pkgs.python3-3_12}/bin/python3 X86_64
 
           verify_output ${arm.pkgs.llvm} aarch64-darwin
           verify_output ${arm.pkgs.nodejs} aarch64-darwin
+          verify_output ${arm.pkgs.perl} aarch64-darwin
           verify_output ${arm.pkgs.python3} aarch64-darwin
           verify_output ${arm.pkgs.python3-3_12} aarch64-darwin
           verify_macho ${arm.pkgs.llvm}/bin/clang ARM64
           verify_macho ${arm.pkgs.nodejs}/bin/node ARM64
+          verify_macho ${arm.pkgs.perl}/bin/perl ARM64
           verify_macho ${arm.pkgs.python3}/bin/python3 ARM64
           verify_macho ${arm.pkgs.python3-3_12}/bin/python3 ARM64
 
