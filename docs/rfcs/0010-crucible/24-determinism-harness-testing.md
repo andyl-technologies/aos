@@ -1022,13 +1022,13 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   scoped [HARN-6] gate, [G-2]; spec §1.2.
   Completed by `checks.crucible.phase2.gates.anyGuest`: a generic AOS Linux
   kernel/initramfs fixture runs under diskless and guest-visible CoW-block launch
-  profiles twice on real QEMU with the host-side trace plugin, the diskless cadence fingerprint streams match exactly
-  through the host QMP-quit window after a generic serial completion marker, both
-  CoW traces pass structural validation while the profile writes through
-  `/dev/vda` and leaves the copied base image byte-identical, and the optional
-  white-box path is consumed as a separate unused, non-perturbing host/plugin
-  contract. Broader off-the-shelf guest image coverage remains outside this
-  completed initial matrix.
+  profiles twice on real QEMU with the host-side trace plugin, both cadence
+  fingerprint streams match exactly through the host QMP-quit window after a
+  generic serial completion marker, the CoW profile writes through `/dev/vda`
+  and leaves the copied base image byte-identical, and the optional white-box
+  path is consumed as a separate unused, non-perturbing host/plugin contract.
+  Broader off-the-shelf guest image coverage remains outside this completed
+  initial matrix.
 - [x] **T-HARN-17** Freeze the boundary-ABI golden vectors (shmem layout,
   protocol frames, RPC messages) and implement `gate:abi-conformance` with version
   checks and the bump-on-change rule. — satisfies [HARN-32], [G-8]; spec §8.1.
