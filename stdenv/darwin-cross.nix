@@ -205,6 +205,8 @@
         [binaries]
         c = '${ccWrapper}/bin/cc'
         cpp = '${ccWrapper}/bin/c++'
+        objc = '${ccWrapper}/bin/cc'
+        objcpp = '${ccWrapper}/bin/c++'
         ar = '${ccWrapper}/bin/ar'
         strip = '${ccWrapper}/bin/strip'
         pkg-config = 'pkg-config'
