@@ -5,8 +5,91 @@
 {
   lib,
   stdenv,
+  buildPackages ? null,
+  targetPackages ? null,
 }: let
   fetchurl = lib.fetchurl;
+  platformSupport = import ./_platform-support.nix;
+
+  # Cross package-set roles. `self` is the host package set: its outputs run
+  # on stdenv.hostPlatform. Build tools must be selected from buildPackages so
+  # they execute on stdenv.buildPlatform, while targetPackages is available to
+  # compiler packages whose code-generation target differs from their host.
+  # Native evaluation collapses all three roles to the same fixed point.
+  resolvedBuildPackages =
+    if buildPackages != null
+    then buildPackages
+    else self;
+  resolvedTargetPackages =
+    if targetPackages != null
+    then targetPackages
+    else self;
+  packageSets = {
+    build = resolvedBuildPackages;
+    host = self;
+    target = resolvedTargetPackages;
+  };
+
+  # Existing package recipes historically referred to one package fixed point
+  # for both tools and target libraries. Preserve their authored buildDeps API
+  # while resolving each identifiable executable dependency through the native
+  # build package set. A version mismatch is left untouched so constraint
+  # validation fails visibly instead of silently substituting another tool.
+  buildDependencyAliases = {
+    make = "gnumake";
+    node = "nodejs";
+    pkgconf = "pkg-config";
+    python = "python3";
+    jdk = "openjdk";
+  };
+  spliceBuildDependency = dep:
+    if !builtins.isAttrs dep
+    then dep
+    else let
+      pname = dep.pname or null;
+      mainProgram = dep.meta.mainProgram or null;
+      version = dep.version or null;
+      versionParts =
+        if version != null
+        then builtins.match "([0-9]+)\\.([0-9]+).*" version
+        else null;
+      major =
+        if versionParts != null
+        then builtins.elemAt versionParts 0
+        else null;
+      minor =
+        if versionParts != null
+        then builtins.elemAt versionParts 1
+        else null;
+      aliasKey =
+        if pname != null && builtins.hasAttr pname buildDependencyAliases
+        then pname
+        else if mainProgram != null && builtins.hasAttr mainProgram buildDependencyAliases
+        then mainProgram
+        else null;
+      candidateNames =
+        lib.unique (
+          lib.optionals (pname != null && major != null && minor != null) [
+            "${pname}-${major}_${minor}"
+          ]
+          ++ lib.optionals (pname != null && major != null) ["${pname}-${major}"]
+          ++ lib.optional (pname != null) pname
+          ++ lib.optional (mainProgram != null) mainProgram
+          ++ lib.optional (aliasKey != null) buildDependencyAliases.${aliasKey}
+        );
+      candidates = builtins.map (name: resolvedBuildPackages.${name}) (
+        builtins.filter (name: builtins.hasAttr name resolvedBuildPackages) candidateNames
+      );
+      matchingCandidates = builtins.filter (
+        candidate:
+          version == null
+          || !(candidate ? version)
+          || version == candidate.version
+      ) candidates;
+    in
+      if matchingCandidates != []
+      then builtins.head matchingCandidates
+      else dep;
 
   # Raw stdenv.mkDerivation, without nuke-references injected. Used by
   # nuke-references itself (to break the self-referential cycle).
@@ -199,7 +282,7 @@
           version = args.version or "0";
           src = preparedConfigModule.src;
           outputs = ["config"];
-          buildDeps = [self.nix];
+          buildDeps = [resolvedBuildPackages.nix];
           phases = [
             {
               name = "install";
@@ -239,7 +322,7 @@
                       exit 1
                     fi
                     ${stdenv.findutils}/bin/find "$output" -type f -name '*.nix' \
-                      -exec ${self.nix}/bin/nix-instantiate --store dummy:// --parse {} \; >/dev/null
+                      -exec ${resolvedBuildPackages.nix}/bin/nix-instantiate --store dummy:// --parse {} \; >/dev/null
                       # Reject direct store literals and builtins.storeDir. The
                       # evaluated manifest validator is the semantic boundary for
                       # paths assembled by otherwise ordinary Nix expressions.
@@ -277,8 +360,8 @@
             maintainers = args.meta.maintainers or defaultMaintainers;
           };
         buildDeps =
-          (args.buildDeps or [])
-          ++ [self.nuke-references];
+          builtins.map spliceBuildDependency (args.buildDeps or [])
+          ++ [resolvedBuildPackages.nuke-references];
         passthru = (args.passthru or {}) // exposeAttrs // configModuleAttrs;
       }
       // exposeAttrs;
@@ -286,7 +369,7 @@
     exposeCheck =
       if args ? expose
       then
-        self.runCommand "expose-payload-closure-check-${packageName}" {
+        resolvedBuildPackages.runCommand "expose-payload-closure-check-${packageName}" {
           payload = drv;
           exposePath = renderedExpose;
           disallowedRequisites = [renderedExpose];
@@ -327,7 +410,7 @@
     lib.fetchCargoDeps (
       args
       // {
-        cargo = self.rust;
+        cargo = resolvedBuildPackages.rust;
         inherit bootstrapTools;
         extraPaths = [
           stdenv.coreutils
@@ -337,8 +420,8 @@
         ];
         extraLibPaths =
           [
-            self.openssl
-            self.zlib
+            resolvedBuildPackages.openssl
+            resolvedBuildPackages.zlib
           ]
           ++ (args.extraLibPaths or []);
       }
@@ -348,10 +431,10 @@
     lib.fetchCargoVendor (
       args
       // {
-        cargo = self.rust;
-        python3 = self.python3;
-        git = self.git;
-        caCertificates = self.ca-certificates;
+        cargo = resolvedBuildPackages.rust;
+        python3 = resolvedBuildPackages.python3;
+        git = resolvedBuildPackages.git;
+        caCertificates = resolvedBuildPackages.ca-certificates;
         inherit bootstrapTools;
         extraPaths = [
           stdenv.coreutils
@@ -361,8 +444,8 @@
         ];
         extraLibPaths =
           [
-            self.openssl
-            self.zlib
+            resolvedBuildPackages.openssl
+            resolvedBuildPackages.zlib
           ]
           ++ (args.extraLibPaths or []);
       }
@@ -372,7 +455,7 @@
     lib.fetchGoModules (
       args
       // {
-        go = self.go;
+        go = resolvedBuildPackages.go;
         inherit bootstrapTools;
         extraPaths = [
           stdenv.coreutils
@@ -387,9 +470,9 @@
     lib.fetchNpmDeps (
       args
       // {
-        nodejs = self.nodejs;
-        python3 = self.python3;
-        caCertificates = self.ca-certificates;
+        nodejs = resolvedBuildPackages.nodejs;
+        python3 = resolvedBuildPackages.python3;
+        caCertificates = resolvedBuildPackages.ca-certificates;
         inherit bootstrapTools;
         extraPaths = [
           stdenv.coreutils
@@ -401,12 +484,12 @@
           stdenv.grep
           stdenv.gawk
           stdenv.findutils
-          self.git
+          resolvedBuildPackages.git
         ];
         extraLibPaths =
           [
-            self.openssl
-            self.zlib
+            resolvedBuildPackages.openssl
+            resolvedBuildPackages.zlib
           ]
           ++ (args.extraLibPaths or []);
       }
@@ -521,7 +604,7 @@
       {
         schema = "aos.cargo-artifact-contract/v1";
         system = stdenv.hostPlatform.system;
-        rust = builtins.unsafeDiscardStringContext (toString self.rust);
+        rust = builtins.unsafeDiscardStringContext (toString resolvedBuildPackages.rust);
         buildType = args.buildType or "release";
         checkType = args.checkType or (args.buildType or "release");
         buildFeatures = args.buildFeatures or [];
@@ -535,7 +618,7 @@
       // (args.cargoArtifactContract or {});
     inheritedArtifacts = args.cargoArtifacts or null;
     cargoBuildOnlyReferences =
-      [args.cargoDeps self.rust]
+      [args.cargoDeps resolvedBuildPackages.rust]
       ++ lib.optional (inheritedArtifacts != null) inheritedArtifacts;
     artifactsCompatible =
       inheritedArtifacts
@@ -563,10 +646,10 @@
           restArgs
           // {
             buildDeps =
-              [self.rust self.jq]
+              [resolvedBuildPackages.rust resolvedBuildPackages.jq]
               ++ (
                 if args.cargoNextest or false
-                then [self.cargo-nextest]
+                then [resolvedBuildPackages.cargo-nextest]
                 else []
               )
               ++ (args.buildDeps or []);
@@ -637,13 +720,13 @@
       mkDerivation (
         restArgs
         // {
-          buildDeps = [self.go] ++ (args.buildDeps or []);
+          buildDeps = [resolvedBuildPackages.go] ++ (args.buildDeps or []);
           phases = phases.goPhases goArgsWithDefaults;
           # Guard: the Go toolchain must not leak into the runtime closure.
           # -trimpath (in goPhases) prevents source-path embedding; this
           # disallowedReferences catches any residual leak at build time.
           # Matches nixpkgs' buildGoModule pattern.
-          disallowedReferences = args.disallowedReferences or [self.go];
+          disallowedReferences = args.disallowedReferences or [resolvedBuildPackages.go];
         }
       )
     );
@@ -654,16 +737,16 @@
       args
       // {
         inherit bootstrapTools;
-        caCertificates = args.caCertificates or self.ca-certificates;
+        caCertificates = args.caCertificates or resolvedBuildPackages.ca-certificates;
       }
     );
 
   mkBazelPackage = args: let
     # Extract bazel-specific parameters
-    bazel = args.bazel or self.bazel;
-    jdk = args.jdk or self.openjdk;
+    bazel = args.bazel or resolvedBuildPackages.bazel;
+    jdk = args.jdk or resolvedBuildPackages.openjdk;
     tools = args.tools or [];
-    caCerts = args.caCertificates or self.ca-certificates;
+    caCerts = args.caCertificates or resolvedBuildPackages.ca-certificates;
     bazelTarget = args.bazelTarget or (throw "mkBazelPackage: bazelTarget required");
     bazelFlags = args.bazelFlags or [];
     bazelBuildFlags = args.bazelBuildFlags or [];
@@ -708,7 +791,7 @@
             [
               bazel
               jdk
-              self.patchelf
+              resolvedBuildPackages.patchelf
             ]
             ++ tools
             ++ (args.buildDeps or []);
@@ -716,7 +799,7 @@
             bazelDeps = deps;
             inherit bazel jdk tools;
             inherit bootstrapTools;
-            patchelf = self.patchelf;
+            patchelf = resolvedBuildPackages.patchelf;
             bash = stdenv.bash;
             caCertificates = caCerts;
             inherit bazelTarget bazelFlags bazelBuildFlags;
@@ -728,6 +811,46 @@
       )
     );
 
+  # Lightweight package arguments break cycles introduced when foundational
+  # tools are themselves target packages. Build-dependency splicing can read
+  # the stable pname without forcing the target derivation; uses in runtime
+  # dependencies or string interpolation still resolve the real target output.
+  targetToolArgumentNames = [
+    "bash"
+    "coreutils"
+    "gnumake"
+    "sed"
+    "grep"
+    "findutils"
+    "gawk"
+    "diffutils"
+    "tar"
+    "gzip"
+    "patch"
+  ];
+  targetPackageArgumentProxy = name: {
+    type = "derivation";
+    inherit name;
+    pname = name;
+    outputs = ["out"];
+    outputName = "out";
+    outPath = self.${name}.outPath;
+    drvPath = self.${name}.drvPath;
+    meta = {};
+    __toString = _: builtins.toString self.${name};
+  };
+  packageArgumentScope =
+    self
+    // lib.optionalAttrs stdenv.hostPlatform.isDarwin (
+      builtins.listToAttrs (
+        builtins.map (name: {
+          inherit name;
+          value = targetPackageArgumentProxy name;
+        })
+        targetToolArgumentNames
+      )
+    );
+
   # callPackage: import a package file and auto-fill its arguments from `self`.
   # The package file is a function whose formals are introspected via
   # builtins.functionArgs, then satisfied from the package set plus the
@@ -735,7 +858,7 @@
   callPackage = path: overrides: let
     fn = import path;
     auto = builtins.intersectAttrs (builtins.functionArgs fn) (
-      self
+      packageArgumentScope
       // {
         inherit mkDerivation fetchurl callPackage;
       }
@@ -795,6 +918,21 @@
     filePackages // subdirPackages;
 
   discoveredPackages = discoverPackages ./.;
+  darwinGcc = import ./darwin/_darwin-gcc.nix {
+    inherit lib mkDerivation fetchurl stdenv buildPackages;
+    bash = self.bash;
+    llvm = self.llvm;
+  };
+  darwinCc = import ./darwin/_darwin-cc.nix {
+    inherit mkDerivation stdenv;
+    bash = self.bash;
+    llvm = self.llvm;
+  };
+  darwinBinutils = import ./darwin/_darwin-binutils.nix {
+    inherit mkDerivation fetchurl stdenv buildPackages;
+    bash = self.bash;
+    zlib = self.zlib;
+  };
   # Discovered factory modules are callable package constructors, not
   # derivations. Keep them in `pkgs` for their consumers, but never advertise
   # them as buildable `pkg-*` flake outputs or aggregate build dependencies.
@@ -804,7 +942,7 @@
     "aos-uki"
     "dbus-conf"
   ];
-  packageNames = builtins.attrNames (
+  uncheckedPackageNames = builtins.attrNames (
     builtins.removeAttrs discoveredPackages (["trivial-builders"] ++ packageFactories)
     // {
       nuke-references = null;
@@ -831,15 +969,30 @@
       patch = null;
     }
   );
+  packageNames =
+    assert platformSupport.validate uncheckedPackageNames;
+      uncheckedPackageNames;
+  targetPackageNamesFor = targetSystem:
+    platformSupport.targetPackageNames targetSystem packageNames;
+  targetPackagesFor = targetSystem:
+    builtins.mapAttrs platformSupport.annotate (
+      platformSupport.selectTargetPackages targetSystem self packageNames
+    );
 
   self =
     {
       # --- Plumbing ---
       inherit mkDerivation fetchurl lib packageNames;
+      inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
       inherit (cargoArtifactsSupport) mkCargoDummySource;
       inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchNpmDeps fetchBazelDeps;
       inherit bootstrapTools;
+      buildPackages = resolvedBuildPackages;
+      hostPackages = self;
+      targetPackages = resolvedTargetPackages;
+      inherit packageSets;
+      inherit spliceBuildDependency;
       fakeHash = lib.fakeHash;
       # --- Build infrastructure ---
       inherit stdenv;
@@ -895,41 +1048,105 @@
       cloudcore = callPackage ./kubernetes/cloudcore.nix {inherit kubeedgeSource;};
       edgecore = callPackage ./kubernetes/edgecore.nix {inherit kubeedgeSource;};
 
+      # The cross stdenv keeps a native-built SDK internally for bootstrapping.
+      # The public package is rebuilt through the host package set so APR sees
+      # the selected Darwin target marker rather than the Linux scheduler.
+      darwin-sdk = discoveredPackages.darwin-sdk;
+      darwinSdk = self.darwin-sdk;
+      darwin-runtimes =
+        if stdenv.hostPlatform.isDarwin
+        then withDefaultMaintainers stdenv.darwinRuntimes
+        else discoveredPackages.darwin-runtimes;
+      darwinRuntimes = self.darwin-runtimes;
+
       # --- stdenv packages (linked, not rebuilt) ---
       gcc =
         withDistributionMeta {
           description = "GNU Compiler Collection with AOS target and runtime defaults";
           license = "GPL-3.0-or-later WITH GCC-exception-3.1";
         }
-        stdenv.gcc;
-      glibc = withDefaultMaintainers stdenv.glibc;
-      binutils = withDefaultMaintainers stdenv.binutils;
+        (
+          if stdenv.hostPlatform.isDarwin
+          then darwinGcc
+          else stdenv.gcc
+        );
+      glibc = withDefaultMaintainers (
+        stdenv.glibc
+        // lib.optionalAttrs stdenv.hostPlatform.isDarwin {
+          dev = stdenv.glibc;
+          static = stdenv.glibc;
+        }
+      );
+      binutils = withDefaultMaintainers (
+        if stdenv.hostPlatform.isDarwin
+        then darwinBinutils
+        else stdenv.binutils
+      );
       cc =
         withDistributionMeta {
           description = "AOS C and C++ compiler wrapper toolchain";
           license = "GPL-3.0-or-later WITH GCC-exception-3.1";
         }
-        stdenv.cc;
+        (
+          if stdenv.hostPlatform.isDarwin
+          then darwinCc
+          else stdenv.cc
+        );
       # The unwrapped gcc-14.3.0-stage2. `pkgs.gcc` is the wrapped
       # gcc-14.3.0-wrapped; the perl Config scrub needs to substitute
       # and block the unwrapped one, since that's what Configure
       # records via specs/PATH.
-      gccUnwrapped = withDefaultMaintainers stdenv.gccStage2;
+      gccUnwrapped = withDefaultMaintainers (
+        if stdenv.hostPlatform.isDarwin
+        then darwinGcc
+        else if stdenv ? gccStage2
+        then stdenv.gccStage2
+        else stdenv.gcc
+      );
+      gcc-libs =
+        if stdenv.hostPlatform.isDarwin
+        then withDefaultMaintainers darwinGcc
+        else discoveredPackages.gcc-libs;
       getent = withDistributionMeta {
         description = "Name service database lookup utility from GNU C Library";
         license = "LGPL-2.1-or-later";
       } (lib.getOutput "getent" stdenv.glibc);
-      bash = withDefaultMaintainers stdenv.bash;
-      coreutils = withDefaultMaintainers stdenv.coreutils;
-      gnumake = withDefaultMaintainers stdenv.gnumake;
-      sed = withDefaultMaintainers stdenv.sed;
-      grep = withDefaultMaintainers stdenv.grep;
-      findutils = withDefaultMaintainers stdenv.findutils;
-      gawk = withDefaultMaintainers stdenv.gawk;
-      diffutils = withDefaultMaintainers stdenv.diffutils;
-      tar = withDefaultMaintainers stdenv.tar;
-      gzip = withDefaultMaintainers stdenv.gzip;
-      patch = withDefaultMaintainers stdenv.patch;
+      # Native package sets retain the final stdenv tools. Darwin package roots
+      # must be actual target builds; Linux build tools remain available only
+      # through buildPackages and build-dependency splicing.
+      bash = withDefaultMaintainers (
+        if stdenv.hostPlatform.isDarwin then discoveredPackages.bash else stdenv.bash
+      );
+      coreutils = withDefaultMaintainers (
+        if stdenv.hostPlatform.isDarwin then discoveredPackages.coreutils else stdenv.coreutils
+      );
+      gnumake = withDefaultMaintainers (
+        if stdenv.hostPlatform.isDarwin then discoveredPackages.gnumake else stdenv.gnumake
+      );
+      sed = withDefaultMaintainers (
+        if stdenv.hostPlatform.isDarwin then discoveredPackages.sed else stdenv.sed
+      );
+      grep = withDefaultMaintainers (
+        if stdenv.hostPlatform.isDarwin then discoveredPackages.grep else stdenv.grep
+      );
+      findutils = withDefaultMaintainers (
+        if stdenv.hostPlatform.isDarwin then discoveredPackages.findutils else stdenv.findutils
+      );
+      gawk = withDefaultMaintainers (
+        if stdenv.hostPlatform.isDarwin then discoveredPackages.gawk else stdenv.gawk
+      );
+      diffutils = withDefaultMaintainers (
+        if stdenv.hostPlatform.isDarwin then discoveredPackages.diffutils else stdenv.diffutils
+      );
+      tar = withDefaultMaintainers (
+        if stdenv.hostPlatform.isDarwin then discoveredPackages.tar else stdenv.tar
+      );
+      gzip = withDefaultMaintainers (
+        if stdenv.hostPlatform.isDarwin then discoveredPackages.gzip else stdenv.gzip
+      );
+      patch = withDefaultMaintainers (
+        if stdenv.hostPlatform.isDarwin then discoveredPackages.patch else stdenv.patch
+      );
     }
     # --- Trivial builders, exposed flat on the package set ---
     # The file at pkgs/build-support/trivial-builders.nix is also picked up

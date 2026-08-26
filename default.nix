@@ -32,7 +32,9 @@
 }: let
   lib = import ./lib {
     inherit system;
-    bash = stdenv.bash;
+    # Every Nix builder executes on buildPlatform, including during a cross
+    # build. Never select a target bash as the derivation builder.
+    bash = buildStdenv.bash;
   };
   buildPlatform = lib.platform;
   hostPlatform =
@@ -40,14 +42,51 @@
     then lib.mkPlatform crossSystem
     else buildPlatform;
 
-  # Self-contained stdenv: hex0 bootstrap → toolchain ladder → production stdenv.
-  stdenv = import ./stdenv {
-    inherit buildPlatform hostPlatform;
-    targetPlatform = hostPlatform;
+  # The native stdenv and package set provide tools that execute on the build
+  # machine. A cross stdenv uses those tools while producing hostPlatform
+  # outputs; Darwin selects its dedicated Linux-hosted cross environment below.
+  buildStdenv = import ./stdenv {
+    inherit buildPlatform;
+    hostPlatform = buildPlatform;
+    targetPlatform = buildPlatform;
   };
 
-  # All packages are built hermetically from source using only stdenv.
-  pkgs = import ./pkgs {inherit lib stdenv;};
+  buildPackages =
+    if crossSystem == null
+    then pkgs
+    else
+      import ./pkgs {
+        inherit lib;
+        stdenv = buildStdenv;
+      };
+
+  stdenv =
+    if crossSystem == null
+    then buildStdenv
+    else if hostPlatform.isDarwin
+    then
+      import ./stdenv/darwin-cross.nix {
+        inherit
+          lib
+          buildStdenv
+          buildPackages
+          buildPlatform
+          hostPlatform
+          ;
+        targetPlatform = hostPlatform;
+      }
+    else
+      import ./stdenv {
+        inherit buildPlatform hostPlatform;
+        targetPlatform = hostPlatform;
+      };
+
+  # Host packages produce artifacts for hostPlatform. Package definitions use
+  # pkgs.buildPackages for generators, compilers, and other executable build
+  # dependencies, and ordinary package arguments for host libraries.
+  pkgs = import ./pkgs {
+    inherit lib stdenv buildPackages;
+  };
 
   # Auto-discovered module list.
   modules = import ./modules;
@@ -998,7 +1037,7 @@
       referenceIntegrity = crucibleReferenceIntegrity;
     };
 in {
-  inherit lib pkgs stdenv modules mkSystem packagesWithExpose;
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose;
 
   # Auto-discovered golden image systems.
   # Each system has .config, .options, .build, and .checks.
@@ -1046,21 +1085,30 @@ in {
     };
     build = let
       critical-pkgs = import ./tests/build/critical-pkgs.nix {inherit pkgs lib;};
+      cross-platform-foundation = import ./tests/build/cross-platform-foundation.nix {
+        pkgs = buildPackages;
+      };
+      darwin-cross-smoke = import ./tests/build/darwin-cross-smoke.nix {
+        pkgs = buildPackages;
+      };
       gcc-config-shell = import ./tests/build/mk-gcc-config-shell.nix {inherit pkgs lib;};
       hardening-probe = import ./tests/build/hardening-probe.nix {inherit pkgs lib;};
       kernel-config = import ./tests/build/kernel-config.nix {inherit pkgs lib;};
+      package-platform-support = import ./tests/build/package-platform-support.nix {
+        pkgs = buildPackages;
+      };
       package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
       systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in {
-      inherit critical-pkgs gcc-config-shell hardening-probe kernel-config package-root-image systemd-verity golden-image-budgets;
+      inherit critical-pkgs cross-platform-foundation darwin-cross-smoke gcc-config-shell hardening-probe kernel-config package-platform-support package-root-image systemd-verity golden-image-budgets;
       # Single target that pulls in the whole build-check group.
       all = pkgs.mkDerivation {
         pname = "aos-build-checks-all";
         version = "0";
         src = null;
         buildDeps =
-          [critical-pkgs gcc-config-shell kernel-config package-root-image systemd-verity]
+          [critical-pkgs cross-platform-foundation darwin-cross-smoke gcc-config-shell kernel-config package-platform-support package-root-image systemd-verity]
           ++ builtins.attrValues hardening-probe
           ++ builtins.attrValues golden-image-budgets;
         phases = [
