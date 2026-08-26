@@ -496,6 +496,7 @@ in
             "$xnuRoot/iokit/IOKit/IOTypes.h" \
             "$xnuRoot/iokit/IOKit/OSMessageNotification.h" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/"
+          cp "$xnuRoot/bsd/sys/disk.h" "$out/usr/include/sys/disk.h"
           cp \
             "$ioUsbFamilyRoot/IOUSBFamily/Headers/USB.h" \
             "$ioUsbFamilyRoot/IOUSBFamily/Headers/IOUSBLib.h" \
@@ -509,10 +510,15 @@ in
           cp \
             "$ioStorageFamilyRoot/IOBlockStorageDevice.h" \
             "$ioStorageFamilyRoot/IOMedia.h" \
+            "$ioStorageFamilyRoot/IOMediaBSDClient.h" \
             "$ioStorageFamilyRoot/IOStorage.h" \
             "$ioStorageFamilyRoot/IOStorageControllerCharacteristics.h" \
             "$ioStorageFamilyRoot/IOStorageDeviceCharacteristics.h" \
             "$ioStorageFamilyRoot/IOStorageProtocolCharacteristics.h" \
+            "$out/System/Library/Frameworks/IOKit.framework/Headers/storage/"
+          cp \
+            "$darlingIoKitUserRoot/darling/include/IOKit/storage/IOCDMedia.h" \
+            "$darlingIoKitUserRoot/darling/include/IOKit/storage/IODVDMedia.h" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/storage/"
           cp \
             "$darlingIoKitUserRoot/darling/include/IOKit/storage/ata/ATASMARTLib.h" \

@@ -446,6 +446,9 @@
             printf '%s\n' \
               '#include <IOKit/IOKitLib.h>' \
               '#include <IOKit/storage/IOBlockStorageDevice.h>' \
+              '#include <IOKit/storage/IOCDMedia.h>' \
+              '#include <IOKit/storage/IODVDMedia.h>' \
+              '#include <IOKit/storage/IOMediaBSDClient.h>' \
               '#include <IOKit/storage/ata/ATASMARTLib.h>' \
               '#include <IOKit/usb/IOUSBHostFamilyDefinitions.h>' \
               '#include <IOKit/usb/IOUSBLib.h>' \
@@ -456,7 +459,8 @@
               '  CFMutableDictionaryRef matching = IOServiceMatching(kIOUSBDeviceClassName);' \
               '  io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, matching);' \
               '  if (service != IO_OBJECT_NULL) IOObjectRelease(service);' \
-              '  return 0;' \
+              '  unsigned long mediaIoctls[] = { DKIOCGETBLOCKSIZE, DKIOCGETBLOCKCOUNT };' \
+              '  return kIOCDMediaClass[0] != 73 || kIODVDMediaClass[0] != 73 || mediaIoctls[0] == mediaIoctls[1];' \
               '}' \
               > iokit-smoke.c
             "$CC" iokit-smoke.c \
