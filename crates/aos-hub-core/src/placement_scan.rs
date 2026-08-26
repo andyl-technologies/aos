@@ -31,6 +31,8 @@ use crate::surface_write::{PartTag, SurfaceWrite, SurfaceWriteProvider};
 const CLAIM_LEASE_SECONDS: i64 = 600;
 const CLAIM_HEARTBEAT_SECONDS: u64 = 60;
 const COPY_PART_BYTES: usize = 8 * 1024 * 1024;
+const COPY_PART_UPLOAD_ATTEMPTS: u32 = 3;
+const COPY_PART_RETRY_DELAY_MILLIS: u64 = 250;
 
 /// Executes reviewed physical-placement copy and scan operations.
 pub struct PlacementScanController {
@@ -647,9 +649,7 @@ async fn copy_surface_object(
                 if pending.len() == COPY_PART_BYTES {
                     let part_number = u32::try_from(parts.len() + 1)?;
                     parts.push(
-                        writer
-                            .upload_part(path, &upload_id, part_number, &pending)
-                            .await?,
+                        upload_copy_part(writer, path, &upload_id, part_number, &pending).await?,
                     );
                     pending.clear();
                 }
@@ -660,11 +660,7 @@ async fn copy_surface_object(
         }
         if !pending.is_empty() {
             let part_number = u32::try_from(parts.len() + 1)?;
-            parts.push(
-                writer
-                    .upload_part(path, &upload_id, part_number, &pending)
-                    .await?,
-            );
+            parts.push(upload_copy_part(writer, path, &upload_id, part_number, &pending).await?);
         }
         Ok((parts, received))
     }
@@ -681,6 +677,36 @@ async fn copy_surface_object(
         Err(error) => {
             let _ = writer.abort_multipart(path, &upload_id).await;
             Err(error)
+        }
+    }
+}
+
+async fn upload_copy_part(
+    writer: &dyn SurfaceWrite,
+    path: &str,
+    upload_id: &str,
+    part_number: u32,
+    bytes: &[u8],
+) -> Result<PartTag> {
+    let mut attempt = 1_u32;
+    loop {
+        match writer
+            .upload_part(path, upload_id, part_number, bytes)
+            .await
+        {
+            Ok(tag) => return Ok(tag),
+            Err(error) if attempt >= COPY_PART_UPLOAD_ATTEMPTS => {
+                return Err(error).with_context(|| {
+                    format!("uploading placement copy part {part_number} after {attempt} attempts")
+                });
+            }
+            Err(_) => {
+                clock::sleep(std::time::Duration::from_millis(
+                    COPY_PART_RETRY_DELAY_MILLIS * u64::from(attempt),
+                ))
+                .await;
+                attempt += 1;
+            }
         }
     }
 }
@@ -790,6 +816,10 @@ mod tests {
     struct CopySurfaceWriter {
         placement: String,
         objects: Arc<Mutex<HashMap<String, BTreeMap<String, Vec<u8>>>>>,
+    }
+
+    struct RetryingMultipartWriter {
+        attempts: Arc<AtomicUsize>,
     }
 
     #[async_trait::async_trait]
@@ -1016,6 +1046,49 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceWrite for RetryingMultipartWriter {
+        async fn write(&self, _path: &str, _bytes: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete(&self, _path: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn upload_part(
+            &self,
+            _path: &str,
+            _upload_id: &str,
+            part_number: u32,
+            _bytes: &[u8],
+        ) -> Result<PartTag> {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            if attempt < COPY_PART_UPLOAD_ATTEMPTS as usize {
+                anyhow::bail!("transient upload failure");
+            }
+            Ok(PartTag {
+                part_number,
+                etag: "part-etag".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn multipart_copy_retries_transient_part_uploads() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let writer = RetryingMultipartWriter {
+            attempts: Arc::clone(&attempts),
+        };
+
+        let tag = upload_copy_part(&writer, "nar/object", "upload-1", 7, b"bytes")
+            .await
+            .unwrap();
+
+        assert_eq!(tag.part_number, 7);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
 
     async fn scan_fixture(
