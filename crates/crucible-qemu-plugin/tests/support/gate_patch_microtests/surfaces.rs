@@ -4,7 +4,7 @@
 use std::error::Error;
 use std::fs;
 
-use super::common::{assert_contains, required, workspace_root, EXPECTED_PATCHES};
+use super::common::{EXPECTED_PATCHES, assert_contains, required, workspace_root};
 
 /// Asserts plugin ABI, Nix fixtures, and aggregate contracts for every patch.
 ///
