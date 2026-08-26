@@ -46,6 +46,7 @@
               '#include <rpc/rpc.h>' \
               '#include <sys/syscall.h>' \
               '#include <sys/ttydev.h>' \
+              '#include <sys/xattr.h>' \
               '#include <SystemConfiguration/SystemConfiguration.h>' \
               'int main(void) {' \
               '  CFStringRef label = CFSTR("aos Darwin SDK");' \
@@ -67,6 +68,11 @@
               '  CFStringRef typeDescription = CFCopyTypeIDDescription(CFStringGetTypeID());' \
               '  CFDictionaryRef proxies = SCDynamicStoreCopyProxies(NULL);' \
               '  OSStatus launchStatus = LSOpenCFURLRef(url, NULL);' \
+              '  char attributes[32];' \
+              '  ssize_t attributeSize = getxattr(".", "com.andyl.aos.smoke", attributes, sizeof(attributes), 0, XATTR_NOFOLLOW);' \
+              '  ssize_t attributeListSize = listxattr(".", attributes, sizeof(attributes), XATTR_NOFOLLOW);' \
+              '  int attributeSetStatus = setxattr(".", "com.andyl.aos.smoke", "aos", 3, 0, XATTR_CREATE);' \
+              '  int attributeRemoveStatus = removexattr(".", "com.andyl.aos.smoke", XATTR_NOFOLLOW);' \
               '  if (proxies != NULL) CFRelease(proxies);' \
               '  if (typeDescription != NULL) CFRelease(typeDescription);' \
               '  if (uuidString != NULL) CFRelease(uuidString);' \
@@ -78,7 +84,7 @@
               '  if (path != NULL) CFRelease(path);' \
               '  if (zone != NULL) CFRelease(zone);' \
               '  if (canonicalLanguage != NULL) CFRelease(canonicalLanguage);' \
-              '  return label == NULL || canonicalLanguage == NULL || maximum < 0 || zoneName == NULL || identifier == value || !represented || launchStatus == -1;' \
+              '  return label == NULL || canonicalLanguage == NULL || maximum < 0 || zoneName == NULL || identifier == value || !represented || launchStatus == -1 || attributeSize < -1 || attributeListSize < -1 || attributeSetStatus < -1 || attributeRemoveStatus < -1 || XATTR_CREATE != 0x0002 || XATTR_REPLACE != 0x0004;' \
               '}' \
               > framework-smoke.c
             "$CC" framework-smoke.c \

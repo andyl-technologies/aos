@@ -205,6 +205,7 @@ in
           cp "$xnuRoot/bsd/netinet/tcp_fsm.h" "$out/usr/include/netinet/"
           cp "$xnuRoot/bsd/netinet/tcp_timer.h" "$out/usr/include/netinet/"
           cp "$xnuRoot/bsd/sys/ttydev.h" "$out/usr/include/sys/"
+          cp "$xnuRoot/bsd/sys/xattr.h" "$out/usr/include/sys/"
           # XNU generates the installed syscall-number header from its
           # authoritative master table rather than checking it into source.
           # Run Apple's generator with the hermetic AOS shell and build tools.
