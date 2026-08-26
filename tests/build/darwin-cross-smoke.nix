@@ -108,6 +108,36 @@
               -o "$c/bin/aos-darwin-framework-smoke"
 
             printf '%s\n' \
+              '#include <Hypervisor/Hypervisor.h>' \
+              '#if defined(__aarch64__) || defined(__arm64__)' \
+              'int main(void) {' \
+              '  uint32_t ipaSize = 0;' \
+              '  uint64_t feature = 0;' \
+              '  hv_vm_config_t vmConfig = hv_vm_config_create();' \
+              '  hv_vcpu_config_t vcpuConfig = hv_vcpu_config_create();' \
+              '  hv_return_t result = hv_vm_config_get_default_ipa_size(&ipaSize);' \
+              '  result |= hv_vm_config_get_max_ipa_size(&ipaSize);' \
+              '  result |= hv_vm_config_set_ipa_size(vmConfig, ipaSize);' \
+              '  result |= hv_vcpu_config_get_feature_reg(vcpuConfig, HV_FEATURE_REG_ID_AA64DFR0_EL1, &feature);' \
+              '  result |= hv_vm_create(vmConfig);' \
+              '  return result == HV_SUCCESS && feature == 0;' \
+              '}' \
+              '#else' \
+              '#include <Hypervisor/hv_vmx.h>' \
+              'int main(void) {' \
+              '  uint64_t capability = 0;' \
+              '  hv_vcpuid_t vcpu = 0;' \
+              '  hv_return_t result = hv_vm_create(HV_VM_DEFAULT);' \
+              '  result |= hv_vcpu_create(&vcpu, HV_VCPU_DEFAULT);' \
+              '  result |= hv_vmx_read_capability(HV_VMX_CAP_PROCBASED, &capability);' \
+              '  return result == HV_SUCCESS && capability == 0;' \
+              '}' \
+              '#endif' \
+              > hypervisor-smoke.c
+            "$CC" hypervisor-smoke.c -framework Hypervisor \
+              -o "$c/bin/aos-darwin-hypervisor-smoke"
+
+            printf '%s\n' \
               '#include <CoreFoundation/CoreFoundation.h>' \
               '#include <CoreServices/CoreServices.h>' \
               'static void aos_fsevent_callback(ConstFSEventStreamRef stream, void *info, size_t count, void *paths, const FSEventStreamEventFlags flags[], const FSEventStreamEventId ids[]) { (void)stream; (void)info; (void)count; (void)paths; (void)flags; (void)ids; }' \
@@ -531,6 +561,7 @@
               "$c/bin/aos-darwin-cocoa-smoke" \
               "$c/bin/aos-darwin-framework-smoke" \
               "$c/bin/aos-darwin-foundation-appkit-smoke" \
+              "$c/bin/aos-darwin-hypervisor-smoke" \
               "$c/bin/aos-darwin-iconv-smoke" \
               "$c/bin/aos-darwin-iokit-smoke" \
               "$c/bin/aos-darwin-nis-smoke" \
