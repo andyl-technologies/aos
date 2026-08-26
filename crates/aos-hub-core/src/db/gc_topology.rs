@@ -9522,6 +9522,31 @@ impl Database {
             )
             .unchecked();
             self.backend.checked_batch(&[closure]).await?;
+            if let Some(missing_root) = self
+                .backend
+                .query_opt(
+                    "SELECT root.store_hash
+                     FROM cache_gc_generation_roots root
+                     LEFT JOIN cache_objects object
+                       ON object.cache_id = root.cache_id
+                      AND object.store_hash = root.store_hash
+                      AND object.lifecycle_state = 'active'
+                     WHERE root.cache_id = ?1 AND root.generation_id = ?2
+                       AND object.id IS NULL
+                     ORDER BY root.store_hash LIMIT 1",
+                    &vals![cache_id, generation_id],
+                )
+                .await?
+            {
+                let store_hash: String = missing_root.get(0)?;
+                let detail = format!(
+                    "cache GC closure is incomplete: retained root '{store_hash}' is absent from the active cache inventory"
+                );
+                let _ = self
+                    .fail_cache_gc_generation(cache_id, &generation_id, &detail, now)
+                    .await;
+                bail!(detail);
+            }
             if let Err(error) = self
                 .complete_cache_gc_generation(cache_id, &generation_id, now)
                 .await
@@ -12187,6 +12212,45 @@ mod tests {
                 .current_mark_generation_id,
             None
         );
+    }
+
+    #[tokio::test]
+    async fn gc_plan_reports_a_retained_root_missing_from_inventory() {
+        let db = gc_fixture().await;
+        db.create_manual_retention_root_topology(&CreateManualRetentionRoot {
+            root_id: "missing-plan-root".into(),
+            reason_id: "missing-plan-reason".into(),
+            cache_id: 1,
+            store_hash: "missing123".into(),
+            reason: "prove planner diagnostic".into(),
+            actor: "user:1".into(),
+            actor_kind: "user".into(),
+            actor_id: 1,
+            lease_id: None,
+            lease_expires_at: None,
+            expected_epoch: 0,
+            mutation_id: "root-mutation".into(),
+            now: 100,
+        })
+        .await
+        .unwrap();
+
+        let error = db
+            .build_cache_gc_plan_topology(
+                1,
+                "actor-scope",
+                "user:1",
+                "missing-root-plan",
+                "request-digest",
+                110,
+                1_010,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("retained root 'missing123' is absent from the active cache inventory"));
     }
 
     #[tokio::test]
