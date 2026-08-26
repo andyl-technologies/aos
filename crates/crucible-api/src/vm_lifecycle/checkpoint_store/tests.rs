@@ -37,6 +37,7 @@ fn target(node: &str) -> TargetManifest {
     };
     TargetManifest {
         node: String::from(node),
+        immutable_backing: Some(ContentHash::from_bytes(b"immutable backing")),
         counter: 0,
         scheduler_time: 0,
         snapshot: ContentHash::from_bytes(node.as_bytes()),
@@ -104,6 +105,7 @@ fn snapshot_portable(mut manifest: ClosureManifest, snapshot: &Snapshot) -> Memo
     target.manifest_identity =
         exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
             configuration,
+            immutable_backing: target.immutable_backing,
             node: &node,
             counter: target.counter,
             scheduler_time: VirtualTime {
@@ -138,6 +140,7 @@ fn refresh_target_manifest_identities(manifest: &mut ClosureManifest) {
         target.manifest_identity =
             exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
                 configuration,
+                immutable_backing: target.immutable_backing,
                 node: &node,
                 counter: target.counter,
                 scheduler_time: VirtualTime {
@@ -256,6 +259,7 @@ fn publish_one_node_raw_checkpoint(
     let manifest_identity =
         exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
             configuration: configuration.id(),
+            immutable_backing: Some(ContentHash::from_bytes(b"immutable backing")),
             node: &node,
             counter: 0,
             scheduler_time: VirtualTime { ticks: 0 },
@@ -286,6 +290,7 @@ fn publish_one_node_raw_checkpoint(
                     def: scenario,
                     schedule: Schedule::empty(),
                 },
+                immutable_backing: Some(ContentHash::from_bytes(b"immutable backing")),
                 counter: 0,
                 scheduler_time: VirtualTime { ticks: 0 },
                 snapshot,
@@ -413,6 +418,56 @@ fn legacy_v4_closure_manifest_retains_its_identity_and_canonical_bytes() {
 }
 
 #[test]
+fn previous_v5_closure_manifest_retains_its_identity_and_canonical_bytes() {
+    let mut previous = manifest();
+    previous.format_version = PREVIOUS_MANIFEST_VERSION;
+    previous.identity = closure_identity(&previous).expect("derive previous identity");
+    let bytes = encode_manifest(&previous).expect("encode previous manifest");
+    assert!(bytes.starts_with(PREVIOUS_MANIFEST_MAGIC));
+
+    let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
+        .expect("decode previous manifest");
+    assert!(decoded == previous);
+    assert_eq!(
+        closure_identity(&decoded).expect("derive decoded identity"),
+        previous.identity
+    );
+    assert_eq!(
+        encode_manifest(&decoded).expect("re-encode previous manifest"),
+        bytes
+    );
+}
+
+#[test]
+fn target_manifest_identity_authenticates_immutable_backing() {
+    let node = NodeId {
+        name: String::from("vm-a"),
+    };
+    let basis = |immutable_backing| ExactCheckpointTargetManifestBasis {
+        configuration: ContentHash::from_bytes(b"configuration"),
+        immutable_backing,
+        node: &node,
+        counter: 17,
+        scheduler_time: VirtualTime { ticks: 23 },
+        snapshot: ContentHash::from_bytes(b"snapshot"),
+        fault_identity: ContentHash::from_bytes(b"fault"),
+        overlay: ContentHash::from_bytes(b"overlay"),
+        vmstate: ContentHash::from_bytes(b"vmstate"),
+    };
+
+    let legacy = exact_checkpoint_target_manifest_identity(basis(None));
+    let first = exact_checkpoint_target_manifest_identity(basis(Some(ContentHash::from_bytes(
+        b"first backing",
+    ))));
+    let second = exact_checkpoint_target_manifest_identity(basis(Some(ContentHash::from_bytes(
+        b"second backing",
+    ))));
+
+    assert_ne!(legacy, first);
+    assert_ne!(first, second);
+}
+
+#[test]
 fn closure_manifest_rejects_unsorted_or_trailing_records() {
     let mut unsorted = manifest();
     unsorted.targets = vec![target("b"), target("a")];
@@ -424,6 +479,22 @@ fn closure_manifest_rejects_unsorted_or_trailing_records() {
     assert!(
         decode::decode_manifest_with_limits(&trailing, FaultResourceLimits::default()).is_err()
     );
+}
+
+#[test]
+fn closure_manifest_versions_enforce_backing_field_ownership() {
+    let mut current_without_backing = manifest();
+    let mut missing = target("a");
+    missing.immutable_backing = None;
+    current_without_backing.targets.push(missing);
+    let bytes = encode_manifest(&current_without_backing).expect("encode missing-backing fixture");
+    assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
+
+    let mut previous_with_backing = manifest();
+    previous_with_backing.format_version = PREVIOUS_MANIFEST_VERSION;
+    previous_with_backing.targets.push(target("a"));
+    let bytes = encode_manifest(&previous_with_backing).expect("encode prior-backing fixture");
+    assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
 }
 
 #[test]

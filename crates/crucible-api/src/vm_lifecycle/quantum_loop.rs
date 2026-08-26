@@ -2111,9 +2111,20 @@ impl ProductionVmLifecycleLoop {
                         ),
                     }
                 })?;
+                let immutable_backing = self
+                    .immutable_root_images
+                    .get(&capture.node)
+                    .copied()
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "exact checkpoint has no immutable root-image identity for `{}`",
+                            capture.node.name
+                        ),
+                    })?;
                 let manifest_identity =
                     exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
                         configuration: configuration.id(),
+                        immutable_backing: Some(immutable_backing),
                         node: &capture.node,
                         counter: capture.counter,
                         scheduler_time: capture.scheduler_time,
@@ -2126,6 +2137,7 @@ impl ProductionVmLifecycleLoop {
                     capture.node.clone(),
                     ProductionVmExactCheckpointTarget {
                         configuration: configuration.clone(),
+                        immutable_backing: Some(immutable_backing),
                         counter: capture.counter,
                         scheduler_time: capture.scheduler_time,
                         snapshot: capture.snapshot.clone(),
