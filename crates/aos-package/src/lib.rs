@@ -105,7 +105,7 @@ use clap::{Args, Subcommand, ValueEnum};
 
 use aos_core::error::AosError;
 use aos_core::output::{OutputMode, Printer};
-use sysroot::KernelUpgradeMode;
+use sysroot::SystemTransitionMode;
 use types::{
     ProfileScope, RegistryUploadAuthConfig, validate_branch_name, validate_channel_name,
     validate_commit_hash, validate_git_ref_name, validate_registry_name,
@@ -159,16 +159,16 @@ pub enum PackageCommand {
         /// Bypass sysroot-lock check for specific packages (comma-separated) or "all"
         #[arg(long, value_name = "NAMES", num_args = 0..=1, default_missing_value = "all")]
         ignore_sysroot_lock: Option<String>,
-        /// Use kexec to hot-load new kernel (with --system)
-        #[arg(long, group = "kernel_mode")]
+        /// Reject legacy kexec transitions, which cannot change the A/B root slot
+        #[arg(long, group = "kernel_mode", hide = true)]
         kexec: bool,
-        /// Full reboot after activation (with --system)
+        /// Reboot after staging the immutable system image
         #[arg(long, group = "kernel_mode")]
         reboot: bool,
-        /// Userspace only, defer kernel to next reboot (with --system)
-        #[arg(long, group = "kernel_mode")]
+        /// Reject the retired userspace-only system switch
+        #[arg(long, group = "kernel_mode", hide = true)]
         live: bool,
-        /// Drain workloads before kernel switch (with --kexec or --reboot)
+        /// Drain workloads before --reboot
         #[arg(long)]
         drain: bool,
     },
@@ -212,16 +212,16 @@ pub enum PackageCommand {
         /// Bypass sysroot-lock check for specific packages (comma-separated) or "all"
         #[arg(long, value_name = "NAMES", num_args = 0..=1, default_missing_value = "all")]
         ignore_sysroot_lock: Option<String>,
-        /// Use kexec to hot-load new kernel (with --system)
-        #[arg(long, group = "kernel_mode")]
+        /// Reject legacy kexec transitions, which cannot change the A/B root slot
+        #[arg(long, group = "kernel_mode", hide = true)]
         kexec: bool,
-        /// Full reboot after activation (with --system)
+        /// Reboot after staging the immutable system image
         #[arg(long, group = "kernel_mode")]
         reboot: bool,
-        /// Userspace only, defer kernel to next reboot (with --system)
-        #[arg(long, group = "kernel_mode")]
+        /// Reject the retired userspace-only system switch
+        #[arg(long, group = "kernel_mode", hide = true)]
         live: bool,
-        /// Drain workloads before kernel switch (with --kexec or --reboot)
+        /// Drain workloads before --reboot
         #[arg(long)]
         drain: bool,
     },
@@ -394,16 +394,16 @@ pub enum PackageCommand {
         /// List profile generations (system generations with --system)
         #[arg(long)]
         list: bool,
-        /// Use kexec to hot-load old kernel (with --system)
-        #[arg(long, group = "kernel_mode")]
+        /// Reject legacy kexec transitions, which cannot change the A/B root slot
+        #[arg(long, group = "kernel_mode", hide = true)]
         kexec: bool,
-        /// Full reboot after rollback (with --system)
+        /// Reboot after selecting an image rollback
         #[arg(long, group = "kernel_mode")]
         reboot: bool,
-        /// Userspace only, defer kernel to next reboot (with --system)
-        #[arg(long, group = "kernel_mode")]
+        /// Reject the retired userspace-only system switch
+        #[arg(long, group = "kernel_mode", hide = true)]
         live: bool,
-        /// Drain workloads before kernel switch (with --kexec or --reboot)
+        /// Drain workloads before --reboot
         #[arg(long)]
         drain: bool,
     },
@@ -2247,19 +2247,103 @@ impl CacheUploadAuthArgs {
     }
 }
 
-/// Convert mutually-exclusive kernel mode flags into a [`KernelUpgradeMode`].
+/// Validates transition flags before loading package-manager state.
 ///
-/// Clap's `kernel_mode` arg group guarantees at most one flag is set; with
-/// none set the default [`KernelUpgradeMode::Advisory`] is returned.
-fn parse_kernel_mode(kexec: bool, reboot: bool, live: bool) -> KernelUpgradeMode {
-    if kexec {
-        KernelUpgradeMode::Kexec
-    } else if reboot {
-        KernelUpgradeMode::Reboot
-    } else if live {
-        KernelUpgradeMode::Live
+/// Immutable A/B image transitions can either remain staged or request a full
+/// reboot. Kexec cannot select the newly written root slot, and a userspace-only
+/// switch would violate the image/config authority split. Configuration-axis
+/// rollback has no boot transition at all.
+fn validate_system_transition_options(command: &PackageCommand) -> Result<()> {
+    let validate_image_transition = |kexec: bool, reboot: bool, live: bool, drain: bool| {
+        if kexec {
+            bail!(
+                "--kexec is not supported for immutable A/B image transitions; use --reboot or omit the transition flag to stage for a later reboot"
+            );
+        }
+        if live {
+            bail!(
+                "--live is not supported for immutable A/B image transitions; staging never replaces userspace on the running image"
+            );
+        }
+        if drain && !reboot {
+            bail!("--drain requires --reboot for an immutable A/B image transition");
+        }
+        Ok(())
+    };
+
+    match command {
+        PackageCommand::Install {
+            system,
+            image,
+            kexec,
+            reboot,
+            live,
+            drain,
+            ..
+        } => {
+            let any_transition = *kexec || *reboot || *live || *drain;
+            if any_transition && image.is_some() {
+                bail!("system transition flags cannot be used with --image download mode");
+            }
+            if any_transition && !system {
+                bail!("system transition flags require --system");
+            }
+            if *system {
+                validate_image_transition(*kexec, *reboot, *live, *drain)?;
+            }
+        }
+        PackageCommand::Upgrade {
+            system,
+            kexec,
+            reboot,
+            live,
+            drain,
+            ..
+        } => {
+            let any_transition = *kexec || *reboot || *live || *drain;
+            if any_transition && !system {
+                bail!("system transition flags require --system");
+            }
+            if *system {
+                validate_image_transition(*kexec, *reboot, *live, *drain)?;
+            }
+        }
+        PackageCommand::Rollback {
+            system,
+            image,
+            list,
+            kexec,
+            reboot,
+            live,
+            drain,
+            ..
+        } => {
+            let any_transition = *kexec || *reboot || *live || *drain;
+            if any_transition && !system {
+                bail!("system transition flags require --system --image");
+            }
+            if any_transition && !image {
+                bail!("system transition flags apply only to rollback --system --image");
+            }
+            if any_transition && *list {
+                bail!("system transition flags cannot be used with rollback --list");
+            }
+            if *image {
+                validate_image_transition(*kexec, *reboot, *live, *drain)?;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+/// Converts a validated reboot flag into a system transition mode.
+fn parse_system_transition_mode(reboot: bool) -> SystemTransitionMode {
+    if reboot {
+        SystemTransitionMode::Reboot
     } else {
-        KernelUpgradeMode::Advisory
+        SystemTransitionMode::Advisory
     }
 }
 
@@ -2735,6 +2819,8 @@ pub async fn run(
         );
     }
 
+    validate_system_transition_options(command)?;
+
     let system = command.is_system();
     let scope = if system {
         ProfileScope::System
@@ -2756,9 +2842,7 @@ pub async fn run(
             output: image_output,
             reinstall,
             ignore_sysroot_lock,
-            kexec,
             reboot,
-            live,
             drain,
             ..
         } => {
@@ -2783,7 +2867,7 @@ pub async fn run(
                 }
                 desired::reconcile_from_file(&config, path, dry_run, yes, printer).await
             } else if *install_system || image_fmt.is_some() {
-                let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
+                let transition_mode = parse_system_transition_mode(*reboot);
                 sysroot::install_system(
                     &config,
                     packages,
@@ -2792,7 +2876,7 @@ pub async fn run(
                     image_output.as_deref(),
                     dry_run,
                     yes,
-                    kernel_mode,
+                    transition_mode,
                     *drain,
                     printer,
                 )
@@ -2851,15 +2935,14 @@ pub async fn run(
             exclude,
             system: upgrade_system,
             ignore_sysroot_lock,
-            kexec,
             reboot,
-            live,
             drain,
+            ..
         } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
             if *upgrade_system {
-                let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
-                sysroot::upgrade_system(&config, dry_run, kernel_mode, *drain, printer).await
+                let transition_mode = parse_system_transition_mode(*reboot);
+                sysroot::upgrade_system(&config, dry_run, transition_mode, *drain, printer).await
             } else {
                 upgrade::run(&config, packages, exclude, dry_run, yes, &ignore, printer).await
             }
@@ -2984,31 +3067,27 @@ pub async fn run(
             system: rollback_system,
             image,
             list: rollback_list,
-            kexec,
             reboot,
-            live,
             drain,
+            ..
         } => {
             if *rollback_system && *image {
-                let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
+                let transition_mode = parse_system_transition_mode(*reboot);
                 sysroot::rollback_image_generation(
                     *generation,
                     *rollback_list,
                     dry_run,
-                    kernel_mode,
+                    transition_mode,
                     *drain,
                     printer,
                 )
                 .await
             } else if *rollback_system {
-                let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
                 sysroot::rollback_system(
                     &config,
                     *generation,
                     *rollback_list,
                     dry_run,
-                    kernel_mode,
-                    *drain,
                     printer,
                 )
                 .await
