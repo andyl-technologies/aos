@@ -3062,7 +3062,7 @@ in {
         "source_drv = \"$ROOT_SOURCE_STORE\"" \
         "release metadata records v1 source provenance"
       assert_file_contains "$REG_DIR/packages/s/static-closure.toml" \
-        'source_nar_hash = "sha256-' "release metadata records v1 source NAR hash"
+        'source_nar_hash = "sha256:' "release metadata records v1 source NAR hash"
 
       assert_file_exists "/tmp/static-release-origin/$ROOT_HASH.narinfo" \
         "release cache has root narinfo"
@@ -3137,7 +3137,7 @@ in {
         fail "apm registry add syncs uploaded static origin"
       }
       cat /tmp/static-release-add.out
-      assert_file_contains /tmp/static-release-add.out "Signing.*trusted key pinned" \
+      assert_file_contains /tmp/static-release-add.out "Signing.*trusted key.*pinned" \
         "consumer pins static release registry signing key"
       assert_file_contains "$HOME/.local/share/apm/registries/static-release-reg/registry.toml" \
         "http://127.0.0.1:18120" \
@@ -5242,7 +5242,7 @@ in {
         fail "apm registry add syncs trusted signed registry"
       }
       cat /tmp/signed-add.out
-      assert_file_contains /tmp/signed-add.out "Signing.*trusted key pinned" \
+      assert_file_contains /tmp/signed-add.out "Signing.*trusted key.*pinned" \
         "registry add reports pinned signing key"
       CONFIG_FILE="$APM_CONFIG/registries.d/signed-reg.toml"
       assert_file_contains "$CONFIG_FILE" "required = true" \
