@@ -25,6 +25,7 @@
   libinfoRevision = "39b70c515baee5b609e7e91693edbd934b6845a1";
   libresolvRevision = "e48cd914edc1cb14f8289b8e2dfdaac360481cd2";
   bootstrapCmdsRevision = "c71d2d72f48995baaea76148f61002e5299841de";
+  launchdRevision = "d448a1c8f70a61202f8705f94337f686b87c30c4";
 
   coreFoundationSrc = fetchurl {
     urls = [
@@ -116,6 +117,13 @@
     ];
     hash = "sha256-SmxCzFs5b2jIQIU5WaKxnDoQDyOybC3EhbRBMTdEvAs=";
   };
+
+  launchdSrc = fetchurl {
+    urls = [
+      "https://github.com/apple-oss-distributions/launchd/archive/${launchdRevision}.tar.gz"
+    ];
+    hash = "sha256-Ab6pH7z/1TD/HtRZJXOhE1kXRiYDEwq8Pmc/xaN7K54=";
+  };
 in
   mkDerivation {
     pname = "darwin-sdk";
@@ -152,6 +160,7 @@ in
           tar xf ${libinfoSrc}
           tar xf ${libresolvSrc}
           tar xf ${bootstrapCmdsSrc}
+          tar xf ${launchdSrc}
           cd "zig-${version}"
         '';
       }
@@ -171,6 +180,7 @@ in
           libinfoRoot="../Libinfo-${libinfoRevision}"
           libresolvRoot="../libresolv-${libresolvRevision}"
           bootstrapCmdsRoot="../bootstrap_cmds-${bootstrapCmdsRevision}"
+          launchdRoot="../launchd-${launchdRevision}"
 
           mkdir -p \
             "$out/usr/include/c++/v1" \
@@ -178,6 +188,7 @@ in
             "$out/usr/include/objc" \
             "$out/usr/include/os" \
             "$out/usr/include/rpc" \
+            "$out/usr/include/servers" \
             "$out/usr/lib" \
             "$out/System/Library/Frameworks/ApplicationServices.framework/Headers" \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Headers" \
@@ -218,6 +229,11 @@ in
           cp "$libresolvRoot/arpa/nameser.h" "$out/usr/include/arpa/"
           cp "$libcRoot/include/arpa/nameser_compat.h" "$out/usr/include/arpa/"
           cp "$libinfoRoot"/rpc.subproj/*.h "$out/usr/include/rpc/"
+          cp "$libcRoot/include/fstab.h" "$out/usr/include/"
+          # launchd publishes the userspace Mach bootstrap interface at the
+          # traditional SDK path consumed by Kerberos KCM and other clients.
+          cp "$launchdRoot/liblaunch/bootstrap.h" \
+            "$out/usr/include/servers/bootstrap.h"
           cp "$xnuRoot/libkern/os/log.h" "$out/usr/include/os/"
           cp \
             "$libcRoot/include/readpassphrase.h" \

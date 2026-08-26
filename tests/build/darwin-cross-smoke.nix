@@ -113,6 +113,8 @@
               '#include <membership.h>' \
               '#include <os/log.h>' \
               '#include <readpassphrase.h>' \
+              '#include <fstab.h>' \
+              '#include <servers/bootstrap.h>' \
               '#include <sys/socket.h>' \
               '#include <utmp.h>' \
               '#include <util.h>' \
@@ -126,6 +128,14 @@
               '  (const void *)&forkpty,' \
               '  (const void *)&sendfile,' \
               '  (const void *)&readpassphrase,' \
+              '  (const void *)&getfsent,' \
+              '  (const void *)&getfsspec,' \
+              '  (const void *)&getfsfile,' \
+              '  (const void *)&setfsent,' \
+              '  (const void *)&endfsent,' \
+              '  (const void *)&bootstrap_look_up,' \
+              '  (const void *)&bootstrap_check_in,' \
+              '  (const void *)&bootstrap_status,' \
               '  (const void *)&mbr_uuid_to_id,' \
               '  (const void *)&mbr_uid_to_uuid,' \
               '  (const void *)&mbr_gid_to_uuid,' \
