@@ -672,7 +672,9 @@ in rec {
               jq -c '
                 walk(
                   if type == "string"
-                  then gsub("/nix/store/[0-9a-z]{32}-[^/[:space:]]+"; "/nix/store/00000000000000000000000000000000-redacted")
+                  then
+                    gsub("/nix/store/[0-9a-z]{32}-[^/[:space:]]+"; "/nix/store/00000000000000000000000000000000-redacted")
+                    | gsub("/build/"; "./")
                   else .
                   end
                 )

@@ -639,6 +639,75 @@
         then self.rust.passthru.buildTool
         else throw "mkCargoPackage: Darwin rust package does not expose passthru.buildTool"
       else resolvedBuildPackages.rust;
+    cargoBuildTargetPrefix =
+      lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.buildPlatform.config);
+    cargoBuildCcPrefix = builtins.replaceStrings ["-"] ["_"] stdenv.buildPlatform.config;
+    cargoTargetPrefix =
+      lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.hostPlatform.config);
+    cargoTargetRustflagsName = "CARGO_TARGET_${cargoTargetPrefix}_RUSTFLAGS";
+    cargoEffectiveEnv =
+      (args.cargoEnv or {})
+      // lib.optionalAttrs (stdenv.isCross && stdenv.hostPlatform.isDarwin) {
+        "${cargoTargetRustflagsName}" = builtins.concatStringsSep " " (
+          builtins.filter
+          (flag: flag != "")
+          [
+            (args.${cargoTargetRustflagsName} or "")
+            ((args.cargoEnv or {}).${cargoTargetRustflagsName} or "")
+            (args.RUSTFLAGS or "")
+            "--remap-path-prefix=/build=."
+          ]
+        );
+      };
+    cargoBuildToolchain =
+      if stdenv.isCross && stdenv.hostPlatform.isDarwin
+      then
+        resolvedBuildPackages.mkDerivation {
+          pname = "cargo-native-build-toolchain";
+          version = "0";
+          src = null;
+          runtimeDeps = [resolvedBuildPackages.cc];
+          phases = [
+            {
+              name = "install";
+              script = ''
+                mkdir -p "$out/bin"
+
+                write_wrapper() {
+                  tool=$1
+                  wrapper=$2
+                  {
+                    printf '%s\n' '#!${resolvedBuildPackages.bash}/bin/bash'
+                    printf '%s\n' \
+                      'unset AOS_CROSS_COMPILING AOS_GOARCH AOS_GOOS' \
+                      'unset AOS_HARDENING_DISABLE AOS_HARDENING_ENABLE' \
+                      'unset AOS_OBJECT_FORMAT AOS_RUST_TARGET' \
+                      'unset AOS_TARGET_ARCH AOS_TARGET_PLATFORM' \
+                      'unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH' \
+                      'unset LIBRARY_PATH MACOSX_DEPLOYMENT_TARGET SDKROOT' \
+                      'unset NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS'
+                    printf 'exec %s "$@"\n' "$tool"
+                  } > "$out/bin/$wrapper"
+                  chmod +x "$out/bin/$wrapper"
+                }
+
+                write_wrapper ${resolvedBuildPackages.cc}/bin/cc cc
+                write_wrapper ${resolvedBuildPackages.cc}/bin/c++ c++
+                write_wrapper ${resolvedBuildPackages.cc}/bin/ar ar
+                write_wrapper ${resolvedBuildPackages.cc}/bin/ranlib ranlib
+              '';
+            }
+          ];
+        }
+      else resolvedBuildPackages.cc;
+    cargoBuildToolchainEnv = lib.optionalAttrs (stdenv.isCross && stdenv.hostPlatform.isDarwin) {
+      "CARGO_TARGET_${cargoBuildTargetPrefix}_LINKER" = "${cargoBuildToolchain}/bin/cc";
+      "CARGO_TARGET_${cargoBuildTargetPrefix}_AR" = "${cargoBuildToolchain}/bin/ar";
+      "CC_${cargoBuildCcPrefix}" = "${cargoBuildToolchain}/bin/cc";
+      "CXX_${cargoBuildCcPrefix}" = "${cargoBuildToolchain}/bin/c++";
+      "AR_${cargoBuildCcPrefix}" = "${cargoBuildToolchain}/bin/ar";
+      "RANLIB_${cargoBuildCcPrefix}" = "${cargoBuildToolchain}/bin/ranlib";
+    };
     cargoArtifactContract =
       {
         schema = "aos.cargo-artifact-contract/v1";
@@ -648,7 +717,7 @@
         checkType = args.checkType or (args.buildType or "release");
         buildFeatures = args.buildFeatures or [];
         buildNoDefaultFeatures = args.buildNoDefaultFeatures or false;
-        cargoEnv = args.cargoEnv or {};
+        cargoEnv = cargoEffectiveEnv;
         nativeInputs =
           map
           (dep: builtins.unsafeDiscardStringContext (toString dep))
@@ -658,6 +727,7 @@
     inheritedArtifacts = args.cargoArtifacts or null;
     cargoBuildOnlyReferences =
       [args.cargoDeps cargoBuildTool]
+      ++ lib.optional (stdenv.isCross && stdenv.hostPlatform.isDarwin) cargoBuildToolchain
       ++ lib.optional (inheritedArtifacts != null) inheritedArtifacts;
     artifactsCompatible =
       inheritedArtifacts
@@ -673,7 +743,11 @@
         })
         cargoSpecificAttrs
       ))
-      (args // {inherit cargoArtifactContract;});
+      (args
+        // {
+          inherit cargoArtifactContract;
+          cargoEnv = cargoEffectiveEnv;
+        });
     # Remove cargo-specific attrs before passing to mkDerivation
     restArgs = removeAttrs args cargoSpecificAttrs;
   in
@@ -683,6 +757,7 @@
       addBuilderOverrides mkCargoPackage args (
         mkDerivation (
           restArgs
+          // cargoBuildToolchainEnv
           // {
             buildDeps =
               [cargoBuildTool resolvedBuildPackages.jq]
@@ -770,12 +845,21 @@
       )
     );
 
+  # Bazel repository helpers and downloaded executable repair always run on the
+  # build machine.  In a cross package set, the ordinary bootstrapTools is the
+  # target compiler wrapper (and Darwin intentionally has no ELF interpreter
+  # metadata), so use the native wrapper for these build-time operations.
+  bazelBootstrapTools =
+    if stdenv.isCross
+    then resolvedBuildPackages.cc
+    else bootstrapTools;
+
   # Wire fetchBazelDeps with AOS-specific defaults
   fetchBazelDeps = args:
     lib.fetchBazelDeps (
       args
       // {
-        inherit bootstrapTools;
+        bootstrapTools = bazelBootstrapTools;
         caCertificates = args.caCertificates or resolvedBuildPackages.ca-certificates;
       }
     );
@@ -837,7 +921,7 @@
           phases = phases.bazelPhases {
             bazelDeps = deps;
             inherit bazel jdk tools;
-            inherit bootstrapTools;
+            bootstrapTools = bazelBootstrapTools;
             patchelf = resolvedBuildPackages.patchelf;
             bash = stdenv.bash;
             caCertificates = caCerts;
@@ -961,6 +1045,7 @@
     inherit lib mkDerivation fetchurl stdenv buildPackages;
     bash = self.bash;
     llvm = self.llvm;
+    zlib = self.zlib;
   };
   darwinCc = import ./darwin/_darwin-cc.nix {
     inherit mkDerivation stdenv;
