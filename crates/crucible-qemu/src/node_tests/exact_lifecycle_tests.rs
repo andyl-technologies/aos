@@ -447,6 +447,14 @@ fn qemu_node_satisfies_simulation_backend_trait() -> Result<(), Box<dyn Error>> 
         Err(BackendError::Rejected { message })
             if message.contains("capture_exact_snapshot")
     ));
+    assert!(matches!(
+        SimulationBackend::restore(
+            &mut node,
+            &BackendSnapshot::new(checkpoint("simulation-backend-restore")),
+        ),
+        Err(BackendError::Rejected { message })
+            if message.contains("paired VMState and host-I/O realization")
+    ));
     let later = SimulationBackend::step_to(&mut node, VirtualTime { ticks: 29 })?;
     assert_eq!(later.reached, VirtualTime { ticks: 29 });
     assert_eq!(SimulationBackend::now(&node), VirtualTime { ticks: 29 });

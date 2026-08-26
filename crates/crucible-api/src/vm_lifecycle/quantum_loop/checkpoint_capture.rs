@@ -45,10 +45,117 @@ pub(in crate::vm_lifecycle) struct PendingExactCapture {
     pub(super) scheduler_time: VirtualTime,
     /// Live QEMU snapshot deleted before publication or during rollback.
     pub(super) snapshot: ExactSnapshotHandle,
+    /// Pre-owned staged overlay metadata once its copy authenticates.
+    pub(super) overlay_artifact: Option<ProductionCheckpointArtifact>,
+    /// Pre-owned staged VMState metadata once its copy authenticates.
+    pub(super) vmstate_artifact: Option<ProductionCheckpointArtifact>,
     /// Whether the live QMP snapshot still requires deletion.
     pub(super) snapshot_cleanup_pending: bool,
     /// Whether a formerly running node remains paused at the capture boundary.
     pub(super) resume_pending: bool,
+}
+
+/// Allocation-owning description of one target before the first QMP save.
+pub(super) struct PreparedExactCheckpointTarget {
+    /// World node captured by this target.
+    pub(super) node: NodeId,
+    /// Physical icount paired with the exact snapshot.
+    pub(super) counter: u64,
+    /// Scheduler time paired with the physical counter.
+    pub(super) scheduler_time: VirtualTime,
+    /// Lifecycle state that selects the running or paused capture operation.
+    pub(super) service_state: ProductionNodeServiceState,
+    /// Fully owned temporal-graph checkpoint passed into QEMU capture.
+    pub(super) checkpoint: Checkpoint,
+    /// Current process-generation overlay copied after QMP save.
+    pub(super) source_overlay: PathBuf,
+    /// Transaction-staging destination for the overlay copy.
+    pub(super) staged_overlay: PathBuf,
+    /// Current process-generation VMState artifact copied after QMP save.
+    pub(super) source_vmstate: PathBuf,
+    /// Transaction-staging destination for the VMState copy.
+    pub(super) staged_vmstate: PathBuf,
+}
+
+/// Owns every per-node checkpoint and artifact path before QMP mutation.
+///
+/// # Errors
+///
+/// Returns an error when checkpoint topology or node ownership is invalid, or
+/// when the bounded destination vector cannot be reserved.
+pub(super) fn prepare_exact_checkpoint_targets(
+    configuration: &Configuration,
+    checkpoint_virtual_time: VirtualTime,
+    node_icounts: &BTreeMap<NodeId, crucible::Icount>,
+    boundaries: Vec<(NodeId, u64, VirtualTime, ProductionNodeServiceState)>,
+    node_indexes: &BTreeMap<NodeId, usize>,
+    node_run_directories: &BTreeMap<NodeId, PathBuf>,
+    staging: &Path,
+) -> Result<Vec<PreparedExactCheckpointTarget>, SchedulerError> {
+    let parent = if configuration.schedule.is_empty() {
+        None
+    } else {
+        let parent_len = configuration.schedule.len().saturating_sub(1);
+        let parent_schedule = configuration.schedule.prefix(parent_len).map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!(
+                    "derive exact checkpoint parent at schedule length {parent_len}: {error}"
+                ),
+            }
+        })?;
+        Some(Configuration {
+            def: configuration.def.clone(),
+            schedule: parent_schedule,
+        })
+    };
+    let mut prepared = Vec::new();
+    prepared
+        .try_reserve_exact(boundaries.len())
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("reserve exact checkpoint prepared targets: {error}"),
+        })?;
+
+    for (node, counter, scheduler_time, service_state) in boundaries {
+        let checkpoint = Checkpoint::from_recorded_configuration(
+            configuration,
+            parent.as_ref(),
+            checkpoint_virtual_time,
+            node_icounts.clone(),
+            CheckpointKind::Fat,
+            BTreeMap::new(),
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("materialize exact scheduler checkpoint: {error}"),
+        })?;
+        let index =
+            node_indexes
+                .get(&node)
+                .copied()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!("exact checkpoint has no launch index for `{}`", node.name),
+                })?;
+        let source_directory =
+            node_run_directories
+                .get(&node)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "exact checkpoint has no process-generation directory for `{}`",
+                        node.name
+                    ),
+                })?;
+        prepared.push(PreparedExactCheckpointTarget {
+            node,
+            counter,
+            scheduler_time,
+            service_state,
+            checkpoint,
+            source_overlay: source_directory.join(PRODUCTION_ROOT_OVERLAY_FILE_NAME),
+            staged_overlay: staging.join(format!("node-{index}.qcow2")),
+            source_vmstate: source_directory.join(PRODUCTION_VMSTATE_FILE_NAME),
+            staged_vmstate: staging.join(format!("node-{index}-vmstate.qcow2")),
+        });
+    }
+    Ok(prepared)
 }
 
 impl From<SchedulerError> for ExactCheckpointTransactionError {
@@ -475,3 +582,6 @@ mod tests {
         ));
     }
 }
+#[cfg(test)]
+#[path = "checkpoint_capture/tests.rs"]
+mod preparation_tests;
