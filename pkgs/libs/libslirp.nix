@@ -8,9 +8,11 @@
   ninja,
   python3,
   glib,
+  stdenv,
   buildPackages,
 }: let
   version = "4.9.1";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
     pname = "libslirp";
@@ -23,18 +25,25 @@ in
       hash = "sha256-OXBUIUO3wR5qCaTStQ8woTNHPEHxXtC9zDt6HEUNmlw=";
     };
 
-    buildDeps = [
-      gnumake
-      pkg-config
-      meson
-      ninja
-      python3
-      glib.dev
-      glib.tools
-    ];
-    runtimeDeps = [
-      glib
-    ];
+    buildDeps =
+      if isDarwinCross
+      then [
+        buildPackages.gnumake
+        buildPackages.pkg-config
+        buildPackages.meson
+        buildPackages.ninja
+        buildPackages.python3
+      ]
+      else [
+        gnumake
+        pkg-config
+        meson
+        ninja
+        python3
+        glib.dev
+        glib.tools
+      ];
+    runtimeDeps = [glib];
     propagatedDeps = [glib];
 
     phases = [
@@ -52,6 +61,23 @@ in
       {
         name = "configure";
         script = ''
+          ${
+            if isDarwinCross
+            then ''
+              # Meson's sys_root property is correct for ordinary FHS cross
+              # sysroots, but pkg-config must not prepend the Darwin SDK to
+              # absolute Nix store paths from GLib's .pc files.  Keep the
+              # generated dependency metadata and provide its absolute target
+              # include/library roots explicitly.
+              export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+              export CFLAGS="''${CFLAGS:-} -I${glib.dev}/include/glib-2.0 -I${glib.dev}/lib/glib-2.0/include"
+              # GLib keeps its unversioned linker-name symlinks in the dev
+              # output.  The symlinks resolve to the runtime output, so linked
+              # artifacts retain only the latter.
+              export LDFLAGS="''${LDFLAGS:-} -L${glib.dev}/lib"
+            ''
+            else ""
+          }
           meson setup build \
             $mesonFlags \
             --prefix=$out \
