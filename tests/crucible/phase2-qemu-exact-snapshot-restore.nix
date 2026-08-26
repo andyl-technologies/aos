@@ -134,8 +134,12 @@
         needle = "self.capture_exact_checkpoint_set(&configuration)?";
       }
       {
-        label = "production paired capture";
-        needle = ".capture_exact_snapshot(&node, checkpoint)";
+        label = "running-node publication capture";
+        needle = ".capture_exact_snapshot_for_publication(&node, checkpoint)?";
+      }
+      {
+        label = "powered-off paused capture";
+        needle = ".capture_exact_snapshot_paused(&node, checkpoint)?";
       }
       {
         label = "VMState artifact persistence";

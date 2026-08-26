@@ -54,7 +54,15 @@ fn gate_qemu_inert_runs_reference_vs_patched_corpus() -> Result<(), Box<dyn Erro
         &inert_gate,
         "reference_vs_patched_boot_plain_icount_identical=true",
     );
-    assert_contains(&inert_gate, "qmp_introspection_surface_identical=true");
+    assert_contains(&inert_gate, "qmp_upstream_command_set_identical=true");
+    assert_contains(
+        &inert_gate,
+        "qmp_introspection_surface_identical_after_control_extension=true",
+    );
+    assert_contains(
+        &inert_gate,
+        "qmp_crucible_control_extension_sim_off_rejected_without_run_state_change=true",
+    );
     assert_contains(&inert_gate, "migration_stream_identical=true");
     assert_contains(&inert_gate, "snapshot_restore_surface_identical=true");
     assert_contains(&inert_gate, "compare_files boot-tcg-raw");

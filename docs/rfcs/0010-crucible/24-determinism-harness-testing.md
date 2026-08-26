@@ -63,8 +63,9 @@ invariants/requirements it enforces.
 | `gate:scheduler-liveness` | L3 scheduler actor | INV-8; HARN-18 | The scheduler always reaches quiescence or its time limit; no deadlock/livelock. |
 | `gate:control-responsive` | L4 control plane | INV-8; HARN-19 | A control op is acknowledged within a bounded number of quanta. |
 | `gate:any-guest` | L2 guest boot | INV-5, G-2; HARN-6 | An unmodified guest boots deterministically with no image mutation. |
-| `gate:qemu-inert` | AOS QEMU package + patch series | INV-7, G-7; HARN-20, HARN-21 | Sim-off QEMU is behaviorally identical to upstream; each patch has a passing micro-test. |
+| `gate:qemu-inert` | AOS QEMU package + patch series | INV-7, G-7; HARN-20, HARN-21 | Sim-off guest and upstream management behavior are identical; the exact Crucible host-control extension is rejected without changing stopped run state; each patch has a passing micro-test. |
 | `gate:abi-conformance` | L1 boundary ABIs | G-8; HARN-32, HARN-33, HARN-34 | Shmem layout, protocol, and RPC match frozen golden vectors. |
+| `gate:typed-choice` | L1/L2 guest choice boundary | INV-3, INV-4, G-8; SHM-53, SHM-54 | Typed guest registrations, exact pending tokens, host-authorized replies, and fresh-process continuation match the frozen shared-memory and canonical choice contracts. |
 | `gate:license-boundary` | Repository and Crucible/QEMU boundary (Always) | BOUND-1..BOUND-12 | `crucible-harness` rejects dependency, license-scope, protocol-shape, package-source, or corresponding-source violations. |
 | `gate:patch-microtests` | QEMU patch series (per-patch) | INV-7; HARN-20 | Every patch in the series has a focused, passing behavioral test. |
 | `gate:adversarial-determinism` | Cross-layer (Phase ≥ L2) | INV-1, INV-4, INV-9; HARN-11 | N runs under hostile host conditions yield byte-identical canonical logs. |
@@ -83,7 +84,7 @@ The first twelve names — `gate:layer0-determinism`, `gate:single-vm-fingerprin
 `gate:scheduler-liveness`, `gate:control-responsive`, `gate:harness-lint`, and
 `gate:e2e-determinism` — are the names the spine and other topic files already
 reference. `gate:abi-conformance`, `gate:patch-microtests`,
-`gate:adversarial-determinism`, and `gate:perf-bench` (the last owned by
+`gate:typed-choice`, `gate:adversarial-determinism`, and `gate:perf-bench` (the last owned by
 [`25-performance-targets.md`](25-performance-targets.md)) are added here and are
 equally canonical. `gate:basic-block-coverage` is the Phase-6 coverage boundary;
 it remains red until its loaded-QEMU proof is green. `gate:fleet-equivalence`
@@ -238,8 +239,11 @@ runs on every boundary-affecting change and at release construction.
   patched source and exercise it with sim mode **off**, comparing its observable
   behavior against an unpatched reference build over a behavioral corpus (boot,
   device I/O, migration, snapshot, QMP surface).
-- **Pass/fail:** sim-off behavior is identical to the unpatched reference across
-  the corpus; the plugin is not loaded and no sim flag is set.
+- **Pass/fail:** sim-off guest and upstream management behavior are identical to
+  the unpatched reference across the corpus; the plugin is not loaded and no sim
+  flag is set. The only permitted QMP command-set delta is the enumerated
+  terminal-lifecycle host-control command, which MUST fail closed and leave the
+  stopped VM in its original run state without sim mode.
 - **Guards:** the AOS QEMU package + patch series. **Enforces:** INV-7, G-7.
 
 #### `gate:abi-conformance`
@@ -757,8 +761,11 @@ Forward ref: [`11-qemu-patches.md`](11-qemu-patches.md).
   the patched source, run with **sim mode off** (plugin not loaded, no sim
   flags), is behaviorally identical to an unpatched reference build across a
   behavioral corpus (boot a stock image, device I/O, snapshot/restore, migration
-  surface, the QMP command set). Pass/fail is identical observable behavior; any
-  difference is a violation of INV-7 and blocks the AOS QEMU package from shipping.
+  surface, and the upstream QMP command set). The gate MUST separately prove that
+  the exact enumerated Crucible terminal-lifecycle QMP extension fails closed
+  and leaves a stopped VM in its original run state without sim mode. Any other
+  observable difference is a violation of INV-7 and blocks the AOS QEMU package
+  from shipping.
   This is what lets AOS use one QEMU for both production and simulation (G-7).
 
 The inertness corpus is hermetic and from-source per AOS build principles: the
@@ -854,6 +861,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   phase1  gate:single-vm-fingerprint         (double-backed fingerprint)
   phase1  gate:divergence-bisect             (diagnostic, exercised on doubles)
   phase2  gate:abi-conformance               (L1 ABIs)
+  phase2  gate:typed-choice                  (typed guest choice boundary)
   phase2  gate:layer1-injection              (L1 injection preflight)
   phase2  gate:patch-microtests              (patch series)
   phase2  gate:qemu-inert                    (sim-off QEMU behavior)
