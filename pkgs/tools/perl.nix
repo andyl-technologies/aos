@@ -13,6 +13,7 @@
   gccUnwrapped,
   glibc,
   stdenv,
+  buildPackages,
 }: let
   version = "5.40.1";
   isDarwin = stdenv.hostPlatform.isDarwin;
@@ -25,6 +26,23 @@
     if stdenv.hostPlatform.isAarch64
     then "8"
     else "16";
+  # Native Perl records the public GCC package set, while Darwin Perl is
+  # compiled by the bootstrap cross wrapper in stdenv. Referencing public
+  # pkgs.gcc/cc from a cross output check would add the final Canadian-cross
+  # compiler to every Perl consumer without checking the compiler actually
+  # used for this derivation.
+  recordedCc =
+    if isDarwin
+    then stdenv.cc
+    else cc;
+  recordedGcc =
+    if isDarwin
+    then stdenv.cc
+    else gcc;
+  recordedGccUnwrapped =
+    if isDarwin
+    then stdenv.cc
+    else gccUnwrapped;
   perlCrossVersion = "1.6.4";
   perlCrossSrc = fetchurl {
     urls = [
@@ -50,7 +68,13 @@ in
       hash = "sha256-36IMLu8rSvEzUlYQu7Zd0Td37PmYycWxzPDTCOcy7j8=";
     };
 
-    buildDeps = [gnumake];
+    buildDeps =
+      [gnumake]
+      ++ (
+        if isDarwin
+        then [buildPackages.llvm]
+        else []
+      );
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -60,7 +84,7 @@ in
     # exempt — it intentionally keeps the unscrubbed Config files.
     outputChecks = {
       out = {
-        disallowedReferences = [gcc gccUnwrapped cc];
+        disallowedReferences = [recordedGcc recordedGccUnwrapped recordedCc];
       };
     };
 
@@ -86,6 +110,14 @@ in
                 [ -f "$script" ] || continue
                 sed -i "1s|^#!/bin/sh$|#!$CONFIG_SHELL|" "$script"
               done
+
+              # Time::HiRes treats a target link probe as a runnable native
+              # executable and concludes that clockid_t is absent. Darwin's
+              # public time.h always defines the type, so cache that target
+              # fact before the extension adds a conflicting typedef.
+              sed -i \
+                '/^sub has_clockid_t{/a\    return 1;' \
+                dist/Time-HiRes/Makefile.PL
           ''
           else ''
             tar xf $src
@@ -97,6 +129,14 @@ in
         script =
           if isDarwin
           then ''
+            # perl-cross configures a Linux build-miniperl before the Darwin
+            # target. Its probe uses the conventional GNU readelf name; AOS
+            # LLVM provides the compatible implementation as llvm-readelf.
+            mkdir -p "$TMPDIR/perl-native-tools"
+            ln -s ${buildPackages.llvm}/bin/llvm-readelf \
+              "$TMPDIR/perl-native-tools/readelf"
+            export PATH="$TMPDIR/perl-native-tools:$PATH"
+
             # perl-cross still names an ELF-only inspection tool even when
             # every ABI size is supplied.  A no-op keeps that unused lookup
             # hermetic; Mach-O byte order is pinned below as well.
@@ -198,56 +238,71 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
+        script =
+          ''
+            make install
 
-          # ── Preserve unmodified Config files in $dev before scrubbing ──
-          # $dev is a forensic copy mirroring $out's layout, not a usable
-          # perl interpreter. Lets future devs audit the build-time
-          # toolchain or rebuild an XS-capable variant from this baseline.
-          mkdir -p "$dev"
-          for cfg in "$out"/lib/perl5/*/*/Config.pm "$out"/lib/perl5/*/*/Config_heavy.pl; do
-            [ -f "$cfg" ] || continue
-            rel="''${cfg#$out/}"
-            mkdir -p "$dev/$(dirname "$rel")"
-            cp "$cfg" "$dev/$rel"
-          done
+            # ── Preserve unmodified Config files in $dev before scrubbing ──
+            # $dev is a forensic copy mirroring $out's layout, not a usable
+            # perl interpreter. Lets future devs audit the build-time
+            # toolchain or rebuild an XS-capable variant from this baseline.
+            mkdir -p "$dev"
+            for cfg in "$out"/lib/perl5/*/*/Config.pm "$out"/lib/perl5/*/*/Config_heavy.pl; do
+              [ -f "$cfg" ] || continue
+              rel="''${cfg#$out/}"
+              mkdir -p "$dev/$(dirname "$rel")"
+              cp "$cfg" "$dev/$rel"
+            done
 
-          # ── Scrub $out: rewrite build-time toolchain refs ──────────────
-          # Mirrors nixpkgs perl/interpreter.nix:312-332. After this step
-          # $Config{cc}, $Config{libpth}, etc. resolve to /no-such-path
-          # (or empty). The AOS perl-consumer audit shows no package
-          # reads $Config{cc}, so this breaks nothing — and it cuts the
-          # ~900 MB toolchain cascade that perl drags into every closure.
+            # ── Scrub $out: rewrite build-time toolchain refs ──────────────
+            # Mirrors nixpkgs perl/interpreter.nix:312-332. After this step
+            # $Config{cc}, $Config{libpth}, etc. resolve to /no-such-path
+            # (or empty). The AOS perl-consumer audit shows no package
+            # reads $Config{cc}, so this breaks nothing — and it cuts the
+            # ~900 MB toolchain cascade that perl drags into every closure.
 
-          # libpth is a parsed Perl list; substituting hash digits inside
-          # the string would leave a syntactically-valid but bogus path.
-          # Replace the whole line instead (mirrors interpreter.nix:317-318).
-          sed "/ *libpth =>/c\\    libpth => ' '," \
-            -i "$out"/lib/perl5/*/*/Config.pm
+            # libpth is a parsed Perl list; substituting hash digits inside
+            # the string would leave a syntactically-valid but bogus path.
+            # Replace the whole line instead (mirrors interpreter.nix:317-318).
+            sed "/ *libpth =>/c\\    libpth => ' '," \
+              -i "$out"/lib/perl5/*/*/Config.pm
 
-          # Config_heavy.pl entries are inert strings — plain path
-          # substitution is safe. The pattern set covers perl's directly-
-          # recorded cc/gcc and the glibc outputs Configure picks up via
-          # CFLAGS/LIBRARY_PATH; without scrubbing glibc.dev/glibc.static
-          # the closure leak would just shift from gcc to those.
-          for pattern in \
-            "${cc}" \
-            "${gcc}" \
-            "${gccUnwrapped}" \
-            "${glibc}" \
-            "${glibc.dev}" \
-            "${glibc.static}" \
-          ; do
-            if [ -n "$pattern" ]; then
-              sed -i "s|$pattern|/no-such-path|g" \
-                "$out"/lib/perl5/*/*/Config_heavy.pl
-            fi
-          done
+            # Config_heavy.pl entries are inert strings — plain path
+            # substitution is safe. The pattern set covers perl's directly-
+            # recorded cc/gcc and the glibc outputs Configure picks up via
+            # CFLAGS/LIBRARY_PATH; without scrubbing glibc.dev/glibc.static
+            # the closure leak would just shift from gcc to those.
+            for pattern in \
+              "${recordedCc}" \
+              "${recordedGcc}" \
+              "${recordedGccUnwrapped}" \
+              "${glibc}" \
+              "${glibc.dev}" \
+              "${glibc.static}" \
+            ; do
+              if [ -n "$pattern" ]; then
+                sed -i "s|$pattern|/no-such-path|g" \
+                  "$out"/lib/perl5/*/*/Config_heavy.pl
+              fi
+            done
 
-          # .packlist records build-time install paths — drop it.
-          rm -f "$out"/lib/perl5/*/*/.packlist
-        '';
+            # .packlist records build-time install paths — drop it.
+            rm -f "$out"/lib/perl5/*/*/.packlist
+          ''
+          + (
+            if isDarwin
+            then ''
+              # Perl installs generated module data and documentation outside
+              # the generic executable/config scrub set. Remove build-time
+              # store references from every shipped regular file while
+              # retaining the interpreter's own paths and target runtimes.
+              find "$out" -type f -print0 \
+                | xargs -0 -r nuke-refs \
+                    -e "$out" \
+                    -e "${stdenv.darwinRuntimes}"
+            ''
+            else ""
+          );
       }
     ];
 
