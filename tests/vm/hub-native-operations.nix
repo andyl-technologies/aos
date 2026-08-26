@@ -315,6 +315,109 @@ in
         registry:operations/maintenance primary \
         --if-version "$placement_version" >/tmp/placement-promote.json
 
+      echo '==> Exercise multi-placement operations, equivalence, and policy selection'
+      reviewed placement-secondary-create placement add \
+        registry:operations/maintenance secondary \
+        --binding instance-default --prefix registries/maintenance-secondary \
+        --kind complete --desired-state active --read enabled --read-order 5 \
+        >/tmp/placement-secondary-create.json
+      hub_cli placement list registry:operations/maintenance --page-size 1 \
+        >/tmp/placement-list.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data.placements | length == 1' /tmp/placement-list.json >/dev/null
+      secondary_version=$(resource_version /tmp/placement-secondary-create.json)
+      reviewed placement-secondary-scan placement scan \
+        registry:operations/maintenance secondary \
+        --wait --timeout 2m --if-version "$secondary_version" \
+        >/tmp/placement-secondary-scan.json
+      hub_cli placement show registry:operations/maintenance secondary \
+        >/tmp/placement-secondary.json
+      secondary_version=$(resource_version /tmp/placement-secondary.json)
+      reviewed placement-secondary-update placement update \
+        registry:operations/maintenance secondary \
+        --read enabled --read-order 10 --if-version "$secondary_version" \
+        >/tmp/placement-secondary-update.json
+      secondary_version=$(resource_version /tmp/placement-secondary-update.json)
+      hub_cli placement presence registry:operations/maintenance \
+        nar/00000000000000000000000000000000.nar --page-size 1 \
+        >/tmp/placement-presence.json
+      reviewed placement-replicate placement replicate \
+        registry:operations/maintenance --from primary --to secondary \
+        --wait --timeout 2m --if-version "$secondary_version" \
+        >/tmp/placement-replicate.json
+      reviewed placement-repair placement repair \
+        registry:operations/maintenance secondary \
+        --wait --timeout 2m --if-version "$secondary_version" \
+        >/tmp/placement-repair.json
+      hub_cli placement show registry:operations/maintenance primary \
+        >/tmp/placement-primary.json
+      primary_version=$(resource_version /tmp/placement-primary.json)
+      hub_cli placement show registry:operations/maintenance secondary \
+        >/tmp/placement-secondary.json
+      secondary_version=$(resource_version /tmp/placement-secondary.json)
+      expect_hub_error placement-equivalence-distinct \
+        'different physical object identities' \
+        placement-equivalence confirm \
+        registry:operations/maintenance primary secondary \
+        --if-a-version "$primary_version" --if-b-version "$secondary_version" \
+        --if-version "$primary_version" --plan \
+        --idempotency-key placement-equivalence-distinct
+      hub_cli placement-equivalence list registry:operations/maintenance \
+        --page-size 1 >/tmp/placement-equivalence-list.json
+      expect_hub_error placement-equivalence-remove-missing 'not.?found' \
+        placement-equivalence remove equivalence:00000000000000000000000000000000 \
+        --if-version 1 --plan \
+        --idempotency-key placement-equivalence-remove-missing
+
+      reviewed placement-policy-create placement-policy create \
+        registry:operations/maintenance operations-failover \
+        --kind ordered-failover --member primary --member secondary \
+        --retry-on connect-failure --retry-on origin-503 --if-version 0 \
+        >/tmp/placement-policy-create.json
+      hub_cli placement-policy list registry:operations/maintenance --page-size 1 \
+        >/tmp/placement-policy-list.json
+      hub_cli placement-policy show registry:operations/maintenance \
+        operations-failover >/tmp/placement-policy-show.json
+      policy_version=$(resource_version /tmp/placement-policy-show.json)
+      reviewed placement-policy-revise placement-policy revise \
+        registry:operations/maintenance operations-failover \
+        --kind ordered-failover --member secondary --member primary \
+        --retry-on timeout-before-headers --if-version "$policy_version" \
+        >/tmp/placement-policy-revise.json
+      hub_cli placement-policy revisions registry:operations/maintenance \
+        operations-failover --page-size 1 >/tmp/placement-policy-revisions.json
+      hub_cli placement-policy show registry:operations/maintenance \
+        operations-failover --revision 2 >/tmp/placement-policy-revision.json
+      hub_cli placement-policy test registry:operations/maintenance \
+        operations-failover --revision 2 \
+        --object nar/00000000000000000000000000000000.nar \
+        >/tmp/placement-policy-test.json
+
+      echo '==> Exercise reversible placement drain and metadata removal'
+      reviewed placement-transient-create placement add \
+        registry:operations/maintenance transient \
+        --binding instance-default --prefix registries/maintenance-transient \
+        --kind complete --desired-state active --read enabled --read-order 20 \
+        >/tmp/placement-transient-create.json
+      transient_version=$(resource_version /tmp/placement-transient-create.json)
+      reviewed placement-transient-drain placement drain \
+        registry:operations/maintenance transient \
+        --if-version "$transient_version" >/tmp/placement-transient-drain.json
+      hub_cli placement show registry:operations/maintenance transient \
+        >/tmp/placement-transient-draining.json
+      transient_version=$(resource_version /tmp/placement-transient-draining.json)
+      reviewed placement-transient-drain-cancel placement drain cancel \
+        registry:operations/maintenance transient \
+        --if-version "$transient_version" >/tmp/placement-transient-drain-cancel.json
+      transient_version=$(resource_version /tmp/placement-transient-drain-cancel.json)
+      reviewed placement-transient-remove placement remove \
+        registry:operations/maintenance transient \
+        --if-version "$transient_version" >/tmp/placement-transient-remove.json
+      expect_hub_error placement-promotion-cancel-ready \
+        'no unconfirmed promotion' placement promotion cancel \
+        registry:operations/maintenance --if-version 1 --plan \
+        --idempotency-key placement-promotion-cancel-ready
+
       echo '==> Exercise surface inventory, topology, and resolution explanation'
       hub_cli surface show registry:operations/maintenance \
         >/tmp/surface-show.json
