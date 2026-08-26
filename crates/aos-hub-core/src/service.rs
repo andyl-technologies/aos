@@ -1245,6 +1245,12 @@ fn insert_retention_reason(
         });
 }
 
+fn retention_refresh_reason_id(refresh_id: &str, reason_key: &str) -> String {
+    hex::encode(Sha256::digest(
+        format!("{refresh_id}\0{reason_key}").as_bytes(),
+    ))
+}
+
 fn bounded_retention_source_ref(value: &str, digest: &str) -> String {
     if value.len() <= 255 {
         return value.to_string();
@@ -31108,6 +31114,10 @@ impl RpcService {
             .await?;
         for reason in reasons.values() {
             let mut reason = reason.clone();
+            // Superseded refreshes remain immutable during their removal-grace
+            // window, so the same logical reason must have a generation-local
+            // row identity while retaining its stable reason key.
+            reason.reason_id = retention_refresh_reason_id(&refresh_id, &reason.reason_key);
             reason.refreshed_at = now;
             if let Err(error) = self
                 .db
@@ -38134,6 +38144,20 @@ mod cache_upload_tests {
 
         assert!(reparsed.is_object());
         assert_eq!(serde_json::to_string(&reparsed).unwrap(), stored);
+    }
+
+    #[test]
+    fn retention_reason_row_identity_is_refresh_local() {
+        let reason_key = "registry_catalog:logical-reason";
+
+        let first = super::retention_refresh_reason_id("refresh-one", reason_key);
+        let repeated = super::retention_refresh_reason_id("refresh-one", reason_key);
+        let successor = super::retention_refresh_reason_id("refresh-two", reason_key);
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, successor);
+        assert_eq!(first.len(), 64);
+        assert_eq!(successor.len(), 64);
     }
 
     #[test]
