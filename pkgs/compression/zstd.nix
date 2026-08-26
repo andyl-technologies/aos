@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   zlib,
+  stdenv,
 }: let
   version = "1.5.7";
 in
@@ -22,6 +23,8 @@ in
     runtimeDeps = [zlib];
     propagatedDeps = [];
 
+    # The build machine's uname remains Linux during a cross build. Tell the
+    # upstream makefiles which target naming and install-name rules to use.
     phases = [
       {
         name = "unpack";
@@ -33,13 +36,21 @@ in
       {
         name = "build";
         script = ''
-          make PREFIX=$out -j$NIX_BUILD_CORES
+          make PREFIX=$out -j$NIX_BUILD_CORES ${
+            if stdenv.hostPlatform.isDarwin
+            then "TARGET_SYSTEM=Darwin UNAME_TARGET_SYSTEM=Darwin"
+            else ""
+          }
         '';
       }
       {
         name = "install";
         script = ''
-          make install PREFIX=$out
+          make install PREFIX=$out ${
+            if stdenv.hostPlatform.isDarwin
+            then "TARGET_SYSTEM=Darwin UNAME_TARGET_SYSTEM=Darwin"
+            else ""
+          }
         '';
       }
     ];
