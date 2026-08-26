@@ -1124,24 +1124,28 @@ pub(super) fn open_local_campaign_service(
         None
     };
     apply_campaign_import_manifests(&prepared, &args.campaign_import_manifest)?;
+    let selected_campaigns = if args.campaign_runtime_all {
+        prepared
+            .discover_packaged_campaigns()
+            .map_err(|error| serve_error(format!("campaign runtime discovery error: {error}")))?
+    } else {
+        args.campaign_runtime
+            .iter()
+            .map(|campaign| {
+                crucible_campaign::CampaignName::new(campaign)
+                    .map_err(|error| serve_error(format!("campaign runtime name error: {error}")))
+            })
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()?
+    };
     let packaged_executor = match args.campaign_packaged_executor.as_deref() {
         Some(deployment) => {
-            let campaigns = args
-                .campaign_runtime
-                .iter()
-                .map(|campaign| {
-                    crucible_campaign::CampaignName::new(campaign).map_err(|error| {
-                        serve_error(format!("campaign runtime name error: {error}"))
-                    })
-                })
-                .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
             let executor_socket = args.campaign_executor_socket.first().ok_or_else(|| {
                 usage_error("--campaign-packaged-executor requires one executor socket")
             })?;
             Some(prepare_cli_packaged_executor(
                 &prepared,
                 args,
-                campaigns,
+                selected_campaigns.clone(),
                 executor_socket,
                 deployment,
                 production_qemu.ok_or_else(|| {
@@ -1151,24 +1155,37 @@ pub(super) fn open_local_campaign_service(
         }
         None => None,
     };
-    let mut runtimes = Vec::with_capacity(args.campaign_runtime.len());
-    for (index, (campaign, executor_socket)) in args
-        .campaign_runtime
-        .iter()
-        .zip(&args.campaign_executor_socket)
-        .enumerate()
-    {
+    let runtime_targets = if packaged_executor.is_some() {
+        let executor_socket = args.campaign_executor_socket.first().ok_or_else(|| {
+            usage_error("--campaign-packaged-executor requires one executor socket")
+        })?;
+        selected_campaigns
+            .iter()
+            .cloned()
+            .map(|campaign| (campaign, executor_socket.as_path()))
+            .collect::<Vec<_>>()
+    } else {
+        args.campaign_runtime
+            .iter()
+            .zip(&args.campaign_executor_socket)
+            .map(|(campaign, executor_socket)| {
+                crucible_campaign::CampaignName::new(campaign)
+                    .map(|campaign| (campaign, executor_socket.as_path()))
+                    .map_err(|error| serve_error(format!("campaign runtime name error: {error}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let mut runtimes = Vec::with_capacity(runtime_targets.len());
+    for (index, (campaign, executor_socket)) in runtime_targets.into_iter().enumerate() {
         let stream = connect_campaign_executor(executor_socket)?;
         let planner = runtime_control_planner.clone().ok_or_else(|| {
             serve_error("campaign runtime attachment requires the planner control profile")
         })?;
-        let runtime_config = crucible_daemon::CanonicalCampaignRuntimeConfig::canonical_defaults(
-            crucible_campaign::CampaignName::new(campaign).map_err(|error| {
-                serve_error(format!("campaign runtime {index} name error: {error}"))
-            })?,
-            planner,
-        )
-        .map_err(|error| serve_error(format!("campaign runtime configuration error: {error}")))?;
+        let runtime_config =
+            crucible_daemon::CanonicalCampaignRuntimeConfig::canonical_defaults(campaign, planner)
+                .map_err(|error| {
+                    serve_error(format!("campaign runtime configuration error: {error}"))
+                })?;
         runtimes.push(
             prepared
                 .prepare_runtime(stream, &runtime_config)
@@ -1467,7 +1484,19 @@ pub(super) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError
 }
 
 fn validate_campaign_runtime_attachments(args: &ServeArgs) -> Result<(), CliError> {
-    if args.campaign_runtime.len() != args.campaign_executor_socket.len() {
+    let packaged = args.campaign_packaged_executor.is_some();
+    if packaged {
+        if args.campaign_executor_socket.is_empty()
+            || args
+                .campaign_executor_socket
+                .windows(2)
+                .any(|pair| pair[0] != pair[1])
+        {
+            return Err(usage_error(
+                "--campaign-packaged-executor requires one shared executor socket value",
+            ));
+        }
+    } else if args.campaign_runtime.len() != args.campaign_executor_socket.len() {
         return Err(usage_error(
             "--campaign-runtime and --campaign-executor-socket must be repeated the same number of times",
         ));
@@ -1478,10 +1507,15 @@ fn validate_campaign_runtime_attachments(args: &ServeArgs) -> Result<(), CliErro
             crucible_daemon::MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES
         )));
     }
-    if args.campaign_runtime.is_empty() {
-        if args.campaign_packaged_executor.is_some() {
+    if args.campaign_runtime.is_empty() && !args.campaign_runtime_all {
+        if packaged {
             return Err(usage_error(
-                "--campaign-packaged-executor requires one campaign runtime",
+                "--campaign-packaged-executor requires --campaign-runtime or --campaign-runtime-all",
+            ));
+        }
+        if !args.campaign_executor_socket.is_empty() {
+            return Err(usage_error(
+                "--campaign-executor-socket requires a campaign runtime",
             ));
         }
         return Ok(());
@@ -1506,16 +1540,6 @@ fn validate_campaign_runtime_attachments(args: &ServeArgs) -> Result<(), CliErro
                 "--campaign-runtime cannot attach the same campaign twice",
             ));
         }
-    }
-    if args.campaign_packaged_executor.is_some()
-        && args
-            .campaign_executor_socket
-            .windows(2)
-            .any(|pair| pair[0] != pair[1])
-    {
-        return Err(usage_error(
-            "--campaign-packaged-executor requires every attached runtime to use the same executor socket",
-        ));
     }
     Ok(())
 }

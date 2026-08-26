@@ -176,16 +176,22 @@ service may omit it. Repeating paired `--campaign-runtime NAME` and
 `--campaign-executor-socket PATH` arguments attaches the packaged canonical
 planner and one authenticated local executor to each of at most 256 unique
 existing campaigns; the two argument lists are paired in command-line order.
+With a packaged executor, `--campaign-runtime-all` instead selects the complete
+authenticated local campaign catalog from one stable page and fails closed if
+the catalog is empty or exceeds 256 campaigns.
 Attachment fails closed unless the component authority is present and the
 service is writable. In packaged-executor mode every repeated executor path
 MUST name the same managed endpoint. The daemon authenticates the complete
 campaign set in canonical name order before acquiring QEMU host resources and
-admits it only when every lineage has the same exact compatibility profile and
-scenario artifact. Those campaigns share one fixed worker/capacity pool and
-one native baked-genesis authority. The advertised durable-store namespace is
+admits it only when every lineage has the same exact compatibility profile. It
+charges and decodes at most 128 MiB of distinct canonical scenario-artifact
+bodies before host acquisition, captures one native baked genesis for each,
+and routes promotion by exact World/scenario identity. Those campaigns share
+one fixed worker/capacity pool and endpoint. The advertised durable-store namespace is
 derived from the deployment state root rather than an arbitrarily first
 campaign, so argument reordering or adding a compatible campaign does not
-change locality identity; a different scenario requires another executor pool.
+change locality identity. A scenario absent from the startup catalog requires
+a restart with the enlarged catalog or another executor pool.
 After bind, an authorized local operator can attach another existing campaign:
 
 ```text
@@ -587,12 +593,12 @@ endpoint ownership uses a distinct lifetime lock and the same exact owner,
 stale-recovery, mode, and conditional-teardown rules as the campaign socket;
 both sockets may share one secure directory without sharing authority.
 The daemon can now own the single-host packaged QEMU executor through a strict
-deployment file and the existing campaign-runtime flags. That composition
+deployment file and the explicit or all-campaign runtime selector. That composition
 selects the concrete fresh/thin-replay worker, a fixed worker pool, durable
 ledger/checkpoint stores, resource ownership, and the authenticated loopback
 endpoint as one lifecycle; it does not create a second user-facing service.
-Concrete exact-resume worker selection remains an implementation gate and is
-not advertised by this packaged endpoint.
+The endpoint advertises exact restore only after one promotion owner per fixed
+worker has received the complete authenticated native scenario catalog.
 
 The direct service contract implements strict request-bound `CreateCampaign`,
 `DeriveCampaign`, `GetCampaign`, historical `GetSnapshot`, coalesced
@@ -649,8 +655,9 @@ crucible serve --listen 127.0.0.1:0 --trusted-unauthenticated-bind \
   --campaign-state /var/lib/crucible/campaign \
   --campaign-policy /etc/crucible/campaign-policy.toml \
   --campaign-component-authority /etc/crucible/campaign-authority.bin \
-  --campaign-runtime nightly-search \
+  --campaign-runtime-all \
   --campaign-executor-socket /run/crucible/executor.sock \
+  --campaign-packaged-executor /etc/crucible/packaged-executor.toml \
   --campaign-socket-mode 600
 ```
 
@@ -676,10 +683,12 @@ retains the socket namespace until the same semantic join completes. In
 daemon-packaged mode a strict version-one deployment file fixes aggregate
 capacity, worker count, cgroup/run roots, project-ID range, child credential,
 checkpoint ceiling, and exact compatibility profile before the endpoint is
-exposed. One pool may serve up to 256 explicitly attached campaigns only when
-their exact compatibility and scenario-artifact basis is identical. Admission
-rechecks that scenario for every attempt, and post-bind attachment through the
-packaged endpoint rejects a different scenario before executor connection. A
+exposed. One pool may serve up to 256 explicitly selected or automatically
+discovered campaigns only when their exact compatibility profile is identical.
+Its closed startup catalog contains one native baked genesis per distinct exact
+scenario; admission rechecks catalog membership for every attempt, and
+post-bind attachment through the packaged endpoint rejects an uncatalogued
+scenario before executor connection. A
 post-bind attachment naming another independently authenticated executor keeps
 that executor's own capability scope. Fixed workers receive stable disjoint
 run-state roots. The concrete fresh/thin-replay and promoted exact-resume paths

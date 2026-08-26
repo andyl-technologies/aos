@@ -311,9 +311,10 @@ pub use executor_worker::{
 };
 pub use guest_selectable::GuestSelectableError;
 pub use packaged_qemu_executor::{
-    AttachedPackagedQemuExecutor, PackagedQemuExecutor, PackagedQemuExecutorCompletion,
-    PackagedQemuExecutorConfig, PackagedQemuExecutorConfigError, PackagedQemuExecutorError,
-    PackagedQemuExecutorJoinError, PackagedQemuExecutorStartError, prepare_packaged_qemu_executor,
+    AttachedPackagedQemuExecutor, MAX_PACKAGED_SCENARIO_CATALOG_BYTES, PackagedQemuExecutor,
+    PackagedQemuExecutorCompletion, PackagedQemuExecutorConfig, PackagedQemuExecutorConfigError,
+    PackagedQemuExecutorError, PackagedQemuExecutorJoinError, PackagedQemuExecutorStartError,
+    prepare_packaged_qemu_executor,
 };
 #[cfg(target_os = "linux")]
 pub use paused_checkpoint_promotion::{
@@ -347,7 +348,8 @@ pub use planner_process::{
 };
 pub use qemu_baked_genesis::{
     ProductionBakedGenesisCaptureError, ProductionBakedGenesisCheckpoint,
-    ProductionBakedGenesisCheckpointError, ProductionBakedGenesisReplayFactory,
+    ProductionBakedGenesisCheckpointError, ProductionBakedGenesisReplayCatalogError,
+    ProductionBakedGenesisReplayCatalogFactory, ProductionBakedGenesisReplayFactory,
     ProductionBakedGenesisReplayLauncher, ProductionBakedGenesisReplayStore,
     capture_production_baked_genesis,
 };

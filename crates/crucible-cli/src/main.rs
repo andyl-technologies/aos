@@ -1436,8 +1436,7 @@ struct ServeArgs {
         conflicts_with = "read_only"
     )]
     campaign_import_manifest: Vec<PathBuf>,
-    /// Attach the packaged planner and an authenticated local executor to a campaign;
-    /// repeat in executor-socket order.
+    /// Attach the packaged planner and an authenticated local executor to a campaign.
     #[arg(
         long,
         value_name = "name",
@@ -1449,20 +1448,37 @@ struct ServeArgs {
         conflicts_with = "read_only"
     )]
     campaign_runtime: Vec<String>,
+    /// Attach every authenticated campaign in the bounded local catalog.
+    #[arg(
+        long,
+        requires_all = [
+            "campaign_socket",
+            "campaign_component_authority",
+            "campaign_executor_socket",
+            "campaign_packaged_executor"
+        ],
+        conflicts_with_all = ["campaign_runtime", "read_only"]
+    )]
+    campaign_runtime_all: bool,
     /// Connect one attached campaign runtime to this owner-only Unix socket;
-    /// repeat in runtime order.
+    /// repeat in runtime order unless a packaged pool shares one endpoint.
     #[arg(
         long,
         value_name = "path",
-        requires = "campaign_runtime",
+        requires = "campaign_socket",
         conflicts_with = "read_only"
     )]
     campaign_executor_socket: Vec<PathBuf>,
-    /// Start one packaged local QEMU executor pool from this strict deployment file.
+    /// Start one scenario-catalogued packaged QEMU pool from this deployment file.
     #[arg(
         long,
         value_name = "path",
-        requires_all = ["campaign_runtime", "production_qemu"],
+        requires_all = [
+            "campaign_socket",
+            "campaign_component_authority",
+            "campaign_executor_socket",
+            "production_qemu"
+        ],
         conflicts_with = "read_only"
     )]
     campaign_packaged_executor: Option<PathBuf>,
