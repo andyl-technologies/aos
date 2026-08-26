@@ -6,6 +6,8 @@
   pkg-config,
   bison,
   flex,
+  coreutils,
+  tar,
   perl,
   python3,
   llvm,
@@ -85,6 +87,10 @@ in
     runtimeDeps =
       if isDarwin
       then [
+        bison
+        flex
+        coreutils
+        tar
         curl
         gettext
         icu
@@ -166,7 +172,11 @@ in
             # Query the Darwin Perl configuration using the native interpreter.
             # Config.pm is pure Perl and the versions are identical across the
             # build and host package sets, so no target executable is run.
-            target_perl_config=$(find ${perl.dev}/lib -name Config.pm -print -quit)
+            # Net/Config.pm has the same basename and may sort before the
+            # architecture configuration on x86_64. Select the latter
+            # explicitly so configure sees useshrplib and libperl.dylib.
+            target_perl_config=$(find ${perl.dev}/lib \
+              -name Config.pm ! -path '*/Net/Config.pm' -print -quit)
             test -n "$target_perl_config"
             target_perl_archlib=$(dirname "$target_perl_config")
             target_perl_privlib=$(dirname "$target_perl_archlib")
@@ -229,6 +239,22 @@ in
               --with-lz4 \
               --with-zstd \
               --with-ssl=openssl
+
+            # CONFIGURE_ARGS is compiled into pg_config and the server, and
+            # the generated header is also installed for extensions. Keep the
+            # native wrappers active in the build makefiles, but publish only
+            # the corresponding Darwin-side tool paths in that metadata.
+            sed -i \
+              -e "s|$PWD/.aos-native-tools/llvm-config|${llvm}/bin/llvm-config|g" \
+              -e "s|$PWD/.aos-native-tools/python3|${python3}/bin/python3|g" \
+              -e "s|CC=$CC|CC=${llvm}/bin/clang|g" \
+              -e "s|CXX=$CXX|CXX=${llvm}/bin/clang++|g" \
+              -e 's|${buildPackages.llvm}|${llvm}|g' \
+              -e 's|${buildPackages.perl}|${perl}|g' \
+              -e 's|${buildPackages.python3}|${python3}|g' \
+              -e 's|${buildPackages.tcl}|${tcl}|g' \
+              -e "s| 'PKG_CONFIG_PATH=[^']*'||g" \
+              src/include/pg_config.h
 
             for macro in \
               ENABLE_GSS ENABLE_NLS USE_ICU USE_LDAP USE_LLVM USE_LIBCURL \
@@ -308,7 +334,25 @@ in
               -e 's|${buildPackages.perl}|${perl}|g' \
               -e 's|${buildPackages.python3}|${python3}|g' \
               -e 's|${buildPackages.llvm}|${llvm}|g' \
+              -e "s|$PWD/.aos-native-tools/llvm-config|${llvm}/bin/llvm-config|g" \
+              -e "s|$PWD/.aos-native-tools/python3|${python3}/bin/python3|g" \
               -e "s|$CC|${llvm}/bin/clang|g" \
+              -e "s|^CXX = .*|CXX = ${llvm}/bin/clang++|" \
+              -e "s|^AR = .*|AR = ${llvm}/bin/llvm-ar|" \
+              -e "s|^BISON = .*|BISON = ${bison}/bin/bison|" \
+              -e "s|^FLEX = .*|FLEX = ${flex}/bin/flex|" \
+              -e "s|^MSGFMT  = .*|MSGFMT  = ${gettext}/bin/msgfmt|" \
+              -e "s|^MSGMERGE = .*|MSGMERGE = ${gettext}/bin/msgmerge|" \
+              -e "s|^TAR[[:space:]]*= .*|TAR = ${tar}/bin/tar|" \
+              -e "s|^TCLSH[[:space:]]*= .*|TCLSH = ${tcl}/bin/tclsh9.0|" \
+              -e "s|^XGETTEXT = .*|XGETTEXT = ${gettext}/bin/xgettext|" \
+              -e "s|^install_bin = .*|install_bin = ${coreutils}/bin/install -c|" \
+              -e "s|^MKDIR_P = .*|MKDIR_P = ${coreutils}/bin/mkdir -p|" \
+              -e "s|^STRIP[[:space:]]*= .*|STRIP = ${llvm}/bin/llvm-strip|" \
+              -e "s|^STRIP_STATIC_LIB = .*|STRIP_STATIC_LIB = ${llvm}/bin/llvm-strip -S|" \
+              -e "s|^STRIP_SHARED_LIB = .*|STRIP_SHARED_LIB = ${llvm}/bin/llvm-strip -S|" \
+              -e "s|^XMLLINT[[:space:]]*= .*|XMLLINT = ${libxml2}/bin/xmllint|" \
+              -e "s|^XSLTPROC[[:space:]]*= .*|XSLTPROC = ${libxslt}/bin/xsltproc|" \
               -e "s|^abs_top_builddir = .*|abs_top_builddir = $out/lib/pgxs/src|" \
               -e "s|^abs_top_srcdir = .*|abs_top_srcdir = $out/lib/pgxs/src|" \
               {} +
