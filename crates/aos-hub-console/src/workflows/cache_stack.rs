@@ -274,11 +274,12 @@ fn CacheStackAdd(client: ApiClient, registry_id: String, version: String) -> imp
                 return;
             }
         };
+        let entry_id = idempotency_key("cache-stack-entry");
         let change = aos_proto_types::ConsumerCacheChange {
             operation: "add".to_string(),
             entry_id: String::new(),
             desired: Some(aos_proto_types::ConsumerCacheStackEntry {
-                entry_id: String::new(),
+                entry_id,
                 source: Some(source),
                 priority: 0,
                 mirror_group_id: String::new(),

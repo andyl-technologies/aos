@@ -38,6 +38,7 @@ pub fn is_machine_path(path: &str) -> bool {
 pub fn cache_control(path: &str) -> &'static str {
     let immutable = if let Some(rest) = path.strip_prefix("objects/") {
         !rest.starts_with("info/")
+            && !rest.starts_with("aos-index-v1/")
             && !is_loose_git_object_path(path)
             && !is_git_pack_index_path(path)
     } else if let Some(rest) = path.strip_prefix("web/") {
@@ -221,6 +222,7 @@ mod tests {
             "HEAD",
             "info/refs",
             "objects/info/packs",
+            "objects/aos-index-v1/ab",
             "channels/stable/00",
             "nix-cache-info",
             "abcd.narinfo",

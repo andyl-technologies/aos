@@ -440,6 +440,18 @@ green.
       cutover `HUB_SEAL_KEY`; and a throwaway verification created a test admin
       `x@y.com` (weak password) that must be deleted (the seal-gated `/_admin/sql`
       cutover tool can, via a one-off `cutover-admin` build).
+- [x] Partition request execution without weakening the relational boundary.
+      Four Durable Object namespaces (`HubControlShard`, `HubTenantShard`,
+      `HubRegistryShard`, and `HubCacheShard`) run the shared router on stable,
+      hashed resource affinity keys. They issue short, seal-authenticated SQL
+      operations to the authoritative `HubDb`; provider I/O, request decoding,
+      and response construction therefore proceed independently for unrelated
+      resources while checked batches and cross-resource constraints remain one
+      SQLite transaction. `HUB_REQUEST_SHARDING=off|read|on` supplies a staged
+      read cutover and immediate rollback without a data copy or dual-write
+      interval. The v2 Wrangler migration adds the stateless classes alongside
+      the existing v1 SQLite class. Logs and `Server-Timing` expose shard
+      duration, remote-SQL calls, aggregate SQL latency, and rows read.
 
 ### Cross-cutting gates (every phase)
 

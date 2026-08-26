@@ -711,6 +711,22 @@ pub struct CacheObjectPresenceObservation {
     pub observed_at: i64,
 }
 
+/// One provider listing identity staged without retaining object bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheInventoryListedObject {
+    /// Surface-relative object key.
+    pub object_key: String,
+    /// Lowercase hexadecimal SHA-256 derived or safely reused for the bytes.
+    pub observed_sha256: String,
+    /// Observed representation size.
+    pub observed_size: i64,
+    /// Provider-issued strong version identifier, when available.
+    pub etag: Option<String>,
+}
+
+/// Maximum listing identities persisted by one inventory transaction.
+pub const MAX_CACHE_INVENTORY_LISTED_OBJECT_BATCH: usize = 256;
+
 /// Normalized narinfo metadata staged under one unpublished inventory generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheInventoryNarinfoCandidate {
@@ -5130,46 +5146,90 @@ impl Database {
         observed_size: i64,
         etag: Option<&str>,
     ) -> Result<()> {
+        self.stage_cache_inventory_listed_objects(
+            cache_id,
+            generation,
+            placement_id,
+            owner_token,
+            &[CacheInventoryListedObject {
+                object_key: object_key.to_string(),
+                observed_sha256: observed_sha256.to_string(),
+                observed_size,
+                etag: etag.map(str::to_string),
+            }],
+        )
+        .await
+    }
+
+    /// Stages one bounded page of listed byte identities atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an oversized or malformed page, duplicate keys, a
+    /// missing placement scan, a non-building generation, or persistence
+    /// failure.
+    pub async fn stage_cache_inventory_listed_objects(
+        &self,
+        cache_id: i64,
+        generation: i64,
+        placement_id: i64,
+        owner_token: &str,
+        objects: &[CacheInventoryListedObject],
+    ) -> Result<()> {
         validate_stable_key(owner_token, "cache inventory owner token")?;
-        if cache_id <= 0
-            || generation <= 0
-            || placement_id <= 0
-            || object_key.is_empty()
-            || object_key.len() > 512
-            || observed_sha256.len() != 64
-            || observed_size < 0
-        {
+        if cache_id <= 0 || generation <= 0 || placement_id <= 0 {
             bail!("cache inventory listed-object evidence is invalid");
         }
-        self.backend
-            .checked_batch(&[Statement::new(
+        if objects.len() > MAX_CACHE_INVENTORY_LISTED_OBJECT_BATCH {
+            bail!("cache inventory listed-object page exceeds its bound");
+        }
+        let mut keys = BTreeSet::new();
+        for object in objects {
+            if object.object_key.is_empty()
+                || object.object_key.len() > 512
+                || object.observed_sha256.len() != 64
+                || !object
+                    .observed_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                || object.observed_size < 0
+                || !keys.insert(object.object_key.as_str())
+            {
+                bail!("cache inventory listed-object evidence is invalid");
+            }
+        }
+
+        let mut statements = Vec::with_capacity(objects.len() + 1);
+        statements.push(CheckedStatement::exact(
+            "UPDATE cache_inventory_placement_scans
+                SET selected_at = selected_at
+              WHERE cache_id = ?1 AND generation = ?2 AND placement_id = ?3
+                AND completed_at IS NULL
+                AND EXISTS (SELECT 1 FROM cache_inventory_generations inventory
+                    WHERE inventory.cache_id = ?1 AND inventory.generation = ?2
+                      AND inventory.state = 'building' AND inventory.owner_token = ?4)",
+            vals![cache_id, generation, placement_id, owner_token].to_vec(),
+            1,
+        ));
+        statements.extend(objects.iter().map(|object| {
+            CheckedStatement::unchecked(
                 "INSERT INTO cache_inventory_listed_objects
-                   (cache_id, generation, placement_id, object_key,
-                    observed_sha256, observed_size, etag)
-                 SELECT ?1, ?2, placement.id, ?4, ?5, ?6, ?7
-                 FROM surface_placements placement
-                 JOIN cache_inventory_generations inventory
-                   ON inventory.cache_id = ?1 AND inventory.generation = ?2
-                 JOIN cache_inventory_placement_scans scan
-                   ON scan.cache_id = inventory.cache_id
-                  AND scan.generation = inventory.generation
-                  AND scan.placement_id = placement.id
-                 WHERE placement.id = ?3 AND placement.cache_id = ?1
-                   AND inventory.state = 'building' AND inventory.owner_token = ?8
-                   AND scan.completed_at IS NULL",
+                    (cache_id, generation, placement_id, object_key,
+                     observed_sha256, observed_size, etag)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 vals![
                     cache_id,
                     generation,
                     placement_id,
-                    object_key,
-                    observed_sha256,
-                    observed_size,
-                    etag,
-                    owner_token
-                ],
+                    object.object_key.as_str(),
+                    object.observed_sha256.as_str(),
+                    object.observed_size,
+                    object.etag.as_deref()
+                ]
+                .to_vec(),
             )
-            .expecting(1)])
-            .await
+        }));
+        self.backend.checked_batch(&statements).await
     }
 
     /// Reads previously staged listing evidence without loading an object body.
@@ -9944,7 +10004,7 @@ fn quota_reservation_statements(
     .expecting(1)]
 }
 
-fn row_to_cache_write_ticket(row: &Row) -> Result<CacheWriteTicketRecord> {
+pub(super) fn row_to_cache_write_ticket(row: &Row) -> Result<CacheWriteTicketRecord> {
     Ok(CacheWriteTicketRecord {
         ticket_id: row.get(0)?,
         cache_id: row.get(1)?,

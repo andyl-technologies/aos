@@ -237,9 +237,18 @@ R2 binding (virtual-hosted endpoint `aos-hub-surfaces.<acct>.r2.cloudflarestorag
 AES-GCM-sealed credentials), with `default.binding_id` repointed to it.
 No Worker redeploy was needed — `presign_cache` was already live.
 
-### Remaining levers to saturate 3 Gbit
-1. **Batch mint + batch narinfo register.** Each path still makes 2 Worker
-   round-trips (~300 ms each: mint + narinfo). Batching both into one RPC apiece
-   removes the per-path Worker latency, leaving only the direct R2 PUTs.
-2. **Faster metadata gathering.** ~40 s of the 83 s is `nix path-info` over the
+### Follow-up status — bounded bulk control operations
+
+The client-facing mint and narinfo operations are now bounded bulk RPCs.
+`CreateCacheObjectUploads` accepts at most 256 unique paths and returns results
+in input order. On the common bound-R2 proxy path, the service resolves the
+writer once, reads occupied slots once, and creates every new ticket in one
+atomic backend batch; an exact retry reuses those tickets. Direct-origin mode
+retains per-object inventory and quota evidence inside that one control request
+before returning independently fenced capabilities. Narinfo registration is
+likewise capped at 256 entries, rejects duplicate store identities before any
+write, and overlaps at most eight independent evidence/write workflows.
+
+The remaining lever is faster metadata gathering. ~40 s of the 83 s is
+`nix path-info` over the
    371-path closure, before any upload.

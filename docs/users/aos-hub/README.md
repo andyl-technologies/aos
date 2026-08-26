@@ -17,9 +17,12 @@ administration through `aos-hub`. Worker deployments are administered through
 the web/API surface and the `aos-hub worker` deployment commands.
 
 The Worker does not make every Hub request edge-local. Static assets and
-cacheable public facade reads can be served at the edge; console, API, browse,
-and write traffic is serialized through one `HubDb` Durable Object. Account for
-that control-plane latency and capacity when choosing a deployment.
+cacheable public facade reads can be served at the edge. Other requests run in
+resource-affine control, tenant, registry, or cache execution objects; those
+objects send only short transactions to the single authoritative `HubDb`
+SQLite object. Cross-resource constraints remain atomic, while request parsing,
+response construction, and provider I/O no longer serialize behind unrelated
+resources.
 
 ## Start here
 

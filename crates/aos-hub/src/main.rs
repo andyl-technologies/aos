@@ -244,6 +244,13 @@ struct WorkerArgs {
     /// Canonical HTTPS control-plane origin (for example `https://aos.example.com`).
     #[arg(long, env = "HUB_EXTERNAL_URL")]
     external_url: Option<String>,
+    /// Public HTTPS origin that exposes the instance-default storage binding.
+    ///
+    /// Public registries placed on that binding automatically use their
+    /// placement prefix below this origin as the canonical Git URL. Explicit
+    /// delivery-route advertisements override this default.
+    #[arg(long, env = "HUB_DEFAULT_PUBLIC_DELIVERY_URL")]
+    default_public_delivery_url: Option<String>,
     /// Immutable source/build identity exposed for deployment verification.
     #[arg(long, env = "HUB_DEPLOYMENT_ID")]
     deployment_id: Option<String>,
@@ -1109,6 +1116,18 @@ async fn provision_worker(
     assets: &aos_hub::cloudflare::Assets,
     args: &WorkerArgs,
 ) -> Result<aos_hub::cloudflare::DeployConfig> {
+    if let Some(delivery_url) = &args.default_public_delivery_url {
+        let parsed =
+            url::Url::parse(delivery_url).context("default public delivery URL is invalid")?;
+        anyhow::ensure!(
+            parsed.scheme() == "https"
+                && parsed.username().is_empty()
+                && parsed.password().is_none()
+                && parsed.query().is_none()
+                && parsed.fragment().is_none(),
+            "default public delivery URL must be an HTTPS URL without credentials, query, or fragment"
+        );
+    }
     let external_url = args
         .external_url
         .clone()
@@ -1138,6 +1157,7 @@ async fn provision_worker(
     cfg.observability = !args.no_observability;
     cfg.head_sampling_rate = args.head_sampling_rate;
     cfg.logpush = args.logpush;
+    cfg.default_public_delivery_url = args.default_public_delivery_url.clone();
     // Email Service binding: emitted only when a verified sender is supplied.
     cfg.email_from = args.email_from.clone();
     Ok(cfg)

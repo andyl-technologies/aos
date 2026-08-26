@@ -153,10 +153,13 @@ eviction uses the reviewed
 is separate from logical GC.
 
 Cache producers call `BinaryCacheService/CreateCacheObjectUploads` with one
-canonical machine path and declared byte size. A non-empty `uploadUrl` accepts
-the exact bytes with `PUT`; direct-origin URLs are capabilities and must not
-receive the Hub bearer, while `/BinaryCacheService/UploadObject/...` is a typed
-authenticated Hub proxy. An empty URL requires
+canonical machine path and declared byte size, or parallel `paths`/`sizes`
+arrays containing at most 256 unique objects. The batch response preserves
+input order and exact retries return the same live tickets. A non-empty
+`uploadUrl` accepts the exact bytes with `PUT`; direct-origin URLs are
+capabilities and must not receive the Hub bearer, while
+`/BinaryCacheService/UploadObject/...` is a typed authenticated Hub proxy. An
+empty URL requires
 `BeginCacheMultipartUpload`, numbered `PUT` requests to the returned
 `partUploadUrl`, and `CompleteCacheMultipartUpload`; clients abort failed
 uploads with `AbortCacheMultipartUpload`.

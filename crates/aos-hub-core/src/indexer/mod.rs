@@ -64,7 +64,7 @@ use crate::db::{
 };
 use crate::fetch::SurfaceFetch;
 
-use self::load::{load_registry_tree, ObjectReader};
+use self::load::{load_registry_tree_with_reader, load_release_tree_with_reader, ObjectReader};
 
 /// Maximum branches (channels) processed per index run.
 ///
@@ -85,6 +85,14 @@ pub const MAX_RELEASE_TAGS: usize = 1024;
 /// avoids making a complete channel cost hundreds of serial object-store round
 /// trips while remaining below Worker subrequest and memory limits.
 const CHANNEL_FETCH_CONCURRENCY: usize = 32;
+
+/// Maximum release generations verified concurrently during a full index pass.
+///
+/// A release generation includes its tree, image-publication evidence, and pack
+/// probe. Processing releases serially multiplies that object-store latency by
+/// the retention depth; this bounded fanout covers a typical retention window
+/// while keeping Worker memory and subrequests bounded.
+const RELEASE_TREE_FETCH_CONCURRENCY: usize = 8;
 
 /// Outcome of one indexing run.
 #[derive(Debug)]
@@ -401,6 +409,15 @@ async fn index_registry_inner(
     }
 
     let reader = ObjectReader::new(fetch);
+    reader.preload_bundles().await?;
+    let (bundle_fetches, loose_fetches, cached_objects) = reader.stats()?;
+    tracing::info!(
+        phase = "bundle_preload",
+        bundle_fetches,
+        loose_fetches,
+        cached_objects,
+        "registry index phase completed"
+    );
     let commit = reader.read_commit(commit_oid).await?;
     let mut trusted: Vec<String> = registry.trust_keys.clone();
     let typed_publication = append_signing_usage_key(
@@ -419,7 +436,16 @@ async fn index_registry_inner(
             .with_context(|| format!("verifying commit {commit_oid}"))?;
     }
 
-    let tree = load_registry_tree(fetch, commit_oid).await?;
+    let tree = load_registry_tree_with_reader(&reader, commit_oid).await?;
+    let (bundle_fetches, loose_fetches, cached_objects) = reader.stats()?;
+    tracing::info!(
+        phase = "head_tree",
+        bundle_fetches,
+        loose_fetches,
+        cached_objects,
+        packages = tree.packages.len(),
+        "registry index phase completed"
+    );
 
     // In-band rotation: the roster committed by a verified commit extends
     // the trusted set for tag verification (apm pins these on sync).
@@ -445,114 +471,168 @@ async fn index_registry_inner(
     let mut release_images = Vec::new();
     let mut image_presence = Vec::new();
     let mut image_release_tag_oids = std::collections::BTreeSet::new();
-    for (tag_name, tag_oid) in release_tags {
-        let payload = reader.read_kind(*tag_oid, ObjectKind::Tag).await?;
-        let lenient = lenient_tag(&payload, tag_name)?;
-        if lenient.tag.target_type != TagTarget::Commit {
-            bail!("release tag '{tag_name}' does not target a commit");
-        }
-        let source_commit = lenient.tag.object.clone();
-        let release_tree = load_registry_tree(
-            fetch,
-            aos_registry_surface::object::Oid::from_hex(&source_commit)?,
-        )
-        .await
-        .with_context(|| format!("loading release artifact snapshot for '{tag_name}'"))?;
-        let has_image_catalog = release_tree.packages.iter().any(|package| {
-            package.package.sysroot
-                && package.versions.iter().any(|version| {
-                    version.platforms.values().any(|platform| {
-                        platform
-                            .images
+    for batch in release_tags.chunks(RELEASE_TREE_FETCH_CONCURRENCY) {
+        let loaded = try_join_all(batch.iter().copied().map(|(tag_name, tag_oid)| {
+            let reader = &reader;
+            async move {
+                let payload = reader.read_kind(*tag_oid, ObjectKind::Tag).await?;
+                let lenient = lenient_tag(&payload, tag_name)?;
+                if lenient.tag.target_type != TagTarget::Commit {
+                    bail!("release tag '{tag_name}' does not target a commit");
+                }
+                let source_commit = lenient.tag.object.clone();
+                let release_tree = load_release_tree_with_reader(
+                    reader,
+                    aos_registry_surface::object::Oid::from_hex(&source_commit)?,
+                )
+                .await
+                .with_context(|| format!("loading release artifact snapshot for '{tag_name}'"))?;
+                Ok::<_, anyhow::Error>((
+                    tag_name.clone(),
+                    *tag_oid,
+                    payload,
+                    lenient,
+                    source_commit,
+                    release_tree,
+                ))
+            }
+        }))
+        .await?;
+        let trusted = trusted.as_slice();
+        let advertised_commit = advertised_commit.as_str();
+        let refs_digest = refs_digest.as_str();
+        let verified = try_join_all(loaded.into_iter().map(
+            |(tag_name, tag_oid, payload, lenient, source_commit, release_tree)| async move {
+                let has_image_catalog = release_tree.packages.iter().any(|package| {
+                    package.package.sysroot
+                        && package.versions.iter().any(|version| {
+                            version.platforms.values().any(|platform| {
+                                platform
+                                    .images
+                                    .iter()
+                                    .any(|image| !image.delivery.is_store_only())
+                            })
+                        })
+                });
+                let (signed, signer) =
+                    if registry.require_signatures || typed_publication || has_image_catalog {
+                        // An image catalog is always authenticated by its release tag,
+                        // even for registries that otherwise permit unsigned package
+                        // metadata. An unsigned HEAD roster cannot delegate image trust.
+                        let image_trusted = if registry.require_signatures || typed_publication {
+                            trusted
+                        } else {
+                            registry.trust_keys.as_slice()
+                        };
+                        let signed = verify_signed_tag(&payload, &tag_name, image_trusted)
+                            .with_context(|| format!("signed image release tag '{tag_name}'"))?;
+                        let signer = parse_signed_tag(&payload)
+                            .ok()
+                            .and_then(|signed| sshsig_signer(&signed.signature));
+                        (signed, signer)
+                    } else {
+                        (lenient, None)
+                    };
+
+                let mut release_leases = Vec::new();
+                let mut release_image = None;
+                let mut release_presence = Vec::new();
+                let mut image_tag_oid = None;
+                if has_image_catalog {
+                    let catalog = verify_system_image_objects(
+                        db,
+                        fetch,
+                        registry.id,
+                        indexed_placement_id,
+                        advertised_commit,
+                        refs_digest,
+                        &source_commit,
+                        &release_tree.root.registry.name,
+                        &release_tree.packages,
+                        &tag_name,
+                        &mut release_leases,
+                    )
+                    .await
+                    .with_context(|| format!("verifying signed image release '{tag_name}'"))?;
+                    let images = catalog
+                        .images
+                        .into_iter()
+                        .filter(|image| image.release == tag_name.as_str())
+                        .collect::<Vec<_>>();
+                    if !images.is_empty() {
+                        let selected_keys = images
                             .iter()
-                            .any(|image| !image.delivery.is_store_only())
-                    })
-                })
-        });
-        let (signed, signer) =
-            if registry.require_signatures || typed_publication || has_image_catalog {
-                // An image catalog is always authenticated by its release tag,
-                // even for registries that otherwise permit unsigned package
-                // metadata. An unsigned HEAD roster cannot delegate image trust.
-                let image_trusted = if registry.require_signatures || typed_publication {
-                    trusted.as_slice()
-                } else {
-                    registry.trust_keys.as_slice()
-                };
-                let signed = verify_signed_tag(&payload, tag_name, image_trusted)
-                    .with_context(|| format!("signed image release tag '{tag_name}'"))?;
-                let signer = parse_signed_tag(&payload)
-                    .ok()
-                    .and_then(|signed| sshsig_signer(&signed.signature));
-                (signed, signer)
-            } else {
-                (lenient, None)
-            };
-        if has_image_catalog {
-            let catalog = verify_system_image_objects(
-                db,
-                fetch,
-                registry.id,
-                indexed_placement_id,
-                &advertised_commit,
-                &refs_digest,
-                &source_commit,
-                &release_tree.root.registry.name,
-                &release_tree.packages,
-                snapshot_leases,
-            )
-            .await
-            .with_context(|| format!("verifying signed image release '{tag_name}'"))?;
-            let images = catalog
-                .images
-                .into_iter()
-                .filter(|image| image.release == tag_name.as_str())
-                .collect::<Vec<_>>();
-            if !images.is_empty() {
-                let selected_keys = images
-                    .iter()
-                    .filter(|image| !image.delivery.is_store_backed())
-                    .flat_map(|image| {
-                        [
-                            image.delivery.object_key.clone(),
-                            image.delivery.image_info.object_key.clone(),
-                        ]
-                    })
-                    .collect::<std::collections::BTreeSet<_>>();
-                image_release_tag_oids.insert(tag_oid.to_hex());
-                release_images.push(ReleaseImageSnapshot {
+                            .filter(|image| !image.delivery.is_store_backed())
+                            .flat_map(|image| {
+                                [
+                                    image.delivery.object_key.clone(),
+                                    image.delivery.image_info.object_key.clone(),
+                                ]
+                            })
+                            .collect::<std::collections::BTreeSet<_>>();
+                        image_tag_oid = Some(tag_oid.to_hex());
+                        release_image = Some(ReleaseImageSnapshot {
+                            release_tag: tag_name.clone(),
+                            source_commit: source_commit.clone(),
+                            verified_tag_oid: tag_oid.to_hex(),
+                            catalog_digest: catalog.digest,
+                            images,
+                        });
+                        release_presence.extend(
+                            catalog.objects.into_iter().filter(|object| {
+                                selected_keys.contains(object.object_key.as_str())
+                            }),
+                        );
+                    }
+                }
+
+                let artifacts = release_snapshot_artifacts(&release_tree.packages);
+                let manifest_digest = hex::encode(Sha256::digest(serde_json::to_vec(&artifacts)?));
+                let artifact_snapshot = ReleaseArtifactSnapshot {
                     release_tag: tag_name.clone(),
                     source_commit: source_commit.clone(),
                     verified_tag_oid: tag_oid.to_hex(),
-                    catalog_digest: catalog.digest,
-                    images,
-                });
-                image_presence.extend(
-                    catalog
-                        .objects
-                        .into_iter()
-                        .filter(|object| selected_keys.contains(object.object_key.as_str())),
-                );
-            }
+                    manifest_digest,
+                    artifacts,
+                };
+                let release = ReleaseRow {
+                    semver: tag_name.clone(),
+                    tag_oid: tag_oid.to_hex(),
+                    commit_oid: source_commit,
+                    signer,
+                    tagged_at: signed.tag.tagger_when,
+                    pack_present: probe_pack_presence(fetch, &tag_name).await?,
+                };
+                Ok::<_, anyhow::Error>((
+                    release,
+                    artifact_snapshot,
+                    release_image,
+                    release_presence,
+                    release_leases,
+                    image_tag_oid,
+                ))
+            },
+        ))
+        .await?;
+        for (release, artifacts, image, presence, leases, image_tag_oid) in verified {
+            releases.push(release);
+            release_artifact_snapshots.push(artifacts);
+            release_images.extend(image);
+            image_presence.extend(presence);
+            snapshot_leases.extend(leases);
+            image_release_tag_oids.extend(image_tag_oid);
         }
-        let artifacts = release_snapshot_artifacts(&release_tree.packages);
-        let manifest_digest = hex::encode(Sha256::digest(serde_json::to_vec(&artifacts)?));
-        release_artifact_snapshots.push(ReleaseArtifactSnapshot {
-            release_tag: tag_name.clone(),
-            source_commit: source_commit.clone(),
-            verified_tag_oid: tag_oid.to_hex(),
-            manifest_digest,
-            artifacts,
-        });
-        releases.push(ReleaseRow {
-            semver: tag_name.clone(),
-            tag_oid: tag_oid.to_hex(),
-            commit_oid: source_commit,
-            signer,
-            tagged_at: signed.tag.tagger_when,
-            pack_present: probe_pack_presence(fetch, tag_name).await?,
-        });
     }
+    let (bundle_fetches, loose_fetches, cached_objects) = reader.stats()?;
+    tracing::info!(
+        phase = "release_trees",
+        bundle_fetches,
+        loose_fetches,
+        cached_objects,
+        releases = releases.len(),
+        images = release_images.len(),
+        "registry index phase completed"
+    );
 
     // Channels: branches are channel names; each resolves through 256
     // partition payloads pointing at release tag objects.
@@ -572,6 +652,11 @@ async fn index_registry_inner(
         &image_release_tag_oids,
     )
     .await?;
+    tracing::info!(
+        phase = "channels",
+        channels = channels.len(),
+        "registry index phase completed"
+    );
 
     // The committed [caches] cache stack (RFC-0004) is flattened into the
     // priority list stack-unaware clients and the display table resolve; when
@@ -625,6 +710,7 @@ async fn index_registry_inner(
         pending: false,
     };
     if let Some(placement_id) = indexed_placement_id {
+        tracing::info!(phase = "snapshot", "registry index phase started");
         db.apply_snapshot_with_image_presence(
             registry.id,
             &snapshot,
@@ -636,9 +722,11 @@ async fn index_registry_inner(
     } else if !image_presence.is_empty() {
         bail!("signed system images require an exact indexed placement");
     } else {
+        tracing::info!(phase = "snapshot", "registry index phase started");
         db.apply_snapshot_from_placement(registry.id, &snapshot, None)
             .await?;
     }
+    tracing::info!(phase = "snapshot", "registry index phase completed");
 
     // Cross-reference the verified HEAD commit with the change-set log
     // (RFC-0004 "Configuration management"): a commit carrying an
@@ -932,6 +1020,7 @@ async fn verify_system_image_objects(
     commit: &str,
     registry_identity: &str,
     packages: &[aos_registry_surface::manifest::PackageToml],
+    selected_release: &str,
     snapshot_leases: &mut Vec<String>,
 ) -> Result<VerifiedSystemImageCatalog> {
     let mut expected = BTreeMap::<String, ExpectedImageObject>::new();
@@ -945,7 +1034,7 @@ async fn verify_system_image_objects(
                         continue;
                     }
                     image.validate_delivery(&version.version, platform)?;
-                    images.push(crate::db::IndexedSystemImage {
+                    let indexed_image = crate::db::IndexedSystemImage {
                         package: package.package.name.clone(),
                         release: version.version.clone(),
                         platform: platform.clone(),
@@ -954,7 +1043,11 @@ async fn verify_system_image_objects(
                         nar_hash: image.nar_hash.clone(),
                         nar_size: image.nar_size,
                         delivery: image.delivery.clone(),
-                    });
+                    };
+                    let selected = version.version == selected_release;
+                    if selected {
+                        images.push(indexed_image);
+                    }
                     if image.delivery.is_store_backed() {
                         let mut store_artifacts = vec![
                             (
@@ -1013,7 +1106,9 @@ async fn verify_system_image_objects(
                             byte_size: size,
                             role,
                         };
-                        insert_expected_image_artifact(&mut expected, key, identity.clone())?;
+                        if selected {
+                            insert_expected_image_artifact(&mut expected, key, identity.clone())?;
+                        }
                         insert_expected_image_artifact(&mut catalog_artifacts, key, identity)?;
                     }
                 }
@@ -1039,7 +1134,11 @@ async fn verify_system_image_objects(
             objects: Vec::new(),
         });
     }
-    verify_image_publication_receipt(fetch, commit, registry_identity, &expected).await?;
+    // The receipt still proves the complete catalog committed by this release
+    // tree. Only objects exposed by this tag need placement evidence here;
+    // historical versions are verified when their own retained tags are
+    // indexed instead of being redundantly revalidated for every newer tag.
+    verify_image_publication_receipt(fetch, commit, registry_identity, &catalog_artifacts).await?;
     let digest = image_catalog_digest(registry_identity, &catalog_artifacts)?;
 
     let mut verified = Vec::with_capacity(expected.len());
