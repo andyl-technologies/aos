@@ -27,6 +27,7 @@
   bootstrapCmdsRevision = "c71d2d72f48995baaea76148f61002e5299841de";
   launchdRevision = "d448a1c8f70a61202f8705f94337f686b87c30c4";
   hfsRevision = "d1bac2f062e6e9c0dfcce302d9aacb10173d0eea";
+  darlingMetalRevision = "ae20248dc144beab899e38752f5a530f28a0ea56";
 
   coreFoundationSrc = fetchurl {
     urls = [
@@ -132,6 +133,13 @@
     ];
     hash = "sha256-rkCBjserV45xh6t27BXUy6vlGFGQOYUr863j0kAWmnA=";
   };
+
+  darlingMetalSrc = fetchurl {
+    urls = [
+      "https://github.com/darlinghq/darling-metal/archive/${darlingMetalRevision}.tar.gz"
+    ];
+    hash = "sha256-LPZdRfksAi3RY5sNAm3YTr4JPcMW5TuHtYOFCAv+vZQ=";
+  };
 in
   mkDerivation {
     pname = "darwin-sdk";
@@ -170,6 +178,7 @@ in
           tar xf ${bootstrapCmdsSrc}
           tar xf ${launchdSrc}
           tar xf ${hfsSrc}
+          tar xf ${darlingMetalSrc}
           cd "zig-${version}"
         '';
       }
@@ -191,6 +200,7 @@ in
           bootstrapCmdsRoot="../bootstrap_cmds-${bootstrapCmdsRevision}"
           launchdRoot="../launchd-${launchdRevision}"
           hfsRoot="../hfs-${hfsRevision}"
+          darlingMetalRoot="../darling-metal-${darlingMetalRevision}"
 
           mkdir -p \
             "$out/usr/include/c++/v1" \
@@ -211,6 +221,8 @@ in
             "$out/System/Library/Frameworks/CoreFoundation.framework/Versions/A" \
             "$out/System/Library/Frameworks/CoreServices.framework/Headers" \
             "$out/System/Library/Frameworks/CoreServices.framework/Versions/A" \
+            "$out/System/Library/Frameworks/CoreVideo.framework/Headers" \
+            "$out/System/Library/Frameworks/CoreVideo.framework/Versions/A" \
             "$out/System/Library/Frameworks/Foundation.framework/Headers" \
             "$out/System/Library/Frameworks/Foundation.framework/Versions/C" \
             "$out/System/Library/Frameworks/Hypervisor.framework/Headers" \
@@ -218,6 +230,12 @@ in
             "$out/System/Library/Frameworks/IOKit.framework/Headers/storage/ata" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/storage" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/usb" \
+            "$out/System/Library/Frameworks/IOSurface.framework/Headers" \
+            "$out/System/Library/Frameworks/IOSurface.framework/Versions/A" \
+            "$out/System/Library/Frameworks/Metal.framework/Headers" \
+            "$out/System/Library/Frameworks/Metal.framework/Versions/A" \
+            "$out/System/Library/Frameworks/QuartzCore.framework/Headers" \
+            "$out/System/Library/Frameworks/QuartzCore.framework/Versions/A" \
             "$out/System/Library/Frameworks/Security.framework/Headers" \
             "$out/System/Library/Frameworks/SystemConfiguration.framework/Headers" \
             "$out/share/licenses/darwin-sdk"
@@ -339,6 +357,7 @@ in
             "$libinfoRoot/nis.subproj/ypclnt.h" \
             "$out/usr/include/rpcsvc/"
           cp "$libcRoot/include/fstab.h" "$out/usr/include/"
+          cp "$libcRoot/stdtime/FreeBSD/tzfile.h" "$out/usr/include/"
           # launchd publishes the userspace Mach bootstrap interface at the
           # traditional SDK path consumed by Kerberos KCM and other clients.
           cp "$launchdRoot/liblaunch/bootstrap.h" \
@@ -496,6 +515,11 @@ in
             "$xnuRoot/iokit/IOKit/IOTypes.h" \
             "$xnuRoot/iokit/IOKit/OSMessageNotification.h" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/"
+          # Current Darwin IOKit umbrellas expose the public host-information
+          # MIG calls used by clients such as Dawn.  The pinned open-source
+          # IOKitLib header predates that transitive declaration.
+          sed -i '/#include <mach\/mach_init.h>/a #include <mach/mach_host.h>' \
+            "$out/System/Library/Frameworks/IOKit.framework/Headers/IOKitLib.h"
           cp "$xnuRoot/bsd/sys/disk.h" "$out/usr/include/sys/disk.h"
           cp \
             "$ioUsbFamilyRoot/IOUSBFamily/Headers/USB.h" \
@@ -794,6 +818,7 @@ in
                 - _CFDataGetBytes
                 - _CFDataGetLength
                 - _CFDataGetTypeID
+                - _CFDictionaryAddValue
                 - _CFDictionaryCreateMutable
                 - _CFDictionaryGetValue
                 - _CFDictionaryGetValueIfPresent
@@ -1023,6 +1048,651 @@ in
           ln -s CoreServices.tbd \
             "$out/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices"
 
+          # Dawn uses IOSurface-backed multiplanar Metal textures. Publish the
+          # documented opaque reference, property keys, and geometry queries
+          # as their own framework rather than treating them as IOKit symbols.
+          cat > "$out/System/Library/Frameworks/IOSurface.framework/Headers/IOSurfaceRef.h" <<'EOF'
+          #ifndef _AOS_IOSURFACE_REF_H_
+          #define _AOS_IOSURFACE_REF_H_
+
+          #include <CoreFoundation/CoreFoundation.h>
+
+          CF_EXTERN_C_BEGIN
+
+          typedef struct __IOSurface *IOSurfaceRef;
+
+          extern const CFStringRef kIOSurfaceAllocSize;
+          extern const CFStringRef kIOSurfaceWidth;
+          extern const CFStringRef kIOSurfaceHeight;
+          extern const CFStringRef kIOSurfacePixelFormat;
+          extern const CFStringRef kIOSurfacePlaneInfo;
+          extern const CFStringRef kIOSurfacePlaneWidth;
+          extern const CFStringRef kIOSurfacePlaneHeight;
+          extern const CFStringRef kIOSurfacePlaneBytesPerElement;
+          extern const CFStringRef kIOSurfacePlaneBytesPerRow;
+          extern const CFStringRef kIOSurfacePlaneSize;
+          extern const CFStringRef kIOSurfacePlaneOffset;
+
+          IOSurfaceRef IOSurfaceCreate(CFDictionaryRef properties);
+          size_t IOSurfaceAlignProperty(CFStringRef property, size_t value);
+          size_t IOSurfaceGetWidth(IOSurfaceRef buffer);
+          size_t IOSurfaceGetHeight(IOSurfaceRef buffer);
+          OSType IOSurfaceGetPixelFormat(IOSurfaceRef buffer);
+          size_t IOSurfaceGetPlaneCount(IOSurfaceRef buffer);
+          size_t IOSurfaceGetWidthOfPlane(IOSurfaceRef buffer, size_t planeIndex);
+          size_t IOSurfaceGetHeightOfPlane(IOSurfaceRef buffer, size_t planeIndex);
+
+          CF_EXTERN_C_END
+
+          #endif
+          EOF
+          cat > "$out/System/Library/Frameworks/IOSurface.framework/Headers/IOSurface.h" <<'EOF'
+          #ifndef _AOS_IOSURFACE_H_
+          #define _AOS_IOSURFACE_H_
+          #include <IOSurface/IOSurfaceRef.h>
+          #endif
+          EOF
+          cat > "$out/System/Library/Frameworks/IOSurface.framework/IOSurface.tbd" <<'EOF'
+          --- !tapi-tbd
+          tbd-version: 4
+          targets: [ x86_64-macos, arm64-macos ]
+          install-name: '/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface'
+          current-version: 372.0.0
+          compatibility-version: 1.0.0
+          reexported-libraries:
+            - targets: [ x86_64-macos, arm64-macos ]
+              libraries: [ '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation' ]
+          exports:
+            - targets: [ x86_64-macos, arm64-macos ]
+              symbols:
+                - _IOSurfaceAlignProperty
+                - _IOSurfaceCreate
+                - _IOSurfaceGetHeight
+                - _IOSurfaceGetHeightOfPlane
+                - _IOSurfaceGetPixelFormat
+                - _IOSurfaceGetPlaneCount
+                - _IOSurfaceGetWidth
+                - _IOSurfaceGetWidthOfPlane
+                - _kIOSurfaceAllocSize
+                - _kIOSurfaceHeight
+                - _kIOSurfacePixelFormat
+                - _kIOSurfacePlaneBytesPerElement
+                - _kIOSurfacePlaneBytesPerRow
+                - _kIOSurfacePlaneHeight
+                - _kIOSurfacePlaneInfo
+                - _kIOSurfacePlaneOffset
+                - _kIOSurfacePlaneSize
+                - _kIOSurfacePlaneWidth
+                - _kIOSurfaceWidth
+          ...
+          EOF
+          ln -s ../../IOSurface.tbd \
+            "$out/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface.tbd"
+          ln -s IOSurface.tbd \
+            "$out/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface"
+
+          # Dawn maps WebGPU multiplanar formats to CoreVideo's public pixel
+          # format codes. The production sources use only these ABI constants,
+          # but Bazel still links the framework as part of the Apple backend.
+          cat > "$out/System/Library/Frameworks/CoreVideo.framework/Headers/CVPixelBuffer.h" <<'EOF'
+          #ifndef _AOS_COREVIDEO_CVPIXELBUFFER_H_
+          #define _AOS_COREVIDEO_CVPIXELBUFFER_H_
+
+          #include <CoreFoundation/CoreFoundation.h>
+
+          #ifdef __cplusplus
+          enum : OSType
+          #else
+          enum
+          #endif
+          {
+            kCVPixelFormatType_32BGRA = 'BGRA',
+            kCVPixelFormatType_32RGBA = 'RGBA',
+            kCVPixelFormatType_OneComponent8 = 'L008',
+            kCVPixelFormatType_TwoComponent8 = '2C08',
+            kCVPixelFormatType_ARGB2101010LEPacked = 'l10r',
+            kCVPixelFormatType_OneComponent16 = 'L016',
+            kCVPixelFormatType_TwoComponent16 = '2C16',
+            kCVPixelFormatType_OneComponent16Half = 'L00h',
+            kCVPixelFormatType_TwoComponent16Half = '2C0h',
+            kCVPixelFormatType_64RGBAHalf = 'RGhA',
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange = '420v',
+            kCVPixelFormatType_422YpCbCr8BiPlanarVideoRange = '422v',
+            kCVPixelFormatType_444YpCbCr8BiPlanarVideoRange = '444v',
+            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange = 'x420',
+            kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange = 'x422',
+            kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange = 'x444',
+            kCVPixelFormatType_420YpCbCr8VideoRange_8A_TriPlanar = 'v0a8',
+          };
+
+          #endif
+          EOF
+          cat > "$out/System/Library/Frameworks/CoreVideo.framework/Headers/CoreVideo.h" <<'EOF'
+          #ifndef _AOS_COREVIDEO_H_
+          #define _AOS_COREVIDEO_H_
+          #include <CoreVideo/CVPixelBuffer.h>
+          #endif
+          EOF
+          cat > "$out/System/Library/Frameworks/CoreVideo.framework/CoreVideo.tbd" <<'EOF'
+          --- !tapi-tbd
+          tbd-version: 4
+          targets: [ x86_64-macos, arm64-macos ]
+          install-name: '/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo'
+          current-version: 1.8.0
+          compatibility-version: 1.2.0
+          reexported-libraries:
+            - targets: [ x86_64-macos, arm64-macos ]
+              libraries: [ '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation' ]
+          ...
+          EOF
+          ln -s ../../CoreVideo.tbd \
+            "$out/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo.tbd"
+          ln -s CoreVideo.tbd \
+            "$out/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo"
+
+          # Dawn's macOS backend is part of Workerd's normal source build.  Use
+          # Darling's independently implemented public Metal declarations so
+          # the open SDK retains that backend without importing an Xcode SDK.
+          cp -R "$darlingMetalRoot/include/Metal/." \
+            "$out/System/Library/Frameworks/Metal.framework/Headers/"
+          sed -i 's/NS_ENUM(uint8,/NS_ENUM(uint8_t,/' \
+            "$out/System/Library/Frameworks/Metal.framework/Headers/MTLTexture.h"
+          # MTLColorWriteMask is a bitmask in Apple's public API. Darling's
+          # independently implemented declaration used NS_ENUM, which makes
+          # ordinary flag accumulation ill-typed in Objective-C++.
+          sed -i 's/typedef NS_ENUM(NSUInteger, MTLColorWriteMask)/typedef NS_OPTIONS(NSUInteger, MTLColorWriteMask)/' \
+            "$out/System/Library/Frameworks/Metal.framework/Headers/MTLRenderPipeline.h"
+          # The independently implemented Metal headers intentionally grow in
+          # small API slices. Dawn also names these modern state/encoder types;
+          # keep their Objective-C identities available even where no method
+          # declaration is needed for static dispatch.
+          cat > "$out/System/Library/Frameworks/Metal.framework/Headers/MTLAOSDeviceTypes.h" <<'EOF'
+          #ifndef _METAL_AOS_DEVICE_TYPES_H_
+          #define _METAL_AOS_DEVICE_TYPES_H_
+
+          #import <Foundation/Foundation.h>
+          #import <Metal/MTLResource.h>
+          #include <stdint.h>
+
+          typedef NSUInteger MTLTimestamp;
+
+          typedef NS_ENUM(NSUInteger, MTLFeatureSet) {
+            MTLFeatureSet_iOS_GPUFamily1_v1 = 0,
+            MTLFeatureSet_iOS_GPUFamily2_v1 = 1,
+            MTLFeatureSet_iOS_GPUFamily3_v1 = 4,
+            MTLFeatureSet_iOS_GPUFamily3_v2 = 7,
+            MTLFeatureSet_iOS_GPUFamily4_v1 = 11,
+            MTLFeatureSet_tvOS_GPUFamily2_v1 = 30003,
+          };
+
+          typedef NS_ENUM(NSInteger, MTLGPUFamily) {
+            MTLGPUFamilyApple1 = 1001,
+            MTLGPUFamilyApple2 = 1002,
+            MTLGPUFamilyApple3 = 1003,
+            MTLGPUFamilyApple4 = 1004,
+            MTLGPUFamilyApple5 = 1005,
+            MTLGPUFamilyApple6 = 1006,
+            MTLGPUFamilyApple7 = 1007,
+            MTLGPUFamilyMac2 = 2002,
+            MTLGPUFamilyCommon1 = 3001,
+            MTLGPUFamilyCommon2 = 3002,
+            MTLGPUFamilyCommon3 = 3003,
+            MTLGPUFamilyMetal3 = 5001,
+          };
+
+          typedef NS_ENUM(NSUInteger, MTLCounterSamplingPoint) {
+            MTLCounterSamplingPointAtStageBoundary = 0,
+            MTLCounterSamplingPointAtDrawBoundary = 1,
+            MTLCounterSamplingPointAtDispatchBoundary = 2,
+            MTLCounterSamplingPointAtTileDispatchBoundary = 3,
+            MTLCounterSamplingPointAtBlitBoundary = 4,
+          };
+
+          typedef NSString * const MTLCommonCounter;
+          extern MTLCommonCounter MTLCommonCounterTimestamp;
+          typedef NSString * const MTLCommonCounterSet;
+          extern MTLCommonCounterSet MTLCommonCounterSetTimestamp;
+
+          @protocol MTLDevice;
+          @protocol MTLCounter <NSObject>
+          @property(readonly, copy) NSString *name;
+          @end
+
+          @protocol MTLCounterSet <NSObject>
+          @property(readonly, copy) NSString *name;
+          @property(readonly, copy) NSArray<id<MTLCounter>> *counters;
+          @end
+
+          @interface MTLCounterSampleBufferDescriptor : NSObject <NSCopying>
+          @property(retain) id<MTLCounterSet> counterSet;
+          @property(copy) NSString *label;
+          @property MTLStorageMode storageMode;
+          @property NSUInteger sampleCount;
+          @end
+
+          @protocol MTLCounterSampleBuffer <NSObject>
+          @property(readonly) id<MTLDevice> device;
+          @property(readonly) NSString *label;
+          @property(readonly) NSUInteger sampleCount;
+          @end
+
+          #endif
+          EOF
+          cat > "$out/System/Library/Frameworks/Metal.framework/Headers/MTLAOSDeviceMethods.h" <<'EOF'
+          @property(readonly, copy) NSString *name;
+          @property(readonly) uint64_t registryID;
+          @property(readonly) NSUInteger maxBufferLength;
+          @property(readonly) BOOL hasUnifiedMemory;
+          @property(readonly) uint64_t recommendedMaxWorkingSetSize;
+          @property(readonly) NSArray<id<MTLCounterSet>> *counterSets;
+          - (BOOL)supportsFeatureSet:(MTLFeatureSet)featureSet;
+          - (BOOL)supportsFamily:(MTLGPUFamily)gpuFamily;
+          - (BOOL)supportsCounterSampling:(MTLCounterSamplingPoint)samplingPoint;
+          - (id<MTLCounterSampleBuffer>)newCounterSampleBufferWithDescriptor:(MTLCounterSampleBufferDescriptor *)descriptor
+                                                                        error:(NSError **)error;
+          - (void)sampleTimestamps:(MTLTimestamp *)cpuTimestamp
+                       gpuTimestamp:(MTLTimestamp *)gpuTimestamp;
+          EOF
+          sed -i '/^@protocol MTLDevice <NSObject>$/i #import <Metal/MTLAOSDeviceTypes.h>' \
+            "$out/System/Library/Frameworks/Metal.framework/Headers/MTLDevice.h"
+          sed -i '/^@protocol MTLDevice <NSObject>$/a #import <Metal/MTLAOSDeviceMethods.h>' \
+            "$out/System/Library/Frameworks/Metal.framework/Headers/MTLDevice.h"
+
+          cat > "$out/System/Library/Frameworks/Metal.framework/Headers/MTLAOSAdditionalTypes.h" <<'EOF'
+          #ifndef _METAL_AOS_ADDITIONAL_TYPES_H_
+          #define _METAL_AOS_ADDITIONAL_TYPES_H_
+
+          #import <Metal/MTLCommandEncoder.h>
+          #import <Metal/MTLDevice.h>
+          #import <Metal/MTLPixelFormat.h>
+          #import <Metal/MTLTexture.h>
+
+          typedef NS_OPTIONS(NSUInteger, MTLBlitOption) {
+            MTLBlitOptionNone = 0,
+            MTLBlitOptionDepthFromDepthStencil = 1 << 0,
+            MTLBlitOptionStencilFromDepthStencil = 1 << 1,
+          };
+
+          typedef NS_ENUM(NSUInteger, MTLCompareFunction) {
+            MTLCompareFunctionNever = 0,
+            MTLCompareFunctionLess = 1,
+            MTLCompareFunctionEqual = 2,
+            MTLCompareFunctionLessEqual = 3,
+            MTLCompareFunctionGreater = 4,
+            MTLCompareFunctionNotEqual = 5,
+            MTLCompareFunctionGreaterEqual = 6,
+            MTLCompareFunctionAlways = 7,
+          };
+
+          typedef NS_ENUM(NSUInteger, MTLStencilOperation) {
+            MTLStencilOperationKeep = 0,
+            MTLStencilOperationZero = 1,
+            MTLStencilOperationReplace = 2,
+            MTLStencilOperationIncrementClamp = 3,
+            MTLStencilOperationDecrementClamp = 4,
+            MTLStencilOperationInvert = 5,
+            MTLStencilOperationIncrementWrap = 6,
+            MTLStencilOperationDecrementWrap = 7,
+          };
+
+          typedef NS_ENUM(NSUInteger, MTLSamplerMinMagFilter) {
+            MTLSamplerMinMagFilterNearest = 0,
+            MTLSamplerMinMagFilterLinear = 1,
+          };
+
+          typedef NS_ENUM(NSUInteger, MTLSamplerMipFilter) {
+            MTLSamplerMipFilterNotMipmapped = 0,
+            MTLSamplerMipFilterNearest = 1,
+            MTLSamplerMipFilterLinear = 2,
+          };
+
+          typedef NS_ENUM(NSUInteger, MTLSamplerAddressMode) {
+            MTLSamplerAddressModeClampToEdge = 0,
+            MTLSamplerAddressModeMirrorClampToEdge = 1,
+            MTLSamplerAddressModeRepeat = 2,
+            MTLSamplerAddressModeMirrorRepeat = 3,
+            MTLSamplerAddressModeClampToZero = 4,
+            MTLSamplerAddressModeClampToBorderColor = 5,
+          };
+
+          typedef NS_ENUM(NSUInteger, MTLVertexFormat) {
+            MTLVertexFormatInvalid = 0,
+            MTLVertexFormatUChar2 = 1,
+            MTLVertexFormatUChar3 = 2,
+            MTLVertexFormatUChar4 = 3,
+            MTLVertexFormatChar2 = 4,
+            MTLVertexFormatChar3 = 5,
+            MTLVertexFormatChar4 = 6,
+            MTLVertexFormatUChar2Normalized = 7,
+            MTLVertexFormatUChar3Normalized = 8,
+            MTLVertexFormatUChar4Normalized = 9,
+            MTLVertexFormatChar2Normalized = 10,
+            MTLVertexFormatChar3Normalized = 11,
+            MTLVertexFormatChar4Normalized = 12,
+            MTLVertexFormatUShort2 = 13,
+            MTLVertexFormatUShort3 = 14,
+            MTLVertexFormatUShort4 = 15,
+            MTLVertexFormatShort2 = 16,
+            MTLVertexFormatShort3 = 17,
+            MTLVertexFormatShort4 = 18,
+            MTLVertexFormatUShort2Normalized = 19,
+            MTLVertexFormatUShort3Normalized = 20,
+            MTLVertexFormatUShort4Normalized = 21,
+            MTLVertexFormatShort2Normalized = 22,
+            MTLVertexFormatShort3Normalized = 23,
+            MTLVertexFormatShort4Normalized = 24,
+            MTLVertexFormatHalf2 = 25,
+            MTLVertexFormatHalf3 = 26,
+            MTLVertexFormatHalf4 = 27,
+            MTLVertexFormatFloat = 28,
+            MTLVertexFormatFloat2 = 29,
+            MTLVertexFormatFloat3 = 30,
+            MTLVertexFormatFloat4 = 31,
+            MTLVertexFormatInt = 32,
+            MTLVertexFormatInt2 = 33,
+            MTLVertexFormatInt3 = 34,
+            MTLVertexFormatInt4 = 35,
+            MTLVertexFormatUInt = 36,
+            MTLVertexFormatUInt2 = 37,
+            MTLVertexFormatUInt3 = 38,
+            MTLVertexFormatUInt4 = 39,
+            MTLVertexFormatInt1010102Normalized = 40,
+            MTLVertexFormatUInt1010102Normalized = 41,
+          };
+
+          typedef NS_ENUM(NSUInteger, MTLVertexStepFunction) {
+            MTLVertexStepFunctionConstant = 0,
+            MTLVertexStepFunctionPerVertex = 1,
+            MTLVertexStepFunctionPerInstance = 2,
+            MTLVertexStepFunctionPerPatch = 3,
+            MTLVertexStepFunctionPerPatchControlPoint = 4,
+          };
+
+          typedef NS_ENUM(NSUInteger, MTLDepthClipMode) {
+            MTLDepthClipModeClip = 0,
+            MTLDepthClipModeClamp = 1,
+          };
+
+          typedef NS_ENUM(NSUInteger, MTLVisibilityResultMode) {
+            MTLVisibilityResultModeDisabled = 0,
+            MTLVisibilityResultModeBoolean = 1,
+            MTLVisibilityResultModeCounting = 2,
+          };
+
+          typedef NS_ENUM(NSUInteger, MTLLibraryError) {
+            MTLLibraryErrorUnsupported = 1,
+            MTLLibraryErrorInternal = 2,
+            MTLLibraryErrorCompileFailure = 3,
+            MTLLibraryErrorCompileWarning = 4,
+            MTLLibraryErrorFunctionNotFound = 5,
+            MTLLibraryErrorFileNotFound = 6,
+          };
+
+          @protocol MTLBlitCommandEncoder <MTLCommandEncoder>
+          @end
+
+          @protocol MTLDepthStencilState <NSObject>
+          @end
+
+          @protocol MTLSamplerState <NSObject>
+          @end
+
+          @protocol MTLSharedEvent <NSObject>
+          @end
+
+          @interface MTLTextureDescriptor (AOSDawn)
+          + (MTLTextureDescriptor *)texture2DDescriptorWithPixelFormat:(MTLPixelFormat)pixelFormat
+                                                                 width:(NSUInteger)width
+                                                                height:(NSUInteger)height
+                                                             mipmapped:(BOOL)mipmapped;
+          @property MTLTextureType textureType;
+          @property MTLPixelFormat pixelFormat;
+          @property NSUInteger width;
+          @property NSUInteger height;
+          @property NSUInteger depth;
+          @property NSUInteger mipmapLevelCount;
+          @property NSUInteger sampleCount;
+          @property NSUInteger arrayLength;
+          @property MTLResourceOptions resourceOptions;
+          @property MTLCPUCacheMode cpuCacheMode;
+          @property MTLStorageMode storageMode;
+          @property MTLHazardTrackingMode hazardTrackingMode;
+          @property MTLTextureUsage usage;
+          @end
+
+          @interface MTLSamplerDescriptor (AOSDawn)
+          @property MTLSamplerMinMagFilter minFilter;
+          @property MTLSamplerMinMagFilter magFilter;
+          @property MTLSamplerMipFilter mipFilter;
+          @property NSUInteger maxAnisotropy;
+          @property MTLSamplerAddressMode sAddressMode;
+          @property MTLSamplerAddressMode tAddressMode;
+          @property MTLSamplerAddressMode rAddressMode;
+          @property BOOL normalizedCoordinates;
+          @property float lodMinClamp;
+          @property float lodMaxClamp;
+          @property MTLCompareFunction compareFunction;
+          @property(copy) NSString *label;
+          @end
+
+          @interface MTLStencilDescriptor (AOSDawn)
+          @property MTLCompareFunction stencilCompareFunction;
+          @property MTLStencilOperation stencilFailureOperation;
+          @property MTLStencilOperation depthFailureOperation;
+          @property MTLStencilOperation depthStencilPassOperation;
+          @property uint32_t readMask;
+          @property uint32_t writeMask;
+          @end
+
+          @interface MTLDepthStencilDescriptor (AOSDawn)
+          @property MTLCompareFunction depthCompareFunction;
+          @property(getter=isDepthWriteEnabled) BOOL depthWriteEnabled;
+          @property(copy) MTLStencilDescriptor *frontFaceStencil;
+          @property(copy) MTLStencilDescriptor *backFaceStencil;
+          @property(copy) NSString *label;
+          @end
+
+          @interface MTLCompileOptions (AOSDawn)
+          @property BOOL fastMathEnabled;
+          @property BOOL preserveInvariance;
+          @end
+
+          @interface MTLVertexBufferLayoutDescriptor : NSObject <NSCopying>
+          @property NSUInteger stride;
+          @property MTLVertexStepFunction stepFunction;
+          @property NSUInteger stepRate;
+          @end
+
+          @interface MTLVertexBufferLayoutDescriptorArray : NSObject
+          - (MTLVertexBufferLayoutDescriptor *)objectAtIndexedSubscript:(NSUInteger)index;
+          - (void)setObject:(MTLVertexBufferLayoutDescriptor *)descriptor
+                atIndexedSubscript:(NSUInteger)index;
+          @end
+
+          @interface MTLVertexAttributeDescriptor : NSObject <NSCopying>
+          @property MTLVertexFormat format;
+          @property NSUInteger offset;
+          @property NSUInteger bufferIndex;
+          @end
+
+          @interface MTLVertexAttributeDescriptorArray : NSObject
+          - (MTLVertexAttributeDescriptor *)objectAtIndexedSubscript:(NSUInteger)index;
+          - (void)setObject:(MTLVertexAttributeDescriptor *)descriptor
+                atIndexedSubscript:(NSUInteger)index;
+          @end
+
+          @interface MTLVertexDescriptor (AOSDawn)
+          + (MTLVertexDescriptor *)vertexDescriptor;
+          @property(readonly) MTLVertexBufferLayoutDescriptorArray *layouts;
+          @property(readonly) MTLVertexAttributeDescriptorArray *attributes;
+          - (void)reset;
+          @end
+
+          @interface MTLRenderPassSampleBufferAttachmentDescriptor : NSObject <NSCopying>
+          @property(retain) id<MTLCounterSampleBuffer> sampleBuffer;
+          @property NSUInteger startOfVertexSampleIndex;
+          @property NSUInteger endOfVertexSampleIndex;
+          @property NSUInteger startOfFragmentSampleIndex;
+          @property NSUInteger endOfFragmentSampleIndex;
+          @end
+
+          @interface MTLRenderPassSampleBufferAttachmentDescriptorArray : NSObject
+          - (MTLRenderPassSampleBufferAttachmentDescriptor *)objectAtIndexedSubscript:(NSUInteger)index;
+          - (void)setObject:(MTLRenderPassSampleBufferAttachmentDescriptor *)descriptor
+                atIndexedSubscript:(NSUInteger)index;
+          @end
+
+          @interface MTLBlitPassSampleBufferAttachmentDescriptor : NSObject <NSCopying>
+          @property(retain) id<MTLCounterSampleBuffer> sampleBuffer;
+          @property NSUInteger startOfEncoderSampleIndex;
+          @property NSUInteger endOfEncoderSampleIndex;
+          @end
+
+          @interface MTLBlitPassSampleBufferAttachmentDescriptorArray : NSObject
+          - (MTLBlitPassSampleBufferAttachmentDescriptor *)objectAtIndexedSubscript:(NSUInteger)index;
+          - (void)setObject:(MTLBlitPassSampleBufferAttachmentDescriptor *)descriptor
+                atIndexedSubscript:(NSUInteger)index;
+          @end
+
+          @interface MTLBlitPassDescriptor : NSObject <NSCopying>
+          + (MTLBlitPassDescriptor *)blitPassDescriptor;
+          @property(readonly) MTLBlitPassSampleBufferAttachmentDescriptorArray *sampleBufferAttachments;
+          @end
+
+          #endif
+          EOF
+          sed -i '/^#endif \/\/ _METAL_METAL_H_$/i #import <Metal/MTLAOSAdditionalTypes.h>' \
+            "$out/System/Library/Frameworks/Metal.framework/Headers/Metal.h"
+          mkdir -p "$out/share/licenses/darwin-sdk/darling-metal"
+          cp -R "$darlingMetalRoot/LICENSES/." \
+            "$out/share/licenses/darwin-sdk/darling-metal/"
+
+          cat > "$out/System/Library/Frameworks/Metal.framework/Metal.tbd" <<'EOF'
+          --- !tapi-tbd
+          tbd-version: 4
+          targets: [ x86_64-macos, arm64-macos ]
+          install-name: '/System/Library/Frameworks/Metal.framework/Versions/A/Metal'
+          current-version: 367.4.0
+          compatibility-version: 1.0.0
+          exports:
+            - targets: [ x86_64-macos, arm64-macos ]
+              symbols:
+                - _MTLCopyAllDevices
+                - _MTLCopyAllDevicesWithObserver
+                - _MTLCreateSystemDefaultDevice
+                - _MTLCommonCounterSetTimestamp
+                - _MTLCommonCounterTimestamp
+                - _MTLDeviceRemovalRequestedNotification
+                - _MTLDeviceWasAddedNotification
+                - _MTLDeviceWasRemovedNotification
+                - _MTLRemoveDeviceObserver
+                - '_OBJC_CLASS_$_MTLCaptureManager'
+                - '_OBJC_CLASS_$_MTLBlitPassDescriptor'
+                - '_OBJC_CLASS_$_MTLCompileOptions'
+                - '_OBJC_CLASS_$_MTLComputePassDescriptor'
+                - '_OBJC_CLASS_$_MTLComputePassSampleBufferAttachmentDescriptor'
+                - '_OBJC_CLASS_$_MTLComputePassSampleBufferAttachmentDescriptorArray'
+                - '_OBJC_CLASS_$_MTLComputePipelineDescriptor'
+                - '_OBJC_CLASS_$_MTLCounterSampleBufferDescriptor'
+                - '_OBJC_CLASS_$_MTLDepthStencilDescriptor'
+                - '_OBJC_CLASS_$_MTLPipelineBufferDescriptor'
+                - '_OBJC_CLASS_$_MTLPipelineBufferDescriptorArray'
+                - '_OBJC_CLASS_$_MTLRenderPassAttachmentDescriptor'
+                - '_OBJC_CLASS_$_MTLRenderPassColorAttachmentDescriptor'
+                - '_OBJC_CLASS_$_MTLRenderPassColorAttachmentDescriptorArray'
+                - '_OBJC_CLASS_$_MTLRenderPassDepthAttachmentDescriptor'
+                - '_OBJC_CLASS_$_MTLRenderPassDescriptor'
+                - '_OBJC_CLASS_$_MTLRenderPassStencilAttachmentDescriptor'
+                - '_OBJC_CLASS_$_MTLRenderPipelineColorAttachmentDescriptor'
+                - '_OBJC_CLASS_$_MTLRenderPipelineColorAttachmentDescriptorArray'
+                - '_OBJC_CLASS_$_MTLRenderPipelineDescriptor'
+                - '_OBJC_CLASS_$_MTLSamplerDescriptor'
+                - '_OBJC_CLASS_$_MTLStencilDescriptor'
+                - '_OBJC_CLASS_$_MTLTextureDescriptor'
+                - '_OBJC_CLASS_$_MTLVertexAttributeDescriptor'
+                - '_OBJC_CLASS_$_MTLVertexBufferLayoutDescriptor'
+                - '_OBJC_CLASS_$_MTLVertexDescriptor'
+          ...
+          EOF
+          ln -s ../../Metal.tbd \
+            "$out/System/Library/Frameworks/Metal.framework/Versions/A/Metal.tbd"
+          ln -s Metal.tbd \
+            "$out/System/Library/Frameworks/Metal.framework/Versions/A/Metal"
+
+          # QuartzCore owns the layer which presents Metal drawables. Dawn's
+          # backend needs only the public CALayer/CAMetalLayer contract, while
+          # all GPU objects remain declared and linked by Metal itself.
+          cat > "$out/System/Library/Frameworks/QuartzCore.framework/Headers/CALayer.h" <<'EOF'
+          #ifndef _AOS_QUARTZCORE_CALAYER_H_
+          #define _AOS_QUARTZCORE_CALAYER_H_
+
+          #import <Foundation/Foundation.h>
+
+          typedef struct CGSize {
+            double width;
+            double height;
+          } CGSize;
+
+          @interface CALayer : NSObject
+          + (instancetype)layer;
+          @property(getter=isOpaque) BOOL opaque;
+          @end
+
+          #endif
+          EOF
+          cat > "$out/System/Library/Frameworks/QuartzCore.framework/Headers/CAMetalLayer.h" <<'EOF'
+          #ifndef _AOS_QUARTZCORE_CAMETALLAYER_H_
+          #define _AOS_QUARTZCORE_CAMETALLAYER_H_
+
+          #import <QuartzCore/CALayer.h>
+          #import <Metal/Metal.h>
+
+          @protocol CAMetalDrawable <MTLDrawable>
+          @property(readonly) id<MTLTexture> texture;
+          @end
+
+          @interface CAMetalLayer : CALayer
+          @property CGSize drawableSize;
+          @property BOOL framebufferOnly;
+          @property(retain) id<MTLDevice> device;
+          @property MTLPixelFormat pixelFormat;
+          @property BOOL displaySyncEnabled;
+          - (id<CAMetalDrawable>)nextDrawable;
+          @end
+
+          #endif
+          EOF
+          cat > "$out/System/Library/Frameworks/QuartzCore.framework/Headers/QuartzCore.h" <<'EOF'
+          #ifndef _AOS_QUARTZCORE_H_
+          #define _AOS_QUARTZCORE_H_
+          #import <QuartzCore/CALayer.h>
+          #import <QuartzCore/CAMetalLayer.h>
+          #endif
+          EOF
+          cat > "$out/System/Library/Frameworks/QuartzCore.framework/QuartzCore.tbd" <<'EOF'
+          --- !tapi-tbd
+          tbd-version: 4
+          targets: [ x86_64-macos, arm64-macos ]
+          install-name: '/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore'
+          current-version: 1151.6.0
+          compatibility-version: 1.2.0
+          reexported-libraries:
+            - targets: [ x86_64-macos, arm64-macos ]
+              libraries:
+                - '/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation'
+                - '/System/Library/Frameworks/Metal.framework/Versions/A/Metal'
+          exports:
+            - targets: [ x86_64-macos, arm64-macos ]
+              symbols:
+                - '_OBJC_CLASS_$_CALayer'
+                - '_OBJC_CLASS_$_CAMetalLayer'
+          ...
+          EOF
+          ln -s ../../QuartzCore.tbd \
+            "$out/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore.tbd"
+          ln -s QuartzCore.tbd \
+            "$out/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore"
+
           # GLib uses Foundation's filesystem lookup API and AppKit's native
           # notification backend, while other consumers import both through
           # Cocoa. Publish the documented command-line Objective-C subset as
@@ -1031,6 +1701,31 @@ in
           #ifndef _AOS_FOUNDATION_H_
           #define _AOS_FOUNDATION_H_
           #import <objc/NSObject.h>
+          #import <CoreFoundation/CFAvailability.h>
+          #include <dispatch/dispatch.h>
+
+          #define NS_ENUM(_type, _name) CF_ENUM(_type, _name)
+          #define NS_OPTIONS(_type, _name) CF_OPTIONS(_type, _name)
+          #define NS_INLINE static inline
+
+          typedef struct _NSRange {
+            NSUInteger location;
+            NSUInteger length;
+          } NSRange;
+          NS_INLINE NSRange NSMakeRange(NSUInteger location, NSUInteger length) {
+            NSRange range = {location, length};
+            return range;
+          }
+          typedef double CFTimeInterval;
+
+          @protocol NSCopying
+          @end
+
+          @class NSString;
+          @interface NSError : NSObject
+          @property(readonly) NSInteger code;
+          @property(readonly, copy) NSString *localizedDescription;
+          @end
 
           typedef NSInteger NSComparisonResult;
           enum { NSOrderedAscending = -1, NSOrderedSame = 0, NSOrderedDescending = 1 };
@@ -1060,6 +1755,7 @@ in
           - (const char *)cStringUsingEncoding:(NSStringEncoding)encoding;
           - (NSData *)dataUsingEncoding:(NSStringEncoding)encoding;
           - (NSComparisonResult)compare:(NSString *)string;
+          - (NSComparisonResult)caseInsensitiveCompare:(NSString *)string;
           @end
 
           @interface NSData : NSObject
@@ -1136,6 +1832,19 @@ in
           - (id)objectForInfoDictionaryKey:(NSString *)key;
           @end
 
+          typedef struct {
+            NSInteger majorVersion;
+            NSInteger minorVersion;
+            NSInteger patchVersion;
+          } NSOperatingSystemVersion;
+
+          @interface NSProcessInfo : NSObject
+          + (NSProcessInfo *)processInfo;
+          @property(readonly) NSOperatingSystemVersion operatingSystemVersion;
+          @property(readonly, copy) NSString *operatingSystemVersionString;
+          - (BOOL)isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion)version;
+          @end
+
           typedef NSUInteger NSSearchPathDirectory;
           enum {
             NSApplicationDirectory = 1,
@@ -1180,6 +1889,18 @@ in
             BOOL expandTilde
           );
 
+          #endif
+          EOF
+          cat > "$out/System/Library/Frameworks/Foundation.framework/Headers/NSObject.h" <<'EOF'
+          #ifndef _AOS_FOUNDATION_NSOBJECT_H_
+          #define _AOS_FOUNDATION_NSOBJECT_H_
+          #import <Foundation/Foundation.h>
+          #endif
+          EOF
+          cat > "$out/System/Library/Frameworks/Foundation.framework/Headers/NSProcessInfo.h" <<'EOF'
+          #ifndef _AOS_FOUNDATION_NSPROCESSINFO_H_
+          #define _AOS_FOUNDATION_NSPROCESSINFO_H_
+          #import <Foundation/Foundation.h>
           #endif
           EOF
 
@@ -1259,6 +1980,7 @@ in
                 - '_OBJC_CLASS_$_NSMutableDictionary'
                 - '_OBJC_CLASS_$_NSNumber'
                 - '_OBJC_CLASS_$_NSObject'
+                - '_OBJC_CLASS_$_NSProcessInfo'
                 - '_OBJC_CLASS_$_NSString'
                 - '_OBJC_CLASS_$_NSURL'
                 - '_OBJC_CLASS_$_NSUserDefaults'
@@ -1955,8 +2677,10 @@ in
                 - _IORegistryEntryCreateCFProperty
                 - _IORegistryEntryFromPath
                 - _IORegistryEntryGetChildEntry
+                - _IORegistryEntryIDMatching
                 - _IORegistryEntryGetParentEntry
                 - _IORegistryEntryGetPath
+                - _IORegistryEntrySearchCFProperty
                 - _IORegistryEntrySetCFProperty
                 - _IOServiceAddMatchingNotification
                 - _IOServiceAuthorize
@@ -2117,6 +2841,9 @@ in
                 - _sel_getName
                 - _sel_getUid
                 - _sel_registerName
+            - targets: [ x86_64-macos ]
+              symbols:
+                - _objc_msgSend_stret
           ...
           EOF
 

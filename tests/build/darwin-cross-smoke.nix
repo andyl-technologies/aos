@@ -312,9 +312,67 @@
               -o "$c/bin/aos-darwin-foundation-appkit-smoke"
 
             printf '%s\n' \
+              '#import <Foundation/NSObject.h>' \
+              '#import <Foundation/NSProcessInfo.h>' \
+              '#import <CoreVideo/CVPixelBuffer.h>' \
+              '#import <IOSurface/IOSurfaceRef.h>' \
+              '#import <Metal/Metal.h>' \
+              '#import <QuartzCore/CAMetalLayer.h>' \
+              'int main(void) {' \
+              '  id<MTLDevice> device = MTLCreateSystemDefaultDevice();' \
+              '  NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();' \
+              '  MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];' \
+              '  descriptor.textureType = MTLTextureType2D;' \
+              '  descriptor.width = 1;' \
+              '  descriptor.height = 1;' \
+              '  descriptor.usage = MTLTextureUsageShaderRead;' \
+              '  MTLSamplerDescriptor *sampler = [MTLSamplerDescriptor new];' \
+              '  sampler.minFilter = MTLSamplerMinMagFilterLinear;' \
+              '  sampler.compareFunction = MTLCompareFunctionAlways;' \
+              '  MTLVertexDescriptor *vertex = [MTLVertexDescriptor vertexDescriptor];' \
+              '  MTLVertexBufferLayoutDescriptor *vertexLayout = [MTLVertexBufferLayoutDescriptor new];' \
+              '  MTLVertexAttributeDescriptor *vertexAttribute = [MTLVertexAttributeDescriptor new];' \
+              '  vertex.attributes[0].format = MTLVertexFormatFloat4;' \
+              '  vertex.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;' \
+              '  MTLCounterSampleBufferDescriptor *counter = [MTLCounterSampleBufferDescriptor new];' \
+              '  counter.storageMode = MTLStorageModeShared;' \
+              '  MTLBlitPassDescriptor *blitDescriptor = [MTLBlitPassDescriptor new];' \
+              '  id<MTLBlitCommandEncoder> blitEncoder = nil;' \
+              '  id<MTLSharedEvent> sharedEvent = nil;' \
+              '  NSProcessInfo *processInfo = [NSProcessInfo processInfo];' \
+              '  NSOperatingSystemVersion version = processInfo.operatingSystemVersion;' \
+              '  OSType pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;' \
+              '  IOSurfaceRef surface = IOSurfaceCreate(NULL);' \
+              '  size_t rowBytes = IOSurfaceAlignProperty(kIOSurfacePlaneBytesPerRow, 64);' \
+              '  CAMetalLayer *layer = [CAMetalLayer layer];' \
+              '  CGSize drawableSize = { 1.0, 1.0 };' \
+              '  NSRange range = NSMakeRange(0, 1);' \
+              '  layer.drawableSize = drawableSize;' \
+              '  layer.device = device;' \
+              '  MTLTimestamp timestamp = 0;' \
+              '  MTLCommonCounterSet counterSet = MTLCommonCounterSetTimestamp;' \
+              '  MTLCommonCounter counterName = MTLCommonCounterTimestamp;' \
+              '  MTLColorWriteMask writeMask = MTLColorWriteMaskRed | MTLColorWriteMaskGreen;' \
+              '  BOOL unified = device.hasUnifiedMemory;' \
+              '  uint64_t workingSet = device.recommendedMaxWorkingSetSize;' \
+              '  NSComparisonResult comparison = [counterName caseInsensitiveCompare:counterSet];' \
+              '  return device == nil || devices == nil || descriptor == nil || sampler == nil || vertex == nil || vertexLayout == nil || vertexAttribute == nil || counter == nil || blitDescriptor == nil || blitEncoder != nil || sharedEvent != nil || processInfo == nil || version.majorVersion < 0 || pixelFormat == 0 || surface == NULL || rowBytes == 0 || layer == nil || range.length != 1 || timestamp != 0 || counterSet == nil || counterName == nil || writeMask == MTLColorWriteMaskNone || unified > 1 || workingSet == UINT64_MAX || comparison < NSOrderedAscending;' \
+              '}' \
+              > metal-smoke.m
+            "$CC" metal-smoke.m \
+              -framework Foundation \
+              -framework CoreVideo \
+              -framework IOSurface \
+              -framework Metal \
+              -framework QuartzCore \
+              -lobjc \
+              -o "$c/bin/aos-darwin-metal-smoke"
+
+            printf '%s\n' \
               '#include <arpa/nameser.h>' \
               '#include <dns.h>' \
               '#include <resolv.h>' \
+              '#include <tzfile.h>' \
               'int main(void) {' \
               '  unsigned char answer[NS_PACKETSZ];' \
               '  char expanded[NS_MAXDNAME];' \
@@ -325,7 +383,7 @@
               '  res_ndestroy(&state);' \
               '  int query = res_query("localhost", ns_c_in, ns_t_a, answer, sizeof(answer));' \
               '  int expansion = dn_expand(answer, answer + sizeof(answer), answer, expanded, sizeof(expanded));' \
-              '  return initialized < -1 || serverCount < 0 || query < -1 || expansion < -1;' \
+              '  return initialized < -1 || serverCount < 0 || query < -1 || expansion < -1 || sizeof(struct tzhead) != 44;' \
               '}' \
               > resolver-smoke.c
             "$CC" resolver-smoke.c -o "$c/bin/aos-darwin-resolver-smoke"
@@ -464,10 +522,18 @@
               '  SecTaskRef task = SecTaskCreateFromSelf(kCFAllocatorDefault);' \
               '  if (task != NULL) CFRelease(task);' \
               '  CFMutableDictionaryRef matching = IOServiceMatching(kIOUSBDeviceClassName);' \
+              '  CFDictionaryAddValue(matching, CFSTR("AOSKey"), CFSTR("AOSValue"));' \
               '  io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, matching);' \
+              '  CFTypeRef property = IORegistryEntrySearchCFProperty(service, kIOServicePlane, CFSTR("IOClass"), kCFAllocatorDefault, 0);' \
+              '  if (property != NULL) CFRelease(property);' \
               '  if (service != IO_OBJECT_NULL) IOObjectRelease(service);' \
+              '  CFMutableDictionaryRef idMatching = IORegistryEntryIDMatching(0);' \
+              '  if (idMatching != NULL) CFRelease(idMatching);' \
+              '  host_basic_info_data_t hostInfo = { 0 };' \
+              '  mach_msg_type_number_t hostInfoCount = HOST_BASIC_INFO_COUNT;' \
+              '  kern_return_t hostStatus = host_info(mach_host_self(), HOST_BASIC_INFO, (host_info_t)&hostInfo, &hostInfoCount);' \
               '  unsigned long mediaIoctls[] = { DKIOCGETBLOCKSIZE, DKIOCGETBLOCKCOUNT };' \
-              '  return kIOCDMediaClass[0] != 73 || kIODVDMediaClass[0] != 73 || mediaIoctls[0] == mediaIoctls[1];' \
+              '  return kIOCDMediaClass[0] != 73 || kIODVDMediaClass[0] != 73 || mediaIoctls[0] == mediaIoctls[1] || (hostStatus != KERN_SUCCESS && hostStatus != KERN_FAILURE);' \
               '}' \
               > iokit-smoke.c
             "$CC" iokit-smoke.c \
@@ -575,6 +641,7 @@
               "$c/bin/aos-darwin-hypervisor-smoke" \
               "$c/bin/aos-darwin-iconv-smoke" \
               "$c/bin/aos-darwin-iokit-smoke" \
+              "$c/bin/aos-darwin-metal-smoke" \
               "$c/bin/aos-darwin-nis-smoke" \
               "$c/bin/aos-darwin-objective-c-smoke" \
               "$c/bin/aos-darwin-resolver-smoke" \
