@@ -311,6 +311,11 @@
                     ${stdenv.coreutils}/bin/mkdir -p "$output"
                     ${stdenv.coreutils}/bin/cp -R "$source/." "$output/"
                     ${stdenv.coreutils}/bin/chmod -R u+w "$output"
+                    # Directory derivations carry an AOS target marker. Nested
+                    # generated inputs are module content here, not separately
+                    # publishable outputs, so discard their copied metadata.
+                    ${stdenv.findutils}/bin/find "$output" -path '*/nix-support/aos-target-platform' -delete
+                    ${stdenv.findutils}/bin/find "$output" -type d -name nix-support -empty -delete
                     ${stdenv.coreutils}/bin/cp "${configModuleMetaFile}" "$output/config-meta.json"
 
                     invalid_entry=$(${stdenv.findutils}/bin/find "$output" ! -type d ! -type f -print -quit)
