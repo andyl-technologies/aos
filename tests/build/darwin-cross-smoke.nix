@@ -62,6 +62,9 @@
               '  CFTimeZoneResetSystem();' \
               '  CFStringRef zoneName = zone == NULL ? NULL : CFTimeZoneGetName(zone);' \
               '  CFStringRef path = CFStringCreateWithCString(kCFAllocatorDefault, ".", kCFStringEncodingUTF8);' \
+              '  CFStringRef pathCopy = path == NULL ? NULL : CFStringCreateCopy(kCFAllocatorDefault, path);' \
+              '  CFComparisonResult pathComparison = pathCopy == NULL ? kCFCompareLessThan : CFStringCompare(pathCopy, path, 0);' \
+              '  Boolean pathHasPrefix = pathCopy != NULL && CFStringHasPrefix(pathCopy, CFSTR("."));' \
               '  CFURLRef pathURL = path == NULL ? NULL : CFURLCreateWithFileSystemPath(kCFAllocatorDefault, path, kCFURLPOSIXPathStyle, true);' \
               '  UInt8 pathBuffer[32];' \
               '  Boolean represented = pathURL != NULL && CFURLGetFileSystemRepresentation(pathURL, true, pathBuffer, sizeof(pathBuffer));' \
@@ -88,12 +91,13 @@
               '  if (bundle != NULL) CFRelease(bundle);' \
               '  if (url != NULL) CFRelease(url);' \
               '  if (pathURL != NULL) CFRelease(pathURL);' \
+              '  if (pathCopy != NULL) CFRelease(pathCopy);' \
               '  if (path != NULL) CFRelease(path);' \
               '  if (systemZone != NULL) CFRelease(systemZone);' \
               '  if (zone != NULL) CFRelease(zone);' \
               '  if (canonicalLanguage != NULL) CFRelease(canonicalLanguage);' \
               '  struct ether_addr address = { { 0 } };' \
-              '  return label == NULL || canonicalLanguage == NULL || maximum < 0 || convertedCharacters < 0 || usedStringBytes < 0 || zoneName == NULL || systemZone == NULL || identifier == value || !represented || launchStatus == -1 || attributeSize < -1 || attributeListSize < -1 || attributeSetStatus < -1 || attributeRemoveStatus < -1 || address.octet[0] != 0 || ETHER_ADDR_LEN != 6 || XATTR_CREATE != 0x0002 || XATTR_REPLACE != 0x0004;' \
+              '  return label == NULL || canonicalLanguage == NULL || maximum < 0 || convertedCharacters < 0 || usedStringBytes < 0 || zoneName == NULL || systemZone == NULL || pathComparison != kCFCompareEqualTo || !pathHasPrefix || identifier == value || !represented || launchStatus == -1 || attributeSize < -1 || attributeListSize < -1 || attributeSetStatus < -1 || attributeRemoveStatus < -1 || address.octet[0] != 0 || ETHER_ADDR_LEN != 6 || XATTR_CREATE != 0x0002 || XATTR_REPLACE != 0x0004;' \
               '}' \
               > framework-smoke.c
             "$CC" framework-smoke.c \
