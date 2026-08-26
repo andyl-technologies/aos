@@ -7,6 +7,7 @@
 ##! `pkgs.erofs-utils`, whose snapshot tarball ships only
 ##! `configure.ac` and needs the full autotools bootstrap.
 {
+  lib,
   mkDerivation,
   fetchurl,
   m4,
@@ -22,6 +23,7 @@
   stdenv,
 }: let
   version = "2.5.4";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
     pname = "libtool";
@@ -112,7 +114,7 @@ in
             nativeRoot=$(dirname "$(dirname "$nativeTool")")
             targetRoot=$2
             [ "$nativeRoot" = "$targetRoot" ] && return
-            grep -IrlZ -F "$nativeRoot" "$out" 2>/dev/null \
+            ${lib.optionalString isDarwinCross "{ "}grep -IrlZ -F "$nativeRoot" "$out" 2>/dev/null${lib.optionalString isDarwinCross " || [ \"$?\" -eq 1 ]; }"} \
               | xargs -0 -r sed -i "s|$nativeRoot|$targetRoot|g"
           }
           retarget_tool_root m4 ${m4}
@@ -125,12 +127,12 @@ in
           retarget_tool_root gzip ${gzip}
 
           nativeBashRoot=$(dirname "$(dirname "$CONFIG_SHELL")")
-          grep -IrlZ -F "$nativeBashRoot" "$out" 2>/dev/null \
+          ${lib.optionalString isDarwinCross "{ "}grep -IrlZ -F "$nativeBashRoot" "$out" 2>/dev/null${lib.optionalString isDarwinCross " || [ \"$?\" -eq 1 ]; }"} \
             | xargs -0 -r sed -i "s|$nativeBashRoot|${bash}|g"
 
           # The standalone installed libtool must select the compiler present
           # on Darwin rather than retaining the Linux cross-wrapper executable.
-          grep -IrlZ -F "${stdenv.cc}/bin/" "$out" 2>/dev/null \
+          ${lib.optionalString isDarwinCross "{ "}grep -IrlZ -F "${stdenv.cc}/bin/" "$out" 2>/dev/null${lib.optionalString isDarwinCross " || [ \"$?\" -eq 1 ]; }"} \
             | xargs -0 -r sed -i "s|${stdenv.cc}/bin/||g"
         '';
       }
