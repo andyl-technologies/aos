@@ -14,8 +14,11 @@
   bzip2,
   readline,
   sqlite,
+  gnutls,
+  openldap,
   bash,
   stdenv,
+  buildPackages,
 }: let
   version = "2.5.20";
 in
@@ -31,10 +34,16 @@ in
       hash = "sha256-ZGEmbpnDCEGaN5q+bDVtVMIUE2xFib1llRCRE4mJ/8Y=";
     };
 
-    buildDeps = [
-      gnumake
-      pkg-config
-    ];
+    buildDeps =
+      [
+        gnumake
+        pkg-config
+      ]
+      ++ (
+        if stdenv.isCross && stdenv.hostPlatform.isDarwin
+        then [buildPackages.libgpg-error]
+        else []
+      );
     # The GnuPG crypto stack plus compression (zlib/bzip2), readline for the
     # interactive prompts, sqlite for the keyboxd key database, and libusb1 so
     # scdaemon's built-in CCID driver can drive USB smartcard readers without a
@@ -51,6 +60,8 @@ in
         bzip2
         readline
         sqlite
+        gnutls
+        openldap
       ]
       ++ (
         if stdenv.hostPlatform.isDarwin
@@ -87,30 +98,84 @@ in
         # fix-libusb-include-path.patch.
         #
         # The crypto libraries are located via their *-config scripts
-        # (--with-*-prefix); sqlite is found through pkg-config. keyserver TLS
-        # (gnutls) and LDAP (openldap) are left out, so dirmngr auto-disables
-        # those backends.
+        # (--with-*-prefix); sqlite and GnuTLS are found through pkg-config,
+        # while LDAP is rooted explicitly. Keep dirmngr's TLS and LDAP
+        # keyserver transports enabled on every supported platform.
         #
         # The 2.5 development series does not ship pre-built man pages, so the
         # install phase needs the yat2m generator. It lives in libgpg-error's bin
         # (which isn't on PATH here), so point configure's AC_PATH_PROG at it
         # explicitly — same approach as GPGRT_CONFIG.
         name = "configure";
+        script =
+          if stdenv.isCross && stdenv.hostPlatform.isDarwin
+          then ''
+            # The documentation build compiles and executes mkdefsinc on the
+            # Linux builder. Keep native hardening except for Darwin arm's PAC
+            # token, and prevent target SDK/compiler flags reaching it.
+            native_cc="$BUILD_CC"
+            mkdir -p .aos-build-tools
+            cat > .aos-build-tools/cc-for-build <<EOF
+            #!$CONFIG_SHELL
+            native_hardening=
+            for token in \$AOS_HARDENING_ENABLE; do
+              case "\$token" in
+                pacret) ;;
+                *) native_hardening="\$native_hardening \$token" ;;
+              esac
+            done
+            export AOS_HARDENING_ENABLE="\$native_hardening"
+            unset AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+            unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
+            unset MACOSX_DEPLOYMENT_TARGET NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT
+            exec "$native_cc" "\$@"
+            EOF
+            chmod +x .aos-build-tools/cc-for-build
+            export CC_FOR_BUILD="$PWD/.aos-build-tools/cc-for-build"
+
+            export CPPFLAGS="-I${libusb1}/include/libusb-1.0 $CPPFLAGS"
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --sysconfdir=$out/etc \
+              --enable-large-secmem \
+              --disable-nls \
+              --enable-gnutls \
+              --enable-ldap \
+              --with-ldap=${openldap} \
+              --with-libgpg-error-prefix=${libgpg-error} \
+              --with-libgcrypt-prefix=${libgcrypt} \
+              --with-libassuan-prefix=${libassuan} \
+              --with-ksba-prefix=${libksba} \
+              --with-npth-prefix=${npth} \
+              GPGRT_CONFIG=${libgpg-error}/bin/gpgrt-config \
+              YAT2M=${buildPackages.libgpg-error}/bin/yat2m
+          ''
+          else ''
+            export CPPFLAGS="-I${libusb1}/include/libusb-1.0 $CPPFLAGS"
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --sysconfdir=$out/etc \
+              --enable-large-secmem \
+              --disable-nls \
+              --enable-gnutls \
+              --enable-ldap \
+              --with-ldap=${openldap} \
+              --with-libgpg-error-prefix=${libgpg-error} \
+              --with-libgcrypt-prefix=${libgcrypt} \
+              --with-libassuan-prefix=${libassuan} \
+              --with-ksba-prefix=${libksba} \
+              --with-npth-prefix=${npth} \
+              GPGRT_CONFIG=${libgpg-error}/bin/gpgrt-config \
+              YAT2M=${libgpg-error}/bin/yat2m
+          '';
+      }
+      {
+        name = "verify-network-features";
         script = ''
-          export CPPFLAGS="-I${libusb1}/include/libusb-1.0 $CPPFLAGS"
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --sysconfdir=$out/etc \
-            --enable-large-secmem \
-            --disable-nls \
-            --with-libgpg-error-prefix=${libgpg-error} \
-            --with-libgcrypt-prefix=${libgcrypt} \
-            --with-libassuan-prefix=${libassuan} \
-            --with-ksba-prefix=${libksba} \
-            --with-npth-prefix=${npth} \
-            GPGRT_CONFIG=${libgpg-error}/bin/gpgrt-config \
-            YAT2M=${libgpg-error}/bin/yat2m
+          grep '^#define HTTP_USE_GNUTLS 1$' config.h
+          grep '^#define USE_LDAP 1$' config.h
         '';
       }
       {
