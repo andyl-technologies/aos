@@ -202,8 +202,9 @@ in
             "$out/usr/include/servers" \
             "$out/usr/lib" \
             "$out/System/Library/Frameworks/ApplicationServices.framework/Headers" \
+            "$out/System/Library/Frameworks/Cocoa.framework/Headers" \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Headers" \
-            "$out/System/Library/Frameworks/CoreServices.framework" \
+            "$out/System/Library/Frameworks/CoreServices.framework/Headers" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/storage/ata" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/storage" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/usb" \
@@ -550,6 +551,10 @@ in
               symbols:
                 - _CFArrayGetCount
                 - _CFArrayGetValueAtIndex
+                - _CFArrayAppendValue
+                - _CFArrayCreate
+                - _CFArrayCreateMutable
+                - _CFArrayInsertValueAtIndex
                 - _CFBooleanGetTypeID
                 - _CFBooleanGetValue
                 - _CFBundleCopyExecutableURL
@@ -591,8 +596,16 @@ in
                 - _CFTimeZoneGetName
                 - _CFTimeZoneResetSystem
                 - _CFURLCreateFromFileSystemRepresentation
+                - _CFURLCopyAbsoluteURL
+                - _CFURLCopyFileSystemPath
+                - _CFURLCopyLastPathComponent
+                - _CFURLCreateCopyAppendingPathComponent
+                - _CFURLCreateCopyDeletingLastPathComponent
+                - _CFURLCreateFilePathURL
+                - _CFURLCreateFileReferenceURL
                 - _CFURLCreateWithFileSystemPath
                 - _CFURLGetFileSystemRepresentation
+                - _CFURLResourceIsReachable
                 - _CFUUIDCreate
                 - _CFUUIDCreateString
                 - _CFUUIDGetConstantUUIDWithBytes
@@ -603,16 +616,112 @@ in
                 - _kCFAllocatorSystemDefault
                 - _kCFRunLoopCommonModes
                 - _kCFRunLoopDefaultMode
+                - _kCFTypeArrayCallBacks
                 - _kCFTypeDictionaryKeyCallBacks
                 - _kCFTypeDictionaryValueCallBacks
           ...
           EOF
 
-          # CoreServices is a compatibility umbrella on current Darwin.  Curl
-          # retains it in the framework group used for system proxy discovery,
-          # although that code calls only CoreFoundation and
-          # SystemConfiguration.  Publish the real umbrella install name so
-          # the complete Apple link contract remains intact.
+          # CoreServices is a compatibility umbrella on current Darwin. Curl
+          # uses it for proxy integration, while Git and Rust filesystem
+          # clients consume its public FSEvents API. Publish both the umbrella
+          # header and the real install name so those platform features remain
+          # enabled without importing a binary framework from the build host.
+          cat > "$out/System/Library/Frameworks/CoreServices.framework/Headers/CoreServices.h" <<'EOF'
+          #ifndef __CORESERVICES__
+          #define __CORESERVICES__
+
+          #include <CoreFoundation/CoreFoundation.h>
+          #include <dispatch/dispatch.h>
+          #include <stdint.h>
+          #include <sys/types.h>
+
+          CF_EXTERN_C_BEGIN
+
+          typedef uint64_t FSEventStreamEventId;
+          typedef uint32_t FSEventStreamCreateFlags;
+          typedef uint32_t FSEventStreamEventFlags;
+          typedef struct __FSEventStream *FSEventStreamRef;
+          typedef const struct __FSEventStream *ConstFSEventStreamRef;
+          typedef void (*FSEventStreamCallback)(
+            ConstFSEventStreamRef streamRef,
+            void *clientCallBackInfo,
+            size_t numEvents,
+            void *eventPaths,
+            const FSEventStreamEventFlags eventFlags[],
+            const FSEventStreamEventId eventIds[]
+          );
+          typedef struct {
+            CFIndex version;
+            void *info;
+            const void *(*retain)(const void *info);
+            void (*release)(const void *info);
+            CFStringRef (*copyDescription)(const void *info);
+          } FSEventStreamContext;
+
+          enum {
+            kFSEventStreamCreateFlagNone = 0x00000000,
+            kFSEventStreamCreateFlagUseCFTypes = 0x00000001,
+            kFSEventStreamCreateFlagNoDefer = 0x00000002,
+            kFSEventStreamCreateFlagWatchRoot = 0x00000004,
+            kFSEventStreamCreateFlagIgnoreSelf = 0x00000008,
+            kFSEventStreamCreateFlagFileEvents = 0x00000010,
+            kFSEventStreamCreateFlagMarkSelf = 0x00000020,
+            kFSEventStreamCreateFlagUseExtendedData = 0x00000040,
+            kFSEventStreamCreateFlagFullHistory = 0x00000080,
+            kFSEventStreamCreateFlagWithDocID = 0x00000100
+          };
+          enum {
+            kFSEventStreamEventFlagNone = 0x00000000,
+            kFSEventStreamEventFlagMustScanSubDirs = 0x00000001,
+            kFSEventStreamEventFlagUserDropped = 0x00000002,
+            kFSEventStreamEventFlagKernelDropped = 0x00000004,
+            kFSEventStreamEventFlagEventIdsWrapped = 0x00000008,
+            kFSEventStreamEventFlagHistoryDone = 0x00000010,
+            kFSEventStreamEventFlagRootChanged = 0x00000020,
+            kFSEventStreamEventFlagMount = 0x00000040,
+            kFSEventStreamEventFlagUnmount = 0x00000080,
+            kFSEventStreamEventFlagItemCreated = 0x00000100,
+            kFSEventStreamEventFlagItemRemoved = 0x00000200,
+            kFSEventStreamEventFlagItemInodeMetaMod = 0x00000400,
+            kFSEventStreamEventFlagItemRenamed = 0x00000800,
+            kFSEventStreamEventFlagItemModified = 0x00001000,
+            kFSEventStreamEventFlagItemFinderInfoMod = 0x00002000,
+            kFSEventStreamEventFlagItemChangeOwner = 0x00004000,
+            kFSEventStreamEventFlagItemXattrMod = 0x00008000,
+            kFSEventStreamEventFlagItemIsFile = 0x00010000,
+            kFSEventStreamEventFlagItemIsDir = 0x00020000,
+            kFSEventStreamEventFlagItemIsSymlink = 0x00040000,
+            kFSEventStreamEventFlagOwnEvent = 0x00080000,
+            kFSEventStreamEventFlagItemIsHardlink = 0x00100000,
+            kFSEventStreamEventFlagItemIsLastHardlink = 0x00200000,
+            kFSEventStreamEventFlagItemCloned = 0x00400000
+          };
+
+          #define kFSEventStreamEventIdSinceNow ((FSEventStreamEventId)UINT64_MAX)
+
+          FSEventStreamRef FSEventStreamCreate(
+            CFAllocatorRef allocator,
+            FSEventStreamCallback callback,
+            FSEventStreamContext *context,
+            CFArrayRef pathsToWatch,
+            FSEventStreamEventId sinceWhen,
+            CFTimeInterval latency,
+            FSEventStreamCreateFlags flags
+          );
+          void FSEventStreamSetDispatchQueue(FSEventStreamRef streamRef, dispatch_queue_t queue);
+          Boolean FSEventStreamStart(FSEventStreamRef streamRef);
+          void FSEventStreamStop(FSEventStreamRef streamRef);
+          void FSEventStreamInvalidate(FSEventStreamRef streamRef);
+          void FSEventStreamRelease(FSEventStreamRef streamRef);
+          dev_t FSEventStreamGetDeviceBeingWatched(ConstFSEventStreamRef streamRef);
+          FSEventStreamEventId FSEventsGetCurrentEventId(void);
+          Boolean FSEventsPurgeEventsForDeviceUpToEventId(dev_t device, FSEventStreamEventId eventId);
+
+          CF_EXTERN_C_END
+
+          #endif
+          EOF
           cat > "$out/System/Library/Frameworks/CoreServices.framework/CoreServices.tbd" <<'EOF'
           --- !tapi-tbd
           tbd-version: 4
@@ -622,7 +731,129 @@ in
           compatibility-version: 1.0.0
           exports:
             - targets: [ x86_64-macos, arm64-macos ]
-              symbols: [ _LSOpenCFURLRef ]
+              symbols:
+                - _FSEventStreamCreate
+                - _FSEventStreamGetDeviceBeingWatched
+                - _FSEventStreamInvalidate
+                - _FSEventStreamRelease
+                - _FSEventStreamSetDispatchQueue
+                - _FSEventStreamStart
+                - _FSEventStreamStop
+                - _FSEventsGetCurrentEventId
+                - _FSEventsPurgeEventsForDeviceUpToEventId
+                - _LSOpenCFURLRef
+          ...
+          EOF
+
+          # GLib's native Darwin notification backend uses the long-standing
+          # AppKit classes re-exported by Cocoa. The implementation is supplied
+          # by the target macOS system; the cross SDK needs only the public
+          # Objective-C declarations and link-time class/protocol surface.
+          cat > "$out/System/Library/Frameworks/Cocoa.framework/Headers/Cocoa.h" <<'EOF'
+          #ifndef _AOS_COCOA_H_
+          #define _AOS_COCOA_H_
+
+          #import <objc/NSObject.h>
+
+          typedef NSInteger NSComparisonResult;
+          enum { NSOrderedAscending = -1, NSOrderedSame = 0, NSOrderedDescending = 1 };
+
+          typedef struct {
+            unsigned long state;
+            id *itemsPtr;
+            unsigned long *mutationsPtr;
+            unsigned long extra[5];
+          } NSFastEnumerationState;
+
+          @protocol NSFastEnumeration
+          - (NSUInteger)countByEnumeratingWithState:(NSFastEnumerationState *)state
+                                            objects:(id [])buffer
+                                              count:(NSUInteger)len;
+          @end
+
+          @interface NSString : NSObject
+          - (instancetype)initWithUTF8String:(const char *)bytes;
+          - (const char *)UTF8String;
+          - (NSComparisonResult)compare:(NSString *)string;
+          @end
+
+          @interface NSArray<ObjectType> : NSObject <NSFastEnumeration>
+          @end
+
+          @interface NSDictionary<KeyType, ObjectType> : NSObject
+          - (ObjectType)objectForKeyedSubscript:(KeyType)key;
+          @end
+
+          @interface NSMutableDictionary<KeyType, ObjectType> : NSDictionary<KeyType, ObjectType>
+          - (void)setObject:(ObjectType)object forKeyedSubscript:(KeyType)key;
+          @end
+
+          @interface NSBundle : NSObject
+          + (NSBundle *)mainBundle;
+          @property(readonly, copy) NSString *bundleIdentifier;
+          @end
+
+          @interface NSImage : NSObject
+          - (instancetype)initByReferencingFile:(NSString *)fileName;
+          @end
+
+          typedef NSInteger NSUserNotificationActivationType;
+          enum {
+            NSUserNotificationActivationTypeNone = 0,
+            NSUserNotificationActivationTypeContentsClicked = 1,
+            NSUserNotificationActivationTypeActionButtonClicked = 2,
+            NSUserNotificationActivationTypeReplied = 3,
+            NSUserNotificationActivationTypeAdditionalActionClicked = 4
+          };
+
+          @interface NSUserNotification : NSObject
+          @property(copy) NSString *title;
+          @property(copy) NSString *informativeText;
+          @property(copy) NSString *identifier;
+          @property(retain) NSImage *contentImage;
+          @property(copy) NSString *actionButtonTitle;
+          @property(copy) NSDictionary *userInfo;
+          @property(readonly) NSUserNotificationActivationType activationType;
+          @end
+
+          @class NSUserNotificationCenter;
+          @protocol NSUserNotificationCenterDelegate <NSObject>
+          @optional
+          - (void)userNotificationCenter:(NSUserNotificationCenter *)center
+                 didActivateNotification:(NSUserNotification *)notification;
+          @end
+
+          @interface NSUserNotificationCenter : NSObject
+          + (NSUserNotificationCenter *)defaultUserNotificationCenter;
+          @property(assign) id<NSUserNotificationCenterDelegate> delegate;
+          @property(readonly, copy) NSArray<NSUserNotification *> *deliveredNotifications;
+          - (void)deliverNotification:(NSUserNotification *)notification;
+          - (void)removeDeliveredNotification:(NSUserNotification *)notification;
+          @end
+
+          #endif
+          EOF
+          cat > "$out/System/Library/Frameworks/Cocoa.framework/Cocoa.tbd" <<'EOF'
+          --- !tapi-tbd
+          tbd-version: 4
+          targets: [ x86_64-macos, arm64-macos ]
+          install-name: '/System/Library/Frameworks/Cocoa.framework/Versions/A/Cocoa'
+          current-version: 24.0.0
+          compatibility-version: 1.0.0
+          exports:
+            - targets: [ x86_64-macos, arm64-macos ]
+              symbols:
+                - '_OBJC_CLASS_$_NSArray'
+                - '_OBJC_CLASS_$_NSBundle'
+                - '_OBJC_CLASS_$_NSDictionary'
+                - '_OBJC_CLASS_$_NSImage'
+                - '_OBJC_CLASS_$_NSMutableDictionary'
+                - '_OBJC_CLASS_$_NSObject'
+                - '_OBJC_CLASS_$_NSString'
+                - '_OBJC_CLASS_$_NSUserNotification'
+                - '_OBJC_CLASS_$_NSUserNotificationCenter'
+                - '_OBJC_METACLASS_$_NSObject'
+                - '_OBJC_PROTOCOL_$_NSUserNotificationCenterDelegate'
           ...
           EOF
 
@@ -770,6 +1001,7 @@ in
                 - _class_getSuperclass
                 - _method_getImplementation
                 - _method_getName
+                - _objc_alloc
                 - _objc_allocateClassPair
                 - _objc_autorelease
                 - _objc_autoreleaseReturnValue
