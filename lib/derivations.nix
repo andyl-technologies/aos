@@ -153,7 +153,7 @@
 
       if [ -z "''${dontStrip:-}" ]; then
         echo "stripping..."
-        for o in ''${outputs:-out}; do
+        for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
           [ -d "$p" ] || continue
           find "$p" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) -exec strip --strip-unneeded {} \; 2>/dev/null || true
@@ -168,7 +168,7 @@
 
       if [ "$object_format" = elf ] && [ -z "''${dontPatchELF:-}" ] && command -v patchelf >/dev/null 2>&1; then
         echo "shrinking ELF RPATHs..."
-        for o in ''${outputs:-out}; do
+        for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
           [ -d "$p" ] || continue
           find "$p" -type f \( -name '*.so*' -o -perm -u+x \) | while read f; do
@@ -190,7 +190,7 @@
             ;;
         esac
 
-        for o in ''${outputs:-out}; do
+        for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
           [ -d "$p" ] || continue
           find "$p" -type f \( -name '*.dylib' -o -name '*.dylib.*' -o -name '*.so' -o -perm -u+x \) | while read f; do
@@ -230,7 +230,7 @@
         # The env vars are nixpkgs-style ($buildInputs = runtimeDeps,
         # $propagatedBuildInputs = propagatedDeps).
         keep_args=""
-        for o in ''${outputs:-out}; do
+        for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
           [ -n "$p" ] && keep_args="$keep_args -e $p"
         done
@@ -244,7 +244,7 @@
         # __pycache__ is included because import compiles _sysconfigdata
         # to .pyc at install time, baking the build-time toolchain refs
         # into a binary blob that the .py-only pattern would miss.
-        for o in ''${outputs:-out}; do
+        for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
           [ -d "$p" ] || continue
           find "$p" \( \
@@ -270,7 +270,7 @@
   targetPlatformMetadataPhase = outputSystem: {
     name = "target-platform-metadata";
     script = ''
-      for o in ''${outputs:-out}; do
+      for o in ''${AOS_OUTPUT_NAMES:-out}; do
         eval "p=\"\''${$o:-}\""
         [ -n "$p" ] || continue
         if [ -d "$p" ] && [ ! -L "$p" ]; then
@@ -433,12 +433,18 @@
     if [ -n "''${NIX_ATTRS_SH_FILE:-}" ]; then
       . "$NIX_ATTRS_SH_FILE"
       if declare -p outputs 2>/dev/null | grep -q 'declare -A'; then
+        AOS_OUTPUT_NAMES="''${!outputs[*]}"
         for __o in "''${!outputs[@]}"; do
           declare -g "$__o=''${outputs[$__o]}"
         done
         unset __o
+      else
+        AOS_OUTPUT_NAMES="''${outputs:-out}"
       fi
+    else
+      AOS_OUTPUT_NAMES="''${outputs:-out}"
     fi
+    export AOS_OUTPUT_NAMES
 
     # Source the stdenv setup if available
     if [ -n "''${stdenv:-}" ] && [ -f "$stdenv/setup.sh" ]; then

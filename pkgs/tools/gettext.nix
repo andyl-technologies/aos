@@ -195,12 +195,6 @@ in
               ln -s "$lib/lib/libintl.la" "$out/lib/libintl.la"
               ln -s "$lib/include/libintl.h" "$out/include/libintl.h"
 
-              # The shared metadata phase marks only the default output.
-              # Mark the public library output as a target artifact too.
-              mkdir -p "$lib/nix-support"
-              printf '%s\n' '${stdenv.targetPlatform.system}' \
-                > "$lib/nix-support/aos-target-platform"
-
               if grep -R -a -F "$out" "$lib" >/dev/null; then
                 echo "gettext lib output retains the interpreter-backed tools output" >&2
                 exit 1
