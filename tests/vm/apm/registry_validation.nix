@@ -789,19 +789,6 @@ in {
               raise AssertionError(f"unexpected upload path {path}")
           return path[len(prefix):]
 
-      # The immutable-before-mutable ordering invariant applies to the git
-      # ORIGIN upload (immutable objects before the refs/pointers that name
-      # them). `nix-cache-info` is written in the earlier cache-upload phase
-      # (last, after the NARs/narinfos it describes), so it precedes the origin
-      # objects and is not part of the origin pointer group for ordering
-      # purposes (its mutable cache-control is still asserted separately below).
-      def is_mutable(path):
-          return (
-              path in {"HEAD", "info/refs"}
-              or path.startswith("objects/info/")
-              or path.startswith("channels/")
-          )
-
       put_events = [e for e in events if e["method"] == "PUT"]
       rel_events = [(rel(e["path"]), e) for e in put_events]
       forbidden = [
@@ -818,15 +805,58 @@ in {
           for marker in forbidden:
               if marker in path:
                   raise AssertionError(f"unexpected scratch/build output upload: {path}")
-      first_mutable = next((i for i, (path, _) in enumerate(rel_events) if is_mutable(path)), None)
-      if first_mutable is None:
-          raise AssertionError("no mutable uploads recorded")
-      if any(is_mutable(path) for path, _ in rel_events[:first_mutable]):
-          raise AssertionError("mutable upload appeared before immutable group")
-      if any(not is_mutable(path) for path, _ in rel_events[first_mutable:]):
-          raise AssertionError("immutable upload appeared after mutable group")
-
       by_path = {path: event for path, event in rel_events}
+      mutable_policy = "public, max-age=60, s-maxage=60, must-revalidate"
+      immutable_policy = "public, max-age=31536000, s-maxage=31536000, immutable"
+
+      # Cache publication is a separate transaction: NAR payloads precede
+      # their narinfos, and nix-cache-info moves last. The origin transaction
+      # starts after that marker. Its immutable-header payloads must precede
+      # all replaceable metadata. Loose Git objects are deliberately
+      # replaceable because their compressed wire encoding is not fixed by
+      # their object ID; pack payloads remain immutable.
+      cache_marker = next(
+          (i for i, (path, _) in enumerate(rel_events) if path == "nix-cache-info"),
+          None,
+      )
+      if cache_marker is None:
+          raise AssertionError("nix-cache-info was not uploaded")
+      cache_events = rel_events[:cache_marker + 1]
+      first_narinfo = next(
+          (i for i, (path, _) in enumerate(cache_events) if path.endswith(".narinfo")),
+          None,
+      )
+      if first_narinfo is None:
+          raise AssertionError("no narinfo uploads recorded")
+      if any(not path.startswith("nar/") for path, _ in cache_events[:first_narinfo]):
+          raise AssertionError("cache metadata appeared before all NAR payloads")
+      if any(not path.endswith(".narinfo") for path, _ in cache_events[first_narinfo:-1]):
+          raise AssertionError("cache payload appeared after narinfo publication began")
+
+      origin_events = rel_events[cache_marker + 1:]
+      if not origin_events:
+          raise AssertionError("no origin uploads recorded")
+      first_mutable = next(
+          (
+              i
+              for i, (_, event) in enumerate(origin_events)
+              if event["cache_control"] == mutable_policy
+          ),
+          None,
+      )
+      if first_mutable is None:
+          raise AssertionError("no mutable origin uploads recorded")
+      if any(
+          event["cache_control"] != immutable_policy
+          for _, event in origin_events[:first_mutable]
+      ):
+          raise AssertionError("non-immutable origin upload appeared in immutable group")
+      if any(
+          event["cache_control"] == immutable_policy
+          for _, event in origin_events[first_mutable:]
+      ):
+          raise AssertionError("immutable origin upload appeared after mutable group")
+
       expected_mutable = [
           "HEAD",
           "info/refs",
@@ -834,7 +864,7 @@ in {
       ]
       for path in expected_mutable:
           event = by_path[path]
-          assert event["cache_control"] == "public, max-age=60, must-revalidate", event
+          assert event["cache_control"] == mutable_policy, event
           assert event["content_type"] == "text/plain", event
 
       object_events = [
@@ -843,9 +873,19 @@ in {
           if path.startswith("objects/") and not path.startswith("objects/info/")
       ]
       if not object_events:
-          raise AssertionError("no immutable git object uploads found")
-      for _, event in object_events:
-          assert event["cache_control"] == "public, max-age=31536000, immutable", event
+          raise AssertionError("no git object uploads found")
+      loose_object_events = [
+          (path, event)
+          for path, event in object_events
+          if len(path.split("/")) == 3 and len(path.split("/")[1]) == 2
+      ]
+      if not loose_object_events:
+          raise AssertionError("no loose git object uploads found")
+      for _, event in loose_object_events:
+          assert event["cache_control"] == mutable_policy, event
+      for path, event in object_events:
+          if path.endswith(".pack"):
+              assert event["cache_control"] == immutable_policy, event
 
       narinfo_events = [(p, e) for p, e in rel_events if p.endswith(".narinfo")]
       narinfo_paths = {path for path, _ in narinfo_events}
@@ -855,14 +895,14 @@ in {
       # Narinfos are served with the mutable cache policy (they can be
       # re-signed in place); the NARs they reference stay immutable.
       for _, event in narinfo_events:
-          assert event["cache_control"] == "public, max-age=60, must-revalidate", event
+          assert event["cache_control"] == mutable_policy, event
           assert event["content_type"] == "text/x-nix-narinfo", event
 
       nar_events = [(p, e) for p, e in rel_events if p.startswith("nar/")]
       if len(nar_events) != len(narinfo_events):
           raise AssertionError(f"expected one NAR per narinfo, got narinfos={narinfo_events}, nars={nar_events}")
       for _, event in nar_events:
-          assert event["cache_control"] == "public, max-age=31536000, immutable", event
+          assert event["cache_control"] == immutable_policy, event
           assert event["content_type"] == "application/x-nix-nar", event
 
       alternates = os.path.join(root, "objects/info/alternates")

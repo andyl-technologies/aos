@@ -50,6 +50,7 @@
   #   nix           nix / nix-store: cache and store operations
   #   systemd       systemctl and systemd-measure; systemctl also captures
   #                 failed-unit diagnostics after activation reconciliation
+  #   openssl       X.509 and detached recovery-bundle signature verification
   #   sbsigntools   sbverify for image signature verification
   #   zstd          pack-delta compression and store decompression
   #   util-linux    mount: scoped EFI System Partition remount transactions
@@ -59,7 +60,7 @@
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths
   # to placeholders and the wrappers would point at nonexistent stores.
-  runtimeTools = [bash nix sbsigntools systemd mtools qemu-img util-linux zstd which];
+  runtimeTools = [bash nix openssl sbsigntools systemd mtools qemu-img util-linux zstd which];
   runtimeBinPath = lib.concatStringsSep ":" [
     (lib.makeBinPath runtimeTools)
     "${systemd}/lib/systemd"
