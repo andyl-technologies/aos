@@ -15,12 +15,42 @@
   zlib,
   libslirp,
   dtc,
+  stdenv,
+  buildPackages,
   pname ? "qemu",
   enablePlugins ? false,
   applyCruciblePatches ? false,
   series ? import ./qemu-patches/_series.nix,
 }: let
   version = series.qemuVersion;
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  buildPython =
+    if isDarwinCross
+    then buildPackages.python3
+    else python3;
+  buildMeson =
+    if isDarwinCross
+    then buildPackages.meson
+    else meson;
+  buildSetuptools =
+    if isDarwinCross
+    then buildPackages.setuptools
+    else setuptools;
+  buildDistlib =
+    if isDarwinCross
+    then buildPackages.distlib
+    else distlib;
+  darwinSigner =
+    if isDarwinCross
+    then
+      import ./_darwin-signer.nix {
+        inherit (buildPackages) mkDerivation fetchurl gnumake pkg-config openssl;
+      }
+    else null;
+  darwinQemuArch =
+    if stdenv.hostPlatform.constraints.cpu == "arm64"
+    then "aarch64"
+    else stdenv.hostPlatform.constraints.cpu;
   patchDir = ./qemu-patches;
   patchPath = file: patchDir + "/${file}";
   patchHashLine = patch: "${builtins.hashFile "sha256" (patchPath patch.file)}  ${patch.file}\n";
@@ -81,40 +111,56 @@
     if enablePlugins
     then "--enable-plugins"
     else "--disable-plugins";
-  qemuConfigureFlags = [
-    "--target-list=x86_64-softmmu,aarch64-softmmu"
-    "--enable-kvm"
-    pluginFlag
-    "--enable-slirp"
-    "--enable-virtfs"
-    "--disable-bsd-user"
-    "--disable-linux-user"
-    "--disable-docs"
-    "--disable-guest-agent"
-    "--disable-sdl"
-    "--disable-gtk"
-    "--disable-opengl"
-    "--disable-virglrenderer"
-    "--disable-vnc"
-    "--disable-spice"
-    "--disable-curses"
-    "--disable-xen"
-    "--disable-brlapi"
-    "--disable-cap-ng"
-    "--disable-libusb"
-    "--disable-usb-redir"
-    "--disable-vde"
-    "--disable-nettle"
-    "--disable-gcrypt"
-    "--disable-gnutls"
-    "--disable-libnfs"
-    "--disable-libssh"
-    "--disable-smartcard"
-    "--disable-vhost-net"
-    "--enable-fdt=system"
-    "--audio-drv-list="
-    "--enable-pie"
-  ];
+  qemuConfigureFlags =
+    [
+      "--target-list=x86_64-softmmu,aarch64-softmmu"
+    ]
+    ++ (
+      if isDarwinCross
+      then [
+        "--disable-kvm"
+        "--enable-hvf"
+        "--cross-prefix="
+        "--host-cc=$PWD/.aos-build-tools/cc-for-build"
+        "--cpu=${stdenv.hostPlatform.constraints.cpu}"
+      ]
+      else ["--enable-kvm"]
+    )
+    ++ [
+      pluginFlag
+      "--enable-slirp"
+      "--enable-virtfs"
+      "--disable-bsd-user"
+      "--disable-linux-user"
+      "--disable-docs"
+      "--disable-guest-agent"
+      "--disable-sdl"
+      "--disable-gtk"
+      "--disable-opengl"
+      "--disable-virglrenderer"
+      "--disable-vnc"
+      "--disable-spice"
+      "--disable-curses"
+      "--disable-xen"
+      "--disable-brlapi"
+      "--disable-cap-ng"
+      "--disable-libusb"
+      "--disable-usb-redir"
+      "--disable-vde"
+      "--disable-nettle"
+      "--disable-gcrypt"
+      "--disable-gnutls"
+      "--disable-libnfs"
+      "--disable-libssh"
+      "--disable-smartcard"
+      "--disable-vhost-net"
+      "--enable-fdt=system"
+      "--audio-drv-list="
+    ]
+    # Mach-O executables use Darwin's platform-default PIE model.  QEMU's
+    # generic probe passes `-pie` under `-Werror`, which Clang correctly
+    # rejects there as an unused ELF-style command-line option.
+    ++ lib.optional (!isDarwinCross) "--enable-pie";
   qemuConfigureFlagsMaterial = builtins.concatStringsSep "\n" qemuConfigureFlags;
   qemuConfigureFlagsHash = builtins.hashString "sha256" "${qemuConfigureFlagsMaterial}\n";
   qemuConfigureFlagsScript = builtins.concatStringsSep " \\\n            " qemuConfigureFlags;
@@ -216,17 +262,31 @@ in
       hash = series.qemuSourceHash;
     };
 
-    buildDeps = [
-      gnumake
-      pkg-config
-      meson
-      ninja
-      python3
-      setuptools
-      distlib
-      glib.dev
-      glib.tools
-    ];
+    buildDeps =
+      if isDarwinCross
+      then [
+        buildPackages.gnumake
+        buildPackages.pkg-config
+        buildMeson
+        buildPackages.ninja
+        buildPython
+        buildSetuptools
+        buildDistlib
+        buildPackages.glib.tools
+        buildPackages.dtc
+        darwinSigner
+      ]
+      else [
+        gnumake
+        pkg-config
+        meson
+        ninja
+        python3
+        setuptools
+        distlib
+        glib.dev
+        glib.tools
+      ];
     runtimeDeps = [
       glib
       pixman
@@ -235,6 +295,10 @@ in
       dtc
     ];
     propagatedDeps = [];
+    # The Darwin install is finalized and signed below. Either generic
+    # mutating pass would invalidate the resulting Mach-O code signatures.
+    dontStrip = lib.optionalString isDarwinCross "1";
+    dontNukeRefs = lib.optionalString isDarwinCross "1";
 
     phases = [
       {
@@ -274,11 +338,25 @@ in
             -c "$TMPDIR/qemu-crucible-shmem-abi-probe.c" \
             -o "$TMPDIR/qemu-crucible-shmem-abi-probe.o"
           ${patchPhase}
+          ${lib.optionalString isDarwinCross ''
+            # QEMU's macOS packaging helper assumes Xcode's proprietary
+            # codesign, Rez, and SetFile utilities. ldid supplies the runtime-
+            # significant ad-hoc signature and HVF entitlement from a
+            # hermetic Linux-native build. Nix store paths and NAR archives do
+            # not preserve resource forks or Finder flags, so omit only that
+            # legacy executable-icon metadata.
+            sed -i \
+              's|codesign --entitlements "$ENTITLEMENT" --force -s - "$SRC"|ldid -S"$ENTITLEMENT" "$SRC"|' \
+              scripts/entitlement.sh
+            sed -i '/^Rez -append /d; /^SetFile -a C /d' scripts/entitlement.sh
+            grep -q 'ldid -S"$ENTITLEMENT" "$SRC"' scripts/entitlement.sh
+            ! grep -Eq '^(Rez|SetFile|codesign) ' scripts/entitlement.sh
+          ''}
           # Patch Python shebangs for Nix sandbox
           find . -type f -name '*.py' | while read f; do
             if head -1 "$f" | grep -q '^#!'; then
-              sed -i "1s|#!/usr/bin/env python3|#!${python3}/bin/python3|" "$f"
-              sed -i "1s|#!/usr/bin/python3|#!${python3}/bin/python3|" "$f"
+              sed -i "1s|#!/usr/bin/env python3|#!${buildPython}/bin/python3|" "$f"
+              sed -i "1s|#!/usr/bin/python3|#!${buildPython}/bin/python3|" "$f"
             fi
           done
         '';
@@ -286,7 +364,40 @@ in
       {
         name = "configure";
         script = ''
-          export PYTHONPATH="${meson}/lib/python3/site-packages:${distlib}/lib/python3.14/site-packages:${setuptools}/lib/python3.14/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
+          ${
+            if isDarwinCross
+            then ''
+              # QEMU's host compiler builds Linux executables that run during
+              # the cross build. Isolate it from the Darwin SDK and target-only
+              # hardening inherited by the target compiler environment.
+              native_cc="${buildPackages.cc}/bin/cc"
+              mkdir -p .aos-build-tools
+              cat > .aos-build-tools/cc-for-build <<EOF
+              #!$CONFIG_SHELL
+              unset AOS_HARDENING_ENABLE AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+              unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
+              unset MACOSX_DEPLOYMENT_TARGET NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT
+              exec "$native_cc" "\$@"
+              EOF
+              chmod +x .aos-build-tools/cc-for-build
+            ''
+            else ""
+          }
+          export PYTHONPATH="${buildMeson}/lib/python3/site-packages:${buildDistlib}/lib/python3.14/site-packages:${buildSetuptools}/lib/python3.14/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
+          ${
+            if isDarwinCross
+            then ''
+              export PYTHON=${buildPython}/bin/python3
+              export PKG_CONFIG=${buildPackages.pkg-config}/bin/pkg-config
+              export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+              export C_INCLUDE_PATH="${glib.dev}/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
+              # GLib keeps its unversioned Darwin linker-name symlinks in the
+              # development output. They resolve to the runtime output, so the
+              # installed QEMU closure still retains only the actual library.
+              export LDFLAGS="''${LDFLAGS:-} -L${glib.dev}/lib"
+            ''
+            else ""
+          }
 
           ./configure \
             --prefix=$out \
@@ -393,6 +504,51 @@ in
             corresponding_source_required=true
             corresponding_source_identity=${qemuBuildIdentity}
             RELEASE_POLICY
+          ''}
+          ${lib.optionalString isDarwinCross ''
+            # Finalize Mach-O contents before applying their signatures. The
+            # generic fixup and scrub phases are disabled for this derivation
+            # because changing even one byte afterward invalidates the code
+            # directory hashes.
+            find "$out" -type f \( -name '*.dylib' -o -name '*.dylib.*' \) \
+              -exec strip --strip-unneeded {} \; 2>/dev/null || true
+            find "$out" -type f -name '*.a' \
+              -exec strip -S {} \; 2>/dev/null || true
+            for d in bin sbin libexec; do
+              if [ -d "$out/$d" ]; then
+                find "$out/$d" -type f -exec strip -s {} \; 2>/dev/null || true
+              fi
+            done
+
+            keep_args="-e $out"
+            for p in ${glib} ${pixman} ${zlib} ${libslirp} ${dtc}; do
+              keep_args="$keep_args -e $p"
+            done
+            find "$out" \( \
+                 -path '*/bin/*' -o -path '*/sbin/*' -o -path '*/libexec/*' \
+              -o -name '*.so' -o -name '*.so.*' \
+              -o -name '*.dylib' -o -name '*.dylib.*' \
+              -o -name '*.pc' -o -name '*.la' -o -name Makefile \
+              \) -type f -print0 \
+              | xargs -0 -r nuke-refs $keep_args
+
+            entitlements=$PWD/accel/hvf/entitlements.plist
+            find "$out" -type f \( \
+                 -name '*.dylib' -o -name '*.dylib.*' -o -name '*.so' \
+              -o -perm -u+x \
+              \) | while read f; do
+              if ! objdump --macho --private-header "$f" >/dev/null 2>&1; then
+                continue
+              fi
+              if [ "$f" = "$out/bin/qemu-system-${darwinQemuArch}" ]; then
+                ldid -S"$entitlements" "$f"
+              else
+                ldid -S "$f"
+              fi
+            done
+
+            ldid -e "$out/bin/qemu-system-${darwinQemuArch}" \
+              | grep -q '<key>com.apple.security.hypervisor</key>'
           ''}
         '';
       }
