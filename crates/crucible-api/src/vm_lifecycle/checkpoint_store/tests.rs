@@ -335,7 +335,8 @@ fn closure_manifest_round_trip_is_canonical() {
     original.node_service_states = vec![(String::from("a"), 1), (String::from("b"), 2)];
 
     let bytes = encode_manifest(&original).expect("encode canonical closure manifest");
-    let decoded = decode_manifest(&bytes).expect("decode canonical closure manifest");
+    let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
+        .expect("decode canonical closure manifest");
 
     assert_eq!(
         encode_manifest(&decoded).expect("re-encode canonical closure manifest"),
@@ -351,7 +352,8 @@ fn legacy_v4_closure_manifest_retains_its_identity_and_canonical_bytes() {
     let bytes = encode_manifest(&legacy).expect("encode legacy manifest");
     assert!(bytes.starts_with(LEGACY_MANIFEST_MAGIC));
 
-    let decoded = decode_manifest(&bytes).expect("decode legacy manifest");
+    let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
+        .expect("decode legacy manifest");
     assert!(decoded == legacy);
     assert_eq!(
         closure_identity(&decoded).expect("derive decoded identity"),
@@ -368,11 +370,13 @@ fn closure_manifest_rejects_unsorted_or_trailing_records() {
     let mut unsorted = manifest();
     unsorted.targets = vec![target("b"), target("a")];
     let bytes = encode_manifest(&unsorted).expect("encode fixture");
-    assert!(decode_manifest(&bytes).is_err());
+    assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
 
     let mut trailing = encode_manifest(&manifest()).expect("encode fixture");
     trailing.push(0);
-    assert!(decode_manifest(&trailing).is_err());
+    assert!(
+        decode::decode_manifest_with_limits(&trailing, FaultResourceLimits::default()).is_err()
+    );
 }
 
 #[test]
