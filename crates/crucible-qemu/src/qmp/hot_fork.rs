@@ -67,10 +67,31 @@ pub struct QmpHotForkReadiness {
 }
 
 impl QmpHotForkReadiness {
+    /// Builds one valid version-1 report from its exact acknowledged bitmap.
+    ///
+    /// The `ready` value is derived rather than supplied, so callers cannot
+    /// construct a contradictory typed report.
+    #[must_use]
+    pub const fn from_acknowledged_proofs(acknowledged_proofs: u64) -> Option<Self> {
+        if acknowledged_proofs & !QMP_HOT_FORK_REQUIRED_PROOFS != 0 {
+            return None;
+        }
+        Some(Self {
+            acknowledged_proofs,
+            ready: acknowledged_proofs == QMP_HOT_FORK_REQUIRED_PROOFS,
+        })
+    }
+
     /// Returns whether QEMU attested every required version-1 proof.
     #[must_use]
     pub const fn ready(self) -> bool {
         self.ready
+    }
+
+    /// Returns the exact acknowledged version-1 proof bitmap.
+    #[must_use]
+    pub const fn acknowledged_proofs(self) -> u64 {
+        self.acknowledged_proofs
     }
 
     /// Returns whether QEMU attested one exact proof class.
@@ -100,9 +121,11 @@ pub(super) fn parse_hot_fork_readiness(value: &Value) -> Result<QmpHotForkReadin
                 && acknowledged_proofs & !required_proofs == 0
                 && ready == (acknowledged_proofs == required_proofs) =>
         {
-            Ok(QmpHotForkReadiness {
-                acknowledged_proofs,
-                ready,
+            QmpHotForkReadiness::from_acknowledged_proofs(acknowledged_proofs).ok_or_else(|| {
+                QmpError::MalformedTypedResponse {
+                    command: QmpCommandKind::QueryHotForkReadiness,
+                    response: value.to_string(),
+                }
             })
         }
         _ => Err(QmpError::MalformedTypedResponse {

@@ -6,8 +6,8 @@ use std::os::unix::net::UnixStream;
 use crucible::Checkpoint;
 
 use super::{
-    QmpClient, QmpCommandComplete, QmpError, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind,
-    QmpSnapshotTag, QmpTimeoutStream,
+    QmpClient, QmpCommandComplete, QmpError, QmpHotForkReadiness, QmpIoTimeoutPolicy,
+    QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use crate::{
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
@@ -113,6 +113,23 @@ where
         self.client
             .cont_acknowledged()
             .map(|_complete| ())
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Queries QEMU's exact versioned hot-fork readiness proof bitmap.
+    ///
+    /// This operation is observational. It does not prepare a template or
+    /// infer readiness from ordinary paused state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
+    /// not satisfy the closed readiness schema.
+    pub fn query_hot_fork_readiness(
+        &mut self,
+    ) -> Result<QmpHotForkReadiness, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_readiness()
             .map_err(QemuNodeChannelError::from)
     }
 
