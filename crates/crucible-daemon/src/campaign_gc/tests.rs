@@ -860,6 +860,126 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
 }
 
 #[test]
+fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
+    let temp = tempfile::TempDir::new().expect("temporary compressed GC root");
+    let blob_root = temp.path().join("compressed");
+    let ref_root = temp.path().join("refs");
+    let ledger_root = temp.path().join("ledger");
+    let journal_root = temp.path().join("journal");
+    let compressed_node = StoreNodeId::new("compressed-primary").expect("compressed node");
+    let graph_config = || StoreGraphConfig {
+        root: compressed_node.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::RamExtent, ObjectKind::Trace]),
+        nodes: BTreeMap::from([(
+            compressed_node.clone(),
+            StoreNodeSpec::CompressedDirectory {
+                root: blob_root.clone(),
+                maximum_logical_object_bytes: 1024 * 1024,
+            },
+        )]),
+    };
+
+    let (graph, admin) = StoreGraph::build_with_admin(graph_config()).expect("compressed graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let live = ContentEnvelope::new(
+        "crucible.test.gc-compressed-live",
+        1,
+        BTreeSet::new(),
+        vec![b'L'; 64 * 1024],
+    )
+    .expect("live envelope");
+    let live_bytes = live.canonical_bytes();
+    let live_id = live.content_id(ObjectKind::RamExtent);
+    graph
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes.clone()))
+        .expect("store live compressed object");
+    refs.compare_exchange(
+        &RefName::new("retained/compressed-gc").expect("compressed ref"),
+        None,
+        live_id,
+    )
+    .expect("publish compressed root");
+    let orphan_bytes = vec![b'O'; 128 * 1024];
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, &orphan_bytes);
+    graph
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes.clone()))
+        .expect("store compressed orphan");
+
+    let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("open compressed ledger");
+    let prepared = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect("plan compressed GC");
+    assert_eq!(prepared.plan().physical().len(), 1);
+    assert_eq!(prepared.plan().physical()[0].objects(), 2);
+    assert_eq!(
+        prepared.plan().physical()[0].logical_bytes(),
+        u64::try_from(live_bytes.len() + orphan_bytes.len()).expect("logical byte total")
+    );
+    assert_eq!(prepared.candidates().len(), 1);
+    assert_eq!(
+        prepared.candidates().logical_bytes(),
+        u64::try_from(orphan_bytes.len()).expect("orphan logical bytes")
+    );
+    assert_eq!(
+        prepared.candidates().iter().next().expect("orphan").id(),
+        orphan
+    );
+    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
+        .expect("create compressed GC journal");
+    drop(journal);
+    drop(ledger);
+    drop(repository);
+    drop(refs);
+    drop(graph);
+    drop(admin);
+
+    let (graph, admin) =
+        StoreGraph::build_with_admin(graph_config()).expect("restart compressed graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let mut ledger =
+        DirectoryAssignmentLedger::open(&ledger_root).expect("reopen compressed ledger");
+    let mut journal =
+        DirectoryCampaignGcJournal::open(&journal_root).expect("reopen compressed GC journal");
+    let report = super::apply_single_host_campaign_gc(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect("apply compressed GC after restart");
+    assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
+    assert_eq!(report.candidates(), 1);
+    assert_eq!(
+        report.logical_bytes(),
+        u64::try_from(orphan_bytes.len()).expect("reported orphan bytes")
+    );
+    assert!(graph.contains(live_id).expect("live compressed placement"));
+    assert!(!graph.contains(orphan).expect("orphan compressed placement"));
+    assert_eq!(
+        graph
+            .read(live_id, None)
+            .expect("read retained compressed object")
+            .read_all(1024 * 1024)
+            .expect("authenticate retained compressed object"),
+        live_bytes
+    );
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Complete);
+}
+
+#[test]
 fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_bytes() {
     let temp = tempfile::TempDir::new().expect("temporary packed GC root");
     let pack_root = temp.path().join("packs");

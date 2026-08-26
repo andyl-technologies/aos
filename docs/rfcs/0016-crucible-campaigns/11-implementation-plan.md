@@ -1584,7 +1584,8 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
 - [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
   projection in generation-bound GC retention plans. Snapshot-bound semantic
   and operational root inventory plus the exclusive generation-bound memory,
-  directory, and packed physical-leaf inventory/delete, authoritative-ref
+  directory, compressed-directory, and packed physical-leaf inventory/delete,
+  authoritative-ref
   inventory, and operational-ledger inventory primitives plus the canonical
   bounded plan identity are implemented. The daemon now constructs the
   canonical root and physical-candidate manifests, authenticates their complete
@@ -1601,9 +1602,13 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   administrative value rather than accepting independently supplied inputs.
   Exact-generation single-host physical-leaf apply now revalidates every root
   and physical basis, deletes under the leaf fence, and leaves interrupted
-  journals recovery-required. A restart regression applies
-  that path to a sparse packed leaf and proves logical deletion retains the live
-  object and shared pack. Exact-pin materialization selection is now
+  journals recovery-required. One restart regression applies that path to a
+  compressed-directory leaf, proves inventory/candidate accounting uses
+  authenticated plaintext lengths, deletes only the unreachable physical
+  placement, and reauthenticates the retained plaintext after reopening every
+  durable component. Another applies it to a sparse packed leaf and proves
+  logical deletion retains the live object and shared pack. Exact-pin
+  materialization selection is now
   restart-safe, exact-configuration/fact-bound, and consumed by both planning
   and apply; stale records cease to root checkpoint closures after unpin.
   Transform/S3 administration, policy-aware reachable-cache eviction, and full

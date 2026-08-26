@@ -1077,27 +1077,30 @@ and indexes, atomically switches the index generation, waits for existing
 readers, then permits delayed deletion of old packs. Removing an exact
 materialization never removes the semantic configuration or thin replay path.
 
-The implemented memory, directory, and packed blob leaves now provide the
-exclusive physical inventory generation/idempotent exact-candidate deletion
-primitive. The memory and directory ref leaves provide the exclusive
-authoritative-ref inventory generation and publication-lifecycle fence needed
-by that apply step. The assignment ledger likewise provides one
+The implemented memory, directory, compressed-directory, and packed blob
+leaves now provide the exclusive physical inventory generation/idempotent
+exact-candidate deletion primitive. The memory and directory ref leaves provide
+the exclusive authoritative-ref inventory generation and publication-lifecycle
+fence needed by that apply step. The assignment ledger likewise provides one
 exclusive, persistent generation over its combined operational root inventory.
-Directory and packed generations survive restart; memory generations are
-process-local and monotonic for their ephemeral backend instance. These
-primitives remain held by the daemon maintenance owner. The canonical bounded
-v1 plan header now binds these
+Directory, compressed-directory, and packed generations survive restart;
+memory generations are process-local and monotonic for their ephemeral backend
+instance. These primitives remain held by the daemon maintenance owner. The
+canonical bounded v1 plan header now binds these
 generations to constructed root and candidate manifests, and the external
 journal durably owns their exact bytes and apply phase. No campaign
 repository, planner, executor, or ordinary store-graph handle receives the
 administrative capabilities, and no deletion is safe until durable external
 manifest ownership and every applicable root and physical generation have been
 revalidated. The implemented single-host physical-leaf apply and exact-pin
-selection fence satisfy that rule for memory, directory, and packed leaves. The
-packed leaf separately provides generation-bound repack plan/apply and logical
-candidate deletion under its exclusive lifecycle fence; composed transform/S3
-tiers and policy-aware reachable-cache eviction still require their additional
-administration before global deletion.
+selection fence satisfy that rule for memory, directory, compressed-directory,
+and packed leaves. The compressed-directory integration regression plans from
+authenticated plaintext lengths, persists and reopens the journal and graph,
+deletes one unreachable compressed placement, and reauthenticates the retained
+plaintext object. The packed leaf separately provides generation-bound repack
+plan/apply and logical candidate deletion under its exclusive lifecycle fence;
+composed transform/S3 tiers and policy-aware reachable-cache eviction still
+require their additional administration before global deletion.
 
 - **[CSTORE-19]** GC MUST derive liveness from authenticated refs, pins, and
   child references, never access time, cache temperature, or backend listing
