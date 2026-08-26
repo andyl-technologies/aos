@@ -67,25 +67,27 @@
         else if mainProgram != null && builtins.hasAttr mainProgram buildDependencyAliases
         then mainProgram
         else null;
-      candidateNames =
-        lib.unique (
-          lib.optionals (pname != null && major != null && minor != null) [
-            "${pname}-${major}_${minor}"
-          ]
-          ++ lib.optionals (pname != null && major != null) ["${pname}-${major}"]
-          ++ lib.optional (pname != null) pname
-          ++ lib.optional (mainProgram != null) mainProgram
-          ++ lib.optional (aliasKey != null) buildDependencyAliases.${aliasKey}
-        );
+      candidateNames = lib.unique (
+        lib.optionals (pname != null && major != null && minor != null) [
+          "${pname}-${major}_${minor}"
+        ]
+        ++ lib.optionals (pname != null && major != null) ["${pname}-${major}"]
+        ++ lib.optional (pname != null) pname
+        ++ lib.optional (mainProgram != null) mainProgram
+        ++ lib.optional (aliasKey != null) buildDependencyAliases.${aliasKey}
+      );
       candidates = builtins.map (name: resolvedBuildPackages.${name}) (
         builtins.filter (name: builtins.hasAttr name resolvedBuildPackages) candidateNames
       );
-      matchingCandidates = builtins.filter (
-        candidate:
-          version == null
-          || !(candidate ? version)
-          || version == candidate.version
-      ) candidates;
+      matchingCandidates =
+        builtins.filter (
+          candidate:
+            version
+            == null
+            || !(candidate ? version)
+            || version == candidate.version
+        )
+        candidates;
     in
       if matchingCandidates != []
       then builtins.head matchingCandidates
@@ -600,11 +602,22 @@
     };
 
   mkCargoPackage = args: let
+    # Cross-building a Rust package needs a compiler that executes on the
+    # Linux builder while carrying the selected Darwin standard library. The
+    # published `pkgs.rust` is intentionally Darwin-hosted, so its explicit
+    # build-tool role is distinct from both that output and native Rust.
+    cargoBuildTool =
+      if stdenv.isCross && stdenv.hostPlatform.isDarwin
+      then
+        if self.rust ? passthru && self.rust.passthru ? buildTool
+        then self.rust.passthru.buildTool
+        else throw "mkCargoPackage: Darwin rust package does not expose passthru.buildTool"
+      else resolvedBuildPackages.rust;
     cargoArtifactContract =
       {
         schema = "aos.cargo-artifact-contract/v1";
         system = stdenv.hostPlatform.system;
-        rust = builtins.unsafeDiscardStringContext (toString resolvedBuildPackages.rust);
+        rust = builtins.unsafeDiscardStringContext (toString cargoBuildTool);
         buildType = args.buildType or "release";
         checkType = args.checkType or (args.buildType or "release");
         buildFeatures = args.buildFeatures or [];
@@ -618,7 +631,7 @@
       // (args.cargoArtifactContract or {});
     inheritedArtifacts = args.cargoArtifacts or null;
     cargoBuildOnlyReferences =
-      [args.cargoDeps resolvedBuildPackages.rust]
+      [args.cargoDeps cargoBuildTool]
       ++ lib.optional (inheritedArtifacts != null) inheritedArtifacts;
     artifactsCompatible =
       inheritedArtifacts
@@ -646,7 +659,7 @@
           restArgs
           // {
             buildDeps =
-              [resolvedBuildPackages.rust resolvedBuildPackages.jq]
+              [cargoBuildTool resolvedBuildPackages.jq]
               ++ (
                 if args.cargoNextest or false
                 then [resolvedBuildPackages.cargo-nextest]
@@ -969,9 +982,7 @@
       patch = null;
     }
   );
-  packageNames =
-    assert platformSupport.validate uncheckedPackageNames;
-      uncheckedPackageNames;
+  packageNames = assert platformSupport.validate uncheckedPackageNames; uncheckedPackageNames;
   targetPackageNamesFor = targetSystem:
     platformSupport.targetPackageNames targetSystem packageNames;
   targetPackagesFor = targetSystem:
@@ -1115,37 +1126,59 @@
       # must be actual target builds; Linux build tools remain available only
       # through buildPackages and build-dependency splicing.
       bash = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin then discoveredPackages.bash else stdenv.bash
+        if stdenv.hostPlatform.isDarwin
+        then discoveredPackages.bash
+        else stdenv.bash
       );
       coreutils = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin then discoveredPackages.coreutils else stdenv.coreutils
+        if stdenv.hostPlatform.isDarwin
+        then discoveredPackages.coreutils
+        else stdenv.coreutils
       );
       gnumake = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin then discoveredPackages.gnumake else stdenv.gnumake
+        if stdenv.hostPlatform.isDarwin
+        then discoveredPackages.gnumake
+        else stdenv.gnumake
       );
       sed = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin then discoveredPackages.sed else stdenv.sed
+        if stdenv.hostPlatform.isDarwin
+        then discoveredPackages.sed
+        else stdenv.sed
       );
       grep = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin then discoveredPackages.grep else stdenv.grep
+        if stdenv.hostPlatform.isDarwin
+        then discoveredPackages.grep
+        else stdenv.grep
       );
       findutils = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin then discoveredPackages.findutils else stdenv.findutils
+        if stdenv.hostPlatform.isDarwin
+        then discoveredPackages.findutils
+        else stdenv.findutils
       );
       gawk = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin then discoveredPackages.gawk else stdenv.gawk
+        if stdenv.hostPlatform.isDarwin
+        then discoveredPackages.gawk
+        else stdenv.gawk
       );
       diffutils = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin then discoveredPackages.diffutils else stdenv.diffutils
+        if stdenv.hostPlatform.isDarwin
+        then discoveredPackages.diffutils
+        else stdenv.diffutils
       );
       tar = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin then discoveredPackages.tar else stdenv.tar
+        if stdenv.hostPlatform.isDarwin
+        then discoveredPackages.tar
+        else stdenv.tar
       );
       gzip = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin then discoveredPackages.gzip else stdenv.gzip
+        if stdenv.hostPlatform.isDarwin
+        then discoveredPackages.gzip
+        else stdenv.gzip
       );
       patch = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin then discoveredPackages.patch else stdenv.patch
+        if stdenv.hostPlatform.isDarwin
+        then discoveredPackages.patch
+        else stdenv.patch
       );
     }
     # --- Trivial builders, exposed flat on the package set ---
