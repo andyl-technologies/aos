@@ -20,6 +20,7 @@
   qemuExactRunner = builtins.readFile ../../crates/crucible-qemu/examples/crucible-qemu-live-exact-snapshot.rs;
   smpGuestSource = builtins.readFile ./phase2-qemu-live-plugin-quantum-smp-guest.nix;
   productionLoop = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
+  productionCheckpointCapture = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop/checkpoint_capture.rs;
   productionRuntime = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle.rs;
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
@@ -137,6 +138,8 @@
         label = "production paired capture";
         needle = ".capture_exact_snapshot(&node, checkpoint)";
       }
+    ]
+    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/quantum_loop/checkpoint_capture.rs" productionCheckpointCapture [
       {
         label = "VMState artifact persistence";
         needle = "PRODUCTION_VMSTATE_FILE_NAME";

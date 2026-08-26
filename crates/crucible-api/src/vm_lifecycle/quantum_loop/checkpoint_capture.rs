@@ -46,10 +46,111 @@ pub(in crate::vm_lifecycle) struct CapturedExactCheckpointTarget {
     pub(super) overlay_artifact: Option<ProductionCheckpointArtifact>,
     /// Staged VMState metadata once its copy authenticates.
     pub(super) vmstate_artifact: Option<ProductionCheckpointArtifact>,
-    /// Canonical target identity once both artifacts authenticate.
-    pub(super) manifest_identity: Option<ContentHash>,
     /// Whether the live VMState artifact still requires deletion.
     pub(super) cleanup_pending: bool,
+}
+
+/// Allocation-owning description of one target before the first QMP save.
+pub(super) struct PreparedExactCheckpointTarget {
+    /// World node captured by this target.
+    pub(super) node: NodeId,
+    /// Physical icount paired with the exact snapshot.
+    pub(super) counter: u64,
+    /// Scheduler time paired with the physical counter.
+    pub(super) scheduler_time: VirtualTime,
+    /// Lifecycle state that selects the running or paused capture operation.
+    pub(super) service_state: ProductionNodeServiceState,
+    /// Fully owned temporal-graph checkpoint passed into QEMU capture.
+    pub(super) checkpoint: Checkpoint,
+    /// Current process-generation overlay copied after QMP save.
+    pub(super) source_overlay: PathBuf,
+    /// Transaction-staging destination for the overlay copy.
+    pub(super) staged_overlay: PathBuf,
+    /// Current process-generation VMState artifact copied after QMP save.
+    pub(super) source_vmstate: PathBuf,
+    /// Transaction-staging destination for the VMState copy.
+    pub(super) staged_vmstate: PathBuf,
+}
+
+/// Owns every per-node checkpoint and artifact path before QMP mutation.
+///
+/// # Errors
+///
+/// Returns an error when checkpoint topology or node ownership is invalid, or
+/// when the bounded destination vector cannot be reserved.
+pub(super) fn prepare_exact_checkpoint_targets(
+    configuration: &Configuration,
+    checkpoint_virtual_time: VirtualTime,
+    node_icounts: &BTreeMap<NodeId, crucible::Icount>,
+    boundaries: Vec<(NodeId, u64, VirtualTime, ProductionNodeServiceState)>,
+    node_indexes: &BTreeMap<NodeId, usize>,
+    node_run_directories: &BTreeMap<NodeId, PathBuf>,
+    staging: &Path,
+) -> Result<Vec<PreparedExactCheckpointTarget>, SchedulerError> {
+    let parent = if configuration.schedule.is_empty() {
+        None
+    } else {
+        let parent_len = configuration.schedule.len().saturating_sub(1);
+        let parent_schedule = configuration.schedule.prefix(parent_len).map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!(
+                    "derive exact checkpoint parent at schedule length {parent_len}: {error}"
+                ),
+            }
+        })?;
+        Some(Configuration {
+            def: configuration.def.clone(),
+            schedule: parent_schedule,
+        })
+    };
+    let mut prepared = Vec::new();
+    prepared
+        .try_reserve_exact(boundaries.len())
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("reserve exact checkpoint prepared targets: {error}"),
+        })?;
+
+    for (node, counter, scheduler_time, service_state) in boundaries {
+        let checkpoint = Checkpoint::from_recorded_configuration(
+            configuration,
+            parent.as_ref(),
+            checkpoint_virtual_time,
+            node_icounts.clone(),
+            CheckpointKind::Fat,
+            BTreeMap::new(),
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("materialize exact scheduler checkpoint: {error}"),
+        })?;
+        let index =
+            node_indexes
+                .get(&node)
+                .copied()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!("exact checkpoint has no launch index for `{}`", node.name),
+                })?;
+        let source_directory =
+            node_run_directories
+                .get(&node)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "exact checkpoint has no process-generation directory for `{}`",
+                        node.name
+                    ),
+                })?;
+        prepared.push(PreparedExactCheckpointTarget {
+            node,
+            counter,
+            scheduler_time,
+            service_state,
+            checkpoint,
+            source_overlay: source_directory.join(PRODUCTION_ROOT_OVERLAY_FILE_NAME),
+            staged_overlay: staging.join(format!("node-{index}.qcow2")),
+            source_vmstate: source_directory.join(PRODUCTION_VMSTATE_FILE_NAME),
+            staged_vmstate: staging.join(format!("node-{index}-vmstate.qcow2")),
+        });
+    }
+    Ok(prepared)
 }
 
 impl CapturedExactCheckpointTarget {
@@ -61,10 +162,24 @@ impl CapturedExactCheckpointTarget {
     pub(super) fn into_target(
         self,
         configuration: &Configuration,
+        fault_checkpoint: ContentHash,
     ) -> Result<(NodeId, ProductionVmExactCheckpointTarget), SchedulerError> {
         let overlay_artifact = self.overlay_artifact.ok_or_else(incomplete_capture)?;
         let vmstate_artifact = self.vmstate_artifact.ok_or_else(incomplete_capture)?;
-        let manifest_identity = self.manifest_identity.ok_or_else(incomplete_capture)?;
+        let manifest_identity = crucible::ContentHash::from_canonical_material(
+            "crucible.production-vm-exact-checkpoint.v1",
+            &format!(
+                "configuration={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\nvmstate={}",
+                configuration.id().to_hex(),
+                self.node.name,
+                self.counter,
+                self.scheduler_time.ticks,
+                self.snapshot.id().to_hex(),
+                fault_checkpoint.to_hex(),
+                overlay_artifact.identity.to_hex(),
+                vmstate_artifact.identity.to_hex(),
+            ),
+        );
         let node = self.node;
         Ok((
             node,
@@ -277,141 +392,5 @@ fn incomplete_capture() -> SchedulerError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn boundary_error(message: &str) -> SchedulerError {
-        SchedulerError::BoundaryViolation {
-            message: String::from(message),
-        }
-    }
-
-    #[test]
-    fn cleanup_attempts_every_capture_in_reverse_order() {
-        #[derive(Debug, PartialEq, Eq)]
-        struct Capture {
-            id: u8,
-            pending: bool,
-        }
-        let mut captures = vec![
-            Capture {
-                id: 1,
-                pending: true,
-            },
-            Capture {
-                id: 2,
-                pending: true,
-            },
-            Capture {
-                id: 3,
-                pending: true,
-            },
-        ];
-        let mut observed = Vec::new();
-        let error = match cleanup_exact_captures_with(
-            &mut captures,
-            |capture| {
-                observed.push(capture.id);
-                if capture.id == 3 || capture.id == 1 {
-                    Err(capture.id)
-                } else {
-                    Ok(())
-                }
-            },
-            |capture| capture.pending = false,
-            |capture| capture.pending,
-        ) {
-            Ok(()) => panic!("the first reverse-order cleanup error should survive"),
-            Err(error) => error,
-        };
-
-        assert_eq!(observed, [3, 2, 1]);
-        assert_eq!(error, 3);
-        assert_eq!(
-            captures,
-            [
-                Capture {
-                    id: 1,
-                    pending: true
-                },
-                Capture {
-                    id: 3,
-                    pending: true
-                }
-            ]
-        );
-    }
-
-    #[test]
-    fn publication_registry_retains_only_durable_or_indeterminate_owners() {
-        let configuration = ContentHash::from_bytes(b"configuration");
-        let identity = ContentHash::from_bytes(b"checkpoint");
-
-        let mut publications =
-            BTreeMap::from([(configuration, ExactCheckpointPublicationState::Preparing)]);
-        let committed = match finish_exact_checkpoint_transaction(
-            &mut publications,
-            configuration,
-            Ok(identity),
-        ) {
-            Ok(committed) => committed,
-            Err(error) => panic!("publication should commit: {error}"),
-        };
-        assert_eq!(committed, identity);
-        assert!(matches!(
-            publications.get(&configuration),
-            Some(ExactCheckpointPublicationState::Published(observed)) if *observed == identity
-        ));
-
-        publications.insert(configuration, ExactCheckpointPublicationState::Preparing);
-        assert!(
-            finish_exact_checkpoint_transaction(
-                &mut publications,
-                configuration,
-                Err(ExactCheckpointTransactionError::Unpublished(
-                    boundary_error("unpublished",)
-                )),
-            )
-            .is_err()
-        );
-        assert!(!publications.contains_key(&configuration));
-
-        publications.insert(configuration, ExactCheckpointPublicationState::Preparing);
-        assert!(
-            finish_exact_checkpoint_transaction(
-                &mut publications,
-                configuration,
-                Err(ExactCheckpointTransactionError::Indeterminate {
-                    identity: Some(identity),
-                    captures: Vec::new(),
-                    source: boundary_error("indeterminate"),
-                }),
-            )
-            .is_err()
-        );
-        assert!(matches!(
-            publications.get(&configuration),
-            Some(ExactCheckpointPublicationState::PublicationIndeterminate(observed))
-                if *observed == identity
-        ));
-
-        publications.insert(configuration, ExactCheckpointPublicationState::Preparing);
-        assert!(
-            finish_exact_checkpoint_transaction(
-                &mut publications,
-                configuration,
-                Err(ExactCheckpointTransactionError::Indeterminate {
-                    identity: None,
-                    captures: Vec::new(),
-                    source: boundary_error("cleanup pending"),
-                }),
-            )
-            .is_err()
-        );
-        assert!(matches!(
-            publications.get(&configuration),
-            Some(ExactCheckpointPublicationState::CleanupPending(captures))
-                if captures.is_empty()
-        ));
-    }
-}
+#[path = "checkpoint_capture/tests.rs"]
+mod tests;
