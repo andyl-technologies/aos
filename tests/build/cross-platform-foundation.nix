@@ -1,5 +1,6 @@
 # Evaluation and build contracts for Linux-hosted Darwin package composition.
 {pkgs}: let
+  lib = pkgs.lib;
   platforms = import ../../lib/platform.nix;
   buildPlatform = pkgs.stdenv.buildPlatform;
   x86Darwin = platforms.mkPlatform "x86_64-darwin";
@@ -48,6 +49,28 @@
     && arm.pkgs.cc.platforms.host.system == armDarwin.system
     && arm.pkgs.gcc.platforms.host.system == armDarwin.system
     && arm.pkgs.binutils.platforms.host.system == armDarwin.system;
+  linuxOnlyAosRuntimeFragments = [
+    "-aos-ebpf-"
+    "-aos-landlock-"
+    "-aos-selinux-"
+    "-aos-verity-root-guard-"
+    "-checkpolicy-"
+    "-policycoreutils-"
+    "-semodule-utils-"
+    "-systemd-"
+    "-util-linux-"
+  ];
+  aosRuntimeInputsArePortable = package:
+    builtins.all (
+      input:
+        builtins.all (
+          fragment: !(lib.hasInfix fragment (builtins.baseNameOf (toString input)))
+        )
+        linuxOnlyAosRuntimeFragments
+    ) (package.buildInputs or []);
+  darwinAosRuntimeIsPortable =
+    aosRuntimeInputsArePortable x86.pkgs.aos
+    && aosRuntimeInputsArePortable arm.pkgs.aos;
 
   targetRuntime = pkgs.lib.mkDerivation {
     pname = "darwin-target-runtime-probe";
@@ -117,6 +140,7 @@ in
   assert baseToolsAreTargetPackages;
   assert baseToolBuildDepsStayNative;
   assert publicToolchainsAreDarwin;
+  assert darwinAosRuntimeIsPortable;
     pkgs.mkDerivation {
       pname = "cross-platform-foundation-check";
       version = "0";
