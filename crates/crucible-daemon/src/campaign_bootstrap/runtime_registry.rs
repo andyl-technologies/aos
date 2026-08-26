@@ -9,12 +9,13 @@
 
 use std::collections::BTreeMap;
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 
 use crucible_campaign::{
     CampaignHash, CampaignName, CampaignRepository, CampaignServiceFailure,
-    CampaignServiceFailureSource, PlannerAuthorityKey,
+    CampaignServiceFailureSource, PlannerAuthorityKey, ScenarioArtifactId,
 };
 
 use crate::{
@@ -66,6 +67,7 @@ impl CampaignRuntimeAttachmentHandle {
             .upgrade()
             .ok_or(CampaignLocalServiceError::RuntimeAttachmentClosed)?;
         let reservation = shared.reserve(config.campaign().clone(), true, None)?;
+        shared.validate_packaged_scenario(config.campaign(), None)?;
         let planner_authority = shared
             .planner_authority
             .as_ref()
@@ -102,6 +104,7 @@ impl CampaignRuntimeAttachmentHandle {
             .upgrade()
             .ok_or(CampaignLocalServiceError::RuntimeAttachmentClosed)?;
         let reservation = shared.reserve(config.campaign().clone(), true, None)?;
+        shared.validate_packaged_scenario(config.campaign(), Some(endpoint.path()))?;
         let planner_authority = shared
             .planner_authority
             .as_ref()
@@ -193,6 +196,9 @@ impl CampaignRuntimeControlService for CanonicalCampaignRuntimeController {
             .as_ref()
             .ok_or(CampaignServiceFailure::Unauthorized)?
             .clone();
+        shared
+            .validate_packaged_scenario(request.campaign(), Some(request.executor_endpoint()))
+            .map_err(|error| runtime_control_failure(&error))?;
         let endpoint = ExecutorLoopbackEndpointConfig::new(
             request.executor_endpoint().to_owned(),
             self.executor_owner_user_id,
@@ -238,6 +244,7 @@ impl CampaignRuntimeRegistryOwner {
         mode: CampaignLocalServiceMode,
         shutdown: CampaignLoopbackServerShutdown,
         repository_owner: CampaignStateOwner,
+        packaged_scope: Option<(PathBuf, ScenarioArtifactId)>,
     ) -> Self {
         Self {
             shared: Arc::new(CampaignRuntimeRegistry {
@@ -245,6 +252,7 @@ impl CampaignRuntimeRegistryOwner {
                 planner_authority,
                 mode,
                 shutdown,
+                packaged_scope,
                 state: Mutex::new(RegistryState::open()),
                 changed: Condvar::new(),
                 _repository_owner: repository_owner,
@@ -281,6 +289,7 @@ struct CampaignRuntimeRegistry {
     planner_authority: Option<PlannerAuthorityKey>,
     mode: CampaignLocalServiceMode,
     shutdown: CampaignLoopbackServerShutdown,
+    packaged_scope: Option<(PathBuf, ScenarioArtifactId)>,
     state: Mutex<RegistryState>,
     changed: Condvar,
     _repository_owner: CampaignStateOwner,
@@ -296,6 +305,31 @@ impl CampaignRuntimeRegistry {
         }
         let reservation = self.reserve(prepared.campaign().clone(), false, None)?;
         reservation.install(prepared).map(|_| ())
+    }
+
+    fn validate_packaged_scenario(
+        &self,
+        campaign: &CampaignName,
+        endpoint: Option<&Path>,
+    ) -> Result<(), CampaignLocalServiceError> {
+        let Some((packaged_endpoint, admitted)) = self.packaged_scope.as_ref() else {
+            return Ok(());
+        };
+        if endpoint.is_some_and(|endpoint| endpoint != packaged_endpoint.as_path()) {
+            return Ok(());
+        };
+        let head = self
+            .repository
+            .head(campaign.as_str())
+            .map_err(CanonicalCampaignRuntimeError::Repository)?;
+        let lineage = self
+            .repository
+            .load_lineage(head.snapshot().lineage())
+            .map_err(CanonicalCampaignRuntimeError::Repository)?;
+        if lineage.scenario_content() != *admitted {
+            return Err(CampaignLocalServiceError::RuntimeScenarioMismatch);
+        }
+        Ok(())
     }
 
     fn reserve(
@@ -607,6 +641,9 @@ fn runtime_control_failure(error: &CampaignLocalServiceError) -> CampaignService
             CampaignServiceFailure::Unavailable
         }
         CampaignLocalServiceError::InvalidRuntimeCount => CampaignServiceFailure::ResourceExhausted,
+        CampaignLocalServiceError::RuntimeScenarioMismatch => {
+            CampaignServiceFailure::InvalidRequest
+        }
         CampaignLocalServiceError::RuntimeRepositoryMismatch
         | CampaignLocalServiceError::RuntimeRegistryPoisoned
         | CampaignLocalServiceError::RuntimeMonitorPanicked => {

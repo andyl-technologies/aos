@@ -1632,7 +1632,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "campaign_packaged_executor",
                 "campaign_socket_mode",
             ][..],
-            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_component_authority=Load distinct planner/debugger component authority keys from this file\ncampaign_import_manifest=Import verified campaign creation artifacts before binding the socket\ncampaign_runtime=Attach the packaged planner and one local executor to an existing campaign; repeat in executor-socket order\ncampaign_executor_socket=Connect one attached campaign runtime to this owner-only Unix socket; repeat in runtime order\ncampaign_packaged_executor=Start the packaged local QEMU executor from this strict deployment file\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
+            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_component_authority=Load distinct planner/debugger component authority keys from this file\ncampaign_import_manifest=Import verified campaign creation artifacts before binding the socket\ncampaign_runtime=Attach the packaged planner and an authenticated local executor to a campaign; repeat in executor-socket order\ncampaign_executor_socket=Connect one attached campaign runtime to this owner-only Unix socket; repeat in runtime order\ncampaign_packaged_executor=Start one packaged local QEMU executor pool from this strict deployment file\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
         ),
         (
             "debug",
@@ -2566,6 +2566,37 @@ pub(super) fn cli_serve_campaign_profile_rejects_partial_or_invalid_input() {
         validate_serve_invocation(args),
         Err(CliError::Usage(_))
     ));
+
+    let shared_packaged_executor = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+        "--production-qemu",
+        "--campaign-socket",
+        "/tmp/campaign.sock",
+        "--campaign-state",
+        "/tmp/campaign-state",
+        "--campaign-policy",
+        "/tmp/campaign-policy",
+        "--campaign-component-authority",
+        "/tmp/component-authority",
+        "--campaign-runtime",
+        "beta",
+        "--campaign-executor-socket",
+        "/tmp/shared-executor.sock",
+        "--campaign-runtime",
+        "alpha",
+        "--campaign-executor-socket",
+        "/tmp/shared-executor.sock",
+        "--campaign-packaged-executor",
+        "/tmp/executor-deployment.toml",
+    ]);
+    let Commands::Serve(args) = &shared_packaged_executor.command else {
+        panic!("expected serve command");
+    };
+    validate_serve_invocation(args).expect("shared packaged executor invocation");
 }
 
 #[test]

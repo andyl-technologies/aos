@@ -1,4 +1,4 @@
-//! Packaged production-QEMU executor composition for one local campaign.
+//! Packaged production-QEMU executor composition for local campaigns.
 //!
 //! This module joins the durable assignment ledger, repository-backed
 //! admission, fixed semantic worker pool, guarded fresh-QEMU runner, and
@@ -20,14 +20,16 @@ use crucible_campaign::{
     AttemptResourceLimits, CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignName,
     CampaignRepository, CampaignRepositoryError, DaemonEpoch, ExecutionRetentionIntent,
     ExecutorCapabilitySet, ExecutorCompatibilityProfile, ExecutorDescription,
-    ExecutorMaterializationCapability,
+    ExecutorMaterializationCapability, ExecutorRejection, ObservationId, ScenarioArtifactId,
+    SubmitAttemptRequest,
 };
 use crucible_cas::content_store::{DirectoryBlobBackend, ImmutableBlobBackend};
 use crucible_qemu::{LinuxQemuAttemptHostConfig, QemuVmRealizationError};
 
 use crate::{
-    AssignmentLedgerError, AttemptExecutionContext, ComposedQemuAttemptResourceGuardFactory,
-    CrucibleArtifactError, CrucibleExecutionModel, DirectoryAssignmentLedger, ExactCheckpointStore,
+    AssignmentLedgerError, AttemptAdmissionValidator, AttemptExecutionContext,
+    CompletionValidationFailure, ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError,
+    CrucibleExecutionModel, DirectoryAssignmentLedger, ExactCheckpointStore,
     ExactCheckpointStoreError, ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity,
     ExecutorLocalService, ExecutorLocalServiceError, ExecutorLocalServiceReport,
     ExecutorLocalServiceShutdown, ExecutorLoopbackEndpointConfig, ExecutorLoopbackEndpointError,
@@ -39,7 +41,7 @@ use crate::{
     QemuAttemptExecutionRouter, QemuAttemptHostResourceFactory, QemuAttemptHostResourceOwner,
     QemuAttemptProcessResourceGuard, QemuAttemptProductionVmLifecycleError,
     QemuAttemptProductionVmLifecycleFactory, QemuFreshExecutionRunner, QemuFreshModeledDriver,
-    QemuProductionExactResumeExecutionRunner, RepositoryAttemptAdmission, RepositoryAttemptWorker,
+    QemuProductionExactResumeExecutionRunner, RepositoryAttemptWorker,
     SharedQemuAttemptHostResourceFactory, UnixPeerExecutorIdentity,
     capture_production_baked_genesis, decode_crucible_scenario_artifact,
 };
@@ -47,10 +49,10 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
-/// Complete deployment contract for one packaged local QEMU executor.
+/// Complete deployment contract for one packaged local QEMU executor pool.
 #[derive(Clone, Debug)]
 pub struct PackagedQemuExecutorConfig {
-    campaign: CampaignName,
+    campaigns: BTreeSet<CampaignName>,
     endpoint: ExecutorLoopbackEndpointConfig,
     server: ExecutorLoopbackServerConfig,
     ledger_root: PathBuf,
@@ -71,13 +73,14 @@ impl PackagedQemuExecutorConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`PackagedQemuExecutorConfigError`] when the worker count or
-    /// checkpoint ceiling is zero, or the worker count exceeds the configured
-    /// execution-slot ceiling.
+    /// Returns [`PackagedQemuExecutorConfigError`] when the campaign set or
+    /// worker count is empty, the campaign set exceeds the runtime attachment
+    /// ceiling, the checkpoint ceiling is zero, or the worker count exceeds the
+    /// configured execution-slot ceiling.
     // crucible-lint: allow rust-allow -- the deployment contract keeps every startup-fixed authority and bound explicit.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        campaign: CampaignName,
+        campaigns: BTreeSet<CampaignName>,
         endpoint: ExecutorLoopbackEndpointConfig,
         server: ExecutorLoopbackServerConfig,
         ledger_root: impl Into<PathBuf>,
@@ -92,6 +95,12 @@ impl PackagedQemuExecutorConfig {
         lifecycle: ProductionVmLifecycleConfig,
         host: LinuxQemuAttemptHostConfig,
     ) -> Result<Self, PackagedQemuExecutorConfigError> {
+        if campaigns.is_empty() {
+            return Err(PackagedQemuExecutorConfigError::NoCampaigns);
+        }
+        if campaigns.len() > crate::MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES {
+            return Err(PackagedQemuExecutorConfigError::TooManyCampaigns);
+        }
         if worker_count == 0 {
             return Err(PackagedQemuExecutorConfigError::ZeroWorkers);
         }
@@ -104,7 +113,7 @@ impl PackagedQemuExecutorConfig {
             return Err(PackagedQemuExecutorConfigError::ZeroCheckpointBytes);
         }
         Ok(Self {
-            campaign,
+            campaigns,
             endpoint,
             server,
             ledger_root: ledger_root.into(),
@@ -121,10 +130,10 @@ impl PackagedQemuExecutorConfig {
         })
     }
 
-    /// Returns the campaign whose exact lineage this executor admits.
+    /// Returns the campaigns sharing this exact packaged executor pool.
     #[must_use]
-    pub const fn campaign(&self) -> &CampaignName {
-        &self.campaign
+    pub const fn campaigns(&self) -> &BTreeSet<CampaignName> {
+        &self.campaigns
     }
 
     /// Returns the managed executor endpoint.
@@ -161,6 +170,12 @@ impl PackagedQemuExecutorConfig {
 /// Invalid packaged-executor deployment configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PackagedQemuExecutorConfigError {
+    /// No campaign was assigned to the packaged pool.
+    #[error("packaged QEMU executor campaign set is empty")]
+    NoCampaigns,
+    /// More campaigns were assigned than the daemon attachment ceiling.
+    #[error("packaged QEMU executor campaign set exceeds the attachment ceiling")]
+    TooManyCampaigns,
     /// No semantic worker was configured.
     #[error("packaged QEMU executor worker count is zero")]
     ZeroWorkers,
@@ -172,16 +187,20 @@ pub enum PackagedQemuExecutorConfigError {
     ZeroCheckpointBytes,
 }
 
-/// Prepared packaged executor bound to one exact campaign repository.
+/// Prepared packaged executor pool bound to one exact campaign repository.
 pub struct PackagedQemuExecutor {
     repository_identity: Arc<CampaignRepository>,
-    service: ExecutorLocalService<DirectoryAssignmentLedger, RepositoryAttemptAdmission>,
+    admitted_scenario: ScenarioArtifactId,
+    endpoint: PathBuf,
+    service: ExecutorLocalService<DirectoryAssignmentLedger, PackagedAttemptAdmission>,
 }
 
-/// Running packaged executor thread coupled to one daemon service lifecycle.
+/// Running packaged executor-pool thread coupled to one daemon service lifecycle.
 pub struct AttachedPackagedQemuExecutor {
     repository_identity: Arc<CampaignRepository>,
-    shutdown: ExecutorLocalServiceShutdown<DirectoryAssignmentLedger, RepositoryAttemptAdmission>,
+    admitted_scenario: ScenarioArtifactId,
+    endpoint: PathBuf,
+    shutdown: ExecutorLocalServiceShutdown<DirectoryAssignmentLedger, PackagedAttemptAdmission>,
     completion: Arc<(Mutex<bool>, Condvar)>,
     thread: Option<JoinHandle<Result<ExecutorLocalServiceReport, ExecutorLocalServiceError>>>,
 }
@@ -196,6 +215,8 @@ impl AttachedPackagedQemuExecutor {
     pub fn start(service: PackagedQemuExecutor) -> Result<Self, PackagedQemuExecutorStartError> {
         let PackagedQemuExecutor {
             repository_identity,
+            admitted_scenario,
+            endpoint,
             service,
         } = service;
         let shutdown = service.shutdown_handle();
@@ -210,6 +231,8 @@ impl AttachedPackagedQemuExecutor {
             .map_err(|source| PackagedQemuExecutorStartError::Spawn { source })?;
         Ok(Self {
             repository_identity,
+            admitted_scenario,
+            endpoint,
             shutdown,
             completion,
             thread: Some(thread),
@@ -226,6 +249,16 @@ impl AttachedPackagedQemuExecutor {
 
     pub(crate) fn uses_repository(&self, repository: &Arc<CampaignRepository>) -> bool {
         Arc::ptr_eq(&self.repository_identity, repository)
+    }
+
+    /// Returns the exact scenario artifact backed by the native baked genesis.
+    pub(crate) const fn admitted_scenario(&self) -> ScenarioArtifactId {
+        self.admitted_scenario
+    }
+
+    /// Returns the exact managed endpoint served by this pool.
+    pub(crate) fn endpoint(&self) -> &Path {
+        &self.endpoint
     }
 
     /// Requests sticky listener and semantic-worker shutdown.
@@ -333,24 +366,25 @@ pub enum PackagedQemuExecutorJoinError {
 
 /// Opens every durable/host owner and starts one packaged local QEMU executor.
 ///
-/// The repository head is authenticated before any executor endpoint is bound.
-/// The returned service owns the listener, semantic workers, shared Linux host
-/// allocator, and exact repository incarnation used for admission and result
-/// publication.
+/// Every configured repository head is authenticated in canonical campaign
+/// order before host-resource acquisition or endpoint binding. All campaigns
+/// must share the exact compatibility profile and scenario artifact captured
+/// by the pool's one native baked genesis. The returned service owns the
+/// listener, semantic workers, shared Linux host allocator, and exact
+/// repository incarnation used for admission and result publication.
 ///
 /// # Errors
 ///
-/// Returns [`PackagedQemuExecutorError`] when the campaign or lineage cannot be
-/// authenticated, a durable or host owner cannot be acquired, capabilities do
-/// not encode, workers cannot start, or the managed endpoint cannot bind.
+/// Returns [`PackagedQemuExecutorError`] when a campaign or lineage cannot be
+/// authenticated, configured campaign bases differ, a durable or host owner
+/// cannot be acquired, capabilities do not encode, workers cannot start, or
+/// the managed endpoint cannot bind.
 pub fn prepare_packaged_qemu_executor(
     repository: Arc<CampaignRepository>,
     config: PackagedQemuExecutorConfig,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError> {
-    let head = repository.head(config.campaign.as_str())?;
-    let lineage = repository.load_lineage(head.snapshot().lineage())?;
-    let profile = ExecutorCompatibilityProfile::from_lineage(&lineage);
-    let scenario_artifact = repository.load_scenario_artifact(lineage.scenario_content())?;
+    let basis = authenticate_packaged_campaigns(&repository, &config.campaigns)?;
+    let scenario_artifact = repository.load_scenario_artifact(basis.scenario)?;
     let scenario = decode_crucible_scenario_artifact(&scenario_artifact)?;
     let host = SharedQemuAttemptHostResourceFactory::new(
         LinuxQemuAttemptHostResourceFactory::open(config.host.clone())?,
@@ -374,13 +408,52 @@ pub fn prepare_packaged_qemu_executor(
     );
     let baked = capture_production_baked_genesis(&mut baked_factory, &scenario, &capture_context)
         .map_err(|source| PackagedQemuExecutorError::BakedGenesis(Box::new(source)))?;
-    compose_packaged_qemu_executor_with_baked_genesis(repository, profile, config, host, baked)
+    compose_packaged_qemu_executor_with_baked_genesis(repository, basis, config, host, baked)
+}
+
+#[derive(Clone)]
+struct PackagedCampaignBasis {
+    profile: ExecutorCompatibilityProfile,
+    scenario: ScenarioArtifactId,
+}
+
+fn authenticate_packaged_campaigns(
+    repository: &CampaignRepository,
+    campaigns: &BTreeSet<CampaignName>,
+) -> Result<PackagedCampaignBasis, PackagedQemuExecutorError> {
+    let mut campaigns = campaigns.iter();
+    let first = campaigns
+        .next()
+        .ok_or(PackagedQemuExecutorError::NoCampaigns)?;
+    let head = repository.head(first.as_str())?;
+    let lineage = repository.load_lineage(head.snapshot().lineage())?;
+    let basis = PackagedCampaignBasis {
+        profile: ExecutorCompatibilityProfile::from_lineage(&lineage),
+        scenario: lineage.scenario_content(),
+    };
+
+    for campaign in campaigns {
+        let head = repository.head(campaign.as_str())?;
+        let lineage = repository.load_lineage(head.snapshot().lineage())?;
+        if !basis.profile.admits(&lineage) {
+            return Err(PackagedQemuExecutorError::CampaignCompatibilityMismatch {
+                campaign: campaign.clone(),
+            });
+        }
+        if lineage.scenario_content() != basis.scenario {
+            return Err(PackagedQemuExecutorError::CampaignScenarioMismatch {
+                campaign: campaign.clone(),
+            });
+        }
+    }
+    Ok(basis)
 }
 
 #[cfg(test)]
-fn compose_packaged_qemu_executor<H>(
+pub(crate) fn compose_packaged_qemu_executor<H>(
     repository: Arc<CampaignRepository>,
     profile: ExecutorCompatibilityProfile,
+    scenario: ScenarioArtifactId,
     config: PackagedQemuExecutorConfig,
     host: H,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
@@ -392,7 +465,7 @@ where
 {
     compose_packaged_qemu_executor_with_checkpoint_promotions(
         repository,
-        profile,
+        PackagedCampaignBasis { profile, scenario },
         config,
         host,
         Vec::<DisabledPackagedCheckpointPromotionWorker>::new(),
@@ -419,7 +492,7 @@ impl LocalCheckpointPromotionWorker for DisabledPackagedCheckpointPromotionWorke
 #[cfg(test)]
 fn compose_packaged_qemu_executor_with_checkpoint_promotions<H, P>(
     repository: Arc<CampaignRepository>,
-    profile: ExecutorCompatibilityProfile,
+    basis: PackagedCampaignBasis,
     config: PackagedQemuExecutorConfig,
     host: H,
     promotion_workers: Vec<P>,
@@ -434,7 +507,7 @@ where
     let shared = SharedQemuAttemptHostResourceFactory::new(host);
     compose_packaged_qemu_executor_with_promotion_builder(
         repository,
-        profile,
+        basis,
         config,
         shared,
         move |_store, _checkpoints, _shared, _run_state_root, _worker_count| promotion_workers,
@@ -443,7 +516,7 @@ where
 
 fn compose_packaged_qemu_executor_with_baked_genesis<H>(
     repository: Arc<CampaignRepository>,
-    profile: ExecutorCompatibilityProfile,
+    basis: PackagedCampaignBasis,
     config: PackagedQemuExecutorConfig,
     shared: SharedQemuAttemptHostResourceFactory<H>,
     baked: ProductionBakedGenesisCheckpoint,
@@ -456,7 +529,7 @@ where
 {
     compose_packaged_qemu_executor_with_promotion_builder(
         repository,
-        profile,
+        basis,
         config,
         shared,
         move |store, checkpoints, shared, run_state_root, worker_count| {
@@ -480,7 +553,7 @@ where
 
 fn compose_packaged_qemu_executor_with_promotion_builder<H, P, B>(
     repository: Arc<CampaignRepository>,
-    profile: ExecutorCompatibilityProfile,
+    basis: PackagedCampaignBasis,
     config: PackagedQemuExecutorConfig,
     shared: SharedQemuAttemptHostResourceFactory<H>,
     build_promotions: B,
@@ -528,7 +601,7 @@ where
         materialization.insert(ExecutorMaterializationCapability::ExactRestore);
     }
     let capabilities = ExecutorCapabilitySet::new(
-        profile.clone(),
+        basis.profile.clone(),
         config.host_architecture,
         BTreeSet::from([config.qemu_profile]),
         materialization,
@@ -539,7 +612,7 @@ where
     let description = ExecutorDescription::new(config.daemon_epoch, capabilities)?;
     let supervisor = LocalExecutorSupervisor::new(
         ledger,
-        RepositoryAttemptAdmission::new(Arc::clone(&repository), profile),
+        PackagedAttemptAdmission::new(Arc::clone(&repository), basis.profile, basis.scenario),
         config.daemon_epoch,
         config.capacity,
     );
@@ -581,6 +654,7 @@ where
     } else {
         LocalExecutorWorkerPool::start(executor, store, checkpoints, workers)?
     };
+    let endpoint = config.endpoint.path().to_owned();
     let listener = config.endpoint.bind()?;
     let service = ExecutorLocalService::from_managed_listener(
         listener,
@@ -593,6 +667,8 @@ where
     )?;
     Ok(PackagedQemuExecutor {
         repository_identity: repository,
+        admitted_scenario: basis.scenario,
+        endpoint,
         service,
     })
 }
@@ -608,9 +684,93 @@ fn packaged_resource_ceiling(
     )
 }
 
+#[derive(Clone)]
+struct PackagedAttemptAdmission {
+    repository: Arc<CampaignRepository>,
+    profile: ExecutorCompatibilityProfile,
+    scenario: ScenarioArtifactId,
+}
+
+impl PackagedAttemptAdmission {
+    const fn new(
+        repository: Arc<CampaignRepository>,
+        profile: ExecutorCompatibilityProfile,
+        scenario: ScenarioArtifactId,
+    ) -> Self {
+        Self {
+            repository,
+            profile,
+            scenario,
+        }
+    }
+
+    fn validate_scenario(&self, request: &SubmitAttemptRequest) -> Result<(), ExecutorRejection> {
+        let lineage = self
+            .repository
+            .load_lineage(request.lineage())
+            .map_err(|error| error.executor_rejection())?;
+        if lineage.scenario_content() != self.scenario {
+            return Err(ExecutorRejection::Incompatible);
+        }
+        Ok(())
+    }
+}
+
+impl AttemptAdmissionValidator for PackagedAttemptAdmission {
+    fn validate(&self, request: &SubmitAttemptRequest) -> Result<(), ExecutorRejection> {
+        self.repository
+            .validate_executor_request_with_profile(request, &self.profile)
+            .map_err(|error| error.executor_rejection())?;
+        self.validate_scenario(request)
+    }
+
+    fn validate_completion(
+        &self,
+        request: &SubmitAttemptRequest,
+        observation: ObservationId,
+    ) -> Result<(), CompletionValidationFailure> {
+        self.repository
+            .validate_executor_completion_with_profile(request, observation, &self.profile)
+            .map_err(completion_validation_failure)?;
+        self.validate_scenario(request)
+            .map_err(|_| CompletionValidationFailure::Incompatible)
+    }
+}
+
+fn completion_validation_failure(error: CampaignRepositoryError) -> CompletionValidationFailure {
+    match error.executor_rejection() {
+        ExecutorRejection::UnavailableInput => CompletionValidationFailure::UnavailableInput,
+        ExecutorRejection::Unauthorized => CompletionValidationFailure::Unauthorized,
+        ExecutorRejection::Incompatible
+        | ExecutorRejection::Backpressure
+        | ExecutorRejection::ConflictingAssignment => CompletionValidationFailure::Incompatible,
+    }
+}
+
 /// Failure to acquire or compose one packaged local QEMU executor.
 #[derive(Debug, thiserror::Error)]
 pub enum PackagedQemuExecutorError {
+    /// The internal deployment contract named no campaign.
+    #[error("packaged QEMU executor has no campaign")]
+    NoCampaigns,
+    /// A configured campaign does not share the pool's exact compatibility basis.
+    #[error(
+        "campaign `{}` is incompatible with the packaged QEMU executor pool",
+        campaign.as_str()
+    )]
+    CampaignCompatibilityMismatch {
+        /// Incompatible configured campaign.
+        campaign: CampaignName,
+    },
+    /// A configured campaign does not share the pool's native baked scenario.
+    #[error(
+        "campaign `{}` uses another packaged QEMU scenario",
+        campaign.as_str()
+    )]
+    CampaignScenarioMismatch {
+        /// Campaign whose exact scenario artifact differs.
+        campaign: CampaignName,
+    },
     /// Campaign or lineage authentication failed.
     #[error(transparent)]
     Repository(#[from] CampaignRepositoryError),

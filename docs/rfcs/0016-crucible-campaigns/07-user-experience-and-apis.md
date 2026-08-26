@@ -177,8 +177,15 @@ service may omit it. Repeating paired `--campaign-runtime NAME` and
 planner and one authenticated local executor to each of at most 256 unique
 existing campaigns; the two argument lists are paired in command-line order.
 Attachment fails closed unless the component authority is present and the
-service is writable. The packaged local QEMU executor option remains limited
-to one campaign-specific attachment.
+service is writable. In packaged-executor mode every repeated executor path
+MUST name the same managed endpoint. The daemon authenticates the complete
+campaign set in canonical name order before acquiring QEMU host resources and
+admits it only when every lineage has the same exact compatibility profile and
+scenario artifact. Those campaigns share one fixed worker/capacity pool and
+one native baked-genesis authority. The advertised durable-store namespace is
+derived from the deployment state root rather than an arbitrarily first
+campaign, so argument reordering or adding a compatible campaign does not
+change locality identity; a different scenario requires another executor pool.
 After bind, an authorized local operator can attach another existing campaign:
 
 ```text
@@ -660,17 +667,23 @@ uses a nonblocking absolute 30-second default deadline rather than allowing a
 full executor backlog to pin attachment indefinitely. Restart reopens the same
 object/ref directories while stale-socket recovery remains exact-owner
 conditional.
-The separately hosted or daemon-packaged executor endpoint has one coupled lifecycle owner: a
-shutdown closes assignment admission, signals active attempts, interrupts
-connections, and joins both connection and semantic workers. Terminal semantic
-worker failure closes the listener instead of leaving an apparently live but
-unusable socket. Dropping the unserved owner retains the socket namespace until
-the same semantic join completes. In daemon-packaged mode a strict version-one
-deployment file fixes aggregate capacity, worker count, cgroup/run roots,
-project-ID range, child credential, checkpoint ceiling, and exact compatibility
-profile before the endpoint is exposed. Fixed workers receive stable disjoint
-run-state roots. Only the concrete fresh/thin-replay worker is selected;
-exact-resume composition remains fail-closed and open.
+The separately hosted or daemon-packaged executor endpoint has one coupled
+lifecycle owner: a shutdown closes assignment admission, signals active
+attempts, interrupts connections, and joins both connection and semantic
+workers. Terminal semantic worker failure closes the listener instead of
+leaving an apparently live but unusable socket. Dropping the unserved owner
+retains the socket namespace until the same semantic join completes. In
+daemon-packaged mode a strict version-one deployment file fixes aggregate
+capacity, worker count, cgroup/run roots, project-ID range, child credential,
+checkpoint ceiling, and exact compatibility profile before the endpoint is
+exposed. One pool may serve up to 256 explicitly attached campaigns only when
+their exact compatibility and scenario-artifact basis is identical. Admission
+rechecks that scenario for every attempt, and post-bind attachment through the
+packaged endpoint rejects a different scenario before executor connection. A
+post-bind attachment naming another independently authenticated executor keeps
+that executor's own capability scope. Fixed workers receive stable disjoint
+run-state roots. The concrete fresh/thin-replay and promoted exact-resume paths
+are selected; hot-fork execution remains fail-closed and open.
 `--read-only` applies to both APIs and cannot be bypassed by a mutation grant in
 the campaign policy.
 

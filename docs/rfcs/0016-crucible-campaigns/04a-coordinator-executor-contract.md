@@ -1108,8 +1108,15 @@ the current count without reconnecting to the executor. A concurrent exact
 request returns retryable unavailability while preparation is in flight, and a
 different endpoint for the same campaign returns nonretryable command reuse.
 `crucible campaign ... attach CAMPAIGN --executor-socket PATH` is the checked
-operator porcelain. Repository-wide automatic campaign discovery and a shared
-multi-campaign packaged-executor allocator remain future work.
+operator porcelain. One daemon-packaged executor may serve multiple explicitly
+named campaigns only when they share the same exact compatibility profile,
+scenario artifact, and endpoint. The configured campaign set is canonicalized
+before QEMU host-resource acquisition; attempt admission and dynamic runtime
+attachment through that packaged endpoint both recheck the scenario-specific
+baked-genesis boundary. A dynamic attachment naming another independently
+authenticated executor uses that executor's capability scope. Automatic
+campaign discovery and allocation across multiple scenario-specific pools
+remain future work.
 
 SIGINT,
 SIGTERM, lifecycle-server failure, or CampaignService failure shuts down both

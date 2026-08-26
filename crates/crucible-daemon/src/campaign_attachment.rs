@@ -19,6 +19,7 @@ use crucible_campaign::{
     CampaignSupervisorError, CanonicalPuctPlanner, ExecutionRetentionIntent, ExecutorClient,
     ExecutorClientError, MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
     MAX_PLANNER_SCAN_PAGE_ITEMS, PlannerAuthorityKey, PlannerClient, PlanningBudget,
+    ScenarioArtifactId,
 };
 
 use crate::{
@@ -226,6 +227,7 @@ type CanonicalSupervisorFailure = CampaignSupervisorError<
 pub struct PreparedCanonicalCampaignRuntime {
     repository_identity: Arc<CampaignRepository>,
     campaign: CampaignName,
+    scenario: ScenarioArtifactId,
     supervisor: CanonicalSupervisor,
     planner_cancellation: CanonicalPlannerProcessCancellation,
     runtime: CampaignRuntimeConfig,
@@ -240,6 +242,10 @@ impl PreparedCanonicalCampaignRuntime {
     #[must_use]
     pub const fn campaign(&self) -> &CampaignName {
         &self.campaign
+    }
+
+    pub(crate) const fn scenario(&self) -> ScenarioArtifactId {
+        self.scenario
     }
 
     /// Starts the fixed campaign runtime thread.
@@ -406,6 +412,7 @@ pub fn prepare_canonical_campaign_runtime(
     Ok(PreparedCanonicalCampaignRuntime {
         repository_identity: Arc::clone(&repository),
         campaign: config.campaign().clone(),
+        scenario: lineage.scenario_content(),
         supervisor,
         planner_cancellation,
         runtime: config.runtime(),

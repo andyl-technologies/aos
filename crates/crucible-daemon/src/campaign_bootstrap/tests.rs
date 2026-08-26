@@ -11,6 +11,7 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
+use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{
     AttemptResourceLimits, CampaignClient, CampaignClientError, CampaignLineage, CampaignMode,
     CampaignName, CampaignPolicy, CampaignPrincipal, CampaignSeed, CampaignServiceFailure,
@@ -24,19 +25,93 @@ use crucible_campaign::{
     ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, RetentionPolicy, ScenarioDefId,
     SubmitAttemptRequest, SubmitAttemptResponse, WatchExecutorCapacityRequest,
 };
+use crucible_qemu::{
+    LinuxQemuAttemptHostConfig, QemuChildProcessContract, QemuLaunchResourceRequirements,
+    QemuNodeChild, QemuPreparedRunDirectory, QemuVmRealizationError,
+};
 use tempfile::tempdir;
 
 use crate::{
     AllowAllAttemptAdmission, AttachCampaignRuntimeRequest, CampaignRuntimeAttachmentDisposition,
     CanonicalPlannerProcessConfig, ExecutorCapacity, ExecutorLoopbackEndpointConfig,
-    LocalExecutorCapabilityService, LocalExecutorSupervisor, LoopbackCampaignService,
-    LoopbackCampaignServiceError, LoopbackCampaignTimeouts, LoopbackExecutorTimeouts,
-    MAX_EXECUTOR_REQUESTS_PER_CONNECTION, MemoryAssignmentLedger,
-    serve_loopback_executor_component_connection_with_limits,
+    ExecutorLoopbackServerConfig, LocalExecutorCapabilityService, LocalExecutorSupervisor,
+    LoopbackCampaignService, LoopbackCampaignServiceError, LoopbackCampaignTimeouts,
+    LoopbackExecutorTimeouts, MAX_EXECUTOR_REQUESTS_PER_CONNECTION, MemoryAssignmentLedger,
+    PackagedQemuExecutorConfig, QemuAttemptCancellationSignal, QemuAttemptHostResourceFactory,
+    QemuAttemptHostResourceOwner, serve_loopback_executor_component_connection_with_limits,
     serve_loopback_executor_component_once,
 };
 
 use super::*;
+
+#[derive(Debug)]
+struct UnusedPackagedHostFactory;
+
+#[derive(Debug)]
+struct UnusedPackagedHostOwner;
+
+#[derive(Clone, Debug)]
+struct UnusedPackagedCancellation;
+
+impl QemuAttemptCancellationSignal for UnusedPackagedCancellation {
+    fn signal(&self) -> Result<(), QemuVmRealizationError> {
+        Ok(())
+    }
+}
+
+impl QemuAttemptHostResourceFactory for UnusedPackagedHostFactory {
+    type Owner = UnusedPackagedHostOwner;
+
+    fn begin(
+        &mut self,
+        _resources: AttemptResourceLimits,
+    ) -> Result<Self::Owner, QemuVmRealizationError> {
+        Err(unused_packaged_host_error())
+    }
+}
+
+impl QemuAttemptHostResourceOwner for UnusedPackagedHostOwner {
+    type CancellationSignal = UnusedPackagedCancellation;
+
+    fn resource_limits(&self) -> AttemptResourceLimits {
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 1024 * 1024 * 1024, 50_000)
+            .expect("packaged resource ceiling")
+    }
+
+    fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
+        Err(unused_packaged_host_error())
+    }
+
+    fn prepare_generation_run_directory(
+        &mut self,
+        _requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        Err(unused_packaged_host_error())
+    }
+
+    fn cancellation_signal(&self) -> Result<Self::CancellationSignal, QemuVmRealizationError> {
+        Ok(UnusedPackagedCancellation)
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
+        Err(unused_packaged_host_error())
+    }
+
+    fn retain_failed_launch_child(&mut self, _child: QemuNodeChild) {}
+
+    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+        Ok(())
+    }
+
+    fn quarantine(&mut self) {}
+}
+
+fn unused_packaged_host_error() -> QemuVmRealizationError {
+    QemuVmRealizationError::Executor {
+        operation: "use unused packaged bootstrap host",
+        message: String::from("test does not execute a guest"),
+    }
+}
 
 fn fixture() -> (tempfile::TempDir, CampaignLocalServiceConfig) {
     let directory = tempdir().expect("bootstrap directory");
@@ -425,6 +500,108 @@ fn multi_runtime_bind_sorts_unique_campaigns_and_joins_every_runtime() {
     service.shutdown_handle().shutdown();
     service.serve().expect("serve and join runtime set");
     assert!(!socket.exists());
+}
+
+#[test]
+fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
+    let (directory, config) = fixture();
+    let authority = directory.path().join("component-authority.bin");
+    write_component_authorities(&authority, [0x31; 32], [0x73; 32]);
+    let config = config
+        .with_component_authority_path(&authority)
+        .expect("component authority path");
+    let campaign_socket = config.endpoint().path().to_owned();
+    let prepared = config.prepare().expect("prepare service");
+    let lineage = create_runtime_campaign(&prepared.repository, "alpha");
+    assert_eq!(
+        create_runtime_campaign(&prepared.repository, "beta"),
+        lineage
+    );
+
+    let metadata = fs::metadata(directory.path()).expect("packaged endpoint directory");
+    let executor_endpoint = ExecutorLoopbackEndpointConfig::new(
+        directory.path().join("shared-executor.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("packaged executor endpoint");
+    let host = LinuxQemuAttemptHostConfig::new(
+        "/sys/fs/cgroup/crucible-packaged-bootstrap-test",
+        "/var/lib/crucible-packaged-bootstrap-test",
+        "packaged-bootstrap-test",
+        1,
+        2,
+        metadata.uid().checked_add(1).expect("child user ID"),
+        metadata.gid().checked_add(1).expect("child group ID"),
+        32,
+        1024,
+        Duration::from_secs(1),
+    )
+    .expect("packaged host configuration");
+    let packaged_config = PackagedQemuExecutorConfig::new(
+        BTreeSet::from([
+            CampaignName::new("beta").expect("beta campaign"),
+            CampaignName::new("alpha").expect("alpha campaign"),
+        ]),
+        executor_endpoint.clone(),
+        ExecutorLoopbackServerConfig::default(),
+        directory.path().join("executor-ledger"),
+        directory.path().join("executor-checkpoints"),
+        1024 * 1024,
+        DaemonEpoch::from_bytes([0x61; 16]).expect("daemon epoch"),
+        ExecutorCapacity::new(2, 2, 512 * 1024 * 1024, 1024 * 1024 * 1024, 50_000)
+            .expect("executor capacity"),
+        2,
+        "x86_64",
+        "deterministic-tcg-v1",
+        CampaignHash::derive("crucible.test.shared-packaged-store.v1", b"bootstrap"),
+        ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state"),
+        host,
+    )
+    .expect("packaged executor configuration");
+    let packaged = crate::packaged_qemu_executor::compose_packaged_qemu_executor(
+        Arc::clone(&prepared.repository),
+        ExecutorCompatibilityProfile::from_lineage(&lineage),
+        lineage.scenario_content(),
+        packaged_config,
+        UnusedPackagedHostFactory,
+    )
+    .expect("compose shared packaged executor");
+    let executor =
+        AttachedPackagedQemuExecutor::start(packaged).expect("start shared packaged executor");
+
+    let beta = prepared
+        .prepare_runtime(
+            executor_endpoint.connect().expect("connect beta runtime"),
+            &named_runtime_config("beta"),
+        )
+        .expect("prepare beta runtime");
+    let alpha = prepared
+        .prepare_runtime(
+            executor_endpoint.connect().expect("connect alpha runtime"),
+            &named_runtime_config("alpha"),
+        )
+        .expect("prepare alpha runtime");
+    let service = prepared
+        .bind_with_runtimes_and_executor(vec![beta, alpha], executor)
+        .expect("bind shared packaged executor pool");
+    assert_eq!(
+        service
+            .runtime_attachment_handle()
+            .attached_campaigns()
+            .expect("attached campaigns")
+            .iter()
+            .map(CampaignName::as_str)
+            .collect::<Vec<_>>(),
+        ["alpha", "beta"]
+    );
+    service.shutdown_handle().shutdown();
+    service
+        .serve()
+        .expect("serve and join shared executor pool");
+    assert!(!campaign_socket.exists());
+    assert!(!executor_endpoint.path().exists());
 }
 
 #[test]
