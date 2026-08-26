@@ -539,13 +539,17 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   transition, inserts an interruptible 1 ms fairness pause after at most 256
   immediate operations, reports terminal component failures to its join owner,
   and does not add a second modeled-work queue. The daemon bootstrap now
-  attaches one explicitly named existing campaign to the packaged canonical
-  planner and one authenticated local executor. It negotiates executor
-  description/lineage/resources before planner-basis publication, starts only
-  after the CampaignService endpoint is acquired, and couples runtime failure
-  or process shutdown to listener shutdown and worker join. Campaign
-  enumeration, dynamic attachment, multiple simultaneous campaign runtimes,
-  and richer operational tuning remain open.
+  attaches a startup-fixed set of 1 through 256 unique explicitly named
+  existing campaigns to packaged canonical planner workers and matched
+  authenticated local executors. It negotiates each executor
+  description/lineage/resources basis before publishing that attachment's
+  planner basis, prepares and sorts the complete set by canonical campaign
+  name before any runtime starts, starts only after the CampaignService
+  endpoint is acquired, and couples any runtime failure or process shutdown to
+  listener shutdown and complete worker join. The packaged local QEMU executor
+  remains a campaign-specific one-runtime composition.
+  Campaign enumeration, dynamic attachment, a shared packaged-executor
+  allocator, and richer operational tuning remain open.
   The QEMU realization executor now exposes only a borrowed already-realized
   live-backend facade without generic VMState/process authority, and the daemon
   composes that capability with a pre-launch exact resource guard and mandatory
@@ -1037,9 +1041,10 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   finite wall deadline and sticky cancellation, drains bounded pipes, and
   kills and reaps the authority-free worker before returning. The generic
   daemon-owned long-lived coordinator runtime is implemented. Process startup
-  can now attach that runtime to one explicitly named existing campaign with
-  the packaged planner and one authenticated local executor; automatic
-  campaign discovery, dynamic/multiple attachment, and additional opaque
+  can now attach a bounded fixed set of up to 256 such runtimes to unique
+  explicitly named existing campaigns, each with the packaged planner and a
+  matched authenticated local executor. Automatic campaign discovery, dynamic
+  attachment, shared packaged-executor allocation, and additional opaque
   non-finite model-prior adapters remain open. The first `CampaignService`
   checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for

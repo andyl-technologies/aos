@@ -172,10 +172,13 @@ may activate an already imported compatible canonical policy. A runtime-capable
 local daemon also receives
 `--campaign-component-authority FILE`, the strict owner-only version-one
 planner/debugger authority bundle specified in §04a. The current control-only
-service may omit it. Supplying both `--campaign-runtime NAME` and
-`--campaign-executor-socket PATH` attaches the packaged canonical planner and
-one authenticated local executor to that existing campaign; attachment fails
-closed unless the component authority is present and the service is writable.
+service may omit it. Repeating paired `--campaign-runtime NAME` and
+`--campaign-executor-socket PATH` arguments attaches the packaged canonical
+planner and one authenticated local executor to each of at most 256 unique
+existing campaigns; the two argument lists are paired in command-line order.
+Attachment fails closed unless the component authority is present and the
+service is writable. The packaged local QEMU executor option remains limited
+to one campaign-specific attachment.
 `start` changes desired state through the same recorded `Resume` transition as
 `resume`, but reports the operator's initial-start intent distinctly. Both
 require the exact expected snapshot and an idempotency key. `pause` stops new
@@ -572,9 +575,9 @@ the named source history, authorizes both names, leaves the source unchanged,
 and exactly replays by target name after later target mutations or restart. The
 initial nested CLI now exposes authenticated current status, one-shot resumable
 watch, exact-precondition lifecycle mutation, and semantic pin/unpin mutation;
-automatic/multiple campaign attachment and remaining paged inspection are still
-required before the service is complete. Repeated bounded `WatchCampaign`
-calls provide
+automatic campaign discovery, dynamic attachment, and remaining paged
+inspection are still required before the service is complete. Repeated bounded
+`WatchCampaign` calls provide
 the initial resumable, coalesced current-head stream. The bounded versioned
 Unix-stream loopback binding is now
 implemented with a request-bound stable error envelope preserving authorization,
