@@ -78,6 +78,33 @@
             "$CC" resolver-smoke.c -o "$c/bin/aos-darwin-resolver-smoke"
 
             printf '%s\n' \
+              '#include <mach/mach_vm.h>' \
+              '#include <membership.h>' \
+              '#include <os/log.h>' \
+              '#include <readpassphrase.h>' \
+              '#include <sys/socket.h>' \
+              '#include <util.h>' \
+              'static const void *const aos_darwin_symbols[] = {' \
+              '  (const void *)&mach_vm_read_overwrite,' \
+              '  (const void *)&mach_vm_region,' \
+              '  (const void *)&openpty,' \
+              '  (const void *)&login_tty,' \
+              '  (const void *)&forkpty,' \
+              '  (const void *)&sendfile,' \
+              '  (const void *)&readpassphrase,' \
+              '  (const void *)&mbr_uuid_to_id,' \
+              '  (const void *)&mbr_uid_to_uuid,' \
+              '  (const void *)&mbr_gid_to_uuid,' \
+              '};' \
+              'int main(void) {' \
+              '  os_log(OS_LOG_DEFAULT, "aos Darwin command-line SDK smoke");' \
+              '  return aos_darwin_symbols[0] == 0;' \
+              '}' \
+              > command-line-sdk-smoke.c
+            "$CC" command-line-sdk-smoke.c \
+              -o "$c/bin/aos-darwin-command-line-sdk-smoke"
+
+            printf '%s\n' \
               '#include <objc/runtime.h>' \
               '__attribute__((objc_root_class)) @interface AosRoot @end' \
               '@implementation AosRoot @end' \
@@ -153,6 +180,7 @@
 
             for executable in \
               "$c/bin/aos-darwin-c-smoke" \
+              "$c/bin/aos-darwin-command-line-sdk-smoke" \
               "$c/bin/aos-darwin-framework-smoke" \
               "$c/bin/aos-darwin-iokit-smoke" \
               "$c/bin/aos-darwin-objective-c-smoke" \
@@ -167,6 +195,13 @@
                 printf '%s\n' "$header" >&2
                 exit 1
               fi
+              strings_output=$("$STRINGS" "$executable")
+              case "$strings_output" in
+                *'/build/'*)
+                  echo "build-directory debug path in $executable" >&2
+                  exit 1
+                  ;;
+              esac
             done
 
             for library in ${cross.stdenv.darwinRuntimes}/lib/*.dylib; do
@@ -188,6 +223,13 @@
               case "$headers" in
                 *'/build'*)
                   echo "build-directory load command in $library" >&2
+                  exit 1
+                  ;;
+              esac
+              strings_output=$("$STRINGS" "$library")
+              case "$strings_output" in
+                *'/build/'*)
+                  echo "build-directory debug path in $library" >&2
                   exit 1
                   ;;
               esac

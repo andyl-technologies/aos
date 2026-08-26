@@ -8,6 +8,7 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
 }: let
   version = "0.16.0";
   sdkVersion = "15.0";
@@ -23,6 +24,7 @@
   libcRevision = "71bbe350ab79eef58113991d817ccc6165061a64";
   libinfoRevision = "39b70c515baee5b609e7e91693edbd934b6845a1";
   libresolvRevision = "e48cd914edc1cb14f8289b8e2dfdaac360481cd2";
+  bootstrapCmdsRevision = "c71d2d72f48995baaea76148f61002e5299841de";
 
   coreFoundationSrc = fetchurl {
     urls = [
@@ -107,6 +109,13 @@
     ];
     hash = "sha256-K7ghDWDtbetG3Ns5Hvsz2ylybXXY6tkDW4ZseAazMu0=";
   };
+
+  bootstrapCmdsSrc = fetchurl {
+    urls = [
+      "https://github.com/apple-oss-distributions/bootstrap_cmds/archive/${bootstrapCmdsRevision}.tar.gz"
+    ];
+    hash = "sha256-SmxCzFs5b2jIQIU5WaKxnDoQDyOybC3EhbRBMTdEvAs=";
+  };
 in
   mkDerivation {
     pname = "darwin-sdk";
@@ -119,6 +128,10 @@ in
       hash = "sha256-QxhpWe3IfVx6G+e30qJe//0izlgHx6+ZBn+G+ZZBv98=";
     };
 
+    buildDeps = [
+      buildPackages.flex
+      buildPackages.bison
+    ];
     runtimeDeps = [];
 
     phases = [
@@ -138,6 +151,7 @@ in
           tar xf ${libcSrc}
           tar xf ${libinfoSrc}
           tar xf ${libresolvSrc}
+          tar xf ${bootstrapCmdsSrc}
           cd "zig-${version}"
         '';
       }
@@ -147,7 +161,7 @@ in
           coreFoundationRoot="../swift-corelibs-foundation-${coreFoundationRevision}"
           systemConfigurationRoot="../configd-${systemConfigurationRevision}"
           ioKitUserRoot="../IOKitUser-${ioKitUserRevision}"
-          xnuRoot="../xnu-${xnuRevision}"
+          xnuRoot="$PWD/../xnu-${xnuRevision}"
           ioUsbFamilyRoot="../IOUSBFamily-${ioUsbFamilyRevision}"
           ioStorageFamilyRoot="../IOStorageFamily-${ioStorageFamilyRevision}"
           darlingIoKitUserRoot="../darling-iokituser-${darlingIoKitUserRevision}"
@@ -156,11 +170,13 @@ in
           libcRoot="../Libc-${libcRevision}"
           libinfoRoot="../Libinfo-${libinfoRevision}"
           libresolvRoot="../libresolv-${libresolvRevision}"
+          bootstrapCmdsRoot="../bootstrap_cmds-${bootstrapCmdsRevision}"
 
           mkdir -p \
             "$out/usr/include/c++/v1" \
             "$out/usr/include/libunwind" \
             "$out/usr/include/objc" \
+            "$out/usr/include/os" \
             "$out/usr/include/rpc" \
             "$out/usr/lib" \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Headers" \
@@ -200,6 +216,78 @@ in
           cp "$libresolvRoot/arpa/nameser.h" "$out/usr/include/arpa/"
           cp "$libcRoot/include/arpa/nameser_compat.h" "$out/usr/include/arpa/"
           cp "$libinfoRoot"/rpc.subproj/*.h "$out/usr/include/rpc/"
+          cp "$xnuRoot/libkern/os/log.h" "$out/usr/include/os/"
+          cp \
+            "$libcRoot/include/readpassphrase.h" \
+            "$libcRoot/include/util.h" \
+            "$out/usr/include/"
+          cp \
+            "$libinfoRoot/membership.subproj/membership.h" \
+            "$libinfoRoot/membership.subproj/ntsid.h" \
+            "$out/usr/include/"
+
+          # Apple installs mach_vm.h after compiling the Mach Interface
+          # Generator and running it over XNU's authoritative mach_vm.defs.
+          # Reproduce that source pipeline with Linux-executed AOS build tools
+          # instead of checking in a generated SDK artifact or using Xcode.
+          migBuild="$PWD/aos-mig-build"
+          mkdir -p "$migBuild"
+          cp -R "$bootstrapCmdsRoot/migcom.tproj/." "$migBuild/"
+          cp -R "$out/usr/include" "$migBuild/apple-headers"
+          chmod -R u+w "$migBuild"
+          (
+            cd "$migBuild"
+            ${buildPackages.flex}/bin/flex -o lexxer.c lexxer.l
+            ${buildPackages.bison}/bin/bison -y -d parser.y
+
+            # migcom is a native build tool, but its implementation consumes
+            # Darwin's public types. Adapt only this private header copy to the
+            # Linux C runtime that executes the generator.
+            sed -i 's/[[:space:]]*__asm("_".*$//' apple-headers/sys/cdefs.h
+            sed -i \
+              -e 's/__stdinp/stdin/g' \
+              -e 's/__stdoutp/stdout/g' \
+              -e 's/__stderrp/stderr/g' \
+              apple-headers/_stdio.h
+            sed -i 's/__error/__errno_location/g' apple-headers/sys/errno.h
+            sed -i 's|#include <ctype.h>|#include "aos-mig-ctype.h"|' string.c
+            cat > aos-mig-ctype.h <<'EOF'
+          #define islower(c) ((unsigned int)((c) - 'a') <= (unsigned int)('z' - 'a'))
+          #define toupper(c) (islower(c) ? ((c) - 'a' + 'A') : (c))
+          EOF
+
+            buildCC=${buildPackages.stdenv.cc}/bin/cc
+            runBuildCC() (
+              unset AOS_HARDENING_ENABLE AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+              unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
+              unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH CPATH LIBRARY_PATH
+              unset MACOSX_DEPLOYMENT_TARGET NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT
+              exec "$buildCC" "$@"
+            )
+            compilerIncludes=$(runBuildCC -print-file-name=include)
+            runBuildCC -nostdinc -I. -Iapple-headers -isystem "$compilerIncludes" \
+              -Ulinux -U__linux -U__linux__ -D__APPLE__=1 -D__MACH__=1 \
+              -D__private_extern__= -D__kernel_ptr_semantics= \
+              -D__LITTLE_ENDIAN__=1 -DNDEBUG -DMIG_VERSION='"aos-mig"' \
+              -o migcom \
+              error.c global.c header.c lexxer.c mig.c y.tab.c \
+              routine.c server.c statement.c string.c type.c user.c utils.c
+
+            {
+              printf '#line 1 "%s"\n' "$xnuRoot/osfmk/mach/mach_vm.defs"
+              cat "$xnuRoot/osfmk/mach/mach_vm.defs"
+            } > mach_vm.defs.c
+            runBuildCC -E -x c \
+              -D__MACH30__ \
+              -I "$xnuRoot/osfmk" \
+              -I "$xnuRoot" \
+              mach_vm.defs.c \
+              | ./migcom \
+                  -header "$out/usr/include/mach/mach_vm.h" \
+                  -user /dev/null \
+                  -server /dev/null
+            test -s "$out/usr/include/mach/mach_vm.h"
+          )
 
           # Newer Apple open-source framework headers describe bridgeOS API
           # availability, while Zig's open SDK snapshot omits that platform's
@@ -329,6 +417,8 @@ in
             "$out/share/licenses/darwin-sdk/Libinfo-LICENSE"
           cp "$libresolvRoot/APPLE_LICENSE" \
             "$out/share/licenses/darwin-sdk/libresolv-LICENSE"
+          cp "$bootstrapCmdsRoot/APPLE_LICENSE" \
+            "$out/share/licenses/darwin-sdk/bootstrap_cmds-LICENSE"
 
           cat > "$out/System/Library/Frameworks/Security.framework/Headers/Security.h" <<'EOF'
           #ifndef _SECURITY_H_
