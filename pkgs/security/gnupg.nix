@@ -39,23 +39,24 @@ in
     # interactive prompts, sqlite for the keyboxd key database, and libusb1 so
     # scdaemon's built-in CCID driver can drive USB smartcard readers without a
     # running pcscd.
-    runtimeDeps = [
-      libgpg-error
-      libgcrypt
-      libassuan
-      libksba
-      npth
-      libusb1
-      zlib
-      bzip2
-      readline
-      sqlite
-    ]
-    ++ (
-      if stdenv.hostPlatform.isDarwin
-      then [bash]
-      else []
-    );
+    runtimeDeps =
+      [
+        libgpg-error
+        libgcrypt
+        libassuan
+        libksba
+        npth
+        libusb1
+        zlib
+        bzip2
+        readline
+        sqlite
+      ]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [bash]
+        else []
+      );
     propagatedDeps = [];
 
     # GnuPG's secure-memory pool and several internal structures use trailing

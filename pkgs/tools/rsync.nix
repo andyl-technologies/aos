@@ -24,17 +24,18 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [
-      zlib
-      openssl
-      zstd
-      lz4
-    ]
-    ++ (
-      if stdenv.hostPlatform.isDarwin
-      then [bash]
-      else []
-    );
+    runtimeDeps =
+      [
+        zlib
+        openssl
+        zstd
+        lz4
+      ]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [bash]
+        else []
+      );
     propagatedDeps = [];
 
     phases = [

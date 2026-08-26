@@ -32,17 +32,18 @@ in
       pkg-config
       perl
     ];
-    runtimeDeps = [
-      openssl
-      zlib
-      nghttp2
-      ca-certificates
-    ]
-    ++ (
-      if stdenv.hostPlatform.isDarwin
-      then [bash]
-      else []
-    );
+    runtimeDeps =
+      [
+        openssl
+        zlib
+        nghttp2
+        ca-certificates
+      ]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [bash]
+        else []
+      );
     propagatedDeps = [
       openssl
       zlib
