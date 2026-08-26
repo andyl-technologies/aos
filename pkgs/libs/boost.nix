@@ -6,12 +6,26 @@
   bash,
   which,
   bzip2,
+  xz,
   zlib,
   buildPackages,
   stdenv,
 }: let
   version = "1.87.0";
   underscoreVersion = "1_87_0";
+  selectedLibraryFlags = "--with-system --with-filesystem --with-regex --with-container --with-context --with-coroutine --with-thread --with-chrono --with-date_time --with-program_options --with-iostreams --with-serialization --with-log --with-atomic --with-random";
+  darwinTargetFlags =
+    if stdenv.hostPlatform.isDarwin
+    then "target-os=darwin binary-format=mach-o architecture=${
+      if stdenv.hostPlatform.isAarch64
+      then "arm"
+      else "x86"
+    } address-model=64 abi=${
+      if stdenv.hostPlatform.isAarch64
+      then "aapcs"
+      else "sysv"
+    }"
+    else "";
 in
   mkDerivation {
     pname = "boost";
@@ -36,10 +50,16 @@ in
       bash
       which
     ];
-    runtimeDeps = [
-      bzip2
-      zlib
-    ];
+    runtimeDeps =
+      [
+        bzip2
+        zlib
+      ]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [xz]
+        else []
+      );
     propagatedDeps = [];
 
     phases = [
@@ -85,7 +105,7 @@ in
           ./b2 -j$NIX_BUILD_CORES \
             ${
             if stdenv.hostPlatform.isDarwin
-            then "--user-config=$PWD/user-config.jam toolset=clang"
+            then "--user-config=$PWD/user-config.jam toolset=clang ${selectedLibraryFlags} ${darwinTargetFlags}"
             else "toolset=gcc"
           } \
             variant=release \
@@ -96,7 +116,12 @@ in
             -sZLIB_INCLUDE=${zlib}/include \
             -sZLIB_LIBRARY_PATH=${zlib}/lib \
             -sBZIP2_INCLUDE=${bzip2}/include \
-            -sBZIP2_LIBRARY_PATH=${bzip2}/lib
+            -sBZIP2_LIBRARY_PATH=${bzip2}/lib \
+            ${
+            if stdenv.hostPlatform.isDarwin
+            then "-sLZMA_INCLUDE=${xz}/include -sLZMA_LIBRARY_PATH=${xz}/lib"
+            else ""
+          }
         '';
       }
       {
@@ -112,7 +137,7 @@ in
             --libdir=$out/lib \
             ${
             if stdenv.hostPlatform.isDarwin
-            then "--user-config=$PWD/user-config.jam toolset=clang"
+            then "--user-config=$PWD/user-config.jam toolset=clang ${selectedLibraryFlags} ${darwinTargetFlags}"
             else "toolset=gcc"
           } \
             variant=release \
