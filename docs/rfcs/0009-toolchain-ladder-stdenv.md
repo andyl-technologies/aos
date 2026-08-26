@@ -474,6 +474,13 @@ source preparation so a changed upstream rule fails before the compiler runs.
 This keeps generated build-tree discovery valid when the surrounding sandbox
 shell has hostile glob state without hard-coding glibc's configured subdirs.
 
+When OpenJDK 8 is bootstrapped by an AOS JDK that does not provide
+`javax.activation`, add the generated JAF classes to the JAXWS boot class path
+and make the JAXWS compilation depend explicitly on the JAF compilation. Do
+not rely on their shared archive target to order sibling prerequisites: the
+inner OpenJDK make graph may run them concurrently, exposing a partially
+populated JAF output directory.
+
 ## Expected outcome
 
 The ~22,400 toolchain LOC should drop by well over half: the POSIX-tools
