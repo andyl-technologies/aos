@@ -185,8 +185,8 @@
     ]
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliCargo [
       {
-        label = "CLI depends on guest-host protocol ABI source";
-        needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
+        label = "CLI depends on the API-owned guest-host protocol surface";
+        needle = "crucible-api = { path = \"../crucible-api\" }";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePkg [
@@ -208,7 +208,7 @@
       }
       {
         label = "separate suite runtime closure";
-        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures]";
+        needle = "runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]";
       }
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPkg [

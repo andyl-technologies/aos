@@ -222,7 +222,7 @@
       }
       {
         label = "resume checkpoint instantiation";
-        needle = "resume_session_from_checkpoint";
+        needle = "Engine::from_recorded_checkpoint";
       }
       {
         label = "list reads live mirror";
@@ -288,7 +288,7 @@
       }
       {
         label = "resume genesis material rejection test";
-        needle = "resume_session_rejects_non_baked_genesis_checkpoint_material";
+        needle = "resume_session_rejects_tampered_zero_time_baked_genesis";
       }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [

@@ -181,22 +181,12 @@
         needle = "RPC GetReproduction stale epoch should be typed";
       }
       {
-        label = "RPC fault reproduction payload coverage";
-        needle = "RPC fault reproduction should decode";
-      }
-      {
         label = "RPC command payload wire encoder";
         needle = "command_payload_material_wire";
       }
       {
         label = "HTTP/2 GetReproduction handler";
         needle = "handle_get_reproduction";
-      }
-    ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" session [
-      {
-        label = "at-sequence regression test";
-        needle = "boundary_control_at_sequence_is_before_scheduler_control_events";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

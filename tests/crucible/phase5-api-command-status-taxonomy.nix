@@ -14,7 +14,10 @@
   streaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
   session = import ./_crucible-session-source.nix {inherit lib;};
   client = builtins.readFile ../../crates/crucible-api/src/client.rs;
-  rpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
+  rpcAbi = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/rpc_abi.rs;
+  };
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-api/tests/gate_control_client.rs;

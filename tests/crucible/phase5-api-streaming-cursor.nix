@@ -12,7 +12,10 @@
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   eventLogStream = builtins.readFile ../../crates/crucible-api/src/event_log_stream.rs;
-  streaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
+  streaming = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/streaming.rs;
+  };
   client = builtins.readFile ../../crates/crucible-api/src/client.rs;
   session = import ./_crucible-session-source.nix {inherit lib;};
   streamingCursorTest = builtins.readFile ../../crates/crucible-api/tests/gate_streaming_cursor.rs;
