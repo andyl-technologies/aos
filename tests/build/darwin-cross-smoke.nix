@@ -342,6 +342,21 @@
               -o "$c/bin/aos-darwin-objective-c-smoke"
 
             printf '%s\n' \
+              '#include <sandbox.h>' \
+              'extern int sandbox_init_with_parameters(const char *profile, uint64_t flags, const char *const parameters[], char **errorbuf);' \
+              'int main(void) {' \
+              '  char *error = 0;' \
+              '  const char *const parameters[] = { 0 };' \
+              '  int named = sandbox_init(kSBXProfilePureComputation, SANDBOX_NAMED, &error);' \
+              '  int parameterized = sandbox_init_with_parameters("(version 1) (allow default)", 0, parameters, &error);' \
+              '  sandbox_free_error(error);' \
+              '  return named == parameterized && SANDBOX_NAMED_EXTERNAL == 0;' \
+              '}' \
+              > sandbox-smoke.c
+            "$CC" sandbox-smoke.c -lsandbox \
+              -o "$c/bin/aos-darwin-sandbox-smoke"
+
+            printf '%s\n' \
               '#include <IOKit/IOKitLib.h>' \
               '#include <IOKit/storage/IOBlockStorageDevice.h>' \
               '#include <IOKit/storage/ata/ATASMARTLib.h>' \
