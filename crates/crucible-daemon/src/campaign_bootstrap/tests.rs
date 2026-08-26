@@ -196,10 +196,18 @@ fn named_runtime_config(name: &str) -> CanonicalCampaignRuntimeConfig {
 }
 
 fn create_runtime_campaign(repository: &Arc<CampaignRepository>, name: &str) -> CampaignLineage {
-    let scenario = ScenarioDefId::from_hash(CampaignHash::derive("test", b"bootstrap-scenario"));
+    create_runtime_campaign_for_scenario(repository, name, b"bootstrap-scenario")
+}
+
+fn create_runtime_campaign_for_scenario(
+    repository: &Arc<CampaignRepository>,
+    name: &str,
+    scenario_label: &[u8],
+) -> CampaignLineage {
+    let scenario = ScenarioDefId::from_hash(CampaignHash::derive("test", scenario_label));
     let genesis = ConfigurationId::from_hash(CampaignHash::derive("test", b"bootstrap-genesis"));
     let scenario_content = repository
-        .publish_scenario_artifact(scenario, 1, b"scenario".to_vec())
+        .publish_scenario_artifact(scenario, 1, scenario_label.to_vec())
         .expect("scenario artifact");
     let genesis_content = repository
         .publish_configuration_artifact(scenario, scenario_content, genesis, 1, b"genesis".to_vec())
@@ -503,6 +511,28 @@ fn multi_runtime_bind_sorts_unique_campaigns_and_joins_every_runtime() {
 }
 
 #[test]
+fn packaged_runtime_discovery_authenticates_and_orders_the_complete_catalog() {
+    let (_directory, config) = fixture();
+    let prepared = config.prepare().expect("prepare service");
+    assert!(matches!(
+        prepared.discover_packaged_campaigns(),
+        Err(CampaignLocalServiceError::InvalidRuntimeCount)
+    ));
+
+    create_runtime_campaign_for_scenario(&prepared.repository, "zeta", b"scenario-zeta");
+    create_runtime_campaign_for_scenario(&prepared.repository, "alpha", b"scenario-alpha");
+    assert_eq!(
+        prepared
+            .discover_packaged_campaigns()
+            .expect("discover authenticated campaign catalog")
+            .iter()
+            .map(CampaignName::as_str)
+            .collect::<Vec<_>>(),
+        ["alpha", "zeta"]
+    );
+}
+
+#[test]
 fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
     let (directory, config) = fixture();
     let authority = directory.path().join("component-authority.bin");
@@ -512,10 +542,19 @@ fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
         .expect("component authority path");
     let campaign_socket = config.endpoint().path().to_owned();
     let prepared = config.prepare().expect("prepare service");
-    let lineage = create_runtime_campaign(&prepared.repository, "alpha");
-    assert_eq!(
-        create_runtime_campaign(&prepared.repository, "beta"),
-        lineage
+    let alpha_lineage = create_runtime_campaign_for_scenario(
+        &prepared.repository,
+        "alpha",
+        b"packaged-alpha-scenario",
+    );
+    let beta_lineage = create_runtime_campaign_for_scenario(
+        &prepared.repository,
+        "beta",
+        b"packaged-beta-scenario",
+    );
+    assert_ne!(
+        alpha_lineage.scenario_content(),
+        beta_lineage.scenario_content()
     );
 
     let metadata = fs::metadata(directory.path()).expect("packaged endpoint directory");
@@ -560,10 +599,13 @@ fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
         host,
     )
     .expect("packaged executor configuration");
-    let packaged = crate::packaged_qemu_executor::compose_packaged_qemu_executor(
+    let packaged = crate::packaged_qemu_executor::compose_packaged_qemu_executor_for_scenarios(
         Arc::clone(&prepared.repository),
-        ExecutorCompatibilityProfile::from_lineage(&lineage),
-        lineage.scenario_content(),
+        ExecutorCompatibilityProfile::from_lineage(&alpha_lineage),
+        BTreeSet::from([
+            alpha_lineage.scenario_content(),
+            beta_lineage.scenario_content(),
+        ]),
         packaged_config,
         UnusedPackagedHostFactory,
     )

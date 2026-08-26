@@ -21,17 +21,18 @@ The checked local API currently provides:
 - finite, generated, and exhaustive additive branch requests;
 - snapshot, graph, choice, frontier, finding, and comparison queries;
 - proof-bearing choice, finding, and attempt explanations; and
-- a bounded set of packaged deterministic planner runtimes, each attached to
-  one authenticated local executor endpoint.
+- a bounded set of packaged deterministic planner runtimes attached to one or
+  more authenticated local executor endpoints.
 
 The daemon can either attach `--campaign-runtime` to an independently owned
 `--campaign-executor-socket` or own a packaged local QEMU executor at that
 socket. Packaged mode composes a fixed worker pool, repository admission,
 durable assignment ledger, checkpoint store, resource owner, and loopback
 listener into the campaign service lifecycle. It advertises only the concrete
-materialization paths it owns: packaged startup captures and authenticates
-baked genesis, installs one fixed replay-oracle promotion owner per semantic
-worker, and advertises exact restore only after that nonempty owner set exists.
+materialization paths it owns: packaged startup captures and authenticates one
+baked genesis for every scenario in its closed catalog, installs one fixed
+replay-oracle promotion owner per semantic worker, and advertises exact restore
+only after that nonempty owner set exists.
 Raw `NotRun` checkpoints remain ineligible until promotion succeeds. Do not
 interpret this single-host composition as multi-host readiness.
 
@@ -117,6 +118,11 @@ and must advertise a compatibility profile and resource ceiling that admit the
 campaign lineage. Attachment fails before planner-basis publication when those
 facts disagree.
 
+Packaged mode may instead select the complete authenticated local catalog with
+`--campaign-runtime-all`. Discovery reads one stable page and fails closed when
+the catalog is empty or contains more than 256 campaigns; it never silently
+truncates the startup set.
+
 Embedded deployments may retain the service's bounded post-bind attachment
 handle and supply either an already connected, authenticated executor stream or
 the same exact endpoint capability used at startup. The latter authenticates
@@ -152,21 +158,22 @@ owner-only packaged-executor deployment file:
   --campaign-state ./campaign-state \
   --campaign-policy ./campaign-peers.toml \
   --campaign-component-authority ./campaign-authority.toml \
-  --campaign-runtime network-recovery \
-  --campaign-executor-socket /run/user/1000/crucible/executor.sock \
-  --campaign-runtime network-recovery-canary \
+  --campaign-runtime-all \
   --campaign-executor-socket /run/user/1000/crucible/executor.sock \
   --campaign-packaged-executor ./campaign-executor.toml
 ```
 
 All packaged-mode runtime entries name the same executor socket and share its
-fixed workers and aggregate resource ceiling. The daemon sorts and authenticates
-the complete campaign set before acquiring QEMU host resources. Every campaign
-must have the same exact Crucible/QEMU compatibility profile and scenario
-artifact because one pool owns one native baked genesis; use a separate daemon
-pool for another scenario. The durable store locality derives from
-`--campaign-state`, so reordering or adding a compatible campaign does not
-change the pool identity.
+fixed workers and aggregate resource ceiling. The daemon sorts and
+authenticates the complete campaign set before acquiring QEMU host resources.
+Every campaign must have the same exact Crucible/QEMU compatibility profile.
+Distinct scenario artifacts are decoded under a 128 MiB aggregate canonical-
+body limit before host acquisition, receive separate native baked-genesis
+entries, and route exact promotion by World/scenario identity. A later dynamic
+attachment through the packaged endpoint must use a scenario already present
+in that startup catalog; otherwise restart with the enlarged catalog or use a
+separate pool. The durable store locality derives from `--campaign-state`, so
+reordering or adding a compatible campaign does not change the pool identity.
 
 The version-1 deployment file is strict TOML, must be an exact-owner regular
 file with mode `0600`, and is bounded to 64 KiB:

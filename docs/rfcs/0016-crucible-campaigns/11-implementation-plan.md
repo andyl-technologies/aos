@@ -547,19 +547,24 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   name before any runtime starts, starts only after the CampaignService
   endpoint is acquired, and couples any runtime failure or process shutdown to
   listener shutdown and complete worker join. One packaged local QEMU executor
-  may now own the fixed workers and aggregate capacity for multiple explicitly
-  named campaigns. The complete set is canonicalized and authenticated before
-  host-resource acquisition; every lineage must share the exact compatibility
-  profile and scenario artifact captured by the one native baked genesis, and
-  attempt admission plus post-bind attachment through that packaged endpoint
-  recheck that boundary. Attachments naming another authenticated executor use
-  that executor's own scope.
+  may now own the fixed workers and aggregate capacity for either multiple
+  explicitly named campaigns or the complete authenticated
+  `--campaign-runtime-all` startup catalog. Discovery uses one stable page and
+  fails closed outside 1 through 256 campaigns. The complete set is
+  canonicalized and authenticated before host-resource acquisition; every
+  lineage must share the exact compatibility profile. Distinct scenario
+  artifacts are charged under a 128 MiB aggregate canonical-body bound,
+  decoded before host acquisition, and each receives one native baked genesis
+  in a closed exact World/scenario promotion catalog. Attempt admission plus
+  post-bind attachment through that endpoint require membership in the startup
+  scenario catalog. Attachments naming another authenticated executor use that
+  executor's own scope.
   The authenticated service now enumerates campaign refs through an explicit
   all-campaign grant using bounded stable ref pages and validates every returned
   head closure. The nested CLI follows those checked pages under explicit page,
   entry, and response-byte budgets and emits resumable structured or human
-  reports. Allocation across multiple scenario-specific packaged pools and
-  richer operational tuning remain open.
+  reports. Allocation across multiple incompatible-profile packaged pools,
+  live native-catalog expansion, and richer operational tuning remain open.
   The QEMU realization executor now exposes only a borrowed already-realized
   live-backend facade without generic VMState/process authority, and the daemon
   composes that capability with a pre-launch exact resource guard and mandatory
@@ -1069,12 +1074,14 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   per-campaign policy checks; the bounded registry provides exact replay without
   repeated executor I/O, and `crucible campaign attach` reports attachment or
   replay status. Startup can now share one fixed packaged-executor pool among
-  an explicit bounded campaign set with one exact scenario artifact; the same
-  executor remains available to compatible post-bind attachments through its
-  exact endpoint and rejects other scenarios before connection or attempt
-  admission. Attachments naming another executor remain independently scoped.
-  Automatic campaign discovery, allocation across scenario-specific pools, and
-  additional opaque non-finite model-prior adapters remain open. The first
+  an explicit bounded campaign set or the complete authenticated one-page
+  startup catalog. The pool admits one exact compatibility profile and a
+  bounded closed native catalog containing every distinct scenario selected at
+  startup; the same executor remains available to compatible post-bind
+  attachments only when their scenario is already catalogued. Attachments
+  naming another executor remain independently scoped. Allocation across
+  incompatible-profile pools, live scenario-catalog expansion, and additional
+  opaque non-finite model-prior adapters remain open. The first
   `CampaignService` checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
   bounded by-value creation, authenticated current-head reads,

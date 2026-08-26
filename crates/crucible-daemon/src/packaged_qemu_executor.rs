@@ -5,16 +5,18 @@
 //! managed executor endpoint behind one owner. Each worker routes a durable
 //! version-four root exclusively through the guarded production-resume path;
 //! fresh execution never substitutes for an invalid root. The advertised
-//! public production preparation captures one authenticated native baked
-//! genesis, installs one concrete replay-oracle promotion owner per fixed
-//! semantic worker, and advertises exact restore only with that complete owner
-//! set. Test-only composition helpers can still omit promotion deliberately.
+//! public production preparation captures an authenticated native baked
+//! genesis for every scenario in its closed catalog, installs one concrete
+//! replay-oracle promotion owner per fixed semantic worker, and advertises
+//! exact restore only with that complete owner set. Test-only composition
+//! helpers can still omit promotion deliberately.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
+use crucible::ScenarioDefForm;
 use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{
     AttemptResourceLimits, CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignName,
@@ -37,17 +39,24 @@ use crate::{
     LinuxQemuAttemptHostResourceFactory, LocalCheckpointPromotionWorker,
     LocalExecutorCapabilityService, LocalExecutorPoolConfigError, LocalExecutorSupervisor,
     LocalExecutorWorkerPool, ProductionBakedGenesisCaptureError, ProductionBakedGenesisCheckpoint,
-    ProductionBakedGenesisReplayFactory, ProductionCheckpointPromotionWorker,
-    QemuAttemptExecutionRouter, QemuAttemptHostResourceFactory, QemuAttemptHostResourceOwner,
-    QemuAttemptProcessResourceGuard, QemuAttemptProductionVmLifecycleError,
-    QemuAttemptProductionVmLifecycleFactory, QemuFreshExecutionRunner, QemuFreshModeledDriver,
-    QemuProductionExactResumeExecutionRunner, RepositoryAttemptWorker,
-    SharedQemuAttemptHostResourceFactory, UnixPeerExecutorIdentity,
+    ProductionBakedGenesisReplayCatalogError, ProductionBakedGenesisReplayCatalogFactory,
+    ProductionCheckpointPromotionWorker, QemuAttemptExecutionRouter,
+    QemuAttemptHostResourceFactory, QemuAttemptHostResourceOwner, QemuAttemptProcessResourceGuard,
+    QemuAttemptProductionVmLifecycleError, QemuAttemptProductionVmLifecycleFactory,
+    QemuFreshExecutionRunner, QemuFreshModeledDriver, QemuProductionExactResumeExecutionRunner,
+    RepositoryAttemptWorker, SharedQemuAttemptHostResourceFactory, UnixPeerExecutorIdentity,
     capture_production_baked_genesis, decode_crucible_scenario_artifact,
 };
 
 #[cfg(test)]
 mod tests;
+
+/// Maximum aggregate canonical bytes in one packaged scenario catalog.
+///
+/// Startup authenticates and decodes the complete closed catalog before it
+/// acquires the shared Linux host-resource owner. This bound therefore limits
+/// both hostile immutable-store work and retained decoded scenario state.
+pub const MAX_PACKAGED_SCENARIO_CATALOG_BYTES: usize = 128 * 1024 * 1024;
 
 /// Complete deployment contract for one packaged local QEMU executor pool.
 #[derive(Clone, Debug)]
@@ -190,7 +199,7 @@ pub enum PackagedQemuExecutorConfigError {
 /// Prepared packaged executor pool bound to one exact campaign repository.
 pub struct PackagedQemuExecutor {
     repository_identity: Arc<CampaignRepository>,
-    admitted_scenario: ScenarioArtifactId,
+    admitted_scenarios: BTreeSet<ScenarioArtifactId>,
     endpoint: PathBuf,
     service: ExecutorLocalService<DirectoryAssignmentLedger, PackagedAttemptAdmission>,
 }
@@ -198,7 +207,7 @@ pub struct PackagedQemuExecutor {
 /// Running packaged executor-pool thread coupled to one daemon service lifecycle.
 pub struct AttachedPackagedQemuExecutor {
     repository_identity: Arc<CampaignRepository>,
-    admitted_scenario: ScenarioArtifactId,
+    admitted_scenarios: BTreeSet<ScenarioArtifactId>,
     endpoint: PathBuf,
     shutdown: ExecutorLocalServiceShutdown<DirectoryAssignmentLedger, PackagedAttemptAdmission>,
     completion: Arc<(Mutex<bool>, Condvar)>,
@@ -215,7 +224,7 @@ impl AttachedPackagedQemuExecutor {
     pub fn start(service: PackagedQemuExecutor) -> Result<Self, PackagedQemuExecutorStartError> {
         let PackagedQemuExecutor {
             repository_identity,
-            admitted_scenario,
+            admitted_scenarios,
             endpoint,
             service,
         } = service;
@@ -231,7 +240,7 @@ impl AttachedPackagedQemuExecutor {
             .map_err(|source| PackagedQemuExecutorStartError::Spawn { source })?;
         Ok(Self {
             repository_identity,
-            admitted_scenario,
+            admitted_scenarios,
             endpoint,
             shutdown,
             completion,
@@ -251,9 +260,9 @@ impl AttachedPackagedQemuExecutor {
         Arc::ptr_eq(&self.repository_identity, repository)
     }
 
-    /// Returns the exact scenario artifact backed by the native baked genesis.
-    pub(crate) const fn admitted_scenario(&self) -> ScenarioArtifactId {
-        self.admitted_scenario
+    /// Returns every exact scenario artifact backed by the native catalog.
+    pub(crate) const fn admitted_scenarios(&self) -> &BTreeSet<ScenarioArtifactId> {
+        &self.admitted_scenarios
     }
 
     /// Returns the exact managed endpoint served by this pool.
@@ -368,10 +377,10 @@ pub enum PackagedQemuExecutorJoinError {
 ///
 /// Every configured repository head is authenticated in canonical campaign
 /// order before host-resource acquisition or endpoint binding. All campaigns
-/// must share the exact compatibility profile and scenario artifact captured
-/// by the pool's one native baked genesis. The returned service owns the
-/// listener, semantic workers, shared Linux host allocator, and exact
-/// repository incarnation used for admission and result publication.
+/// must share the exact compatibility profile. One native baked genesis is
+/// captured for every distinct exact scenario artifact, and the fixed workers
+/// route promotion through that closed catalog while sharing one aggregate
+/// Linux host allocator and capacity owner.
 ///
 /// # Errors
 ///
@@ -384,8 +393,7 @@ pub fn prepare_packaged_qemu_executor(
     config: PackagedQemuExecutorConfig,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError> {
     let basis = authenticate_packaged_campaigns(&repository, &config.campaigns)?;
-    let scenario_artifact = repository.load_scenario_artifact(basis.scenario)?;
-    let scenario = decode_crucible_scenario_artifact(&scenario_artifact)?;
+    let scenarios = preflight_packaged_scenario_catalog(&repository, &basis.scenarios)?;
     let host = SharedQemuAttemptHostResourceFactory::new(
         LinuxQemuAttemptHostResourceFactory::open(config.host.clone())?,
     );
@@ -396,25 +404,73 @@ pub fn prepare_packaged_qemu_executor(
         ExecutionCancellation::default(),
         ExecutionCheckpointRequest::default(),
     );
-    let baked_lifecycle = config.lifecycle.clone().with_run_state_root(
-        config
-            .lifecycle
-            .run_state_root()
-            .join("campaign-baked-genesis"),
-    );
-    let mut baked_factory = QemuAttemptProductionVmLifecycleFactory::new(
-        baked_lifecycle,
-        ComposedQemuAttemptResourceGuardFactory::new(host.clone()),
-    );
-    let baked = capture_production_baked_genesis(&mut baked_factory, &scenario, &capture_context)
-        .map_err(|source| PackagedQemuExecutorError::BakedGenesis(Box::new(source)))?;
+    let mut baked = BTreeMap::new();
+    for (scenario_id, scenario) in scenarios {
+        let baked_lifecycle = config.lifecycle.clone().with_run_state_root(
+            config
+                .lifecycle
+                .run_state_root()
+                .join("campaign-baked-genesis")
+                .join(CampaignHash::from_bytes(scenario_id.content_id().digest()).to_hex()),
+        );
+        let mut baked_factory = QemuAttemptProductionVmLifecycleFactory::new(
+            baked_lifecycle,
+            ComposedQemuAttemptResourceGuardFactory::new(host.clone()),
+        );
+        let checkpoint =
+            capture_production_baked_genesis(&mut baked_factory, &scenario, &capture_context)
+                .map_err(|source| PackagedQemuExecutorError::BakedGenesis {
+                    scenario: scenario_id,
+                    source: Box::new(source),
+                })?;
+        baked.insert(scenario_id, checkpoint);
+    }
     compose_packaged_qemu_executor_with_baked_genesis(repository, basis, config, host, baked)
+}
+
+fn preflight_packaged_scenario_catalog(
+    repository: &CampaignRepository,
+    scenarios: &BTreeSet<ScenarioArtifactId>,
+) -> Result<Vec<(ScenarioArtifactId, ScenarioDefForm)>, PackagedQemuExecutorError> {
+    let mut charged = 0;
+    let mut semantic_bases = BTreeSet::new();
+    let mut decoded = Vec::with_capacity(scenarios.len());
+    for scenario_id in scenarios {
+        let artifact = repository.load_scenario_artifact(*scenario_id)?;
+        charge_packaged_scenario_catalog_bytes(
+            &mut charged,
+            artifact.canonical_bytes().len(),
+            MAX_PACKAGED_SCENARIO_CATALOG_BYTES,
+        )?;
+        let scenario = decode_crucible_scenario_artifact(&artifact)?;
+        if !semantic_bases.insert((scenario.world().id, scenario.scenario_def().id())) {
+            return Err(PackagedQemuExecutorError::BakedGenesisCatalog(
+                ProductionBakedGenesisReplayCatalogError::DuplicateBasis,
+            ));
+        }
+        decoded.push((*scenario_id, scenario));
+    }
+    Ok(decoded)
+}
+
+fn charge_packaged_scenario_catalog_bytes(
+    charged: &mut usize,
+    record_bytes: usize,
+    maximum: usize,
+) -> Result<(), PackagedQemuExecutorError> {
+    *charged = charged
+        .checked_add(record_bytes)
+        .ok_or(PackagedQemuExecutorError::ScenarioCatalogBytesExceeded { maximum })?;
+    if *charged > maximum {
+        return Err(PackagedQemuExecutorError::ScenarioCatalogBytesExceeded { maximum });
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
 struct PackagedCampaignBasis {
     profile: ExecutorCompatibilityProfile,
-    scenario: ScenarioArtifactId,
+    scenarios: BTreeSet<ScenarioArtifactId>,
 }
 
 fn authenticate_packaged_campaigns(
@@ -427,26 +483,20 @@ fn authenticate_packaged_campaigns(
         .ok_or(PackagedQemuExecutorError::NoCampaigns)?;
     let head = repository.head(first.as_str())?;
     let lineage = repository.load_lineage(head.snapshot().lineage())?;
-    let basis = PackagedCampaignBasis {
-        profile: ExecutorCompatibilityProfile::from_lineage(&lineage),
-        scenario: lineage.scenario_content(),
-    };
+    let mut scenarios = BTreeSet::from([lineage.scenario_content()]);
+    let profile = ExecutorCompatibilityProfile::from_lineage(&lineage);
 
     for campaign in campaigns {
         let head = repository.head(campaign.as_str())?;
         let lineage = repository.load_lineage(head.snapshot().lineage())?;
-        if !basis.profile.admits(&lineage) {
+        if !profile.admits(&lineage) {
             return Err(PackagedQemuExecutorError::CampaignCompatibilityMismatch {
                 campaign: campaign.clone(),
             });
         }
-        if lineage.scenario_content() != basis.scenario {
-            return Err(PackagedQemuExecutorError::CampaignScenarioMismatch {
-                campaign: campaign.clone(),
-            });
-        }
+        scenarios.insert(lineage.scenario_content());
     }
-    Ok(basis)
+    Ok(PackagedCampaignBasis { profile, scenarios })
 }
 
 #[cfg(test)]
@@ -463,9 +513,32 @@ where
     crate::ComposedQemuAttemptResourceGuard<H::Owner>:
         QemuAttemptProcessResourceGuard + Send + 'static,
 {
+    compose_packaged_qemu_executor_for_scenarios(
+        repository,
+        profile,
+        BTreeSet::from([scenario]),
+        config,
+        host,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn compose_packaged_qemu_executor_for_scenarios<H>(
+    repository: Arc<CampaignRepository>,
+    profile: ExecutorCompatibilityProfile,
+    scenarios: BTreeSet<ScenarioArtifactId>,
+    config: PackagedQemuExecutorConfig,
+    host: H,
+) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
+where
+    H: QemuAttemptHostResourceFactory + Send + 'static,
+    H::Owner: QemuAttemptHostResourceOwner + Send + 'static,
+    crate::ComposedQemuAttemptResourceGuard<H::Owner>:
+        QemuAttemptProcessResourceGuard + Send + 'static,
+{
     compose_packaged_qemu_executor_with_checkpoint_promotions(
         repository,
-        PackagedCampaignBasis { profile, scenario },
+        PackagedCampaignBasis { profile, scenarios },
         config,
         host,
         Vec::<DisabledPackagedCheckpointPromotionWorker>::new(),
@@ -519,7 +592,7 @@ fn compose_packaged_qemu_executor_with_baked_genesis<H>(
     basis: PackagedCampaignBasis,
     config: PackagedQemuExecutorConfig,
     shared: SharedQemuAttemptHostResourceFactory<H>,
-    baked: ProductionBakedGenesisCheckpoint,
+    baked: BTreeMap<ScenarioArtifactId, ProductionBakedGenesisCheckpoint>,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
 where
     H: QemuAttemptHostResourceFactory + Send + 'static,
@@ -527,23 +600,23 @@ where
     crate::ComposedQemuAttemptResourceGuard<H::Owner>:
         QemuAttemptProcessResourceGuard + Send + 'static,
 {
+    let catalog = ProductionBakedGenesisReplayCatalogFactory::new(
+        baked.into_values(),
+        ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
+    )?;
     compose_packaged_qemu_executor_with_promotion_builder(
         repository,
         basis,
         config,
         shared,
-        move |store, checkpoints, shared, run_state_root, worker_count| {
+        move |store, checkpoints, _shared, run_state_root, worker_count| {
             (0..worker_count)
                 .map(|slot| {
-                    let factory = ProductionBakedGenesisReplayFactory::new(
-                        baked.clone(),
-                        ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
-                    );
                     ProductionCheckpointPromotionWorker::new(
                         store.clone(),
                         Arc::clone(checkpoints),
                         run_state_root.join(format!("worker-{slot:03}")),
-                        factory,
+                        catalog.clone(),
                     )
                 })
                 .collect::<Vec<_>>()
@@ -612,7 +685,11 @@ where
     let description = ExecutorDescription::new(config.daemon_epoch, capabilities)?;
     let supervisor = LocalExecutorSupervisor::new(
         ledger,
-        PackagedAttemptAdmission::new(Arc::clone(&repository), basis.profile, basis.scenario),
+        PackagedAttemptAdmission::new(
+            Arc::clone(&repository),
+            basis.profile,
+            basis.scenarios.clone(),
+        ),
         config.daemon_epoch,
         config.capacity,
     );
@@ -667,7 +744,7 @@ where
     )?;
     Ok(PackagedQemuExecutor {
         repository_identity: repository,
-        admitted_scenario: basis.scenario,
+        admitted_scenarios: basis.scenarios,
         endpoint,
         service,
     })
@@ -688,19 +765,19 @@ fn packaged_resource_ceiling(
 struct PackagedAttemptAdmission {
     repository: Arc<CampaignRepository>,
     profile: ExecutorCompatibilityProfile,
-    scenario: ScenarioArtifactId,
+    scenarios: BTreeSet<ScenarioArtifactId>,
 }
 
 impl PackagedAttemptAdmission {
-    const fn new(
+    fn new(
         repository: Arc<CampaignRepository>,
         profile: ExecutorCompatibilityProfile,
-        scenario: ScenarioArtifactId,
+        scenarios: BTreeSet<ScenarioArtifactId>,
     ) -> Self {
         Self {
             repository,
             profile,
-            scenario,
+            scenarios,
         }
     }
 
@@ -709,7 +786,7 @@ impl PackagedAttemptAdmission {
             .repository
             .load_lineage(request.lineage())
             .map_err(|error| error.executor_rejection())?;
-        if lineage.scenario_content() != self.scenario {
+        if !self.scenarios.contains(&lineage.scenario_content()) {
             return Err(ExecutorRejection::Incompatible);
         }
         Ok(())
@@ -762,24 +839,30 @@ pub enum PackagedQemuExecutorError {
         /// Incompatible configured campaign.
         campaign: CampaignName,
     },
-    /// A configured campaign does not share the pool's native baked scenario.
-    #[error(
-        "campaign `{}` uses another packaged QEMU scenario",
-        campaign.as_str()
-    )]
-    CampaignScenarioMismatch {
-        /// Campaign whose exact scenario artifact differs.
-        campaign: CampaignName,
-    },
     /// Campaign or lineage authentication failed.
     #[error(transparent)]
     Repository(#[from] CampaignRepositoryError),
     /// The retained Crucible scenario artifact failed semantic authentication.
     #[error(transparent)]
     Artifact(#[from] CrucibleArtifactError),
+    /// The complete native scenario catalog exceeds its startup work bound.
+    #[error("packaged QEMU scenario catalog exceeds {maximum} canonical bytes")]
+    ScenarioCatalogBytesExceeded {
+        /// Maximum admitted aggregate canonical record-body bytes.
+        maximum: usize,
+    },
     /// Exact baked-genesis capture or complete native admission failed.
+    #[error("packaged QEMU baked-genesis capture failed for scenario {scenario:?}")]
+    BakedGenesis {
+        /// Exact scenario whose native capture failed.
+        scenario: ScenarioArtifactId,
+        /// Guarded capture or native admission failure.
+        #[source]
+        source: Box<ProductionBakedGenesisCaptureError<QemuAttemptProductionVmLifecycleError>>,
+    },
+    /// The complete native scenario catalog was empty or ambiguous.
     #[error(transparent)]
-    BakedGenesis(Box<ProductionBakedGenesisCaptureError<QemuAttemptProductionVmLifecycleError>>),
+    BakedGenesisCatalog(#[from] ProductionBakedGenesisReplayCatalogError),
     /// Durable assignment-ledger acquisition failed.
     #[error(transparent)]
     Ledger(#[from] AssignmentLedgerError),

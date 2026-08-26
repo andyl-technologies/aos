@@ -9,6 +9,7 @@
 //! for post-bind attachment without exposing repository or component-authority
 //! capabilities.
 
+use std::collections::BTreeSet;
 use std::fs::{self, File, Permissions};
 use std::io::{self, Read};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -18,10 +19,10 @@ use std::sync::Arc;
 
 use crucible::{ScenarioDefForm, Schedule};
 use crucible_campaign::{
-    CampaignAuthorizationError, CampaignHash, CampaignName, CampaignPrincipal,
-    CampaignPrincipalAuthorizer, CampaignRepository, CampaignServiceOperation,
-    CandidateGeneratorSpec, CandidateGeneratorSpecId, ConfigurationArtifactId,
-    DebuggerAuthorityKey, PlannerAuthorityKey,
+    CampaignAuthorizationError, CampaignCodecError, CampaignHash, CampaignName, CampaignPrincipal,
+    CampaignPrincipalAuthorizer, CampaignRepository, CampaignRepositoryError,
+    CampaignServiceOperation, CandidateGeneratorSpec, CandidateGeneratorSpecId,
+    ConfigurationArtifactId, DebuggerAuthorityKey, PlannerAuthorityKey,
 };
 use crucible_cas::content_store::{DirectoryBlobBackend, DirectoryRefBackend};
 use rustix::fs::{FlockOperation, Mode, OFlags, flock};
@@ -344,6 +345,38 @@ impl PreparedCampaignLocalService {
         prepare_packaged_qemu_executor(Arc::clone(&self.repository), config).map_err(Into::into)
     }
 
+    /// Discovers the complete bounded set of authenticated campaign heads.
+    ///
+    /// This owner-side operation is intended for fixed packaged-runtime
+    /// startup. It reads one stable ref page, validates every returned head,
+    /// and rejects rather than truncating when the repository contains more
+    /// campaigns than the daemon's runtime ceiling. It exposes no repository
+    /// or mutable-ref capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError::InvalidRuntimeCount`] when the
+    /// repository is empty or exceeds the 256-runtime ceiling, or a catalog
+    /// error when a ref, head closure, or canonical campaign name is invalid.
+    pub fn discover_packaged_campaigns(
+        &self,
+    ) -> Result<BTreeSet<CampaignName>, CampaignLocalServiceError> {
+        let page = self
+            .repository
+            .list_heads(None, MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES)
+            .map_err(CampaignLocalServiceError::CampaignCatalog)?;
+        if page.heads().is_empty() || page.next_after().is_some() {
+            return Err(CampaignLocalServiceError::InvalidRuntimeCount);
+        }
+        page.heads()
+            .iter()
+            .map(|head| {
+                CampaignName::new(head.name())
+                    .map_err(CampaignLocalServiceError::CampaignCatalogName)
+            })
+            .collect()
+    }
+
     /// Verifies and imports one exact Crucible scenario and configuration.
     ///
     /// # Errors
@@ -488,7 +521,7 @@ impl PreparedCampaignLocalService {
     /// Runtime identities are validated and sorted before endpoint binding.
     /// Every runtime and the packaged executor must belong to this exact
     /// repository incarnation, and every runtime must use the executor's exact
-    /// native baked scenario. The executor's fixed workers and aggregate
+    /// native baked scenario catalog. The executor's fixed workers and aggregate
     /// resource ceiling are shared across the complete runtime set.
     ///
     /// # Errors
@@ -505,10 +538,10 @@ impl PreparedCampaignLocalService {
         if !executor.uses_repository(&self.repository) {
             return Err(CampaignLocalServiceError::RuntimeRepositoryMismatch);
         }
-        let admitted_scenario = executor.admitted_scenario();
+        let admitted_scenarios = executor.admitted_scenarios();
         if runtimes
             .iter()
-            .any(|runtime| runtime.scenario() != admitted_scenario)
+            .any(|runtime| !admitted_scenarios.contains(&runtime.scenario()))
         {
             return Err(CampaignLocalServiceError::RuntimeScenarioMismatch);
         }
@@ -540,9 +573,12 @@ impl PreparedCampaignLocalService {
             Arc::new(CampaignLocalAuthorizer { policy, mode }),
             server_config,
         )?;
-        let packaged_scope = executor
-            .as_ref()
-            .map(|executor| (executor.endpoint().to_owned(), executor.admitted_scenario()));
+        let packaged_scope = executor.as_ref().map(|executor| {
+            (
+                executor.endpoint().to_owned(),
+                executor.admitted_scenarios().clone(),
+            )
+        });
         let runtime_registry = CampaignRuntimeRegistryOwner::new(
             repository,
             planner_authority,
@@ -721,6 +757,12 @@ pub enum CampaignLocalServiceError {
     /// A prepared runtime belongs to another repository instance.
     #[error("campaign runtime belongs to another repository instance")]
     RuntimeRepositoryMismatch,
+    /// Authenticated campaign-catalog traversal failed during fixed discovery.
+    #[error("campaign runtime catalog authentication failed")]
+    CampaignCatalog(#[source] CampaignRepositoryError),
+    /// A stored campaign ref could not be represented by the service name grammar.
+    #[error("campaign runtime catalog contains an invalid campaign name")]
+    CampaignCatalogName(#[source] CampaignCodecError),
     /// A prepared runtime uses another packaged native scenario.
     #[error("campaign runtime scenario is not admitted by the packaged executor")]
     RuntimeScenarioMismatch,

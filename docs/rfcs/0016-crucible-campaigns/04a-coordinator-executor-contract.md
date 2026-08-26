@@ -1042,13 +1042,17 @@ stores become reachable. `crucible serve` enables this composition only when
 `--campaign-socket`, `--campaign-state`, and `--campaign-policy` are supplied
 together; `--campaign-component-authority` is valid only with that profile,
 and `--campaign-socket-mode` is octal and defaults to `600`. A startup-fixed
-single-host attachment set is enabled by repeating paired
+single-host attachment set is enabled either by repeating paired
 `--campaign-runtime NAME` and `--campaign-executor-socket PATH` arguments in
-the same order. The daemon accepts 1 through 256 unique existing campaign
-names, requires the writable component-authority profile, sorts the prepared
-attachments by canonical campaign name before starting them, and gives each
-campaign the packaged canonical planner worker plus its checked executor
-connection. Before publishing an attachment's fixed four-object planner basis,
+the same order or, for one packaged endpoint, by passing
+`--campaign-runtime-all`. The latter authenticates one stable repository-ref
+page and fails closed when the catalog is empty or requires more than the
+reviewed 256 entries; it never silently truncates. The daemon accepts 1 through
+256 unique existing campaign names, requires the writable component-authority
+profile, sorts the prepared attachments by canonical campaign name before
+starting them, and gives each campaign the packaged canonical planner worker
+plus its checked executor connection. Before publishing an attachment's fixed
+four-object planner basis,
 the daemon connects to its absolute dot-free executor path whose socket inode
 is exact-owner mode `0600`, authenticates the connected peer's effective
 UID/GID with `SO_PEERCRED`, rechecks the path identity, performs
@@ -1058,10 +1062,16 @@ runtime thread starts. The reviewed default serves
 at most 1,024 planner positions and 16 MiB per planner invocation, scans at
 most 1,024 attempts per executor step, and caps admitted worker slots at 256.
 Termination of any attached runtime stops the shared service and joins the
-complete bounded set before repository ownership is released. The packaged
-local QEMU executor option remains campaign-specific and therefore accepts
-exactly one attachment. The embedded deployment owner may also retain a weak
-post-bind attachment capability. It exposes neither repository nor component-
+complete bounded set before repository ownership is released. One packaged
+local QEMU executor may own the complete bounded attachment set when every
+campaign has the same exact executor compatibility profile. Before opening its
+Linux host owner it loads, aggregate-charges at most 128 MiB of canonical
+scenario-artifact bodies, and semantically decodes every distinct scenario.
+It then captures one native baked genesis per scenario and installs a closed
+promotion catalog keyed by exact World/scenario identity. All workers and
+campaigns share one aggregate capacity owner and endpoint. The embedded
+deployment owner may also retain a weak post-bind attachment capability. It
+exposes neither repository nor component-
 authority access, rejects read-only or authority-free profiles before executor
 I/O, and reserves a unique campaign plus one of the same 256 attachment slots
 before bounded executor/repository preparation. Preparation runs without the
@@ -1108,15 +1118,17 @@ the current count without reconnecting to the executor. A concurrent exact
 request returns retryable unavailability while preparation is in flight, and a
 different endpoint for the same campaign returns nonretryable command reuse.
 `crucible campaign ... attach CAMPAIGN --executor-socket PATH` is the checked
-operator porcelain. One daemon-packaged executor may serve multiple explicitly
-named campaigns only when they share the same exact compatibility profile,
-scenario artifact, and endpoint. The configured campaign set is canonicalized
-before QEMU host-resource acquisition; attempt admission and dynamic runtime
-attachment through that packaged endpoint both recheck the scenario-specific
-baked-genesis boundary. A dynamic attachment naming another independently
-authenticated executor uses that executor's capability scope. Automatic
-campaign discovery and allocation across multiple scenario-specific pools
-remain future work.
+operator porcelain. One daemon-packaged executor may serve the bounded explicit
+set or the complete `--campaign-runtime-all` startup catalog when every member
+shares the same exact compatibility profile and endpoint. The configured set
+is canonicalized before QEMU host-resource acquisition; its distinct scenarios
+form the closed 128 MiB native baked-genesis catalog described above. Attempt
+admission and dynamic runtime attachment through that endpoint both require an
+exact scenario already present in the startup catalog. A dynamic attachment
+naming another independently authenticated executor uses that executor's
+capability scope. Automatic allocation across multiple incompatible-profile
+packaged pools and live expansion of a native scenario catalog remain future
+work.
 
 SIGINT,
 SIGTERM, lifecycle-server failure, or CampaignService failure shuts down both

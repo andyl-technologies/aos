@@ -298,14 +298,18 @@ listener routes that operation only after exact peer-principal and per-campaign
 policy checks. It reserves before executor I/O, uses the same authenticated
 endpoint connector as startup, and exactly replays an installed request without
 reconnecting to the executor. The CLI exposes that path through `campaign
-attach`. Startup may now bind multiple explicitly named campaigns to one fixed
-packaged-executor pool when all use the same exact compatibility profile,
-scenario artifact, and managed endpoint. The pool rechecks its scenario on
-attempt admission, and the runtime registry applies the same constraint before
-a post-bind attachment connects to that packaged endpoint. Attachments naming
-another independently authenticated executor retain that executor's own
-capability scope. Automatic campaign discovery and allocation across different
-scenario-specific pools remain open.
+attach`. Startup may bind an explicit bounded campaign set or the complete
+authenticated one-page catalog selected by `--campaign-runtime-all` to one
+packaged-executor pool. Every admitted campaign uses the same exact
+compatibility profile and managed endpoint, while each distinct scenario
+artifact receives its own native baked-genesis entry. The daemon authenticates
+and decodes the complete canonical scenario catalog under a 128 MiB aggregate
+record-body limit before acquiring QEMU host resources. Promotion routes by
+the exact World/scenario basis; attempt admission and dynamic attachment
+through that endpoint reject scenarios absent from the startup catalog.
+Attachments naming another independently authenticated executor retain that
+executor's own capability scope. Allocation across multiple incompatible-
+profile packaged pools remains open.
 
 The real-node realization boundary now has an executor-owned exact-capture
 primitive for that checkpoint path. It seals the unified event

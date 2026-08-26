@@ -224,7 +224,7 @@ fn packaged_executor_advertises_exact_restore_with_one_owner_per_worker() {
         repository,
         PackagedCampaignBasis {
             profile: profile(),
-            scenario: scenario_artifact(),
+            scenarios: BTreeSet::from([scenario_artifact()]),
         },
         config,
         UnusedHostFactory,
@@ -398,7 +398,10 @@ fn packaged_campaign_basis_is_order_independent_and_exact() {
     let lineage = repository
         .load_lineage(alpha.snapshot().lineage())
         .expect("alpha lineage");
-    assert_eq!(basis.scenario, lineage.scenario_content());
+    assert_eq!(
+        basis.scenarios,
+        BTreeSet::from([lineage.scenario_content()])
+    );
     assert!(basis.profile.admits(&lineage));
 
     let incompatible = repository_with_campaigns(&[
@@ -411,15 +414,20 @@ fn packaged_campaign_basis_is_order_independent_and_exact() {
             if campaign.as_str() == "beta"
     ));
 
-    let another_scenario = repository_with_campaigns(&[
+    let multiple_scenarios = repository_with_campaigns(&[
         ("alpha", b"alpha-scenario", "qemu-test"),
         ("beta", b"beta-scenario", "qemu-test"),
     ]);
-    assert!(matches!(
-        authenticate_packaged_campaigns(&another_scenario, &campaigns),
-        Err(PackagedQemuExecutorError::CampaignScenarioMismatch { campaign })
-            if campaign.as_str() == "beta"
-    ));
+    let basis = authenticate_packaged_campaigns(&multiple_scenarios, &campaigns)
+        .expect("one packaged pool admits a bounded scenario catalog");
+    assert_eq!(basis.scenarios.len(), 2);
+    for campaign in ["alpha", "beta"] {
+        let head = multiple_scenarios.head(campaign).expect("campaign head");
+        let lineage = multiple_scenarios
+            .load_lineage(head.snapshot().lineage())
+            .expect("campaign lineage");
+        assert!(basis.scenarios.contains(&lineage.scenario_content()));
+    }
 }
 
 #[test]
@@ -445,6 +453,49 @@ fn invalid_campaign_fails_before_operational_owner_mutation() {
     assert!(!ledger.exists());
     assert!(!checkpoints.exists());
     assert!(!socket.exists());
+}
+
+#[test]
+fn invalid_scenario_fails_before_operational_owner_mutation() {
+    let directory = tempfile::tempdir().expect("packaged executor directory");
+    let mut config = config(&directory, 1);
+    config.campaigns = BTreeSet::from([CampaignName::new("invalid").expect("campaign name")]);
+    let ledger = config.ledger_root().to_owned();
+    let checkpoints = config.checkpoint_root().to_owned();
+    let socket = config.endpoint().path().to_owned();
+    let repository = repository_with_campaigns(&[("invalid", b"not-crucible", "qemu-test")]);
+
+    let error = match prepare_packaged_qemu_executor(repository, config) {
+        Ok(_) => panic!("invalid scenario must fail before executor preparation"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, PackagedQemuExecutorError::Artifact(_)));
+    assert!(!ledger.exists());
+    assert!(!checkpoints.exists());
+    assert!(!socket.exists());
+}
+
+#[test]
+fn packaged_scenario_catalog_charges_an_exact_aggregate_byte_bound() {
+    let mut charged = 0;
+    charge_packaged_scenario_catalog_bytes(&mut charged, 5, 8)
+        .expect("first scenario fits catalog");
+    charge_packaged_scenario_catalog_bytes(&mut charged, 3, 8)
+        .expect("exact catalog bound is admitted");
+    assert_eq!(charged, 8);
+
+    assert!(matches!(
+        charge_packaged_scenario_catalog_bytes(&mut charged, 1, 8),
+        Err(PackagedQemuExecutorError::ScenarioCatalogBytesExceeded { maximum: 8 })
+    ));
+
+    let mut overflow = usize::MAX;
+    assert!(matches!(
+        charge_packaged_scenario_catalog_bytes(&mut overflow, 1, usize::MAX),
+        Err(PackagedQemuExecutorError::ScenarioCatalogBytesExceeded {
+            maximum: usize::MAX
+        })
+    ));
 }
 
 #[test]

@@ -71,6 +71,19 @@ pub struct ProductionBakedGenesisReplayFactory<R> {
     resources: R,
 }
 
+/// Scenario-routed native baked-genesis replay authority.
+///
+/// A packaged executor may admit several exact scenario artifacts while still
+/// sharing one aggregate host-resource allocator and worker pool. This catalog
+/// selects the immutable baked checkpoint by the authenticated World and
+/// scenario identities supplied by promotion recovery. It never falls back to
+/// another scenario.
+#[derive(Clone)]
+pub struct ProductionBakedGenesisReplayCatalogFactory<R> {
+    baked_by_basis: BTreeMap<(ContentHash, ContentHash), ProductionBakedGenesisCheckpoint>,
+    resources: R,
+}
+
 /// Concrete exact/thin launcher pair produced for one replay target.
 pub type ProductionBakedGenesisReplayLauncher = QemuReplayValidationNodeLauncher<
     QemuExactProfileWarmRestoreNodeLauncher,
@@ -326,6 +339,58 @@ impl<R> ProductionBakedGenesisReplayFactory<R> {
     }
 }
 
+impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
+    /// Binds a nonempty exact World/scenario catalog to one shared allocator.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionBakedGenesisReplayCatalogError`] when the catalog is
+    /// empty or contains two independently captured entries for one exact
+    /// World/scenario basis.
+    pub fn new(
+        baked: impl IntoIterator<Item = ProductionBakedGenesisCheckpoint>,
+        resources: R,
+    ) -> Result<Self, ProductionBakedGenesisReplayCatalogError> {
+        let mut baked_by_basis = BTreeMap::new();
+        for checkpoint in baked {
+            let basis = (checkpoint.world(), checkpoint.scenario());
+            if baked_by_basis.insert(basis, checkpoint).is_some() {
+                return Err(ProductionBakedGenesisReplayCatalogError::DuplicateBasis);
+            }
+        }
+        if baked_by_basis.is_empty() {
+            return Err(ProductionBakedGenesisReplayCatalogError::Empty);
+        }
+        Ok(Self {
+            baked_by_basis,
+            resources,
+        })
+    }
+
+    /// Returns the number of exact World/scenario checkpoints in the catalog.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.baked_by_basis.len()
+    }
+
+    /// Returns whether the catalog contains no checkpoint.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.baked_by_basis.is_empty()
+    }
+}
+
+/// Invalid native baked-genesis replay catalog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+pub enum ProductionBakedGenesisReplayCatalogError {
+    /// No scenario checkpoint was supplied.
+    #[error("production baked-genesis replay catalog is empty")]
+    Empty,
+    /// Two captured checkpoints claim one exact World/scenario basis.
+    #[error("production baked-genesis replay catalog repeats a World/scenario basis")]
+    DuplicateBasis,
+}
+
 impl<R> ProductionPausedCheckpointReplayFactory for ProductionBakedGenesisReplayFactory<R>
 where
     R: QemuAttemptResourceGuardFactory,
@@ -400,6 +465,57 @@ where
             store, executor, guard,
         ))
     }
+}
+
+impl<R> ProductionPausedCheckpointReplayFactory for ProductionBakedGenesisReplayCatalogFactory<R>
+where
+    R: QemuAttemptResourceGuardFactory + Clone,
+    R::Guard: QemuAttemptProcessResourceGuard,
+{
+    type Store = ProductionBakedGenesisReplayStore;
+    type Launcher = ProductionBakedGenesisReplayLauncher;
+    type Guard = R::Guard;
+
+    fn begin_target(
+        &mut self,
+        exact_root: ExactCheckpointId,
+        world: &World,
+        configuration: &Configuration,
+        target: &crucible_api::ProductionExactCheckpointReplayTarget,
+        cancellation: &crate::ExecutionCancellation,
+        resources: AttemptResourceLimits,
+    ) -> Result<
+        ProductionPausedCheckpointReplaySession<Self::Store, Self::Launcher, Self::Guard>,
+        QemuVmRealizationError,
+    > {
+        let baked =
+            select_baked_catalog_entry(&self.baked_by_basis, world.id, configuration.def.id())?;
+        let mut selected =
+            ProductionBakedGenesisReplayFactory::new(baked.clone(), self.resources.clone());
+        selected.begin_target(
+            exact_root,
+            world,
+            configuration,
+            target,
+            cancellation,
+            resources,
+        )
+    }
+}
+
+fn select_baked_catalog_entry<T>(
+    catalog: &BTreeMap<(ContentHash, ContentHash), T>,
+    world: ContentHash,
+    scenario: ContentHash,
+) -> Result<&T, QemuVmRealizationError> {
+    catalog
+        .get(&(world, scenario))
+        .ok_or_else(|| QemuVmRealizationError::InvalidCheckpoint {
+            role: "production baked-genesis replay catalog",
+            message: String::from(
+                "requested World/scenario has no admitted native baked checkpoint",
+            ),
+        })
 }
 
 fn prepare_replay_target_generations<G>(
@@ -562,4 +678,39 @@ where
 {
     let candidate = capture_fresh_genesis_checkpoint_candidate(factory, source, context)?;
     ProductionBakedGenesisCheckpoint::admit(source, candidate).map_err(Into::into)
+}
+
+#[cfg(test)]
+// crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for failure localization.
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn baked_catalog_routes_by_the_complete_world_scenario_basis() {
+        let world = ContentHash::from_bytes(b"shared-world");
+        let first = ContentHash::from_bytes(b"first-scenario");
+        let second = ContentHash::from_bytes(b"second-scenario");
+        let catalog = BTreeMap::from([((world, first), 11), ((world, second), 22)]);
+
+        assert_eq!(
+            *select_baked_catalog_entry(&catalog, world, first).expect("first exact basis"),
+            11
+        );
+        assert_eq!(
+            *select_baked_catalog_entry(&catalog, world, second).expect("second exact basis"),
+            22
+        );
+        assert!(matches!(
+            select_baked_catalog_entry(
+                &catalog,
+                world,
+                ContentHash::from_bytes(b"foreign-scenario")
+            ),
+            Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "production baked-genesis replay catalog",
+                ..
+            })
+        ));
+    }
 }

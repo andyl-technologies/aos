@@ -7,7 +7,7 @@
 //! attached runtimes before joining any one of them, and retains the repository
 //! namespace lock through the final join.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
@@ -244,7 +244,7 @@ impl CampaignRuntimeRegistryOwner {
         mode: CampaignLocalServiceMode,
         shutdown: CampaignLoopbackServerShutdown,
         repository_owner: CampaignStateOwner,
-        packaged_scope: Option<(PathBuf, ScenarioArtifactId)>,
+        packaged_scope: Option<(PathBuf, BTreeSet<ScenarioArtifactId>)>,
     ) -> Self {
         Self {
             shared: Arc::new(CampaignRuntimeRegistry {
@@ -289,7 +289,7 @@ struct CampaignRuntimeRegistry {
     planner_authority: Option<PlannerAuthorityKey>,
     mode: CampaignLocalServiceMode,
     shutdown: CampaignLoopbackServerShutdown,
-    packaged_scope: Option<(PathBuf, ScenarioArtifactId)>,
+    packaged_scope: Option<(PathBuf, BTreeSet<ScenarioArtifactId>)>,
     state: Mutex<RegistryState>,
     changed: Condvar,
     _repository_owner: CampaignStateOwner,
@@ -326,7 +326,7 @@ impl CampaignRuntimeRegistry {
             .repository
             .load_lineage(head.snapshot().lineage())
             .map_err(CanonicalCampaignRuntimeError::Repository)?;
-        if lineage.scenario_content() != *admitted {
+        if !admitted.contains(&lineage.scenario_content()) {
             return Err(CampaignLocalServiceError::RuntimeScenarioMismatch);
         }
         Ok(())
@@ -645,6 +645,8 @@ fn runtime_control_failure(error: &CampaignLocalServiceError) -> CampaignService
             CampaignServiceFailure::InvalidRequest
         }
         CampaignLocalServiceError::RuntimeRepositoryMismatch
+        | CampaignLocalServiceError::CampaignCatalog(_)
+        | CampaignLocalServiceError::CampaignCatalogName(_)
         | CampaignLocalServiceError::RuntimeRegistryPoisoned
         | CampaignLocalServiceError::RuntimeMonitorPanicked => {
             CampaignServiceFailure::IntegrityFailure

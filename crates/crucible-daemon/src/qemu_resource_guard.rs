@@ -333,6 +333,17 @@ pub struct ComposedQemuAttemptResourceGuardFactory<H> {
     host: H,
 }
 
+impl<H> Clone for ComposedQemuAttemptResourceGuardFactory<H>
+where
+    H: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            host: self.host.clone(),
+        }
+    }
+}
+
 impl<H> ComposedQemuAttemptResourceGuardFactory<H> {
     /// Creates a resource-guard factory over one host-resource allocator.
     #[must_use]
