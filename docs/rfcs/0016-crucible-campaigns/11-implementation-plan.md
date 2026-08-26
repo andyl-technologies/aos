@@ -1356,11 +1356,22 @@ source-authoritative read-through caching, write-through mirroring, and
 path-free saturating synchronous operation/byte/error/elapsed-nanosecond counters
 plus deferred stream opens, authenticated completions, partial abandonments,
 failures, delivered bytes, and open/read elapsed nanoseconds over memory,
-durable directory, durable compressed-directory, and packed leaves. The
+durable directory, durable compressed-directory, durable encrypted-directory,
+and packed leaves. The
 compressed-directory leaf streams a fixed private Zstandard representation
 below plaintext identity, enforces a per-object plaintext bound before source
 or decoder work, authenticates complete plaintext for range reads, survives
 restart, and participates in generation-bound physical inventory and deletion.
+The encrypted-directory leaf now streams fixed 64-KiB AES-256-GCM chunks below
+the same plaintext identity, derives per-object/chunk nonces from a separately
+supplied key capability, binds exact length/key generation/ordinal/final state
+as associated data, authenticates the full plaintext even for range reads, and
+participates in the same restart-safe physical inventory/deletion boundary.
+Graph schema v4 includes only the non-secret key ID and object bound; secret
+bytes are absent from graph identity, descriptions, receipts, and disk headers.
+A checksummed, keyed-verifier state under the inventory lock pins one exact
+key generation to the physical root before any object operation, so a wrong
+secret cannot create a mixed-key directory.
 The graph now also admits a restart-safe aggregate logical-quota node around
 one exclusively owned physical leaf. A durable dirty/clean state transaction
 repairs commit-indeterminate puts and deletes from a bounded fenced child
@@ -1382,9 +1393,9 @@ therefore cannot collect a children-before-journal publication. Tests cover
 restart, torn-tail recovery, corrupt-journal rejection, count/byte limits,
 durable-child and non-overlapping-path admission, lifecycle exclusion,
 single-pass staging authentication, transfer completion, and stale GC plans.
-Destination-specific durability policy plumbing, encryption below plaintext
-identity, physical-filesystem quota, namespaced authorization, S3, and broader
-transform composition remain open; therefore T-CAM-5.5 is not checked by this
+Destination-specific durability policy plumbing, compression-before-encryption
+and broader layered transforms, physical-filesystem quota, namespaced
+authorization, and S3 remain open; therefore T-CAM-5.5 is not checked by this
 checkpoint.
 
 The packed leaf now provides immutable bounded multi-object pack files, a
@@ -1405,8 +1416,8 @@ admission, and physical configuration mismatch. Phase 5's composed-tier, S3,
 global-GC, archival, and realistic operator flights remain under T-CAM-5.7
 through T-CAM-5.9 rather than weakening this completed leaf contract.
 
-The memory, directory, compressed-directory, and packed blob leaves now expose
-separately held, exclusive administrative fences for physical logical-object
+The memory, directory, compressed-directory, encrypted-directory, and packed
+blob leaves now expose separately held, exclusive administrative fences for physical logical-object
 inventory. A logical-quota node exclusively owns one such leaf's fence and
 re-exports the same generation under its quota boundary so GC deletion updates
 the durable aggregate accounting. The memory and directory ref leaves
@@ -1595,7 +1606,8 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
 - [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
   projection in generation-bound GC retention plans. Snapshot-bound semantic
   and operational root inventory plus the exclusive generation-bound memory,
-  directory, compressed-directory, and packed physical-leaf inventory/delete,
+  directory, compressed-directory, encrypted-directory, and packed
+  physical-leaf inventory/delete,
   authoritative-ref
   inventory, and operational-ledger inventory primitives plus the canonical
   bounded plan identity are implemented. The daemon now constructs the
@@ -1614,10 +1626,12 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   Exact-generation single-host physical-leaf apply now revalidates every root
   and physical basis, deletes under the leaf fence, and leaves interrupted
   journals recovery-required. One restart regression applies that path to a
-  compressed-directory leaf, proves inventory/candidate accounting uses
-  authenticated plaintext lengths, deletes only the unreachable physical
-  placement, and reauthenticates the retained plaintext after reopening every
-  durable component. Another applies it to a sparse packed leaf and proves
+  compressed-directory leaf, and another applies it to an encrypted-directory
+  leaf with a separately reconstructed key capability. Both prove
+  inventory/candidate accounting uses authenticated plaintext lengths, delete
+  only the unreachable physical placement, and reauthenticate the retained
+  plaintext after reopening every durable component. A further regression
+  applies it to a sparse packed leaf and proves
   logical deletion retains the live object and shared pack. Exact-pin
   materialization selection is now
   restart-safe, exact-configuration/fact-bound, and consumed by both planning
@@ -1711,7 +1725,7 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `LAZY-1..51` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
-| `CSTORE-1..22` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
+| `CSTORE-1..24` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
 | `CAPI-1..14` | 8 | CLI/API contracts, continuity, campaign replay |
 | `CMEAS-1..14` | 3, 8 | campaign model, replay, ABI conformance |
 | `CSEC-1..12` | 1–9 | license boundary, ABI conformance, isolation, store equivalence |

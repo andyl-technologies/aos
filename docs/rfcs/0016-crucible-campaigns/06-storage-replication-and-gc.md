@@ -404,10 +404,87 @@ reports authenticated logical lengths, not physical frame lengths. Compressed
 and plaintext directory roots must not overlap because their physical record
 grammars differ.
 
+The durable encrypted-directory leaf similarly preserves ordinary plaintext
+`ContentId` identity while storing a private authenticated physical record. An
+encrypted graph node names an absolute physical root, a nonzero per-object
+plaintext limit no greater than 64 MiB, and a non-secret key-generation ID of
+1 through 64 ASCII letters, digits, `.`, `_`, or `-`. The secret is supplied
+separately through a construction-time key capability; missing keys fail with
+`Unauthorized` before the leaf is constructed. Secret bytes never enter graph
+configuration identity, introspection, placement receipts, inventory records,
+or the physical header.
+
+Before any object read, presence check, put, or inventory operation, the leaf
+holds the directory inventory lock and validates or creates the registered
+`.inventory-admin/encryption-key-v1` state:
+
+```text
+"CRUCK001" || key_id_binding[32] || keyed_verifier[32] || checksum[32]
+```
+
+`keyed_verifier =
+BLAKE3_keyed(secret,
+"crucible.content-store.encryption-key-verifier.v1" || key_id_binding)` and
+`checksum = BLAKE3("crucible.content-store.encryption-key-state.v1" ||
+all preceding state bytes)`. The verifier is compared in constant time. Its
+only supported secret profile is a uniformly provisioned 256-bit key; the
+on-disk verifier MUST NOT be used with passwords or other guessable material.
+The state is conditionally published with file and directory sync under the
+cross-process inventory lock. A checksum or key-ID mismatch is corrupt
+configuration; a verifier mismatch is `Unauthorized`. Consequently a changed
+secret cannot add a second key generation to an established root under the
+same public key ID. Operators MUST change the key-generation ID and physical
+root when rotating secrets; migration between roots remains an authenticated
+logical-object transfer.
+
+Plaintext is split into fixed 65,536-byte chunks (with one empty final chunk
+for an empty object) and each chunk is encrypted independently with
+AES-256-GCM and a 16-byte tag. The cipher key is
+`BLAKE3_keyed(secret,
+"crucible.content-store.encrypted-aes-key.v1")`, which separates AES use from
+nonce and verifier derivation under the supplied master key. The private v1
+record is exactly:
+
+```text
+"CRUCE001"
+logical_length:u64be
+chunk_bytes:u32be                         # exactly 65,536
+key_id_binding[32]
+repeated ceil_nonzero(logical_length / chunk_bytes) times:
+    ciphertext[plaintext_chunk_length] || authentication_tag[16]
+```
+
+`key_id_binding =
+BLAKE3("crucible.content-store.encryption-key-id.v1" ||
+key_id_length:u64be || key_id_ascii)`. For chunk ordinal `i`, the 96-bit nonce
+is the first 12 bytes of
+`BLAKE3_keyed(secret,
+"crucible.content-store.encrypted-chunk-nonce.v1" || content_id_ascii ||
+i:u32be)`. This deterministic construction is safe because an immutable
+`ContentId` fixes one exact plaintext under a key generation; the plaintext ID
+and physical path already expose equality. It avoids persisting nonce state and
+must not be reused for mutable or non-content-addressed plaintext.
+
+The associated data is the exact concatenation
+`"crucible.content-store.encrypted-chunk-aad.v1" ||
+content_id_length:u16be || content_id_ascii || logical_length:u64be ||
+chunk_bytes:u32be || key_id_binding[32] || i:u32be || final:u8 ||
+plaintext_chunk_length:u64be`. Readers validate the fixed header and exact
+physical length before allocation, authenticate every chunk, and hash the
+complete plaintext through the normal `ContentId` domain even for a range
+read. This detects wrong keys, wrong key IDs, reordering, truncation, appended
+chunks, changed final markers, ciphertext mutation outside a requested range,
+and logical-ID substitution. Puts reject oversized declarations before opening
+the source, authenticate the source while encrypting with one bounded chunk,
+and use the directory leaf's sync/link publication and persistent inventory
+generation. Encrypted, compressed, plaintext, packed, journal, and quota-state
+roots must not overlap.
+
 The initial `LogicalQuota` composition owns exactly one durable directory,
-compressed-directory, or packed leaf. Admission rejects an ephemeral memory or
-non-leaf child and any second incoming edge to that child. Construction transfers the child's
-separate inventory/delete capability into the quota node, and
+compressed-directory, encrypted-directory, or packed leaf. Admission rejects
+an ephemeral memory or non-leaf child and any second incoming edge to that
+child. Construction transfers the child's separate inventory/delete capability
+into the quota node, and
 `StoreGraphAdmin` exposes the quota node instead of its child. Consequently a
 cooperating GC deletion cannot bypass reclamation accounting. The quota has a
 nonzero aggregate object-count ceiling no greater than 67,108,864 and a nonzero
@@ -497,6 +574,8 @@ demand propagation before constructing the root:
   overlap a blob directory or another journal directory;
 - a logical quota has nonzero count/byte bounds, exclusively owns one durable
   physical leaf, and uses a non-overlapping absolute state directory;
+- an encrypted directory has a nonzero plaintext-object limit no greater than
+  64 MiB and resolves its non-secret key ID through a separate key capability;
 - public introspection returns only node ID, built-in kind, and derived
   capabilities, never a directory root, endpoint, or credential.
 
@@ -528,22 +607,25 @@ bypass these checks.
 `StoreGraph::build_with_admin` returns the ordinary immutable graph and a
 separate, non-cloneable `StoreGraphAdmin`. The graph does not retain or expose
 physical inventory/delete authority. The administrative value retains exactly
-one capability for every admitted memory, directory, compressed-directory, or
-packed leaf except that a logical-quota node owns and replaces its child's
-direct capability. It lends those boundaries in canonical node-ID order to the
-daemon maintenance owner. Shared graph paths therefore do not duplicate a leaf
+one capability for every admitted memory, directory, compressed-directory,
+encrypted-directory, or packed leaf except that a logical-quota node owns and
+replaces its child's direct capability. It lends those boundaries in canonical
+node-ID order to the daemon maintenance owner. Shared graph paths therefore do not duplicate a leaf
 inventory, and a campaign repository that receives only `StoreGraph` cannot
 construct a deletion fence. Both values retain the same content-derived
 `StoreGraphConfigurationId`; GC accepts the administrative value itself and
 cannot pair independently supplied leaves with an unrelated graph hash.
 
 The registered `crucible.content-store.graph-configuration` schemas v1 through
-v3 freeze that identity basis. New writers retain the byte-for-byte v1 body
-when the graph has neither compressed-directory nor logical-quota nodes, emit
-v2 when it has a compressed-directory node but no logical quota, and emit v3
-when it has any logical-quota node. V2 uses the same grammar and existing tags
-as v1, changes the magic suffix from `v1` to `v2`, and adds tag 11. V3 changes
-the suffix to `v3`, retains tags 1 through 11, and adds tag 12. Every persistent
+v4 freeze that identity basis. New writers retain the byte-for-byte v1 body
+when the graph has no compressed-directory, logical-quota, or encrypted nodes,
+emit v2 when it has a compressed-directory node but no logical quota or
+encryption, emit v3 when it has a logical-quota node but no encryption, and
+emit v4 when it has any encrypted-directory node. V2 uses the same grammar and
+existing tags as v1, changes the magic suffix from `v1` to `v2`, and adds tag
+11. V3 changes the suffix to `v3`, retains tags 1 through 11, and adds tag 12.
+V4 changes the suffix to `v4`, retains tags 1 through 12, and adds tag 13.
+Every persistent
 path is an absolute host-local Unix path; its opaque bytes, rather than a lossy
 Unicode rendering, enter the identity.
 Node IDs and counts use their bounds above, object-kind tags and routed entries
@@ -582,6 +664,9 @@ node tag 11 CompressedDirectory:
 node tag 12 LogicalQuota: child:string_u16 || state_root:path_u32
                          || maximum_objects:u64be
                          || maximum_logical_bytes:u64be
+node tag 13 EncryptedDirectory:
+                         root:path_u32 || maximum_logical_object_bytes:u64be
+                         || key_id:string_u16
 ```
 
 Let `D` be `crucible.content-store.graph-configuration-id.v1` and `B` the
@@ -1130,15 +1215,16 @@ and indexes, atomically switches the index generation, waits for existing
 readers, then permits delayed deletion of old packs. Removing an exact
 materialization never removes the semantic configuration or thin replay path.
 
-The implemented memory, directory, compressed-directory, and packed blob
+The implemented memory, directory, compressed-directory, encrypted-directory,
+and packed blob
 leaves now provide the exclusive physical inventory generation/idempotent
 exact-candidate deletion primitive. The memory and directory ref leaves provide
 the exclusive authoritative-ref inventory generation and publication-lifecycle
 fence needed by that apply step. The assignment ledger likewise provides one
 exclusive, persistent generation over its combined operational root inventory.
-Directory, compressed-directory, and packed generations survive restart;
-memory generations are process-local and monotonic for their ephemeral backend
-instance. These primitives remain held by the daemon maintenance owner. The
+Directory, compressed-directory, encrypted-directory, and packed generations
+survive restart; memory generations are process-local and monotonic for their
+ephemeral backend instance. These primitives remain held by the daemon maintenance owner. The
 canonical bounded v1 plan header now binds these
 generations to constructed root and candidate manifests, and the external
 journal durably owns their exact bytes and apply phase. No campaign
@@ -1147,10 +1233,11 @@ administrative capabilities, and no deletion is safe until durable external
 manifest ownership and every applicable root and physical generation have been
 revalidated. The implemented single-host physical-leaf apply and exact-pin
 selection fence satisfy that rule for memory, directory, compressed-directory,
-and packed leaves. The compressed-directory integration regression plans from
-authenticated plaintext lengths, persists and reopens the journal and graph,
-deletes one unreachable compressed placement, and reauthenticates the retained
-plaintext object. The packed leaf separately provides generation-bound repack
+encrypted-directory, and packed leaves. The compressed- and
+encrypted-directory integration regressions plan from authenticated plaintext
+lengths, persist and reopen the journal and graph, delete the respective
+unreachable physical placement, and reauthenticate the retained plaintext
+object. The packed leaf separately provides generation-bound repack
 plan/apply and logical candidate deletion under its exclusive lifecycle fence;
 composed transform/S3 tiers and policy-aware reachable-cache eviction still
 require their additional administration before global deletion.
@@ -1185,3 +1272,8 @@ logs, or placement receipts returned to ordinary operators.
   child mutation indeterminate before it begins, recover exact count/byte usage
   from a bounded fenced inventory, and own the child's deletion capability so
   reclamation cannot bypass accounting.
+- **[CSTORE-24]** Authenticated encryption below plaintext `ContentId` MUST use
+  a versioned bounded physical grammar, bind every chunk to the exact logical
+  ID/length/key generation/ordinal/final state, authenticate the complete
+  plaintext for every read, and receive secret keys only through a separate
+  non-serializable construction capability.

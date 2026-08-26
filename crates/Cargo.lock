@@ -41,6 +41,7 @@ dependencies = [
  "ctr",
  "ghash",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -2155,10 +2156,12 @@ dependencies = [
 name = "crucible-cas"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "blake3",
  "rustix 1.1.4",
  "tempfile",
  "thiserror 2.0.18",
+ "zeroize",
  "zstd",
 ]
 

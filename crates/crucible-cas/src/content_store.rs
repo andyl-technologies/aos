@@ -24,6 +24,7 @@ mod admin;
 mod composition;
 mod compressed_directory;
 mod directory;
+mod encrypted_directory;
 mod graph;
 mod memory;
 mod packed;
@@ -37,6 +38,9 @@ pub use admin::{
 };
 pub use compressed_directory::CompressedDirectoryBlobBackend;
 pub use directory::{DirectoryBlobBackend, DirectoryRefBackend};
+pub use encrypted_directory::{
+    EncryptedDirectoryBlobBackend, StoreEncryptionKey, StoreEncryptionKeyId, StoreGraphKeyring,
+};
 pub use graph::{
     StoreGraph, StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId,
     StoreGraphPhysicalAdmin, StoreNodeDescription, StoreNodeId, StoreNodeKind, StoreNodeMetrics,
@@ -854,6 +858,8 @@ pub enum GraphViolation {
     InvalidWriteBackBounds,
     /// A compressed directory leaf has a zero plaintext-object bound.
     InvalidCompressedObjectLimit,
+    /// An encrypted directory leaf has an invalid plaintext-object bound.
+    InvalidEncryptedObjectLimit,
     /// A logical quota has a zero aggregate bound.
     InvalidLogicalQuotaBounds,
     /// A logical quota does not exclusively own one physical leaf.
@@ -883,6 +889,7 @@ impl fmt::Display for GraphViolation {
             Self::UnsupportedChild => "unsupported child capability",
             Self::InvalidWriteBackBounds => "invalid write-back bounds",
             Self::InvalidCompressedObjectLimit => "invalid compressed-object limit",
+            Self::InvalidEncryptedObjectLimit => "invalid encrypted-object limit",
             Self::InvalidLogicalQuotaBounds => "invalid logical-quota bounds",
             Self::InvalidLogicalQuotaChild => "logical quota must exclusively own a physical leaf",
             Self::OverlappingAdministrativePath => "overlapping administrative path",

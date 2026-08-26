@@ -648,6 +648,294 @@ fn compressed_directory_rejects_oversized_sources_and_corrupt_physical_records()
 }
 
 #[test]
+fn encrypted_directory_authenticates_ranges_and_inventory_across_restart() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = temp.path().join("encrypted");
+    let key_id = StoreEncryptionKeyId::new("campaign-key-7").expect("key ID");
+    let key_bytes = [0xa5; 32];
+    let store = EncryptedDirectoryBlobBackend::new(
+        "encrypted",
+        &root,
+        4 * 1024 * 1024,
+        key_id.clone(),
+        StoreEncryptionKey::new(key_bytes).expect("key"),
+    )
+    .expect("encrypted directory");
+
+    let mut expected = BTreeMap::new();
+    let mut largest = None;
+    for length in [0_usize, 65_535, 65_536, 65_537, 2 * 65_536 + 17] {
+        let bytes = (0..length)
+            .map(|index| (index as u32).wrapping_mul(17).wrapping_add(91) as u8)
+            .collect::<Vec<_>>();
+        let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, &bytes);
+        let receipt = put_bytes(&store, id, &bytes).expect("encrypted put");
+        assert!(receipt.is_durable());
+        assert_eq!(receipt.id, id);
+        assert_eq!(
+            put_bytes(&store, id, &bytes).expect("idempotent encrypted put"),
+            receipt
+        );
+        expected.insert(id, bytes);
+        largest = Some(id);
+    }
+
+    let largest = largest.expect("largest object ID");
+    let largest_bytes = &expected[&largest];
+    let physical = fs::read(object_path(&root, largest)).expect("encrypted physical record");
+    assert!(
+        !physical
+            .windows(key_bytes.len())
+            .any(|window| window == key_bytes)
+    );
+    let key_state = fs::read(root.join(".inventory-admin/encryption-key-v1"))
+        .expect("encrypted key-generation state");
+    assert!(
+        !key_state
+            .windows(key_bytes.len())
+            .any(|window| window == key_bytes)
+    );
+    assert!(
+        !physical
+            .windows(largest_bytes.len())
+            .any(|window| window == largest_bytes)
+    );
+
+    let reopened = EncryptedDirectoryBlobBackend::new(
+        "encrypted",
+        &root,
+        4 * 1024 * 1024,
+        key_id,
+        StoreEncryptionKey::new(key_bytes).expect("restart key"),
+    )
+    .expect("reopened encrypted directory");
+    for (id, bytes) in &expected {
+        assert_eq!(
+            read_bytes(&reopened, *id, None).expect("restart encrypted read"),
+            *bytes
+        );
+    }
+    assert_eq!(
+        read_bytes(
+            &reopened,
+            largest,
+            Some(ByteRange::new(65_530, 19).expect("cross-chunk range")),
+        )
+        .expect("authenticated encrypted range"),
+        largest_bytes[65_530..65_549]
+    );
+
+    let mut fence = reopened
+        .acquire_inventory_fence()
+        .expect("encrypted inventory fence");
+    let summary = fence
+        .visit_inventory(&mut |_| Ok(()))
+        .expect("encrypted inventory");
+    assert_eq!(summary.objects(), expected.len() as u64);
+    assert_eq!(
+        summary.logical_bytes(),
+        expected.values().map(|bytes| bytes.len() as u64).sum()
+    );
+    assert_eq!(
+        fence
+            .delete_candidate(largest)
+            .expect("planned encrypted delete"),
+        PlannedDeleteDisposition::Deleted
+    );
+    assert_eq!(
+        fence
+            .delete_candidate(largest)
+            .expect("repeated encrypted delete"),
+        PlannedDeleteDisposition::AlreadyAbsent
+    );
+}
+
+#[test]
+fn encrypted_directory_fails_closed_on_limits_wrong_keys_and_corruption() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = temp.path().join("encrypted");
+    for invalid in ["", "bad/key", "bad:key", "space key"] {
+        assert!(matches!(
+            StoreEncryptionKeyId::new(invalid),
+            Err(StoreError::InvalidComposition { .. })
+        ));
+    }
+    assert!(matches!(
+        StoreEncryptionKey::new([0; 32]),
+        Err(StoreError::InvalidComposition { .. })
+    ));
+    let key_id = StoreEncryptionKeyId::new("campaign-key-8").expect("key ID");
+    let store = EncryptedDirectoryBlobBackend::new(
+        "encrypted",
+        &root,
+        128 * 1024,
+        key_id.clone(),
+        StoreEncryptionKey::new([0x18; 32]).expect("key"),
+    )
+    .expect("encrypted directory");
+
+    let oversized_bytes = Arc::<[u8]>::from(vec![0x44; 128 * 1024 + 1]);
+    let oversized_id = ContentId::for_bytes(ObjectKind::Trace, 1, &oversized_bytes);
+    let opens = Arc::new(AtomicUsize::new(0));
+    let oversized = BlobHandle::new(Arc::new(CountingSource {
+        bytes: Arc::clone(&oversized_bytes),
+        opens: Arc::clone(&opens),
+        bytes_read: Arc::new(AtomicUsize::new(0)),
+    }));
+    assert!(matches!(
+        store.put_if_absent(oversized_id, &oversized),
+        Err(StoreError::Quota)
+    ));
+    assert_eq!(opens.load(Ordering::SeqCst), 0);
+
+    let wrong_id = ContentId::for_bytes(ObjectKind::Trace, 1, b"expected");
+    assert!(matches!(
+        put_bytes(&store, wrong_id, b"different"),
+        Err(StoreError::Corrupt { .. })
+    ));
+    assert!(!object_path(&root, wrong_id).exists());
+
+    let bytes = (0_u32..96 * 1024)
+        .map(|value| value.wrapping_mul(1_103_515_245).wrapping_add(12_345) as u8)
+        .collect::<Vec<_>>();
+    let id = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
+    put_bytes(&store, id, &bytes).expect("encrypted put");
+
+    let wrong_key = EncryptedDirectoryBlobBackend::new(
+        "encrypted",
+        &root,
+        128 * 1024,
+        key_id.clone(),
+        StoreEncryptionKey::new([0x19; 32]).expect("wrong key"),
+    )
+    .expect("wrong-key store");
+    assert!(matches!(
+        read_bytes(&wrong_key, id, None),
+        Err(StoreError::Unauthorized)
+    ));
+    let wrong_key_bytes = b"wrong-key-new-object";
+    let wrong_key_new_id = ContentId::for_bytes(ObjectKind::Trace, 1, wrong_key_bytes);
+    assert!(matches!(
+        put_bytes(&wrong_key, wrong_key_new_id, wrong_key_bytes),
+        Err(StoreError::Unauthorized)
+    ));
+    assert!(!object_path(&root, wrong_key_new_id).exists());
+    let wrong_key_id = EncryptedDirectoryBlobBackend::new(
+        "encrypted",
+        &root,
+        128 * 1024,
+        StoreEncryptionKeyId::new("campaign-key-9").expect("wrong key ID"),
+        StoreEncryptionKey::new([0x18; 32]).expect("right key"),
+    )
+    .expect("wrong-key-ID store");
+    assert!(matches!(
+        wrong_key_id.read(id, None),
+        Err(StoreError::InvalidComposition { .. })
+    ));
+
+    let physical_path = object_path(&root, id);
+    let mut physical = fs::read(&physical_path).expect("encrypted physical record");
+    *physical.last_mut().expect("ciphertext tail") ^= 0x80;
+    fs::write(&physical_path, &physical).expect("corrupt ciphertext tail");
+    let leading = store
+        .read(id, Some(ByteRange::new(0, 16).expect("leading range")))
+        .expect("open corrupted encrypted range");
+    assert!(matches!(
+        leading.read_all(1024),
+        Err(StoreError::Corrupt { .. })
+    ));
+
+    let symlink_id = ContentId::for_bytes(ObjectKind::Trace, 1, b"symlink");
+    let symlink_path = object_path(&root, symlink_id);
+    fs::create_dir_all(symlink_path.parent().expect("symlink parent"))
+        .expect("create symlink parent");
+    std::os::unix::fs::symlink(&physical_path, &symlink_path).expect("create encrypted symlink");
+    assert!(matches!(
+        store.read(symlink_id, None),
+        Err(StoreError::Io { .. })
+    ));
+
+    let key_state_path = root.join(".inventory-admin/encryption-key-v1");
+    let mut key_state = fs::read(&key_state_path).expect("read key state");
+    *key_state.last_mut().expect("key-state checksum") ^= 0x01;
+    fs::write(&key_state_path, key_state).expect("corrupt key state");
+    assert!(matches!(
+        store.read(id, None),
+        Err(StoreError::InvalidComposition { .. })
+    ));
+}
+
+#[test]
+fn encrypted_directory_serializes_first_key_generation_across_instances() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = temp.path().join("encrypted");
+    let key_id = StoreEncryptionKeyId::new("campaign-key-race").expect("key ID");
+    let first = Arc::new(
+        EncryptedDirectoryBlobBackend::new(
+            "first",
+            &root,
+            1024,
+            key_id.clone(),
+            StoreEncryptionKey::new([0x31; 32]).expect("first key"),
+        )
+        .expect("first encrypted directory"),
+    );
+    let second = Arc::new(
+        EncryptedDirectoryBlobBackend::new(
+            "second",
+            &root,
+            1024,
+            key_id,
+            StoreEncryptionKey::new([0x32; 32]).expect("second key"),
+        )
+        .expect("second encrypted directory"),
+    );
+    let first_bytes = b"first-generation-object";
+    let second_bytes = b"second-generation-object";
+    let first_id = ContentId::for_bytes(ObjectKind::Trace, 1, first_bytes);
+    let second_id = ContentId::for_bytes(ObjectKind::Trace, 1, second_bytes);
+    let barrier = Arc::new(Barrier::new(3));
+
+    let first_worker = {
+        let store = Arc::clone(&first);
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            put_bytes(store.as_ref(), first_id, first_bytes)
+        })
+    };
+    let second_worker = {
+        let store = Arc::clone(&second);
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            put_bytes(store.as_ref(), second_id, second_bytes)
+        })
+    };
+    barrier.wait();
+    let first_result = first_worker.join().expect("join first key writer");
+    let second_result = second_worker.join().expect("join second key writer");
+
+    match (&first_result, &second_result) {
+        (Ok(_), Err(StoreError::Unauthorized)) => {
+            assert_eq!(
+                read_bytes(first.as_ref(), first_id, None).expect("first read"),
+                first_bytes
+            );
+            assert!(!object_path(&root, second_id).exists());
+        }
+        (Err(StoreError::Unauthorized), Ok(_)) => {
+            assert_eq!(
+                read_bytes(second.as_ref(), second_id, None).expect("second read"),
+                second_bytes
+            );
+            assert!(!object_path(&root, first_id).exists());
+        }
+        results => panic!("exactly one key generation must win: {results:?}"),
+    }
+}
+
+#[test]
 fn directory_ref_inventory_is_persistent_fenced_and_fail_closed() {
     let temp = TempDir::new().expect("temporary directory");
     let root = temp.path().join("authority");
@@ -1572,6 +1860,140 @@ fn compressed_directory_is_a_bounded_versioned_graph_leaf() {
         }),
         Err(StoreError::InvalidGraph {
             violation: GraphViolation::OverlappingAdministrativePath,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn encrypted_directory_graph_identity_excludes_secret_key_material() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = node_id("encrypted");
+    let key_id = StoreEncryptionKeyId::new("campaign-key-10").expect("key ID");
+    let config = |maximum_logical_object_bytes, key_id: StoreEncryptionKeyId| StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
+        nodes: BTreeMap::from([(
+            root.clone(),
+            StoreNodeSpec::EncryptedDirectory {
+                root: temp.path().join("objects"),
+                maximum_logical_object_bytes,
+                key_id,
+            },
+        )]),
+    };
+    let mut first_keys = StoreGraphKeyring::new();
+    first_keys
+        .insert(
+            key_id.clone(),
+            StoreEncryptionKey::new([0x55; 32]).expect("first key"),
+        )
+        .expect("insert first key");
+    let first_config = config(1024 * 1024, key_id.clone());
+    assert!(!format!("{first_config:?}").contains(&"55".repeat(32)));
+    let (first, admin) = StoreGraph::build_with_admin_and_keys(first_config, &first_keys)
+        .expect("first encrypted graph");
+    assert_eq!(first.describe()[0].kind, StoreNodeKind::EncryptedDirectory);
+    assert_eq!(admin.physical().len(), 1);
+    assert!(!format!("{:?}", first.describe()).contains(key_id.as_str()));
+    let golden = StoreGraph::build_with_keys(
+        StoreGraphConfig {
+            root: root.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
+            nodes: BTreeMap::from([(
+                root.clone(),
+                StoreNodeSpec::EncryptedDirectory {
+                    root: PathBuf::from("/var/lib/crucible/campaign-encrypted-objects"),
+                    maximum_logical_object_bytes: 1024 * 1024,
+                    key_id: key_id.clone(),
+                },
+            )]),
+        },
+        &first_keys,
+    )
+    .expect("golden encrypted graph");
+    assert_eq!(
+        encode_hex(&golden.configuration_id().as_bytes()),
+        "267c8bb7bffff4a036092332e038d3c451b50058bda3a76628d147ec07b12378"
+    );
+
+    let bytes = vec![0x71; 96 * 1024];
+    let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, &bytes);
+    put_bytes(&first, id, &bytes).expect("encrypted graph put");
+
+    let mut same_keys = StoreGraphKeyring::new();
+    same_keys
+        .insert(
+            key_id.clone(),
+            StoreEncryptionKey::new([0x55; 32]).expect("restart key"),
+        )
+        .expect("insert restart key");
+    assert!(matches!(
+        same_keys.insert(
+            key_id.clone(),
+            StoreEncryptionKey::new([0x56; 32]).expect("duplicate key"),
+        ),
+        Err(StoreError::InvalidComposition { .. })
+    ));
+    let restarted = StoreGraph::build_with_keys(config(1024 * 1024, key_id.clone()), &same_keys)
+        .expect("restart encrypted graph");
+    assert_eq!(first.configuration_id(), restarted.configuration_id());
+    assert_eq!(
+        read_bytes(&restarted, id, None).expect("restart read"),
+        bytes
+    );
+
+    let mut different_keys = StoreGraphKeyring::new();
+    different_keys
+        .insert(
+            key_id.clone(),
+            StoreEncryptionKey::new([0x56; 32]).expect("different key"),
+        )
+        .expect("insert different key");
+    let different_secret =
+        StoreGraph::build_with_keys(config(1024 * 1024, key_id.clone()), &different_keys)
+            .expect("different-secret graph");
+    assert_eq!(
+        first.configuration_id(),
+        different_secret.configuration_id()
+    );
+    assert!(matches!(
+        read_bytes(&different_secret, id, None),
+        Err(StoreError::Unauthorized)
+    ));
+
+    let changed_limit =
+        StoreGraph::build_with_keys(config(2 * 1024 * 1024, key_id.clone()), &same_keys)
+            .expect("changed-limit graph");
+    assert_ne!(first.configuration_id(), changed_limit.configuration_id());
+    let second_key_id = StoreEncryptionKeyId::new("campaign-key-11").expect("second key ID");
+    let mut second_keys = StoreGraphKeyring::new();
+    second_keys
+        .insert(
+            second_key_id.clone(),
+            StoreEncryptionKey::new([0x55; 32]).expect("second key"),
+        )
+        .expect("insert second key");
+    let changed_key_id =
+        StoreGraph::build_with_keys(config(1024 * 1024, second_key_id), &second_keys)
+            .expect("changed-key-ID graph");
+    assert_ne!(first.configuration_id(), changed_key_id.configuration_id());
+
+    assert!(matches!(
+        StoreGraph::build(config(1024 * 1024, key_id.clone())),
+        Err(StoreError::Unauthorized)
+    ));
+    assert!(matches!(
+        StoreGraph::build_with_keys(config(0, key_id.clone()), &same_keys),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::InvalidEncryptedObjectLimit,
+            ..
+        })
+    ));
+    assert!(matches!(
+        StoreGraph::build_with_keys(config(64 * 1024 * 1024 + 1, key_id), &same_keys),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::InvalidEncryptedObjectLimit,
             ..
         })
     ));
