@@ -396,6 +396,126 @@ pub(super) fn prepare_exact_checkpoint_set_with_boundary(
     })
 }
 
+/// Streams one paused checkpoint artifact into a private content-addressed
+/// chunk directory without first duplicating the complete file.
+///
+/// The returned artifact owns only the directory path and compact chunk
+/// sequence. The caller must keep that directory alive until durable closure
+/// publication has copied or reused every chunk. Source length is admitted
+/// before the private object directory is created.
+pub(super) fn stage_checkpoint_artifact_chunks_with_boundary(
+    source: &Path,
+    object_directory: &Path,
+    role: &str,
+    current_artifact_bytes: u64,
+    resource_limits: FaultResourceLimits,
+    boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
+) -> Result<ProductionCheckpointArtifact, SchedulerError> {
+    boundary()?;
+    let mut source_file = File::open(source).map_err(|error| {
+        store_error(format!(
+            "open stopped exact-checkpoint {role} {}: {error}",
+            source.display()
+        ))
+    })?;
+    let source_length = source_file
+        .metadata()
+        .map_err(|error| {
+            store_error(format!(
+                "inspect stopped exact-checkpoint {role} {}: {error}",
+                source.display()
+            ))
+        })?
+        .len();
+    resource_limits
+        .reserve(
+            "fat_checkpoint_bytes",
+            current_artifact_bytes,
+            source_length,
+        )
+        .map_err(scheduler_resource_limit)?;
+    boundary()?;
+    fs::create_dir_all(object_directory).map_err(|error| {
+        store_error(format!(
+            "create staged exact-checkpoint {role} chunk directory {}: {error}",
+            object_directory.display()
+        ))
+    })?;
+    let mut buffer = vec![0_u8; ARTIFACT_CHUNK_BYTES];
+    let mut hasher = blake3::Hasher::new();
+    let mut chunks = Vec::new();
+    let mut length = 0_u64;
+
+    loop {
+        let mut filled = 0;
+        while filled < buffer.len() {
+            boundary()?;
+            let read = source_file.read(&mut buffer[filled..]).map_err(|error| {
+                store_error(format!(
+                    "read stopped exact-checkpoint {role} {}: {error}",
+                    source.display()
+                ))
+            })?;
+            if read == 0 {
+                break;
+            }
+            filled += read;
+        }
+        if filled == 0 {
+            break;
+        }
+
+        boundary()?;
+        let bytes = &buffer[..filled];
+        let identity = hash_bytes_with_boundary(bytes, boundary)?;
+        persist_object_with_boundary(object_directory, identity, bytes, boundary)?;
+        chunks.push(identity);
+        hasher.update(bytes);
+        length = length
+            .checked_add(u64::try_from(filled).map_err(|error| {
+                store_error(format!(
+                    "convert staged exact-checkpoint {role} length: {error}"
+                ))
+            })?)
+            .ok_or_else(|| {
+                store_error(format!("staged exact-checkpoint {role} length overflow"))
+            })?;
+
+        if filled < buffer.len() {
+            break;
+        }
+    }
+
+    boundary()?;
+    let mut trailing = [0_u8; 1];
+    if source_file.read(&mut trailing).map_err(|error| {
+        store_error(format!(
+            "finish stopped exact-checkpoint {role} {}: {error}",
+            source.display()
+        ))
+    })? != 0
+    {
+        return Err(store_error(format!(
+            "stopped exact-checkpoint {role} grew while it was staged"
+        )));
+    }
+    if length != source_length {
+        return Err(store_error(format!(
+            "stopped exact-checkpoint {role} changed length while it was staged"
+        )));
+    }
+    sync_directory(object_directory)?;
+
+    Ok(ProductionCheckpointArtifact {
+        source: ProductionCheckpointArtifactSource::ChunkStore(object_directory.to_path_buf()),
+        identity: ContentHash {
+            bytes: *hasher.finalize().as_bytes(),
+        },
+        length,
+        chunks,
+    })
+}
+
 pub(super) fn load_exact_checkpoint_set(
     run_state_root: &Path,
     scenario: &ScenarioDef,

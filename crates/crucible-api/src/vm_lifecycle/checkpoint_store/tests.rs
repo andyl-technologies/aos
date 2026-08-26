@@ -1017,6 +1017,87 @@ fn chunk_store_deduplicates_and_materializes_complete_artifacts() {
 }
 
 #[test]
+fn paused_artifact_staging_writes_only_deduplicated_chunks() {
+    let root = tempfile::tempdir().expect("create direct chunk-staging fixture");
+    let source = root.path().join("active-overlay.qcow2");
+    let object_directory = root.path().join("staged-objects");
+    let repeated = vec![0x6d; ARTIFACT_CHUNK_BYTES];
+    let mut bytes = repeated.clone();
+    bytes.extend_from_slice(&repeated);
+    bytes.extend_from_slice(b"tail");
+    fs::write(&source, &bytes).expect("write active overlay fixture");
+
+    let artifact = stage_checkpoint_artifact_chunks_with_boundary(
+        &source,
+        &object_directory,
+        "root overlay",
+        0,
+        FaultResourceLimits::compiled_maximum(),
+        &mut || Ok(()),
+    )
+    .expect("stage paused overlay directly into chunks");
+
+    assert_eq!(artifact.identity, ContentHash::from_bytes(&bytes));
+    assert_eq!(artifact.length, bytes.len() as u64);
+    assert_eq!(artifact.chunks.len(), 3);
+    assert_eq!(artifact.chunks[0], artifact.chunks[1]);
+    assert!(matches!(
+        artifact.source,
+        ProductionCheckpointArtifactSource::ChunkStore(ref directory)
+            if directory == &object_directory
+    ));
+    assert!(!object_directory.join("active-overlay.qcow2").exists());
+
+    let stored_count = fs::read_dir(&object_directory)
+        .expect("read staged object directory")
+        .map(|entry| {
+            fs::read_dir(entry.expect("read staged object prefix").path())
+                .expect("read staged object prefix directory")
+                .count()
+        })
+        .sum::<usize>();
+    assert_eq!(stored_count, 2);
+
+    let restored = root.path().join("restored-overlay.qcow2");
+    materialize_checkpoint_artifact(&artifact, &restored, "direct chunk staging")
+        .expect("materialize directly staged chunks");
+    assert_eq!(fs::read(restored).expect("read restored overlay"), bytes);
+}
+
+#[test]
+fn paused_artifact_staging_rejects_length_before_writing_chunks() {
+    let root = tempfile::tempdir().expect("create chunk-staging limit fixture");
+    let source = root.path().join("active-vmstate.qcow2");
+    let object_directory = root.path().join("staged-objects");
+    fs::write(&source, b"over-limit").expect("write over-limit artifact fixture");
+
+    let error = stage_checkpoint_artifact_chunks_with_boundary(
+        &source,
+        &object_directory,
+        "VMState",
+        0,
+        FaultResourceLimits {
+            fat_checkpoint_bytes: 4,
+            ..FaultResourceLimits::default()
+        },
+        &mut || Ok(()),
+    )
+    .expect_err("over-limit artifact must be rejected");
+
+    assert!(matches!(
+        error,
+        SchedulerError::ResourceLimit {
+            field: "fat_checkpoint_bytes",
+            current: 0,
+            requested: 10,
+            configured: 4,
+            ..
+        }
+    ));
+    assert!(!object_directory.exists());
+}
+
+#[test]
 fn lifecycle_wire_restores_terminal_branch_and_controls() {
     let scenario = crucible::happy_path_scenario()
         .expect("build lifecycle wire scenario")

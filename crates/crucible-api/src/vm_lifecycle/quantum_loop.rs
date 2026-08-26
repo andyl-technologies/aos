@@ -2,6 +2,7 @@
 
 use super::checkpoint_store::{
     PersistExactCheckpointError, prepare_exact_checkpoint_set_with_boundary,
+    stage_checkpoint_artifact_chunks_with_boundary,
 };
 use super::*;
 
@@ -26,6 +27,7 @@ use lifecycle::{
     release_restored_generation_after_scheduler_publication, select_preowned_terminal_generation,
 };
 
+#[cfg(test)]
 const CHECKPOINT_BOUNDARY_CHUNK_BYTES: usize = 1024 * 1024;
 
 #[cfg(test)]
@@ -80,84 +82,6 @@ fn checkpoint_artifact_from_stopped_file_with_boundary(
     Ok(ProductionCheckpointArtifact {
         source: ProductionCheckpointArtifactSource::File(source.to_path_buf()),
         identity,
-        length,
-        chunks: Vec::new(),
-    })
-}
-
-fn stage_checkpoint_artifact_with_boundary(
-    source: &Path,
-    destination: &Path,
-    role: &str,
-    boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
-) -> Result<ProductionCheckpointArtifact, SchedulerError> {
-    boundary()?;
-    let mut source_file =
-        File::open(source).map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!(
-                "open stopped exact-checkpoint {role} {}: {error}",
-                source.display()
-            ),
-        })?;
-    let mut destination_file =
-        File::create(destination).map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!(
-                "create staged exact-checkpoint {role} {}: {error}",
-                destination.display()
-            ),
-        })?;
-    let mut buffer = vec![0_u8; CHECKPOINT_BOUNDARY_CHUNK_BYTES];
-    let mut hasher = blake3::Hasher::new();
-    let mut length = 0_u64;
-    loop {
-        boundary()?;
-        let read = std::io::Read::read(&mut source_file, &mut buffer).map_err(|error| {
-            SchedulerError::BoundaryViolation {
-                message: format!(
-                    "read stopped exact-checkpoint {role} {}: {error}",
-                    source.display()
-                ),
-            }
-        })?;
-        if read == 0 {
-            break;
-        }
-        boundary()?;
-        std::io::Write::write_all(&mut destination_file, &buffer[..read]).map_err(|error| {
-            SchedulerError::BoundaryViolation {
-                message: format!(
-                    "write staged exact-checkpoint {role} {}: {error}",
-                    destination.display()
-                ),
-            }
-        })?;
-        hasher.update(&buffer[..read]);
-        let read_length =
-            u64::try_from(read).map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("convert staged exact-checkpoint {role} length: {error}"),
-            })?;
-        length =
-            length
-                .checked_add(read_length)
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: format!("staged exact-checkpoint {role} length overflow"),
-                })?;
-    }
-    boundary()?;
-    destination_file
-        .sync_all()
-        .map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!(
-                "sync staged exact-checkpoint {role} {}: {error}",
-                destination.display()
-            ),
-        })?;
-
-    Ok(ProductionCheckpointArtifact {
-        source: ProductionCheckpointArtifactSource::File(destination.to_path_buf()),
-        identity: ContentHash {
-            bytes: *hasher.finalize().as_bytes(),
-        },
         length,
         chunks: Vec::new(),
     })
@@ -2036,6 +1960,7 @@ impl ProductionVmLifecycleLoop {
         let recorded_controls = self.recorded_controls.clone();
         let node_generations = self.node_generations.clone();
         let node_service_states = self.node_service_states.clone();
+        let resource_limits = self.source.plan().fault_signals().resource_limits();
 
         boundary()?;
         let checkpoint_parent = self._run_directory.path().join("exact-checkpoints");
@@ -2073,6 +1998,7 @@ impl ProductionVmLifecycleLoop {
             .map_err(|error| SchedulerError::BoundaryViolation {
                 message: format!("reserve exact checkpoint capture owners: {error}"),
             })?;
+        let mut artifact_bytes = 0_u64;
         let capture_result = (|| -> Result<(), SchedulerError> {
             for prepared in prepared_targets {
                 boundary()?;
@@ -2083,9 +2009,9 @@ impl ProductionVmLifecycleLoop {
                     service_state,
                     checkpoint,
                     source_overlay,
-                    staged_overlay,
+                    staged_overlay_chunks,
                     source_vmstate,
-                    staged_vmstate,
+                    staged_vmstate_chunks,
                 } = prepared;
                 let snapshot = match service_state {
                     ProductionNodeServiceState::Running => self
@@ -2123,18 +2049,35 @@ impl ProductionVmLifecycleLoop {
                                 "exact checkpoint capture owner disappeared after insertion",
                             ),
                         })?;
-                capture.overlay_artifact = Some(stage_checkpoint_artifact_with_boundary(
+                let overlay_artifact = stage_checkpoint_artifact_chunks_with_boundary(
                     &source_overlay,
-                    &staged_overlay,
+                    &staged_overlay_chunks,
                     "root overlay",
+                    artifact_bytes,
+                    resource_limits,
                     boundary,
-                )?);
-                capture.vmstate_artifact = Some(stage_checkpoint_artifact_with_boundary(
+                )?;
+                artifact_bytes = artifact_bytes
+                    .checked_add(overlay_artifact.length)
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: String::from("exact-checkpoint artifact byte accounting overflow"),
+                    })?;
+                capture.overlay_artifact = Some(overlay_artifact);
+
+                let vmstate_artifact = stage_checkpoint_artifact_chunks_with_boundary(
                     &source_vmstate,
-                    &staged_vmstate,
+                    &staged_vmstate_chunks,
                     "VMState",
+                    artifact_bytes,
+                    resource_limits,
                     boundary,
-                )?);
+                )?;
+                artifact_bytes = artifact_bytes
+                    .checked_add(vmstate_artifact.length)
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: String::from("exact-checkpoint artifact byte accounting overflow"),
+                    })?;
+                capture.vmstate_artifact = Some(vmstate_artifact);
                 boundary()?;
             }
             Ok(())
@@ -2215,7 +2158,7 @@ impl ProductionVmLifecycleLoop {
             prepare_exact_checkpoint_set_with_boundary(
                 &self.config.run_state_root,
                 self.scenario.id(),
-                self.source.plan().fault_signals().resource_limits(),
+                resource_limits,
                 &mut checkpoint_set,
                 boundary,
             )
