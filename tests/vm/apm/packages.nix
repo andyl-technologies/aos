@@ -4528,7 +4528,7 @@ in {
       assert_file_contains "$REG_DIR/packages/s/source-alt.toml" \
         "$SOURCE_STORE" "published metadata records source drv path"
       assert_file_contains "$REG_DIR/packages/s/source-alt.toml" \
-        'source_nar_hash = "sha256-' "published metadata records source NAR hash"
+        'source_nar_hash = "sha256:' "published metadata records source NAR hash"
 
       $APR cache generate \
         --registry source-alt-reg \
