@@ -367,6 +367,15 @@ impl PreparedAttemptCheckpoint {
             Self::Production(checkpoint) => checkpoint.configuration(),
         }
     }
+
+    pub(crate) fn native_retirement(
+        &self,
+    ) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
+        match self {
+            Self::SingleNode(_) => None,
+            Self::Production(checkpoint) => checkpoint.native_retirement(),
+        }
+    }
 }
 
 /// Exact checkpoint returned by an execution before immutable publication.
@@ -1179,6 +1188,9 @@ pub enum ExactCheckpointStoreError {
     /// The complete production continuation failed scenario-aware authentication.
     #[error(transparent)]
     Production(#[from] crucible_api::LifecycleApiError),
+    /// Attempt-local native checkpoint retirement failed.
+    #[error(transparent)]
+    NativeRetirement(#[from] crucible_api::ProductionExactCheckpointRetirementError),
 }
 
 fn map_checkpoint_store_error(error: StoreError) -> ExactCheckpointStoreError {
@@ -1275,7 +1287,7 @@ impl ExactCheckpointStoreError {
             Self::Store(
                 StoreError::Unavailable | StoreError::Io { .. } | StoreError::StreamIo { .. }
             )
-        )
+        ) || matches!(self, Self::NativeRetirement(error) if error.is_retryable())
     }
 }
 

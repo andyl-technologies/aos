@@ -328,6 +328,53 @@ fn regular_file_count(path: &Path) -> usize {
 }
 
 #[test]
+fn native_checkpoint_retirement_is_crash_safe_and_idempotent() {
+    let root = tempfile::tempdir().expect("create native retirement store");
+    let (source, identity, _, _) = publish_one_node_raw_checkpoint(root.path());
+    let scenario = source.scenario_def().id();
+    let closure = open_exact_checkpoint_closure(root.path(), &source, identity)
+        .expect("open native closure before retirement");
+    let retirement = closure.native_retirement();
+    let scenario_directory = root.path().join(scenario.to_hex());
+
+    let first = retire_production_exact_checkpoint_catalog(&retirement)
+        .expect("retire native checkpoint catalog");
+    assert_eq!(first.scenario(), scenario);
+    assert!(first.retired());
+    assert!(!scenario_directory.exists());
+
+    let second =
+        retire_production_exact_checkpoint_catalog(&retirement).expect("repeat native retirement");
+    assert_eq!(second.scenario(), scenario);
+    assert!(!second.retired());
+}
+
+#[test]
+fn native_checkpoint_retirement_recovers_renamed_generation() {
+    let root = tempfile::tempdir().expect("create interrupted native retirement store");
+    let (source, identity, _, _) = publish_one_node_raw_checkpoint(root.path());
+    let scenario = source.scenario_def().id();
+    let closure = open_exact_checkpoint_closure(root.path(), &source, identity)
+        .expect("open native closure before interrupted retirement");
+    let retirement = closure.native_retirement();
+    let scenario_name = scenario.to_hex();
+    let active = root.path().join(&scenario_name);
+    let retired = root
+        .path()
+        .join(format!(".retired-checkpoint-catalog-{scenario_name}"));
+    fs::rename(&active, &retired).expect("simulate durable catalog rename");
+    File::open(root.path())
+        .and_then(|directory| directory.sync_all())
+        .expect("sync simulated rename");
+
+    let report = retire_production_exact_checkpoint_catalog(&retirement)
+        .expect("finish interrupted retirement");
+    assert!(!report.retired());
+    assert!(!active.exists());
+    assert!(!retired.exists());
+}
+
+#[test]
 fn closure_manifest_round_trip_is_canonical() {
     let mut original = manifest();
     original.targets = vec![target("a"), target("b")];

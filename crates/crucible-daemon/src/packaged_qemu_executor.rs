@@ -12,6 +12,7 @@
 //! helpers can still omit promotion deliberately.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -29,7 +30,7 @@ use crucible_cas::content_store::{DirectoryBlobBackend, ImmutableBlobBackend};
 use crucible_qemu::{LinuxQemuAttemptHostConfig, QemuVmRealizationError};
 
 use crate::{
-    AssignmentLedgerError, AttemptAdmissionValidator, AttemptExecutionContext,
+    AssignmentLedger, AssignmentLedgerError, AttemptAdmissionValidator, AttemptExecutionContext,
     CompletionValidationFailure, ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError,
     CrucibleExecutionModel, DirectoryAssignmentLedger, ExactCheckpointStore,
     ExactCheckpointStoreError, ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity,
@@ -646,6 +647,8 @@ where
     ) -> Vec<P>,
 {
     let ledger = DirectoryAssignmentLedger::open(&config.ledger_root)?;
+    ledger.visit_checkpoint_roots(&mut |_| {})?;
+    reconcile_packaged_native_catalogs(config.lifecycle.run_state_root())?;
     let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
         "campaign-exact-checkpoints",
         &config.checkpoint_root,
@@ -748,6 +751,94 @@ where
         endpoint,
         service,
     })
+}
+
+const PACKAGED_NATIVE_NAMESPACES: [&str; 2] =
+    ["campaign-workers", "campaign-checkpoint-promotions"];
+
+fn reconcile_packaged_native_catalogs(
+    run_state_root: &Path,
+) -> Result<(), PackagedNativeCatalogRecoveryError> {
+    for namespace in PACKAGED_NATIVE_NAMESPACES {
+        retire_packaged_native_namespace(run_state_root, namespace)?;
+    }
+    Ok(())
+}
+
+fn retire_packaged_native_namespace(
+    parent: &Path,
+    namespace: &'static str,
+) -> Result<(), PackagedNativeCatalogRecoveryError> {
+    let active = parent.join(namespace);
+    let retired = parent.join(format!(".retired-{namespace}"));
+    let active_present = packaged_directory_presence(&active)?;
+    let retired_present = packaged_directory_presence(&retired)?;
+    if active_present && retired_present {
+        return Err(PackagedNativeCatalogRecoveryError::ConflictingGeneration { namespace });
+    }
+    if retired_present {
+        remove_packaged_native_namespace(parent, &retired)?;
+    }
+    if !active_present {
+        sync_packaged_native_parent(parent)?;
+        return Ok(());
+    }
+
+    fs::rename(&active, &retired).map_err(|source| PackagedNativeCatalogRecoveryError::Io {
+        operation: "rename",
+        path: active,
+        source,
+    })?;
+    sync_packaged_native_parent(parent)?;
+    remove_packaged_native_namespace(parent, &retired)
+}
+
+fn packaged_directory_presence(path: &Path) -> Result<bool, PackagedNativeCatalogRecoveryError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(true),
+        Ok(_) => Err(PackagedNativeCatalogRecoveryError::InvalidPath {
+            path: path.to_path_buf(),
+        }),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(PackagedNativeCatalogRecoveryError::Io {
+            operation: "inspect",
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn remove_packaged_native_namespace(
+    parent: &Path,
+    retired: &Path,
+) -> Result<(), PackagedNativeCatalogRecoveryError> {
+    fs::remove_dir_all(retired).map_err(|source| PackagedNativeCatalogRecoveryError::Io {
+        operation: "remove",
+        path: retired.to_path_buf(),
+        source,
+    })?;
+    sync_packaged_native_parent(parent)
+}
+
+fn sync_packaged_native_parent(parent: &Path) -> Result<(), PackagedNativeCatalogRecoveryError> {
+    let directory = match File::open(parent) {
+        Ok(directory) => directory,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(PackagedNativeCatalogRecoveryError::Io {
+                operation: "open parent for synchronization",
+                path: parent.to_path_buf(),
+                source,
+            });
+        }
+    };
+    directory
+        .sync_all()
+        .map_err(|source| PackagedNativeCatalogRecoveryError::Io {
+            operation: "synchronize parent",
+            path: parent.to_path_buf(),
+            source,
+        })
 }
 
 fn packaged_resource_ceiling(
@@ -866,6 +957,9 @@ pub enum PackagedQemuExecutorError {
     /// Durable assignment-ledger acquisition failed.
     #[error(transparent)]
     Ledger(#[from] AssignmentLedgerError),
+    /// Abandoned attempt-local native checkpoint state could not be reconciled.
+    #[error(transparent)]
+    NativeCatalogRecovery(#[from] PackagedNativeCatalogRecoveryError),
     /// Durable exact-checkpoint store construction failed.
     #[error(transparent)]
     Checkpoints(#[from] ExactCheckpointStoreError),
@@ -884,4 +978,32 @@ pub enum PackagedQemuExecutorError {
     /// Fixed listener construction failed.
     #[error(transparent)]
     Listener(#[from] ExecutorLoopbackListenerError),
+}
+
+/// Failure to reconcile abandoned packaged-worker native checkpoint state.
+#[derive(Debug, thiserror::Error)]
+pub enum PackagedNativeCatalogRecoveryError {
+    /// Active and retired generations appeared together under exclusive ownership.
+    #[error("packaged native namespace `{namespace}` has conflicting generations")]
+    ConflictingGeneration {
+        /// Dedicated worker namespace with conflicting generations.
+        namespace: &'static str,
+    },
+    /// A dedicated namespace path was replaced by another filesystem type.
+    #[error("packaged native namespace path is not a directory: {path}")]
+    InvalidPath {
+        /// Path that violated the worker-state namespace contract.
+        path: PathBuf,
+    },
+    /// Durable namespace reconciliation failed.
+    #[error("{operation} packaged native namespace {path}: {source}")]
+    Io {
+        /// Stable filesystem operation label.
+        operation: &'static str,
+        /// Exact path involved in the failed operation.
+        path: PathBuf,
+        /// Underlying filesystem failure.
+        #[source]
+        source: std::io::Error,
+    },
 }

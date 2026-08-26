@@ -31,6 +31,11 @@ mod recovery;
 pub(super) use recovery::{
     reconcile_indeterminate_publication, recover_published_checkpoint_catalog,
 };
+mod retirement;
+pub use retirement::{
+    ProductionExactCheckpointRetirement, ProductionExactCheckpointRetirementError,
+    ProductionExactCheckpointRetirementReport, retire_production_exact_checkpoint_catalog,
+};
 
 const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v5\0";
 const LEGACY_MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v4\0";

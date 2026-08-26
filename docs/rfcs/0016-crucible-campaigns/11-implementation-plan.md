@@ -892,8 +892,13 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   A concrete real-node replay factory now opens one node from a shared compact
   baked catalog, prepares independently bound exact and thin run directories,
   streams both authenticated artifact pairs under one resource guard, and
-  returns the fixed-node paired launcher/store session. Assignment-root-aware
-  cleanup of abandoned native entries remains open.
+  returns the fixed-node paired launcher/store session. Attempt and promotion
+  native catalogs are retired only after their campaign-CAS root or durable
+  cancellation/revert is established. Retirement uses a parent-synchronized
+  rename/remove protocol; packaged restart authenticates the complete retained
+  ledger checkpoint-root inventory under the exclusive writer lock before
+  reconciling the dedicated worker namespaces. Exact cleanup retries never
+  rerun guest execution, and baked-genesis catalogs remain separate.
   Production-loop process reconstruction and
   exact-resume driver selection are implemented: `NotRun` is rejected during no-write admission,
   the exact closure is restored under the attempt guard, and the packaged
@@ -973,8 +978,10 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   root materialization through the attempt-owned directory. The packaged worker
   selects that resume adapter without fresh fallback, restores the complete
   event prefix and quiescence boundary, and retains runner-owned shutdown and
-  result sealing. Fresh exact-cache, native-catalog cleanup, and production
-  tuning remain open; `NotRun` is still fail-closed. Packaged startup installs
+  result sealing. Fresh exact-cache and production tuning remain open;
+  native-catalog cleanup is implemented through the crash-safe attempt-owned
+  retirement and restart reconciliation described in T-CAM-4.5. `NotRun` is
+  still fail-closed. Packaged startup installs
   the fixed replay-oracle owners and advertises `ExactRestore` only after that
   owner set exists. The fixed worker
   pool and its

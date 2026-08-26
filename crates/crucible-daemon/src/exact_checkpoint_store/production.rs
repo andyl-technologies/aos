@@ -6,7 +6,8 @@ use std::io::{self, Read};
 use crucible::SchedulerOperationalFailureClass;
 use crucible_api::{
     LifecycleApiError, PreparedProductionReplayOraclePromotion, ProductionExactCheckpointClosure,
-    ProductionExactCheckpointObject, ProductionExactCheckpointSource,
+    ProductionExactCheckpointObject, ProductionExactCheckpointRetirement,
+    ProductionExactCheckpointSource, retire_production_exact_checkpoint_catalog,
 };
 use crucible_cas::content_store::BlobSource;
 
@@ -45,6 +46,7 @@ pub struct PreparedProductionExactCheckpoint {
     configuration: ContentHash,
     object_bytes: u64,
     cancellation: Option<ExecutionCancellation>,
+    native_retirement: Option<ProductionExactCheckpointRetirement>,
 }
 
 impl fmt::Debug for PreparedProductionExactCheckpoint {
@@ -96,6 +98,27 @@ impl PreparedProductionExactCheckpoint {
     #[must_use]
     pub const fn object_bytes(&self) -> u64 {
         self.object_bytes
+    }
+
+    /// Retires the redundant attempt-local native source after CAS publication.
+    ///
+    /// This operation is idempotent. The caller must have stopped the QEMU
+    /// lifecycle and must retain exclusive ownership of the semantic worker's
+    /// run-state root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an exact native-retirement error when the catalog namespace is
+    /// inconsistent or its durable rename/removal cannot complete.
+    pub fn retire_native_source(&self) -> Result<(), ExactCheckpointStoreError> {
+        if let Some(retirement) = &self.native_retirement {
+            retire_production_exact_checkpoint_catalog(retirement)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn native_retirement(&self) -> Option<ProductionExactCheckpointRetirement> {
+        self.native_retirement.clone()
     }
 }
 
@@ -297,6 +320,7 @@ impl ExactCheckpointStore {
         let production_identity = closure.identity();
         let scenario = closure.scenario();
         let configuration = closure.configuration();
+        let native_retirement = Some(closure.native_retirement());
         let source: Arc<dyn ProductionExactCheckpointSource> = Arc::new(closure);
         prepare_production_source_with_cancellation(
             source,
@@ -305,6 +329,7 @@ impl ExactCheckpointStore {
             configuration,
             self.maximum_checkpoint_bytes,
             cancellation,
+            native_retirement,
         )
     }
 
@@ -344,6 +369,7 @@ impl ExactCheckpointStore {
         let production_identity = promotion.promoted();
         let scenario = promotion.scenario();
         let configuration = promotion.configuration();
+        let native_retirement = Some(promotion.native_retirement());
         let source: Arc<dyn ProductionExactCheckpointSource> = Arc::new(promotion);
         prepare_production_source_with_cancellation(
             source,
@@ -352,6 +378,7 @@ impl ExactCheckpointStore {
             configuration,
             self.maximum_checkpoint_bytes,
             cancellation,
+            native_retirement,
         )
     }
 
@@ -614,6 +641,7 @@ fn prepare_production_source(
         configuration,
         maximum_checkpoint_bytes,
         None,
+        None,
     )
 }
 
@@ -624,6 +652,7 @@ fn prepare_production_source_with_cancellation(
     configuration: ContentHash,
     maximum_checkpoint_bytes: u64,
     cancellation: Option<ExecutionCancellation>,
+    native_retirement: Option<ProductionExactCheckpointRetirement>,
 ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
     check_cancellation(cancellation.as_ref())?;
     let manifest_bytes = source.manifest();
@@ -737,6 +766,7 @@ fn prepare_production_source_with_cancellation(
         configuration,
         object_bytes,
         cancellation,
+        native_retirement,
     })
 }
 

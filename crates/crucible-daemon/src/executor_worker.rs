@@ -692,6 +692,12 @@ impl PreparedCheckpointResult {
     pub const fn root(&self) -> crucible_campaign::ExactCheckpointId {
         self.checkpoint.root()
     }
+
+    pub(crate) fn native_retirement(
+        &self,
+    ) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
+        self.checkpoint.native_retirement()
+    }
 }
 
 /// Linear proof that a checkpoint publication root is durable.
@@ -742,6 +748,8 @@ pub enum CheckpointResultStageOutcome {
     Publish(Box<StagedCheckpointResult>),
     /// Another idempotent or terminal state won without further writes.
     Finished {
+        /// Prepared token retained so redundant native state can be retired.
+        prepared: Box<PreparedCheckpointResult>,
         /// Exact deterministic checkpoint root that was not republished.
         checkpoint: crucible_campaign::ExactCheckpointId,
         /// Durable stage disposition.
@@ -796,6 +804,16 @@ impl CheckpointResultAbortToken {
             Self::Prepared(prepared) => prepared.queued(),
             Self::Staged(staged) => staged.queued(),
             Self::Published(published) => published.queued(),
+        }
+    }
+
+    pub(crate) fn native_retirement(
+        &self,
+    ) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
+        match self {
+            Self::Prepared(prepared) => prepared.native_retirement(),
+            Self::Staged(staged) => staged.prepared.native_retirement(),
+            Self::Published(_) => None,
         }
     }
 }
@@ -991,6 +1009,7 @@ where
         ),
         CheckpointPublicationOutcome::AlreadyPaused | CheckpointPublicationOutcome::NotCurrent => {
             Ok(CheckpointResultStageOutcome::Finished {
+                prepared: Box::new(prepared),
                 checkpoint,
                 outcome: stage,
             })
@@ -1017,6 +1036,14 @@ pub fn publish_staged_checkpoint_result(
             });
         }
     };
+    if let PreparedAttemptCheckpoint::Production(prepared) = &staged.prepared.checkpoint
+        && let Err(source) = prepared.retire_native_source()
+    {
+        return Err(CheckpointResultPublicationError {
+            staged: Box::new(staged),
+            source,
+        });
+    }
     Ok(PublishedCheckpointResult {
         queued: staged.prepared.queued,
         publication,
