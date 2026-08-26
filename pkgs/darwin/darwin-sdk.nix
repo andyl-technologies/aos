@@ -204,7 +204,9 @@ in
             "$out/System/Library/Frameworks/ApplicationServices.framework/Headers" \
             "$out/System/Library/Frameworks/Cocoa.framework/Headers" \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Headers" \
+            "$out/System/Library/Frameworks/CoreFoundation.framework/Versions/A" \
             "$out/System/Library/Frameworks/CoreServices.framework/Headers" \
+            "$out/System/Library/Frameworks/CoreServices.framework/Versions/A" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/storage/ata" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/storage" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/usb" \
@@ -585,6 +587,7 @@ in
                 - _CFRunLoopStop
                 - _CFRunLoopWakeUp
                 - _CFStringCreateWithCString
+                - _CFStringCreateWithBytes
                 - _CFStringGetBytes
                 - _CFStringGetCString
                 - _CFStringGetCStringPtr
@@ -621,6 +624,14 @@ in
                 - _kCFTypeDictionaryValueCallBacks
           ...
           EOF
+          # Reexported framework install names include their versioned binary
+          # path. ld64.lld resolves that path directly when following a TBD
+          # reexport, so retain the canonical framework layout around the
+          # release stub in addition to its top-level SDK lookup name.
+          ln -s ../../CoreFoundation.tbd \
+            "$out/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation.tbd"
+          ln -s CoreFoundation.tbd \
+            "$out/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
 
           # CoreServices is a compatibility umbrella on current Darwin. Curl
           # uses it for proxy integration, while Git and Rust filesystem
@@ -729,6 +740,9 @@ in
           install-name: '/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices'
           current-version: 1228.0.0
           compatibility-version: 1.0.0
+          reexported-libraries:
+            - targets: [ x86_64-macos, arm64-macos ]
+              libraries: [ '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation' ]
           exports:
             - targets: [ x86_64-macos, arm64-macos ]
               symbols:
@@ -744,6 +758,10 @@ in
                 - _LSOpenCFURLRef
           ...
           EOF
+          ln -s ../../CoreServices.tbd \
+            "$out/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices.tbd"
+          ln -s CoreServices.tbd \
+            "$out/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices"
 
           # GLib's native Darwin notification backend uses the long-standing
           # AppKit classes re-exported by Cocoa. The implementation is supplied
