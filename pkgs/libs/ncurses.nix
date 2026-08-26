@@ -54,14 +54,15 @@ in
               # linker search paths exported by the cross stdenv.
               native_cc="$BUILD_CC"
               mkdir -p .aos-build-tools
-              cat > .aos-build-tools/cc <<EOF
-              #!$CONFIG_SHELL
-              unset AOS_HARDENING_ENABLE AOS_TARGET_ARCH AOS_TARGET_PLATFORM
-              unset C_INCLUDE_PATH
-              unset CPLUS_INCLUDE_PATH LIBRARY_PATH MACOSX_DEPLOYMENT_TARGET
-              unset NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT
-              exec "$native_cc" "\$@"
-              EOF
+              {
+                printf '#!%s\n' "$CONFIG_SHELL"
+                printf '%s\n' \
+                  'unset AOS_HARDENING_ENABLE AOS_TARGET_ARCH AOS_TARGET_PLATFORM' \
+                  'unset C_INCLUDE_PATH' \
+                  'unset CPLUS_INCLUDE_PATH LIBRARY_PATH MACOSX_DEPLOYMENT_TARGET' \
+                  'unset NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT'
+                printf 'exec "%s" "$@"\n' "$native_cc"
+              } > .aos-build-tools/cc
               chmod +x .aos-build-tools/cc
               build_cc_flag="--with-build-cc=$PWD/.aos-build-tools/cc"
               # Host-built generators include the target-generated curses.h,
