@@ -37,8 +37,10 @@ in
       pkgs.coreutils
       pkgs.curl
       pkgs.grep
+      pkgs.git
       pkgs.iproute2
       pkgs.jq
+      pkgs.openssh
       pkgs.sed
       jwtSecret
       probeSigners
@@ -281,9 +283,26 @@ in
         /tmp/org-list-empty.json >/dev/null
       reviewed org-create org create --slug operations --display-name 'Operations qualification' \
         > /tmp/org-create.json
+      producer_home=/tmp/producer-home
+      mkdir -p "$producer_home"
+      producer_path=${pkgs.git}/bin:${pkgs.openssh}/bin:${pkgs.coreutils}/bin
+      HOME="$producer_home" ${pkgs.git}/bin/git config --global \
+        user.name 'Operations Maintainer'
+      HOME="$producer_home" ${pkgs.git}/bin/git config --global \
+        user.email maintainer@example.test
+      HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos}/bin/apr --json keys generate maintainer --registry maintenance \
+        >/tmp/producer-key.json
+      ${pkgs.coreutils}/bin/cat /tmp/producer-key.json
+      producer_trust_key=$(${pkgs.jq}/bin/jq -er \
+        '.public_key // .trust_key' /tmp/producer-key.json)
+      producer_key=$(${pkgs.jq}/bin/jq -er \
+        '.private_key // .key_path' /tmp/producer-key.json)
+      test -n "$producer_trust_key"
+      test -s "$producer_key"
       reviewed registry-create registry create --org operations --name maintenance \
         --visibility private \
-        --trust-key 'maintenance:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAIEtMspYqYtUjGxOcRGRwn4WVoEYXgbIV+4crzbmtYAXy' \
+        --trust-key "$producer_trust_key" \
         > /tmp/registry-create.json
       ${pkgs.aos}/bin/aos --json hub registry show operations/maintenance \
         --hub "$hub_url" --token "$token" >/tmp/registry-show.json
@@ -323,6 +342,107 @@ in
       reviewed placement-promote placement promote \
         registry:operations/maintenance primary \
         --if-version "$placement_version" >/tmp/placement-promote.json
+
+      echo '==> Publish a real APR-produced initial registry surface'
+      HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos}/bin/apr create maintenance \
+        --trust-key "$producer_trust_key" --trust-key-id maintainer \
+        --key "$producer_key" >/tmp/apr-create.json
+      producer_registry="$producer_home/.local/share/apm/registries/maintenance"
+      test -s "$producer_registry/registry.toml"
+      test -s "$producer_registry/.git/HEAD"
+      test -s "$producer_registry/.git/info/refs"
+      producer_surface=/tmp/producer-surface
+      HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos}/bin/apr --json origin upload \
+        --registry maintenance --upload-url "file://$producer_surface" \
+        >/tmp/apr-origin-upload.json
+      ${pkgs.coreutils}/bin/cat /tmp/apr-origin-upload.json
+      test -s "$producer_surface/HEAD"
+      test -s "$producer_surface/info/refs"
+      hub_cli_into /tmp/publication-upload.json registry publish upload \
+        operations/maintenance --root "$producer_surface"
+      ${pkgs.coreutils}/bin/cat /tmp/publication-upload.json
+      publication_id=$(${pkgs.jq}/bin/jq -er .data.publication_id \
+        /tmp/publication-upload.json)
+      hub_cli_into /tmp/publication-show.json registry publish show "$publication_id"
+      ${pkgs.jq}/bin/jq -e \
+        '.data.state == "ready" and .data.indexed_commit != ""' \
+        /tmp/publication-show.json >/dev/null
+      hub_cli_into /tmp/publication-list.json registry publish list operations/maintenance \
+        --state ready --page-size 1
+      ${pkgs.jq}/bin/jq -e --arg id "$publication_id" \
+        '.data.publications | any(.publication_id == $id and .state == "ready")' \
+        /tmp/publication-list.json >/dev/null
+
+      echo '==> Exercise registry consumer-cache configuration and review reads'
+      hub_cli_into /tmp/cache-stack-empty.json registry cache-stack show \
+        operations/maintenance
+      ${pkgs.coreutils}/bin/cat /tmp/cache-stack-empty.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data.stack.registry_id == "operations/maintenance"
+          and (.data.stack.entries // []) == []
+          and .data.stack.resource_version != ""' \
+        /tmp/cache-stack-empty.json >/dev/null
+      cache_stack_version=$(${pkgs.jq}/bin/jq -er \
+        .data.stack.resource_version /tmp/cache-stack-empty.json)
+      hub_cli_into /tmp/cache-stack-validation-empty.json \
+        registry cache-stack validate operations/maintenance
+      ${pkgs.coreutils}/bin/cat /tmp/cache-stack-validation-empty.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data.valid == true
+          and (.data.warnings | any(contains("no signed consumer-cache entries")))' \
+        /tmp/cache-stack-validation-empty.json >/dev/null
+      expect_hub_error cache-stack-url-scheme 'http or https' \
+        registry cache-stack add operations/maintenance \
+        --url ftp://cache.example.test --plan
+      expect_hub_error cache-stack-url-credentials \
+        'credentials, query, or fragment' \
+        registry cache-stack add operations/maintenance \
+        --url https://user@cache.example.test --plan
+      expect_hub_error cache-stack-url-query \
+        'credentials, query, or fragment' \
+        registry cache-stack add operations/maintenance \
+        --url 'https://cache.example.test?tenant=operations' --plan
+      expect_hub_error cache-stack-url-fragment \
+        'credentials, query, or fragment' \
+        registry cache-stack add operations/maintenance \
+        --url 'https://cache.example.test#unsigned' --plan
+      reviewed cache-stack-external-add registry cache-stack add \
+        operations/maintenance --url https://cache-a.example.test \
+        --if-version "$cache_stack_version" >/tmp/cache-stack-external-add.json
+      cache_stack_change_id=$(${pkgs.jq}/bin/jq -er \
+        '.data.change_id // .change_id' /tmp/cache-stack-external-add.json)
+      ${pkgs.jq}/bin/jq -e \
+        '(.data.state // .state) == "draft"' \
+        /tmp/cache-stack-external-add.json >/dev/null
+
+      hub_cli_into /tmp/config-changesets.json registry configuration changesets \
+        --scope registry:operations/maintenance --page-size 1
+      ${pkgs.jq}/bin/jq -e --arg id "$cache_stack_change_id" \
+        '.data.changesets | any(.change_id == $id and .status == "draft")' \
+        /tmp/config-changesets.json >/dev/null
+      hub_cli_into /tmp/config-show.json registry configuration show \
+        "$cache_stack_change_id"
+      ${pkgs.jq}/bin/jq -e --arg id "$cache_stack_change_id" \
+        '.data.changeset.change_id == $id
+          and (.data.revisions | length) == 1' /tmp/config-show.json >/dev/null
+      hub_cli_into /tmp/config-change-requests.json \
+        registry configuration change-requests \
+        operations/maintenance --page-size 1
+      ${pkgs.jq}/bin/jq -e --arg id "$cache_stack_change_id" \
+        '.data.change_requests
+          | any(.change_id == $id and (.merge_command | contains("apr change merge")))' \
+        /tmp/config-change-requests.json >/dev/null
+      hub_cli_into /tmp/config-log.json registry configuration log \
+        operations/maintenance \
+        --page-size 1
+      ${pkgs.jq}/bin/jq -e '.data | type == "object"' \
+        /tmp/config-log.json >/dev/null
+      hub_cli_into /tmp/config-diff.json registry configuration diff \
+        operations/maintenance
+      ${pkgs.jq}/bin/jq -e '.data | type == "object"' \
+        /tmp/config-diff.json >/dev/null
 
       echo '==> Exercise multi-placement operations, equivalence, and policy selection'
       reviewed placement-secondary-create placement add \

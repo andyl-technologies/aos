@@ -24196,12 +24196,14 @@ impl RpcService {
             }
         }
         canonical.sort();
-        if !canonical.iter().any(|object| object.3 == "immutable")
-            || !canonical.iter().any(|object| object.3 == "mutable_pointer")
-        {
-            return Err(RpcError::invalid(
-                "publication requires immutable objects and mutable pointers",
-            ));
+        // A freshly-created APR registry can consist entirely of replaceable
+        // loose Git encodings plus HEAD/info/refs. Requiring a pack, NAR, or
+        // other immutable payload here would make that valid initial signed
+        // surface impossible to publish. The immutable upload class may be
+        // empty; the pointer class is still mandatory because committing it is
+        // what makes a publication observable to readers.
+        if !canonical.iter().any(|object| object.3 == "mutable_pointer") {
+            return Err(RpcError::invalid("publication requires mutable pointers"));
         }
         let placements = self
             .db
