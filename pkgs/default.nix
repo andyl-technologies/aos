@@ -1003,18 +1003,19 @@
       patch = null;
     }
   );
-  packageNames = assert platformSupport.validate uncheckedPackageNames; uncheckedPackageNames;
+  allPackageNames = assert platformSupport.validate uncheckedPackageNames; uncheckedPackageNames;
+  packageNames = platformSupport.targetPackageNames stdenv.hostPlatform.system allPackageNames;
   targetPackageNamesFor = targetSystem:
-    platformSupport.targetPackageNames targetSystem packageNames;
+    platformSupport.targetPackageNames targetSystem allPackageNames;
   targetPackagesFor = targetSystem:
     builtins.mapAttrs platformSupport.annotate (
-      platformSupport.selectTargetPackages targetSystem self packageNames
+      platformSupport.selectTargetPackages targetSystem self allPackageNames
     );
 
   self =
     {
       # --- Plumbing ---
-      inherit mkDerivation fetchurl lib packageNames;
+      inherit mkDerivation fetchurl lib packageNames allPackageNames;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
       inherit (cargoArtifactsSupport) mkCargoDummySource;
@@ -1088,7 +1089,7 @@
       darwin-runtimes =
         if stdenv.hostPlatform.isDarwin
         then withDefaultMaintainers stdenv.darwinRuntimes
-        else discoveredPackages.darwin-runtimes;
+        else null;
       darwinRuntimes = self.darwin-runtimes;
 
       # --- stdenv packages (linked, not rebuilt) ---
