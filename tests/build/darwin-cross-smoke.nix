@@ -214,10 +214,11 @@
               '#import <Foundation/Foundation.h>' \
               '#import <AppKit/AppKit.h>' \
               'int main(void) {' \
+              '  NSSearchPathDirectory mediaDirectories[] = { NSMoviesDirectory, NSMusicDirectory, NSPicturesDirectory, NSSharedPublicDirectory };' \
               '  NSArray<NSString *> *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, true);' \
               '  NSString *path = paths.firstObject;' \
               '  NSImage *image = [[NSImage alloc] initByReferencingFile:path];' \
-              '  return image == nil || path.UTF8String == NULL;' \
+              '  return image == nil || path.UTF8String == NULL || mediaDirectories[0] == 0;' \
               '}' \
               > foundation-appkit-smoke.m
             "$CC" foundation-appkit-smoke.m \

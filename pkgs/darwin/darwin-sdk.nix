@@ -948,14 +948,32 @@ in
           typedef NSUInteger NSSearchPathDirectory;
           enum {
             NSApplicationDirectory = 1,
+            NSDemoApplicationDirectory = 2,
+            NSDeveloperApplicationDirectory = 3,
+            NSAdminApplicationDirectory = 4,
             NSLibraryDirectory = 5,
+            NSDeveloperDirectory = 6,
             NSUserDirectory = 7,
+            NSDocumentationDirectory = 8,
             NSDocumentDirectory = 9,
             NSCoreServiceDirectory = 10,
+            NSAutosavedInformationDirectory = 11,
             NSDesktopDirectory = 12,
             NSCachesDirectory = 13,
             NSApplicationSupportDirectory = 14,
-            NSDownloadsDirectory = 15
+            NSDownloadsDirectory = 15,
+            NSInputMethodsDirectory = 16,
+            NSMoviesDirectory = 17,
+            NSMusicDirectory = 18,
+            NSPicturesDirectory = 19,
+            NSPrinterDescriptionDirectory = 20,
+            NSSharedPublicDirectory = 21,
+            NSPreferencePanesDirectory = 22,
+            NSApplicationScriptsDirectory = 23,
+            NSItemReplacementDirectory = 99,
+            NSAllApplicationsDirectory = 100,
+            NSAllLibrariesDirectory = 101,
+            NSTrashDirectory = 102
           };
           typedef NSUInteger NSSearchPathDomainMask;
           enum {
