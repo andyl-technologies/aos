@@ -40,9 +40,13 @@
               '#include <SystemConfiguration/SystemConfiguration.h>' \
               'int main(void) {' \
               '  CFStringRef label = CFSTR("aos Darwin SDK");' \
+              '  CFIndex maximum = CFStringGetMaximumSizeForEncoding(CFStringGetLength(label), kCFStringEncodingUTF8);' \
+              '  CFTimeZoneRef zone = CFTimeZoneCopyDefault();' \
+              '  CFStringRef zoneName = zone == NULL ? NULL : CFTimeZoneGetName(zone);' \
               '  CFDictionaryRef proxies = SCDynamicStoreCopyProxies(NULL);' \
               '  if (proxies != NULL) CFRelease(proxies);' \
-              '  return label == NULL;' \
+              '  if (zone != NULL) CFRelease(zone);' \
+              '  return label == NULL || maximum < 0 || zoneName == NULL;' \
               '}' \
               > framework-smoke.c
             "$CC" framework-smoke.c \

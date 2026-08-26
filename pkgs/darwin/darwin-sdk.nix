@@ -145,6 +145,8 @@ in
           cp -R lib/libcxxabi/include/. "$out/usr/include/c++/v1/"
           cp -R lib/libunwind/include/. "$out/usr/include/libunwind/"
           cp lib/libc/darwin/libSystem.tbd "$out/usr/lib/libSystem.tbd"
+          sed -i '$i\  - targets: [ x86_64-macos, arm64-macos ]\n    symbols: [ _iconv, _iconv_close, _iconv_open ]' \
+            "$out/usr/lib/libSystem.tbd"
           cp "$xnuRoot/bsd/netinet/tcp_fsm.h" "$out/usr/include/netinet/"
           cp "$xnuRoot/bsd/netinet/tcp_timer.h" "$out/usr/include/netinet/"
           cp "$xnuRoot/bsd/sys/ttydev.h" "$out/usr/include/sys/"
@@ -352,6 +354,9 @@ in
                 - _CFStringGetCString
                 - _CFStringGetCStringPtr
                 - _CFStringGetLength
+                - _CFStringGetMaximumSizeForEncoding
+                - _CFTimeZoneCopyDefault
+                - _CFTimeZoneGetName
                 - _CFUUIDGetConstantUUIDWithBytes
                 - _CFUUIDGetUUIDBytes
                 - ___CFConstantStringClassReference
