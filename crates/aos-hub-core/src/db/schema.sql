@@ -1406,8 +1406,7 @@ CREATE TABLE placement_policy_build_events(
   mutation_kind KEYTEXT32 NOT NULL,
   created_at INTEGER NOT NULL,
   UNIQUE(policy_revision_id, build_version),
-  FOREIGN KEY(policy_revision_id, build_version, revision_state)
-  REFERENCES placement_policy_revisions(id, build_version, state),
+  FOREIGN KEY(policy_revision_id) REFERENCES placement_policy_revisions(id),
   CHECK(revision_state = 'building'),
   CHECK(mutation_kind IN('add_group', 'add_complete_member', 'add_shard_member'))
 );
@@ -1423,8 +1422,7 @@ CREATE TABLE placement_policy_publications(
   UNIQUE(policy_revision_id),
   FOREIGN KEY(policy_revision_id, policy_id, revision_state)
   REFERENCES placement_policy_revisions(id, policy_id, state),
-  FOREIGN KEY(policy_id, policy_resource_version)
-  REFERENCES placement_policy_heads(policy_id, resource_version),
+  FOREIGN KEY(policy_id) REFERENCES placement_policy_heads(policy_id),
   CHECK(revision_state = 'published')
 );
 CREATE TABLE placement_equivalences(

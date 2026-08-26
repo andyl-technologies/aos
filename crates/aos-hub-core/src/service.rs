@@ -15348,8 +15348,15 @@ impl RpcService {
         ),
         RpcError,
     > {
-        self.require_control_plan_permission(auth, &req.plan_id, Permission::PlacementManage)
+        let (plan, input): (_, PlacementPolicyMutationPlanInput) = self
+            .load_control_plan(auth, &req.plan_id, plan_kind, Some(&req.confirmation_hash))
             .await?;
+        self.require_delivery_scope(
+            auth,
+            &input.owner_scope_key,
+            Permission::PlacementPolicyManage,
+        )
+        .await?;
         self.begin_control_plan_apply(
             auth,
             &req.plan_id,
@@ -15358,9 +15365,6 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, PlacementPolicyMutationPlanInput) = self
-            .load_control_plan(auth, &req.plan_id, plan_kind, Some(&req.confirmation_hash))
-            .await?;
         let (surface, _) = self
             .writable_topology_surface(auth, input.request.surface.clone())
             .await?;
@@ -17962,14 +17966,28 @@ impl RpcService {
                 "placement resource version is stale".to_string(),
             ));
         }
-        let mut targets = Vec::new();
-        if !req.source_placement_name.is_empty() {
-            targets.push((
-                "source".to_string(),
-                self.topology_placement(surface, &req.source_placement_name)
-                    .await?,
-            ));
-        }
+        let source = if req.source_placement_name.is_empty() {
+            self.db
+                .list_surface_placements(surface)
+                .await
+                .map_err(RpcError::internal)?
+                .into_iter()
+                .find(|placement| {
+                    placement.id != destination.id
+                        && placement.desired_state == "active"
+                        && placement.state == "ready"
+                        && placement.completeness == "complete"
+                })
+                .ok_or_else(|| {
+                    RpcError::FailedPrecondition(
+                        "repair requires another ready, complete source placement".to_string(),
+                    )
+                })?
+        } else {
+            self.topology_placement(surface, &req.source_placement_name)
+                .await?
+        };
+        let mut targets = vec![("source".to_string(), source)];
         targets.push(("primary".to_string(), destination));
         self.schedule_placement_operation("repair_placement", &req.idempotency_key, targets)
             .await
