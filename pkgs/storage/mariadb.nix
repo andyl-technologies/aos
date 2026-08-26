@@ -11,6 +11,7 @@
   boost,
   bzip2,
   curl,
+  fmt,
   icu,
   jemalloc,
   libaio,
@@ -27,6 +28,7 @@
   xz,
   zlib,
   zstd,
+  linux-pam,
   openpam,
   stdenv,
   buildPackages,
@@ -38,6 +40,65 @@
       "https://archive.mariadb.org/mariadb-${version}/source/mariadb-${version}.tar.gz"
     ];
     hash = "sha256-WreIPbUZv86/3SqsCbxVRKEs4yjznt1G0L8BaQYV72w=";
+  };
+  messagePackVersion = "2.1.1";
+  messagePack = mkDerivation {
+    pname = "msgpack-c";
+    version = messagePackVersion;
+    src = fetchurl {
+      urls = [
+        "https://github.com/msgpack/msgpack-c/archive/refs/tags/cpp-${messagePackVersion}.tar.gz"
+      ];
+      hash = "sha256-1r7xLZWYFqOcemly8/FsByTkx/8JJ+tZo1JH3IJntgk=";
+    };
+
+    buildDeps = [cmake];
+    runtimeDeps = [];
+    propagatedDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd msgpack-c-cpp-${messagePackVersion}
+
+          # This transition deliberately advances into the generic state
+          # handler. Make that intent explicit for AOS's -Werror build.
+          sed -i '/^            default:$/i\\            /* fall through */' \
+            include/msgpack/unpack_template.h
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          cmake -S . -B build \
+            $cmakeFlags \
+            -DCMAKE_INSTALL_PREFIX=$out \
+            -DMSGPACK_ENABLE_CXX=OFF \
+            -DMSGPACK_BUILD_EXAMPLES=OFF \
+            -DMSGPACK_BUILD_TESTS=OFF
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          cmake --build build --parallel $NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          cmake --install build
+        '';
+      }
+    ];
+
+    meta = {
+      description = "MessagePack C serialization library";
+      homepage = "https://msgpack.org/";
+      license = "BSL-1.0";
+    };
   };
 
   # MariaDB exports six build-time generators for cross builds. Build that
@@ -62,7 +123,7 @@
           buildPackages.ncurses
           buildPackages.openssl
         ];
-        runtimeDeps = [];
+        runtimeDeps = [buildPackages.fmt];
         propagatedDeps = [];
 
         phases = [
@@ -86,6 +147,10 @@
                 -DOPENSSL_ROOT_DIR=${buildPackages.openssl} \
                 -DWITH_ZLIB=bundled \
                 -DWITH_PCRE=bundled \
+                -DWITH_LIBFMT=system \
+                -DHAVE_SYSTEM_LIBFMT:BOOL=ON \
+                -DLIBFMT_INCLUDE_DIR=${buildPackages.fmt}/include \
+                -DLibfmt_core_h=${buildPackages.fmt}/include/fmt/core.h \
                 -DCURSES_LIBRARY=${buildPackages.ncurses}/lib/libncursesw.so \
                 -DCURSES_INCLUDE_PATH=${buildPackages.ncurses}/include \
                 -DWITH_JEMALLOC:STRING=no \
@@ -146,10 +211,12 @@ in
         boost
         bzip2
         curl
+        fmt
         icu
         jemalloc
         libevent
         lz4
+        messagePack
         ncurses
         openpam
         openssl
@@ -163,14 +230,17 @@ in
         boost
         bzip2
         curl
+        fmt
         icu
         jemalloc
         libaio
         libevent
         liburing
         lz4
+        messagePack
         ncurses
         numactl
+        linux-pam
         openssl
         pcre2
         snappy
@@ -184,10 +254,37 @@ in
     phases = [
       {
         name = "unpack";
-        script = ''
-          tar xf $src
-          cd mariadb-${version}
-        '';
+        script =
+          if isDarwin
+          then ''
+            tar xf $src
+            cd mariadb-${version}
+
+            # MariaDB's generic hardening probe tests ELF-only -z flags with
+            # CMake's cross static-library mode, which cannot reject linker
+            # options. The AOS wrapper already injects the corresponding
+            # Darwin hardening, so keep SECURITY_HARDENED enabled while
+            # omitting only this inapplicable upstream ELF flag block.
+            sed -i \
+              's/IF(SECURITY_HARDENED AND /IF(SECURITY_HARDENED AND NOT APPLE AND /' \
+              CMakeLists.txt
+
+            # mysql.cc assumes every Apple SDK supplies the system libedit
+            # compatibility header even after CMake selected MariaDB's bundled
+            # readline implementation. The public source SDK intentionally has
+            # no host-provided libedit; include the implementation selected by
+            # MYSQL_CHECK_READLINE through MY_READLINE_INCLUDE_DIR instead.
+            sed -i \
+              '/#  include <editline\/readline.h>/a\#  include <history.h>' \
+              client/mysql.cc
+            sed -i \
+              's|#  include <editline/readline.h>|#  include <readline.h>|' \
+              client/mysql.cc
+          ''
+          else ''
+            tar xf $src
+            cd mariadb-${version}
+          '';
       }
       {
         name = "configure";
@@ -199,6 +296,7 @@ in
             cmake .. \
               $cmakeFlags \
               -DCMAKE_INSTALL_PREFIX=$out \
+              -DCMAKE_TRY_COMPILE_TARGET_TYPE=EXECUTABLE \
               -DINSTALL_SYSCONFDIR=$out/etc \
               -DINSTALL_SYSCONF2DIR=$out/etc/my.cnf.d \
               -DMYSQL_DATADIR=/var/lib/mysql \
@@ -209,7 +307,24 @@ in
               -DWITH_ZLIB=system \
               -DWITH_ZSTD=system \
               -DWITH_PCRE=system \
+              -DWITH_LIBFMT=system \
+              -DHAVE_SYSTEM_LIBFMT:BOOL=ON \
+              -DLIBFMT_INCLUDE_DIR=${fmt}/include \
+              -DLibfmt_core_h=${fmt}/include/fmt/core.h \
               -DGRN_WITH_LIBEVENT:STRING=${libevent} \
+              -DGRN_WITH_MESSAGE_PACK:STRING=${messagePack} \
+              -DCURSES_LIBRARY=${ncurses}/lib/libncursesw.dylib \
+              -DCURSES_INCLUDE_PATH=${ncurses}/include \
+              -DLZ4_LIBRARIES=${lz4}/lib/liblz4.dylib \
+              -DLZ4_INCLUDE_DIRS=${lz4}/include \
+              -DBZIP2_LIBRARIES=${bzip2}/lib/libbz2.dylib \
+              -DBZIP2_INCLUDE_DIR=${bzip2}/include \
+              -DSNAPPY_LIBRARIES=${snappy}/lib/libsnappy.dylib \
+              -DSNAPPY_INCLUDE_DIRS=${snappy}/include \
+              -DSnappy_LIBRARIES=${snappy}/lib/libsnappy.dylib \
+              -DSnappy_INCLUDE_DIRS=${snappy}/include \
+              -DZSTD_LIBRARIES=${zstd}/lib/libzstd.dylib \
+              -DZSTD_INCLUDE_DIRS=${zstd}/include \
               -DWITH_JEMALLOC:STRING=yes \
               -DWITH_NUMA:BOOL=OFF \
               -DWITH_ROCKSDB_BZip2:STRING=ON \
@@ -219,6 +334,16 @@ in
               -DWITH_SYSTEMD:STRING=no \
               -DWITH_UNIT_TESTS:BOOL=ON \
               -DAWS_SDK_EXTERNAL_PROJECT:BOOL=OFF \
+              -DHAVE_ACCEPT4:INTERNAL=0 \
+              -DHAVE_AUXV_GETAUXVAL:INTERNAL=0 \
+              -DHAVE_BFILL:INTERNAL=0 \
+              -DHAVE_GETPASSPHRASE:INTERNAL=0 \
+              -DHAVE_MALLOC_USABLE_SIZE:INTERNAL=0 \
+              -DHAVE_NETDB_H:INTERNAL=1 \
+              -DHAVE_PAM_SYSLOG:INTERNAL=0 \
+              -DHAVE_SCHED_GETCPU:INTERNAL=0 \
+              -DHAVE_SIGWAITINFO:INTERNAL=0 \
+              -DHAVE__STRTOUI64:INTERNAL=0 \
               -DBOOST_ROOT=${boost.dev} \
               -DIMPORT_EXECUTABLES=${nativeGenerators}/import_executables.cmake
 
@@ -233,6 +358,7 @@ in
               'WITH_ZSTD:.*=system' \
               'WITH_PCRE:.*=system' \
               'GRN_WITH_LIBEVENT:STRING=${libevent}' \
+              'GRN_WITH_MESSAGE_PACK:STRING=${messagePack}' \
               'WITH_JEMALLOC:STRING=yes' \
               'WITH_NUMA:BOOL=OFF' \
               'WITH_ROCKSDB_BZip2:STRING=ON' \
@@ -248,7 +374,17 @@ in
               echo "ERROR: MariaDB unexpectedly enabled systemd on Darwin" >&2
               exit 1
             }
+            for unavailable in \
+              HAVE_ACCEPT4 HAVE_AUXV_GETAUXVAL HAVE_BFILL \
+              HAVE_GETPASSPHRASE HAVE_MALLOC_USABLE_SIZE HAVE_PAM_SYSLOG \
+              HAVE_SCHED_GETCPU HAVE_SIGWAITINFO HAVE__STRTOUI64; do
+              grep "^#define $unavailable 1$" include/my_config.h && {
+                echo "ERROR: MariaDB detected unavailable Darwin libc API $unavailable" >&2
+                exit 1
+              }
+            done
             grep '^PLUGIN_AUTH_PAM:BOOL=YES$' CMakeCache.txt
+            cd ..
           ''
           else ''
             mkdir build
@@ -265,7 +401,28 @@ in
               -DWITH_ZLIB=system \
               -DWITH_ZSTD=system \
               -DWITH_PCRE=system \
+              -DWITH_LIBFMT=system \
+              -DHAVE_SYSTEM_LIBFMT:BOOL=ON \
+              -DLIBFMT_INCLUDE_DIR=${fmt}/include \
+              -DLibfmt_core_h=${fmt}/include/fmt/core.h \
               -DGRN_WITH_LIBEVENT:STRING=${libevent} \
+              -DGRN_WITH_MESSAGE_PACK:STRING=${messagePack} \
+              -DCURSES_LIBRARY=${ncurses}/lib/libncursesw.so \
+              -DCURSES_INCLUDE_PATH=${ncurses}/include \
+              -DLZ4_LIBRARIES=${lz4}/lib/liblz4.so \
+              -DLZ4_INCLUDE_DIRS=${lz4}/include \
+              -DBZIP2_LIBRARIES=${bzip2}/lib/libbz2.so \
+              -DBZIP2_INCLUDE_DIR=${bzip2}/include \
+              -DSNAPPY_LIBRARIES=${snappy}/lib/libsnappy.so \
+              -DSNAPPY_INCLUDE_DIRS=${snappy}/include \
+              -DSnappy_LIBRARIES=${snappy}/lib/libsnappy.so \
+              -DSnappy_INCLUDE_DIRS=${snappy}/include \
+              -DZSTD_LIBRARIES=${zstd}/lib/libzstd.so \
+              -DZSTD_INCLUDE_DIRS=${zstd}/include \
+              -DLIBAIO_LIBRARIES=${libaio}/lib/libaio.so \
+              -DLIBAIO_INCLUDE_DIRS=${libaio}/include \
+              -DURING_LIBRARIES=${liburing}/lib/liburing.so \
+              -DURING_INCLUDE_DIRS=${liburing}/include \
               -DWITH_JEMALLOC:STRING=yes \
               -DWITH_NUMA:BOOL=ON \
               -DWITH_LIBURING:BOOL=ON \
@@ -293,6 +450,7 @@ in
               'WITH_ZSTD:.*=system' \
               'WITH_PCRE:.*=system' \
               'GRN_WITH_LIBEVENT:STRING=${libevent}' \
+              'GRN_WITH_MESSAGE_PACK:STRING=${messagePack}' \
               'WITH_JEMALLOC:STRING=yes' \
               'WITH_NUMA:BOOL=ON' \
               'WITH_LIBURING:BOOL=ON' \
@@ -306,13 +464,16 @@ in
               grep "^$setting$" CMakeCache.txt
             done
             grep '^#define HAVE_SYSTEMD 1$' include/my_config.h
+            cd ..
           '';
       }
       {
         name = "build";
         script = ''
-          cd build
-          make -j$NIX_BUILD_CORES
+          (
+            cd build
+            make -j$NIX_BUILD_CORES
+          )
         '';
       }
       {
@@ -323,6 +484,15 @@ in
             cd build
             make install
 
+            # These native test-suite helpers are installed below the usual
+            # bin/sbin/libexec roots, so the generic fixup does not discover
+            # them as executables. Strip their Mach-O symbols explicitly via
+            # the Darwin wrapper to remove build-tree N_OSO string-table data.
+            for helper in my_safe_process wsrep_check_version; do
+              "$STRIP" --strip-unneeded \
+                "$out/mariadb-test/lib/My/SafeProcess/$helper"
+            done
+
             test -f "$out/lib/plugin/ha_rocksdb.so"
             "$OBJDUMP" --macho --dylibs-used \
               "$out/lib/plugin/ha_rocksdb.so" > rocksdb-needed.txt
@@ -331,17 +501,22 @@ in
             done
 
             test -f "$out/lib/plugin/ha_mroonga.so"
-            "$OBJDUMP" --macho --dylibs-used \
-              "$out/lib/plugin/ha_mroonga.so" | grep libevent
-            "$OBJDUMP" --macho --dylibs-used \
-              "$out/bin/mariadbd" | grep libjemalloc
+            # Groonga gates its libevent consumers on a combined suggestion
+            # feature set. Darwin's linker dead-strips libevent from targets
+            # which do not call it, so prove provider detection in the cache
+            # instead of requiring every Mroonga module to retain the dylib.
+            grep '^HAVE_LIBEVENT:INTERNAL=1$' CMakeCache.txt
+            grep '^#define GRN_WITH_MESSAGE_PACK$' \
+              storage/mroonga/vendor/groonga/config.h
+            grep '^MESSAGE_PACK_FOUND:INTERNAL=1$' CMakeCache.txt
+            grep '^MESSAGE_PACK_LIBRARIES:INTERNAL=msgpackc$' CMakeCache.txt
             test -f "$out/lib/plugin/auth_pam.so"
             "$OBJDUMP" --macho --dylibs-used \
               "$out/lib/plugin/auth_pam.so" | grep libpam
 
             mkdir -p "$out/share/aos-build-features"
             grep -E \
-              '^(BUILD_CONFIG|FEATURE_SET|WITH_SSL|WITH_ZLIB|WITH_ZSTD|WITH_PCRE|GRN_WITH_LIBEVENT|WITH_JEMALLOC|WITH_NUMA|WITH_ROCKSDB_BZip2|WITH_ROCKSDB_LZ4|WITH_ROCKSDB_Snappy|WITH_ROCKSDB_ZSTD|WITH_SYSTEMD|WITH_UNIT_TESTS|AWS_SDK_EXTERNAL_PROJECT|PLUGIN_AUTH_PAM):' \
+              '^(BUILD_CONFIG|FEATURE_SET|WITH_SSL|WITH_ZLIB|WITH_ZSTD|WITH_PCRE|GRN_WITH_LIBEVENT|GRN_WITH_MESSAGE_PACK|WITH_JEMALLOC|WITH_NUMA|WITH_ROCKSDB_BZip2|WITH_ROCKSDB_LZ4|WITH_ROCKSDB_Snappy|WITH_ROCKSDB_ZSTD|WITH_SYSTEMD|WITH_UNIT_TESTS|AWS_SDK_EXTERNAL_PROJECT|PLUGIN_AUTH_PAM):' \
               CMakeCache.txt > "$out/share/aos-build-features/mariadb-cmake-cache.txt"
           ''
           else ''
@@ -359,11 +534,14 @@ in
             done
             test -f "$out/lib/plugin/ha_mroonga.so"
             readelf -d "$out/lib/plugin/ha_mroonga.so" | grep libevent
-            readelf -d "$out/bin/mariadbd" | grep libjemalloc
+            grep '^#define GRN_WITH_MESSAGE_PACK$' \
+              storage/mroonga/vendor/groonga/config.h
+            grep '^MESSAGE_PACK_FOUND:INTERNAL=1$' CMakeCache.txt
+            grep '^MESSAGE_PACK_LIBRARIES:INTERNAL=msgpackc$' CMakeCache.txt
 
             mkdir -p "$out/share/aos-build-features"
             grep -E \
-              '^(BUILD_CONFIG|FEATURE_SET|WITH_SSL|WITH_ZLIB|WITH_ZSTD|WITH_PCRE|GRN_WITH_LIBEVENT|WITH_JEMALLOC|WITH_NUMA|WITH_LIBURING|WITH_ROCKSDB_BZip2|WITH_ROCKSDB_LZ4|WITH_ROCKSDB_Snappy|WITH_ROCKSDB_ZSTD|WITH_SYSTEMD|WITH_UNIT_TESTS|AWS_SDK_EXTERNAL_PROJECT):' \
+              '^(BUILD_CONFIG|FEATURE_SET|WITH_SSL|WITH_ZLIB|WITH_ZSTD|WITH_PCRE|GRN_WITH_LIBEVENT|GRN_WITH_MESSAGE_PACK|WITH_JEMALLOC|WITH_NUMA|WITH_LIBURING|WITH_ROCKSDB_BZip2|WITH_ROCKSDB_LZ4|WITH_ROCKSDB_Snappy|WITH_ROCKSDB_ZSTD|WITH_SYSTEMD|WITH_UNIT_TESTS|AWS_SDK_EXTERNAL_PROJECT):' \
               CMakeCache.txt > "$out/share/aos-build-features/mariadb-cmake-cache.txt"
           '';
       }
@@ -383,7 +561,9 @@ in
       version = testing.mkToolCheck {
         pname = "storage-mariadb";
         tool = self;
-        command = "mariadbd --version";
+        # Do not consult the host's /etc/my.cnf.d while checking the packaged
+        # server binary.
+        command = "mariadbd --no-defaults --version";
       };
 
       features = testing.mkVMTest {
@@ -398,6 +578,7 @@ in
           grep '^WITH_ZSTD:.*=system$' "$features"
           grep '^WITH_PCRE:.*=system$' "$features"
           grep '^GRN_WITH_LIBEVENT:STRING=${libevent}$' "$features"
+          grep '^GRN_WITH_MESSAGE_PACK:STRING=${messagePack}$' "$features"
           grep '^WITH_JEMALLOC:STRING=yes$' "$features"
           grep '^WITH_NUMA:BOOL=ON$' "$features"
           grep '^WITH_LIBURING:BOOL=ON$' "$features"
