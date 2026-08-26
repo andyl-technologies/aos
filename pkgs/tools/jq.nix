@@ -7,6 +7,7 @@
   patchelf,
   pkg-config,
   oniguruma,
+  buildPackages,
 }: let
   version = "1.8.1";
 in
@@ -28,10 +29,10 @@ in
     # Guard: keep the autotools build toolchain out of jq's
     # `--version`-baked PKG_CONFIG_PATH / CC strings.
     disallowedReferences = [
-      gnumake
-      pkg-config
-      patch
-      patchelf
+      buildPackages.gnumake
+      buildPackages.pkg-config
+      buildPackages.patch
+      buildPackages.patchelf
     ];
 
     phases = [

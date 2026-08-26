@@ -9,6 +9,7 @@
   linux-headers,
   libtirpc,
   stdenv,
+  buildPackages,
 }: let
   version = "4.99.4";
 in
@@ -42,10 +43,10 @@ in
     # Guard: keep the autotools build toolchain out of lsof's
     # `-v`-baked PKG_CONFIG_PATH / CC strings.
     disallowedReferences = [
-      gnumake
-      pkg-config
-      patch
-      patchelf
+      buildPackages.gnumake
+      buildPackages.pkg-config
+      buildPackages.patch
+      buildPackages.patchelf
     ];
 
     phases = [

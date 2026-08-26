@@ -25,10 +25,20 @@ in
     phases = [
       {
         name = "unpack";
-        script = ''
-          tar xf $src
-          cd lowdown-${version}
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            tar xf $src
+            cd lowdown-${version}
+
+            # These headers only supplied types and declarations which the
+            # bundled base64 fallback does not use.
+            sed -i '/#include <arpa\/nameser\.h>/d; /#include <resolv\.h>/d' compats.c
+          ''
+          else ''
+            tar xf $src
+            cd lowdown-${version}
+          '';
       }
       {
         name = "configure";
@@ -36,7 +46,10 @@ in
           ./configure PREFIX=$out
           ${
             if stdenv.hostPlatform.isDarwin
-            then ''sed -i 's/liblowdown\.so/liblowdown.dylib/g' Makefile''
+            then ''
+              sed -i 's/liblowdown\.so/liblowdown.dylib/g' Makefile
+              sed -i 's|-Wl,[^ ]* |-Wl,-install_name,@rpath/$@.$(LIBVER) |' Makefile
+            ''
             else ""
           }
         '';

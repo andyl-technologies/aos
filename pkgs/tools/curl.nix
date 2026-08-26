@@ -13,6 +13,7 @@
   ca-certificates,
   bash,
   stdenv,
+  buildPackages,
 }: let
   version = "8.12.1";
 in
@@ -53,10 +54,10 @@ in
     # Guard: keep the autotools build toolchain out of curl's
     # `--version`-baked CC/PKG_CONFIG_PATH strings.
     disallowedReferences = [
-      gnumake
-      pkg-config
-      patch
-      patchelf
+      buildPackages.gnumake
+      buildPackages.pkg-config
+      buildPackages.patch
+      buildPackages.patchelf
     ];
 
     phases = [

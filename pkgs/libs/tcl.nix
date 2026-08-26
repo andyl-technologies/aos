@@ -43,7 +43,19 @@ in
         script = ''
           ${
             if stdenv.isCross
-            then ''export ac_cv_path_tclsh="${buildPackages.tcl}/bin/tclsh9.0"''
+            then ''
+              export ac_cv_path_tclsh="${buildPackages.tcl}/bin/tclsh9.0"
+              ${
+                if stdenv.hostPlatform.isDarwin
+                then ''
+                  export ac_cv_func_getnameinfo=yes
+                  export ac_cv_func_getaddrinfo=yes
+                  export ac_cv_func_freeaddrinfo=yes
+                  export ac_cv_func_gai_strerror=yes
+                ''
+                else ""
+              }
+            ''
             else ""
           }
           ./configure \
