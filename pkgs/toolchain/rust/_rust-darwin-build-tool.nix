@@ -115,9 +115,13 @@ in
       {
         name = "install";
         script = ''
-          stage0_sysroot="build/${buildTriple}/stage0-sysroot"
-          target_lib="$stage0_sysroot/lib/rustlib/${hostTriple}/lib"
-          target_std=$(find "$target_lib" -name 'libstd-*.rlib' -type f -print -quit)
+          # For a local stage-0 rebuild, bootstrap leaves freshly-built target
+          # artifacts in Cargo's output directory while stage0-sysroot retains
+          # only its original host libraries.  Assemble the target rustlib from
+          # those artifacts without trying to run any Mach-O output.
+          target_artifacts="build/${buildTriple}/stage0-std/${hostTriple}/release/deps"
+          target_lib="$out/lib/rustlib/${hostTriple}/lib"
+          target_std=$(find "$target_artifacts" -name 'libstd-*.rlib' -type f -print -quit)
           if [ -z "$target_std" ]; then
             echo "Rust bootstrap did not produce the ${hostTriple} standard library" >&2
             exit 1
@@ -135,7 +139,12 @@ in
             name=$(basename "$entry")
             ln -s "$entry" "$out/lib/rustlib/$name"
           done
-          cp -a "$stage0_sysroot/lib/rustlib/${hostTriple}" "$out/lib/rustlib/"
+          mkdir -p "$target_lib"
+          for library in "$target_artifacts"/*.rlib "$target_artifacts"/*.dylib; do
+            if [ -f "$library" ]; then
+              cp -a "$library" "$target_lib/"
+            fi
+          done
 
           for executable in ${nativeRust}/bin/*; do
             name=$(basename "$executable")
