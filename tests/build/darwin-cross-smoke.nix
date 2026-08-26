@@ -41,6 +41,7 @@
               '#include <ApplicationServices/ApplicationServices.h>' \
               '#include <CoreFoundation/CoreFoundation.h>' \
               '#include <CoreServices/CoreServices.h>' \
+              '#include <net/ethernet.h>' \
               '#include <netinet/tcp_fsm.h>' \
               '#include <netinet/tcp_timer.h>' \
               '#include <rpc/pmap_prot.h>' \
@@ -91,7 +92,8 @@
               '  if (systemZone != NULL) CFRelease(systemZone);' \
               '  if (zone != NULL) CFRelease(zone);' \
               '  if (canonicalLanguage != NULL) CFRelease(canonicalLanguage);' \
-              '  return label == NULL || canonicalLanguage == NULL || maximum < 0 || convertedCharacters < 0 || usedStringBytes < 0 || zoneName == NULL || systemZone == NULL || identifier == value || !represented || launchStatus == -1 || attributeSize < -1 || attributeListSize < -1 || attributeSetStatus < -1 || attributeRemoveStatus < -1 || XATTR_CREATE != 0x0002 || XATTR_REPLACE != 0x0004;' \
+              '  struct ether_addr address = { { 0 } };' \
+              '  return label == NULL || canonicalLanguage == NULL || maximum < 0 || convertedCharacters < 0 || usedStringBytes < 0 || zoneName == NULL || systemZone == NULL || identifier == value || !represented || launchStatus == -1 || attributeSize < -1 || attributeListSize < -1 || attributeSetStatus < -1 || attributeRemoveStatus < -1 || address.octet[0] != 0 || ETHER_ADDR_LEN != 6 || XATTR_CREATE != 0x0002 || XATTR_REPLACE != 0x0004;' \
               '}' \
               > framework-smoke.c
             "$CC" framework-smoke.c \
@@ -124,6 +126,9 @@
               '  Boolean reachable = CFURLResourceIsReachable(filePath, NULL);' \
               '  FSEventStreamContext context = { 0, NULL, NULL, NULL, NULL };' \
               '  FSEventStreamRef stream = FSEventStreamCreate(kCFAllocatorDefault, aos_fsevent_callback, &context, immutable, kFSEventStreamEventIdSinceNow, 0.1, kFSEventStreamCreateFlagFileEvents);' \
+              '  CFRunLoopRef runLoop = CFRunLoopGetCurrent();' \
+              '  Boolean waiting = CFRunLoopIsWaiting(runLoop);' \
+              '  FSEventStreamScheduleWithRunLoop(stream, runLoop, kCFRunLoopDefaultMode);' \
               '  FSEventStreamSetDispatchQueue(stream, NULL);' \
               '  Boolean started = FSEventStreamStart(stream);' \
               '  dev_t device = FSEventStreamGetDeviceBeingWatched(stream);' \
@@ -143,7 +148,7 @@
               '  if (mutable != NULL) CFRelease(mutable);' \
               '  if (immutable != NULL) CFRelease(immutable);' \
               '  if (text != NULL) CFRelease(text);' \
-              '  return reachable && started && purged && current == 0;' \
+              '  return reachable && started && purged && waiting && current == 0;' \
               '}' \
               > coreservices-smoke.c
             # CoreServices is an umbrella and must carry its CoreFoundation
@@ -204,6 +209,22 @@
               -framework CoreFoundation \
               -lobjc \
               -o "$c/bin/aos-darwin-cocoa-smoke"
+
+            printf '%s\n' \
+              '#import <Foundation/Foundation.h>' \
+              '#import <AppKit/AppKit.h>' \
+              'int main(void) {' \
+              '  NSArray<NSString *> *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, true);' \
+              '  NSString *path = paths.firstObject;' \
+              '  NSImage *image = [[NSImage alloc] initByReferencingFile:path];' \
+              '  return image == nil || path.UTF8String == NULL;' \
+              '}' \
+              > foundation-appkit-smoke.m
+            "$CC" foundation-appkit-smoke.m \
+              -framework Foundation \
+              -framework AppKit \
+              -lobjc \
+              -o "$c/bin/aos-darwin-foundation-appkit-smoke"
 
             printf '%s\n' \
               '#include <arpa/nameser.h>' \
@@ -318,6 +339,42 @@
               -o "$c/bin/aos-darwin-iokit-smoke"
 
             printf '%s\n' \
+              '#include <Security/Security.h>' \
+              'static OSStatus aos_ssl_read(SSLConnectionRef connection, void *data, size_t *length) { (void)connection; (void)data; (void)length; return errSSLClosedGraceful; }' \
+              'static OSStatus aos_ssl_write(SSLConnectionRef connection, const void *data, size_t *length) { (void)connection; (void)data; (void)length; return errSSLClosedGraceful; }' \
+              'int main(void) {' \
+              '  SSLContextRef context = SSLCreateContext(kCFAllocatorDefault, kSSLClientSide, kSSLStreamType);' \
+              '  SSLSetIOFuncs(context, aos_ssl_read, aos_ssl_write);' \
+              '  SSLSetConnection(context, NULL);' \
+              '  SSLSetSessionOption(context, kSSLSessionOptionBreakOnServerAuth, true);' \
+              '  SSLSetProtocolVersionMin(context, kTLSProtocol1);' \
+              '  SSLSetProtocolVersionMax(context, kTLSProtocol12);' \
+              '  SSLSetPeerDomainName(context, "localhost", 9);' \
+              '  OSStatus handshake = SSLHandshake(context);' \
+              '  SecTrustRef trust = NULL;' \
+              '  SSLCopyPeerTrust(context, &trust);' \
+              '  SecTrustResultType trustResult = kSecTrustResultInvalid;' \
+              '  if (trust != NULL) SecTrustEvaluate(trust, &trustResult);' \
+              '  SecCertificateRef certificate = trust == NULL ? NULL : SecTrustGetCertificateAtIndex(trust, 0);' \
+              '  CFDataRef certificateData = certificate == NULL ? NULL : SecCertificateCopyData(certificate);' \
+              '  CFStringRef error = SecCopyErrorMessageString(handshake, NULL);' \
+              '  size_t processed = 0;' \
+              '  SSLWrite(context, "aos", 3, &processed);' \
+              '  SSLRead(context, NULL, 0, &processed);' \
+              '  SSLClose(context);' \
+              '  if (error != NULL) CFRelease(error);' \
+              '  if (certificateData != NULL) CFRelease(certificateData);' \
+              '  if (trust != NULL) CFRelease(trust);' \
+              '  if (context != NULL) CFRelease(context);' \
+              '  return trustResult == kSecTrustResultOtherError && processed == (size_t)-1;' \
+              '}' \
+              > security-smoke.c
+            "$CC" security-smoke.c \
+              -framework CoreFoundation \
+              -framework Security \
+              -o "$c/bin/aos-darwin-security-smoke"
+
+            printf '%s\n' \
               'extern "C" int puts(const char *);' \
               '#include <string>' \
               'constexpr int answer = 42;' \
@@ -366,11 +423,13 @@
               "$c/bin/aos-darwin-coreservices-smoke" \
               "$c/bin/aos-darwin-cocoa-smoke" \
               "$c/bin/aos-darwin-framework-smoke" \
+              "$c/bin/aos-darwin-foundation-appkit-smoke" \
               "$c/bin/aos-darwin-iconv-smoke" \
               "$c/bin/aos-darwin-iokit-smoke" \
               "$c/bin/aos-darwin-nis-smoke" \
               "$c/bin/aos-darwin-objective-c-smoke" \
               "$c/bin/aos-darwin-resolver-smoke" \
+              "$c/bin/aos-darwin-security-smoke" \
               "$c/lib/libaos-darwin-cmake-smoke.dylib" \
               "$cxx/libaos-darwin-cmake-cxx-smoke.dylib" \
               "$cxx/aos-darwin-flat-namespace.bundle" \

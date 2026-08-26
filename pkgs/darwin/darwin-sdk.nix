@@ -203,11 +203,15 @@ in
             "$out/usr/include/servers" \
             "$out/usr/lib" \
             "$out/System/Library/Frameworks/ApplicationServices.framework/Headers" \
+            "$out/System/Library/Frameworks/AppKit.framework/Headers" \
+            "$out/System/Library/Frameworks/AppKit.framework/Versions/C" \
             "$out/System/Library/Frameworks/Cocoa.framework/Headers" \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Headers" \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Versions/A" \
             "$out/System/Library/Frameworks/CoreServices.framework/Headers" \
             "$out/System/Library/Frameworks/CoreServices.framework/Versions/A" \
+            "$out/System/Library/Frameworks/Foundation.framework/Headers" \
+            "$out/System/Library/Frameworks/Foundation.framework/Versions/C" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/storage/ata" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/storage" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/usb" \
@@ -260,6 +264,7 @@ in
             "$out/usr/lib/libSystem.tbd"
           cp "$xnuRoot/bsd/netinet/tcp_fsm.h" "$out/usr/include/netinet/"
           cp "$xnuRoot/bsd/netinet/tcp_timer.h" "$out/usr/include/netinet/"
+          cp "$xnuRoot/bsd/net/ethernet.h" "$out/usr/include/net/"
           cp "$xnuRoot/bsd/sys/ttydev.h" "$out/usr/include/sys/"
           cp "$xnuRoot/bsd/sys/xattr.h" "$out/usr/include/sys/"
           # XNU generates the installed syscall-number header from its
@@ -474,10 +479,11 @@ in
           cp "$darlingIoKitUserRoot/APPLE_LICENSE" \
             "$out/share/licenses/darwin-sdk/Darling-IOKitUser-LICENSE"
 
-          # The command-line packages in this tree use only Security's SecTask
-          # API to query their own entitlements.  Publish that documented ABI
-          # without pulling in the unrelated keychain, codesigning, and CDSA
-          # header graph from the full framework umbrella.
+          # Publish the command-line Security APIs used by entitlement clients
+          # and libgit2's Darwin TLS transport. The complete upstream umbrella
+          # also imports private keychain and CDSA headers, so describe the
+          # documented SecTask, SecureTransport, certificate, and trust subset
+          # directly from their canonical public declarations.
           cp "$securityRoot/OSX/APPLE_LICENSE" \
             "$out/share/licenses/darwin-sdk/Security-LICENSE"
 
@@ -508,10 +514,122 @@ in
           cp "$hfsRoot/APPLE_LICENSE" \
             "$out/share/licenses/darwin-sdk/hfs-LICENSE"
 
+          cat > "$out/System/Library/Frameworks/Security.framework/Headers/SecBase.h" <<'EOF'
+          #ifndef _SECURITY_SECBASE_H_
+          #define _SECURITY_SECBASE_H_
+          #include <CoreFoundation/CoreFoundation.h>
+          #include <stdint.h>
+          #include <sys/cdefs.h>
+          __BEGIN_DECLS
+          typedef int32_t OSStatus;
+          typedef struct __SecCertificate *SecCertificateRef;
+          typedef struct __SecTrust *SecTrustRef;
+          CFStringRef SecCopyErrorMessageString(OSStatus status, void *reserved);
+          enum {
+            errSSLClosedGraceful = -9805,
+            errSSLPeerAuthCompleted = -9841,
+            errSSLServerAuthCompleted = errSSLPeerAuthCompleted
+          };
+          __END_DECLS
+          #endif
+          EOF
+
+          cat > "$out/System/Library/Frameworks/Security.framework/Headers/SecCertificate.h" <<'EOF'
+          #ifndef _SECURITY_SECCERTIFICATE_H_
+          #define _SECURITY_SECCERTIFICATE_H_
+          #include <Security/SecBase.h>
+          __BEGIN_DECLS
+          CFDataRef SecCertificateCopyData(SecCertificateRef certificate);
+          __END_DECLS
+          #endif
+          EOF
+
+          cat > "$out/System/Library/Frameworks/Security.framework/Headers/SecTrust.h" <<'EOF'
+          #ifndef _SECURITY_SECTRUST_H_
+          #define _SECURITY_SECTRUST_H_
+          #include <Security/SecBase.h>
+          __BEGIN_DECLS
+          typedef enum {
+            kSecTrustResultInvalid = 0,
+            kSecTrustResultProceed = 1,
+            kSecTrustResultConfirm = 2,
+            kSecTrustResultDeny = 3,
+            kSecTrustResultUnspecified = 4,
+            kSecTrustResultRecoverableTrustFailure = 5,
+            kSecTrustResultFatalTrustFailure = 6,
+            kSecTrustResultOtherError = 7
+          } SecTrustResultType;
+          OSStatus SecTrustEvaluate(SecTrustRef trust, SecTrustResultType *result);
+          SecCertificateRef SecTrustGetCertificateAtIndex(SecTrustRef trust, CFIndex index);
+          __END_DECLS
+          #endif
+          EOF
+
+          cat > "$out/System/Library/Frameworks/Security.framework/Headers/SecureTransport.h" <<'EOF'
+          #ifndef _SECURITY_SECURETRANSPORT_H_
+          #define _SECURITY_SECURETRANSPORT_H_
+          #include <Security/SecTrust.h>
+          #include <stddef.h>
+          __BEGIN_DECLS
+          struct SSLContext;
+          typedef struct SSLContext *SSLContextRef;
+          typedef const void *SSLConnectionRef;
+          typedef OSStatus (*SSLReadFunc)(SSLConnectionRef connection, void *data, size_t *dataLength);
+          typedef OSStatus (*SSLWriteFunc)(SSLConnectionRef connection, const void *data, size_t *dataLength);
+          typedef enum {
+            kSSLSessionOptionBreakOnServerAuth = 0
+          } SSLSessionOption;
+          typedef enum {
+            kSSLServerSide = 0,
+            kSSLClientSide = 1
+          } SSLProtocolSide;
+          typedef enum {
+            kSSLStreamType = 0,
+            kSSLDatagramType = 1
+          } SSLConnectionType;
+          typedef enum {
+            kSSLProtocolUnknown = 0,
+            kSSLProtocol2 = 1,
+            kSSLProtocol3 = 2,
+            kSSLProtocol3Only = 3,
+            kTLSProtocol1 = 4,
+            kTLSProtocol1Only = 5,
+            kSSLProtocolAll = 6,
+            kTLSProtocol11 = 7,
+            kTLSProtocol12 = 8,
+            kDTLSProtocol1 = 9,
+            kTLSProtocol13 = 10,
+            kDTLSProtocol12 = 11,
+            kTLSProtocolMaxSupported = 999
+          } SSLProtocol;
+          SSLContextRef SSLCreateContext(
+            CFAllocatorRef allocator,
+            SSLProtocolSide protocolSide,
+            SSLConnectionType connectionType
+          );
+          OSStatus SSLSetIOFuncs(SSLContextRef context, SSLReadFunc readFunc, SSLWriteFunc writeFunc);
+          OSStatus SSLSetConnection(SSLContextRef context, SSLConnectionRef connection);
+          OSStatus SSLSetSessionOption(SSLContextRef context, SSLSessionOption option, Boolean value);
+          OSStatus SSLSetProtocolVersionMin(SSLContextRef context, SSLProtocol minVersion);
+          OSStatus SSLSetProtocolVersionMax(SSLContextRef context, SSLProtocol maxVersion);
+          OSStatus SSLSetPeerDomainName(SSLContextRef context, const char *peerName, size_t peerNameLength);
+          OSStatus SSLHandshake(SSLContextRef context);
+          OSStatus SSLCopyPeerTrust(SSLContextRef context, SecTrustRef *trust);
+          OSStatus SSLWrite(SSLContextRef context, const void *data, size_t dataLength, size_t *processed);
+          OSStatus SSLRead(SSLContextRef context, void *data, size_t dataLength, size_t *processed);
+          OSStatus SSLClose(SSLContextRef context);
+          __END_DECLS
+          #endif
+          EOF
+
           cat > "$out/System/Library/Frameworks/Security.framework/Headers/Security.h" <<'EOF'
           #ifndef _SECURITY_H_
           #define _SECURITY_H_
+          #include <Security/SecBase.h>
+          #include <Security/SecCertificate.h>
           #include <Security/SecTask.h>
+          #include <Security/SecTrust.h>
+          #include <Security/SecureTransport.h>
           #endif
           EOF
 
@@ -589,6 +707,7 @@ in
                 - _CFRetain
                 - _CFRunLoopAddSource
                 - _CFRunLoopGetCurrent
+                - _CFRunLoopIsWaiting
                 - _CFRunLoopRemoveSource
                 - _CFRunLoopRun
                 - _CFRunLoopSourceCreate
@@ -730,6 +849,11 @@ in
             FSEventStreamCreateFlags flags
           );
           void FSEventStreamSetDispatchQueue(FSEventStreamRef streamRef, dispatch_queue_t queue);
+          void FSEventStreamScheduleWithRunLoop(
+            FSEventStreamRef streamRef,
+            CFRunLoopRef runLoop,
+            CFStringRef runLoopMode
+          );
           Boolean FSEventStreamStart(FSEventStreamRef streamRef);
           void FSEventStreamStop(FSEventStreamRef streamRef);
           void FSEventStreamInvalidate(FSEventStreamRef streamRef);
@@ -759,6 +883,7 @@ in
                 - _FSEventStreamGetDeviceBeingWatched
                 - _FSEventStreamInvalidate
                 - _FSEventStreamRelease
+                - _FSEventStreamScheduleWithRunLoop
                 - _FSEventStreamSetDispatchQueue
                 - _FSEventStreamStart
                 - _FSEventStreamStop
@@ -772,14 +897,13 @@ in
           ln -s CoreServices.tbd \
             "$out/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices"
 
-          # GLib's native Darwin notification backend uses the long-standing
-          # AppKit classes re-exported by Cocoa. The implementation is supplied
-          # by the target macOS system; the cross SDK needs only the public
-          # Objective-C declarations and link-time class/protocol surface.
-          cat > "$out/System/Library/Frameworks/Cocoa.framework/Headers/Cocoa.h" <<'EOF'
-          #ifndef _AOS_COCOA_H_
-          #define _AOS_COCOA_H_
-
+          # GLib uses Foundation's filesystem lookup API and AppKit's native
+          # notification backend, while other consumers import both through
+          # Cocoa. Publish the documented command-line Objective-C subset as
+          # separate frameworks so Meson can discover each module normally.
+          cat > "$out/System/Library/Frameworks/Foundation.framework/Headers/Foundation.h" <<'EOF'
+          #ifndef _AOS_FOUNDATION_H_
+          #define _AOS_FOUNDATION_H_
           #import <objc/NSObject.h>
 
           typedef NSInteger NSComparisonResult;
@@ -805,6 +929,7 @@ in
           @end
 
           @interface NSArray<ObjectType> : NSObject <NSFastEnumeration>
+          @property(readonly) ObjectType firstObject;
           @end
 
           @interface NSDictionary<KeyType, ObjectType> : NSObject
@@ -819,6 +944,41 @@ in
           + (NSBundle *)mainBundle;
           @property(readonly, copy) NSString *bundleIdentifier;
           @end
+
+          typedef NSUInteger NSSearchPathDirectory;
+          enum {
+            NSApplicationDirectory = 1,
+            NSLibraryDirectory = 5,
+            NSUserDirectory = 7,
+            NSDocumentDirectory = 9,
+            NSCoreServiceDirectory = 10,
+            NSDesktopDirectory = 12,
+            NSCachesDirectory = 13,
+            NSApplicationSupportDirectory = 14,
+            NSDownloadsDirectory = 15
+          };
+          typedef NSUInteger NSSearchPathDomainMask;
+          enum {
+            NSUserDomainMask = 1,
+            NSLocalDomainMask = 2,
+            NSNetworkDomainMask = 4,
+            NSSystemDomainMask = 8,
+            NSAllDomainsMask = 0xffff
+          };
+          NSArray<NSString *> *NSSearchPathForDirectoriesInDomains(
+            NSSearchPathDirectory directory,
+            NSSearchPathDomainMask domainMask,
+            BOOL expandTilde
+          );
+
+          #endif
+          EOF
+
+          cat > "$out/System/Library/Frameworks/AppKit.framework/Headers/AppKit.h" <<'EOF'
+          #ifndef _AOS_APPKIT_H_
+          #define _AOS_APPKIT_H_
+
+          #import <Foundation/Foundation.h>
 
           @interface NSImage : NSObject
           - (instancetype)initByReferencingFile:(NSString *)fileName;
@@ -860,6 +1020,63 @@ in
 
           #endif
           EOF
+
+          cat > "$out/System/Library/Frameworks/Cocoa.framework/Headers/Cocoa.h" <<'EOF'
+          #ifndef _AOS_COCOA_H_
+          #define _AOS_COCOA_H_
+          #import <Foundation/Foundation.h>
+          #import <AppKit/AppKit.h>
+          #endif
+          EOF
+
+          cat > "$out/System/Library/Frameworks/Foundation.framework/Foundation.tbd" <<'EOF'
+          --- !tapi-tbd
+          tbd-version: 4
+          targets: [ x86_64-macos, arm64-macos ]
+          install-name: '/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation'
+          current-version: 3100.0.0
+          compatibility-version: 300.0.0
+          exports:
+            - targets: [ x86_64-macos, arm64-macos ]
+              symbols:
+                - _NSSearchPathForDirectoriesInDomains
+                - '_OBJC_CLASS_$_NSArray'
+                - '_OBJC_CLASS_$_NSBundle'
+                - '_OBJC_CLASS_$_NSDictionary'
+                - '_OBJC_CLASS_$_NSMutableDictionary'
+                - '_OBJC_CLASS_$_NSObject'
+                - '_OBJC_CLASS_$_NSString'
+                - '_OBJC_METACLASS_$_NSObject'
+          ...
+          EOF
+          ln -s ../../Foundation.tbd \
+            "$out/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation.tbd"
+          ln -s Foundation.tbd \
+            "$out/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation"
+
+          cat > "$out/System/Library/Frameworks/AppKit.framework/AppKit.tbd" <<'EOF'
+          --- !tapi-tbd
+          tbd-version: 4
+          targets: [ x86_64-macos, arm64-macos ]
+          install-name: '/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit'
+          current-version: 2600.0.0
+          compatibility-version: 45.0.0
+          reexported-libraries:
+            - targets: [ x86_64-macos, arm64-macos ]
+              libraries: [ '/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation' ]
+          exports:
+            - targets: [ x86_64-macos, arm64-macos ]
+              symbols:
+                - '_OBJC_CLASS_$_NSImage'
+                - '_OBJC_CLASS_$_NSUserNotification'
+                - '_OBJC_CLASS_$_NSUserNotificationCenter'
+                - '_OBJC_PROTOCOL_$_NSUserNotificationCenterDelegate'
+          ...
+          EOF
+          ln -s ../../AppKit.tbd \
+            "$out/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit.tbd"
+          ln -s AppKit.tbd \
+            "$out/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit"
           cat > "$out/System/Library/Frameworks/Cocoa.framework/Cocoa.tbd" <<'EOF'
           --- !tapi-tbd
           tbd-version: 4
@@ -867,6 +1084,11 @@ in
           install-name: '/System/Library/Frameworks/Cocoa.framework/Versions/A/Cocoa'
           current-version: 24.0.0
           compatibility-version: 1.0.0
+          reexported-libraries:
+            - targets: [ x86_64-macos, arm64-macos ]
+              libraries:
+                - '/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit'
+                - '/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation'
           exports:
             - targets: [ x86_64-macos, arm64-macos ]
               symbols:
@@ -962,12 +1184,28 @@ in
           exports:
             - targets: [ x86_64-macos, arm64-macos ]
               symbols:
+                - _SSLClose
+                - _SSLCopyPeerTrust
+                - _SSLCreateContext
+                - _SSLHandshake
+                - _SSLRead
+                - _SSLSetConnection
+                - _SSLSetIOFuncs
+                - _SSLSetPeerDomainName
+                - _SSLSetProtocolVersionMax
+                - _SSLSetProtocolVersionMin
+                - _SSLSetSessionOption
+                - _SSLWrite
+                - _SecCertificateCopyData
+                - _SecCopyErrorMessageString
                 - _SecTaskCopySigningIdentifier
                 - _SecTaskCopyValueForEntitlement
                 - _SecTaskCopyValuesForEntitlements
                 - _SecTaskCreateFromSelf
                 - _SecTaskCreateWithAuditToken
                 - _SecTaskGetTypeID
+                - _SecTrustEvaluate
+                - _SecTrustGetCertificateAtIndex
           ...
           EOF
 
