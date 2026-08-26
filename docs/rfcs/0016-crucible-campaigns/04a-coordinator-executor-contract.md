@@ -1686,6 +1686,18 @@ recorded the matching unmodified runtime frontier with the exact choice ID,
 candidate digest, and candidate count. It MUST NOT widen the generic raw-
 override method to accept selections.
 
+For live discovery, the production lifecycle MUST compare against the frontier
+history length captured before the scheduler call and MUST expose only a newly
+recorded frontier whose parent configuration and virtual time still equal the
+current scheduler boundary. It returns that frontier without advancing another
+node; decisions already settled at the same pre-quantum boundary remain in the
+result. One result admits at most 4,096 frontiers and 128 MiB of unique canonical
+choice-record material. The modeled attempt publishes those records only when
+they cause its exact `NextChoice` stop. If another stop policy continues
+execution, the frontier is not retained in the later observation and MUST NOT
+be re-emitted from scheduler history. An already admitted replay branch at that
+boundary is injected instead of being rediscovered.
+
 An execution with pending promoted branches is not exact-checkpoint-ready.
 Fresh materialization consumes the complete plan before the modeled driver may
 request capture. A process restart discards the process-local plan and rebuilds

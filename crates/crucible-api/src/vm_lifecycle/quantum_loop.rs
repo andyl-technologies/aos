@@ -193,6 +193,120 @@ impl ProductionVmLifecycleLoop {
         }
         Ok(())
     }
+
+    /// Normalizes only signal-fault frontiers first observed by this quantum.
+    ///
+    /// The scheduler retains older frontiers for checkpoint and replay
+    /// authentication. Re-emitting that history as a later discovery would
+    /// manufacture a branch point after execution had already passed it, so
+    /// callers supply the frontier count captured before the quantum began.
+    fn signal_fault_campaign_discoveries_at_current_boundary_since(
+        &self,
+        first: usize,
+    ) -> Result<Vec<crucible::campaign::ChoiceDiscovery>, SchedulerError> {
+        let frontiers = self.inner.loop_impl().search_frontiers();
+        let current = frontiers
+            .get(first..)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("signal-fault frontier history shrank during one quantum"),
+            })?;
+        if current.len() > crucible::MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES {
+            return Err(SchedulerError::ResourceLimit {
+                field: "signal-fault campaign discoveries",
+                current: 0,
+                requested: u64::try_from(current.len()).unwrap_or(u64::MAX),
+                configured: u64::try_from(crucible::MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES)
+                    .unwrap_or(u64::MAX),
+                hard: u64::try_from(crucible::MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES)
+                    .unwrap_or(u64::MAX),
+            });
+        }
+
+        let mut charged_records = BTreeSet::new();
+        let mut charged_bytes = 0usize;
+        let mut discoveries = Vec::with_capacity(current.len());
+        let configuration = self.inner.loop_impl().configuration();
+        let at = self.inner.loop_impl().frontier();
+        for frontier in current
+            .iter()
+            .filter(|frontier| frontier.configuration == *configuration && frontier.at == at)
+        {
+            let discovery = crucible::SignalFaultSelectable::from_frontier(frontier)
+                .and_then(|selectable| selectable.discovery())
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("normalize live signal-fault campaign discovery: {error}"),
+                })?;
+            for (id, bytes) in [
+                (
+                    discovery.opportunity().declaration().content_id(),
+                    discovery.declaration().canonical_bytes().len(),
+                ),
+                (
+                    discovery.opportunity().domain().content_id(),
+                    discovery.domain().canonical_bytes().len(),
+                ),
+                (
+                    discovery
+                        .opportunity()
+                        .id()
+                        .map_err(|error| SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "identify live signal-fault campaign discovery: {error}"
+                            ),
+                        })?
+                        .content_id(),
+                    discovery.opportunity().canonical_bytes().len(),
+                ),
+            ] {
+                if !charged_records.insert(id) {
+                    continue;
+                }
+                charged_bytes = charged_bytes.checked_add(bytes).ok_or_else(|| {
+                    SchedulerError::ResourceLimit {
+                        field: "signal-fault campaign discovery bytes",
+                        current: 0,
+                        requested: u64::MAX,
+                        configured: u64::try_from(
+                            crucible::campaign::MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
+                        )
+                        .unwrap_or(u64::MAX),
+                        hard: u64::try_from(
+                            crucible::campaign::MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
+                        )
+                        .unwrap_or(u64::MAX),
+                    }
+                })?;
+                if charged_bytes > crucible::campaign::MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES {
+                    return Err(SchedulerError::ResourceLimit {
+                        field: "signal-fault campaign discovery bytes",
+                        current: 0,
+                        requested: u64::try_from(charged_bytes).unwrap_or(u64::MAX),
+                        configured: u64::try_from(
+                            crucible::campaign::MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
+                        )
+                        .unwrap_or(u64::MAX),
+                        hard: u64::try_from(
+                            crucible::campaign::MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
+                        )
+                        .unwrap_or(u64::MAX),
+                    });
+                }
+            }
+            discoveries.push(discovery);
+        }
+        Ok(discoveries)
+    }
+
+    fn append_live_signal_fault_campaign_discoveries(
+        &self,
+        first: usize,
+        outcome: &mut QuantumOutcome,
+    ) -> Result<(), SchedulerError> {
+        outcome
+            .discovered_choices
+            .extend(self.signal_fault_campaign_discoveries_at_current_boundary_since(first)?);
+        Ok(())
+    }
 }
 
 impl QuantumLoop for ProductionVmLifecycleLoop {
@@ -210,6 +324,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             })?;
         let operation = (|| {
             self.reconcile_indeterminate_debug_ownership()?;
+            let signal_fault_frontier_start = self.inner.loop_impl().search_frontiers().len();
             let mut pre_quantum_appends = Vec::new();
             let fault_append = self.evaluate_signal_fault_boundary()?;
             if !fault_append.entries.is_empty() {
@@ -241,6 +356,35 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             self.inner
                 .loop_impl_mut()
                 .record_pending_signal_fault_search_frontiers(boundary_search_choices)?;
+            let live_signal_fault_discoveries = self
+                .signal_fault_campaign_discoveries_at_current_boundary_since(
+                    signal_fault_frontier_start,
+                )?;
+            let replaying_current_signal_fault_branch =
+                self.signal_fault_branches.front().is_some_and(|branch| {
+                    branch.parent() == self.inner.loop_impl().configuration()
+                        && branch.frontier() == self.inner.loop_impl().frontier()
+                });
+            if !live_signal_fault_discoveries.is_empty() && !replaying_current_signal_fault_branch {
+                let scheduler = self.inner.loop_impl();
+                let mut outcome = QuantumOutcome {
+                    configuration: scheduler.configuration().clone(),
+                    frontier: scheduler.frontier(),
+                    advanced_node: None,
+                    resolved_events: Vec::new(),
+                    decisions: pre_quantum_decisions,
+                    discovered_choices: live_signal_fault_discoveries,
+                    event_log_entries: Vec::new(),
+                    event_log_segment_bytes: Vec::new(),
+                    event_log_segment_text: String::new(),
+                    event_log_segment_hash: None,
+                    event_log_offset: scheduler.event_log_offset(),
+                    scheduler_quiescence: Some(scheduler.quiescence()?),
+                };
+                prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                self.capture_debug_runtime_evidence()?;
+                return Ok(outcome);
+            }
             if self.terminal_verdict.is_some() {
                 let scheduler = self.inner.loop_impl();
                 let mut outcome = QuantumOutcome {
@@ -258,6 +402,10 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                     scheduler_quiescence: Some(scheduler.quiescence()?),
                 };
                 prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                self.append_live_signal_fault_campaign_discoveries(
+                    signal_fault_frontier_start,
+                    &mut outcome,
+                )?;
                 self.capture_debug_runtime_evidence()?;
                 return Ok(outcome);
             }
@@ -363,6 +511,10 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                         scheduler_quiescence,
                     };
                     prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                    self.append_live_signal_fault_campaign_discoveries(
+                        signal_fault_frontier_start,
+                        &mut outcome,
+                    )?;
                     self.capture_debug_runtime_evidence()?;
                     return Ok(outcome);
                 }
@@ -435,6 +587,10 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                         scheduler_quiescence,
                     };
                     prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                    self.append_live_signal_fault_campaign_discoveries(
+                        signal_fault_frontier_start,
+                        &mut outcome,
+                    )?;
                     self.capture_debug_runtime_evidence()?;
                     return Ok(outcome);
                 }
@@ -495,6 +651,10 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             for append in self.settle_trigger_graph()? {
                 merge_event_log_append(&mut outcome, append);
             }
+            self.append_live_signal_fault_campaign_discoveries(
+                signal_fault_frontier_start,
+                &mut outcome,
+            )?;
             self.capture_debug_runtime_evidence()?;
             Ok(outcome)
         })();
