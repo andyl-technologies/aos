@@ -553,6 +553,31 @@ mod tests {
     }
 
     #[test]
+    fn terminal_operation_status_fails_closed() {
+        let response = |state: &str, error: &str| hub_types::WatchOperationResponse {
+            operation: Some(hub_types::OperationDetail {
+                operation: Some(hub_types::OperationRef {
+                    operation_id: "operation-1".into(),
+                    state: state.into(),
+                    ..Default::default()
+                }),
+                error: error.into(),
+                ..Default::default()
+            }),
+            terminal: true,
+        };
+
+        assert!(terminal_operation_status(&response("succeeded", "")).is_ok());
+        let failed = terminal_operation_status(&response("failed", "copy rejected"))
+            .unwrap_err()
+            .to_string();
+        assert!(failed.contains("operation-1"));
+        assert!(failed.contains("copy rejected"));
+        assert!(terminal_operation_status(&response("cancelled", "")).is_err());
+        assert!(terminal_operation_status(&response("running", "")).is_err());
+    }
+
+    #[test]
     fn access_policy_variants_reject_cross_kind_fields() {
         let input = HubAccessPolicyArgs {
             access: Some("public".into()),
@@ -3071,7 +3096,7 @@ async fn watch_hub_operation(
             if let Some(response) = last_response {
                 print_topology_message(printer, &response)?;
             }
-            return Ok(());
+            anyhow::bail!("timed out waiting for Hub operation '{operation_id}'");
         }
         let response: hub_types::WatchOperationResponse = client
             .call_topology(
@@ -3095,9 +3120,40 @@ async fn watch_hub_operation(
             if printer.mode() == OutputMode::Json {
                 print_topology_message(printer, &response)?;
             }
-            return Ok(());
+            return terminal_operation_status(&response);
         }
         last_response = Some(response);
+    }
+}
+
+fn terminal_operation_status(response: &hub_types::WatchOperationResponse) -> Result<()> {
+    let detail = response
+        .operation
+        .as_ref()
+        .context("the Hub returned a terminal watch response without operation detail")?;
+    let operation = detail
+        .operation
+        .as_ref()
+        .context("the Hub returned terminal operation detail without an operation")?;
+
+    match operation.state.as_str() {
+        "succeeded" => Ok(()),
+        "failed" | "cancelled" => {
+            let reason = if detail.error.is_empty() {
+                "no error detail was provided"
+            } else {
+                detail.error.as_str()
+            };
+            anyhow::bail!(
+                "Hub operation '{}' {}: {reason}",
+                operation.operation_id,
+                operation.state
+            )
+        }
+        state => anyhow::bail!(
+            "Hub operation '{}' was marked terminal in unexpected state '{state}'",
+            operation.operation_id
+        ),
     }
 }
 
