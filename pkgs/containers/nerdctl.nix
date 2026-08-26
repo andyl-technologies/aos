@@ -4,6 +4,8 @@
   fetchurl,
   fetchGoModules,
   cni-plugins,
+  bash,
+  stdenv,
 }: let
   version = "2.2.1";
   src = fetchurl {
@@ -27,18 +29,27 @@ in
     ldflags = "-s -w -X github.com/containerd/nerdctl/v2/pkg/version.Version=v${version}";
     doCheck = false;
 
-    runtimeDeps = [cni-plugins];
+    # CNI plugins implement Linux network namespaces.  Darwin nerdctl remains
+    # useful as a client for remote containerd endpoints without that runtime
+    # integration.
+    runtimeDeps =
+      if stdenv.hostPlatform.isDarwin
+      then []
+      else [cni-plugins bash];
 
-    postInstall = ''
-          # Wrap nerdctl to set CNI_PATH
-          mv "$out/bin/nerdctl" "$out/bin/.nerdctl-unwrapped"
-          cat > "$out/bin/nerdctl" << WRAPPER
-      #!/bin/sh
-      export CNI_PATH="${cni-plugins}/bin"
-      exec "\$(dirname "\$0")/.nerdctl-unwrapped" "\$@"
-      WRAPPER
-          chmod +x "$out/bin/nerdctl"
-    '';
+    postInstall =
+      if stdenv.hostPlatform.isDarwin
+      then ""
+      else ''
+            # Wrap nerdctl to set CNI_PATH
+            mv "$out/bin/nerdctl" "$out/bin/.nerdctl-unwrapped"
+            cat > "$out/bin/nerdctl" << WRAPPER
+        #!${bash}/bin/bash
+        export CNI_PATH="${cni-plugins}/bin"
+        exec "\$(dirname "\$0")/.nerdctl-unwrapped" "\$@"
+        WRAPPER
+            chmod +x "$out/bin/nerdctl"
+      '';
 
     checks = {
       testing,

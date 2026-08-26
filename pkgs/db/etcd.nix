@@ -3,8 +3,7 @@
   mkDerivation,
   fetchurl,
   fetchGoModules,
-  gnumake,
-  go,
+  buildPackages,
 }: let
   version = "3.5.21";
   src = fetchurl {
@@ -40,10 +39,10 @@ in
     inherit version;
     inherit src;
 
-    buildDeps = [
-      gnumake
-      go
-    ];
+    # The published Go package is Darwin-hosted in a cross package set and
+    # cannot execute on the Linux builder.  Go's native compiler emits the
+    # selected Darwin target directly.
+    buildDeps = [buildPackages.go];
     runtimeDeps = [];
 
     phases = [
@@ -60,6 +59,10 @@ in
           export GOCACHE=$TMPDIR/go-cache
           export CGO_ENABLED=0
           export GOPROXY=off
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            export GOOS="$AOS_GOOS"
+            export GOARCH="$AOS_GOARCH"
+          fi
           mkdir -p "$GOCACHE" bin
 
           cd server
