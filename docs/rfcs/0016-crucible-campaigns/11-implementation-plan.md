@@ -982,9 +982,15 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   domain, and opportunity records. It reauthenticates those records and a
   campaign branch selection to reconstruct the exact selection plus optional
   override prefix, including the unmodified-result sentinel. Campaign attempt
-  decoding recognizes this standardized adapter and retains the opaque
-  validated replay plan. Live pause-at-frontier admission, production QEMU
-  prefix injection, bounded interesting-window policy, and automatic
+  decoding recognizes this standardized adapter, reconstructs up to 4,096
+  nested promoted events in exact schedule order, and retains one opaque
+  validated replay plan. The fresh production lifecycle installs all finite
+  signal overrides before launch, stops at each exact parent/time frontier,
+  proves the exact producer choice through a consumed override or matching
+  unmodified runtime frontier, injects only the typed selection-plus-optional-
+  override prefix, prevents checkpoint capture while a prefix remains, and
+  reconstructs the plan from immutable input after restart. Live pause-and-
+  publication admission, bounded interesting-window policy, and automatic
   signature-preserving minimization remain open; retrospective frontiers are
   deliberately not published as later observation discoveries.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy

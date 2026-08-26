@@ -17,7 +17,8 @@ pub(crate) use app_random_selectable::{
     is_app_random_model_selection, is_app_random_schedule_decision,
 };
 pub use signal_fault_selectable::{
-    MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES, SIGNAL_FAULT_CAMPAIGN_ADAPTER, SignalFaultCampaignBranch,
+    MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES, MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES,
+    SIGNAL_FAULT_CAMPAIGN_ADAPTER, SignalFaultCampaignBranch, SignalFaultCampaignReplayPlan,
     SignalFaultSelectable, SignalFaultSelectableError,
 };
 

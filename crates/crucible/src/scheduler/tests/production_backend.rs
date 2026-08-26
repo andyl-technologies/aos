@@ -460,6 +460,56 @@ fn branch_prefix_admission_records_only_explorer_overrides() {
 }
 
 #[test]
+fn signal_fault_branch_admission_requires_the_exact_typed_boundary() {
+    let mut scheduler = test_scheduler(Vec::new(), Vec::new());
+    let parent = scheduler.configuration().clone();
+    let frontier = scheduler.frontier();
+    let choice = crate::model::BindingSearchChoice {
+        id: crate::model::SearchChoiceId::from_content_hash(ContentHash::from_bytes(
+            b"typed-scheduler-signal-choice",
+        )),
+        candidates_digest: ContentHash::from_bytes(b"typed-scheduler-signal-candidates"),
+        candidate_count: 2,
+        selected_index: None,
+        overridden: false,
+    };
+    let selectable = crate::SignalFaultSelectable::from_frontier(&crate::SearchRuntimeFrontier {
+        configuration: parent.clone(),
+        at: frontier,
+        choices: crate::SearchFrontierChoices::from_decisions(
+            choice
+                .override_decisions(parent.id())
+                .into_iter()
+                .map(Decision::Override),
+        ),
+    })
+    .expect("typed signal selectable");
+    let selection = selectable
+        .branch_selection(&parent, 1)
+        .expect("typed signal selection");
+    let branch = selectable
+        .resolve_branch(&selection)
+        .expect("typed signal branch");
+
+    let (configuration, append) = scheduler
+        .append_signal_fault_campaign_branch(&branch)
+        .expect("exact typed branch should append");
+    assert_eq!(configuration, *branch.selected());
+    assert_eq!(scheduler.configuration(), branch.selected());
+    assert!(branch.decisions().iter().all(|decision| {
+        append
+            .entries
+            .iter()
+            .any(|entry| entry.payload() == &SchedulerEventLogPayload::Decision(decision.clone()))
+    }));
+
+    let error = scheduler
+        .append_signal_fault_campaign_branch(&branch)
+        .expect_err("a consumed branch must not apply at another parent");
+    assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
+}
+
+#[test]
 fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
     fn app_random_decisions(
         seed: Seed,

@@ -16,12 +16,14 @@
 //! Decoding re-derives both semantic identities before a live session or QEMU
 //! process can consume the values.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crucible::{
     Configuration, ContentHash, Decision, EngineError, FindingReproductionArtifact,
     MAX_MINIMIZATION_CANDIDATE_WORK_BYTES, MAX_MINIMIZATION_CANDIDATES, MinimizationConfig,
-    MinimizationRun, ScenarioDefForm, Schedule,
+    MinimizationRun, ScenarioDefForm, Schedule, SignalFaultCampaignReplayPlan,
+    SignalFaultSelectable,
 };
 use crucible_campaign::{
     CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignRepository,
@@ -453,6 +455,12 @@ pub enum CrucibleArtifactError {
     /// A promoted signal-fault selection did not match its standardized records.
     #[error(transparent)]
     SignalFaultSelection(#[from] crucible::SignalFaultSelectableError),
+    /// A standardized signal-fault selection was not followed by its exact prefix.
+    #[error("Crucible configuration signal-fault branch differs from its authenticated prefix")]
+    SignalFaultScheduleMismatch,
+    /// A raw signal-fault override was not certified by a standardized selection.
+    #[error("Crucible configuration contains an unbound signal-fault override")]
+    UnboundSignalFaultOverride,
 }
 
 /// Encodes one validated Crucible scenario form as a campaign artifact.
@@ -587,10 +595,38 @@ pub fn decode_crucible_configuration_artifact_with_selections(
     artifact: &ConfigurationArtifact,
     store: &CampaignExecutorStore,
 ) -> Result<Configuration, CrucibleArtifactError> {
+    decode_crucible_configuration_artifact_with_signal_fault_replay(
+        scenario,
+        scenario_artifact,
+        artifact,
+        store,
+    )
+    .map(|(configuration, _)| configuration)
+}
+
+/// Strictly decodes a configuration and retains authenticated signal-fault replay.
+///
+/// This performs the same complete selection validation as
+/// [`decode_crucible_configuration_artifact_with_selections`]. In addition, it
+/// reconstructs every standardized promoted signal-fault branch, requires its
+/// selection and optional override to occur at the exact target prefix, and
+/// returns the bounded ordered plan consumed by the production lifecycle.
+///
+/// # Errors
+///
+/// Returns [`CrucibleArtifactError`] for malformed artifacts, unresolved or
+/// inconsistent selection records, uncovered signal-fault overrides, or an
+/// invalid replay plan.
+pub fn decode_crucible_configuration_artifact_with_signal_fault_replay(
+    scenario: &ScenarioDefForm,
+    scenario_artifact: &ScenarioArtifact,
+    artifact: &ConfigurationArtifact,
+    store: &CampaignExecutorStore,
+) -> Result<(Configuration, SignalFaultCampaignReplayPlan), CrucibleArtifactError> {
     let configuration =
         decode_crucible_configuration_artifact_structural(scenario, scenario_artifact, artifact)?;
-    validate_selection_decisions(&configuration, artifact, store)?;
-    Ok(configuration)
+    let replay = resolve_selection_decisions(&configuration, artifact, store)?;
+    Ok((configuration, replay))
 }
 
 fn decode_crucible_configuration_artifact_structural(
@@ -633,11 +669,11 @@ fn decode_crucible_configuration_artifact_structural(
     Ok(configuration)
 }
 
-fn validate_selection_decisions(
+fn resolve_selection_decisions(
     configuration: &Configuration,
     artifact: &ConfigurationArtifact,
     store: &CampaignExecutorStore,
-) -> Result<(), CrucibleArtifactError> {
+) -> Result<SignalFaultCampaignReplayPlan, CrucibleArtifactError> {
     let mut selections = Vec::new();
     let mut campaign_branch_count = 0usize;
     for (index, decision) in configuration.schedule.decisions().iter().enumerate() {
@@ -667,7 +703,12 @@ fn validate_selection_decisions(
         return Err(CrucibleArtifactError::SelectionResolutionLimit);
     }
     if selections.is_empty() {
-        return Ok(());
+        if configuration.schedule.decisions().iter().any(|decision| {
+            matches!(decision, Decision::Override(override_decision) if override_decision.point.key.starts_with("signal-fault/"))
+        }) {
+            return Err(CrucibleArtifactError::UnboundSignalFaultOverride);
+        }
+        return Ok(SignalFaultCampaignReplayPlan::empty(configuration.clone()));
     }
 
     let selection_ids = selections
@@ -675,6 +716,8 @@ fn validate_selection_decisions(
         .map(|(_, selection)| selection.id())
         .collect::<Result<Vec<_>, _>>()?;
     let resolved = store.resolve_selections(&selection_ids)?;
+    let mut signal_fault_branches = Vec::new();
+    let mut covered_signal_fault_overrides = BTreeSet::new();
     for ((index, selection), resolved) in selections.into_iter().zip(resolved) {
         if resolved.selection() != &selection
             || resolved.opportunity().scenario() != artifact.scenario()
@@ -699,6 +742,31 @@ fn validate_selection_decisions(
                         .opportunity()
                         .branch_point_id(campaign_configuration_id(parent.id())),
                 )?;
+                if matches!(
+                    resolved.opportunity().source(),
+                    crucible_campaign::ChoiceSource::Environment { adapter, .. }
+                        if adapter == crucible::SIGNAL_FAULT_CAMPAIGN_ADAPTER
+                ) {
+                    let selectable = SignalFaultSelectable::from_records(
+                        &parent,
+                        resolved.declaration(),
+                        resolved.opportunity(),
+                        resolved.domain(),
+                    )?;
+                    let branch = selectable.resolve_branch(&selection)?;
+                    let end = index
+                        .checked_add(branch.decisions().len())
+                        .ok_or(CrucibleArtifactError::SelectionResolutionLimit)?;
+                    if end > configuration.schedule.len()
+                        || configuration.schedule.decisions()[index..end] != *branch.decisions()
+                    {
+                        return Err(CrucibleArtifactError::SignalFaultScheduleMismatch);
+                    }
+                    if branch.decisions().len() == 2 {
+                        covered_signal_fault_overrides.insert(index + 1);
+                    }
+                    signal_fault_branches.push(branch);
+                }
             }
             SelectionOrigin::ModelSample(_) => {
                 crucible::validate_app_random_model_selection(
@@ -711,7 +779,20 @@ fn validate_selection_decisions(
             }
         }
     }
-    Ok(())
+    if configuration
+        .schedule
+        .decisions()
+        .iter()
+        .enumerate()
+        .any(|(index, decision)| {
+            matches!(decision, Decision::Override(override_decision) if override_decision.point.key.starts_with("signal-fault/"))
+                && !covered_signal_fault_overrides.contains(&index)
+        })
+    {
+        return Err(CrucibleArtifactError::UnboundSignalFaultOverride);
+    }
+    SignalFaultCampaignReplayPlan::new(configuration.clone(), signal_fault_branches)
+        .map_err(Into::into)
 }
 
 fn require_schema(
@@ -792,6 +873,56 @@ mod tests {
         )
         .expect("default selection");
         Decision::Selection(SelectionDecision::new(&selection))
+    }
+
+    fn signal_fault_selectable(
+        parent: &Configuration,
+        label: &[u8],
+        frontier: u64,
+    ) -> SignalFaultSelectable {
+        let choice = crucible::model::BindingSearchChoice {
+            id: crucible::model::SearchChoiceId::from_content_hash(ContentHash::from_bytes(label)),
+            candidates_digest: ContentHash::from_canonical_material(
+                "crucible.test.artifact-signal-candidates",
+                &label
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>(),
+            ),
+            candidate_count: 2,
+            selected_index: None,
+            overridden: false,
+        };
+        SignalFaultSelectable::from_frontier(&crucible::SearchRuntimeFrontier {
+            configuration: parent.clone(),
+            at: VirtualTime { ticks: frontier },
+            choices: crucible::SearchFrontierChoices::from_decisions(
+                choice
+                    .override_decisions(parent.id())
+                    .into_iter()
+                    .map(Decision::Override),
+            ),
+        })
+        .expect("signal-fault selectable fixture")
+    }
+
+    fn publish_signal_selection(
+        repository: &CampaignRepository,
+        selectable: &SignalFaultSelectable,
+        selection: &Selection,
+    ) {
+        repository
+            .publish_choice_domain(selectable.domain())
+            .expect("publish signal-fault domain");
+        repository
+            .publish_selectable(selectable.declaration())
+            .expect("publish signal-fault declaration");
+        repository
+            .publish_choice_opportunity(selectable.opportunity())
+            .expect("publish signal-fault opportunity");
+        repository
+            .publish_selection(selection)
+            .expect("publish signal-fault selection");
     }
 
     #[test]
@@ -913,7 +1044,7 @@ mod tests {
         repository
             .publish_selection(&selection)
             .expect("publish app-random selection");
-        let store = CampaignExecutorStore::new(repository);
+        let store = CampaignExecutorStore::new(Arc::clone(&repository));
 
         let decoded = decode_crucible_configuration_artifact_with_selections(
             &scenario,
@@ -923,6 +1054,94 @@ mod tests {
         )
         .expect("standardized model sample should pass executor verification");
         assert_eq!(decoded.schedule, schedule);
+    }
+
+    #[test]
+    fn nested_signal_fault_selections_resolve_to_one_exact_ordered_plan() {
+        let scenario = crucible::happy_path_scenario()
+            .expect("happy-path scenario")
+            .scenario;
+        let scenario_artifact =
+            encode_crucible_scenario_artifact(&scenario).expect("scenario artifact");
+        let parent = Configuration::genesis(scenario.scenario_def());
+        let first_selectable = signal_fault_selectable(&parent, b"first-signal-choice", 17);
+        let first_selection = first_selectable
+            .branch_selection(&parent, 0)
+            .expect("first candidate selection");
+        let first = first_selectable
+            .resolve_branch(&first_selection)
+            .expect("first branch");
+        let second_selectable =
+            signal_fault_selectable(first.selected(), b"second-signal-choice", 29);
+        let second_selection = second_selectable
+            .branch_selection(first.selected(), 2)
+            .expect("second unmodified selection");
+        let second = second_selectable
+            .resolve_branch(&second_selection)
+            .expect("second branch");
+        let artifact =
+            encode_crucible_configuration_artifact(&scenario_artifact, &second.selected().schedule)
+                .expect("nested signal configuration");
+
+        let repository = Arc::new(CampaignRepository::new(
+            Arc::new(MemoryBlobBackend::new(
+                "crucible-nested-signal-selections",
+                u64::MAX,
+            )),
+            Arc::new(MemoryRefBackend::new()),
+        ));
+        publish_signal_selection(&repository, &first_selectable, &first_selection);
+        publish_signal_selection(&repository, &second_selectable, &second_selection);
+        let store = CampaignExecutorStore::new(Arc::clone(&repository));
+
+        let (decoded, replay) = decode_crucible_configuration_artifact_with_signal_fault_replay(
+            &scenario,
+            &scenario_artifact,
+            &artifact,
+            &store,
+        )
+        .expect("nested signal choices should authenticate");
+        assert_eq!(decoded, *second.selected());
+        assert_eq!(replay.target(), second.selected());
+        assert_eq!(replay.branches(), &[first.clone(), second]);
+        let restarted_store = CampaignExecutorStore::new(Arc::clone(&repository));
+        let (_, restarted_replay) =
+            decode_crucible_configuration_artifact_with_signal_fault_replay(
+                &scenario,
+                &scenario_artifact,
+                &artifact,
+                &restarted_store,
+            )
+            .expect("restart should reconstruct the same immutable replay plan");
+        assert_eq!(restarted_replay, replay);
+
+        let missing_override = Schedule::empty().appended(first.decisions()[0].clone());
+        let missing_override =
+            encode_crucible_configuration_artifact(&scenario_artifact, &missing_override)
+                .expect("missing-override artifact");
+        assert!(matches!(
+            decode_crucible_configuration_artifact_with_signal_fault_replay(
+                &scenario,
+                &scenario_artifact,
+                &missing_override,
+                &store,
+            ),
+            Err(CrucibleArtifactError::SignalFaultScheduleMismatch)
+        ));
+
+        let raw_override = Schedule::empty().appended(first.decisions()[1].clone());
+        let raw_override =
+            encode_crucible_configuration_artifact(&scenario_artifact, &raw_override)
+                .expect("raw-override artifact");
+        assert!(matches!(
+            decode_crucible_configuration_artifact_with_signal_fault_replay(
+                &scenario,
+                &scenario_artifact,
+                &raw_override,
+                &store,
+            ),
+            Err(CrucibleArtifactError::UnboundSignalFaultOverride)
+        ));
     }
 
     #[test]
