@@ -32187,6 +32187,15 @@ impl RpcService {
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        if matches!(
+            updated.operation_kind.as_str(),
+            "scan_placement" | "replicate_placement" | "repair_placement"
+        ) {
+            self.topology_probes
+                .wake_controller()
+                .await
+                .map_err(RpcError::internal)?;
+        }
         Ok(pb::OperationDetailResponse {
             operation: Some(self.operation_detail(&updated).await?),
         })
