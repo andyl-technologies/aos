@@ -7,8 +7,11 @@
   zlib,
   openssl,
   xz,
+  stdenv,
+  buildPackages,
 }: let
   version = "3.12.9";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 
   markupsafeSrc = fetchurl {
     urls = [
@@ -35,10 +38,16 @@ in
       hash = "sha256-ciCDXZ+Qs3wAbphCqN/0WAqspDGGdPlHMCuNKPP4ERI=";
     };
 
-    buildDeps = [
-      gnumake
-      pkg-config
-    ];
+    buildDeps =
+      [
+        gnumake
+        pkg-config
+      ]
+      ++ (
+        if isDarwinCross
+        then [buildPackages.python3-3_12]
+        else []
+      );
     runtimeDeps = [
       zlib
       openssl
@@ -66,8 +75,15 @@ in
       {
         name = "configure";
         script = ''
-          LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib" \
-          ./configure \
+          ${
+            if isDarwinCross
+            then ''
+              export PYTHON_FOR_BUILD=${buildPackages.python3-3_12}/bin/python3
+            ''
+            else ""
+          }
+          LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib" ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-shared \
             --with-system-ffi=no \
@@ -75,19 +91,38 @@ in
             --with-ensurepip=no \
             --without-static-libpython \
             --disable-test-modules \
-            --with-openssl=${openssl}
+            --with-openssl=${openssl} \
+            ${
+            if isDarwinCross
+            then ''--with-build-python=${buildPackages.python3-3_12}/bin/python3''
+            else ""
+          }
         '';
       }
       {
         name = "build";
         script = ''
-          make -j$NIX_BUILD_CORES
+          ${
+            if isDarwinCross
+            then ''
+              make -j$NIX_BUILD_CORES \
+                PYTHON_FOR_BUILD=${buildPackages.python3-3_12}/bin/python3
+            ''
+            else "make -j$NIX_BUILD_CORES"
+          }
         '';
       }
       {
         name = "install";
         script = ''
-          make install
+          ${
+            if isDarwinCross
+            then ''
+              make install \
+                PYTHON_FOR_BUILD=${buildPackages.python3-3_12}/bin/python3
+            ''
+            else "make install"
+          }
           # Ensure 'python' symlink exists alongside 'python3'
           if [ ! -e $out/bin/python ]; then
             ln -sf python3 $out/bin/python

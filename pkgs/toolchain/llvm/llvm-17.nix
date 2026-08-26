@@ -8,6 +8,8 @@
   python3,
   zlib,
   bootstrapTools,
+  stdenv,
+  buildPackages,
 }: let
   mkLLVM = import ./_llvm.nix {
     inherit
@@ -19,6 +21,8 @@
       python3
       zlib
       bootstrapTools
+      stdenv
+      buildPackages
       ;
   };
 in

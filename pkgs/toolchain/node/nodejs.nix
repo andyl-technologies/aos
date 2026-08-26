@@ -11,8 +11,19 @@
   fetchurl,
   python3,
   gnumake,
+  stdenv,
+  buildPackages,
 }: let
   version = "22.22.3";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  buildPython =
+    if isDarwinCross
+    then buildPackages.python3
+    else python3;
+  targetCpu =
+    if stdenv.hostPlatform.isAarch64
+    then "arm64"
+    else "x64";
 in
   mkDerivation {
     pname = "nodejs";
@@ -25,10 +36,16 @@ in
       hash = "sha256-8+aleNsaszWkpyeFweh60Yos9tL8JXR6HXQfs0rwvQ8=";
     };
 
-    buildDeps = [
-      python3
-      gnumake
-    ];
+    buildDeps =
+      [
+        python3
+        gnumake
+      ]
+      ++ (
+        if isDarwinCross
+        then [buildPython]
+        else []
+      );
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -46,7 +63,15 @@ in
           # No /usr/bin/env in the sandbox: pin every python invocation to the
           # AOS interpreter. configure.py honors $PYTHON; the generated build
           # rules invoke it via the same variable through the Makefile.
-          export PYTHON=${python3}/bin/python3
+          export PYTHON=${buildPython}/bin/python3
+          ${
+            if isDarwinCross
+            then ''
+              export CC_host=${buildPackages.cc}/bin/cc
+              export CXX_host=${buildPackages.cc}/bin/c++
+            ''
+            else ""
+          }
 
           # V8 and Node embed an absolute RPATH-free shared object set; the
           # ccWrapper already injects -Wl,-rpath for runtime deps. Bundled
@@ -55,20 +80,33 @@ in
           # configure.py emit GYP Makefiles driven by AOS gnumake.
           $PYTHON configure.py \
             --prefix=$out \
-            --with-intl=full-icu
+            --with-intl=full-icu \
+            ${
+            if isDarwinCross
+            then ''--cross-compiling --dest-os=mac --dest-cpu=${targetCpu}''
+            else ""
+          }
         '';
       }
       {
         name = "build";
         script = ''
-          export PYTHON=${python3}/bin/python3
-          make -j$NIX_BUILD_CORES PYTHON=$PYTHON
+          export PYTHON=${buildPython}/bin/python3
+          ${
+            if isDarwinCross
+            then ''
+              make -j$NIX_BUILD_CORES PYTHON=$PYTHON \
+                CC.host=${buildPackages.cc}/bin/cc \
+                CXX.host=${buildPackages.cc}/bin/c++
+            ''
+            else "make -j$NIX_BUILD_CORES PYTHON=$PYTHON"
+          }
         '';
       }
       {
         name = "install";
         script = ''
-          export PYTHON=${python3}/bin/python3
+          export PYTHON=${buildPython}/bin/python3
           make install PYTHON=$PYTHON
         '';
       }
