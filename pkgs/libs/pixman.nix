@@ -6,6 +6,7 @@
   pkg-config,
   meson,
   ninja,
+  buildPackages,
 }: let
   version = "0.44.2";
 in
@@ -60,7 +61,10 @@ in
       {
         name = "install";
         script = ''
-          ninja -C build install
+          # Meson records its Python module invocation in build.ninja, not the
+          # environment-setting launcher used during setup.
+          PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
+            ninja -C build install
         '';
       }
     ];
