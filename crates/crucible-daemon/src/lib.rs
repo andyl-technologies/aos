@@ -15,6 +15,8 @@
 //! [`campaign_attachment`] composes each packaged planner and checked local
 //! executor with one named durable campaign, while [`campaign_bootstrap`]
 //! owns a bounded startup-fixed set of those attachments;
+//! [`campaign_runtime_control`] owns their bounded operational attachment
+//! messages without admitting deployment paths into semantic identities;
 //! [`campaign_runtime`] owns one sticky, bounded, long-lived supervisor thread;
 //! [`campaign_loopback`] provides the strict local
 //! user-facing service transport; [`campaign_server`] owns its bounded
@@ -76,6 +78,7 @@ pub mod campaign_loopback;
 pub mod campaign_policy;
 pub mod campaign_retention;
 pub mod campaign_runtime;
+pub mod campaign_runtime_control;
 pub mod campaign_server;
 pub mod control_responsiveness;
 pub mod crucible_artifact;
@@ -172,6 +175,11 @@ pub use campaign_runtime::{
     CampaignRuntimeStartError, CampaignRuntimeStepDisposition, CampaignRuntimeWake,
     DEFAULT_CAMPAIGN_RUNTIME_POLL_INTERVAL, MAX_CAMPAIGN_RUNTIME_IMMEDIATE_BURST,
     MAX_CAMPAIGN_RUNTIME_POLL_INTERVAL, MIN_CAMPAIGN_RUNTIME_POLL_INTERVAL,
+};
+pub use campaign_runtime_control::{
+    AttachCampaignRuntimeRequest, AttachCampaignRuntimeResponse,
+    CampaignRuntimeAttachmentDisposition, CampaignRuntimeControlCodecError,
+    MAX_CAMPAIGN_RUNTIME_CONTROL_MESSAGE_BYTES,
 };
 pub use campaign_server::{
     CampaignLoopbackListenerError, CampaignLoopbackServer, CampaignLoopbackServerConfig,

@@ -409,6 +409,10 @@ fn policy_operation_labels_cover_the_closed_service_vocabulary() {
             "submit-branch-request",
             CampaignServiceOperation::SubmitBranchRequest,
         ),
+        (
+            "attach-campaign-runtime",
+            CampaignServiceOperation::AttachCampaignRuntime,
+        ),
     ];
     for (label, operation) in labels {
         assert_eq!(parse_operation(label), Some(operation));

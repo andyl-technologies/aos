@@ -80,7 +80,8 @@ impl CampaignLocalServiceMode {
                 | CampaignServiceOperation::DeriveCampaign
                 | CampaignServiceOperation::ApplyCampaignCommand
                 | CampaignServiceOperation::PinCampaign
-                | CampaignServiceOperation::SubmitBranchRequest => false,
+                | CampaignServiceOperation::SubmitBranchRequest
+                | CampaignServiceOperation::AttachCampaignRuntime => false,
                 CampaignServiceOperation::ListCampaigns
                 | CampaignServiceOperation::GetCampaign
                 | CampaignServiceOperation::GetCampaignSnapshot

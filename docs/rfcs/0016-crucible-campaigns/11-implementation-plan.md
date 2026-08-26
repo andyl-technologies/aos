@@ -1055,10 +1055,13 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   cancels the complete installed set before joining it. Startup and live
   attachment now share one exact executor connector that brackets connect with
   secure-parent, socket owner/mode/inode, and `SO_PEERCRED` authentication under
-  a finite absolute connect deadline. Authenticated public operator transport/
-  CLI attachment, automatic campaign discovery, shared packaged-executor
-  allocation, and additional opaque non-finite model-prior adapters remain
-  open. The first `CampaignService`
+  a finite absolute connect deadline. A separate registered version-1 daemon-
+  operational message now binds principal, campaign, and the bounded executor
+  path under one digest, exact response, and distinct read-write-only policy
+  operation without admitting the path into campaign identities. Authenticated
+  listener routing/CLI attachment, automatic campaign discovery, shared
+  packaged-executor allocation, and additional opaque non-finite model-prior
+  adapters remain open. The first `CampaignService`
   checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
   bounded by-value creation, authenticated current-head reads,
