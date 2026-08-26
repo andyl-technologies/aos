@@ -30,17 +30,29 @@
 
             printf '%s\n' \
               '#include <CoreFoundation/CoreFoundation.h>' \
+              '#include <netinet/tcp_fsm.h>' \
               '#include <SystemConfiguration/SystemConfiguration.h>' \
               'int main(void) {' \
+              '  CFStringRef label = CFSTR("aos Darwin SDK");' \
               '  CFDictionaryRef proxies = SCDynamicStoreCopyProxies(NULL);' \
               '  if (proxies != NULL) CFRelease(proxies);' \
-              '  return 0;' \
+              '  return label == NULL;' \
               '}' \
               > framework-smoke.c
             "$CC" framework-smoke.c \
               -framework SystemConfiguration \
               -framework CoreFoundation \
+              -lobjc \
               -o "$c/bin/aos-darwin-framework-smoke"
+
+            printf '%s\n' \
+              '#include <objc/runtime.h>' \
+              '__attribute__((objc_root_class)) @interface AosRoot @end' \
+              '@implementation AosRoot @end' \
+              'int main(void) { return objc_getClass("AosRoot") == 0; }' \
+              > objective-c-smoke.m
+            "$CC" objective-c-smoke.m -lobjc \
+              -o "$c/bin/aos-darwin-objective-c-smoke"
 
             printf '%s\n' \
               '#include <IOKit/IOKitLib.h>' \
@@ -66,15 +78,21 @@
 
             printf '%s\n' \
               'extern "C" int puts(const char *);' \
+              '#include <string>' \
               'constexpr int answer = 42;' \
-              'int main() { return answer == 42 && puts("aos Darwin C++ smoke") >= 0 ? 0 : 1; }' \
+              'int main() {' \
+              '  std::string message = "aos Darwin C++ smoke";' \
+              '  return answer == 42 && puts(message.c_str()) >= 0 ? 0 : 1;' \
+              '}' \
               > smoke.cc
-            "$CXX" smoke.cc -o "$cxx/bin/aos-darwin-cxx-smoke"
+            "$CXX" -c smoke.cc -o smoke.o
+            "$CXX" smoke.o -o "$cxx/bin/aos-darwin-cxx-smoke"
 
             for executable in \
               "$c/bin/aos-darwin-c-smoke" \
               "$c/bin/aos-darwin-framework-smoke" \
               "$c/bin/aos-darwin-iokit-smoke" \
+              "$c/bin/aos-darwin-objective-c-smoke" \
               "$cxx/bin/aos-darwin-cxx-smoke"; do
               header=$("$OBJDUMP" --macho --private-header "$executable")
               if ! printf '%s\n' "$header" | grep -q '${expectedCpu}'; then

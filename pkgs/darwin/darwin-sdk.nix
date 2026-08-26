@@ -19,6 +19,7 @@
   ioStorageFamilyRevision = "7edb88fbae296fb7c8ce2f64e115e116e566d51c";
   darlingIoKitUserRevision = "534684e6748dffbd875c6cd1942477a52b66a077";
   securityRevision = "db15acbe6a7f257a859ad9a3bb86097bfe0679d9";
+  objcRevision = "fb265098298302243cd7eeaa1f63f0ba7786dd9a";
 
   coreFoundationSrc = fetchurl {
     urls = [
@@ -75,6 +76,13 @@
     ];
     hash = "sha256-OQFd8WPEZSHROeg+yS+SFSf5Uv4WWeROGltFxqqkl9Y=";
   };
+
+  objcSrc = fetchurl {
+    urls = [
+      "https://github.com/apple-oss-distributions/objc4/archive/${objcRevision}.tar.gz"
+    ];
+    hash = "sha256-+DFg3gllkBpI+lr+AiPV+xBDvpry/iwr2oBJCfidsvU=";
+  };
 in
   mkDerivation {
     pname = "darwin-sdk";
@@ -102,6 +110,7 @@ in
           tar xf ${ioStorageFamilySrc}
           tar xf ${darlingIoKitUserSrc}
           tar xf ${securitySrc}
+          tar xf ${objcSrc}
           cd "zig-${version}"
         '';
       }
@@ -116,10 +125,12 @@ in
           ioStorageFamilyRoot="../IOStorageFamily-${ioStorageFamilyRevision}"
           darlingIoKitUserRoot="../darling-iokituser-${darlingIoKitUserRevision}"
           securityRoot="../Security-${securityRevision}"
+          objcRoot="../objc4-${objcRevision}"
 
           mkdir -p \
             "$out/usr/include/c++/v1" \
             "$out/usr/include/libunwind" \
+            "$out/usr/include/objc" \
             "$out/usr/lib" \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Headers" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/storage/ata" \
@@ -134,6 +145,7 @@ in
           cp -R lib/libcxxabi/include/. "$out/usr/include/c++/v1/"
           cp -R lib/libunwind/include/. "$out/usr/include/libunwind/"
           cp lib/libc/darwin/libSystem.tbd "$out/usr/lib/libSystem.tbd"
+          cp "$xnuRoot/bsd/netinet/tcp_fsm.h" "$out/usr/include/netinet/"
 
           # Newer Apple open-source framework headers describe bridgeOS API
           # availability, while Zig's open SDK snapshot omits that platform's
@@ -170,6 +182,12 @@ in
           cp -R \
             "$coreFoundationRoot/Sources/CoreFoundation/include/." \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Headers/"
+          # swift-corelibs-foundation defaults to its Linux Swift runtime ABI.
+          # Darwin framework consumers use the system CoreFoundation ABI and
+          # its compiler-emitted constant-string class reference instead.
+          sed -i \
+            's/#define DEPLOYMENT_RUNTIME_SWIFT 1/#define DEPLOYMENT_RUNTIME_SWIFT 0/' \
+            "$out/System/Library/Frameworks/CoreFoundation.framework/Headers/CFAvailability.h"
           cp \
             "$systemConfigurationRoot/SystemConfiguration.fproj/SCDynamicStore.h" \
             "$systemConfigurationRoot/SystemConfiguration.fproj/SCDynamicStoreCopySpecific.h" \
@@ -234,6 +252,23 @@ in
           # header graph from the full framework umbrella.
           cp "$securityRoot/OSX/APPLE_LICENSE" \
             "$out/share/licenses/darwin-sdk/Security-LICENSE"
+
+          # Install Apple's public Objective-C runtime headers.  Darwin hosts
+          # provide the implementation in libobjc; cross builds need only the
+          # public compile surface and a target-library ABI description.
+          cp \
+            "$objcRoot/runtime/message.h" \
+            "$objcRoot/runtime/NSObject.h" \
+            "$objcRoot/runtime/NSObjCRuntime.h" \
+            "$objcRoot/runtime/objc-api.h" \
+            "$objcRoot/runtime/objc-auto.h" \
+            "$objcRoot/runtime/objc-exception.h" \
+            "$objcRoot/runtime/objc-sync.h" \
+            "$objcRoot/runtime/objc.h" \
+            "$objcRoot/runtime/runtime.h" \
+            "$out/usr/include/objc/"
+          cp "$objcRoot/APPLE_LICENSE" \
+            "$out/share/licenses/darwin-sdk/ObjectiveC-LICENSE"
 
           cat > "$out/System/Library/Frameworks/Security.framework/Headers/Security.h" <<'EOF'
           #ifndef _SECURITY_H_
@@ -414,6 +449,63 @@ in
                 - _kSCPropNetProxiesSOCKSEnable
                 - _kSCPropNetProxiesSOCKSPort
                 - _kSCPropNetProxiesSOCKSProxy
+          ...
+          EOF
+
+          cat > "$out/usr/lib/libobjc.tbd" <<'EOF'
+          --- !tapi-tbd
+          tbd-version: 4
+          targets: [ x86_64-macos, arm64-macos ]
+          install-name: '/usr/lib/libobjc.A.dylib'
+          current-version: 228.0.0
+          compatibility-version: 1.0.0
+          exports:
+            - targets: [ x86_64-macos, arm64-macos ]
+              symbols:
+                - ___objc_personality_v0
+                - __objc_empty_cache
+                - _class_addIvar
+                - _class_addMethod
+                - _class_conformsToProtocol
+                - _class_copyIvarList
+                - _class_copyMethodList
+                - _class_copyPropertyList
+                - _class_getClassMethod
+                - _class_getInstanceMethod
+                - _class_getInstanceSize
+                - _class_getName
+                - _class_getProperty
+                - _class_getSuperclass
+                - _method_getImplementation
+                - _method_getName
+                - _objc_allocateClassPair
+                - _objc_autorelease
+                - _objc_autoreleaseReturnValue
+                - _objc_copyWeak
+                - _objc_destroyWeak
+                - _objc_disposeClassPair
+                - _objc_getClass
+                - _objc_getMetaClass
+                - _objc_getProtocol
+                - _objc_initWeak
+                - _objc_loadWeakRetained
+                - _objc_lookUpClass
+                - _objc_msgSend
+                - _objc_msgSendSuper
+                - _objc_msgSendSuper2
+                - _objc_moveWeak
+                - _objc_registerClassPair
+                - _objc_release
+                - _objc_retain
+                - _objc_retainAutoreleaseReturnValue
+                - _objc_retainAutoreleasedReturnValue
+                - _objc_storeStrong
+                - _objc_storeWeak
+                - _object_getClass
+                - _object_setClass
+                - _sel_getName
+                - _sel_getUid
+                - _sel_registerName
           ...
           EOF
 

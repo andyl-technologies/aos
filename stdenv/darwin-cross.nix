@@ -78,6 +78,11 @@
       "-DCMAKE_OSX_SYSROOT=${sdk}"
       "-DCMAKE_OSX_ARCHITECTURES=${hostPlatform.darwinArch}"
       "-DCMAKE_OSX_DEPLOYMENT_TARGET=${deploymentTarget}"
+      # CMake's Darwin initializer asks the unavailable target `sw_vers` for
+      # this capability.  State the modern SDK behavior explicitly so install
+      # rpaths (including LLVM's @rpath dylibs) remain available when the
+      # configuration itself executes on Linux.
+      "-DCMAKE_SHARED_LIBRARY_RUNTIME_C_FLAG=-Wl,-rpath,"
       "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY"
     ];
 
