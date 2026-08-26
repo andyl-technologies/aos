@@ -100,6 +100,9 @@ pub enum Commands {
         /// Build all packages
         #[arg(long)]
         all: bool,
+        /// Cross-compile for this Nix platform
+        #[arg(long, visible_alias = "system", value_name = "PLATFORM")]
+        target: Option<String>,
         /// Remote build server URL (enables remote mode)
         #[arg(long, env = "AOS_REMOTE")]
         remote: Option<String>,

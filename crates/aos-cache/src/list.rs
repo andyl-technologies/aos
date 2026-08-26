@@ -36,6 +36,7 @@ pub async fn run_list(
     file: Option<&str>,
     attr: Option<&str>,
     expr: Option<&str>,
+    target: Option<&str>,
 ) -> Result<()> {
     let nix = NixCli::new(0);
 
@@ -47,7 +48,7 @@ pub async fn run_list(
     }
 
     // Resolve and enumerate closure.
-    let store_paths = resolve_installables(&nix, installables, file, attr, expr)?;
+    let store_paths = resolve_installables(&nix, installables, file, attr, expr, target)?;
     let mut all_paths = Vec::new();
     for path in &store_paths {
         let closure = nix.closure(path)?;
