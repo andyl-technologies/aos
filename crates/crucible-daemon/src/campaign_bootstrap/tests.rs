@@ -3,6 +3,7 @@
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for failure localization.
 #![allow(clippy::expect_used)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, Permissions};
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::os::unix::net::UnixStream;
@@ -11,12 +12,21 @@ use std::thread;
 use std::time::Duration;
 
 use crucible_campaign::{
-    CampaignClient, CampaignClientError, CampaignName, CampaignPrincipal, CampaignServiceFailure,
-    CandidateGeneratorAlgorithm, CandidateGeneratorSpec, GetCampaignRequest,
+    AttemptResourceLimits, CampaignClient, CampaignClientError, CampaignLineage, CampaignMode,
+    CampaignName, CampaignPolicy, CampaignPrincipal, CampaignSeed, CampaignServiceFailure,
+    CandidateGeneratorAlgorithm, CandidateGeneratorSpec, ConfigurationId, DaemonEpoch,
+    ExecutorCapabilitySet, ExecutorCompatibilityProfile, ExecutorMaterializationCapability,
+    ExplorerPolicy, FairnessPolicy, GetCampaignRequest, ProgressiveWideningPolicy, PuctPolicy,
+    RetentionPolicy, ScenarioDefId,
 };
 use tempfile::tempdir;
 
-use crate::{CanonicalPlannerProcessConfig, LoopbackCampaignService, LoopbackCampaignTimeouts};
+use crate::{
+    AllowAllAttemptAdmission, CanonicalPlannerProcessConfig, ExecutorCapacity,
+    LocalExecutorCapabilityService, LocalExecutorSupervisor, LoopbackCampaignService,
+    LoopbackCampaignTimeouts, LoopbackExecutorTimeouts, MemoryAssignmentLedger,
+    serve_loopback_executor_component_once,
+};
 
 use super::*;
 
@@ -85,12 +95,104 @@ fn write_component_authorities(path: &Path, planner: [u8; 32], debugger: [u8; 32
 }
 
 fn runtime_config() -> CanonicalCampaignRuntimeConfig {
+    named_runtime_config("attached")
+}
+
+fn named_runtime_config(name: &str) -> CanonicalCampaignRuntimeConfig {
     CanonicalCampaignRuntimeConfig::canonical_defaults(
-        CampaignName::new("attached").expect("campaign name"),
+        CampaignName::new(name).expect("campaign name"),
         CanonicalPlannerProcessConfig::new("/planner", Duration::from_secs(1))
             .expect("planner process configuration"),
     )
     .expect("runtime configuration")
+}
+
+fn create_runtime_campaign(repository: &Arc<CampaignRepository>, name: &str) -> CampaignLineage {
+    let scenario = ScenarioDefId::from_hash(CampaignHash::derive("test", b"bootstrap-scenario"));
+    let genesis = ConfigurationId::from_hash(CampaignHash::derive("test", b"bootstrap-genesis"));
+    let scenario_content = repository
+        .publish_scenario_artifact(scenario, 1, b"scenario".to_vec())
+        .expect("scenario artifact");
+    let genesis_content = repository
+        .publish_configuration_artifact(scenario, scenario_content, genesis, 1, b"genesis".to_vec())
+        .expect("genesis artifact");
+    let lineage = CampaignLineage::new(
+        scenario,
+        scenario_content,
+        genesis,
+        genesis_content,
+        "crucible-test",
+        "qemu-test",
+        BTreeMap::from([(String::from("control"), 1)]),
+        1,
+        1,
+    )
+    .expect("lineage");
+    let widening = ProgressiveWideningPolicy::new(
+        crucible_campaign::ExactRational::new(1, 1).expect("widening coefficient"),
+        crucible_campaign::ExactRational::new(1, 2).expect("widening exponent"),
+        1,
+        100,
+        1,
+    )
+    .expect("widening policy");
+    let policy = CampaignPolicy::new(
+        scenario,
+        CampaignSeed::from_bytes([7; 32]),
+        CampaignMode::Strict,
+        ExplorerPolicy::TreeSearch {
+            widening: Some(widening),
+            puct: PuctPolicy::new(1_000_000, 1, 0),
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeSet::new(),
+        FairnessPolicy::new(0, 0).expect("fairness"),
+        RetentionPolicy::new(true, 1, true, true),
+        true,
+    )
+    .expect("policy");
+    repository
+        .create(name, &lineage, &policy, &BTreeMap::new())
+        .expect("create campaign");
+    lineage
+}
+
+fn executor_pair(lineage: &CampaignLineage) -> (UnixStream, thread::JoinHandle<()>) {
+    let epoch = DaemonEpoch::from_bytes([0x41; 16]).expect("daemon epoch");
+    let resources =
+        AttemptResourceLimits::new(4, 1024 * 1024, 1024 * 1024, 10_000).expect("resources");
+    let capabilities = ExecutorCapabilitySet::new(
+        ExecutorCompatibilityProfile::from_lineage(lineage),
+        "x86_64",
+        BTreeSet::from([String::from("deterministic-tcg")]),
+        BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]),
+        2,
+        resources,
+        BTreeSet::from([CampaignHash::derive("test", b"store")]),
+    )
+    .expect("executor capabilities");
+    let description = crucible_campaign::ExecutorDescription::new(epoch, capabilities)
+        .expect("executor description");
+    let supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        ExecutorCapacity::new(2, 4, 1024 * 1024, 1024 * 1024, 10_000).expect("executor capacity"),
+    );
+    let mut service =
+        LocalExecutorCapabilityService::new(supervisor, description).expect("capability service");
+    let (client, mut server) = UnixStream::pair().expect("executor stream pair");
+    let worker = thread::spawn(move || {
+        serve_loopback_executor_component_once(
+            &mut server,
+            &mut service,
+            LoopbackExecutorTimeouts::default(),
+        )
+        .expect("serve executor description");
+    });
+    (client, worker)
 }
 
 #[test]
@@ -125,6 +227,92 @@ fn runtime_attachment_requires_writable_component_authority_before_executor_io()
     ));
     peer.set_nonblocking(true).expect("nonblocking peer");
     assert_eq!(peer.read(&mut byte).expect("closed executor peer"), 0);
+}
+
+#[test]
+fn multi_runtime_bind_rejects_an_empty_set_before_endpoint_mutation() {
+    let (_directory, config) = fixture();
+    let socket = config.endpoint().path().to_owned();
+    let prepared = config.prepare().expect("prepare service");
+
+    assert!(matches!(
+        prepared.bind_with_runtimes(Vec::new()),
+        Err(CampaignLocalServiceError::InvalidRuntimeCount)
+    ));
+    assert!(!socket.exists());
+}
+
+#[test]
+fn multi_runtime_bind_sorts_unique_campaigns_and_joins_every_runtime() {
+    let (directory, config) = fixture();
+    let authority = directory.path().join("component-authority.bin");
+    write_component_authorities(&authority, [0x31; 32], [0x73; 32]);
+    let config = config
+        .with_component_authority_path(&authority)
+        .expect("component authority path");
+    let socket = config.endpoint().path().to_owned();
+    let prepared = config.prepare().expect("prepare service");
+    let lineage = create_runtime_campaign(&prepared.repository, "alpha");
+    assert_eq!(
+        create_runtime_campaign(&prepared.repository, "beta"),
+        lineage
+    );
+
+    let (beta_executor, beta_server) = executor_pair(&lineage);
+    let beta = prepared
+        .prepare_runtime(beta_executor, &named_runtime_config("beta"))
+        .expect("prepare beta runtime");
+    let (alpha_executor, alpha_server) = executor_pair(&lineage);
+    let alpha = prepared
+        .prepare_runtime(alpha_executor, &named_runtime_config("alpha"))
+        .expect("prepare alpha runtime");
+    beta_server.join().expect("join beta executor server");
+    alpha_server.join().expect("join alpha executor server");
+
+    let service = prepared
+        .bind_with_runtimes(vec![beta, alpha])
+        .expect("bind runtime set");
+    assert_eq!(
+        service
+            .runtimes
+            .iter()
+            .map(|runtime| runtime.campaign().as_str())
+            .collect::<Vec<_>>(),
+        ["alpha", "beta"]
+    );
+    service.shutdown_handle().shutdown();
+    service.serve().expect("serve and join runtime set");
+    assert!(!socket.exists());
+}
+
+#[test]
+fn multi_runtime_bind_rejects_duplicate_campaigns_before_endpoint_mutation() {
+    let (directory, config) = fixture();
+    let authority = directory.path().join("component-authority.bin");
+    write_component_authorities(&authority, [0x31; 32], [0x73; 32]);
+    let config = config
+        .with_component_authority_path(&authority)
+        .expect("component authority path");
+    let socket = config.endpoint().path().to_owned();
+    let prepared = config.prepare().expect("prepare service");
+    let lineage = create_runtime_campaign(&prepared.repository, "attached");
+
+    let (first_executor, first_server) = executor_pair(&lineage);
+    let first = prepared
+        .prepare_runtime(first_executor, &runtime_config())
+        .expect("prepare first runtime");
+    let (second_executor, second_server) = executor_pair(&lineage);
+    let second = prepared
+        .prepare_runtime(second_executor, &runtime_config())
+        .expect("prepare second runtime");
+    first_server.join().expect("join first executor server");
+    second_server.join().expect("join second executor server");
+
+    assert!(matches!(
+        prepared.bind_with_runtimes(vec![first, second]),
+        Err(CampaignLocalServiceError::DuplicateRuntimeCampaign)
+    ));
+    assert!(!socket.exists());
 }
 
 #[test]

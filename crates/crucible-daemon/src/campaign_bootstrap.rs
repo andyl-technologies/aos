@@ -28,11 +28,11 @@ use crate::{
     CampaignLoopbackEndpointError, CampaignLoopbackListenerError, CampaignLoopbackServer,
     CampaignLoopbackServerConfig, CampaignLoopbackServerReport, CampaignLoopbackServerShutdown,
     CanonicalCampaignRuntimeConfig, CanonicalCampaignRuntimeError, CrucibleArtifactError,
-    CrucibleCampaignArtifactStore, MAX_CAMPAIGN_POLICY_BYTES, PackagedQemuExecutor,
-    PackagedQemuExecutorConfig, PackagedQemuExecutorError, PackagedQemuExecutorJoinError,
-    PackagedQemuExecutorStartError, PreparedCanonicalCampaignRuntime, UnixPeerCampaignPolicy,
-    UnixPeerCampaignPolicyLoadError, prepare_canonical_campaign_runtime,
-    prepare_packaged_qemu_executor,
+    CrucibleCampaignArtifactStore, MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES,
+    MAX_CAMPAIGN_POLICY_BYTES, PackagedQemuExecutor, PackagedQemuExecutorConfig,
+    PackagedQemuExecutorError, PackagedQemuExecutorJoinError, PackagedQemuExecutorStartError,
+    PreparedCanonicalCampaignRuntime, UnixPeerCampaignPolicy, UnixPeerCampaignPolicyLoadError,
+    prepare_canonical_campaign_runtime, prepare_packaged_qemu_executor,
 };
 
 const STATE_LOCK_FILE: &str = ".crucible-campaign-repository.lock";
@@ -386,7 +386,7 @@ impl PreparedCampaignLocalService {
     /// Returns [`CampaignLocalServiceError`] when endpoint acquisition or
     /// listener construction fails.
     pub fn bind(self) -> Result<CampaignLocalService, CampaignLocalServiceError> {
-        self.bind_inner(None, None)
+        self.bind_inner(Vec::new(), None)
     }
 
     /// Binds the managed endpoint and starts one prepared canonical runtime.
@@ -405,10 +405,28 @@ impl PreparedCampaignLocalService {
         self,
         runtime: PreparedCanonicalCampaignRuntime,
     ) -> Result<CampaignLocalService, CampaignLocalServiceError> {
-        if !runtime.uses_repository(&self.repository) {
-            return Err(CampaignLocalServiceError::RuntimeRepositoryMismatch);
-        }
-        self.bind_inner(Some(runtime), None)
+        self.bind_with_runtimes(vec![runtime])
+    }
+
+    /// Binds the managed endpoint and starts multiple prepared runtimes.
+    ///
+    /// Runtime identities are sorted by canonical campaign name before any
+    /// thread starts. Every runtime must belong to this exact repository,
+    /// campaign names must be unique, and the fixed attachment ceiling applies
+    /// before endpoint binding. A terminal result from any runtime stops the
+    /// shared service; shutdown joins every runtime before repository release.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError`] when the set is empty, exceeds the
+    /// attachment ceiling, repeats a campaign, contains another repository's
+    /// runtime, endpoint binding fails, or a runtime thread cannot start.
+    pub fn bind_with_runtimes(
+        self,
+        mut runtimes: Vec<PreparedCanonicalCampaignRuntime>,
+    ) -> Result<CampaignLocalService, CampaignLocalServiceError> {
+        self.validate_and_order_runtimes(&mut runtimes)?;
+        self.bind_inner(runtimes, None)
     }
 
     /// Binds the endpoint with one runtime and its packaged executor owner.
@@ -430,12 +448,12 @@ impl PreparedCampaignLocalService {
         {
             return Err(CampaignLocalServiceError::RuntimeRepositoryMismatch);
         }
-        self.bind_inner(Some(runtime), Some(executor))
+        self.bind_inner(vec![runtime], Some(executor))
     }
 
     fn bind_inner(
         self,
-        runtime: Option<PreparedCanonicalCampaignRuntime>,
+        runtimes: Vec<PreparedCanonicalCampaignRuntime>,
         executor: Option<AttachedPackagedQemuExecutor>,
     ) -> Result<CampaignLocalService, CampaignLocalServiceError> {
         let Self {
@@ -455,15 +473,40 @@ impl PreparedCampaignLocalService {
             Arc::new(CampaignLocalAuthorizer { policy, mode }),
             server_config,
         )?;
-        let runtime = runtime
+        let runtimes = runtimes
+            .into_iter()
             .map(PreparedCanonicalCampaignRuntime::start)
-            .transpose()?;
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(CampaignLocalService {
             server,
-            runtime,
+            runtimes,
             executor,
             _state: state,
         })
+    }
+
+    fn validate_and_order_runtimes(
+        &self,
+        runtimes: &mut [PreparedCanonicalCampaignRuntime],
+    ) -> Result<(), CampaignLocalServiceError> {
+        if runtimes.is_empty() || runtimes.len() > MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES {
+            return Err(CampaignLocalServiceError::InvalidRuntimeCount);
+        }
+        if runtimes
+            .iter()
+            .any(|runtime| !runtime.uses_repository(&self.repository))
+        {
+            return Err(CampaignLocalServiceError::RuntimeRepositoryMismatch);
+        }
+
+        runtimes.sort_by(|left, right| left.campaign().cmp(right.campaign()));
+        if runtimes
+            .windows(2)
+            .any(|pair| pair[0].campaign() == pair[1].campaign())
+        {
+            return Err(CampaignLocalServiceError::DuplicateRuntimeCampaign);
+        }
+        Ok(())
     }
 
     fn require_artifact_import(&self) -> Result<(), CampaignLocalServiceError> {
@@ -478,7 +521,7 @@ impl PreparedCampaignLocalService {
 /// Exclusive owner of one durable local CampaignService incarnation.
 pub struct CampaignLocalService {
     server: CampaignLoopbackServer<UnixPeerCampaignPolicy, CampaignLocalAuthorizer>,
-    runtime: Option<AttachedCanonicalCampaignRuntime>,
+    runtimes: Vec<AttachedCanonicalCampaignRuntime>,
     executor: Option<AttachedPackagedQemuExecutor>,
     _state: CampaignStateOwner,
 }
@@ -555,6 +598,12 @@ pub enum CampaignLocalServiceError {
     /// A prepared runtime belongs to another repository instance.
     #[error("campaign runtime belongs to another repository instance")]
     RuntimeRepositoryMismatch,
+    /// No runtime or more than the fixed attachment ceiling was supplied.
+    #[error("campaign runtime attachment count is outside 1..=256")]
+    InvalidRuntimeCount,
+    /// More than one runtime named the same campaign.
+    #[error("campaign runtime attachments contain a duplicate campaign")]
+    DuplicateRuntimeCampaign,
     /// Canonical planner/executor runtime preparation, start, or execution failed.
     #[error(transparent)]
     Runtime(#[from] CanonicalCampaignRuntimeError),

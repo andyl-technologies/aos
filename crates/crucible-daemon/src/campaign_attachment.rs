@@ -28,6 +28,13 @@ use crate::{
     LoopbackExecutorProtocolError, LoopbackExecutorService,
 };
 
+/// Maximum number of canonical campaign runtimes attached to one daemon.
+///
+/// Each attachment owns one supervisor thread and one checked executor
+/// connection. The fixed ceiling bounds startup work, threads, completion
+/// monitors, and shutdown joins independently of repository campaign count.
+pub const MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES: usize = 256;
+
 /// Default positions served to one packaged planner invocation.
 pub const DEFAULT_CANONICAL_PLANNER_SCAN_LIMIT: u32 = 1_024;
 
@@ -218,6 +225,7 @@ type CanonicalSupervisorFailure = CampaignSupervisorError<
 #[must_use = "prepared campaign runtime must be started or explicitly dropped"]
 pub struct PreparedCanonicalCampaignRuntime {
     repository_identity: Arc<CampaignRepository>,
+    campaign: CampaignName,
     supervisor: CanonicalSupervisor,
     planner_cancellation: CanonicalPlannerProcessCancellation,
     runtime: CampaignRuntimeConfig,
@@ -226,6 +234,12 @@ pub struct PreparedCanonicalCampaignRuntime {
 impl PreparedCanonicalCampaignRuntime {
     pub(crate) fn uses_repository(&self, repository: &Arc<CampaignRepository>) -> bool {
         Arc::ptr_eq(&self.repository_identity, repository)
+    }
+
+    /// Returns the exact campaign owned by this prepared runtime.
+    #[must_use]
+    pub const fn campaign(&self) -> &CampaignName {
+        &self.campaign
     }
 
     /// Starts the fixed campaign runtime thread.
@@ -238,6 +252,7 @@ impl PreparedCanonicalCampaignRuntime {
         let runtime = CampaignRuntime::start(self.supervisor, self.runtime)
             .map_err(CanonicalCampaignRuntimeError::RuntimeStart)?;
         Ok(AttachedCanonicalCampaignRuntime {
+            campaign: self.campaign,
             runtime,
             planner_cancellation: self.planner_cancellation,
         })
@@ -250,11 +265,18 @@ impl PreparedCanonicalCampaignRuntime {
 /// containing service cannot release repository ownership first.
 #[must_use = "attached campaign runtime must be shut down and joined"]
 pub struct AttachedCanonicalCampaignRuntime {
+    campaign: CampaignName,
     runtime: CampaignRuntime<CanonicalSupervisor>,
     planner_cancellation: CanonicalPlannerProcessCancellation,
 }
 
 impl AttachedCanonicalCampaignRuntime {
+    /// Returns the exact campaign driven by this runtime.
+    #[must_use]
+    pub const fn campaign(&self) -> &CampaignName {
+        &self.campaign
+    }
+
     /// Returns a capability-free terminal completion signal.
     #[must_use]
     pub fn completion_handle(&self) -> CampaignRuntimeCompletion {
@@ -383,6 +405,7 @@ pub fn prepare_canonical_campaign_runtime(
     .map_err(CanonicalCampaignRuntimeError::Supervisor)?;
     Ok(PreparedCanonicalCampaignRuntime {
         repository_identity: Arc::clone(&repository),
+        campaign: config.campaign().clone(),
         supervisor,
         planner_cancellation,
         runtime: config.runtime(),

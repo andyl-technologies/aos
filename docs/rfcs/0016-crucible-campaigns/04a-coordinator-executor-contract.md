@@ -1015,20 +1015,27 @@ different socket. Its directory identity is rechecked before the path-backed
 stores become reachable. `crucible serve` enables this composition only when
 `--campaign-socket`, `--campaign-state`, and `--campaign-policy` are supplied
 together; `--campaign-component-authority` is valid only with that profile,
-and `--campaign-socket-mode` is octal and defaults to `600`. One explicit
-single-host attachment is enabled by supplying both
-`--campaign-runtime NAME` and `--campaign-executor-socket PATH`. It attaches
-only the named existing campaign, requires the writable component-authority
-profile, and uses the packaged canonical planner worker. Before publishing the
-fixed four-object planner basis or starting the runtime thread, the daemon
-connects to an absolute dot-free executor path whose socket inode is exact-owner
-mode `0600`, authenticates the connected peer's effective UID/GID with
-`SO_PEERCRED`, rechecks the path identity, performs `DescribeExecutor`, and
-requires the executor's exact lineage compatibility, resource ceiling, and
-slot ceiling. The reviewed default serves at most 1,024 planner positions and
-16 MiB per planner invocation, scans at most 1,024 attempts per executor step,
-and caps admitted worker slots at 256. Enumeration, dynamic attachment, and
-multiple attached campaigns remain future work.
+and `--campaign-socket-mode` is octal and defaults to `600`. A startup-fixed
+single-host attachment set is enabled by repeating paired
+`--campaign-runtime NAME` and `--campaign-executor-socket PATH` arguments in
+the same order. The daemon accepts 1 through 256 unique existing campaign
+names, requires the writable component-authority profile, sorts the prepared
+attachments by canonical campaign name before starting them, and gives each
+campaign the packaged canonical planner worker plus its checked executor
+connection. Before publishing an attachment's fixed four-object planner basis,
+the daemon connects to its absolute dot-free executor path whose socket inode
+is exact-owner mode `0600`, authenticates the connected peer's effective
+UID/GID with `SO_PEERCRED`, rechecks the path identity, performs
+`DescribeExecutor`, and requires the executor's exact lineage compatibility,
+resource ceiling, and slot ceiling. Every attachment is prepared before any
+runtime thread starts. The reviewed default serves
+at most 1,024 planner positions and 16 MiB per planner invocation, scans at
+most 1,024 attempts per executor step, and caps admitted worker slots at 256.
+Termination of any attached runtime stops the shared service and joins the
+complete bounded set before repository ownership is released. The packaged
+local QEMU executor option remains campaign-specific and therefore accepts
+exactly one attachment. Enumeration, dynamic attachment, and a shared
+multi-campaign packaged-executor allocator remain future work.
 
 SIGINT,
 SIGTERM, lifecycle-server failure, or CampaignService failure shuts down both

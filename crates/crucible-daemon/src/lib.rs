@@ -12,8 +12,9 @@
 //! storage, strict policy, managed endpoint, and listener ownership;
 //! [`campaign_endpoint`] owns exact local campaign and executor Unix socket
 //! namespaces;
-//! [`campaign_attachment`] composes one packaged planner and checked local
-//! executor with a named durable campaign;
+//! [`campaign_attachment`] composes each packaged planner and checked local
+//! executor with one named durable campaign, while [`campaign_bootstrap`]
+//! owns a bounded startup-fixed set of those attachments;
 //! [`campaign_runtime`] owns one sticky, bounded, long-lived supervisor thread;
 //! [`campaign_loopback`] provides the strict local
 //! user-facing service transport; [`campaign_server`] owns its bounded
@@ -121,8 +122,8 @@ pub use campaign_attachment::{
     AttachedCanonicalCampaignRuntime, CanonicalCampaignRuntimeConfig,
     CanonicalCampaignRuntimeConfigError, CanonicalCampaignRuntimeError,
     DEFAULT_CANONICAL_EXECUTOR_SCAN_LIMIT, DEFAULT_CANONICAL_PLANNER_INPUT_BYTES,
-    DEFAULT_CANONICAL_PLANNER_SCAN_LIMIT, PreparedCanonicalCampaignRuntime,
-    prepare_canonical_campaign_runtime,
+    DEFAULT_CANONICAL_PLANNER_SCAN_LIMIT, MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES,
+    PreparedCanonicalCampaignRuntime, prepare_canonical_campaign_runtime,
 };
 pub use campaign_bootstrap::{
     CampaignLocalService, CampaignLocalServiceConfig, CampaignLocalServiceError,
