@@ -1440,6 +1440,7 @@ in
           #include <stdbool.h>
           #include <stddef.h>
           #include <stdint.h>
+          #include <os/object.h>
 
           #if defined(__aarch64__) || defined(__arm64__)
 
@@ -1852,6 +1853,14 @@ in
             HV_VMX_CAP_PROCBASED2 = 2,
             HV_VMX_CAP_ENTRY = 3,
           } hv_vmx_capability_t;
+
+          enum {
+            CPU_BASED_TSC_OFFSET = 1u << 3,
+            CPU_BASED2_RDTSCP = 1u << 3,
+            CPU_BASED2_INVPCID = 1u << 12,
+            CPU_BASED2_XSAVES_XRSTORS = 1u << 20,
+            VMX_REASON_VMCALL = 18,
+          };
 
           hv_return_t hv_vmx_read_capability(hv_vmx_capability_t capability, uint64_t *value);
           hv_return_t hv_vmx_vcpu_read_vmcs(hv_vcpuid_t vcpu, uint32_t field, uint64_t *value);
