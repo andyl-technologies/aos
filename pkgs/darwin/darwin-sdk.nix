@@ -1569,6 +1569,7 @@ in
                 - _objc_copyWeak
                 - _objc_destroyWeak
                 - _objc_disposeClassPair
+                - _objc_enumerationMutation
                 - _objc_getClass
                 - _objc_getMetaClass
                 - _objc_getProtocol

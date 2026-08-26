@@ -359,12 +359,14 @@
               '#include <objc/runtime.h>' \
               'extern void *objc_autoreleasePoolPush(void);' \
               'extern void objc_autoreleasePoolPop(void *context);' \
+              'extern void objc_enumerationMutation(id object);' \
               '__attribute__((objc_root_class)) @interface AosRoot @end' \
               '@implementation AosRoot @end' \
               'int main(void) {' \
               '  void *pool = objc_autoreleasePoolPush();' \
               '  Class root = objc_getClass("AosRoot");' \
               '  int isMeta = class_isMetaClass(objc_getMetaClass("AosRoot"));' \
+              '  if (root == Nil) objc_enumerationMutation(nil);' \
               '  objc_autoreleasePoolPop(pool);' \
               '  return root == 0 || isMeta < 0;' \
               '}' \
