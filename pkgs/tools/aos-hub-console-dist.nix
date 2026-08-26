@@ -41,7 +41,7 @@
     inherit src;
     name = "aos-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-HpIXteO0Adw3+VmLING6Fd5vDHrGHUt+KQ8gZ312bkU=";
+    hash = "sha256-J3s3XqW8nz1YeU3towJTdnv6WVxP4R8CzRUFPG0Rtrk=";
   };
   cargoEnv = {PROTOC = "${protobuf}/bin/protoc";};
   cargoArtifacts = mkCargoArtifacts {
