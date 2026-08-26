@@ -2872,6 +2872,29 @@ impl Database {
             .context("first-sweep acknowledgement is stale, expired, or mismatched")?;
         let cache_id: i64 = row.get(0)?;
         let expected_epoch: i64 = row.get(1)?;
+        if self
+            .backend
+            .query_opt(
+                "SELECT placement.name
+                 FROM surface_placement_effective placement
+                 LEFT JOIN bindings binding ON binding.id = placement.binding_id
+                 LEFT JOIN binding_write_revisions revision
+                   ON revision.binding_id = placement.binding_id
+                  AND revision.revision = placement.authority_observed_binding_write_revision
+                 WHERE placement.cache_id = ?1
+                   AND (COALESCE(binding.kind, '') = 'r2'
+                     OR placement.requires_conditional_writes <> 1
+                     OR COALESCE(revision.conditional_writes_supported, 0) <> 1)
+                 LIMIT 1",
+                &vals![cache_id],
+            )
+            .await?
+            .is_some()
+        {
+            bail!(
+                "cache has a placement that cannot enforce identity-checked deletion; migrate it to a validated S3 binding before enabling destructive GC"
+            );
+        }
         let statements = [
             Statement::new(
                 "UPDATE cache_gc_first_sweep_acknowledgements

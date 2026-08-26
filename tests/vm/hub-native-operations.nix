@@ -192,6 +192,15 @@ in
           --hub "$hub_url" --token "$token"
       }
 
+      hub_cli_into() {
+        output=$1
+        shift
+        if ! hub_cli "$@" >"$output" 2>&1; then
+          ${pkgs.coreutils}/bin/cat "$output" >&2
+          return 1
+        fi
+      }
+
       retained_plan() {
         label=$1
         shift
@@ -572,6 +581,107 @@ in
       reviewed cache-retention-remove cache retention remove \
         operations/build-cache --registry operations/maintenance \
         --if-version "$retention_version" >/tmp/cache-retention-remove.json
+
+      echo '==> Exercise reviewed cache garbage-collection controls'
+      hub_cli cache gc policy show operations/build-cache \
+        >/tmp/cache-gc-policy-show.json
+      cache_gc_policy_version=$(${pkgs.jq}/bin/jq -er \
+        '.data.policy.resource_version' /tmp/cache-gc-policy-show.json)
+      reviewed cache-gc-policy-bounded cache gc policy set \
+        operations/build-cache --unreferenced-grace 1h \
+        --soft-max-bytes 1073741824 --soft-max-objects 10000 \
+        --schedule 3600 --deletion-concurrency 2 \
+        --retry-initial 10s --retry-max 5m --retry-max-attempts 5 \
+        --tombstone-retention 24h --if-version "$cache_gc_policy_version" \
+        >/tmp/cache-gc-policy-bounded.json
+      cache_gc_policy_version=$(${pkgs.jq}/bin/jq -er \
+        '.data.result.policy.resource_version' /tmp/cache-gc-policy-bounded.json)
+      reviewed cache-gc-policy-unbounded cache gc policy set \
+        operations/build-cache --unreferenced-grace 2h \
+        --clear-soft-max-bytes --clear-soft-max-objects \
+        --schedule 7200 --deletion-concurrency 4 \
+        --retry-initial 30s --retry-max 10m --retry-max-attempts 8 \
+        --tombstone-retention 48h --if-version "$cache_gc_policy_version" \
+        >/tmp/cache-gc-policy-unbounded.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data.result.policy.soft_max_bytes == null and .data.result.policy.soft_max_objects == null' \
+        /tmp/cache-gc-policy-unbounded.json >/dev/null
+
+      hub_cli_into /tmp/cache-gc-bootstrap-plan.json \
+        cache gc plan create operations/build-cache
+      gc_bootstrap_plan_id=$(${pkgs.jq}/bin/jq -er \
+        '.data.plan.plan_id' /tmp/cache-gc-bootstrap-plan.json)
+      hub_cli_into /tmp/cache-gc-bootstrap-plan-show.json \
+        cache gc plan show operations/build-cache "$gc_bootstrap_plan_id"
+      hub_cli_into /tmp/cache-gc-ack-plan.json \
+        cache gc first-sweep plan-acknowledgement \
+        operations/build-cache --gc-plan-id "$gc_bootstrap_plan_id" \
+        --idempotency-key cache-gc-first-sweep-plan
+      gc_ack_plan_id=$(${pkgs.jq}/bin/jq -er \
+        '.data.plan.plan_id' /tmp/cache-gc-ack-plan.json)
+      gc_ack_hash=$(${pkgs.jq}/bin/jq -er \
+        '.data.plan.confirmation_hash' /tmp/cache-gc-ack-plan.json)
+      expect_hub_error cache-gc-local-first-sweep \
+        'cannot enforce identity-checked deletion' \
+        cache gc first-sweep acknowledge operations/build-cache \
+        --ack-plan-id "$gc_ack_plan_id" --confirm-hash "$gc_ack_hash" \
+        --idempotency-key cache-gc-first-sweep-apply --yes
+
+      reviewed cache-gc-control-create cache create operations/gc-control-cache \
+        --name 'GC control qualification cache' --visibility private \
+        --nix-priority 40 --compression zstd --mass-query enabled \
+        >/tmp/cache-gc-control-create.json
+      hub_cli_into /tmp/cache-gc-control-bootstrap-plan.json \
+        cache gc plan create operations/gc-control-cache
+      gc_control_bootstrap_plan_id=$(${pkgs.jq}/bin/jq -er \
+        '.data.plan.plan_id' /tmp/cache-gc-control-bootstrap-plan.json)
+      hub_cli_into /tmp/cache-gc-control-ack-plan.json \
+        cache gc first-sweep plan-acknowledgement \
+        operations/gc-control-cache \
+        --gc-plan-id "$gc_control_bootstrap_plan_id" \
+        --idempotency-key cache-gc-control-first-sweep-plan
+      gc_control_ack_plan_id=$(${pkgs.jq}/bin/jq -er \
+        '.data.plan.plan_id' /tmp/cache-gc-control-ack-plan.json)
+      gc_control_ack_hash=$(${pkgs.jq}/bin/jq -er \
+        '.data.plan.confirmation_hash' /tmp/cache-gc-control-ack-plan.json)
+      hub_cli_into /tmp/cache-gc-control-acknowledge.json \
+        cache gc first-sweep acknowledge operations/gc-control-cache \
+        --ack-plan-id "$gc_control_ack_plan_id" \
+        --confirm-hash "$gc_control_ack_hash" \
+        --idempotency-key cache-gc-control-first-sweep-apply --yes
+
+      hub_cli_into /tmp/cache-gc-run-plan.json \
+        cache gc plan create operations/gc-control-cache
+      gc_run_plan_id=$(${pkgs.jq}/bin/jq -er \
+        '.data.plan.plan_id' /tmp/cache-gc-run-plan.json)
+      gc_run_hash=$(${pkgs.jq}/bin/jq -er \
+        '.data.plan.confirmation_hash' /tmp/cache-gc-run-plan.json)
+      hub_cli cache gc run operations/gc-control-cache \
+        --plan-id "$gc_run_plan_id" --confirm-hash "$gc_run_hash" \
+        --idempotency-key cache-gc-run --yes \
+        >/tmp/cache-gc-run.json
+      gc_operation_id=$(${pkgs.jq}/bin/jq -er \
+        '.data.operation.operation_id' /tmp/cache-gc-run.json)
+      hub_cli cache gc runs list operations/gc-control-cache --page-size 1 \
+        >/tmp/cache-gc-runs-list.json
+      hub_cli cache gc runs show operations/gc-control-cache "$gc_operation_id" \
+        >/tmp/cache-gc-runs-show.json
+      hub_cli cache gc runs watch operations/gc-control-cache "$gc_operation_id" \
+        --timeout 30s >/tmp/cache-gc-runs-watch.json
+      ${pkgs.jq}/bin/jq -e '.data.terminal == true' \
+        /tmp/cache-gc-runs-watch.json >/dev/null
+      hub_cli cache gc jobs list operations/gc-control-cache "$gc_operation_id" \
+        --page-size 1 >/tmp/cache-gc-jobs-list.json
+      ${pkgs.jq}/bin/jq -e '(.data.jobs // []) == []' \
+        /tmp/cache-gc-jobs-list.json >/dev/null
+      expect_hub_error cache-gc-job-show-missing 'not found' \
+        cache gc jobs show operations/gc-control-cache missing-job
+      reviewed_apply_error cache-gc-job-retry-missing 'not found' \
+        cache gc jobs retry operations/gc-control-cache missing-job \
+        --if-version 0
+      expect_hub_error cache-gc-job-abandon-missing 'not found' \
+        cache gc jobs abandon operations/gc-control-cache missing-job \
+        --if-version absent --plan --idempotency-key missing-job-abandon
 
       echo '==> Exercise tenant inventory and ordinary reviewed CRUD'
       ${pkgs.aos}/bin/aos --json hub org show operations \
