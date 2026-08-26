@@ -35,6 +35,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --disable-static \
             --enable-shared \

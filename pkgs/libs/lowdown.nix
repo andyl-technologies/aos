@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "1.2.0";
 in
@@ -33,6 +34,11 @@ in
         name = "configure";
         script = ''
           ./configure PREFIX=$out
+          ${
+            if stdenv.hostPlatform.isDarwin
+            then ''sed -i 's/liblowdown\.so/liblowdown.dylib/g' Makefile''
+            else ""
+          }
         '';
       }
       {

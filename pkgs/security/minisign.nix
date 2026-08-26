@@ -41,6 +41,7 @@ in
         script = ''
           mkdir -p build && cd build
           cmake .. \
+            $cmakeFlags \
             -DCMAKE_INSTALL_PREFIX=$out \
             -DCMAKE_BUILD_TYPE=Release
           make -j$NIX_BUILD_CORES

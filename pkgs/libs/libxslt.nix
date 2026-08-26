@@ -4,6 +4,8 @@
   fetchurl,
   gnumake,
   libxml2,
+  bash,
+  stdenv,
 }: let
   version = "1.1.42";
 in
@@ -19,7 +21,13 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [libxml2];
+    runtimeDeps =
+      [libxml2]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [bash]
+        else []
+      );
 
     phases = [
       {
@@ -33,6 +41,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --disable-static \
             --enable-shared \
@@ -49,9 +58,15 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/xslt-config"
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 

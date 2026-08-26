@@ -3,8 +3,21 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "58";
+  sharedLibrary =
+    if stdenv.hostPlatform.isDarwin
+    then "libinih.0.dylib"
+    else "libinih.so.0";
+  sharedLink =
+    if stdenv.hostPlatform.isDarwin
+    then "libinih.dylib"
+    else "libinih.so";
+  sharedFlags =
+    if stdenv.hostPlatform.isDarwin
+    then "-dynamiclib -Wl,-install_name,$out/lib/${sharedLibrary}"
+    else "-shared -Wl,-soname,${sharedLibrary}";
 in
   mkDerivation {
     pname = "inih";
@@ -33,7 +46,7 @@ in
         name = "build";
         script = ''
           $CC -c -fPIC -o ini.o ini.c
-          $CC -shared -o libinih.so.0 ini.o -Wl,-soname,libinih.so.0
+          $CC ${sharedFlags} -o ${sharedLibrary} ini.o
           $AR rcs libinih.a ini.o
         '';
       }
@@ -44,8 +57,8 @@ in
 
           cp ini.h $out/include/
 
-          cp libinih.so.0 $out/lib/
-          ln -s libinih.so.0 $out/lib/libinih.so
+          cp ${sharedLibrary} $out/lib/
+          ln -s ${sharedLibrary} $out/lib/${sharedLink}
           cp libinih.a $out/lib/
 
           cat > $out/lib/pkgconfig/inih.pc << PCEOF

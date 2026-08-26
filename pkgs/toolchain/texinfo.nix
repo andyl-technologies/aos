@@ -33,13 +33,14 @@ in
         script = ''
           tar xf $src
           cd texinfo-${version}
-          # Fix Perl shebangs — /usr/bin/perl doesn't exist in the sandbox.
-          # Preserve mtimes so make doesn't trigger automake regeneration.
+          # Build helpers use native Perl; the installed scripts are retargeted
+          # to the Darwin Perl after make has finished executing them.
+          nativePerl=$(command -v perl)
           for f in maintain/*.pl tp/maintain/*.pl; do
             if [ -f "$f" ]; then
               ref_time=$(stat -c %Y "$f")
-              sed -i "1s|#!.*/usr/bin/perl|#!${perl}/bin/perl|" "$f"
-              sed -i "1s|#!.*/usr/bin/env perl|#!${perl}/bin/perl|" "$f"
+              sed -i "1s|#!.*/usr/bin/perl|#!$nativePerl|" "$f"
+              sed -i "1s|#!.*/usr/bin/env perl|#!$nativePerl|" "$f"
               touch -d "@$ref_time" "$f"
             fi
           done
@@ -49,6 +50,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --disable-nls
         '';
@@ -65,6 +67,9 @@ in
         name = "install";
         script = ''
           make install
+          nativePerlRoot=$(dirname "$(dirname "$(command -v perl)")")
+          grep -IrlZ -F "$nativePerlRoot" "$out" 2>/dev/null \
+            | xargs -0 -r sed -i "s|$nativePerlRoot|${perl}|g"
         '';
       }
     ];

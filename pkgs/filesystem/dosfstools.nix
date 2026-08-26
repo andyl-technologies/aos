@@ -33,6 +33,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-compat-symlinks
         '';

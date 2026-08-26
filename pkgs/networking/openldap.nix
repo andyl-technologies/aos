@@ -37,6 +37,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-dynamic \
             --enable-modules \

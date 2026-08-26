@@ -7,6 +7,8 @@
   openssl,
   zstd,
   lz4,
+  bash,
+  stdenv,
 }: let
   version = "3.4.1";
 in
@@ -27,7 +29,12 @@ in
       openssl
       zstd
       lz4
-    ];
+    ]
+    ++ (
+      if stdenv.hostPlatform.isDarwin
+      then [bash]
+      else []
+    );
     propagatedDeps = [];
 
     phases = [
@@ -42,6 +49,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --with-included-popt \
             --with-included-zlib=no \
@@ -59,9 +67,17 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            if [ -f "$out/bin/rsync-ssl" ]; then
+              sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/rsync-ssl"
+            fi
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 

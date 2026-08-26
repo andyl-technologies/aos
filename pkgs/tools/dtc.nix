@@ -7,6 +7,8 @@
   flex,
   bison,
   libyaml,
+  bash,
+  stdenv,
 }: let
   version = "1.7.2";
 in
@@ -27,7 +29,13 @@ in
       flex
       bison
     ];
-    runtimeDeps = [libyaml];
+    runtimeDeps =
+      [libyaml]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [bash]
+        else []
+      );
     propagatedDeps = [];
 
     phases = [
@@ -41,14 +49,33 @@ in
       {
         name = "build";
         script = ''
-          make -j$NIX_BUILD_CORES NO_PYTHON=1
+          make -j$NIX_BUILD_CORES \
+            ${
+            if stdenv.hostPlatform.isDarwin
+            then "HOSTOS=darwin"
+            else ""
+          } \
+            NO_PYTHON=1
         '';
       }
       {
         name = "install";
-        script = ''
-          make NO_PYTHON=1 PREFIX=$out install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make \
+              HOSTOS=darwin \
+              NO_PYTHON=1 \
+              PREFIX=$out \
+              install
+            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/dtdiff"
+          ''
+          else ''
+            make \
+              NO_PYTHON=1 \
+              PREFIX=$out \
+              install
+          '';
       }
     ];
 

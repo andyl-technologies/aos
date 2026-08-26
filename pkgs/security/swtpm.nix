@@ -17,6 +17,7 @@
   libtasn1,
   libseccomp,
   openssl,
+  stdenv,
 }: let
   version = "0.10.0";
 in
@@ -43,15 +44,21 @@ in
       glib.dev
       glib.tools
     ];
-    runtimeDeps = [
-      libtpms
-      glib
-      json-glib
-      gnutls
-      libtasn1
-      libseccomp
-      openssl
-    ];
+    runtimeDeps =
+      [
+        libtpms
+        glib
+        json-glib
+        gnutls
+        libtasn1
+        openssl
+        bash
+      ]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then []
+        else [libseccomp]
+      );
     propagatedDeps = [libtpms];
 
     phases = [
@@ -60,13 +67,17 @@ in
         script = ''
           tar xf $src
           cd swtpm-${version}
-          # Patch script shebangs to the AOS bash — the sandbox has no
-          # /usr/bin/env or /bin/bash, and `make install` runs helper
-          # scripts (e.g. ./fileinstall) directly before stdenv's shebang
-          # fixup would otherwise run.
-          grep -rlZ -e '^#!/usr/bin/env bash' -e '^#!/bin/bash' . 2>/dev/null \
+          # `make install` executes helper scripts (notably fileinstall), so
+          # they must use the native shell while cross-compiling.  Installed
+          # scripts are retargeted to the Darwin Bash after installation.
+          grep -rlZ \
+            -e '^#!/usr/bin/env bash' \
+            -e '^#!/usr/bin/env sh' \
+            -e '^#!/bin/bash' \
+            -e '^#!/bin/sh' \
+            . 2>/dev/null \
             | while IFS= read -r -d "" f; do
-              sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$f"
+              sed -i "1s|^#!.*|#!$CONFIG_SHELL|" "$f"
             done
         '';
       }
@@ -79,22 +90,31 @@ in
         # libcrypto (gnutls stays only for the certificate tooling).
         name = "configure";
         script = ''
-          export ACLOCAL_PATH="${pkg-config}/share/aclocal:${libtool}/share/aclocal:${gettext}/share/aclocal''${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
+          nativePkgConfig=$(dirname "$(dirname "$(command -v pkg-config)")")
+          nativeLibtool=$(dirname "$(dirname "$(command -v libtoolize)")")
+          nativeGettext=$(dirname "$(dirname "$(command -v autopoint)")")
+          export ACLOCAL_PATH="$nativePkgConfig/share/aclocal:$nativeLibtool/share/aclocal:$nativeGettext/share/aclocal''${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
           # swtpm's configure hard-requires several tools purely for its
           # test suite (make check) — expect, socat, ss/netstat — which we
           # never run in the hermetic build. Shim them so configure passes
           # without pulling in Tcl/expect and friends.
           mkdir -p $TMPDIR/fakebin
           for t in expect socat netstat ss; do
-            printf '#!/bin/sh\nexit 0\n' > $TMPDIR/fakebin/$t
+            printf '#!%s\nexit 0\n' "$CONFIG_SHELL" > $TMPDIR/fakebin/$t
             chmod +x $TMPDIR/fakebin/$t
           done
           export PATH=$TMPDIR/fakebin:$PATH
           NOCONFIGURE=1 ./autogen.sh
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --disable-static \
             --without-cuse \
+            ${
+            if stdenv.hostPlatform.isDarwin
+            then "--without-seccomp --without-selinux"
+            else ""
+          } \
             --with-openssl \
             --with-tss-user=root \
             --with-tss-group=root
@@ -112,6 +132,10 @@ in
         name = "install";
         script = ''
           make install
+          grep -rlZ "^#!$CONFIG_SHELL" "$out" 2>/dev/null \
+            | while IFS= read -r -d "" f; do
+              sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$f"
+            done
         '';
       }
     ];

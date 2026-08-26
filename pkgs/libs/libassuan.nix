@@ -4,6 +4,8 @@
   fetchurl,
   gnumake,
   libgpg-error,
+  bash,
+  stdenv,
 }: let
   version = "3.0.2";
 in
@@ -20,7 +22,13 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [libgpg-error];
+    runtimeDeps =
+      [libgpg-error]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [bash]
+        else []
+      );
     propagatedDeps = [libgpg-error];
 
     phases = [
@@ -35,6 +43,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --disable-static \
             --with-libgpg-error-prefix=${libgpg-error}
@@ -48,9 +57,15 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/libassuan-config"
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 

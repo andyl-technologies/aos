@@ -111,6 +111,7 @@ in
           # Configure
           HELP2MAN=: \
           ./configure \
+            $configureFlags \
             --prefix=$out
         '';
       }

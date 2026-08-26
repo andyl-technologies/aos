@@ -7,6 +7,8 @@
   which,
   bzip2,
   zlib,
+  buildPackages,
+  stdenv,
 }: let
   version = "1.87.0";
   underscoreVersion = "1_87_0";
@@ -20,7 +22,7 @@ in
     # Boost is overwhelmingly headers, so a consumer that only links it at
     # runtime (nix) keeps the header tree out of its runtime closure by using
     # `boost` for libs and `boost.dev` for build-time includes.
-    outputs = ["out" "dev"];
+    outputs = ["out" "dev" "tools"];
 
     src = fetchurl {
       urls = [
@@ -51,25 +53,41 @@ in
       {
         name = "configure";
         script = ''
-          # Patch shebangs: /usr/bin/env doesn't exist in the Nix sandbox
+          # Build helpers must use the native shell.  A cross build cannot
+          # execute the Bash that belongs in the Darwin target package set.
           find . -type f \( -name "*.sh" -o -name "bootstrap*" \) -print0 | \
-            xargs -0 sed -i "1s|^#!/usr/bin/env sh|#!/bin/sh|"
+            xargs -0 sed -i "1s|^#!/usr/bin/env sh|#!$CONFIG_SHELL|"
           find . -type f \( -name "*.sh" -o -name "bootstrap*" \) -print0 | \
-            xargs -0 sed -i "1s|^#!/usr/bin/env bash|#!${bash}/bin/bash|"
+            xargs -0 sed -i "1s|^#!/usr/bin/env bash|#!$CONFIG_SHELL|"
           find . -type f \( -name "*.sh" -o -name "bootstrap*" \) -print0 | \
-            xargs -0 sed -i "1s|^#!/bin/bash|#!${bash}/bin/bash|"
+            xargs -0 sed -i "1s|^#!/bin/bash|#!$CONFIG_SHELL|"
 
-          ${bash}/bin/bash ./bootstrap.sh \
-            --prefix=$out \
-            --with-libraries=system,filesystem,regex,container,context,coroutine,thread,chrono,date_time,program_options,iostreams,serialization,log,atomic,random \
-            --with-toolset=gcc
+          ${
+            if stdenv.isCross
+            then ''
+              cp ${buildPackages.boost.tools}/bin/b2 ./b2
+              cat > user-config.jam <<EOF
+              using clang : : ${stdenv.cc}/bin/clang++ ;
+              EOF
+            ''
+            else ''
+              "$CONFIG_SHELL" ./bootstrap.sh \
+                --prefix=$out \
+                --with-libraries=system,filesystem,regex,container,context,coroutine,thread,chrono,date_time,program_options,iostreams,serialization,log,atomic,random \
+                --with-toolset=gcc
+            ''
+          }
         '';
       }
       {
         name = "build";
         script = ''
           ./b2 -j$NIX_BUILD_CORES \
-            toolset=gcc \
+            ${
+            if stdenv.hostPlatform.isDarwin
+            then "--user-config=$PWD/user-config.jam toolset=clang"
+            else "toolset=gcc"
+          } \
             variant=release \
             link=shared \
             runtime-link=shared \
@@ -92,7 +110,11 @@ in
             --prefix=$dev \
             --includedir=$dev/include \
             --libdir=$out/lib \
-            toolset=gcc \
+            ${
+            if stdenv.hostPlatform.isDarwin
+            then "--user-config=$PWD/user-config.jam toolset=clang"
+            else "toolset=gcc"
+          } \
             variant=release \
             link=shared \
             runtime-link=shared \
@@ -101,6 +123,11 @@ in
           if [ -d "$out/lib/cmake" ]; then
             mkdir -p "$dev/lib"
             mv "$out/lib/cmake" "$dev/lib/cmake"
+          fi
+
+          mkdir -p "$tools/bin"
+          if [ -z "''${AOS_CROSS_COMPILING:-}" ]; then
+            cp ./b2 "$tools/bin/b2"
           fi
         '';
       }

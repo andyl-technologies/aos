@@ -6,6 +6,8 @@
   pkg-config,
   openssl,
   zlib,
+  python3,
+  stdenv,
 }: let
   version = "2.1.12";
 in
@@ -27,7 +29,12 @@ in
     runtimeDeps = [
       openssl
       zlib
-    ];
+    ]
+    ++ (
+      if stdenv.hostPlatform.isDarwin
+      then [python3]
+      else []
+    );
     propagatedDeps = [];
 
     phases = [
@@ -42,6 +49,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-shared \
             --enable-static \
@@ -56,9 +64,17 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            if [ -f "$out/bin/event_rpcgen.py" ]; then
+              sed -i "1s|^#!.*|#!${python3}/bin/python3|" "$out/bin/event_rpcgen.py"
+            fi
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 

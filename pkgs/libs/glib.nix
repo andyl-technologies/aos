@@ -11,6 +11,8 @@
   pcre2,
   zlib,
   util-linux,
+  bash,
+  stdenv,
 }: let
   version = "2.82.4";
   majorMinor = builtins.concatStringsSep "." (
@@ -36,12 +38,17 @@ in
       ninja
       python3
     ];
-    runtimeDeps = [
-      libffi
-      pcre2
-      zlib
-      util-linux
-    ];
+    runtimeDeps =
+      [
+        libffi
+        pcre2
+        zlib
+      ]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [bash]
+        else [util-linux]
+      );
     propagatedDeps = [
       libffi
       pcre2
@@ -59,11 +66,13 @@ in
         script = ''
           tar xf $src
           cd glib-${version}
-          # Patch Python shebangs so scripts can be found in the Nix sandbox
+          # Meson executes source-tree generators during the build, so their
+          # shebangs must name native Python until installation is complete.
+          nativePython=$(command -v python3)
           find . -type f -name '*.py' | while read f; do
             if head -1 "$f" | grep -q '^#!'; then
-              sed -i "1s|#!/usr/bin/env python3|#!${python3}/bin/python3|" "$f"
-              sed -i "1s|#!/usr/bin/python3|#!${python3}/bin/python3|" "$f"
+              sed -i "1s|#!/usr/bin/env python3|#!$nativePython|" "$f"
+              sed -i "1s|#!/usr/bin/python3|#!$nativePython|" "$f"
             fi
           done
         '';
@@ -71,15 +80,17 @@ in
       {
         name = "configure";
         script = ''
-          # GLib's meson build needs python3 in PATH for codegen scripts
-          export PYTHONPATH="${meson}/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
-
           meson setup build \
+            $mesonFlags \
             --prefix=$out \
             --buildtype=release \
             -Dselinux=disabled \
             -Dxattr=false \
-            -Dlibmount=enabled \
+            -Dlibmount=${
+            if stdenv.hostPlatform.isDarwin
+            then "disabled"
+            else "enabled"
+          } \
             -Dman-pages=disabled \
             -Ddtrace=disabled \
             -Dsystemtap=disabled \
@@ -131,7 +142,7 @@ in
             mkdir -p "$dev/lib/glib-2.0"
             mv "$out/lib/glib-2.0/include" "$dev/lib/glib-2.0/include"
           fi
-          for link in "$out/lib/"*.so; do
+          for link in "$out/lib/"*.${stdenv.hostPlatform.sharedLibraryExtension}; do
             [ -L "$link" ] || continue
             target=$(readlink "$link")
             name=$(basename "$link")
@@ -169,6 +180,21 @@ in
             -e "s|^schemasdir=.*|schemasdir=$out/share/glib-2.0/schemas|" \
             -e "s|^dtdsdir=.*|dtdsdir=$out/share/glib-2.0/dtds|" \
             "$dev/lib/pkgconfig/gio-2.0.pc"
+
+          nativePythonRoot=$(dirname "$(dirname "$(command -v python3)")")
+          for root in "$out" "$dev" "$tools"; do
+            grep -IrlZ -F "$nativePythonRoot" "$root" 2>/dev/null \
+              | xargs -0 -r sed -i "s|$nativePythonRoot|${python3}|g"
+          done
+          ${
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              if [ -f "$tools/bin/glib-gettextize" ]; then
+                sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$tools/bin/glib-gettextize"
+              fi
+            ''
+            else ""
+          }
         '';
       }
     ];
