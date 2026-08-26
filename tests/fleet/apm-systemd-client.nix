@@ -29,7 +29,10 @@
   # activate it at runtime (modules/profiles/server.nix).
   serverWithClientTest = mkSystem [
     ../../systems/server.nix
-    {aos.packages.apm-systemd-client-test.bundle = true;}
+    {
+      aos.roles.server.enable = true;
+      aos.packages.apm-systemd-client-test.bundle = true;
+    }
   ];
 in {
   name = "apm-systemd-client";
