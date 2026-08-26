@@ -10800,6 +10800,51 @@ fn resolve_optional_signing_key(
     }
 }
 
+/// Resolves the signing key for a committed cache-pointer update.
+///
+/// A registry without a trust roster may retain the unsigned local-development
+/// behavior. Once active roster keys exist, however, publishing an unsigned
+/// head would make the registry unusable to verifying consumers. Explicit
+/// options win; otherwise a sole locally configured active key is selected.
+fn resolve_cache_pointer_signing_key(
+    config: &ApmConfig,
+    dir: &Path,
+    registry_name: &str,
+    key: Option<&str>,
+    key_id: Option<&str>,
+) -> Result<Option<ResolvedSigningKey>> {
+    if key.is_some() || key_id.is_some() {
+        return resolve_producer_signing_key(config, dir, registry_name, key, key_id).map(Some);
+    }
+
+    let roster = load_committed_roster(dir)?;
+    if roster.active.is_empty() {
+        return Ok(None);
+    }
+    let registry_config = registry_config_by_name(config, registry_name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "registry '{registry_name}' has an active trust roster but no producer configuration"
+        )
+    })?;
+    let candidates = roster
+        .active
+        .iter()
+        .filter(|entry| registry_config.signing_keys.contains_key(&entry.id))
+        .map(|entry| entry.id.as_str())
+        .collect::<Vec<_>>();
+    match candidates.as_slice() {
+        [key_id] => {
+            resolve_producer_signing_key(config, dir, registry_name, None, Some(key_id)).map(Some)
+        }
+        [] => bail!(
+            "registry '{registry_name}' has active trust keys but none has local private key material; pass --registry-key or configure one under [registry.signing_keys]"
+        ),
+        _ => bail!(
+            "registry '{registry_name}' has multiple locally configured active keys; select one with --registry-key-id"
+        ),
+    }
+}
+
 /// `apr store verify` - checks graph health: record parseability, coverage of
 /// every published closure member (reachable via dependency edges), and (with
 /// `deep`) agreement with the local Nix store's actual NAR hashes.
@@ -10912,6 +10957,8 @@ pub async fn run_cache(
         CacheCommand::Generate {
             output,
             key,
+            registry_key,
+            registry_key_id,
             cache_url,
             upload_urls,
             auth,
@@ -11002,7 +11049,18 @@ pub async fn run_cache(
                     cache_pointer_updated = true;
                     printer.info(&format!("Updated registry.toml [caches] -> {cache_url}"));
                     if !*no_commit {
-                        commit_registry(&dir, "registry: update static cache pointer", None)?;
+                        let signing_key = resolve_cache_pointer_signing_key(
+                            config,
+                            &dir,
+                            &registry_name,
+                            registry_key.as_deref(),
+                            registry_key_id.as_deref(),
+                        )?;
+                        commit_registry(
+                            &dir,
+                            "registry: update static cache pointer",
+                            signing_key.as_ref().map(ResolvedSigningKey::path),
+                        )?;
                         refresh_registry_object_store(&dir)
                             .context("refreshing dumb-HTTP object store after cache update")?;
                         committed = true;
@@ -17552,6 +17610,43 @@ mod tests {
             trusted_key: keypair.trust_key_line(registry),
             private_key,
         }
+    }
+
+    #[test]
+    fn cache_pointer_commit_selects_the_only_configured_active_key() {
+        let tmp = TempDir::new().unwrap();
+        let key = write_seeded_signing_key(tmp.path(), "maintenance", [31_u8; 32], "maintainer");
+        write_test_roster(tmp.path(), "maintainer", &key.trusted_key, &[]).unwrap();
+        let config = test_config_with_signing_key("maintenance", "maintainer", &key.private_key);
+
+        let resolved =
+            resolve_cache_pointer_signing_key(&config, tmp.path(), "maintenance", None, None)
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(resolved.path(), key.private_key.to_str().unwrap());
+    }
+
+    #[test]
+    fn cache_pointer_commit_fails_closed_without_active_private_material() {
+        let tmp = TempDir::new().unwrap();
+        let key = write_seeded_signing_key(tmp.path(), "maintenance", [32_u8; 32], "maintainer");
+        write_test_roster(tmp.path(), "maintainer", &key.trusted_key, &[]).unwrap();
+        let config = ApmConfig {
+            settings: ApmSettings::default(),
+            registries: vec![(test_registry_config("maintenance", None), None)],
+            scope: ProfileScope::User,
+        };
+
+        let error =
+            resolve_cache_pointer_signing_key(&config, tmp.path(), "maintenance", None, None)
+                .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("none has local private key material")
+        );
     }
 
     #[test]
