@@ -2588,7 +2588,7 @@ in {
           and .version == "1.0.0"
           and .dry_run == false
           and .cache_url == "http://127.0.0.1:18082"
-          and .cache_pointer_updated == true
+          and .cache_pointer_updated == false
           and (.full_pack | startswith("pack-") and endswith(".pack"))
           and .deltas == []
           and (.cache.paths >= 3)
