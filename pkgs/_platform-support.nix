@@ -49,6 +49,7 @@ let
     "file"
     "findutils"
     "flex"
+    "fmt"
     "gawk"
     "gc"
     "gettext"
