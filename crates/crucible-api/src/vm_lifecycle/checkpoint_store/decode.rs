@@ -71,6 +71,8 @@ pub(super) fn decode_manifest_with_limits(
         (MANIFEST_VERSION, payload)
     } else if let Some(payload) = bytes.strip_prefix(PREVIOUS_MANIFEST_MAGIC) {
         (PREVIOUS_MANIFEST_VERSION, payload)
+    } else if let Some(payload) = bytes.strip_prefix(OLDER_MANIFEST_MAGIC) {
+        (OLDER_MANIFEST_VERSION, payload)
     } else if let Some(payload) = bytes.strip_prefix(LEGACY_MANIFEST_MAGIC) {
         (LEGACY_MANIFEST_VERSION, payload)
     } else {

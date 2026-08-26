@@ -4,7 +4,7 @@ use super::*;
 
 /// Read-only source for one complete portable production checkpoint closure.
 ///
-/// Implementations expose the canonical version-six manifest, its exact
+/// Implementations expose the canonical version-seven manifest, its exact
 /// sorted immutable-object inventory, and authenticated streaming reads. The
 /// installer independently verifies every byte and never grants the source
 /// destination-store authority.
@@ -18,7 +18,7 @@ pub trait ProductionExactCheckpointSource: Send + Sync {
     /// Returns the exact modeled configuration claimed by this source.
     fn configuration(&self) -> ContentHash;
 
-    /// Returns the canonical `crucible.production-exact-closure.v6` manifest.
+    /// Returns the canonical `crucible.production-exact-closure.v7` manifest.
     fn manifest(&self) -> &[u8];
 
     /// Returns the exact strictly sorted immutable-object inventory.

@@ -32,7 +32,7 @@ impl ProductionExactCheckpointObject {
 /// Read-only portable view of one complete production exact-checkpoint closure.
 ///
 /// The value exposes no directory or mutation authority. Its manifest is the
-/// canonical `crucible.production-exact-closure.v6` body, and its object list
+/// canonical `crucible.production-exact-closure.v7` body, and its object list
 /// is the exact deduplicated set named by that manifest. Large overlay and
 /// VMState artifacts remain represented by their bounded content-addressed
 /// chunks rather than by RAM-sized buffers.
@@ -65,14 +65,16 @@ pub struct ProductionExactCheckpointReplayTarget {
 ///
 /// The value exposes no path or store mutation authority. It retains the exact
 /// chunk manifest needed to stream one artifact with fixed temporary memory and
-/// reauthenticate both its declared length and content identity.
+/// reauthenticate both its declared length and dense or sparse identity.
 #[derive(Clone)]
 pub struct ProductionExactCheckpointReplayArtifact {
-    object_directory: PathBuf,
-    identity: ContentHash,
-    length: u64,
-    chunks: Vec<ContentHash>,
-    role: &'static str,
+    pub(super) object_directory: PathBuf,
+    pub(super) identity: ContentHash,
+    pub(super) length: u64,
+    pub(super) chunks: Vec<ContentHash>,
+    pub(super) sparse: bool,
+    pub(super) extents: Vec<ArtifactExtent>,
+    pub(super) role: &'static str,
 }
 
 impl std::fmt::Debug for ProductionExactCheckpointReplayArtifact {
@@ -82,6 +84,8 @@ impl std::fmt::Debug for ProductionExactCheckpointReplayArtifact {
             .field("identity", &self.identity)
             .field("length", &self.length)
             .field("chunk_count", &self.chunks.len())
+            .field("sparse", &self.sparse)
+            .field("extent_count", &self.extents.len())
             .field("role", &self.role)
             .finish_non_exhaustive()
     }
@@ -92,6 +96,8 @@ impl PartialEq for ProductionExactCheckpointReplayArtifact {
         self.identity == other.identity
             && self.length == other.length
             && self.chunks == other.chunks
+            && self.sparse == other.sparse
+            && self.extents == other.extents
             && self.role == other.role
     }
 }
@@ -205,7 +211,12 @@ impl ProductionExactCheckpointReplayCatalog {
 }
 
 impl ProductionExactCheckpointReplayArtifact {
-    /// Returns the exact content identity of the artifact.
+    /// Returns the exact authenticated identity of the artifact.
+    ///
+    /// Dense artifacts use the BLAKE3 identity of their complete byte stream.
+    /// Sparse version-seven overlays use the domain-separated identity of
+    /// their logical length and canonical changed-chunk extent map; omitted
+    /// chunks have the authenticated meaning of zeroes.
     #[must_use]
     pub const fn identity(&self) -> ContentHash {
         self.identity
@@ -232,14 +243,7 @@ impl ProductionExactCheckpointReplayArtifact {
         &self,
         destination: &mut impl std::io::Write,
     ) -> Result<(), LifecycleApiError> {
-        stream_chunked_checkpoint_artifact(
-            &self.object_directory,
-            &self.chunks,
-            self.length,
-            self.identity,
-            destination,
-            self.role,
-        )
+        stream_replay_artifact(self, destination)
     }
 
     /// Streams and authenticates the artifact under an operational boundary.
@@ -259,15 +263,7 @@ impl ProductionExactCheckpointReplayArtifact {
         destination: &mut impl std::io::Write,
         boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
     ) -> Result<(), LifecycleApiError> {
-        stream_chunked_checkpoint_artifact_with_boundary(
-            &self.object_directory,
-            &self.chunks,
-            self.length,
-            self.identity,
-            destination,
-            self.role,
-            boundary,
-        )
+        stream_replay_artifact_with_boundary(self, destination, boundary)
     }
 }
 
@@ -501,7 +497,7 @@ impl ProductionExactCheckpointClosure {
         self.configuration
     }
 
-    /// Returns the canonical version-six production closure manifest bytes.
+    /// Returns the canonical version-seven production closure manifest bytes.
     #[must_use]
     pub fn manifest(&self) -> &[u8] {
         &self.manifest
@@ -564,6 +560,8 @@ impl ProductionExactCheckpointClosure {
                     identity: target.overlay.identity,
                     length: target.overlay.length,
                     chunks: target.overlay.chunks,
+                    sparse: target.overlay.sparse,
+                    extents: target.overlay.extents,
                     role: "replay-oracle root overlay",
                 },
                 vmstate: ProductionExactCheckpointReplayArtifact {
@@ -571,6 +569,8 @@ impl ProductionExactCheckpointClosure {
                     identity: target.vmstate.identity,
                     length: target.vmstate.length,
                     chunks: target.vmstate.chunks,
+                    sparse: target.vmstate.sparse,
+                    extents: target.vmstate.extents,
                     role: "replay-oracle VMState",
                 },
             })
@@ -625,6 +625,8 @@ impl ProductionExactCheckpointClosure {
                     identity: target.overlay.identity,
                     length: target.overlay.length,
                     chunks: target.overlay.chunks,
+                    sparse: target.overlay.sparse,
+                    extents: target.overlay.extents,
                     role: "replay-oracle root overlay",
                 },
                 vmstate: ProductionExactCheckpointReplayArtifact {
@@ -632,6 +634,8 @@ impl ProductionExactCheckpointClosure {
                     identity: target.vmstate.identity,
                     length: target.vmstate.length,
                     chunks: target.vmstate.chunks,
+                    sparse: target.vmstate.sparse,
+                    extents: target.vmstate.extents,
                     role: "replay-oracle VMState",
                 },
             };

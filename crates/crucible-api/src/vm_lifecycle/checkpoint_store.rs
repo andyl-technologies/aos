@@ -36,12 +36,23 @@ pub use retirement::{
     ProductionExactCheckpointRetirement, ProductionExactCheckpointRetirementError,
     ProductionExactCheckpointRetirementReport, retire_production_exact_checkpoint_catalog,
 };
+mod sparse;
+#[cfg(test)]
+use sparse::sparse_artifact_identity;
+pub(super) use sparse::{ArtifactExtent, stage_sparse_checkpoint_artifact_chunks_with_boundary};
+use sparse::{
+    materialize_sparse_checkpoint_artifact, stream_sparse_artifact_bytes,
+    validate_sparse_artifact_manifest, validate_sparse_artifact_manifest_with_lifecycle_boundary,
+    validate_sparse_artifact_manifest_with_scheduler_boundary, validate_sparse_artifact_shape,
+};
 
-const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v6\0";
-const PREVIOUS_MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v5\0";
+const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v7\0";
+const PREVIOUS_MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v6\0";
+const OLDER_MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v5\0";
 const LEGACY_MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v4\0";
-const MANIFEST_VERSION: u8 = 6;
-const PREVIOUS_MANIFEST_VERSION: u8 = 5;
+const MANIFEST_VERSION: u8 = 7;
+const PREVIOUS_MANIFEST_VERSION: u8 = 6;
+const OLDER_MANIFEST_VERSION: u8 = 5;
 const LEGACY_MANIFEST_VERSION: u8 = 4;
 const MANIFEST_FILE: &str = "manifest.cbor";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
@@ -115,6 +126,18 @@ struct ArtifactManifest {
     length: u64,
     #[serde(deserialize_with = "decode::deserialize_vec")]
     chunks: Vec<ContentHash>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    sparse: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "decode::deserialize_vec"
+    )]
+    extents: Vec<ArtifactExtent>,
+}
+
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 struct ClosureObjects {
@@ -517,6 +540,8 @@ pub(super) fn stage_checkpoint_artifact_chunks_with_boundary(
         },
         length,
         chunks,
+        sparse: false,
+        extents: Vec::new(),
     })
 }
 
@@ -742,12 +767,16 @@ fn load_exact_checkpoint_set_with_boundary(
                 identity: target.overlay.identity,
                 length: target.overlay.length,
                 chunks: target.overlay.chunks.clone(),
+                sparse: target.overlay.sparse,
+                extents: target.overlay.extents.clone(),
             },
             vmstate_artifact: ProductionCheckpointArtifact {
                 source: ProductionCheckpointArtifactSource::ChunkStore(object_directory.clone()),
                 identity: target.vmstate.identity,
                 length: target.vmstate.length,
                 chunks: target.vmstate.chunks.clone(),
+                sparse: target.vmstate.sparse,
+                extents: target.vmstate.extents.clone(),
             },
             manifest_identity: target.manifest_identity,
         };
@@ -965,10 +994,21 @@ fn manifest_object_identities(manifest: &ClosureManifest) -> BTreeSet<ContentHas
     identities.extend(manifest.signal_artifacts.iter().copied());
     for target in &manifest.targets {
         identities.insert(target.snapshot);
-        identities.extend(target.overlay.chunks.iter().copied());
-        identities.extend(target.vmstate.chunks.iter().copied());
+        identities.extend(artifact_object_identities(&target.overlay));
+        identities.extend(artifact_object_identities(&target.vmstate));
     }
     identities
+}
+
+fn artifact_object_identities(
+    artifact: &ArtifactManifest,
+) -> impl Iterator<Item = ContentHash> + '_ {
+    artifact.chunks.iter().copied().chain(
+        artifact
+            .extents
+            .iter()
+            .flat_map(|extent| extent.chunks.iter().copied()),
+    )
 }
 
 fn validate_checkpoint_set(
@@ -1405,6 +1445,8 @@ fn validate_exact_checkpoint_artifact_with_boundary(
                 identity: artifact.identity,
                 length: artifact.length,
                 chunks: artifact.chunks.clone(),
+                sparse: artifact.sparse,
+                extents: artifact.extents.clone(),
             };
             validate_artifact_manifest_with_scheduler_boundary(directory, &manifest, boundary)?;
         }
@@ -1429,12 +1471,16 @@ fn install_persisted_artifact_paths(
             identity: manifest_target.overlay.identity,
             length: manifest_target.overlay.length,
             chunks: manifest_target.overlay.chunks.clone(),
+            sparse: manifest_target.overlay.sparse,
+            extents: manifest_target.overlay.extents.clone(),
         };
         target.vmstate_artifact = ProductionCheckpointArtifact {
             source: ProductionCheckpointArtifactSource::ChunkStore(object_directory.to_path_buf()),
             identity: manifest_target.vmstate.identity,
             length: manifest_target.vmstate.length,
             chunks: manifest_target.vmstate.chunks.clone(),
+            sparse: manifest_target.vmstate.sparse,
+            extents: manifest_target.vmstate.extents.clone(),
         };
     }
     Ok(())
@@ -1786,8 +1832,9 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
     let bytes = encode_manifest(&material)?;
     let domain = match manifest.format_version {
         LEGACY_MANIFEST_VERSION => "crucible.production-exact-closure.v4",
-        PREVIOUS_MANIFEST_VERSION => "crucible.production-exact-closure.v5",
-        MANIFEST_VERSION => "crucible.production-exact-closure.v6",
+        OLDER_MANIFEST_VERSION => "crucible.production-exact-closure.v5",
+        PREVIOUS_MANIFEST_VERSION => "crucible.production-exact-closure.v6",
+        MANIFEST_VERSION => "crucible.production-exact-closure.v7",
         _ => return Err(store_error("unsupported exact checkpoint manifest version")),
     };
     Ok(ContentHash::from_canonical_material(
@@ -1807,6 +1854,7 @@ fn encode_manifest(manifest: &ClosureManifest) -> Result<Vec<u8>, SchedulerError
     }
     let magic = match manifest.format_version {
         LEGACY_MANIFEST_VERSION => LEGACY_MANIFEST_MAGIC,
+        OLDER_MANIFEST_VERSION => OLDER_MANIFEST_MAGIC,
         PREVIOUS_MANIFEST_VERSION => PREVIOUS_MANIFEST_MAGIC,
         MANIFEST_VERSION => MANIFEST_MAGIC,
         _ => return Err(store_error("unsupported exact checkpoint manifest version")),
@@ -1815,6 +1863,30 @@ fn encode_manifest(manifest: &ClosureManifest) -> Result<Vec<u8>, SchedulerError
     bytes.extend_from_slice(magic);
     bytes.extend_from_slice(&payload);
     Ok(bytes)
+}
+
+fn validate_dense_artifact_shape(artifact: &ArtifactManifest) -> Result<(), String> {
+    if artifact.sparse || !artifact.extents.is_empty() {
+        return Err(String::from(
+            "dense checkpoint artifact contains sparse extent metadata",
+        ));
+    }
+    let chunk_count = u64::try_from(artifact.chunks.len())
+        .map_err(|_| String::from("artifact chunk count is not representable"))?;
+    let minimum = chunk_count
+        .saturating_sub(1)
+        .checked_mul(ARTIFACT_CHUNK_BYTES_U64)
+        .and_then(|bytes| bytes.checked_add(u64::from(chunk_count != 0)))
+        .ok_or_else(|| String::from("artifact chunk geometry overflows"))?;
+    let maximum = chunk_count
+        .checked_mul(ARTIFACT_CHUNK_BYTES_U64)
+        .ok_or_else(|| String::from("artifact chunk geometry overflows"))?;
+    if artifact.length < minimum || artifact.length > maximum {
+        return Err(String::from(
+            "closure manifest contains invalid artifact chunk geometry",
+        ));
+    }
+    Ok(())
 }
 
 // crucible-lint: allow stringly-error -- the private shape validator returns bounded diagnostics that the store boundary immediately wraps in CheckpointStoreError.
@@ -1847,20 +1919,20 @@ fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
         ));
     }
     if manifest.targets.iter().any(|target| target.node.is_empty())
-        || (manifest.format_version == MANIFEST_VERSION
-            && manifest
-                .targets
-                .iter()
-                .any(|target| target.immutable_backing.is_none()))
-        || (manifest.format_version != MANIFEST_VERSION
-            && manifest
-                .targets
-                .iter()
-                .any(|target| target.immutable_backing.is_some()))
-        || manifest.targets.iter().any(|target| {
-            (target.overlay.length == 0) != target.overlay.chunks.is_empty()
-                || (target.vmstate.length == 0) != target.vmstate.chunks.is_empty()
-        })
+        || (matches!(
+            manifest.format_version,
+            MANIFEST_VERSION | PREVIOUS_MANIFEST_VERSION
+        ) && manifest
+            .targets
+            .iter()
+            .any(|target| target.immutable_backing.is_none()))
+        || (matches!(
+            manifest.format_version,
+            OLDER_MANIFEST_VERSION | LEGACY_MANIFEST_VERSION
+        ) && manifest
+            .targets
+            .iter()
+            .any(|target| target.immutable_backing.is_some()))
         || manifest
             .node_generations
             .iter()
@@ -1885,25 +1957,18 @@ fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
             "closure manifest aliases a node-specific QEMU snapshot",
         ));
     }
-    for artifact in manifest
-        .targets
-        .iter()
-        .flat_map(|target| [&target.overlay, &target.vmstate])
-    {
-        let chunk_count = u64::try_from(artifact.chunks.len())
-            .map_err(|_| String::from("artifact chunk count is not representable"))?;
-        let minimum = chunk_count
-            .saturating_sub(1)
-            .checked_mul(ARTIFACT_CHUNK_BYTES_U64)
-            .and_then(|bytes| bytes.checked_add(u64::from(chunk_count != 0)))
-            .ok_or_else(|| String::from("artifact chunk geometry overflows"))?;
-        let maximum = chunk_count
-            .checked_mul(ARTIFACT_CHUNK_BYTES_U64)
-            .ok_or_else(|| String::from("artifact chunk geometry overflows"))?;
-        if artifact.length < minimum || artifact.length > maximum {
-            return Err(String::from(
-                "closure manifest contains invalid artifact chunk geometry",
-            ));
+    for target in &manifest.targets {
+        if manifest.format_version == MANIFEST_VERSION {
+            if !target.overlay.sparse || target.vmstate.sparse {
+                return Err(String::from(
+                    "v7 closure manifest has an invalid artifact layout",
+                ));
+            }
+            validate_sparse_artifact_shape(&target.overlay)?;
+            validate_dense_artifact_shape(&target.vmstate)?;
+        } else {
+            validate_dense_artifact_shape(&target.overlay)?;
+            validate_dense_artifact_shape(&target.vmstate)?;
         }
     }
     Ok(())
@@ -2046,11 +2111,13 @@ fn artifact_manifest_with_boundary(
     boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
 ) -> Result<ArtifactManifest, SchedulerError> {
     boundary()?;
-    if !artifact.chunks.is_empty() {
+    if artifact.sparse || !artifact.chunks.is_empty() {
         return Ok(ArtifactManifest {
             identity: artifact.identity,
             length: artifact.length,
             chunks: artifact.chunks.clone(),
+            sparse: artifact.sparse,
+            extents: artifact.extents.clone(),
         });
     }
     let ProductionCheckpointArtifactSource::File(path) = &artifact.source else {
@@ -2096,6 +2163,8 @@ fn artifact_manifest_with_boundary(
         identity: artifact.identity,
         length: artifact.length,
         chunks,
+        sparse: false,
+        extents: Vec::new(),
     })
 }
 
@@ -2119,16 +2188,21 @@ fn persist_chunked_artifact_with_boundary(
         ProductionCheckpointArtifactSource::ChunkStore(source) => {
             validate_artifact_manifest(source, manifest)
                 .map_err(|error| store_error(error.to_string()))?;
-            for chunk in &manifest.chunks {
+            for chunk in artifact_object_identities(manifest) {
                 boundary()?;
-                let source_path = object_path(source, *chunk);
-                let destination = object_path(directory, *chunk);
+                let source_path = object_path(source, chunk);
+                let destination = object_path(directory, chunk);
                 if source_path != destination && !destination.exists() {
-                    persist_file_object_with_boundary(directory, *chunk, &source_path, boundary)?;
+                    persist_file_object_with_boundary(directory, chunk, &source_path, boundary)?;
                 }
             }
         }
         ProductionCheckpointArtifactSource::File(path) => {
+            if manifest.sparse {
+                return Err(store_error(
+                    "sparse checkpoint artifact must originate in a staged chunk store",
+                ));
+            }
             let mut file = File::open(path)
                 .map_err(|error| store_error(format!("open checkpoint artifact: {error}")))?;
             let mut buffer = vec![0_u8; ARTIFACT_CHUNK_BYTES];
@@ -2177,6 +2251,8 @@ pub(super) fn validate_chunked_artifact(
         identity: artifact.identity,
         length: artifact.length,
         chunks: artifact.chunks.clone(),
+        sparse: artifact.sparse,
+        extents: artifact.extents.clone(),
     };
     validate_artifact_manifest(directory, &manifest)?;
     Ok(manifest.identity)
@@ -2186,6 +2262,10 @@ fn validate_artifact_manifest(
     directory: &Path,
     manifest: &ArtifactManifest,
 ) -> Result<(), LifecycleApiError> {
+    if manifest.sparse {
+        validate_sparse_artifact_manifest(directory, manifest)?;
+        return Ok(());
+    }
     let mut reader = ChunkSequenceReader::new(directory, &manifest.chunks)?;
     let observed = ContentHash::from_reader(&mut reader).map_err(|error| {
         loop_factory_error(format!("read chunked checkpoint artifact: {error}"))
@@ -2204,6 +2284,10 @@ fn validate_artifact_manifest_with_scheduler_boundary(
     boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
 ) -> Result<(), SchedulerError> {
     boundary()?;
+    if manifest.sparse {
+        validate_sparse_artifact_manifest_with_scheduler_boundary(directory, manifest, boundary)?;
+        return Ok(());
+    }
     let mut reader = ChunkSequenceReader::new(directory, &manifest.chunks)
         .map_err(|error| store_error(error.to_string()))?;
     let mut hasher = blake3::Hasher::new();
@@ -2273,19 +2357,23 @@ pub(super) fn materialize_checkpoint_artifact(
             })?;
         }
         ProductionCheckpointArtifactSource::ChunkStore(directory) => {
-            let reader = ChunkSequenceReader::new(directory, &artifact.chunks)?;
-            copy_sparse_authenticated(
-                reader,
-                staging.as_file_mut(),
-                artifact.length,
-                artifact.identity,
-            )
-            .map_err(|error| {
-                loop_factory_error(format!(
-                    "materialize exact checkpoint {role} {}: {error}",
-                    destination.display()
-                ))
-            })?;
+            if artifact.sparse {
+                materialize_sparse_checkpoint_artifact(directory, artifact, staging.as_file_mut())?;
+            } else {
+                let reader = ChunkSequenceReader::new(directory, &artifact.chunks)?;
+                copy_sparse_authenticated(
+                    reader,
+                    staging.as_file_mut(),
+                    artifact.length,
+                    artifact.identity,
+                )
+                .map_err(|error| {
+                    loop_factory_error(format!(
+                        "materialize exact checkpoint {role} {}: {error}",
+                        destination.display()
+                    ))
+                })?;
+            }
         }
     }
     staging.as_file().sync_all().map_err(|error| {
@@ -2327,16 +2415,36 @@ pub(super) fn stream_checkpoint_artifact(
             )
         }
         ProductionCheckpointArtifactSource::ChunkStore(directory) => {
-            stream_chunked_checkpoint_artifact(
-                directory,
-                &artifact.chunks,
-                artifact.length,
-                artifact.identity,
-                destination,
-                role,
-            )
+            stream_stored_checkpoint_artifact(directory, artifact, destination, role)
         }
     }
+}
+
+fn stream_stored_checkpoint_artifact(
+    directory: &Path,
+    artifact: &ProductionCheckpointArtifact,
+    destination: &mut impl Write,
+    role: &str,
+) -> Result<(), LifecycleApiError> {
+    if !artifact.sparse {
+        return stream_chunked_checkpoint_artifact(
+            directory,
+            &artifact.chunks,
+            artifact.length,
+            artifact.identity,
+            destination,
+            role,
+        );
+    }
+    let manifest = ArtifactManifest {
+        identity: artifact.identity,
+        length: artifact.length,
+        chunks: artifact.chunks.clone(),
+        sparse: artifact.sparse,
+        extents: artifact.extents.clone(),
+    };
+    validate_sparse_artifact_manifest(directory, &manifest)?;
+    stream_sparse_artifact_bytes(directory, &manifest, destination, &mut || Ok(()))
 }
 
 fn stream_chunked_checkpoint_artifact(
@@ -2374,6 +2482,68 @@ fn stream_chunked_checkpoint_artifact_with_boundary(
         ))),
         Err(AuthenticatedCopyError::Boundary(error)) => Err(error),
     }
+}
+
+fn stream_replay_artifact(
+    artifact: &ProductionExactCheckpointReplayArtifact,
+    destination: &mut impl Write,
+) -> Result<(), LifecycleApiError> {
+    if !artifact.sparse {
+        return stream_chunked_checkpoint_artifact(
+            &artifact.object_directory,
+            &artifact.chunks,
+            artifact.length,
+            artifact.identity,
+            destination,
+            artifact.role,
+        );
+    }
+    let manifest = ArtifactManifest {
+        identity: artifact.identity,
+        length: artifact.length,
+        chunks: artifact.chunks.clone(),
+        sparse: artifact.sparse,
+        extents: artifact.extents.clone(),
+    };
+    validate_sparse_artifact_manifest(&artifact.object_directory, &manifest)?;
+    stream_sparse_artifact_bytes(
+        &artifact.object_directory,
+        &manifest,
+        destination,
+        &mut || Ok(()),
+    )
+}
+
+fn stream_replay_artifact_with_boundary(
+    artifact: &ProductionExactCheckpointReplayArtifact,
+    destination: &mut impl Write,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+) -> Result<(), LifecycleApiError> {
+    if !artifact.sparse {
+        return stream_chunked_checkpoint_artifact_with_boundary(
+            &artifact.object_directory,
+            &artifact.chunks,
+            artifact.length,
+            artifact.identity,
+            destination,
+            artifact.role,
+            boundary,
+        );
+    }
+    boundary()?;
+    let manifest = ArtifactManifest {
+        identity: artifact.identity,
+        length: artifact.length,
+        chunks: artifact.chunks.clone(),
+        sparse: artifact.sparse,
+        extents: artifact.extents.clone(),
+    };
+    validate_sparse_artifact_manifest_with_lifecycle_boundary(
+        &artifact.object_directory,
+        &manifest,
+        boundary,
+    )?;
+    stream_sparse_artifact_bytes(&artifact.object_directory, &manifest, destination, boundary)
 }
 
 enum AuthenticatedCopyError<E> {
@@ -2833,6 +3003,46 @@ fn validate_file_hash_with_boundary(
     if actual != expected {
         return Err(store_error(format!(
             "checkpoint object {} changed before persistence",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_file_hash_with_lifecycle_boundary(
+    path: &Path,
+    expected: ContentHash,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+) -> Result<(), LifecycleApiError> {
+    boundary()?;
+    let mut file = File::open(path).map_err(|error| {
+        loop_factory_error(format!(
+            "open checkpoint object {}: {error}",
+            path.display()
+        ))
+    })?;
+    let mut buffer = vec![0_u8; SPARSE_COPY_BUFFER_BYTES];
+    let mut hasher = blake3::Hasher::new();
+    loop {
+        boundary()?;
+        let read = file.read(&mut buffer).map_err(|error| {
+            loop_factory_error(format!(
+                "hash checkpoint object {}: {error}",
+                path.display()
+            ))
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    boundary()?;
+    let actual = ContentHash {
+        bytes: *hasher.finalize().as_bytes(),
+    };
+    if actual != expected {
+        return Err(loop_factory_error(format!(
+            "checkpoint object {} failed content authentication",
             path.display()
         )));
     }

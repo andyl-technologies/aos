@@ -293,27 +293,39 @@ contains a manifest and authenticated objects for scenario/configuration,
 scheduler, logs, signal artifacts, trigger/assertion/lifecycle/fault state,
 per-node snapshots, disk overlays, QEMU VMState, generations, and service state.
 
-The single-host implementation chunks full overlay and VMState artifacts. It
-keeps every running QEMU node paused after exact capture, hashes and streams the
-run-directory overlay and VMState directly through bounded chunk buffers into
-the content store, durably publishes the closure, then deletes the transient QMP
-snapshot and resumes only nodes that were running. It does not create a second
-full-file staging tree. Restore streams each authenticated file or chunk
-sequence through a fixed 1 MiB buffer into an atomic destination-side staging
-file, hashes the logical byte stream during that pass, and recreates zero runs
-as sparse extents before durable publication. A corrupt, short, long, or
-missing source leaves no partial destination. Cleanup attempts every captured
-node even when one delete or resume fails. Hashing, chunk persistence, portable
-closure validation, and campaign-store streaming observe attempt cancellation
-between fixed one-MiB I/O chunks; cancellation cannot bypass that cleanup or be
-misclassified as retryable store I/O. The remaining storage work is:
+The single-host implementation stores VMState as a dense chunk sequence and a
+root overlay as immutable backing plus a canonical sparse changed-chunk map. It
+keeps every running QEMU node paused after exact capture, discovers allocated
+overlay ranges with `SEEK_DATA`/`SEEK_HOLE`, canonicalizes allocated all-zero
+chunks back to holes, and streams only nonzero changed chunks plus VMState into
+the content store. A filesystem without reliable extent discovery fails closed
+rather than falling back to work proportional to the virtual disk. The closure
+is durably published before transient QMP snapshots are deleted and only nodes
+that were running are resumed. No second full-file staging tree is created.
 
-- represent disk state as immutable backing plus changed overlay objects;
+Version-seven sparse artifacts carry a logical `length`, no dense `chunks`, and
+strictly ordered, nonoverlapping, nonadjacent extents. Each extent contains a
+`start_chunk` and one or more consecutive BLAKE3 chunk identities; chunks are
+4 MiB except for a final partial logical chunk. Omitted logical chunks are
+canonical zeroes. The sparse artifact identity is
+`H("crucible.production-exact-sparse-artifact.v1",
+hex(canonical_cbor({length, extents})))`; stored chunk bytes independently
+authenticate against their named identities. This binds the exact logical byte
+stream without hashing every omitted zero during capture.
+
+Restore authenticates the extent geometry, identity, and every stored chunk,
+then writes those chunks into a new destination-side staging file and creates
+omitted ranges as holes. Dense legacy artifacts stream through a fixed 1 MiB
+buffer and authenticate their complete byte-stream hash. A corrupt, short,
+long, or missing source leaves no partial destination. Cleanup attempts every
+captured node even when one delete or resume fails. Hashing, chunk persistence,
+portable closure validation, and campaign-store streaming observe attempt
+cancellation between bounded I/O chunks; cancellation cannot bypass cleanup or
+be misclassified as retryable store I/O. The remaining storage work is:
+
 - admit QEMU-emitted RAM dirty-page/extent manifests when the fork/snapshot
   capability is available;
-- keep opaque device VMState as authenticated blobs;
-- compact long delta chains without changing configuration identity;
-- verify complete artifact length, chunk order, and whole-object digest.
+- compact and tier long delta chains without changing configuration identity.
 
 The single-node exact-checkpoint foundation uses four registered immutable
 objects. `crucible.qemu.vm-snapshot@device-state.2` is the owner-decoded
@@ -366,16 +378,16 @@ failure can explicitly restore `paused(raw)`.
 The store admits only durable, conditional-create, streaming-read and
 streaming-put backends. The VMState source is finite and reopenable and is
 rejected from its declared length before it is opened when outside the exact
-attempt ceiling. Restore copies the complete authenticated stream into staging
-storage and may expose it to QEMU only after EOF, exact length, and digest have
-all been observed. The first implementation streams the complete qcow2 object;
-extent manifests and changed-state capture remain the required hot-path
-optimization rather than a correctness precondition.
+attempt ceiling. Dense restore copies the complete authenticated stream into
+staging storage and may expose it to QEMU only after EOF, exact length, and
+digest have all been observed. Sparse overlay restore authenticates the exact
+extent manifest and every named chunk before atomically exposing a file whose
+omitted ranges are zero holes.
 
-The complete multi-node production continuation uses version six of the same
+The complete multi-node production continuation uses version seven of the same
 typed root rather than flattening a potentially large object set into one
 generic envelope. The registered leaves are the canonical
-`crucible.production-exact-closure@device-state.6` manifest and exact opaque
+`crucible.production-exact-closure@device-state.7` manifest and exact opaque
 production objects under
 `crucible.executor.production-checkpoint-object@device-state.5`. Every object
 retains its production BLAKE3 identity and declared length in a registered
@@ -393,10 +405,13 @@ scenario.
 Version six additionally binds every live target to the BLAKE3 identity of
 the immutable root-image bytes supplied to QEMU. Lifecycle construction hashes
 the selected image, and capture includes that identity in both the target record
-and target-manifest identity. Restore rejects a mismatch before launching QEMU. Canonical
-version-four and version-five manifests remain readable with no backing claim;
-they retain their original bytes and identities, while only version-six targets
-make the backing proof.
+and target-manifest identity. Restore rejects a mismatch before launching QEMU.
+Canonical version-four and version-five manifests remain readable with no backing claim;
+they retain their original bytes and identities, while version-six and later
+targets make the backing proof. Version seven replaces each dense overlay chunk
+sequence with the canonical sparse extent representation above while retaining
+dense VMState chunks. Canonical version-six manifests remain readable and retain
+their original bytes and identities.
 
 ```text
 "CRUCPIDX" || object_count:u32be

@@ -818,7 +818,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   fail-closed. Legacy version-two roots remain readable but cannot resume a
   campaign attempt. The complete production lifecycle checkpoint store now
   also lends a read-only portable closure capability: it authenticates the
-  version-six production manifest and exact sorted object inventory under the
+  version-seven production manifest and exact sorted object inventory under the
   scenario's aggregate checkpoint bound, keeps overlay and VMState artifacts
   chunked, and reauthenticates each object while streaming without exposing its
   directory. A matching production-store installer accepts that narrow source
@@ -1328,7 +1328,7 @@ Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
 - [x] **T-CAM-5.3** Remove full-file staging copies from the normal exact-closure
   publish/materialize path; stream with bounded buffers and preserve sparse
   extents where valid.
-- [ ] **T-CAM-5.4** Implement immutable disk backing plus child overlay
+- [x] **T-CAM-5.4** Implement immutable disk backing plus child overlay
   manifests and content-deduplicated changed-object storage.
 - [ ] **T-CAM-5.5** Implement and validate an acyclic store-composition graph
   with verified, routed, tiered, read-through, write-through, write-back,
@@ -1448,17 +1448,22 @@ and production maintenance ownership remain open. Those gaps do not weaken the
 separately completed packed-leaf T-CAM-5.6 contract.
 
 The production exact-closure checkpoint now holds every running QEMU node
-paused while it authenticates and streams the live generation's overlay and
-VMState directly into bounded content chunks. It publishes the closure before
-deleting transient QMP snapshots and resuming the originally running nodes, and
-it no longer copies both artifacts through an additional full-file staging
-tree. Direct-file and chunk-sequence restore now use one fixed 1 MiB buffer,
-authenticate length and whole-object identity during the copy, recreate zero
-runs as sparse extents, publish the destination atomically, and leave no partial
-destination after corrupt or missing input. Version-six targets now bind the
-actual immutable root-image byte identity and reject a different backing before
-QEMU launch. Changed-overlay manifests and `O(changed state)` capture remain
-open, so T-CAM-5.4 remains unchecked.
+paused while it authenticates and streams the live generation's VMState and
+allocated overlay extents directly into bounded content chunks. It publishes
+the closure before deleting transient QMP snapshots and resuming the originally
+running nodes, and it no longer copies either artifact through an additional
+full-file staging tree. Version-seven overlay capture requires supported
+`SEEK_DATA`/`SEEK_HOLE` semantics, canonicalizes allocated all-zero chunks back
+to holes, and stores only the remaining changed chunks in ordered sparse extent
+manifests. VMState remains a dense authenticated chunk sequence. Restore uses
+fixed buffers, recreates omitted overlay ranges as holes in a new staging file,
+publishes the destination atomically, and leaves no partial destination after
+corrupt or missing input. Version-six and version-seven targets bind the actual
+immutable root-image byte identity and reject a different backing before QEMU
+launch; canonical version-four through version-six manifests retain their prior
+bytes and identities. This completes the bounded changed-overlay storage portion
+of T-CAM-5.4; QEMU RAM dirty-page manifests and long delta-chain compaction
+remain separate open work.
 
 **Gates:** `gate:campaign-store-equivalence`, `gate:campaign-store-composition`,
 `gate:exact-closure-streaming`, `gate:campaign-continuity-v2`.

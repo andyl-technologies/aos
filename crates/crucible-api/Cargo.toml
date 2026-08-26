@@ -21,6 +21,7 @@ crucible-session = { path = "../crucible-session" }
 futures-util = { workspace = true }
 hyper-util = { workspace = true }
 reqwest = { workspace = true, features = ["http2"] }
+rustix = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rustls = { workspace = true }
