@@ -69,6 +69,11 @@ in
               # ld64.lld does not implement. Its single-module form links
               # the same objects directly into the shared library.
               export lt_cv_apple_cc_single_mod=yes
+
+              # Mach-O debug symbols retain compilation and object paths even
+              # after stripping. Remap the sandbox prefix at compile time so
+              # cached libraries contain no ephemeral /build references.
+              export CXXFLAGS="''${CXXFLAGS:-} -ffile-prefix-map=$PWD=. -fdebug-prefix-map=$PWD=. -fdebug-compilation-dir=."
             ''
             else ""
           }
@@ -80,7 +85,11 @@ in
             --disable-static \
             --enable-cxx \
             --with-pic \
-            CFLAGS=-std=c99
+            ${
+            if stdenv.hostPlatform.isDarwin
+            then ''CFLAGS="-std=c99 -ffile-prefix-map=$PWD=. -fdebug-prefix-map=$PWD=. -fdebug-compilation-dir=."''
+            else "CFLAGS=-std=c99"
+          }
         '';
       }
       {
