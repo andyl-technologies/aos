@@ -779,14 +779,14 @@ in {
         cat /tmp/publish-testpkg-v1.json
         fail "apr --json publish creates package metadata"
       }
-      ${pkgs.jq}/bin/jq -e --arg store "${aosPkg}" \
+      if ${pkgs.jq}/bin/jq -e --arg store "${aosPkg}" \
         '.action == "publish"
           and .registry == "test-reg"
           and .package == "testpkg"
           and .version == "1.0.0"
           and .platform == "x86_64-linux"
           and .store_path == $store
-          and (.nar_hash | startswith("sha256-"))
+          and (.nar_hash | startswith("sha256:"))
           and (.nar_size > 0)
           and (.closure_size > 0)
           and .sysroot == false
@@ -797,11 +797,12 @@ in {
           and .commit_message == "publish testpkg 1.0.0 (x86_64-linux)"
           and .current == "stable"
           and (.head | length == 64)' \
-        /tmp/publish-testpkg-v1.json >/dev/null || {
+        /tmp/publish-testpkg-v1.json >/dev/null; then
+        pass "apr --json publish reports committed package metadata"
+      else
         cat /tmp/publish-testpkg-v1.json
         fail "apr --json publish reports committed package metadata"
-      }
-      pass "apr --json publish reports committed package metadata"
+      fi
 
       # Verify packages/t/testpkg.toml exists
       assert_file_exists "$REG_DIR/packages/t/testpkg.toml" \
