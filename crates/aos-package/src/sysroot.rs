@@ -36,10 +36,10 @@
 //!
 //! # Image transition modes
 //!
-//! [`KernelUpgradeMode`] controls what happens after staging: `Advisory`
-//! (default) and `Live` leave the transition pending and advise a reboot,
-//! `Reboot` drains when requested and queues a full reboot, and `Kexec` is
-//! rejected because it cannot change the immutable root slot.
+//! [`SystemTransitionMode`] controls what happens after staging: `Advisory`
+//! (default) leaves the transition pending and advises a reboot, while
+//! `Reboot` drains when requested and queues a full reboot. Kexec and a live
+//! userspace-only switch are not valid for an immutable A/B image transition.
 
 use std::collections::{BTreeSet, HashSet};
 use std::fs::OpenOptions;
@@ -77,18 +77,14 @@ use crate::verify::{verify_download_hash, verify_downloads, verify_nar_hash};
 // Kernel upgrade mode
 // ---------------------------------------------------------------------------
 
-/// How to handle kernel changes during a system update.
+/// How to complete an immutable system-image transition after staging.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum KernelUpgradeMode {
-    /// Default: update bootloader, advise reboot if kernel changed.
+pub enum SystemTransitionMode {
+    /// Leaves the staged image pending and advises the operator to reboot.
     #[default]
     Advisory,
-    /// Use kexec to hot-load new kernel (~2-5s disruption).
-    Kexec,
-    /// Full reboot after activation.
+    /// Requests a full reboot after staging.
     Reboot,
-    /// Skip kernel upgrade entirely, userspace only.
-    Live,
 }
 
 // ---------------------------------------------------------------------------
@@ -504,7 +500,7 @@ pub async fn install_system(
     image_output: Option<&str>,
     dry_run: bool,
     yes: bool,
-    kernel_mode: KernelUpgradeMode,
+    transition_mode: SystemTransitionMode,
     drain: bool,
     printer: &Printer,
 ) -> Result<()> {
@@ -661,11 +657,6 @@ pub async fn install_system(
         validate_sysroot_secure_boot(config, toplevel_meta, &closure.registry_name, printer)?;
     }
     if image_profile.join(IMAGE_STATE_FILE).is_file() {
-        if kernel_mode == KernelUpgradeMode::Kexec {
-            bail!(
-                "A/B image upgrades cannot use kexec because the inactive root slot must become the next boot root; use --reboot or the default advisory mode"
-            );
-        }
         let image = toplevel_meta
             .images
             .iter()
@@ -715,19 +706,18 @@ pub async fn install_system(
             "Image generation {} staged in slot {:?}; configuration remains unchanged until reboot.",
             staged.number, staged.slot
         ));
-        match kernel_mode {
-            KernelUpgradeMode::Reboot => {
+        match transition_mode {
+            SystemTransitionMode::Reboot => {
                 if drain {
                     drain_workloads(&staged.toplevel, printer).await?;
                 }
                 SystemdClient::connect().await?.reboot().await?;
             }
-            KernelUpgradeMode::Advisory | KernelUpgradeMode::Live => {
+            SystemTransitionMode::Advisory => {
                 printer.plain(
                     "  Reboot to assess the counted image and re-evaluate host configuration.",
                 );
             }
-            KernelUpgradeMode::Kexec => unreachable!("kexec rejected before staging"),
         }
         return Ok(());
     }
@@ -1054,7 +1044,7 @@ fn publish_reactivation_record(
 pub async fn upgrade_system(
     config: &ApmConfig,
     dry_run: bool,
-    kernel_mode: KernelUpgradeMode,
+    transition_mode: SystemTransitionMode,
     drain: bool,
     printer: &Printer,
 ) -> Result<()> {
@@ -1106,7 +1096,7 @@ pub async fn upgrade_system(
         None,
         false,
         true, // auto-yes for upgrade flow
-        kernel_mode,
+        transition_mode,
         drain,
         printer,
     )
@@ -1133,8 +1123,6 @@ pub async fn rollback_system(
     generation: Option<u32>,
     list: bool,
     dry_run: bool,
-    kernel_mode: KernelUpgradeMode,
-    drain: bool,
     printer: &Printer,
 ) -> Result<()> {
     let profile_path = ProfileScope::System.profile_path();
@@ -1295,7 +1283,6 @@ pub async fn rollback_system(
         }
     }
 
-    let _ = (kernel_mode, drain);
     bail!("image generation state is absent; refusing config rollback through legacy state")
 }
 
@@ -2574,7 +2561,7 @@ pub async fn rollback_image_generation(
     generation: Option<u32>,
     list: bool,
     dry_run: bool,
-    kernel_mode: KernelUpgradeMode,
+    transition_mode: SystemTransitionMode,
     drain: bool,
     printer: &Printer,
 ) -> Result<()> {
@@ -2643,7 +2630,7 @@ pub async fn rollback_image_generation(
         "Image generation {} is the durable next-boot default.",
         target.number
     ));
-    if kernel_mode == KernelUpgradeMode::Reboot {
+    if transition_mode == SystemTransitionMode::Reboot {
         if drain {
             drain_workloads(&target.toplevel, printer).await?;
         }
@@ -7041,9 +7028,9 @@ mod tests {
     }
 
     #[test]
-    fn kernel_upgrade_mode_default() {
-        let mode = KernelUpgradeMode::default();
-        assert_eq!(mode, KernelUpgradeMode::Advisory);
+    fn system_transition_mode_default() {
+        let mode = SystemTransitionMode::default();
+        assert_eq!(mode, SystemTransitionMode::Advisory);
     }
 
     #[test]
