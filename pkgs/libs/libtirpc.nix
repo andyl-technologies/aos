@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   pkg-config,
+  stdenv,
 }: let
   version = "1.3.7";
 in
@@ -35,12 +36,21 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --disable-gssapi
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            CPPFLAGS="-D__APPLE_USE_RFC_3542" ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --disable-gssapi
+            sed -i 's/-Wl,--no-undefined//g' src/Makefile
+          ''
+          else ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --disable-gssapi
+          '';
       }
       {
         name = "build";

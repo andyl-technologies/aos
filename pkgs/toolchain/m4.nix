@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "1.4.20";
 in
@@ -31,11 +32,18 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            CFLAGS="-g -O2 -Wno-error=format-security" ./configure \
+              $configureFlags \
+              --prefix=$out
+          ''
+          else ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out
+          '';
       }
       {
         name = "build";
