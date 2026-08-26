@@ -120,10 +120,17 @@
               '  result |= hv_vm_config_set_ipa_size(vmConfig, ipaSize);' \
               '  result |= hv_vcpu_config_get_feature_reg(vcpuConfig, HV_FEATURE_REG_ID_AA64DFR0_EL1, &feature);' \
               '  result |= hv_vm_create(vmConfig);' \
+              '  os_release(vcpuConfig);' \
+              '  os_release(vmConfig);' \
               '  return result == HV_SUCCESS && feature == 0;' \
               '}' \
               '#else' \
               '#include <Hypervisor/hv_vmx.h>' \
+              '_Static_assert(CPU_BASED_TSC_OFFSET == (1u << 3), "primary TSC-offset capability");' \
+              '_Static_assert(CPU_BASED2_RDTSCP == (1u << 3), "secondary RDTSCP capability");' \
+              '_Static_assert(CPU_BASED2_INVPCID == (1u << 12), "secondary INVPCID capability");' \
+              '_Static_assert(CPU_BASED2_XSAVES_XRSTORS == (1u << 20), "secondary XSAVES capability");' \
+              '_Static_assert(VMX_REASON_VMCALL == 18, "VMCALL exit reason");' \
               'int main(void) {' \
               '  uint64_t capability = 0;' \
               '  hv_vcpuid_t vcpu = 0;' \
