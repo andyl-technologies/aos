@@ -29,6 +29,7 @@ tempfile = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+crucible = { path = "../crucible", features = ["test-double"] }
 crucible-campaign = { path = "../crucible-campaign" }
 
 [[example]]

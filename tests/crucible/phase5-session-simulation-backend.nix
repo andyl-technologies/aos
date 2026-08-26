@@ -10,7 +10,11 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   backendLib = builtins.readFile ../../crates/crucible/src/backend.rs;
+  mockBackendLib = builtins.readFile ../../crates/crucible/src/backend/mock.rs;
   backendTests = builtins.readFile ../../crates/crucible/src/backend/tests.rs;
+  crucibleCargo = builtins.readFile ../../crates/crucible/Cargo.toml;
+  qemuCargo = builtins.readFile ../../crates/crucible-qemu/Cargo.toml;
+  daemonCargo = builtins.readFile ../../crates/crucible-daemon/Cargo.toml;
   crucibleShmemLib =
     import ./_crucible-shmem-source.nix {inherit lib;}
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
@@ -106,12 +110,9 @@
         needle = "pub struct FingerprintSample";
       }
       {
-        label = "mock simulation backend";
-        needle = "pub struct MockSimulationBackend";
-      }
-      {
-        label = "mock simulation backend implementation";
-        needle = "impl SimulationBackend for MockSimulationBackend";
+        label = "mock simulation backend module test-only cfg";
+        needle = ''          #[cfg(any(test, feature = "test-double"))]
+          mod mock;'';
       }
     ]
     ++ failuresFor "crates/crucible/src/backend/tests.rs" backendTests [
@@ -142,6 +143,20 @@
         needle = "impl Clone for NodeSlot";
       }
     ]
+    ++ failuresFor "crates/crucible/src/backend/mock.rs" mockBackendLib [
+      {
+        label = "mock simulation backend";
+        needle = "pub struct MockSimulationBackend";
+      }
+      {
+        label = "mock simulation backend implementation";
+        needle = "impl SimulationBackend for MockSimulationBackend";
+      }
+      {
+        label = "mock module production exclusion contract";
+        needle = "Default production builds neither compile";
+      }
+    ]
     ++ failuresFor "crates/crucible/src/lib.rs" crucibleLib [
       {
         label = "public backend effect export";
@@ -157,7 +172,8 @@
       }
       {
         label = "public mock backend export";
-        needle = "MockSimulationBackend";
+        needle = ''          #[cfg(any(test, feature = "test-double"))]
+          pub use backend::{MockSimulationBackend, MockSimulationBackendState};'';
       }
       {
         label = "public simulation trait export";
@@ -166,6 +182,26 @@
       {
         label = "public step observation export";
         needle = "StepObservation";
+      }
+    ]
+    ++ failuresFor "crates/crucible/Cargo.toml" crucibleCargo [
+      {
+        label = "explicit test-double feature";
+        needle = ''test-double = ["dep:crucible-shmem"]'';
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/Cargo.toml" qemuCargo [
+      {
+        label = "QEMU tests enable the mock only as a dev dependency";
+        needle = ''          [dev-dependencies]
+          crucible = { path = "../crucible", features = ["test-double"] }'';
+      }
+    ]
+    ++ failuresFor "crates/crucible-daemon/Cargo.toml" daemonCargo [
+      {
+        label = "daemon tests enable the mock only as a dev dependency";
+        needle = ''          [dev-dependencies]
+          crucible = { path = "../crucible", features = ["test-double"] }'';
       }
     ]
     ++ failuresFor "crates/crucible/src/sim_backend.rs" simBackendLib [
@@ -274,6 +310,7 @@ in
       buildDeps =
         [
           pkgs.coreutils
+          pkgs.grep
           pkgs.rust
           pkgs.sed
         ]
@@ -313,6 +350,37 @@ in
               cd source
             fi
             cd crates
+            negative_consumer="$TMPDIR/crucible-default-no-mock"
+            mkdir -p "$negative_consumer/src" "$negative_consumer/.cargo"
+            cp ../.cargo/config.toml "$negative_consumer/.cargo/config.toml"
+            printf '%s\n' \
+              '[package]' \
+              'name = "crucible-default-no-mock"' \
+              'version = "0.0.0"' \
+              'edition = "2024"' \
+              '[workspace]' \
+              '[dependencies]' \
+              "crucible = { path = \"$PWD/crucible\" }" \
+              > "$negative_consumer/Cargo.toml"
+            printf '%s\n' \
+              'use crucible::MockSimulationBackend;' \
+              'fn main() { let _ = MockSimulationBackend::new(); }' \
+              > "$negative_consumer/src/main.rs"
+            cargo generate-lockfile \
+              --offline \
+              --manifest-path "$negative_consumer/Cargo.toml"
+            if cargo check \
+              --frozen \
+              --offline \
+              --manifest-path "$negative_consumer/Cargo.toml" \
+              --target-dir "$TMPDIR/crucible-default-no-mock-target" \
+              > "$negative_consumer/check.log" 2>&1
+            then
+              echo 'FAIL: default Crucible features expose MockSimulationBackend' >&2
+              exit 1
+            fi
+            grep -Fq 'unresolved import `crucible::MockSimulationBackend`' \
+              "$negative_consumer/check.log"
             cargo test \
               --frozen \
               --offline \
@@ -329,6 +397,25 @@ in
               --lib \
               qemu_node_satisfies_simulation_backend_trait \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-session-simulation-backend-target" \
+              -p crucible-qemu \
+              --test host_worker_pool \
+              -- --list \
+              > "$TMPDIR/host-worker-pool-tests"
+            grep -Fxq \
+              'qemu_host_worker_pool_executes_real_concurrent_path_in_canonical_order: test' \
+              "$TMPDIR/host-worker-pool-tests"
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-session-simulation-backend-target" \
+              -p crucible-qemu \
+              --test host_worker_pool \
+              qemu_host_worker_pool_executes_real_concurrent_path_in_canonical_order \
+              -- --exact --include-ignored --test-threads=1
           '';
         }
         {
@@ -345,7 +432,8 @@ in
             component=crucible-session
             backend_trait=SimulationBackend
             timing_source=scheduler
-            implementations=mock,sim-backend,sim-double,qemu-node
+            implementations=test-only-mock,sim-backend,sim-double,qemu-node
+            default_mock_export=absent
             RESULT
           '';
         }
