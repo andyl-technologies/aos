@@ -215,7 +215,7 @@ impl PlacementScanController {
             .as_ref()
             .context("physical placement copy has no configured write provider")?;
         let fetch = self.surfaces.placement_fetcher(&source).await?;
-        let writer = writes.placement_writer(destination).await?;
+        let destination_fetch = self.surfaces.placement_fetcher(destination).await?;
         let page_limit = if cfg!(target_arch = "wasm32") {
             WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS
         } else {
@@ -226,12 +226,21 @@ impl PlacementScanController {
         } else {
             MAX_SURFACE_LIST_PAGES
         };
+        let destination_evidence = collect_listing_evidence(
+            destination_fetch.as_ref(),
+            page_limit,
+            max_pages,
+            "destination",
+        )
+        .await?;
+        let writer = writes.placement_writer(destination).await?;
         let mut cursor = None;
         let mut prior_path: Option<String> = None;
         let mut budget = SurfaceListingBudget::default();
         let mut pages = 0_usize;
         let mut copied_objects = 0_i64;
         let mut copied_bytes = 0_u64;
+        let mut reused_objects = 0_i64;
         loop {
             pages = pages
                 .checked_add(1)
@@ -241,12 +250,22 @@ impl PlacementScanController {
             }
             let page = fetch.list_page(cursor.as_deref(), page_limit).await?;
             page.validate(page_limit, cursor.as_deref())?;
+            let source_evidence = page.evidence;
             for path in page.paths {
                 if prior_path.as_ref().is_some_and(|prior| prior >= &path) {
                     bail!("placement copy source returned keys out of global order");
                 }
                 budget.record(&path)?;
                 prior_path = Some(path.clone());
+                if matching_listing_evidence(
+                    source_evidence.get(&path),
+                    destination_evidence.get(&path),
+                )? {
+                    reused_objects = reused_objects
+                        .checked_add(1)
+                        .context("placement copy reuse count overflow")?;
+                    continue;
+                }
                 let size = copy_surface_object(fetch.as_ref(), writer.as_ref(), &path).await?;
                 copied_objects = copied_objects
                     .checked_add(1)
@@ -265,6 +284,7 @@ impl PlacementScanController {
             "destination": destination.name,
             "copiedObjects": copied_objects,
             "copiedBytes": copied_bytes,
+            "reusedObjects": reused_objects,
         }))
     }
 
@@ -517,6 +537,57 @@ impl PlacementScanController {
             .await?;
         Ok(())
     }
+}
+
+async fn collect_listing_evidence(
+    fetch: &dyn SurfaceFetch,
+    page_limit: usize,
+    max_pages: usize,
+    role: &str,
+) -> Result<BTreeMap<String, SurfaceListedEvidence>> {
+    let mut cursor = None;
+    let mut prior_path: Option<String> = None;
+    let mut budget = SurfaceListingBudget::default();
+    let mut evidence = BTreeMap::new();
+    let mut pages = 0_usize;
+    loop {
+        pages = pages
+            .checked_add(1)
+            .with_context(|| format!("placement copy {role} page overflow"))?;
+        if pages > max_pages {
+            bail!("placement copy {role} exceeded the page limit");
+        }
+        let page = fetch.list_page(cursor.as_deref(), page_limit).await?;
+        page.validate(page_limit, cursor.as_deref())?;
+        for path in &page.paths {
+            if prior_path.as_ref().is_some_and(|prior| prior >= path) {
+                bail!("placement copy {role} returned keys out of global order");
+            }
+            budget.record(path)?;
+            prior_path = Some(path.clone());
+        }
+        evidence.extend(page.evidence);
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Ok(evidence)
+}
+
+fn matching_listing_evidence(
+    source: Option<&SurfaceListedEvidence>,
+    destination: Option<&SurfaceListedEvidence>,
+) -> Result<bool> {
+    let Some((source, destination)) = source.zip(destination) else {
+        return Ok(false);
+    };
+    if source.size != destination.size {
+        return Ok(false);
+    }
+    let source_etag = crate::surface_write::strong_if_match_etag(&source.strong_etag)?;
+    let destination_etag = crate::surface_write::strong_if_match_etag(&destination.strong_etag)?;
+    Ok(source_etag == destination_etag)
 }
 
 async fn copy_surface_object(
@@ -889,17 +960,30 @@ mod tests {
         }
 
         async fn list_page(&self, _cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
-            let paths = self
+            let entries = self
                 .objects
                 .lock()
                 .map_err(|_| anyhow::anyhow!("copy surface lock is poisoned"))?
                 .get(&self.placement)
-                .map(|objects| objects.keys().cloned().collect::<Vec<_>>())
+                .map(|objects| {
+                    objects
+                        .iter()
+                        .map(|(path, bytes)| {
+                            (
+                                path.clone(),
+                                SurfaceListedEvidence {
+                                    size: i64::try_from(bytes.len()).unwrap(),
+                                    strong_etag: hex::encode(Sha256::digest(bytes)),
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
-            anyhow::ensure!(paths.len() <= limit, "test surface exceeded one page");
+            anyhow::ensure!(entries.len() <= limit, "test surface exceeded one page");
             Ok(SurfaceListPage {
-                paths,
-                evidence: Default::default(),
+                paths: entries.iter().map(|(path, _)| path.clone()).collect(),
+                evidence: entries.into_iter().collect(),
                 next_cursor: None,
             })
         }
@@ -1243,14 +1327,48 @@ mod tests {
             .unwrap();
         assert_eq!(operation.state, "succeeded", "{:?}", operation.error);
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&operation.detail_json).unwrap()
-                ["copy"]["copiedObjects"],
+            serde_json::from_str::<serde_json::Value>(&operation.detail_json).unwrap()["copy"]
+                ["copiedObjects"],
             1
         );
         let destination = db.surface_placement(destination.id).await.unwrap().unwrap();
         assert_eq!(destination.state, "ready");
         assert_eq!(destination.completeness, "complete");
         assert_eq!(provider.objects.lock().unwrap()["canonical"]["HEAD"], body);
+
+        let retry = db
+            .create_topology_operation(&NewTopologyOperation {
+                operation_id: "replicate-copy-destination-retry".into(),
+                operation_kind: "replicate_placement".into(),
+                control_permission: Permission::StorageManage,
+                targets: vec![
+                    NewTopologyOperationTarget {
+                        role: "source".into(),
+                        target: NewTopologyOperationTargetRef::Placement(source.id),
+                        generation_key: source.resource_version,
+                        configuration_digest: String::new(),
+                    },
+                    NewTopologyOperationTarget {
+                        role: "primary".into(),
+                        target: NewTopologyOperationTargetRef::Placement(destination.id),
+                        generation_key: destination.resource_version,
+                        configuration_digest: String::new(),
+                    },
+                ],
+                detail_json: serde_json::json!({"phase":"pending"}).to_string(),
+                progress_total: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(controller.run_due(1).await.unwrap(), 1);
+        let retry = db
+            .topology_operation(&retry.operation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let retry_detail = serde_json::from_str::<serde_json::Value>(&retry.detail_json).unwrap();
+        assert_eq!(retry_detail["copy"]["copiedObjects"], 0);
+        assert_eq!(retry_detail["copy"]["reusedObjects"], 1);
     }
 
     #[tokio::test]
