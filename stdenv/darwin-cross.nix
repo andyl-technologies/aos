@@ -210,6 +210,7 @@
         ar = '${ccWrapper}/bin/ar'
         strip = '${ccWrapper}/bin/strip'
         pkg-config = 'pkg-config'
+        cmake = '${buildPackages.cmake}/bin/cmake'
 
         [host_machine]
         system = 'darwin'

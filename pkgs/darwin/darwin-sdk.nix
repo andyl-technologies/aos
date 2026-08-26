@@ -257,6 +257,53 @@ in
           ...
           EOF
           ln -s libiconv.tbd "$out/usr/lib/libiconv.2.tbd"
+          # Apple's command-line sandbox API is a standalone system library,
+          # not a libSystem re-export.  Nix and other Darwin-native tools use
+          # it to retain the platform sandbox rather than weakening builds.
+          cat > "$out/usr/include/sandbox.h" <<'EOF'
+          #ifndef _SANDBOX_H_
+          #define _SANDBOX_H_
+
+          #include <stdint.h>
+          #include <sys/cdefs.h>
+
+          #define SANDBOX_NAMED 0x0001
+          #define SANDBOX_NAMED_EXTERNAL 0x0003
+
+          __BEGIN_DECLS
+          extern const char *const kSBXProfileNoInternet;
+          extern const char *const kSBXProfileNoNetwork;
+          extern const char *const kSBXProfileNoWrite;
+          extern const char *const kSBXProfileNoWriteExceptTemporary;
+          extern const char *const kSBXProfilePureComputation;
+
+          int sandbox_init(const char *profile, uint64_t flags, char **errorbuf);
+          void sandbox_free_error(char *errorbuf);
+          __END_DECLS
+
+          #endif
+          EOF
+          cat > "$out/usr/lib/libsandbox.tbd" <<'EOF'
+          --- !tapi-tbd
+          tbd-version: 4
+          targets: [ x86_64-macos, arm64-macos ]
+          install-name: '/usr/lib/libsandbox.1.dylib'
+          current-version: 300.0.0
+          compatibility-version: 1.0.0
+          exports:
+            - targets: [ x86_64-macos, arm64-macos ]
+              symbols:
+                - _kSBXProfileNoInternet
+                - _kSBXProfileNoNetwork
+                - _kSBXProfileNoWrite
+                - _kSBXProfileNoWriteExceptTemporary
+                - _kSBXProfilePureComputation
+                - _sandbox_free_error
+                - _sandbox_init
+                - _sandbox_init_with_parameters
+          ...
+          EOF
+          ln -s libsandbox.tbd "$out/usr/lib/libsandbox.1.tbd"
           # Current Apple resolver headers bind the established public entry
           # points to their BIND 9 symbol names. Zig's older libSystem surface
           # describes only the unversioned aliases, so publish the matching
