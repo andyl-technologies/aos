@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "6.0";
 in
@@ -69,7 +70,11 @@ in
       {
         name = "build";
         script = ''
-          make -f unix/Makefile linux_noasm -j$NIX_BUILD_CORES \
+          make -f unix/Makefile ${
+            if stdenv.hostPlatform.isDarwin
+            then "macosx"
+            else "linux_noasm"
+          } -j$NIX_BUILD_CORES \
             LFLAGS2="$NIX_LDFLAGS"
         '';
       }
