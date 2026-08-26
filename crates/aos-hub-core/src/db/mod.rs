@@ -11525,7 +11525,7 @@ impl Database {
             .collect()
     }
 
-    /// Lists placement scans eligible for a controller claim.
+    /// Lists physical placement operations eligible for a controller claim.
     ///
     /// # Errors
     ///
@@ -11542,7 +11542,8 @@ impl Database {
             .query(
                 &format!(
                     "SELECT {OPERATION_COLUMNS} FROM topology_operations operation
-                     WHERE operation.operation_kind = 'scan_placement'
+                     WHERE operation.operation_kind IN
+                       ('scan_placement', 'replicate_placement', 'repair_placement')
                        AND (operation.state = 'pending'
                          OR (operation.state = 'running' AND (
                            NOT EXISTS (SELECT 1 FROM placement_scan_claims claim
@@ -12157,7 +12158,7 @@ impl Database {
         self.topology_operation(operation_id).await
     }
 
-    /// Claims one pending or stale-running physical placement scan under CAS.
+    /// Claims one pending or stale-running physical placement operation under CAS.
     ///
     /// # Errors
     ///
@@ -12189,7 +12190,8 @@ impl Database {
                          started_at = CASE WHEN state = 'pending' THEN ?3 ELSE started_at END,
                          finished_at = NULL, error = NULL,
                          resource_version = resource_version + 1
-                     WHERE operation_id = ?1 AND operation_kind = 'scan_placement'
+                     WHERE operation_id = ?1 AND operation_kind IN
+                       ('scan_placement', 'replicate_placement', 'repair_placement')
                        AND resource_version = ?2
                        AND (state = 'pending' OR (state = 'running' AND (
                          NOT EXISTS (SELECT 1 FROM placement_scan_claims claim
@@ -12346,7 +12348,9 @@ impl Database {
                      detail_json = ?7, error = ?8, finished_at = ?9,
                      resource_version = resource_version + 1
                  WHERE operation_id = ?1 AND resource_version = ?2
-                   AND operation_kind = 'scan_placement' AND state = 'running'
+                   AND operation_kind IN
+                     ('scan_placement', 'replicate_placement', 'repair_placement')
+                   AND state = 'running'
                    AND EXISTS (SELECT 1 FROM placement_scan_claims claim
                      WHERE claim.operation_id = topology_operations.operation_id
                        AND claim.operation_resource_version = ?2
