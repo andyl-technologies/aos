@@ -595,11 +595,73 @@ impl PutReceipt {
         self.placements.iter().any(|placement| placement.durable)
     }
 
+    /// Returns the number of distinct durable backend placements.
+    ///
+    /// A composed store may accidentally repeat one child's receipt. Counting
+    /// stable backend names rather than raw entries prevents such duplication
+    /// from satisfying a multi-placement durability policy.
+    #[must_use]
+    pub fn durable_placements(&self) -> usize {
+        self.placements
+            .iter()
+            .filter(|placement| placement.durable)
+            .map(|placement| placement.backend.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    }
+
     pub(crate) fn one(id: ContentId, placement: PlacementReceipt) -> Self {
         Self {
             id,
             placements: vec![placement],
         }
+    }
+}
+
+/// Operational durability required after one immutable object placement.
+///
+/// The requirement is graph configuration, not canonical campaign state. A
+/// policy can require multiple independently named durable placements and can
+/// reject a child whose successful put still leaves a deferred downstream
+/// transfer. Logical object identity never includes this value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DurabilityRequirement {
+    minimum_durable_placements: u16,
+    allow_deferred_write: bool,
+}
+
+impl DurabilityRequirement {
+    /// Builds a bounded nonzero durability requirement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::InvalidComposition`] when the minimum is zero or
+    /// exceeds the closed store graph's maximum physical node count.
+    pub fn new(
+        minimum_durable_placements: u16,
+        allow_deferred_write: bool,
+    ) -> Result<Self, StoreError> {
+        if minimum_durable_placements == 0 || usize::from(minimum_durable_placements) > 256 {
+            return Err(StoreError::InvalidComposition {
+                reason: "durability requirement has an invalid placement count",
+            });
+        }
+        Ok(Self {
+            minimum_durable_placements,
+            allow_deferred_write,
+        })
+    }
+
+    /// Returns the required number of distinctly named durable placements.
+    #[must_use]
+    pub const fn minimum_durable_placements(self) -> u16 {
+        self.minimum_durable_placements
+    }
+
+    /// Returns whether an acknowledged downstream transfer may remain pending.
+    #[must_use]
+    pub const fn allows_deferred_write(self) -> bool {
+        self.allow_deferred_write
     }
 }
 
@@ -774,6 +836,18 @@ pub enum StoreError {
         /// Stable validation category.
         violation: GraphViolation,
     },
+    /// A successful child put did not meet its admitted durability policy.
+    #[error(
+        "content object {id} has {observed_durable_placements} durable placements; {minimum_durable_placements} required"
+    )]
+    DurabilityUnsatisfied {
+        /// Logical object whose placement evidence was insufficient.
+        id: ContentId,
+        /// Minimum distinct durable placements required by policy.
+        minimum_durable_placements: u16,
+        /// Distinct durable placements present in the returned receipt.
+        observed_durable_placements: u16,
+    },
     /// The operation was not authorized by the backend.
     #[error("store operation is unauthorized")]
     Unauthorized,
@@ -851,6 +925,8 @@ pub enum GraphViolation {
     EmptyChildren,
     /// A routed node does not cover exactly the kinds that can reach it.
     RouteCoverage,
+    /// A durability-policy node does not cover exactly its demanded kinds.
+    DurabilityCoverage,
     /// A tiered node names an invalid write tier.
     InvalidWriteTier,
     /// A child lacks a capability required by its parent layer.
@@ -886,6 +962,7 @@ impl fmt::Display for GraphViolation {
             Self::TooDeep => "graph-depth limit exceeded",
             Self::EmptyChildren => "empty child set",
             Self::RouteCoverage => "incomplete or extraneous route coverage",
+            Self::DurabilityCoverage => "incomplete or extraneous durability-policy coverage",
             Self::InvalidWriteTier => "invalid write tier",
             Self::UnsupportedChild => "unsupported child capability",
             Self::InvalidWriteBackBounds => "invalid write-back bounds",

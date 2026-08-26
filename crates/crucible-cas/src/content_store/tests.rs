@@ -1897,6 +1897,306 @@ fn closed_store_graph_routes_shared_leaves_and_is_introspectable() {
 }
 
 #[test]
+fn durability_policy_enforces_distinct_placements_and_exact_kind_coverage() {
+    let temp = TempDir::new().expect("temporary directory");
+    let policy = node_id("durability");
+    let mirror = node_id("mirror");
+    let first = node_id("first");
+    let second = node_id("second");
+    let requirement = DurabilityRequirement::new(2, false).expect("durability requirement");
+    let config = |requirement| StoreGraphConfig {
+        root: policy.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
+        nodes: BTreeMap::from([
+            (
+                policy.clone(),
+                StoreNodeSpec::DurabilityPolicy {
+                    child: mirror.clone(),
+                    requirements: BTreeMap::from([(ObjectKind::CampaignFact, requirement)]),
+                },
+            ),
+            (
+                mirror.clone(),
+                StoreNodeSpec::WriteThrough {
+                    children: vec![first.clone(), second.clone()],
+                },
+            ),
+            (
+                first.clone(),
+                StoreNodeSpec::Directory {
+                    root: temp.path().join("first"),
+                },
+            ),
+            (
+                second.clone(),
+                StoreNodeSpec::Directory {
+                    root: temp.path().join("second"),
+                },
+            ),
+        ]),
+    };
+    let graph = StoreGraph::build(config(requirement)).expect("durability graph");
+    assert!(
+        graph
+            .describe()
+            .iter()
+            .any(|node| node.kind == StoreNodeKind::DurabilityPolicy)
+    );
+    let bytes = b"durable campaign fact";
+    let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
+    let receipt = put_bytes(&graph, id, bytes).expect("durability-qualified put");
+    assert_eq!(receipt.durable_placements(), 2);
+    assert_eq!(read_bytes(&graph, id, None).expect("policy read"), bytes);
+
+    let restarted = StoreGraph::build(config(requirement)).expect("restart durability graph");
+    assert_eq!(graph.configuration_id(), restarted.configuration_id());
+    assert_eq!(
+        read_bytes(&restarted, id, None).expect("restart read"),
+        bytes
+    );
+    let weaker = StoreGraph::build(config(
+        DurabilityRequirement::new(1, false).expect("weaker requirement"),
+    ))
+    .expect("weaker durability graph");
+    assert_ne!(graph.configuration_id(), weaker.configuration_id());
+
+    let golden_policy = node_id("durability");
+    let golden_mirror = node_id("mirror");
+    let golden_first = node_id("first");
+    let golden_second = node_id("second");
+    let golden = StoreGraph::build(StoreGraphConfig {
+        root: golden_policy.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
+        nodes: BTreeMap::from([
+            (
+                golden_policy,
+                StoreNodeSpec::DurabilityPolicy {
+                    child: golden_mirror.clone(),
+                    requirements: BTreeMap::from([(ObjectKind::CampaignFact, requirement)]),
+                },
+            ),
+            (
+                golden_mirror,
+                StoreNodeSpec::WriteThrough {
+                    children: vec![golden_first.clone(), golden_second.clone()],
+                },
+            ),
+            (
+                golden_first,
+                StoreNodeSpec::Directory {
+                    root: PathBuf::from("/var/lib/crucible/campaign-primary"),
+                },
+            ),
+            (
+                golden_second,
+                StoreNodeSpec::Directory {
+                    root: PathBuf::from("/var/lib/crucible/campaign-archive"),
+                },
+            ),
+        ]),
+    })
+    .expect("golden durability graph");
+    assert_eq!(
+        encode_hex(&golden.configuration_id().as_bytes()),
+        "372a1deab92e040856d4a5f88b315c444f93d4e694887a0bf7eb0e92ae0aa34c"
+    );
+
+    let missing = StoreGraph::build(StoreGraphConfig {
+        root: policy.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
+        nodes: BTreeMap::from([
+            (
+                policy.clone(),
+                StoreNodeSpec::DurabilityPolicy {
+                    child: first.clone(),
+                    requirements: BTreeMap::new(),
+                },
+            ),
+            (
+                first.clone(),
+                StoreNodeSpec::Directory {
+                    root: temp.path().join("missing"),
+                },
+            ),
+        ]),
+    });
+    assert!(matches!(
+        missing,
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::DurabilityCoverage,
+            ..
+        })
+    ));
+
+    let extraneous = StoreGraph::build(StoreGraphConfig {
+        root: policy.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
+        nodes: BTreeMap::from([
+            (
+                policy,
+                StoreNodeSpec::DurabilityPolicy {
+                    child: first.clone(),
+                    requirements: BTreeMap::from([
+                        (ObjectKind::CampaignFact, requirement),
+                        (ObjectKind::Trace, requirement),
+                    ]),
+                },
+            ),
+            (
+                first,
+                StoreNodeSpec::Directory {
+                    root: temp.path().join("extraneous"),
+                },
+            ),
+        ]),
+    });
+    assert!(matches!(
+        extraneous,
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::DurabilityCoverage,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn durability_policy_rejects_duplicate_receipts_and_unadmitted_deferral() {
+    let temp = TempDir::new().expect("temporary directory");
+    let policy = node_id("durability");
+    let mirror = node_id("mirror");
+    let directory = node_id("directory");
+    let requirement = DurabilityRequirement::new(2, false).expect("durability requirement");
+    let duplicate = StoreGraph::build(StoreGraphConfig {
+        root: policy.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
+        nodes: BTreeMap::from([
+            (
+                policy.clone(),
+                StoreNodeSpec::DurabilityPolicy {
+                    child: mirror.clone(),
+                    requirements: BTreeMap::from([(ObjectKind::CampaignFact, requirement)]),
+                },
+            ),
+            (
+                mirror,
+                StoreNodeSpec::WriteThrough {
+                    children: vec![directory.clone(), directory.clone()],
+                },
+            ),
+            (
+                directory.clone(),
+                StoreNodeSpec::Directory {
+                    root: temp.path().join("duplicate"),
+                },
+            ),
+        ]),
+    })
+    .expect("duplicate-child graph remains structurally valid");
+    let bytes = b"one physical placement";
+    let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
+    assert!(matches!(
+        put_bytes(&duplicate, id, bytes),
+        Err(StoreError::DurabilityUnsatisfied {
+            minimum_durable_placements: 2,
+            observed_durable_placements: 1,
+            ..
+        })
+    ));
+
+    let write_back = node_id("write-back");
+    let staging = node_id("staging");
+    let destination = node_id("destination");
+    let deferred_config = |allow_deferred_write| StoreGraphConfig {
+        root: policy.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+        nodes: BTreeMap::from([
+            (
+                policy.clone(),
+                StoreNodeSpec::DurabilityPolicy {
+                    child: write_back.clone(),
+                    requirements: BTreeMap::from([(
+                        ObjectKind::Finding,
+                        DurabilityRequirement::new(1, allow_deferred_write)
+                            .expect("deferred requirement"),
+                    )]),
+                },
+            ),
+            (
+                write_back.clone(),
+                StoreNodeSpec::WriteBack {
+                    staging: staging.clone(),
+                    destination: destination.clone(),
+                    journal_root: temp.path().join("journal"),
+                    maximum_pending_objects: 8,
+                    maximum_pending_bytes: 1_024,
+                },
+            ),
+            (
+                staging.clone(),
+                StoreNodeSpec::Directory {
+                    root: temp.path().join("staging"),
+                },
+            ),
+            (
+                destination.clone(),
+                StoreNodeSpec::Directory {
+                    root: temp.path().join("destination"),
+                },
+            ),
+        ]),
+    };
+    assert!(matches!(
+        StoreGraph::build(deferred_config(false)),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::UnsupportedChild,
+            ..
+        })
+    ));
+    let deferred = StoreGraph::build(deferred_config(true)).expect("admitted deferred policy");
+    let finding_bytes = b"journaled durable staging";
+    let finding = ContentId::for_bytes(ObjectKind::Finding, 1, finding_bytes);
+    assert_eq!(
+        put_bytes(&deferred, finding, finding_bytes)
+            .expect("allowed deferred put")
+            .durable_placements(),
+        1
+    );
+
+    assert!(matches!(
+        DurabilityRequirement::new(0, false),
+        Err(StoreError::InvalidComposition { .. })
+    ));
+    assert!(matches!(
+        StoreGraph::build(StoreGraphConfig {
+            root: policy.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+            nodes: BTreeMap::from([
+                (
+                    policy,
+                    StoreNodeSpec::DurabilityPolicy {
+                        child: directory.clone(),
+                        requirements: BTreeMap::from([(
+                            ObjectKind::Finding,
+                            DurabilityRequirement::new(1, false).expect("memory requirement"),
+                        )]),
+                    },
+                ),
+                (
+                    directory,
+                    StoreNodeSpec::Memory {
+                        max_logical_bytes: 1_024,
+                    },
+                ),
+            ]),
+        }),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::UnsupportedChild,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn store_graph_configuration_identity_is_canonical_and_complete() {
     let root = node_id("root");
     let config = |maximum| StoreGraphConfig {

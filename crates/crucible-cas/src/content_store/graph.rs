@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::composition::{
-    MetricsState, MetricsStore, ReadThroughStore, RoutedStore, TieredStore, VerifiedStore,
-    WriteThroughStore,
+    DurabilityPolicyStore, MetricsState, MetricsStore, ReadThroughStore, RoutedStore, TieredStore,
+    VerifiedStore, WriteThroughStore,
 };
 use super::compressed_directory::CompressedDirectoryBlobBackend;
 use super::directory::DirectoryBlobBackend;
@@ -175,6 +175,13 @@ pub enum StoreNodeSpec {
         /// Hard aggregate logical-byte bound for pending transfer roots.
         maximum_pending_bytes: u64,
     },
+    /// Enforces per-kind durable-placement requirements after child puts.
+    DurabilityPolicy {
+        /// Child that performs the physical placements.
+        child: StoreNodeId,
+        /// Exact requirement for every object kind demanded at this node.
+        requirements: BTreeMap<ObjectKind, DurabilityRequirement>,
+    },
     /// Enforces a restart-safe aggregate logical quota around one owned leaf.
     LogicalQuota {
         /// Exclusively owned physical child leaf.
@@ -212,6 +219,7 @@ impl StoreNodeSpec {
                 destination,
                 ..
             } => vec![staging, destination],
+            Self::DurabilityPolicy { child, .. } => vec![child],
             Self::LogicalQuota { child, .. } => vec![child],
             Self::Metrics { child } => vec![child],
         }
@@ -233,6 +241,7 @@ impl StoreNodeSpec {
             Self::ReadThrough { .. } => StoreNodeKind::ReadThrough,
             Self::WriteThrough { .. } => StoreNodeKind::WriteThrough,
             Self::WriteBack { .. } => StoreNodeKind::WriteBack,
+            Self::DurabilityPolicy { .. } => StoreNodeKind::DurabilityPolicy,
             Self::LogicalQuota { .. } => StoreNodeKind::LogicalQuota,
             Self::Metrics { .. } => StoreNodeKind::Metrics,
         }
@@ -277,6 +286,8 @@ pub enum StoreNodeKind {
     WriteThrough,
     /// Durable deferred write-back transfer.
     WriteBack,
+    /// Exact per-kind durable-placement enforcement.
+    DurabilityPolicy,
     /// Restart-safe aggregate logical quota.
     LogicalQuota,
     /// Operational metrics facade.
@@ -947,6 +958,9 @@ fn validate_demands(config: &StoreGraphConfig) -> Result<(), StoreError> {
                 extend_demand(staging, &kinds, &mut demands, &mut queue);
                 extend_demand(destination, &kinds, &mut demands, &mut queue);
             }
+            StoreNodeSpec::DurabilityPolicy { child, .. } => {
+                extend_demand(child, &kinds, &mut demands, &mut queue);
+            }
             StoreNodeSpec::LogicalQuota { child, .. } => {
                 extend_demand(child, &kinds, &mut demands, &mut queue);
             }
@@ -960,6 +974,15 @@ fn validate_demands(config: &StoreGraphConfig) -> Result<(), StoreError> {
             let required = demands.get(id).cloned().unwrap_or_default();
             if routes.keys().copied().collect::<BTreeSet<_>>() != required {
                 return Err(invalid_graph(id.as_str(), GraphViolation::RouteCoverage));
+            }
+        }
+        if let StoreNodeSpec::DurabilityPolicy { requirements, .. } = node {
+            let required = demands.get(id).cloned().unwrap_or_default();
+            if requirements.keys().copied().collect::<BTreeSet<_>>() != required {
+                return Err(invalid_graph(
+                    id.as_str(),
+                    GraphViolation::DurabilityCoverage,
+                ));
             }
         }
     }
@@ -1130,6 +1153,14 @@ fn instantiate(
             state.write_back.insert(id.clone(), Arc::clone(&store));
             store
         }
+        StoreNodeSpec::DurabilityPolicy {
+            child,
+            requirements,
+        } => Arc::new(DurabilityPolicyStore::new(
+            id.as_str(),
+            instantiate(configuration, child, nodes, keys, state)?,
+            requirements.clone(),
+        )),
         StoreNodeSpec::Metrics { child } => {
             let child = instantiate(configuration, child, nodes, keys, state)?;
             let (backend, metrics_state) = MetricsStore::new(id.as_str(), child);
@@ -1181,6 +1212,7 @@ fn validate_capability_edges(
                 destination,
                 ..
             } => vec![staging, destination],
+            StoreNodeSpec::DurabilityPolicy { child, .. } => vec![child],
             _ => continue,
         };
         for child in children {
@@ -1188,6 +1220,24 @@ fn validate_capability_edges(
                 .get(child)
                 .ok_or_else(|| invalid_graph(child.as_str(), GraphViolation::MissingNode))?;
             if !backend.capabilities().conditional_create {
+                return Err(invalid_graph(id.as_str(), GraphViolation::UnsupportedChild));
+            }
+        }
+        if let StoreNodeSpec::DurabilityPolicy {
+            child,
+            requirements,
+        } = node
+        {
+            let backend = built
+                .get(child)
+                .ok_or_else(|| invalid_graph(child.as_str(), GraphViolation::MissingNode))?;
+            let capabilities = backend.capabilities();
+            if !capabilities.durable
+                || (capabilities.deferred_write
+                    && requirements
+                        .values()
+                        .any(|requirement| !requirement.allows_deferred_write()))
+            {
                 return Err(invalid_graph(id.as_str(), GraphViolation::UnsupportedChild));
             }
         }

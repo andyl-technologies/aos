@@ -1319,10 +1319,10 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
 
 Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
 
-- [ ] **T-CAM-5.1** Introduce separate streaming `ImmutableBlobBackend` and
+- [x] **T-CAM-5.1** Introduce separate streaming `ImmutableBlobBackend` and
   conditional `MutableRefBackend` traits, capability and error models, and
   migrate current campaign/exact-closure persistence behind them.
-- [ ] **T-CAM-5.2** Implement canonical object envelopes, domain-separated
+- [x] **T-CAM-5.2** Implement canonical object envelopes, domain-separated
   logical IDs, child-reference walking, persistent Merkle collections, partial
   closure traversal, and typed corruption diagnostics.
 - [x] **T-CAM-5.3** Remove full-file staging copies from the normal exact-closure
@@ -1388,6 +1388,17 @@ deletion-capable child escape. Tests cover count/byte rejection, idempotent
 puts, GC reclamation, clean restart, dirty restart recovery,
 independent-instance admission serialization, and fail-closed
 shared/non-leaf/path admission.
+The graph now also admits a version-six durability-policy node. It requires an
+exact policy entry for every object kind that can reach it, counts only
+distinct named durable placements in the child receipt, and rejects a put
+whose evidence does not meet the configured minimum. A policy that forbids
+pending downstream transfer fails graph admission when its child advertises
+deferred writes; explicitly deferred classes retain the write-back journal as
+their GC-protected operational root. The requirement and its per-kind mapping
+enter graph configuration identity, while receipts and placement decisions
+remain outside logical object identity. Tests cover restart-stable identity,
+missing and extraneous policy entries, duplicated receipt names, insufficient
+placement count, nondurable children, and explicit write-back admission.
 Read-through falls through only on exact
 absence,
 treats promotion as non-semantic, and never reports cache durability as
@@ -1401,8 +1412,8 @@ therefore cannot collect a children-before-journal publication. Tests cover
 restart, torn-tail recovery, corrupt-journal rejection, count/byte limits,
 durable-child and non-overlapping-path admission, lifecycle exclusion,
 single-pass staging authentication, transfer completion, and stale GC plans.
-Destination-specific durability policy plumbing, broader layered transforms,
-physical-filesystem quota, namespaced
+Canonical object-profile sensitivity and retention validation, broader layered
+transforms, physical-filesystem quota, namespaced
 authorization, and S3 remain open; therefore T-CAM-5.5 is not checked by this
 checkpoint.
 
@@ -1469,6 +1480,28 @@ remain separate open work.
 `gate:exact-closure-streaming`, `gate:campaign-continuity-v2`.
 
 **Manual gate:** accepted §14 Phase 5 storage and destructive-recovery evidence.
+
+The split immutable-blob and mutable-ref contracts now own all campaign
+repository persistence. Both memory and durable-directory leaves pass the same
+streaming identity, conditional-create, conditional-ref, bounded range-read,
+namespace-scan, corruption, restart, and failure-atomicity tests. Production
+exact checkpoints also cross that immutable seam: the daemon authenticates a
+native version-seven closure, streams every object into domain-separated CAS
+placements, publishes bounded canonical index pages and the exact root last,
+then reloads the closure lazily through the same backend as a portable
+`ProductionExactCheckpointSource`. The durable operational ledger retains that
+root across restart without granting the immutable backend mutable-ref
+authority. This completes T-CAM-5.1.
+
+Campaign record kinds and schema versions are registered and wrapped in one
+strict canonical envelope whose typed children are sorted, role-bound, and
+included in its domain-separated logical identity. Persistent Merkle maps and
+sets authenticate point, bounded-page, and exact proof traversal; generic and
+record-specific closure walkers enforce complete or deliberately partial
+reachability with typed missing, corrupt, kind, schema, bound, and semantic
+diagnostics. Schema inventory, canonical round-trip, malformed-envelope,
+Merkle prefix-confusion, false-EOF, unused-proof-node, imported-closure, and
+restart regressions provide executable evidence for T-CAM-5.2.
 
 ## 11.8 Phase 6 — QEMU hot-fork spike
 

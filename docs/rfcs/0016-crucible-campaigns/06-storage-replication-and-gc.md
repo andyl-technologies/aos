@@ -220,7 +220,10 @@ Layers declare both requirements of their children and capabilities they
 synthesize. Store-graph construction fails before campaign access when a child
 cannot satisfy a required operation. Store errors distinguish missing,
 corrupt, unauthorized, incompatible, quota, unavailable, conditional conflict,
-and unsupported-capability outcomes.
+and unsupported-capability outcomes. An authenticated child put whose receipt
+does not satisfy its admitted placement minimum returns
+`DurabilityUnsatisfied`; this is an operator/configuration integrity failure,
+not proof that the immutable child write was rolled back.
 
 - **[CSTORE-5]** Store-graph validation MUST fail closed when any route,
   durability policy, ref backend, or composition layer requires an unsupported
@@ -667,18 +670,20 @@ construct a deletion fence. Both values retain the same content-derived
 cannot pair independently supplied leaves with an unrelated graph hash.
 
 The registered `crucible.content-store.graph-configuration` schemas v1 through
-v5 freeze that identity basis. New writers retain the byte-for-byte v1 body
-when the graph has no compressed-directory, logical-quota, encrypted, or
-compressed-encrypted nodes,
+v6 freeze that identity basis. New writers retain the byte-for-byte v1 body
+when the graph has no compressed-directory, logical-quota, encrypted,
+compressed-encrypted, or durability-policy nodes,
 emit v2 when it has a compressed-directory node but no logical quota or
 encryption, emit v3 when it has a logical-quota node but no encryption, and
 emit v4 when it has any encrypted-directory node but no compressed-encrypted
-node. A graph with any compressed-encrypted-directory node emits v5. V2 uses
+node. A graph with any compressed-encrypted-directory node but no durability
+policy emits v5. A graph with any durability-policy node emits v6. V2 uses
 the same grammar and existing tags as v1, changes the magic suffix from `v1`
 to `v2`, and adds tag 11. V3 changes the suffix to `v3`, retains tags 1 through
 11, and adds tag 12. V4 changes the suffix to `v4`, retains tags 1 through 12,
 and adds tag 13. V5 changes the suffix to `v5`, retains tags 1 through 13, and
 adds tag 14.
+V6 changes the suffix to `v6`, retains tags 1 through 14, and adds tag 15.
 Every persistent
 path is an absolute host-local Unix path; its opaque bytes, rather than a lossy
 Unicode rendering, enter the identity.
@@ -724,6 +729,12 @@ node tag 13 EncryptedDirectory:
 node tag 14 CompressedEncryptedDirectory:
                          root:path_u32 || maximum_logical_object_bytes:u64be
                          || key_id:string_u16
+node tag 15 DurabilityPolicy:
+                         child:string_u16 || requirement_count:u16be
+                         || repeated requirement_count times:
+                            kind:string_u16
+                            || minimum_durable_placements:u16be
+                            || allow_deferred_write:u8
 ```
 
 Let `D` be `crucible.content-store.graph-configuration-id.v1` and `B` the
@@ -774,6 +785,17 @@ conditions are satisfied. Receipts are operational and replaceable. A snapshot
 publisher declares a `DurabilityRequirement`; it may advance the ref only after
 every newly required reachable object has a receipt satisfying that
 requirement.
+
+The initial closed requirement is
+`(minimum_durable_placements:u16, allow_deferred_write:bool)`. The minimum is
+1 through 256 and counts distinct stable backend names whose placement receipt
+is durable; duplicate receipt entries for one backend count once. A
+`DurabilityPolicy` graph node carries exactly one requirement for every object
+kind demanded at that node and no unrelated entries. It validates the receipt
+ID and every placement's logical length before counting. When any requirement
+forbids deferred writes, its child must advertise `deferred_write = false` at
+graph admission. A runtime shortfall returns a typed durability failure after
+immutable child placement but before the caller may publish a mutable ref.
 
 - **[CSTORE-11]** Snapshot publication MUST wait for all objects required by the
   snapshot's retention roots to satisfy the requested durability policy; a

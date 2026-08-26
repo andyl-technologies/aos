@@ -131,6 +131,88 @@ impl ImmutableBlobBackend for RoutedStore {
     }
 }
 
+/// Enforces exact per-kind durability requirements around one child store.
+pub struct DurabilityPolicyStore {
+    name: String,
+    child: Arc<dyn ImmutableBlobBackend>,
+    requirements: BTreeMap<ObjectKind, DurabilityRequirement>,
+}
+
+impl DurabilityPolicyStore {
+    /// Builds a durability-policy facade over one admitted child.
+    ///
+    /// Graph admission proves that `requirements` exactly covers every object
+    /// kind that can reach this node and that non-deferred requirements do not
+    /// wrap a deferred child.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        child: Arc<dyn ImmutableBlobBackend>,
+        requirements: BTreeMap<ObjectKind, DurabilityRequirement>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            child,
+            requirements,
+        }
+    }
+
+    fn requirement(&self, id: ContentId) -> Result<DurabilityRequirement, StoreError> {
+        self.requirements
+            .get(&id.kind())
+            .copied()
+            .ok_or(StoreError::InvalidComposition {
+                reason: "durability policy has no requirement for the logical object kind",
+            })
+    }
+}
+
+impl ImmutableBlobBackend for DurabilityPolicyStore {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        self.child.capabilities()
+    }
+
+    fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+        self.requirement(id)?;
+        self.child.contains(id)
+    }
+
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        self.requirement(id)?;
+        self.child.read(id, range)
+    }
+
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        let requirement = self.requirement(id)?;
+        let receipt = self.child.put_if_absent(id, source)?;
+        if receipt.id != id
+            || receipt
+                .placements
+                .iter()
+                .any(|placement| placement.logical_length != source.logical_length())
+        {
+            return Err(StoreError::Corrupt { id });
+        }
+        let observed = receipt.durable_placements();
+        if observed < usize::from(requirement.minimum_durable_placements()) {
+            let observed_durable_placements =
+                u16::try_from(observed).map_err(|_| StoreError::InvalidComposition {
+                    reason: "durable placement count exceeds the graph bound",
+                })?;
+            return Err(StoreError::DurabilityUnsatisfied {
+                id,
+                minimum_durable_placements: requirement.minimum_durable_placements(),
+                observed_durable_placements,
+            });
+        }
+        Ok(receipt)
+    }
+}
+
 /// Ordered read tiers with one explicit write tier and optional read promotion.
 pub struct TieredStore {
     name: String,

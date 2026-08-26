@@ -2269,6 +2269,7 @@ fn store_service_failure(error: &StoreError) -> CampaignServiceFailure {
         | StoreError::InvalidRange { .. }
         | StoreError::InvalidComposition { .. }
         | StoreError::InvalidGraph { .. }
+        | StoreError::DurabilityUnsatisfied { .. }
         | StoreError::Incompatible
         | StoreError::InvalidSourceLength { .. }
         | StoreError::Poisoned { .. }
