@@ -2,7 +2,7 @@
 {pkgs}: let
   buildSystem = pkgs.stdenv.buildPlatform.system;
 
-  mkTargetSmoke = targetSystem: expectedCpu: let
+  mkTargetSmoke = targetSystem: expectedCpu: expectedDarwinArch: let
     cross = import ../.. {
       system = buildSystem;
       crossSystem = targetSystem;
@@ -83,13 +83,55 @@
                 exit 1
               fi
             done
+
+            for library in ${cross.stdenv.darwinRuntimes}/lib/*.dylib; do
+              headers=$("$OBJDUMP" --macho --all-headers "$library")
+              case "$headers" in
+                *'${expectedCpu}'*) ;;
+                *)
+                  echo "unexpected Mach-O architecture in $library: expected ${expectedCpu}" >&2
+                  exit 1
+                  ;;
+              esac
+              case "$headers" in
+                *'name ${cross.stdenv.darwinRuntimes}/lib/'*) ;;
+                *)
+                  echo "unstable install name in $library" >&2
+                  exit 1
+                  ;;
+              esac
+              case "$headers" in
+                *'/build'*)
+                  echo "build-directory load command in $library" >&2
+                  exit 1
+                  ;;
+              esac
+            done
+
+            for archive in ${cross.stdenv.darwinRuntimes}/lib/darwin/*.a; do
+              headers=$("$OBJDUMP" --macho --universal-headers "$archive")
+              case "$headers" in
+                *'nfat_arch 1'*) ;;
+                *)
+                  echo "compiler runtime archive is not single-architecture: $archive" >&2
+                  exit 1
+                  ;;
+              esac
+              case "$headers" in
+                *'architecture ${expectedDarwinArch}'*) ;;
+                *)
+                  echo "unexpected compiler runtime architecture in $archive" >&2
+                  exit 1
+                  ;;
+              esac
+            done
           '';
         }
       ];
     };
 
-  x86 = mkTargetSmoke "x86_64-darwin" "X86_64";
-  arm = mkTargetSmoke "aarch64-darwin" "ARM64";
+  x86 = mkTargetSmoke "x86_64-darwin" "X86_64" "x86_64";
+  arm = mkTargetSmoke "aarch64-darwin" "ARM64" "arm64";
 in
   pkgs.mkDerivation {
     pname = "darwin-cross-smoke";

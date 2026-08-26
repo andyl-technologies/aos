@@ -24,6 +24,10 @@
     if runtimes == null
     then ""
     else "-isystem ${runtimes}/include/c++/v1";
+  cxxCompilerFlags =
+    if runtimes == null
+    then ""
+    else "-nostdinc++";
   runtimeLinkerFlags =
     if runtimes == null
     then ""
@@ -108,7 +112,15 @@
 
         nix_ldflags=""
         if [ "$linking" = true ] && [ -n "''${NIX_LDFLAGS:-}" ]; then
-          nix_ldflags="$NIX_LDFLAGS"
+          # mkDerivation publishes ELF and Mach-O dependency search flags
+          # through one variable.  ld64 has no -rpath-link equivalent; its
+          # normal -rpath entries already express the target runtime closure.
+          for flag in $NIX_LDFLAGS; do
+            case "$flag" in
+              -Wl,-rpath-link,*) ;;
+              *) nix_ldflags="$nix_ldflags $flag" ;;
+            esac
+          done
         fi
 
         exec ${llvm}/bin/clang \
@@ -129,7 +141,10 @@
         ${cat} > "$out/bin/clang++" <<'WRAPPER_EOF'
         #!${shell}
         set -eu
-        exec "$(${dirname} "$0")/clang" -stdlib=libc++ "$@"
+        # The Linux-hosted LLVM contains its own native libc++ headers.  Keep
+        # include_next from falling through the target runtime into that
+        # second C++ tree instead of the Darwin SDK's C headers.
+        exec "$(${dirname} "$0")/clang" ${cxxCompilerFlags} -stdlib=libc++ "$@"
         WRAPPER_EOF
         ${chmod} +x "$out/bin/clang++"
 
@@ -175,10 +190,34 @@
         ${ln} -s ld "$out/bin/${targetTriple}-ld"
         ${ln} -s as "$out/bin/${targetTriple}-as"
 
-        for tool in ar ranlib nm objcopy objdump size strings strip; do
+        for tool in ar ranlib nm objcopy size strings strip; do
           ${ln} -s "${llvm}/bin/llvm-$tool" "$out/bin/$tool"
           ${ln} -s "${llvm}/bin/llvm-$tool" "$out/bin/${targetTriple}-$tool"
         done
+
+        # llvm-objdump 22 prints some non-object diagnostics on stdout while
+        # returning success.  The generic Mach-O validator relies on failure
+        # to skip executable scripts, so normalize those diagnostics without
+        # changing successful object inspection output.
+        ${cat} > "$out/bin/objdump" <<'WRAPPER_EOF'
+        #!${shell}
+        set -eu
+
+        output=$(${llvm}/bin/llvm-objdump "$@" 2>&1) || {
+          status=$?
+          printf '%s\n' "$output" >&2
+          exit "$status"
+        }
+        case "$output" in
+          *'llvm-objdump: error:'*|*': is not an object file')
+            printf '%s\n' "$output" >&2
+            exit 1
+            ;;
+        esac
+        printf '%s\n' "$output"
+        WRAPPER_EOF
+        ${chmod} +x "$out/bin/objdump"
+        ${ln} -s objdump "$out/bin/${targetTriple}-objdump"
 
         for tool in lipo dwarfdump; do
           ${ln} -s "${llvm}/bin/llvm-$tool" "$out/bin/$tool"

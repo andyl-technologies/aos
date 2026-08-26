@@ -10,6 +10,7 @@
   fetchurl,
 }: let
   version = "0.16.0";
+  sdkVersion = "15.0";
   coreFoundationRevision = "761b621da93a856a48995efc29ed11028c283306";
   systemConfigurationRevision = "585b7f2fca293f4642d21d15c5daf187f63c4796";
   ioKitUserRevision = "323ead896d04424f87184d8f6ff0cce811aab106";
@@ -133,7 +134,30 @@ in
           cp -R lib/libcxxabi/include/. "$out/usr/include/c++/v1/"
           cp -R lib/libunwind/include/. "$out/usr/include/libunwind/"
           cp lib/libc/darwin/libSystem.tbd "$out/usr/lib/libSystem.tbd"
-          cp lib/libc/darwin/SDKSettings.json "$out/SDKSettings.json"
+
+          # Newer Apple open-source framework headers describe bridgeOS API
+          # availability, while Zig's open SDK snapshot omits that platform's
+          # public macro mappings.  Preserve the annotations by teaching the
+          # common availability header about the Clang-supported platform.
+          sed -i '/__API_AVAILABLE_PLATFORM_driverkit/i\
+          #define __API_AVAILABLE_PLATFORM_bridgeos(x) bridgeos,introduced=x\
+          #define __API_DEPRECATED_PLATFORM_bridgeos(x,y) bridgeos,introduced=x,deprecated=y\
+          #define __API_OBSOLETED_PLATFORM_bridgeos(x,y,z) bridgeos,introduced=x,deprecated=y,obsoleted=z\
+          #define __API_UNAVAILABLE_PLATFORM_bridgeos bridgeos,unavailable' \
+            "$out/usr/include/AvailabilityInternal.h"
+
+          # Zig's source aggregation ships only MinimalDisplayName, but Clang
+          # requires Version, MaximumDeploymentTarget, and either a recognized
+          # CanonicalName or SupportedTargets.  Describe the open SDK surface
+          # explicitly so availability and deployment checks remain enabled.
+          cat > "$out/SDKSettings.json" <<'EOF'
+          {
+            "CanonicalName": "macosx${sdkVersion}",
+            "MaximumDeploymentTarget": "${sdkVersion}",
+            "MinimalDisplayName": "macOS ${sdkVersion}",
+            "Version": "${sdkVersion}"
+          }
+          EOF
           cp LICENSE "$out/share/licenses/darwin-sdk/Zig-LICENSE"
           cp lib/libcxx/LICENSE.TXT "$out/share/licenses/darwin-sdk/libcxx-LICENSE"
           cp lib/libcxxabi/LICENSE.TXT "$out/share/licenses/darwin-sdk/libcxxabi-LICENSE"

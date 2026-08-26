@@ -134,7 +134,13 @@
     ninja = buildPackages.ninja;
     python3 = buildPackages.python3;
     stdenv = {
-      inherit buildPlatform hostPlatform targetPlatform;
+      inherit
+        buildPlatform
+        hostPlatform
+        targetPlatform
+        sdk
+        sdkVersion
+        ;
       cc = bootstrapCcWrapper;
     };
   };
