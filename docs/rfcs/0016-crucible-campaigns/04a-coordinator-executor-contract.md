@@ -188,6 +188,7 @@ the CLI, an in-process caller, and a future external coordinator implementation:
 
 ```text
 CreateCampaign        GetCampaign          ApplyCampaignCommand
+ListCampaigns
 GetSnapshot           QueryGraph           GetGraphObject
 QueryFrontier          GetFrontierObject    QueryChoices
 GetChoiceObject        PinCampaign
@@ -205,7 +206,7 @@ Repeated `WatchCampaign` calls form a resumable coalesced watch; the campaign
 ref and immutable objects remain authoritative. A stale or lost watch cursor
 therefore cannot lose campaign state.
 
-The strict service checkpoint defines principal-aware `CreateCampaign`,
+The strict service checkpoint defines principal-aware `ListCampaigns`, `CreateCampaign`,
 `DeriveCampaign`, `GetCampaign`, `GetSnapshot`, `WatchCampaign`,
 `ApplyCampaignCommand`, `QueryGraph`, `GetGraphObject`, and
 `QueryChoices`, `QueryFrontier`, `QueryFindings`, `GetFindingObject`,
@@ -228,6 +229,13 @@ DeriveCampaignResponseV1 = version | request_digest | source_snapshot |
 GetCampaignRequestV1 = version | principal | campaign
 GetCampaignResponseV1 = version | request_digest | snapshot | lineage |
                         active_policy | lifecycle_state
+
+ListCampaignsRequestV1 = version | principal | optional after_campaign | limit
+CampaignListEntryV1 = campaign | snapshot | lineage | active_policy |
+                      lifecycle_state
+ListCampaignsResponseV1 = version | request_digest |
+                          entries[CampaignListEntryV1] |
+                          optional next_after_campaign | visited_refs
 
 GetCampaignSnapshotRequestV1 = version | principal | campaign | snapshot
 GetCampaignSnapshotResponseV1 = version | request_digest | snapshot |
@@ -294,7 +302,7 @@ view; its selected branch point and source MUST equal the proposal, and its
 issued-proposal set MUST contain the exact proposal ID. Operator, exhaustive,
 and debugger proposals carry neither field. Response version 1 remains
 structurally readable for offline compatibility but does not carry
-planner-decision evidence; the version-17 loopback endpoint writes only version
+planner-decision evidence; the version-19 loopback endpoint writes only version
 2.
 
 MerkleLookupProofV1 = node_count:u64 |
@@ -443,6 +451,8 @@ exact language-neutral derivations are:
 ```text
 get_request_digest =
   H("crucible.campaign-service.get-campaign.v1", GetCampaignRequestV1)
+list_request_digest =
+  H("crucible.campaign-service.list-campaigns.v1", ListCampaignsRequestV1)
 get_snapshot_request_digest =
   H("crucible.campaign-service.get-campaign-snapshot.v1",
     GetCampaignSnapshotRequestV1)
@@ -505,6 +515,17 @@ the existing `head`/lifecycle, `apply_control`, and cause-specific operator or
 exhaustive-policy branch owner paths, preserving their idempotence and CAS
 rules. Planner and debugger causes remain confined to their authority-specific
 adapters.
+
+`ListCampaigns` requires an explicit all-campaign grant; an exact-name grant
+never confers namespace discovery. A page contains at most 256 heads in strict
+canonical campaign-name order, resumes after an exclusive campaign-name
+cursor, and inspects at most 65,536 ref entries. Each returned ref target is
+loaded as an exact typed snapshot and its complete authenticated head closure
+and lifecycle projection are validated before the response is constructed.
+`next_after` is either absent at the scanned view's EOF or equals the final
+returned name. The response is a coalesced mutable-ref view rather than an
+immutable cross-page transaction: later creation may appear on a resumed page,
+while immutable returned head bindings remain authenticated.
 
 Creation carries the complete by-value lineage and policy. Large scenario and
 genesis configuration artifacts and the exact transitive generator closure do
@@ -844,7 +865,7 @@ The strict
 local transport frames exactly one canonical request or response as:
 
 ```text
-CampaignLoopbackFrameV18 = "CRUCCS18" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV19 = "CRUCCS19" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -882,10 +903,12 @@ kind = 1 (GetCampaignRequestV1) |
       34 (ExplainCampaignAttemptRequestV1) |
       35 (ExplainCampaignAttemptResponseV2) |
       36 (GetCampaignPlannerRankingsRequestV1) |
-      37 (GetCampaignPlannerRankingsResponseV1)
+      37 (GetCampaignPlannerRankingsResponseV1) |
+      38 (ListCampaignsRequestV1) |
+      39 (ListCampaignsResponseV1)
 ```
 
-Loopback frame versions 1 through 17 are rejected rather than reinterpreted
+Loopback frame versions 1 through 18 are rejected rather than reinterpreted
 under the expanded kind table.
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB

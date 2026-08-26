@@ -3,7 +3,7 @@
 //! The protocol contains only bounded canonical component messages:
 //!
 //! ```text
-//! CampaignLoopbackFrameV18 = magic[8] | kind:u8 | reserved[3] |
+//! CampaignLoopbackFrameV19 = magic[8] | kind:u8 | reserved[3] |
 //!                           body_length:u32be | canonical_body[body_length]
 //! kind = 1 (GetCampaignRequestV1) |
 //!        2 (GetCampaignResponseV1) |
@@ -41,8 +41,10 @@
 //!       34 (ExplainCampaignAttemptRequestV1) |
 //!       35 (ExplainCampaignAttemptResponseV2) |
 //!       36 (GetCampaignPlannerRankingsRequestV1) |
-//!       37 (GetCampaignPlannerRankingsResponseV1)
-//! magic = "CRUCCS18"
+//!       37 (GetCampaignPlannerRankingsResponseV1) |
+//!       38 (ListCampaignsRequestV1) |
+//!       39 (ListCampaignsResponseV1)
+//! magic = "CRUCCS19"
 //! ```
 //!
 //! One mutex serializes complete request/response exchanges so concurrent
@@ -76,15 +78,16 @@ use crucible_campaign::{
     GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
     GetCampaignGraphObjectResponse, GetCampaignPlannerRankingsRequest,
     GetCampaignPlannerRankingsResponse, GetCampaignRequest, GetCampaignResponse,
-    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
-    PinCampaignRequest, PinCampaignResponse, QueryCampaignChoicesRequest,
-    QueryCampaignChoicesResponse, QueryCampaignFindingsRequest, QueryCampaignFindingsResponse,
-    QueryCampaignFrontierRequest, QueryCampaignFrontierResponse, QueryCampaignGraphRequest,
-    QueryCampaignGraphResponse, RepositoryCampaignService, SubmitCampaignBranchRequest,
-    SubmitCampaignBranchResponse, WatchCampaignRequest, WatchCampaignResponse,
+    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, ListCampaignsRequest,
+    ListCampaignsResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest,
+    PinCampaignResponse, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
+    QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
+    QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
+    RepositoryCampaignService, SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
+    WatchCampaignRequest, WatchCampaignResponse,
 };
 
-const FRAME_MAGIC: &[u8; 8] = b"CRUCCS18";
+const FRAME_MAGIC: &[u8; 8] = b"CRUCCS19";
 const FRAME_HEADER_BYTES: usize = 16;
 const GET_CAMPAIGN_REQUEST_KIND: u8 = 1;
 const GET_CAMPAIGN_RESPONSE_KIND: u8 = 2;
@@ -123,6 +126,8 @@ const EXPLAIN_CAMPAIGN_ATTEMPT_REQUEST_KIND: u8 = 34;
 const EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_KIND: u8 = 35;
 const GET_CAMPAIGN_PLANNER_RANKINGS_REQUEST_KIND: u8 = 36;
 const GET_CAMPAIGN_PLANNER_RANKINGS_RESPONSE_KIND: u8 = 37;
+const LIST_CAMPAIGNS_REQUEST_KIND: u8 = 38;
+const LIST_CAMPAIGNS_RESPONSE_KIND: u8 = 39;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub(crate) const DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION: usize = 4_096;
@@ -275,6 +280,24 @@ impl LoopbackCampaignService {
 
 impl CampaignService for LoopbackCampaignService {
     type Error = LoopbackCampaignServiceError;
+
+    fn list_campaigns(
+        &self,
+        request: &ListCampaignsRequest,
+    ) -> Result<ListCampaignsResponse, Self::Error> {
+        self.exchange(
+            LIST_CAMPAIGNS_REQUEST_KIND,
+            LIST_CAMPAIGNS_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |response| {
+                let response = ListCampaignsResponse::from_canonical_bytes(response)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            CampaignServiceFailure::validate_for_list_campaigns,
+        )
+    }
 
     fn create_campaign(
         &self,
@@ -681,6 +704,19 @@ impl<A> CampaignPrincipalAuthorizer for PeerBoundCampaignAuthorizer<'_, A>
 where
     A: CampaignPrincipalAuthorizer + ?Sized,
 {
+    fn authorize_all_campaigns(
+        &self,
+        principal: &CampaignPrincipal,
+        operation: CampaignServiceOperation,
+        request_digest: crucible_campaign::CampaignHash,
+    ) -> Result<(), CampaignAuthorizationError> {
+        if principal != &self.principal {
+            return Err(CampaignAuthorizationError::Unauthorized);
+        }
+        self.inner
+            .authorize_all_campaigns(principal, operation, request_digest)
+    }
+
     fn authorize(
         &self,
         principal: &CampaignPrincipal,
@@ -944,6 +980,34 @@ where
     configure_stream(stream, timeouts)?;
     let (kind, body) = read_frame_any(stream, timeouts.read)?;
     let (response_kind, response) = match kind {
+        LIST_CAMPAIGNS_REQUEST_KIND => {
+            let request = ListCampaignsRequest::from_canonical_bytes(&body)?;
+            match service.list_campaigns(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (LIST_CAMPAIGNS_RESPONSE_KIND, response.canonical_bytes())
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) = failure.validate_for_list_campaigns() {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
         CREATE_CAMPAIGN_REQUEST_KIND => {
             let request = CreateCampaignRequest::from_canonical_bytes(&body)?;
             match service.create_campaign(&request) {

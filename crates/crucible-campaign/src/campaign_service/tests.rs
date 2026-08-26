@@ -102,6 +102,65 @@ fn campaign_names_match_the_repository_ref_grammar() {
 }
 
 #[test]
+fn list_campaign_messages_are_canonical_ordered_and_request_bound() {
+    let principal = CampaignPrincipal::new("operator:alice").expect("principal");
+    let request = ListCampaignsRequest::new(principal.clone(), None, 2).expect("list request");
+    assert_eq!(
+        ListCampaignsRequest::from_canonical_bytes(&request.canonical_bytes())
+            .expect("decode list request"),
+        request
+    );
+    let entries = vec![
+        CampaignListEntry::new(
+            CampaignName::new("alpha").expect("alpha"),
+            snapshot("alpha"),
+            lineage("lineage"),
+            policy("policy"),
+            CampaignState::Running,
+        ),
+        CampaignListEntry::new(
+            CampaignName::new("middle").expect("middle"),
+            snapshot("middle"),
+            lineage("lineage"),
+            policy("policy"),
+            CampaignState::Paused,
+        ),
+    ];
+    let response = ListCampaignsResponse::new(
+        &request,
+        entries.clone(),
+        Some(CampaignName::new("middle").expect("cursor")),
+        2,
+    )
+    .expect("list response");
+    assert_eq!(
+        ListCampaignsResponse::from_canonical_bytes(&response.canonical_bytes())
+            .expect("decode list response"),
+        response
+    );
+    response.validate_for(&request).expect("request binding");
+
+    let resumed = ListCampaignsRequest::new(
+        principal,
+        Some(CampaignName::new("alpha").expect("after")),
+        2,
+    )
+    .expect("resumed request");
+    assert!(response.validate_for(&resumed).is_err());
+    assert!(
+        ListCampaignsResponse::new(&request, entries.into_iter().rev().collect(), None, 2).is_err()
+    );
+    assert!(
+        ListCampaignsRequest::new(
+            CampaignPrincipal::new("operator:alice").expect("principal"),
+            None,
+            MAX_CAMPAIGN_LIST_PAGE_ITEMS + 1,
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn get_campaign_messages_are_canonical_and_request_bound() {
     let request = get_request("network-recovery");
     assert_eq!(
@@ -199,6 +258,13 @@ struct WrongGetService {
 
 impl CampaignService for WrongGetService {
     type Error = Infallible;
+
+    fn list_campaigns(
+        &self,
+        _request: &ListCampaignsRequest,
+    ) -> Result<ListCampaignsResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
 
     fn create_campaign(
         &self,
@@ -357,6 +423,13 @@ struct FixedFailureService(CampaignServiceFailure);
 impl CampaignService for FixedFailureService {
     type Error = CampaignServiceFailure;
 
+    fn list_campaigns(
+        &self,
+        _request: &ListCampaignsRequest,
+    ) -> Result<ListCampaignsResponse, Self::Error> {
+        Err(self.0)
+    }
+
     fn create_campaign(
         &self,
         _request: &CreateCampaignRequest,
@@ -486,6 +559,13 @@ impl CampaignService for FixedFailureService {
 
 impl CampaignService for WrongApplyService {
     type Error = Infallible;
+
+    fn list_campaigns(
+        &self,
+        _request: &ListCampaignsRequest,
+    ) -> Result<ListCampaignsResponse, Self::Error> {
+        unreachable!("test service only handles ApplyCampaignCommand")
+    }
 
     fn create_campaign(
         &self,
@@ -1021,6 +1101,18 @@ fn repository_adapter_authorizes_before_repository_access() {
         Arc::new(MemoryRefBackend::new()),
     );
     let service = RepositoryCampaignService::new(&repository, DenyAll);
+    let list = ListCampaignsRequest::new(
+        CampaignPrincipal::new("operator:alice").expect("principal"),
+        None,
+        1,
+    )
+    .expect("list request");
+    assert!(matches!(
+        service.list_campaigns(&list),
+        Err(RepositoryCampaignServiceError::Authorization(
+            CampaignAuthorizationError::Unauthorized
+        ))
+    ));
     assert!(matches!(
         service.get_campaign(&get_request("absent")),
         Err(RepositoryCampaignServiceError::Authorization(

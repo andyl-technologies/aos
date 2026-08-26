@@ -50,6 +50,16 @@ struct FixedCampaignService;
 impl CampaignService for FixedCampaignService {
     type Error = Infallible;
 
+    fn list_campaigns(
+        &self,
+        request: &crucible_campaign::ListCampaignsRequest,
+    ) -> Result<crucible_campaign::ListCampaignsResponse, Self::Error> {
+        Ok(
+            crucible_campaign::ListCampaignsResponse::new(request, Vec::new(), None, 0)
+                .expect("list response"),
+        )
+    }
+
     fn create_campaign(
         &self,
         request: &CreateCampaignRequest,
@@ -394,6 +404,12 @@ impl CampaignService for FixedCampaignService {
 
 #[test]
 fn direct_and_loopback_campaign_services_are_identical() {
+    let list = crucible_campaign::ListCampaignsRequest::new(
+        CampaignPrincipal::new("operator:alice").expect("principal"),
+        None,
+        8,
+    )
+    .expect("list request");
     let create = create_request("network-recovery-create");
     let derive = derive_request("network-recovery", "network-recovery-derived");
     let get = get_request("network-recovery");
@@ -468,6 +484,7 @@ fn direct_and_loopback_campaign_services_are_identical() {
     let pin = pin_request("network-recovery");
     let branch = branch_submission("network-recovery");
     let direct = CampaignClient::new(FixedCampaignService);
+    let expected_list = direct.list_campaigns(&list).expect("direct list");
     let expected_create = direct.create_campaign(&create).expect("direct create");
     let expected_derive = direct.derive_campaign(&derive).expect("direct derive");
     let expected_get = direct.get_campaign(&get).expect("direct get");
@@ -504,13 +521,18 @@ fn direct_and_loopback_campaign_services_are_identical() {
 
     let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
     let server = thread::spawn(move || {
-        for _ in 0..15 {
+        for _ in 0..16 {
             serve_loopback_campaign_once(&mut server_stream, &FixedCampaignService)
                 .expect("serve campaign request");
         }
     });
     let loopback = LoopbackCampaignService::new(client_stream).expect("loopback service");
     let client = CampaignClient::new(loopback);
+
+    assert_eq!(
+        client.list_campaigns(&list).expect("loopback list"),
+        expected_list
+    );
 
     assert_eq!(
         client.create_campaign(&create).expect("loopback create"),
@@ -632,7 +654,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
     .expect("write frame");
     let mut bytes = [0_u8; 19];
     reader.read_exact(&mut bytes).expect("read frame");
-    assert_eq!(&bytes, b"CRUCCS18\x01\0\0\0\0\0\0\x03abc");
+    assert_eq!(&bytes, b"CRUCCS19\x01\0\0\0\0\0\0\x03abc");
 
     for (kind, reserved, length, reason) in [
         (
@@ -774,6 +796,13 @@ struct WrongGetService {
 
 impl CampaignService for WrongGetService {
     type Error = Infallible;
+
+    fn list_campaigns(
+        &self,
+        _request: &crucible_campaign::ListCampaignsRequest,
+    ) -> Result<crucible_campaign::ListCampaignsResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
 
     fn create_campaign(
         &self,

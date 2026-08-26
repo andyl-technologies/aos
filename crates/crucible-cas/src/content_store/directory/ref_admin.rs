@@ -1,5 +1,6 @@
 //! Persistent generation fencing for the directory ref namespace.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -130,6 +131,77 @@ impl RefStoreAdmin for DirectoryRefBackend {
             state,
         }))
     }
+}
+
+pub(super) fn scan_ref_namespace(
+    backend: &DirectoryRefBackend,
+    namespace: &RefName,
+    after: Option<&RefName>,
+    limit: usize,
+) -> Result<RefScanPage, StoreError> {
+    validate_ref_scan_basis(namespace, after, limit)?;
+    let inventory_root = backend.root.join("refs");
+    let namespace_root = backend.ref_path(namespace);
+    match fs::symlink_metadata(&namespace_root) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => {
+            return Err(StoreError::InvalidComposition {
+                reason: "authoritative ref scan namespace is not a directory",
+            });
+        }
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RefScanPage::new(Vec::new(), None, 0));
+        }
+        Err(source) => {
+            return Err(StoreError::Io {
+                operation: "inspect-ref-scan-namespace",
+                path: namespace_root,
+                source,
+            });
+        }
+    }
+
+    let mut candidates = BTreeMap::new();
+    let mut visited = 0_u64;
+    let mut inventory_count = 0_u64;
+    let depth =
+        u16::try_from(namespace.as_str().split('/').count()).map_err(|_| StoreError::Quota)?;
+    visit_ref_directory(
+        backend,
+        &inventory_root,
+        &namespace_root,
+        depth,
+        &mut |record| {
+            visited = visited.checked_add(1).ok_or(StoreError::Quota)?;
+            if visited > MAX_REF_SCAN_VISITS {
+                return Err(StoreError::Quota);
+            }
+            if after.is_some_and(|cursor| record.name() <= cursor) {
+                return Ok(());
+            }
+            candidates.insert(record.name().clone(), record.target());
+            if candidates.len() > limit.saturating_add(1) {
+                candidates.pop_last();
+            }
+            Ok(())
+        },
+        &mut inventory_count,
+    )?;
+
+    let has_more = candidates.len() > limit;
+    if has_more {
+        candidates.pop_last();
+    }
+    let entries = candidates
+        .into_iter()
+        .map(|(name, target)| RefScanEntry::new(name, target))
+        .collect::<Vec<_>>();
+    let next_after = if has_more {
+        entries.last().map(|entry| entry.name().clone())
+    } else {
+        None
+    };
+    Ok(RefScanPage::new(entries, next_after, visited))
 }
 
 struct DirectoryRefInventoryFence<'a> {

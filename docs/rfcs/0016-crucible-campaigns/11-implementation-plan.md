@@ -548,7 +548,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   endpoint is acquired, and couples any runtime failure or process shutdown to
   listener shutdown and complete worker join. The packaged local QEMU executor
   remains a campaign-specific one-runtime composition.
-  Campaign enumeration, dynamic attachment, a shared packaged-executor
+  The authenticated service now enumerates campaign refs through an explicit
+  all-campaign grant using bounded stable ref pages and validates every returned
+  head closure. CLI listing, dynamic attachment, a shared packaged-executor
   allocator, and richer operational tuning remain open.
   The QEMU realization executor now exposes only a borrowed already-realized
   live-backend facade without generic VMState/process authority, and the daemon
