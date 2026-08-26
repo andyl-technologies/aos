@@ -35,11 +35,11 @@
     '';
   };
   drainScriptPackage = pkgs.writeShellScriptBin "aos-fleet-drain-hook" ''
-      set -eu
-      ${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-test
-      IFS= read -r boot_id < /proc/sys/kernel/random/boot_id
-      printf '%s\n' "$boot_id" > /var/lib/aos-test/drained-boot-id
-      ${pkgs.coreutils}/bin/sync -f /var/lib/aos-test/drained-boot-id
+    set -eu
+    ${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-test
+    IFS= read -r boot_id < /proc/sys/kernel/random/boot_id
+    printf '%s\n' "$boot_id" > /var/lib/aos-test/drained-boot-id
+    ${pkgs.coreutils}/bin/sync -f /var/lib/aos-test/drained-boot-id
   '';
   drainScript = "${drainScriptPackage}/bin/aos-fleet-drain-hook";
   initrdControlFallback = {
