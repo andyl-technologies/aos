@@ -203,6 +203,7 @@ in
             "$out/usr/include/servers" \
             "$out/usr/lib" \
             "$out/System/Library/Frameworks/ApplicationServices.framework/Headers" \
+            "$out/System/Library/Frameworks/ApplicationServices.framework/Versions/A" \
             "$out/System/Library/Frameworks/AppKit.framework/Headers" \
             "$out/System/Library/Frameworks/AppKit.framework/Versions/C" \
             "$out/System/Library/Frameworks/Cocoa.framework/Headers" \
@@ -622,11 +623,53 @@ in
           #endif
           EOF
 
+          cat > "$out/System/Library/Frameworks/Security.framework/Headers/SecKeychain.h" <<'EOF'
+          #ifndef _SECURITY_SECKEYCHAIN_H_
+          #define _SECURITY_SECKEYCHAIN_H_
+          #include <Security/SecBase.h>
+          __BEGIN_DECLS
+          typedef struct __SecKeychain *SecKeychainRef;
+          typedef struct __SecKeychainItem *SecKeychainItemRef;
+          typedef struct SecKeychainAttributeList SecKeychainAttributeList;
+          OSStatus SecKeychainCopyDefault(SecKeychainRef *keychain);
+          OSStatus SecKeychainAddGenericPassword(
+            SecKeychainRef keychain,
+            UInt32 serviceNameLength,
+            const char *serviceName,
+            UInt32 accountNameLength,
+            const char *accountName,
+            UInt32 passwordLength,
+            const void *passwordData,
+            SecKeychainItemRef *itemRef
+          );
+          OSStatus SecKeychainFindGenericPassword(
+            CFTypeRef keychainOrArray,
+            UInt32 serviceNameLength,
+            const char *serviceName,
+            UInt32 accountNameLength,
+            const char *accountName,
+            UInt32 *passwordLength,
+            void **passwordData,
+            SecKeychainItemRef *itemRef
+          );
+          OSStatus SecKeychainItemModifyAttributesAndData(
+            SecKeychainItemRef itemRef,
+            const SecKeychainAttributeList *attributeList,
+            UInt32 length,
+            const void *data
+          );
+          OSStatus SecKeychainItemDelete(SecKeychainItemRef itemRef);
+          OSStatus SecKeychainItemFreeContent(SecKeychainAttributeList *attributeList, void *data);
+          __END_DECLS
+          #endif
+          EOF
+
           cat > "$out/System/Library/Frameworks/Security.framework/Headers/Security.h" <<'EOF'
           #ifndef _SECURITY_H_
           #define _SECURITY_H_
           #include <Security/SecBase.h>
           #include <Security/SecCertificate.h>
+          #include <Security/SecKeychain.h>
           #include <Security/SecTask.h>
           #include <Security/SecTrust.h>
           #include <Security/SecureTransport.h>
@@ -684,6 +727,7 @@ in
                 - _CFArrayCreate
                 - _CFArrayCreateMutable
                 - _CFArrayInsertValueAtIndex
+                - _CFArrayRemoveAllValues
                 - _CFBooleanGetTypeID
                 - _CFBooleanGetValue
                 - _CFBundleCopyExecutableURL
@@ -691,6 +735,7 @@ in
                 - _CFBundleGetIdentifier
                 - _CFBundleGetValueForInfoDictionaryKey
                 - _CFCopyTypeIDDescription
+                - _CFDataGetBytePtr
                 - _CFDataGetBytes
                 - _CFDataGetLength
                 - _CFDataGetTypeID
@@ -734,17 +779,21 @@ in
                 - _CFURLCreateCopyDeletingLastPathComponent
                 - _CFURLCreateFilePathURL
                 - _CFURLCreateFileReferenceURL
+                - _CFURLCreateWithString
                 - _CFURLCreateWithFileSystemPath
                 - _CFURLGetFileSystemRepresentation
                 - _CFURLResourceIsReachable
+                - _CFURLSetResourcePropertyForKey
                 - _CFUUIDCreate
                 - _CFUUIDCreateString
                 - _CFUUIDGetConstantUUIDWithBytes
                 - _CFUUIDGetUUIDBytes
+                - __CFConstantStringClassReference
                 - ___CFConstantStringClassReference
                 - ___CFStringMakeConstantString
                 - _kCFAllocatorDefault
                 - _kCFAllocatorSystemDefault
+                - _kCFBooleanTrue
                 - _kCFRunLoopCommonModes
                 - _kCFRunLoopDefaultMode
                 - _kCFTypeArrayCallBacks
@@ -925,8 +974,12 @@ in
           @interface NSString : NSObject
           - (instancetype)initWithUTF8String:(const char *)bytes;
           - (const char *)UTF8String;
+          - (const char *)cStringUsingEncoding:(NSUInteger)encoding;
           - (NSComparisonResult)compare:(NSString *)string;
           @end
+
+          typedef NSUInteger NSStringEncoding;
+          enum { NSUTF8StringEncoding = 4 };
 
           @interface NSArray<ObjectType> : NSObject <NSFastEnumeration>
           @property(readonly) ObjectType firstObject;
@@ -940,9 +993,16 @@ in
           - (void)setObject:(ObjectType)object forKeyedSubscript:(KeyType)key;
           @end
 
+          @interface NSURL : NSObject
+          + (NSURL *)fileURLWithPath:(NSString *)path;
+          @end
+
           @interface NSBundle : NSObject
           + (NSBundle *)mainBundle;
+          + (NSBundle *)bundleWithURL:(NSURL *)url;
           @property(readonly, copy) NSString *bundleIdentifier;
+          @property(readonly, copy) NSString *bundlePath;
+          - (id)objectForInfoDictionaryKey:(NSString *)key;
           @end
 
           typedef NSUInteger NSSearchPathDirectory;
@@ -1064,6 +1124,7 @@ in
                 - '_OBJC_CLASS_$_NSMutableDictionary'
                 - '_OBJC_CLASS_$_NSObject'
                 - '_OBJC_CLASS_$_NSString'
+                - '_OBJC_CLASS_$_NSURL'
                 - '_OBJC_METACLASS_$_NSObject'
           ...
           EOF
@@ -1082,6 +1143,8 @@ in
           reexported-libraries:
             - targets: [ x86_64-macos, arm64-macos ]
               libraries: [ '/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation' ]
+            - targets: [ x86_64-macos, arm64-macos ]
+              libraries: [ '/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices' ]
           exports:
             - targets: [ x86_64-macos, arm64-macos ]
               symbols:
@@ -1124,10 +1187,10 @@ in
           ...
           EOF
 
-          # CMake's Darwin Xcode generator includes the public
-          # ApplicationServices umbrella and calls LaunchServices through
-          # CoreServices. Keep that command-line development surface in the
-          # SDK without importing a binary Apple framework.
+          # GLib and other command-line clients use the public LaunchServices
+          # API through the ApplicationServices umbrella. Keep the canonical
+          # source and ABI surface, including the compatibility declarations
+          # retained by Apple's SDK, without importing a binary framework.
           cat > "$out/System/Library/Frameworks/ApplicationServices.framework/Headers/ApplicationServices.h" <<'EOF'
           #ifndef __APPLICATIONSERVICES__
           #define __APPLICATIONSERVICES__
@@ -1135,7 +1198,56 @@ in
           #include <CoreFoundation/CoreFoundation.h>
 
           CF_EXTERN_C_BEGIN
+          typedef UInt32 LSLaunchFlags;
+          enum { kLSLaunchDefaults = 0x00000001 };
+
+          typedef UInt32 LSRolesMask;
+          enum { kLSRolesAll = 0xffffffffU };
+
+          enum {
+            kLSUnknownCreator = 0,
+            kLSApplicationNotFoundErr = -10814
+          };
+
+          typedef struct AEDesc AEDesc;
+          typedef struct FSRef { UInt8 hidden[80]; } FSRef;
+
+          typedef struct LSLaunchURLSpec {
+            CFURLRef appURL;
+            CFArrayRef itemURLs;
+            const AEDesc *passThruParams;
+            LSLaunchFlags launchFlags;
+            void *asyncRefCon;
+          } LSLaunchURLSpec;
+
+          CFArrayRef LSCopyApplicationURLsForBundleIdentifier(
+            CFStringRef bundleIdentifier,
+            CFErrorRef *error
+          );
+          OSStatus LSFindApplicationForInfo(
+            OSType creator,
+            CFStringRef bundleIdentifier,
+            CFStringRef name,
+            FSRef *applicationRef,
+            CFURLRef *applicationURL
+          );
+          OSStatus LSOpenFromURLSpec(const LSLaunchURLSpec *urlSpec, CFURLRef *launchedURL);
           CF_EXPORT OSStatus LSOpenCFURLRef(CFURLRef inURL, CFURLRef *outLaunchedURL);
+          CFArrayRef LSCopyAllHandlersForURLScheme(CFStringRef scheme);
+          CFArrayRef LSCopyAllRoleHandlersForContentType(
+            CFStringRef contentType,
+            LSRolesMask roles
+          );
+          CFURLRef LSCopyDefaultApplicationURLForContentType(
+            CFStringRef contentType,
+            LSRolesMask roles,
+            CFErrorRef *error
+          );
+          CFStringRef LSCopyDefaultRoleHandlerForContentType(
+            CFStringRef contentType,
+            LSRolesMask roles
+          );
+          CFStringRef LSCopyDefaultHandlerForURLScheme(CFStringRef scheme);
           CF_EXTERN_C_END
 
           #endif
@@ -1147,11 +1259,27 @@ in
           install-name: '/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices'
           current-version: 64.0.0
           compatibility-version: 1.0.0
+          reexported-libraries:
+            - targets: [ x86_64-macos, arm64-macos ]
+              libraries: [ '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation' ]
           exports:
             - targets: [ x86_64-macos, arm64-macos ]
-              symbols: [ _LSOpenCFURLRef ]
+              symbols:
+                - _LSCopyAllHandlersForURLScheme
+                - _LSCopyAllRoleHandlersForContentType
+                - _LSCopyApplicationURLsForBundleIdentifier
+                - _LSCopyDefaultApplicationURLForContentType
+                - _LSCopyDefaultHandlerForURLScheme
+                - _LSCopyDefaultRoleHandlerForContentType
+                - _LSFindApplicationForInfo
+                - _LSOpenCFURLRef
+                - _LSOpenFromURLSpec
           ...
           EOF
+          ln -s ../../ApplicationServices.tbd \
+            "$out/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices.tbd"
+          ln -s ApplicationServices.tbd \
+            "$out/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices"
 
           cat > "$out/System/Library/Frameworks/IOKit.framework/IOKit.tbd" <<'EOF'
           --- !tapi-tbd
@@ -1216,6 +1344,12 @@ in
                 - _SSLWrite
                 - _SecCertificateCopyData
                 - _SecCopyErrorMessageString
+                - _SecKeychainAddGenericPassword
+                - _SecKeychainCopyDefault
+                - _SecKeychainFindGenericPassword
+                - _SecKeychainItemDelete
+                - _SecKeychainItemFreeContent
+                - _SecKeychainItemModifyAttributesAndData
                 - _SecTaskCopySigningIdentifier
                 - _SecTaskCopyValueForEntitlement
                 - _SecTaskCopyValuesForEntitlements
@@ -1282,11 +1416,14 @@ in
                 - _class_getName
                 - _class_getProperty
                 - _class_getSuperclass
+                - _class_isMetaClass
                 - _method_getImplementation
                 - _method_getName
                 - _objc_alloc
                 - _objc_allocateClassPair
                 - _objc_autorelease
+                - _objc_autoreleasePoolPop
+                - _objc_autoreleasePoolPush
                 - _objc_autoreleaseReturnValue
                 - _objc_copyWeak
                 - _objc_destroyWeak
