@@ -483,6 +483,7 @@ fn lifecycle_construction_failure_quarantines_installed_guard() {
 
 struct FakeFreshLifecycle {
     order: Arc<Mutex<Vec<&'static str>>>,
+    promotion_observations: Option<Arc<Mutex<Vec<bool>>>>,
     cleanup_error: bool,
     pending: Vec<crucible_qemu::QemuNodeSelectablePendingRequest>,
     replies: Arc<Mutex<Vec<crucible_protocol::SelectionReply>>>,
@@ -490,6 +491,19 @@ struct FakeFreshLifecycle {
 }
 
 impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
+    fn enable_signal_fault_campaign_promotion(&mut self) {
+        self.order
+            .lock()
+            .expect("fresh lifecycle order")
+            .push("promotion");
+        if let Some(observations) = &self.promotion_observations {
+            observations
+                .lock()
+                .expect("promotion observations")
+                .push(true);
+        }
+    }
+
     fn drive_quantum(
         &mut self,
         request: crucible::QuantumRequest,
@@ -632,7 +646,40 @@ impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
             .push("begin");
         Ok(FakeFreshLifecycle {
             order: Arc::clone(&self.order),
+            promotion_observations: None,
             cleanup_error: self.cleanup_error,
+            pending: Vec::new(),
+            replies: Arc::new(Mutex::new(Vec::new())),
+            signal_fault_branches: signal_fault_replay.branches().iter().cloned().collect(),
+        })
+    }
+}
+
+struct PromotionRecordingFreshLifecycleFactory {
+    order: Arc<Mutex<Vec<&'static str>>>,
+    observed: Arc<Mutex<Vec<bool>>>,
+}
+
+impl QemuFreshAttemptLifecycleFactory for PromotionRecordingFreshLifecycleFactory {
+    type Lifecycle = FakeFreshLifecycle;
+    type Error = &'static str;
+
+    fn start_fresh_lifecycle(
+        &mut self,
+        _scenario: &ScenarioDef,
+        _source: &crucible::ScenarioDefForm,
+        _start: &Configuration,
+        signal_fault_replay: &crucible::SignalFaultCampaignReplayPlan,
+        _context: &AttemptExecutionContext,
+    ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
+        self.order
+            .lock()
+            .expect("fresh lifecycle order")
+            .push("begin");
+        Ok(FakeFreshLifecycle {
+            order: Arc::clone(&self.order),
+            promotion_observations: Some(Arc::clone(&self.observed)),
+            cleanup_error: false,
             pending: Vec::new(),
             replies: Arc::new(Mutex::new(Vec::new())),
             signal_fault_branches: signal_fault_replay.branches().iter().cloned().collect(),
@@ -649,6 +696,10 @@ struct FakeGenesisCheckpointLifecycle {
 }
 
 impl QemuFreshAttemptLifecycleOwner for FakeGenesisCheckpointLifecycle {
+    fn enable_signal_fault_campaign_promotion(&mut self) {
+        panic!("fresh genesis capture must not enable signal-fault promotion");
+    }
+
     fn drive_quantum(
         &mut self,
         _request: crucible::QuantumRequest,
@@ -957,6 +1008,74 @@ fn fresh_runner_captures_a_sticky_checkpoint_before_shutdown_and_seal() {
         outcome.product(),
         AttemptExecutionProduct::ExactCheckpoint(_)
     ));
+}
+
+#[test]
+fn fresh_runner_opts_only_next_choice_attempts_into_live_signal_promotion() {
+    for (stop, expected) in [
+        (StopCondition::Terminal, false),
+        (StopCondition::NextChoice, true),
+    ] {
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let mut runner = QemuFreshExecutionRunner::new(
+            PromotionRecordingFreshLifecycleFactory {
+                order: Arc::clone(&order),
+                observed: Arc::clone(&observed),
+            },
+            FakeFreshDriver {
+                order,
+                failure: None,
+            },
+        );
+
+        runner
+            .execute(&fresh_runner_input_for_stop(stop), &fresh_runner_context())
+            .expect("fresh runner promotion admission");
+
+        let observed = observed.lock().expect("promotion observations");
+        if expected {
+            assert_eq!(observed.as_slice(), [true]);
+        } else {
+            assert!(observed.is_empty());
+        }
+    }
+}
+
+#[test]
+fn fresh_runner_enables_live_signal_promotion_after_start_materialization() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        PromotionRecordingFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            observed: Arc::clone(&observed),
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let input = non_genesis_fresh_runner_input_with_decisions_for_stop(
+        vec![Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
+            value: 7,
+        })],
+        StopCondition::NextChoice,
+    );
+
+    runner
+        .execute(&input, &fresh_runner_context())
+        .expect("fresh runner should activate promotion after replay");
+
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "replay", "promotion", "drive", "shutdown", "seal"]
+    );
+    assert_eq!(
+        observed.lock().expect("promotion observations").as_slice(),
+        [true]
+    );
 }
 
 #[test]
@@ -1359,6 +1478,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
     let replies = Arc::new(Mutex::new(Vec::new()));
     let mut lifecycle = FakeFreshLifecycle {
         order: Arc::new(Mutex::new(Vec::new())),
+        promotion_observations: None,
         cleanup_error: false,
         pending: vec![
             crucible_qemu::QemuNodeSelectablePendingRequest::from_test_parts(node, pending),
@@ -1624,6 +1744,10 @@ fn production_lifecycle_resource_admission_keeps_retry_and_cancel_classes() {
 }
 
 fn fresh_runner_input() -> CrucibleAttemptExecution {
+    fresh_runner_input_for_stop(StopCondition::Terminal)
+}
+
+fn fresh_runner_input_for_stop(stop: StopCondition) -> CrucibleAttemptExecution {
     let scenario = crucible::crash_restart_scenario()
         .expect("built-in scenario")
         .scenario;
@@ -1664,7 +1788,7 @@ fn fresh_runner_input() -> CrucibleAttemptExecution {
             configuration: configuration_content,
         },
         path.id().expect("branch path id"),
-        StopCondition::Terminal,
+        stop,
     )
     .expect("discovery attempt");
 
@@ -1690,6 +1814,13 @@ fn non_genesis_fresh_runner_input_with_decision(decision: Decision) -> CrucibleA
 
 fn non_genesis_fresh_runner_input_with_decisions(
     decisions: Vec<Decision>,
+) -> CrucibleAttemptExecution {
+    non_genesis_fresh_runner_input_with_decisions_for_stop(decisions, StopCondition::Terminal)
+}
+
+fn non_genesis_fresh_runner_input_with_decisions_for_stop(
+    decisions: Vec<Decision>,
+    stop: StopCondition,
 ) -> CrucibleAttemptExecution {
     let input = fresh_runner_input();
     let scenario = input.scenario().clone();
@@ -1719,7 +1850,7 @@ fn non_genesis_fresh_runner_input_with_decisions(
             configuration: configuration_content,
         },
         path.id().expect("branch path id"),
-        StopCondition::Terminal,
+        stop,
     )
     .expect("non-genesis discovery attempt");
 

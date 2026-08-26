@@ -1698,6 +1698,15 @@ execution, the frontier is not retained in the later observation and MUST NOT
 be re-emitted from scheduler history. An already admitted replay branch at that
 boundary is injected instead of being rediscovered.
 
+The fresh executor MUST enable this live-promotion mode only for an exact
+`NextChoice` attempt, and only after the admitted start configuration has been
+materialized exactly. Frontiers encountered while materializing that start
+remain replay-only evidence and MUST NOT pause or publish retrospectively.
+Terminal, marker, time, and event-count attempts MUST NOT pause merely because
+an authored finite signal-search frontier was recorded. Their scheduler may
+retain that frontier as replay evidence, but it grants no campaign discovery or
+publication authority.
+
 An execution with pending promoted branches is not exact-checkpoint-ready.
 Fresh materialization consumes the complete plan before the modeled driver may
 request capture. A process restart discards the process-local plan and rebuilds

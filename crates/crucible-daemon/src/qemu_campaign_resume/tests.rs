@@ -43,6 +43,10 @@ struct FakeResumeLifecycle {
 }
 
 impl QemuFreshAttemptLifecycleOwner for FakeResumeLifecycle {
+    fn enable_signal_fault_campaign_promotion(&mut self) {
+        panic!("exact resume tests must not use the fresh-attempt promotion gate");
+    }
+
     fn drive_quantum(
         &mut self,
         _request: crucible::QuantumRequest,
