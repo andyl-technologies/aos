@@ -51,7 +51,7 @@
         exec_link=true
         for arg in "$@"; do
           case "$arg" in
-            -c|-S|-E) linking=false ;;
+            -c|-S|-E|-fsyntax-only) linking=false ;;
             -dynamiclib|-shared|-bundle|-r|--relocatable|-nostdlib|-nostartfiles|-ffreestanding) exec_link=false ;;
           esac
         done
@@ -110,30 +110,34 @@
           fi
         fi
 
+        toolchain_ldflags=""
         nix_ldflags=""
-        if [ "$linking" = true ] && [ -n "''${NIX_LDFLAGS:-}" ]; then
+        if [ "$linking" = true ]; then
+          toolchain_ldflags="-fuse-ld=lld ${runtimeLinkerFlags}"
+
           # mkDerivation publishes ELF and Mach-O dependency search flags
           # through one variable.  ld64 has no -rpath-link equivalent; its
           # normal -rpath entries already express the target runtime closure.
-          for flag in $NIX_LDFLAGS; do
-            case "$flag" in
-              -Wl,-rpath-link,*) ;;
-              *) nix_ldflags="$nix_ldflags $flag" ;;
-            esac
-          done
+          if [ -n "''${NIX_LDFLAGS:-}" ]; then
+            for flag in $NIX_LDFLAGS; do
+              case "$flag" in
+                -Wl,-rpath-link,*) ;;
+                *) nix_ldflags="$nix_ldflags $flag" ;;
+              esac
+            done
+          fi
         fi
 
         exec ${llvm}/bin/clang \
           --target=${targetTriple} \
           -isysroot ${sdk} \
           -mmacosx-version-min=${deploymentTarget} \
-          -fuse-ld=lld \
           ${runtimeCompilerFlags} \
           $hardening_cflags \
           "$@" \
           $hardening_post \
           $hardening_ldflags \
-          ${runtimeLinkerFlags} \
+          $toolchain_ldflags \
           $nix_ldflags
         WRAPPER_EOF
         ${chmod} +x "$out/bin/clang"
@@ -144,7 +148,10 @@
         # The Linux-hosted LLVM contains its own native libc++ headers.  Keep
         # include_next from falling through the target runtime into that
         # second C++ tree instead of the Darwin SDK's C headers.
-        exec "$(${dirname} "$0")/clang" ${cxxCompilerFlags} -stdlib=libc++ "$@"
+        # Keep Clang in its C++ driver mode even when the link step contains
+        # only precompiled object files; language inference cannot recover the
+        # required libc++/libc++abi link libraries from an object suffix.
+        exec "$(${dirname} "$0")/clang" --driver-mode=g++ ${cxxCompilerFlags} -stdlib=libc++ "$@"
         WRAPPER_EOF
         ${chmod} +x "$out/bin/clang++"
 
