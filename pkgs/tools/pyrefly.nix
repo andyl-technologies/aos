@@ -5,6 +5,7 @@
   fetchCargoVendor,
   fakeHash,
   jemalloc,
+  stdenv,
 }: let
   version = "0.64.0";
 
@@ -26,14 +27,29 @@
           if p.name == "configure"
           then {
             name = "configure";
-            script = ''
-              ./configure \
-                --prefix=$out \
-                --enable-shared \
-                --enable-static \
-                --with-private-namespace=_rjem_ \
-                --with-jemalloc-prefix=_rjem_
-            '';
+            # jemalloc links its C++ shim through CC and otherwise leaves the
+            # Darwin libc++ ABI symbols unresolved.
+            script =
+              if stdenv.hostPlatform.isDarwin
+              then ''
+                export LDFLAGS="-lc++ -lc++abi -lunwind"
+                ./configure \
+                  --prefix=$out \
+                  --build=${stdenv.buildPlatform.config} \
+                  --host=${stdenv.hostPlatform.config} \
+                  --enable-shared \
+                  --enable-static \
+                  --with-private-namespace=_rjem_ \
+                  --with-jemalloc-prefix=_rjem_
+              ''
+              else ''
+                ./configure \
+                  --prefix=$out \
+                  --enable-shared \
+                  --enable-static \
+                  --with-private-namespace=_rjem_ \
+                  --with-jemalloc-prefix=_rjem_
+              '';
           }
           else p
       )
