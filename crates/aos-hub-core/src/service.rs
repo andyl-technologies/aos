@@ -2416,7 +2416,8 @@ pub struct RpcService {
     pub jwt_keys: JwtKeys,
     /// Externally reachable base URL, used to build the canonical upload URL.
     pub external_url: String,
-    /// Public base URL exposing the instance-default storage binding directly.
+    /// Public base URL exposing canonical-slug placements on the
+    /// instance-default storage binding directly.
     ///
     /// When configured, public registries on a reconciled complete placement
     /// inherit a canonical Git URL from this origin unless an explicit Git
@@ -16287,6 +16288,42 @@ impl RpcService {
             req.hash_range.as_ref(),
         )?;
         let binding_id = self.topology_binding_id(org_id, &req.binding_id).await?;
+        let mut warnings = Vec::new();
+        if let SurfaceTarget::Registry(registry_id) = surface {
+            let binding = self
+                .db
+                .binding(binding_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("binding"))?;
+            let registry = self
+                .db
+                .registry_by_id(registry_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("registry"))?;
+            if binding.is_instance_default
+                && registry.visibility == "public"
+                && req.kind == "complete"
+                && req.desired_read_enabled.unwrap_or(false)
+                && (binding
+                    .object_prefix
+                    .as_deref()
+                    .is_some_and(|prefix| !prefix.is_empty())
+                    || req.prefix.trim_matches('/') != registry.slug)
+            {
+                warnings.push(format!(
+                    "default public delivery remains unavailable because the binding-root-relative prefix '{}' does not equal canonical slug '{}'",
+                    [binding.object_prefix.as_deref().unwrap_or(""), &req.prefix]
+                        .into_iter()
+                        .map(|part| part.trim_matches('/'))
+                        .filter(|part| !part.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                    registry.slug
+                ));
+            }
+        }
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
         let (registry_id, cache_id) = Self::topology_surface_ids(surface);
         let input = PlacementCreatePlanInput {
@@ -16309,7 +16346,7 @@ impl RpcService {
                 "create placement '{}' without write authority",
                 input.request.name
             )],
-            Vec::new(),
+            warnings,
             Some(confirmation_hash),
         )
         .await
@@ -22256,8 +22293,9 @@ impl RpcService {
     /// The consumer-facing base URL for a registry's git surface.
     ///
     /// An explicit canonical Git route is authoritative. Without one, a public
-    /// registry on a complete reconciled instance-default placement derives
-    /// its URL from the configured public storage origin.
+    /// registry on a complete reconciled instance-default placement whose
+    /// prefix equals its canonical slug derives its URL from the configured
+    /// public storage origin.
     ///
     /// # Errors
     ///
@@ -22301,12 +22339,13 @@ impl RpcService {
         }
         let Some(path) = self
             .db
-            .default_public_delivery_path(SurfaceTarget::Registry(registry.id))
+            .default_public_slug_delivery_path(SurfaceTarget::Registry(registry.id), &registry.slug)
             .await
             .map_err(RpcError::internal)?
         else {
             return Err(RpcError::FailedPrecondition(
-                "registry has no published complete placement on default storage".to_owned(),
+                "registry has no published complete canonical-slug placement on default storage"
+                    .to_owned(),
             ));
         };
 
@@ -36025,7 +36064,7 @@ mod cache_upload_tests {
                 surface: SurfaceTarget::Registry(registry_id),
                 name: "primary".into(),
                 binding_id,
-                prefix: "registries/registry-stable-id".into(),
+                prefix: "automatic/main".into(),
                 kind: "complete".into(),
                 desired_state: "active".into(),
                 hash_range: None,
@@ -36044,8 +36083,49 @@ mod cache_upload_tests {
             .with_default_public_delivery_url("https://cdn.example.test/storage-root".into());
         assert_eq!(
             service.registry_consumer_url(&registry).await.unwrap(),
-            "https://cdn.example.test/storage-root/registries/registry-stable-id/"
+            "https://cdn.example.test/storage-root/automatic/main/"
         );
+    }
+
+    #[tokio::test]
+    async fn public_registry_does_not_advertise_an_opaque_default_placement() {
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let binding_id = db
+            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .await
+            .unwrap()
+            .id;
+        let org_id = db.create_org("automatic", "Automatic").await.unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "main", "public", &[], false)
+            .await
+            .unwrap();
+        let placement = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface: SurfaceTarget::Registry(registry_id),
+                name: "primary".into(),
+                binding_id,
+                prefix: "registries/100960088f5b423a93e73b1bcc4082fc".into(),
+                kind: "complete".into(),
+                desired_state: "active".into(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+        db.observe_surface_placement(placement.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+
+        let service = service.with_default_public_delivery_url("https://cdn.example.test".into());
+        assert!(matches!(
+            service.registry_consumer_url(&registry).await,
+            Err(RpcError::FailedPrecondition(message))
+                if message.contains("canonical-slug placement")
+        ));
     }
 
     #[tokio::test]

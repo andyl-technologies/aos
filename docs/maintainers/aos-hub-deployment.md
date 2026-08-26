@@ -124,7 +124,7 @@ Confirm that the shell contains the staging runtime values, then deploy:
   --deployment-id "$deployment_id" \
   --database-instance hub-v2 \
   --rate-limit-namespace-base 2000 \
-  --disable-delivery-attestation \
+  --email-from noreply+aos@send.andyl.org \
   --route-reservation-keys-file "$keyring"
 ```
 
@@ -142,9 +142,10 @@ Connect
 Cloudflare R2 custom-domain UI or its provider API, then pass that origin as
 `--default-public-delivery-url` on every install and deploy. Every public
 registry with a reconciled complete placement on the instance-default binding
-then derives its canonical Git URL from that placement automatically. The
-policy is evaluated continuously, so it covers existing registries, new
-registries, and later placement changes without per-registry bootstrap work.
+whose object prefix exactly equals its canonical Hub slug then derives its Git
+URL as `<origin>/<slug>/`. The policy is evaluated continuously, but fails
+closed for arbitrary or opaque placement prefixes instead of exposing physical
+storage identity to clients.
 
 Use explicit domains, endpoints, gateways, routes, and advertisements for
 private registries, non-default bindings, alternate access policies, or a
@@ -221,7 +222,7 @@ would remove it from the generated Worker configuration.
   --external-url https://aos.andyl.org \
   --deployment-id "$deployment_id" \
   --rate-limit-namespace-base 1000 \
-  --disable-delivery-attestation \
+  --email-from noreply+aos@send.andyl.org \
   --route-reservation-keys-file "$keyring"
 ```
 
