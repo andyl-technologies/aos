@@ -3,8 +3,10 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "0.29.2";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
     pname = "pkg-config";
@@ -31,13 +33,40 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --with-internal-glib \
-            --disable-host-tool
-        '';
+        script =
+          if isDarwinCross
+          then ''
+            # Bundled GLib discovers this by executing a target binary.
+            # Both supported Darwin architectures use downward-growing stacks.
+            export ac_cv_c_stack_direction=-1
+            export glib_cv_stack_grows=no
+            # Mach-O C symbols have a leading underscore. Darwin's bcopy is
+            # overlap-safe, and its reentrant passwd/group interfaces use the
+            # POSIX signatures; bundled GLib otherwise executes each probe.
+            export glib_cv_uscore=yes
+            export glib_cv_working_bcopy=yes
+            export ac_cv_func_posix_getpwuid_r=yes
+            export ac_cv_func_nonposix_getpwuid_r=no
+            export ac_cv_func_posix_getgrgid_r=yes
+            export ac_cv_func_nonposix_getgrgid_r=no
+            # pkg-config 0.29 embeds GLib 2.38, whose atomic pointer macros
+            # intentionally pass integer-sized masks through GCC builtins.
+            # Modern Clang diagnoses that historical extension as an error.
+            export CFLAGS="''${CFLAGS:-} -Wno-int-conversion"
+
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --with-internal-glib \
+              --disable-host-tool
+          ''
+          else ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --with-internal-glib \
+              --disable-host-tool
+          '';
       }
       {
         name = "build";
