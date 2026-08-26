@@ -1057,8 +1057,19 @@ most 1,024 attempts per executor step, and caps admitted worker slots at 256.
 Termination of any attached runtime stops the shared service and joins the
 complete bounded set before repository ownership is released. The packaged
 local QEMU executor option remains campaign-specific and therefore accepts
-exactly one attachment. Enumeration, dynamic attachment, and a shared
-multi-campaign packaged-executor allocator remain future work.
+exactly one attachment. The embedded deployment owner may also retain a weak
+post-bind attachment capability. It exposes neither repository nor component-
+authority access, rejects read-only or authority-free profiles before executor
+I/O, and reserves a unique campaign plus one of the same 256 attachment slots
+before bounded executor/repository preparation. Preparation runs without the
+registry mutex; installation succeeds only while the exact service incarnation
+still accepts attachments. Shutdown closes admission, waits for every bounded
+preparation already in flight, requests cancellation for every installed
+runtime before joining any one, and retains the repository lock through the
+final join. A caller must supply an already connected and authenticated local
+executor stream. Public operator transport/CLI attachment, repository-wide
+automatic campaign discovery, and a shared multi-campaign packaged-executor
+allocator remain future work.
 
 SIGINT,
 SIGTERM, lifecycle-server failure, or CampaignService failure shuts down both

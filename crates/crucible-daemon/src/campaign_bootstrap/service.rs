@@ -5,9 +5,6 @@ use std::thread::{self, JoinHandle};
 
 use super::*;
 
-type RuntimeMonitor = JoinHandle<()>;
-type RuntimeMonitorSpawnResult = Result<Vec<RuntimeMonitor>, (io::Error, Vec<RuntimeMonitor>)>;
-
 impl CampaignLocalService {
     /// Returns a cloneable sticky shutdown authority.
     #[must_use]
@@ -30,70 +27,30 @@ impl CampaignLocalService {
     pub fn serve(self) -> Result<CampaignLoopbackServerReport, CampaignLocalServiceError> {
         let Self {
             server,
-            runtimes,
+            runtime_registry,
             executor,
-            _state: state,
         } = self;
-        let runtime_monitors = match spawn_runtime_monitors(&server, &runtimes) {
-            Ok(monitors) => monitors,
-            Err((source, monitors)) => {
-                let runtime_result = shutdown_runtimes(runtimes);
-                let executor_result = shutdown_executor(executor);
-                let monitor_result = join_runtime_monitors(monitors);
-                drop(state);
-                executor_result?;
-                runtime_result?;
-                monitor_result?;
-                return Err(CampaignLocalServiceError::RuntimeMonitorSpawn { source });
-            }
-        };
         let executor_monitor = match spawn_executor_monitor(&server, executor.as_ref()) {
             Ok(monitor) => monitor,
             Err(source) => {
-                let runtime_result = shutdown_runtimes(runtimes);
+                let runtime_result = runtime_registry.close_and_join();
                 let executor_result = shutdown_executor(executor);
-                let monitor_result = join_runtime_monitors(runtime_monitors);
-                drop(state);
                 executor_result?;
                 runtime_result?;
-                monitor_result?;
                 return Err(CampaignLocalServiceError::PackagedExecutorMonitorSpawn { source });
             }
         };
 
         let result = server.serve().map_err(CampaignLocalServiceError::Listener);
-        let runtime_result = shutdown_runtimes(runtimes);
+        let runtime_result = runtime_registry.close_and_join();
         let executor_result = shutdown_executor(executor);
-        let runtime_monitor_result = join_runtime_monitors(runtime_monitors);
         let executor_monitor_result = join_executor_monitor(executor_monitor);
-        drop(state);
 
         executor_monitor_result?;
-        runtime_monitor_result?;
         executor_result?;
         runtime_result?;
         result
     }
-}
-
-fn spawn_runtime_monitors(
-    server: &CampaignLoopbackServer<UnixPeerCampaignPolicy, CampaignLocalAuthorizer>,
-    runtimes: &[AttachedCanonicalCampaignRuntime],
-) -> RuntimeMonitorSpawnResult {
-    let mut monitors = Vec::with_capacity(runtimes.len());
-    for (index, runtime) in runtimes.iter().enumerate() {
-        let completion = runtime.completion_handle();
-        let shutdown = server.shutdown_handle();
-        let name = format!("crucible-campaign-runtime-monitor-{index:03}");
-        match thread::Builder::new().name(name).spawn(move || {
-            completion.wait();
-            shutdown.shutdown();
-        }) {
-            Ok(monitor) => monitors.push(monitor),
-            Err(source) => return Err((source, monitors)),
-        }
-    }
-    Ok(monitors)
 }
 
 fn spawn_executor_monitor(
@@ -114,20 +71,6 @@ fn spawn_executor_monitor(
         .transpose()
 }
 
-fn shutdown_runtimes(
-    runtimes: Vec<AttachedCanonicalCampaignRuntime>,
-) -> Result<(), CampaignLocalServiceError> {
-    let mut first_error = None;
-    for runtime in runtimes {
-        if let Err(source) = runtime.shutdown_and_join()
-            && first_error.is_none()
-        {
-            first_error = Some(CampaignLocalServiceError::Runtime(source));
-        }
-    }
-    first_error.map_or(Ok(()), Err)
-}
-
 fn shutdown_executor(
     executor: Option<AttachedPackagedQemuExecutor>,
 ) -> Result<(), CampaignLocalServiceError> {
@@ -136,18 +79,6 @@ fn shutdown_executor(
         .transpose()
         .map(|_| ())
         .map_err(CampaignLocalServiceError::PackagedExecutorJoin)
-}
-
-fn join_runtime_monitors(monitors: Vec<RuntimeMonitor>) -> Result<(), CampaignLocalServiceError> {
-    let mut panicked = false;
-    for monitor in monitors {
-        panicked |= monitor.join().is_err();
-    }
-    if panicked {
-        Err(CampaignLocalServiceError::RuntimeMonitorPanicked)
-    } else {
-        Ok(())
-    }
 }
 
 fn join_executor_monitor(monitor: Option<JoinHandle<()>>) -> Result<(), CampaignLocalServiceError> {
