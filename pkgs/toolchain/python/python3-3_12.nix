@@ -4,9 +4,15 @@
   fetchurl,
   gnumake,
   pkg-config,
+  bzip2,
+  ncurses,
+  readline,
+  sqlite,
+  zstd,
   zlib,
   openssl,
   xz,
+  libffi,
   stdenv,
   buildPackages,
 }: let
@@ -48,11 +54,26 @@ in
         then [buildPackages.python3-3_12]
         else []
       );
-    runtimeDeps = [
-      zlib
-      openssl
-      xz
-    ];
+    runtimeDeps =
+      [
+        zlib
+        openssl
+        xz
+      ]
+      ++ (
+        if isDarwinCross
+        then [
+          bzip2
+          ncurses
+          readline
+          sqlite
+          zstd
+          # CPython 3.12 uses system libffi for _ctypes. Its historical
+          # --with-system-ffi switch is no longer recognized by configure.
+          libffi
+        ]
+        else []
+      );
     propagatedDeps = [];
 
     # CPython models PyTupleObject's variable-length ob_item storage as a
@@ -78,7 +99,31 @@ in
           ${
             if isDarwinCross
             then ''
-              export PYTHON_FOR_BUILD=${buildPackages.python3-3_12}/bin/python3
+              # Python 3.12 predates upstream's Darwin cross cases. Teach its
+              # generated configure script the same platform facts carried by
+              # current CPython without regenerating release artifacts.
+              sed -i '/^[[:space:]]*\*-\*-vxworks\*)$/i\
+              \    *-*-darwin*)\
+              \        ac_sys_system=Darwin\
+              \        ac_sys_release=20.0.0\
+              \        _host_cpu=$host_cpu\
+              \        ;;' configure
+              # The first cross-platform switch initializes the release after
+              # selecting ac_sys_system. Preserve Darwin's kernel release at
+              # that later assignment as current CPython does.
+              sed -i 's/^[[:space:]]*ac_sys_release=$/  ac_sys_release=20.0.0/' configure
+              # Target-runtime probes cannot execute on the Linux builder.
+              # Cache Darwin's documented results so IPv6, pthreads, PTYs,
+              # libffi complex values, and timezone support stay enabled.
+              export ac_cv_buggy_getaddrinfo=no
+              export ac_cv_file__dev_ptmx=yes
+              export ac_cv_file__dev_ptc=no
+              export ac_cv_pthread_is_default=yes
+              export ac_cv_kthread=no
+              export ac_cv_pthread=no
+              export ac_cv_ffi_complex_double_supported=yes
+              export ac_cv_pthread_system_supported=yes
+              export ac_cv_working_tzset=yes
             ''
             else ""
           }
@@ -86,7 +131,11 @@ in
             $configureFlags \
             --prefix=$out \
             --enable-shared \
-            --with-system-ffi=no \
+            ${
+            if isDarwinCross
+            then ""
+            else "--with-system-ffi=no"
+          } \
             --with-system-expat=no \
             --with-ensurepip=no \
             --without-static-libpython \
@@ -105,8 +154,10 @@ in
           ${
             if isDarwinCross
             then ''
-              make -j$NIX_BUILD_CORES \
-                PYTHON_FOR_BUILD=${buildPackages.python3-3_12}/bin/python3
+              # Configure embeds _PYTHON_HOST_PLATFORM and target sysconfig
+              # paths in PYTHON_FOR_BUILD. Keep that complete command so
+              # native Python validates files without importing Darwin modules.
+              make -j$NIX_BUILD_CORES
             ''
             else "make -j$NIX_BUILD_CORES"
           }
@@ -118,8 +169,12 @@ in
           ${
             if isDarwinCross
             then ''
-              make install \
-                PYTHON_FOR_BUILD=${buildPackages.python3-3_12}/bin/python3
+              make install
+              sed -i "s|$PWD|.|g" \
+                "$out/lib/python3.12/_sysconfigdata__darwin_darwin.py" \
+                "$out/lib/python3.12/config-3.12-darwin/Makefile"
+              find "$out/lib/python3.12/__pycache__" \
+                -name '_sysconfigdata__darwin_darwin.*.pyc' -delete
             ''
             else "make install"
           }
