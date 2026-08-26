@@ -56,7 +56,7 @@
         exec_link=true
         for arg in "$@"; do
           case "$arg" in
-            -c|-S|-E|-fsyntax-only)
+            -c|-S|-E|-M|-MM|-fsyntax-only)
               compiling=true
               linking=false
               ;;
@@ -172,7 +172,7 @@
         linking=true
         for arg in "$@"; do
           case "$arg" in
-            -c|-S|-E|-fsyntax-only) linking=false ;;
+            -c|-S|-E|-M|-MM|-fsyntax-only) linking=false ;;
           esac
         done
 
