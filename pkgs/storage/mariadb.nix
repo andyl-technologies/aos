@@ -59,6 +59,8 @@
           buildPackages.pkg-config
           buildPackages.perl
           buildPackages.python3
+          buildPackages.ncurses
+          buildPackages.openssl
         ];
         runtimeDeps = [];
         propagatedDeps = [];
@@ -78,14 +80,18 @@
                 -DCMAKE_INSTALL_PREFIX=$out \
                 -DBUILD_CONFIG=mysql_release \
                 -DFEATURE_SET=small \
-                -DWITH_SSL=bundled \
+                -DWITH_SSL=system \
+                -DOPENSSL_ROOT_DIR=${buildPackages.openssl} \
                 -DWITH_ZLIB=bundled \
                 -DWITH_PCRE=bundled \
+                -DCURSES_LIBRARY=${buildPackages.ncurses}/lib/libncursesw.so \
+                -DCURSES_INCLUDE_PATH=${buildPackages.ncurses}/include \
                 -DWITH_JEMALLOC:STRING=no \
                 -DWITH_NUMA:BOOL=OFF \
                 -DIGNORE_AIO_CHECK:BOOL=ON \
                 -DWITH_SYSTEMD:STRING=no \
                 -DWITH_UNIT_TESTS:BOOL=OFF \
+                -DPLUGIN_AUTH_PAM:STRING=NO \
                 -DAWS_SDK_EXTERNAL_PROJECT:BOOL=OFF
             '';
           }
@@ -106,7 +112,8 @@
                 generator_path=$(find build -type f -name "$generator" -perm -u+x -print -quit)
                 test -n "$generator_path"
                 cp "$generator_path" "$out/bin/$generator"
-                sed -i "s|$generator_path|$out/bin/$generator|g" \
+                sed -i \
+                  "s|^  IMPORTED_LOCATION_RELWITHDEBINFO \".*/$generator\"$|  IMPORTED_LOCATION_RELWITHDEBINFO \"$out/bin/$generator\"|" \
                   import_executables.cmake
               done
               cp import_executables.cmake "$out/import_executables.cmake"
