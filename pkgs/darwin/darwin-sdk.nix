@@ -503,6 +503,7 @@ in
                 - _CFDictionaryGetValueIfPresent
                 - _CFDictionarySetValue
                 - _CFGetTypeID
+                - _CFLocaleCreateCanonicalLanguageIdentifierFromString
                 - _CFNumberCreate
                 - _CFNumberGetTypeID
                 - _CFNumberGetValue

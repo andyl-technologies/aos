@@ -49,6 +49,7 @@
               '#include <SystemConfiguration/SystemConfiguration.h>' \
               'int main(void) {' \
               '  CFStringRef label = CFSTR("aos Darwin SDK");' \
+              '  CFStringRef canonicalLanguage = CFLocaleCreateCanonicalLanguageIdentifierFromString(kCFAllocatorDefault, label);' \
               '  CFIndex maximum = CFStringGetMaximumSizeForEncoding(CFStringGetLength(label), kCFStringEncodingUTF8);' \
               '  CFTimeZoneRef zone = CFTimeZoneCopyDefault();' \
               '  CFStringRef zoneName = zone == NULL ? NULL : CFTimeZoneGetName(zone);' \
@@ -76,7 +77,8 @@
               '  if (pathURL != NULL) CFRelease(pathURL);' \
               '  if (path != NULL) CFRelease(path);' \
               '  if (zone != NULL) CFRelease(zone);' \
-              '  return label == NULL || maximum < 0 || zoneName == NULL || identifier == value || !represented || launchStatus == -1;' \
+              '  if (canonicalLanguage != NULL) CFRelease(canonicalLanguage);' \
+              '  return label == NULL || canonicalLanguage == NULL || maximum < 0 || zoneName == NULL || identifier == value || !represented || launchStatus == -1;' \
               '}' \
               > framework-smoke.c
             "$CC" framework-smoke.c \
