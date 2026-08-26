@@ -1867,6 +1867,21 @@ pub enum HubCacheRetentionCmd {
 
 #[derive(Subcommand)]
 pub enum HubCacheRootCmd {
+    /// List manual retention roots
+    List {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        cache: String,
+        #[command(flatten)]
+        pagination: HubPaginationArgs,
+    },
+    /// Show one manual retention root
+    Show {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        cache: String,
+        root_id: String,
+    },
     /// Create an indefinite or leased manual root
     Create {
         #[command(flatten)]

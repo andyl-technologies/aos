@@ -434,6 +434,145 @@ in
       ${pkgs.jq}/bin/jq -e '.data | type == "object"' \
         /tmp/surface-explain.json >/dev/null
 
+      echo '==> Exercise binary-cache, retention, lease, and population lifecycles'
+      reviewed cache-create cache create operations/build-cache \
+        --name 'Operations build cache' --visibility private \
+        --nix-priority 35 --compression zstd --mass-query enabled \
+        >/tmp/cache-create.json
+      hub_cli cache list --org operations --page-size 1 >/tmp/cache-list.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data | tostring | contains("operations/build-cache")' \
+        /tmp/cache-list.json >/dev/null
+      hub_cli cache show operations/build-cache >/tmp/cache-show.json
+      cache_version=$(resource_version /tmp/cache-show.json)
+      reviewed cache-update cache update operations/build-cache \
+        --name 'Operations production cache' --visibility internal \
+        --nix-priority 30 --compression xz --mass-query disabled \
+        --if-version "$cache_version" >/tmp/cache-update.json
+
+      reviewed cache-placement-create placement add \
+        cache:operations/build-cache primary \
+        --binding instance-default --prefix caches/operations-build \
+        --kind complete --desired-state active --read enabled \
+        >/tmp/cache-placement-create.json
+      cache_placement_version=$(resource_version /tmp/cache-placement-create.json)
+      reviewed cache-placement-scan placement scan \
+        cache:operations/build-cache primary --wait --timeout 2m \
+        --if-version "$cache_placement_version" \
+        >/tmp/cache-placement-scan.json
+      hub_cli placement show cache:operations/build-cache primary \
+        >/tmp/cache-placement-show.json
+      cache_placement_version=$(resource_version /tmp/cache-placement-show.json)
+      reviewed cache-placement-promote placement promote \
+        cache:operations/build-cache primary \
+        --if-version "$cache_placement_version" \
+        >/tmp/cache-placement-promote.json
+
+      expect_hub_error cache-integrate-unrouted 'canonical Nix-cache route is not ready' \
+        cache integrate operations/build-cache \
+        --registry operations/maintenance --use-for-clients \
+        --retain-current-catalog --retain-channel stable \
+        --retain-recent-releases 2 --retain-release 1.0.0 \
+        --retain-semver '>=1.0.0,<2.0.0' --populate best-effort \
+        --population-trigger manual
+      hub_cli cache integrate operations/build-cache \
+        --registry operations/maintenance --retain-current-catalog \
+        --retain-channel stable --retain-recent-releases 2 \
+        --retain-release 1.0.0 --retain-semver '>=1.0.0,<2.0.0' \
+        --populate best-effort --population-trigger manual
+      hub_cli cache integration list operations/build-cache --page-size 1 \
+        >/tmp/cache-integration-list-empty.json
+
+      reviewed cache-retention-set cache retention set operations/build-cache \
+        --registry operations/maintenance --current-catalog --channel stable \
+        --recent-releases 2 --release 1.0.0 --semver '>=1.0.0,<2.0.0' \
+        --removal-grace 1h --if-version absent \
+        >/tmp/cache-retention-set.json
+      retention_version=$(resource_version /tmp/cache-retention-set.json)
+      hub_cli cache retention list operations/build-cache --page-size 1 \
+        >/tmp/cache-retention-list.json
+      hub_cli cache retention roots operations/build-cache \
+        --registry operations/maintenance --page-size 1 \
+        >/tmp/cache-retention-roots.json
+      reviewed cache-retention-refresh cache retention refresh \
+        operations/build-cache --registry operations/maintenance \
+        --if-version "$retention_version" --wait --timeout 2m \
+        >/tmp/cache-retention-refresh.json
+      hub_cli cache gc policy show operations/build-cache \
+        >/tmp/cache-gc-policy-before-refresh-all.json
+      cache_gc_version=$(${pkgs.jq}/bin/jq -er \
+        '.data.generation.resource_version' \
+        /tmp/cache-gc-policy-before-refresh-all.json)
+      reviewed cache-retention-refresh-all cache retention refresh \
+        operations/build-cache --if-version "$cache_gc_version" \
+        --wait --timeout 2m >/tmp/cache-retention-refresh-all.json
+
+      cache_store_hash=00000000000000000000000000000000
+      reviewed cache-root-create cache root create operations/build-cache \
+        "$cache_store_hash" --reason 'production qualification lease' \
+        --lease-until 4102444800 \
+        >/tmp/cache-root-create.json
+      root_id=$(${pkgs.jq}/bin/jq -er \
+        '[.. | objects | .root_id? // empty][0]' /tmp/cache-root-create.json)
+      lease_id=$(${pkgs.jq}/bin/jq -er \
+        '[.. | objects | .lease_id? // empty][0]' /tmp/cache-root-create.json)
+      root_version=$(resource_version /tmp/cache-root-create.json)
+      hub_cli cache root list operations/build-cache --page-size 1 \
+        >/tmp/cache-root-list.json
+      hub_cli cache root show operations/build-cache "$root_id" \
+        >/tmp/cache-root-show.json
+      hub_cli cache retention explain operations/build-cache "$cache_store_hash" \
+        >/tmp/cache-retention-explain.json
+      reviewed cache-lease-renew cache lease renew operations/build-cache \
+        "$root_id" --expires 4102448400 --if-version "$root_version" \
+        >/tmp/cache-lease-renew.json
+      successor_lease_id=$(${pkgs.jq}/bin/jq -er \
+        '[.. | objects | .lease_id? // empty][0]' /tmp/cache-lease-renew.json)
+      test "$successor_lease_id" != "$lease_id"
+      hub_cli cache root show operations/build-cache "$root_id" \
+        >/tmp/cache-root-after-renew.json
+      successor_lease_version=$(resource_version /tmp/cache-root-after-renew.json)
+      reviewed cache-lease-revoke cache lease revoke operations/build-cache \
+        "$successor_lease_id" --if-version "$successor_lease_version" \
+        >/tmp/cache-lease-revoke.json
+      hub_cli cache root show operations/build-cache "$root_id" \
+        >/tmp/cache-root-after-revoke.json
+      revoked_lease_version=$(resource_version /tmp/cache-root-after-revoke.json)
+      reviewed cache-root-delete cache root delete operations/build-cache \
+        "$root_id" --if-version "$revoked_lease_version" \
+        >/tmp/cache-root-delete.json
+
+      reviewed cache-population-set cache population set operations/build-cache \
+        --registry operations/maintenance --trigger manual --best-effort \
+        --validation-gate presence --if-version absent \
+        >/tmp/cache-population-set.json
+      population_version=$(resource_version /tmp/cache-population-set.json)
+      hub_cli cache population list operations/build-cache --page-size 1 \
+        >/tmp/cache-population-list.json
+      hub_cli cache coverage show operations/build-cache \
+        --registry operations/maintenance >/tmp/cache-coverage-show.json
+      reviewed cache-population-run cache population run operations/build-cache \
+        --registry operations/maintenance --if-version "$population_version" \
+        >/tmp/cache-population-run.json
+      reviewed cache-coverage-validate cache coverage validate \
+        operations/build-cache --registry operations/maintenance \
+        --if-version "$population_version" \
+        >/tmp/cache-coverage-validate.json
+      reviewed cache-coverage-repair cache coverage repair \
+        operations/build-cache --registry operations/maintenance \
+        --if-version "$population_version" \
+        >/tmp/cache-coverage-repair.json
+      hub_cli cache integration list operations/build-cache \
+        --registry operations/maintenance >/tmp/cache-integration-list.json
+      hub_cli cache integration show operations/build-cache \
+        --registry operations/maintenance >/tmp/cache-integration-show.json
+      reviewed cache-population-remove cache population remove \
+        operations/build-cache --registry operations/maintenance \
+        --if-version "$population_version" >/tmp/cache-population-remove.json
+      reviewed cache-retention-remove cache retention remove \
+        operations/build-cache --registry operations/maintenance \
+        --if-version "$retention_version" >/tmp/cache-retention-remove.json
+
       echo '==> Exercise tenant inventory and ordinary reviewed CRUD'
       ${pkgs.aos}/bin/aos --json hub org show operations \
         --hub "$hub_url" --token "$token" >/tmp/org-show.json
