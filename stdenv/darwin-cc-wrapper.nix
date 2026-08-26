@@ -28,6 +28,10 @@
     if runtimes == null
     then ""
     else "-nostdinc++";
+  cxxRuntimeLinkerFlags =
+    if runtimes == null
+    then ""
+    else "-lc++abi -lunwind";
   runtimeLinkerFlags =
     if runtimes == null
     then ""
@@ -151,6 +155,16 @@
         # Keep Clang in its C++ driver mode even when the link step contains
         # only precompiled object files; language inference cannot recover the
         # required libc++/libc++abi link libraries from an object suffix.
+        linking=true
+        for arg in "$@"; do
+          case "$arg" in
+            -c|-S|-E|-fsyntax-only) linking=false ;;
+          esac
+        done
+
+        if [ "$linking" = true ]; then
+          exec "$(${dirname} "$0")/clang" --driver-mode=g++ ${cxxCompilerFlags} -stdlib=libc++ "$@" ${cxxRuntimeLinkerFlags}
+        fi
         exec "$(${dirname} "$0")/clang" --driver-mode=g++ ${cxxCompilerFlags} -stdlib=libc++ "$@"
         WRAPPER_EOF
         ${chmod} +x "$out/bin/clang++"
@@ -225,6 +239,28 @@
         WRAPPER_EOF
         ${chmod} +x "$out/bin/objdump"
         ${ln} -s objdump "$out/bin/${targetTriple}-objdump"
+
+        # CMake's Darwin platform module queries `sw_vers` even while it is
+        # running on the Linux build machine.  Without target metadata it
+        # assumes pre-10.5 macOS and removes modern @rpath support.  Supply the
+        # small, read-only surface build systems use as part of the cross SDK.
+        ${cat} > "$out/bin/sw_vers" <<'WRAPPER_EOF'
+        #!${shell}
+        set -eu
+
+        case "''${1:-}" in
+          -productName) printf '%s\n' 'macOS' ;;
+          -productVersion) printf '%s\n' '${deploymentTarget}' ;;
+          -buildVersion) printf '%s\n' 'AOS' ;;
+          "")
+            printf 'ProductName:\tmacOS\n'
+            printf 'ProductVersion:\t%s\n' '${deploymentTarget}'
+            printf 'BuildVersion:\tAOS\n'
+            ;;
+          *) exit 1 ;;
+        esac
+        WRAPPER_EOF
+        ${chmod} +x "$out/bin/sw_vers"
 
         for tool in lipo dwarfdump; do
           ${ln} -s "${llvm}/bin/llvm-$tool" "$out/bin/$tool"

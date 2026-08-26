@@ -83,6 +83,10 @@
       # rpaths (including LLVM's @rpath dylibs) remain available when the
       # configuration itself executes on Linux.
       "-DCMAKE_SHARED_LIBRARY_RUNTIME_C_FLAG=-Wl,-rpath,"
+      # Ninja cannot relink a Mach-O executable during installation.  Cross
+      # outputs cannot run from the build tree anyway, so create every target
+      # with its final install rpath from the start.
+      "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
       "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY"
     ];
 
