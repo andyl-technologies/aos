@@ -179,6 +179,7 @@ in
             "$out/usr/include/os" \
             "$out/usr/include/rpc" \
             "$out/usr/lib" \
+            "$out/System/Library/Frameworks/ApplicationServices.framework/Headers" \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Headers" \
             "$out/System/Library/Frameworks/CoreServices.framework" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/storage/ata" \
@@ -222,6 +223,14 @@ in
             "$libcRoot/include/utmp.h" \
             "$libcRoot/include/util.h" \
             "$out/usr/include/"
+          # Apple's Libc build runs util.h through unifdef before installing
+          # it.  Preserve the resulting legacy login-accounting declarations
+          # that OpenSSH still uses instead of publishing the raw source-only
+          # UNIFDEF_LEGACY_UTMP_APIS guards.
+          sed -i \
+            -e '/^#ifdef UNIFDEF_LEGACY_UTMP_APIS$/d' \
+            -e '/^#endif \/\* UNIFDEF_LEGACY_UTMP_APIS \*\/$/d' \
+            "$out/usr/include/util.h"
           cp \
             "$libinfoRoot/membership.subproj/membership.h" \
             "$libinfoRoot/membership.subproj/ntsid.h" \
@@ -539,6 +548,38 @@ in
           install-name: '/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices'
           current-version: 1228.0.0
           compatibility-version: 1.0.0
+          exports:
+            - targets: [ x86_64-macos, arm64-macos ]
+              symbols: [ _LSOpenCFURLRef ]
+          ...
+          EOF
+
+          # CMake's Darwin Xcode generator includes the public
+          # ApplicationServices umbrella and calls LaunchServices through
+          # CoreServices. Keep that command-line development surface in the
+          # SDK without importing a binary Apple framework.
+          cat > "$out/System/Library/Frameworks/ApplicationServices.framework/Headers/ApplicationServices.h" <<'EOF'
+          #ifndef __APPLICATIONSERVICES__
+          #define __APPLICATIONSERVICES__
+
+          #include <CoreFoundation/CoreFoundation.h>
+
+          CF_EXTERN_C_BEGIN
+          CF_EXPORT OSStatus LSOpenCFURLRef(CFURLRef inURL, CFURLRef *outLaunchedURL);
+          CF_EXTERN_C_END
+
+          #endif
+          EOF
+          cat > "$out/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices.tbd" <<'EOF'
+          --- !tapi-tbd
+          tbd-version: 4
+          targets: [ x86_64-macos, arm64-macos ]
+          install-name: '/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices'
+          current-version: 64.0.0
+          compatibility-version: 1.0.0
+          exports:
+            - targets: [ x86_64-macos, arm64-macos ]
+              symbols: [ _LSOpenCFURLRef ]
           ...
           EOF
 

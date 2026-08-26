@@ -38,6 +38,7 @@
             grep -Fq 'smoke.o: smoke.c' smoke.d
 
             printf '%s\n' \
+              '#include <ApplicationServices/ApplicationServices.h>' \
               '#include <CoreFoundation/CoreFoundation.h>' \
               '#include <netinet/tcp_fsm.h>' \
               '#include <netinet/tcp_timer.h>' \
@@ -57,12 +58,13 @@
               '  CFTypeRef value = bundle == NULL ? NULL : CFBundleGetValueForInfoDictionaryKey(bundle, CFSTR("CFBundleIdentifier"));' \
               '  CFStringRef typeDescription = CFCopyTypeIDDescription(CFStringGetTypeID());' \
               '  CFDictionaryRef proxies = SCDynamicStoreCopyProxies(NULL);' \
+              '  OSStatus launchStatus = LSOpenCFURLRef(url, NULL);' \
               '  if (proxies != NULL) CFRelease(proxies);' \
               '  if (typeDescription != NULL) CFRelease(typeDescription);' \
               '  if (bundle != NULL) CFRelease(bundle);' \
               '  if (url != NULL) CFRelease(url);' \
               '  if (zone != NULL) CFRelease(zone);' \
-              '  return label == NULL || maximum < 0 || zoneName == NULL || identifier == value;' \
+              '  return label == NULL || maximum < 0 || zoneName == NULL || identifier == value || launchStatus == -1;' \
               '}' \
               > framework-smoke.c
             "$CC" framework-smoke.c \
@@ -96,6 +98,8 @@
               '  (const void *)&mach_vm_region,' \
               '  (const void *)&openpty,' \
               '  (const void *)&login_tty,' \
+              '  (const void *)&login,' \
+              '  (const void *)&logout,' \
               '  (const void *)&forkpty,' \
               '  (const void *)&sendfile,' \
               '  (const void *)&readpassphrase,' \
