@@ -33466,6 +33466,11 @@ impl RpcService {
             return Err(RpcError::invalid("idempotency_key is required"));
         }
         let version = parse_resource_version(&req.expected_resource_version, 0)?;
+        self.db
+            .object_deletion_job(cache.id, &req.job_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("cache GC deletion job"))?;
         let job = self
             .db
             .retry_cache_gc_deletion_job(

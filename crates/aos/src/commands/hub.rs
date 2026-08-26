@@ -2900,13 +2900,25 @@ async fn cache_gc_plan(printer: &Printer, command: &HubCacheGcPlanCmd) -> Result
     match command {
         HubCacheGcPlanCmd::Create { access, cache } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
+            let current: hub_types::GetCacheGcPolicyResponse = client
+                .call_topology(
+                    HubTopologyMethod::GetCacheGcPolicy,
+                    &hub_types::GetCacheGcPolicyRequest {
+                        cache_id: cache.clone(),
+                    },
+                )
+                .await?;
+            let expected_resource_version = current
+                .generation
+                .context("the Hub returned cache GC policy without a generation")?
+                .resource_version;
             topology_read::<_, hub_types::TopologyPlanResponse>(
                 printer,
                 &client,
                 HubTopologyMethod::PlanRunCacheGc,
                 &hub_types::PlanRunCacheGcRequest {
                     cache_id: cache.clone(),
-                    expected_resource_version: String::new(),
+                    expected_resource_version,
                     idempotency_key: new_idempotency_key(),
                 },
             )
@@ -2941,6 +2953,18 @@ async fn cache_gc_first_sweep(printer: &Printer, command: &HubCacheGcFirstSweepC
             idempotency_key,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
+            let current: hub_types::GetCacheGcPolicyResponse = client
+                .call_topology(
+                    HubTopologyMethod::GetCacheGcPolicy,
+                    &hub_types::GetCacheGcPolicyRequest {
+                        cache_id: cache.clone(),
+                    },
+                )
+                .await?;
+            let expected_resource_version = current
+                .generation
+                .context("the Hub returned cache GC policy without a generation")?
+                .resource_version;
             topology_read::<_, hub_types::TopologyPlanResponse>(
                 printer,
                 &client,
@@ -2948,7 +2972,7 @@ async fn cache_gc_first_sweep(printer: &Printer, command: &HubCacheGcFirstSweepC
                 &hub_types::PlanAcknowledgeCacheGcFirstSweepRequest {
                     cache_id: cache.clone(),
                     gc_plan_id: gc_plan_id.clone(),
-                    expected_resource_version: String::new(),
+                    expected_resource_version,
                     idempotency_key: idempotency_key.clone(),
                 },
             )
