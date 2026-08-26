@@ -582,7 +582,10 @@ in {
       fi
 
       if $APR publish /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dummy-1.0.0 \
-        --name dummy --version 1.0.0 --registry no-clone-reg --no-commit \
+        --name dummy --version 1.0.0 \
+        --description "No-clone publish diagnostic fixture" \
+        --license MIT --maintainer test@test \
+        --registry no-clone-reg --no-commit \
         > /tmp/publish-no-clone.out 2>&1; then
         fail "apr publish should fail without a local clone"
       else
@@ -618,7 +621,10 @@ in {
       fi
 
       if $APR publish /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dummy-1.0.0 \
-        --name dummy --version 1.0.0 --registry no-clone-reg --no-commit \
+        --name dummy --version 1.0.0 \
+        --description "No-clone publish diagnostic fixture" \
+        --license MIT --maintainer test@test \
+        --registry no-clone-reg --no-commit \
         > /tmp/publish-after-update.out 2>&1; then
         fail "apr publish should still fail after consumer metadata update"
       else
