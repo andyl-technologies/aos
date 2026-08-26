@@ -522,6 +522,11 @@ in
           for library in c dl m pthread resolv util; do
             ln -s libSystem.tbd "$out/usr/lib/lib$library.tbd"
           done
+          # Mach-O load commands retain Apple's versioned dylib install names.
+          # Flat-namespace links follow those transitive names through the SDK,
+          # so provide canonical aliases to the corresponding textual stubs.
+          ln -s libSystem.tbd "$out/usr/lib/libSystem.B.dylib"
+          ln -s libobjc.tbd "$out/usr/lib/libobjc.A.dylib"
         '';
       }
     ];
