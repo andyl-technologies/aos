@@ -47,55 +47,73 @@ in
       );
     propagatedDeps = [];
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd fakeroot-${version}
-        '';
-      }
-      {
-        name = "patch";
-        script = ''
-          # Hardcode paths to runtime tools in the fakeroot wrapper script
-          # so it doesn't rely on PATH resolution at runtime.
-          ${
-            if stdenv.hostPlatform.isDarwin
-            then ""
-            else ''sed -i 's|getopt|${util-linux}/bin/getopt|g' scripts/fakeroot.in''
+    phases =
+      [
+        {
+          name = "unpack";
+          script = ''
+            tar xf $src
+            cd fakeroot-${version}
+          '';
+        }
+        {
+          name = "patch";
+          script = ''
+            # Hardcode paths to runtime tools in the fakeroot wrapper script
+            # so it doesn't rely on PATH resolution at runtime.
+            ${
+              if stdenv.hostPlatform.isDarwin
+              then ""
+              else ''sed -i 's|getopt|${util-linux}/bin/getopt|g' scripts/fakeroot.in''
+            }
+            sed -i \
+              -e 's|sed |${sed}/bin/sed |g' \
+              -e 's|kill |${coreutils}/bin/kill |g' \
+              -e 's|/bin/ls|${coreutils}/bin/ls|g' \
+              -e 's|cut |${coreutils}/bin/cut |g' \
+              scripts/fakeroot.in
+          '';
+        }
+      ]
+      ++ (
+        if stdenv.isCross && stdenv.hostPlatform.isDarwin
+        then [
+          {
+            name = "darwin-cross-ipc";
+            script = ''
+              # Darwin implements SysV message queues, but upstream only seeds
+              # the non-runnable cross probe for Linux targets.
+              sed -i 's/linux-gnu\*|linux-musl\*/linux-gnu*|linux-musl*|darwin*/' \
+                configure
+            '';
           }
-          sed -i \
-            -e 's|sed |${sed}/bin/sed |g' \
-            -e 's|kill |${coreutils}/bin/kill |g' \
-            -e 's|/bin/ls|${coreutils}/bin/ls|g' \
-            -e 's|cut |${coreutils}/bin/cut |g' \
-            scripts/fakeroot.in
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --with-ipc=sysv
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install
-          sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/fakeroot"
-        '';
-      }
-    ];
+        ]
+        else []
+      )
+      ++ [
+        {
+          name = "configure";
+          script = ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --with-ipc=sysv
+          '';
+        }
+        {
+          name = "build";
+          script = ''
+            make -j$NIX_BUILD_CORES
+          '';
+        }
+        {
+          name = "install";
+          script = ''
+            make install
+            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/fakeroot"
+          '';
+        }
+      ];
 
     meta = {
       description = "fakeroot — give a fake root environment through LD_PRELOAD";
