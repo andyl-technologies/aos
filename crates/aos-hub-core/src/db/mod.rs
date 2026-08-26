@@ -531,6 +531,9 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("worker_jobs.sql"),
     include_str!("registry_index_build.sql"),
     include_str!("publication_manifest_session.sql"),
+    include_str!("gateway_revision_event_history.sql"),
+    include_str!("placement_policy_build_event_history.sql"),
+    include_str!("placement_policy_publication_history.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -7532,6 +7535,10 @@ impl Database {
 
     /// Reports whether every required placement has exact evidence for a class.
     ///
+    /// An empty object class is complete. This lets a minimal loose-object Git
+    /// publication advance directly to its pointer phase while retaining the
+    /// same all-placements requirement for every class member that exists.
+    ///
     /// # Errors
     ///
     /// Returns an error for invalid class vocabulary or database failure.
@@ -7548,9 +7555,6 @@ impl Database {
             .query_opt(
                 "SELECT 1 FROM registry_publications pub
                  WHERE pub.publication_id = ?1
-                   AND EXISTS (SELECT 1 FROM registry_publication_objects po
-                     WHERE po.publication_id = pub.publication_id
-                       AND po.object_kind = ?2)
                    AND EXISTS (SELECT 1 FROM registry_publication_placements pp
                      WHERE pp.publication_id = pub.publication_id
                        AND pp.required = 1)
@@ -11747,7 +11751,7 @@ impl Database {
             .collect()
     }
 
-    /// Lists placement scans eligible for a controller claim.
+    /// Lists physical placement operations eligible for a controller claim.
     ///
     /// # Errors
     ///
@@ -11764,7 +11768,8 @@ impl Database {
             .query(
                 &format!(
                     "SELECT {OPERATION_COLUMNS} FROM topology_operations operation
-                     WHERE operation.operation_kind = 'scan_placement'
+                     WHERE operation.operation_kind IN
+                       ('scan_placement', 'replicate_placement', 'repair_placement')
                        AND (operation.state = 'pending'
                          OR (operation.state = 'running' AND (
                            NOT EXISTS (SELECT 1 FROM placement_scan_claims claim
@@ -12379,7 +12384,7 @@ impl Database {
         self.topology_operation(operation_id).await
     }
 
-    /// Claims one pending or stale-running physical placement scan under CAS.
+    /// Claims one pending or stale-running physical placement operation under CAS.
     ///
     /// # Errors
     ///
@@ -12411,7 +12416,8 @@ impl Database {
                          started_at = CASE WHEN state = 'pending' THEN ?3 ELSE started_at END,
                          finished_at = NULL, error = NULL,
                          resource_version = resource_version + 1
-                     WHERE operation_id = ?1 AND operation_kind = 'scan_placement'
+                     WHERE operation_id = ?1 AND operation_kind IN
+                       ('scan_placement', 'replicate_placement', 'repair_placement')
                        AND resource_version = ?2
                        AND (state = 'pending' OR (state = 'running' AND (
                          NOT EXISTS (SELECT 1 FROM placement_scan_claims claim
@@ -12568,7 +12574,9 @@ impl Database {
                      detail_json = ?7, error = ?8, finished_at = ?9,
                      resource_version = resource_version + 1
                  WHERE operation_id = ?1 AND resource_version = ?2
-                   AND operation_kind = 'scan_placement' AND state = 'running'
+                   AND operation_kind IN
+                     ('scan_placement', 'replicate_placement', 'repair_placement')
+                   AND state = 'running'
                    AND EXISTS (SELECT 1 FROM placement_scan_claims claim
                      WHERE claim.operation_id = topology_operations.operation_id
                        AND claim.operation_resource_version = ?2
@@ -17935,7 +17943,7 @@ impl Database {
             ),
             (
                 "gateways",
-                "SELECT COUNT(*) FROM gateways WHERE binding_id = ?1",
+                "SELECT COUNT(*) FROM gateway_revisions WHERE binding_id = ?1",
             ),
             (
                 "topology defaults",
@@ -17971,17 +17979,70 @@ impl Database {
         id: i64,
         expected_resource_version: i64,
     ) -> Result<bool> {
-        Ok(self
+        let exists = self
             .backend
-            .execute(
-                "DELETE FROM bindings
-                 WHERE id = ?1 AND resource_version = ?2 AND is_instance_default = 0
-                   AND NOT EXISTS (SELECT 1 FROM surface_placements WHERE binding_id = ?1)
-                   AND NOT EXISTS (SELECT 1 FROM gateways WHERE binding_id = ?1)",
+            .query_opt(
+                "SELECT 1 FROM bindings
+                 WHERE id = ?1 AND resource_version = ?2 AND is_instance_default = 0",
                 &vals![id, expected_resource_version],
             )
             .await?
-            == 1)
+            .is_some();
+        if !exists {
+            return Ok(false);
+        }
+
+        // Credential heads and write-state rows use restrictive composite foreign keys so
+        // deleting the binding cannot rely on cascades alone. Keep the blocker CAS and the
+        // dependent-row teardown in one transaction to avoid partially deleting live state.
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE bindings SET resource_version = resource_version
+                     WHERE id = ?1 AND resource_version = ?2 AND is_instance_default = 0
+                       AND NOT EXISTS (SELECT 1 FROM surface_placements WHERE binding_id = ?1)
+                       AND NOT EXISTS (SELECT 1 FROM gateway_revisions WHERE binding_id = ?1)",
+                    vals![id, expected_resource_version],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM binding_write_state WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM binding_write_revisions WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM binding_credential_heads WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM binding_credential_revisions WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM binding_scope_grant_pins WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM binding_consumer_scopes WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM bindings WHERE id = ?1 AND resource_version = ?2",
+                    vals![id, expected_resource_version],
+                )
+                .expecting(1),
+            ])
+            .await?;
+        Ok(true)
     }
 
     /// Look up an organization by id.
@@ -25119,6 +25180,25 @@ mod tests {
             .is_err());
     }
 
+    #[tokio::test]
+    async fn unused_topology_binding_can_be_checked_and_deleted() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db
+            .create_org("binding-owner", "Binding Owner")
+            .await
+            .unwrap();
+        let binding_id = create_test_binding(&db, org, "archive", "objects").await;
+        create_valid_write_credential(&db, binding_id, "native://archive/write/v1").await;
+
+        assert!(db
+            .binding_delete_blockers(binding_id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(db.delete_topology_binding(binding_id, 1).await.unwrap());
+        assert!(!db.delete_topology_binding(binding_id, 1).await.unwrap());
+    }
+
     async fn create_test_binding(db: &Database, org_id: i64, name: &str, path: &str) -> i64 {
         let owner = db.org_by_id(org_id).await.unwrap().unwrap();
         db.create_topology_binding(
@@ -25586,6 +25666,128 @@ source_nar_hash = ""
         assert!(backend_columns
             .iter()
             .any(|column| column == "completion_etag"));
+    }
+
+    #[test]
+    fn placement_policy_build_event_migration_preserves_history_across_versions() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.contains("placement_policy_build_events_legacy"))
+            .unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 CREATE TABLE placement_policy_revisions(
+                   id TEXT PRIMARY KEY,
+                   build_version INTEGER NOT NULL,
+                   state TEXT NOT NULL,
+                   UNIQUE(id, build_version, state)
+                 );
+                 CREATE TABLE placement_policy_build_events(
+                   event_id TEXT PRIMARY KEY,
+                   policy_revision_id TEXT NOT NULL,
+                   build_version INTEGER NOT NULL,
+                   revision_state TEXT NOT NULL,
+                   mutation_kind TEXT NOT NULL,
+                   created_at INTEGER NOT NULL,
+                   UNIQUE(policy_revision_id, build_version),
+                   FOREIGN KEY(policy_revision_id, build_version, revision_state)
+                   REFERENCES placement_policy_revisions(id, build_version, state)
+                 );
+                 INSERT INTO placement_policy_revisions
+                   (id, build_version, state) VALUES ('revision-1', 1, 'building');
+                 INSERT INTO placement_policy_build_events
+                   (event_id, policy_revision_id, build_version, revision_state,
+                    mutation_kind, created_at)
+                   VALUES ('event-1', 'revision-1', 1, 'building', 'add_group', 1);",
+            )
+            .unwrap();
+
+        connection.execute_batch(migration).unwrap();
+        connection
+            .execute(
+                "UPDATE placement_policy_revisions SET build_version = 2 WHERE id = 'revision-1'",
+                [],
+            )
+            .unwrap();
+
+        let retained: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM placement_policy_build_events
+                 WHERE event_id = 'event-1' AND build_version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, 1);
+    }
+
+    #[test]
+    fn placement_policy_publication_migration_preserves_history_across_head_versions() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.contains("placement_policy_publications_legacy"))
+            .unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 CREATE TABLE placement_policy_revisions(
+                   id TEXT PRIMARY KEY,
+                   policy_id TEXT NOT NULL,
+                   state TEXT NOT NULL,
+                   UNIQUE(id, policy_id, state)
+                 );
+                 CREATE TABLE placement_policy_heads(
+                   policy_id TEXT PRIMARY KEY,
+                   resource_version INTEGER NOT NULL,
+                   UNIQUE(policy_id, resource_version)
+                 );
+                 CREATE TABLE placement_policy_publications(
+                   publication_id TEXT PRIMARY KEY,
+                   policy_revision_id TEXT NOT NULL UNIQUE,
+                   policy_id TEXT NOT NULL,
+                   revision_state TEXT NOT NULL,
+                   policy_resource_version INTEGER NOT NULL,
+                   content_digest TEXT NOT NULL,
+                   published_by TEXT NOT NULL,
+                   published_at INTEGER NOT NULL,
+                   FOREIGN KEY(policy_revision_id, policy_id, revision_state)
+                   REFERENCES placement_policy_revisions(id, policy_id, state),
+                   FOREIGN KEY(policy_id, policy_resource_version)
+                   REFERENCES placement_policy_heads(policy_id, resource_version)
+                 );
+                 INSERT INTO placement_policy_revisions
+                   (id, policy_id, state) VALUES ('revision-1', 'policy-1', 'published');
+                 INSERT INTO placement_policy_heads
+                   (policy_id, resource_version) VALUES ('policy-1', 2);
+                 INSERT INTO placement_policy_publications
+                   (publication_id, policy_revision_id, policy_id, revision_state,
+                    policy_resource_version, content_digest, published_by, published_at)
+                   VALUES ('publication-1', 'revision-1', 'policy-1', 'published',
+                           2, 'digest-1', 'operator', 1);",
+            )
+            .unwrap();
+
+        connection.execute_batch(migration).unwrap();
+        connection
+            .execute(
+                "UPDATE placement_policy_heads SET resource_version = 3
+                 WHERE policy_id = 'policy-1'",
+                [],
+            )
+            .unwrap();
+
+        let retained: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM placement_policy_publications
+                 WHERE publication_id = 'publication-1' AND policy_resource_version = 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, 1);
     }
 
     #[test]
@@ -30713,6 +30915,59 @@ source_nar_hash = ""
             .is_none());
         assert!(!db
             .registry_publication_class_is_complete(publication_id, "immutable")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn empty_registry_publication_object_class_is_complete() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db
+            .create_org("minimal-publish", "Minimal publish")
+            .await
+            .unwrap();
+        let binding_id =
+            create_test_binding(&db, org_id, "minimal-publish", "/tmp/minimal-publish").await;
+        let registry_id = db
+            .create_managed_registry(org_id, "", "registry", "private", &[], false)
+            .await
+            .unwrap();
+        let mut placement = topology_placement(
+            SurfaceTarget::Registry(registry_id),
+            "primary",
+            "minimal-publish",
+            0,
+        );
+        placement.binding_id = binding_id;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+        let publication_id = "minimalpublication00000000000000001";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "minimal-generation".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(64)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: publication_id.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: 1,
+        })
+        .await
+        .unwrap();
+
+        assert!(db
+            .registry_publication_class_is_complete(publication_id, "immutable")
+            .await
+            .unwrap());
+        assert!(db
+            .registry_publication_class_is_complete(publication_id, "mutable_pointer")
             .await
             .unwrap());
     }
