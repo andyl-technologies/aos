@@ -63,6 +63,10 @@ in
           export GOOS=${targetOs}
           export GOARCH=${targetArch}
           export CGO_ENABLED=0
+          # Remove the ephemeral Linux GOROOT from the Darwin commands' DWARF
+          # and pclntab. The installed toolchain is relocatable and discovers
+          # its real GOROOT from the executable path on Darwin.
+          export GOFLAGS=-trimpath
 
           # With no GOBIN override, cmd/go installs ordinary commands beneath
           # bin/<goos>_<goarch> and compiler tools beneath
