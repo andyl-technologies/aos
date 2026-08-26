@@ -3837,7 +3837,7 @@ impl Database {
                  mirror_group_id, cache_id, route_id, route_configuration_generation,
                  route_configuration_digest, indexed_commit
                  FROM registry_cache_stack_entries WHERE registry_id = ?1
-                 ORDER BY resolved_priority, stack_path",
+                 ORDER BY resolved_priority DESC, stack_path",
                 &vals![registry_id],
             )
             .await?
@@ -3874,7 +3874,7 @@ impl Database {
                  mirror_group_id, cache_id, route_id, route_configuration_generation,
                  route_configuration_digest, indexed_commit
                  FROM registry_cache_stack_entries WHERE cache_id = ?1
-                 ORDER BY registry_id, resolved_priority, stack_path",
+                 ORDER BY registry_id, resolved_priority DESC, stack_path",
                 &vals![cache_id],
             )
             .await?
