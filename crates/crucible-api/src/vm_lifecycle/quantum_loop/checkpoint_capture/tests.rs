@@ -56,8 +56,8 @@ fn preparation_is_all_or_nothing_before_qmp_capture() {
     assert_eq!(prepared[0].node, node_a);
     assert_eq!(prepared[0].checkpoint.node_icounts, node_icounts);
     assert_eq!(
-        prepared[1].staged_vmstate,
-        staging.path().join("node-1-vmstate.qcow2")
+        prepared[1].staged_vmstate_chunks,
+        staging.path().join("node-1-vmstate-objects")
     );
 
     let incomplete_directories = BTreeMap::from([(node_a.clone(), PathBuf::from("generation-a"))]);

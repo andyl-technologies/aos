@@ -67,14 +67,14 @@ pub(super) struct PreparedExactCheckpointTarget {
     pub(super) service_state: ProductionNodeServiceState,
     /// Fully owned temporal-graph checkpoint passed into QEMU capture.
     pub(super) checkpoint: Checkpoint,
-    /// Current process-generation overlay copied after QMP save.
+    /// Current process-generation overlay streamed after QMP save.
     pub(super) source_overlay: PathBuf,
-    /// Transaction-staging destination for the overlay copy.
-    pub(super) staged_overlay: PathBuf,
-    /// Current process-generation VMState artifact copied after QMP save.
+    /// Transaction-staging directory for authenticated overlay chunks.
+    pub(super) staged_overlay_chunks: PathBuf,
+    /// Current process-generation VMState artifact streamed after QMP save.
     pub(super) source_vmstate: PathBuf,
-    /// Transaction-staging destination for the VMState copy.
-    pub(super) staged_vmstate: PathBuf,
+    /// Transaction-staging directory for authenticated VMState chunks.
+    pub(super) staged_vmstate_chunks: PathBuf,
 }
 
 /// Owns every per-node checkpoint and artifact path before QMP mutation.
@@ -150,9 +150,9 @@ pub(super) fn prepare_exact_checkpoint_targets(
             service_state,
             checkpoint,
             source_overlay: source_directory.join(PRODUCTION_ROOT_OVERLAY_FILE_NAME),
-            staged_overlay: staging.join(format!("node-{index}.qcow2")),
+            staged_overlay_chunks: staging.join(format!("node-{index}-overlay-objects")),
             source_vmstate: source_directory.join(PRODUCTION_VMSTATE_FILE_NAME),
-            staged_vmstate: staging.join(format!("node-{index}-vmstate.qcow2")),
+            staged_vmstate_chunks: staging.join(format!("node-{index}-vmstate-objects")),
         });
     }
     Ok(prepared)
