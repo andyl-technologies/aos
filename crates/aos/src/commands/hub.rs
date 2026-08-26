@@ -3698,6 +3698,7 @@ async fn cache(printer: &Printer, command: &HubCacheCmd) -> Result<()> {
                 .await;
             }
             let owner = qualified_cache_owner(cache)?;
+            let owner_scope_key = organization_scope_key(&client, Some(owner)).await?;
             let name = name
                 .as_ref()
                 .context("cache create requires --name when creating a plan")?;
@@ -3719,7 +3720,7 @@ async fn cache(printer: &Printer, command: &HubCacheCmd) -> Result<()> {
                     desired: Some(hub_types::BinaryCacheSpec {
                         slug: cache.clone(),
                         name: name.clone(),
-                        owner_scope_key: format!("org:{owner}"),
+                        owner_scope_key,
                         visibility: visibility.clone(),
                         nix_priority: *nix_priority,
                         compression: compression.clone(),
