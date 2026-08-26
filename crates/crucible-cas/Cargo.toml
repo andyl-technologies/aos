@@ -16,6 +16,7 @@ path = "src/bin/crucible-fleet-store.rs"
 blake3 = { workspace = true }
 rustix = { workspace = true }
 thiserror = { workspace = true }
+zstd = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

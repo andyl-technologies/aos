@@ -106,8 +106,8 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
   integral choices, exercise a pending selection across checkpoint/replay, and
   complete the §14 Phase 2 guest flight without internal protocol tooling.
 
-**Gates:** `gate:typed-choice`, `gate:abi-conformance`,
-`gate:e2e-determinism`, `gate:license-boundary`.
+**Gates:** `gate:typed-choice`, `gate:typed-choice-product-checkpoint`,
+`gate:abi-conformance`, `gate:e2e-determinism`, `gate:license-boundary`.
 
 **Manual gate:** accepted §14 Phase 2 real-guest choice flight.
 
@@ -1356,7 +1356,12 @@ source-authoritative read-through caching, write-through mirroring, and
 path-free saturating synchronous operation/byte/error/elapsed-nanosecond counters
 plus deferred stream opens, authenticated completions, partial abandonments,
 failures, delivered bytes, and open/read elapsed nanoseconds over memory,
-durable directory, and packed leaves. Read-through falls through only on exact
+durable directory, durable compressed-directory, and packed leaves. The
+compressed-directory leaf streams a fixed private Zstandard representation
+below plaintext identity, enforces a per-object plaintext bound before source
+or decoder work, authenticates complete plaintext for range reads, survives
+restart, and participates in generation-bound physical inventory and deletion.
+Read-through falls through only on exact
 absence,
 treats promotion as non-semantic, and never reports cache durability as
 authoritative source durability. Durable write-back now requires durable
@@ -1370,7 +1375,7 @@ restart, torn-tail recovery, corrupt-journal rejection, count/byte limits,
 durable-child and non-overlapping-path admission, lifecycle exclusion,
 single-pass staging authentication, transfer completion, and stale GC plans.
 Destination-specific durability policy plumbing,
-compression/encryption below plaintext identity, restart-safe aggregate quota,
+encryption below plaintext identity, restart-safe aggregate quota,
 namespaced authorization, S3, and composed administrative inventory/GC remain
 open; therefore T-CAM-5.5 is not checked by this checkpoint.
 

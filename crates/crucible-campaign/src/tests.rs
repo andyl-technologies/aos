@@ -567,6 +567,11 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             "administrative-record",
         ),
         (
+            "crucible.content-store.compressed-object",
+            "crucible-cas::content_store",
+            "physical-record",
+        ),
+        (
             "crucible.content-store.pack",
             "crucible-cas::content_store",
             "physical-record",
@@ -585,7 +590,12 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         let row = rows
             .get(schema)
             .unwrap_or_else(|| panic!("missing lower schema {schema}"));
-        assert_eq!(row[1], "1");
+        let expected_version = if schema == "crucible.content-store.graph-configuration" {
+            "2"
+        } else {
+            "1"
+        };
+        assert_eq!(row[1], expected_version);
         assert_eq!(row[2], owner);
         assert_eq!(row[3], kind);
     }

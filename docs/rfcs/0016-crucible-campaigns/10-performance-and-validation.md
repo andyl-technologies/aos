@@ -209,6 +209,7 @@ never campaign truth, and may be discarded at any time.
 | `gate:campaign-component-contract` | Campaign/planner/executor direct and loopback-RPC adapters share schemas, validation, idempotency, capability negotiation, and canonical results |
 | `gate:branch-point-model` | Choice opportunities form parent-scoped branch points; finite/generated requests share lazy admission and duplicate semantic edges deduplicate without losing cause evidence |
 | `gate:typed-choice` | Guest and environment choices share domain validation, stable IDs, selection replay, and mismatch rejection |
+| `gate:typed-choice-product-checkpoint` | The real network product preserves one pending typed selection across exact checkpoint and replay without internal protocol tooling |
 | `gate:campaign-replay` | Findings replay without campaign/store and strict campaign planner steps reproduce |
 | `gate:lazy-frontier` | Suspended generators resume, widen, wait, exhaust, and recover correctly |
 | `gate:attempt-idempotence` | Duplicate execution/observation/credit is safe; conflicting result is detected |

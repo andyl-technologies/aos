@@ -9,9 +9,9 @@
 //! removal require the separately held [`BlobStoreAdmin`] capability; complete
 //! ref-namespace inventory requires [`RefStoreAdmin`].
 //!
-//! Built-in memory and directory leaves are public. Composition implementations
-//! remain private and can only be assembled through the admitted [`StoreGraph`]
-//! configuration algebra.
+//! Built-in memory, plaintext-directory, compressed-directory, and packed
+//! leaves are public. Composition implementations remain private and can only
+//! be assembled through the admitted [`StoreGraph`] configuration algebra.
 
 use std::fmt;
 use std::io::{self, Cursor, Read, Write};
@@ -22,6 +22,7 @@ use thiserror::Error;
 
 mod admin;
 mod composition;
+mod compressed_directory;
 mod directory;
 mod graph;
 mod memory;
@@ -33,6 +34,7 @@ pub use admin::{
     InventoryGeneration, PlannedDeleteDisposition, RefInventoryFence, RefInventoryGeneration,
     RefInventoryRecord, RefInventorySummary, RefPublicationGuard, RefStoreAdmin,
 };
+pub use compressed_directory::CompressedDirectoryBlobBackend;
 pub use directory::{DirectoryBlobBackend, DirectoryRefBackend};
 pub use graph::{
     StoreGraph, StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId,
@@ -849,6 +851,8 @@ pub enum GraphViolation {
     UnsupportedChild,
     /// A write-back node has invalid pending-transfer bounds.
     InvalidWriteBackBounds,
+    /// A compressed directory leaf has a zero plaintext-object bound.
+    InvalidCompressedObjectLimit,
     /// A journal and another persistent graph path overlap lexically.
     OverlappingAdministrativePath,
     /// A persistent graph path is relative to ambient process state.
@@ -873,6 +877,7 @@ impl fmt::Display for GraphViolation {
             Self::InvalidWriteTier => "invalid write tier",
             Self::UnsupportedChild => "unsupported child capability",
             Self::InvalidWriteBackBounds => "invalid write-back bounds",
+            Self::InvalidCompressedObjectLimit => "invalid compressed-object limit",
             Self::OverlappingAdministrativePath => "overlapping administrative path",
             Self::RelativeAdministrativePath => "relative administrative path",
             Self::AdministrativePathTooLong => "administrative path is too long",
