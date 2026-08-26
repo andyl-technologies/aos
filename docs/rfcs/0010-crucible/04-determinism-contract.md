@@ -751,14 +751,14 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   Completed by `checks.crucible.phase2.gates.anyGuest`: the gate boots a generic
   AOS Linux kernel/initramfs fixture under diskless and guest-visible CoW-block
   launch profiles twice with the black-box QEMU trace plugin, compares the
-  diskless cadence fingerprint streams byte-for-byte through the host QMP-quit
-  window after a generic serial completion marker, structurally validates both
-  CoW traces while writing a deterministic marker through `/dev/vda`, verifies
-  the copied base image hash is unchanged after overlay-backed runs, rejects any
-  required in-guest Crucible agent, and consumes the separate white-box doorbell
-  off/on contract proving black-box operation remains functional when that
-  optional host/plugin channel is enabled but unused. This completion does not
-  claim live any-guest white-box-on QEMU fingerprint equivalence.
+  diskless and CoW-block cadence fingerprint streams byte-for-byte through the
+  host QMP-quit window after a generic serial completion marker, writes a
+  deterministic marker through `/dev/vda`, verifies the copied base image hash
+  is unchanged after overlay-backed runs, rejects any required in-guest
+  Crucible agent, and consumes the separate white-box doorbell off/on contract
+  proving black-box operation remains functional when that optional host/plugin
+  channel is enabled but unused. This completion does not claim live any-guest
+  white-box-on QEMU fingerprint equivalence.
 - [x] **T-DET-23** Implement `gate:qemu-inert`: prove every patch is inert out of
   sim mode (production QEMU behaviorally identical to upstream) and effective in
   sim mode, with a per-patch micro-test. — satisfies [DET-36], [DET-37], routes
