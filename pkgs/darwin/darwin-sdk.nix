@@ -26,6 +26,7 @@
   libresolvRevision = "e48cd914edc1cb14f8289b8e2dfdaac360481cd2";
   bootstrapCmdsRevision = "c71d2d72f48995baaea76148f61002e5299841de";
   launchdRevision = "d448a1c8f70a61202f8705f94337f686b87c30c4";
+  hfsRevision = "d1bac2f062e6e9c0dfcce302d9aacb10173d0eea";
 
   coreFoundationSrc = fetchurl {
     urls = [
@@ -124,6 +125,13 @@
     ];
     hash = "sha256-Ab6pH7z/1TD/HtRZJXOhE1kXRiYDEwq8Pmc/xaN7K54=";
   };
+
+  hfsSrc = fetchurl {
+    urls = [
+      "https://github.com/apple-oss-distributions/hfs/archive/${hfsRevision}.tar.gz"
+    ];
+    hash = "sha256-rkCBjserV45xh6t27BXUy6vlGFGQOYUr863j0kAWmnA=";
+  };
 in
   mkDerivation {
     pname = "darwin-sdk";
@@ -161,6 +169,7 @@ in
           tar xf ${libresolvSrc}
           tar xf ${bootstrapCmdsSrc}
           tar xf ${launchdSrc}
+          tar xf ${hfsSrc}
           cd "zig-${version}"
         '';
       }
@@ -181,9 +190,11 @@ in
           libresolvRoot="../libresolv-${libresolvRevision}"
           bootstrapCmdsRoot="../bootstrap_cmds-${bootstrapCmdsRevision}"
           launchdRoot="../launchd-${launchdRevision}"
+          hfsRoot="../hfs-${hfsRevision}"
 
           mkdir -p \
             "$out/usr/include/c++/v1" \
+            "$out/usr/include/hfs" \
             "$out/usr/include/libunwind" \
             "$out/usr/include/objc" \
             "$out/usr/include/os" \
@@ -207,6 +218,36 @@ in
           cp lib/libc/darwin/libSystem.tbd "$out/usr/lib/libSystem.tbd"
           sed -i '$i\  - targets: [ x86_64-macos, arm64-macos ]\n    symbols: [ _iconv, _iconv_close, _iconv_open ]' \
             "$out/usr/lib/libSystem.tbd"
+          # Darwin's Rust target specification and ordinary Autoconf clients
+          # link iconv through its historical compatibility install name even
+          # though the POSIX entry points are also exported by libSystem.
+          # Publish that command-line SDK alias so `-liconv` records the same
+          # dylib contract as Apple's SDK.
+          cat > "$out/usr/lib/libiconv.tbd" <<'EOF'
+          --- !tapi-tbd
+          tbd-version: 4
+          targets: [ x86_64-macos, arm64-macos ]
+          install-name: '/usr/lib/libiconv.2.dylib'
+          current-version: 7.0.0
+          compatibility-version: 7.0.0
+          exports:
+            - targets: [ x86_64-macos, arm64-macos ]
+              symbols:
+                - ___iconv
+                - ___iconv_free_list
+                - ___iconv_get_list
+                - __libiconv_version
+                - _iconv
+                - _iconv_canonicalize
+                - _iconv_close
+                - _iconv_open
+                - _iconv_open_into
+                - _iconvctl
+                - _iconvlist
+                - _libiconv_set_relocation_prefix
+          ...
+          EOF
+          ln -s libiconv.tbd "$out/usr/lib/libiconv.2.tbd"
           # Current Apple resolver headers bind the established public entry
           # points to their BIND 9 symbol names. Zig's older libSystem surface
           # describes only the unversioned aliases, so publish the matching
@@ -226,6 +267,7 @@ in
             cp syscall.h "$out/usr/include/sys/"
           )
           cp "$libresolvRoot/resolv.h" "$out/usr/include/"
+          cp "$libresolvRoot/dns.h" "$out/usr/include/"
           cp "$libresolvRoot/arpa/nameser.h" "$out/usr/include/arpa/"
           cp "$libcRoot/include/arpa/nameser_compat.h" "$out/usr/include/arpa/"
           cp "$libinfoRoot"/rpc.subproj/*.h "$out/usr/include/rpc/"
@@ -234,6 +276,7 @@ in
           # traditional SDK path consumed by Kerberos KCM and other clients.
           cp "$launchdRoot/liblaunch/bootstrap.h" \
             "$out/usr/include/servers/bootstrap.h"
+          cp "$hfsRoot/core/hfs_mount.h" "$out/usr/include/hfs/"
           cp "$xnuRoot/libkern/os/log.h" "$out/usr/include/os/"
           cp \
             "$libcRoot/include/readpassphrase.h" \
@@ -450,6 +493,8 @@ in
             "$out/share/licenses/darwin-sdk/libresolv-LICENSE"
           cp "$bootstrapCmdsRoot/APPLE_LICENSE" \
             "$out/share/licenses/darwin-sdk/bootstrap_cmds-LICENSE"
+          cp "$hfsRoot/APPLE_LICENSE" \
+            "$out/share/licenses/darwin-sdk/hfs-LICENSE"
 
           cat > "$out/System/Library/Frameworks/Security.framework/Headers/Security.h" <<'EOF'
           #ifndef _SECURITY_H_

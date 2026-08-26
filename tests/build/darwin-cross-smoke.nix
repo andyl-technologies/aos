@@ -96,6 +96,7 @@
 
             printf '%s\n' \
               '#include <arpa/nameser.h>' \
+              '#include <dns.h>' \
               '#include <resolv.h>' \
               'int main(void) {' \
               '  unsigned char answer[NS_PACKETSZ];' \
@@ -108,12 +109,24 @@
             "$CC" resolver-smoke.c -o "$c/bin/aos-darwin-resolver-smoke"
 
             printf '%s\n' \
+              '#include <iconv.h>' \
+              'int main(void) {' \
+              '  iconv_t converter = iconv_open("UTF-8", "UTF-8");' \
+              '  if (converter != (iconv_t)-1) iconv_close(converter);' \
+              '  return converter == (iconv_t)0;' \
+              '}' \
+              > iconv-smoke.c
+            "$CC" iconv-smoke.c -liconv \
+              -o "$c/bin/aos-darwin-iconv-smoke"
+
+            printf '%s\n' \
               '#include <mach/mach.h>' \
               '#include <mach/mach_vm.h>' \
               '#include <membership.h>' \
               '#include <os/log.h>' \
               '#include <readpassphrase.h>' \
               '#include <fstab.h>' \
+              '#include <hfs/hfs_mount.h>' \
               '#include <servers/bootstrap.h>' \
               '#include <sys/socket.h>' \
               '#include <utmp.h>' \
@@ -142,7 +155,7 @@
               '};' \
               'int main(void) {' \
               '  os_log(OS_LOG_DEFAULT, "aos Darwin command-line SDK smoke");' \
-              '  return sizeof(struct utmp) == 0 || aos_darwin_symbols[0] == 0;' \
+              '  return sizeof(struct utmp) == 0 || UNKNOWNUID != 99 || aos_darwin_symbols[0] == 0;' \
               '}' \
               > command-line-sdk-smoke.c
             "$CC" command-line-sdk-smoke.c \
@@ -226,6 +239,7 @@
               "$c/bin/aos-darwin-c-smoke" \
               "$c/bin/aos-darwin-command-line-sdk-smoke" \
               "$c/bin/aos-darwin-framework-smoke" \
+              "$c/bin/aos-darwin-iconv-smoke" \
               "$c/bin/aos-darwin-iokit-smoke" \
               "$c/bin/aos-darwin-objective-c-smoke" \
               "$c/bin/aos-darwin-resolver-smoke" \
