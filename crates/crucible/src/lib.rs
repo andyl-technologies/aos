@@ -51,9 +51,10 @@ pub use backend::{
     BackendNetworkFaultCursorError, BackendNetworkOutput, BackendNetworkOutputCodecError,
     BackendNetworkPreservedAvailability, BackendNetworkRoute, BackendSnapshot,
     ExecutionFingerprint, ExecutionHorizon, FingerprintSample, GdbAttachInfo, GdbListen,
-    MockSimulationBackend, MockSimulationBackendState, SimulationBackend, StepObservation,
-    deterministic_node_mac, deterministic_node_mac_string,
+    SimulationBackend, StepObservation, deterministic_node_mac, deterministic_node_mac_string,
 };
+#[cfg(any(test, feature = "test-double"))]
+pub use backend::{MockSimulationBackend, MockSimulationBackendState};
 pub use crucible_device::{ResolvedNetworkFrameEffects, ResolvedNetworkFrameEffectsError};
 pub use decision::{
     AppRandomSelectable, AppRandomSelectableError, DecisionRecordError, DecisionRecorder,

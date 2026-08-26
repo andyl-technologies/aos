@@ -276,7 +276,6 @@ shape-line|crates/crucible-shmem/src/shmem/ring_accelerator.rs|706
 shape-line|crates/crucible-shmem/tests/gate_layer1_injection.rs|699
 shape-line|crates/crucible-sim/src/contract_a.rs|1045
 shape-line|crates/crucible-sim/tests/contract_a.rs|773
-shape-line|crates/crucible/src/backend.rs|624
 shape-line|crates/crucible/src/decision.rs|1363
 shape-line|crates/crucible/src/decision/app_random_selectable.rs|967
 shape-line|crates/crucible/src/device_subnode.rs|1228
