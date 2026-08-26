@@ -1245,6 +1245,12 @@ fn insert_retention_reason(
         });
 }
 
+fn retention_refresh_reason_id(refresh_id: &str, reason_key: &str) -> String {
+    hex::encode(Sha256::digest(
+        format!("{refresh_id}\0{reason_key}").as_bytes(),
+    ))
+}
+
 fn bounded_retention_source_ref(value: &str, digest: &str) -> String {
     if value.len() <= 255 {
         return value.to_string();
@@ -6163,11 +6169,8 @@ impl RpcService {
         let generation = endpoint.desired_generation.ok_or_else(|| {
             RpcError::FailedPrecondition("endpoint has no desired generation".to_string())
         })?;
-        if req.resource_generation != generation {
-            return Err(RpcError::FailedPrecondition(
-                "endpoint generation is stale".to_string(),
-            ));
-        }
+        req.resource_generation =
+            resolve_endpoint_grant_generation(req.resource_generation, generation)?;
         let resource = crate::db::GrantResource::Endpoint {
             id: &endpoint.id,
             generation,
@@ -6695,7 +6698,9 @@ impl RpcService {
                 "gateway",
             )
             .await?;
-            if req.owner_scope_key != current.owner_scope_key {
+            if req.owner_scope_key.is_empty() {
+                req.owner_scope_key = current.owner_scope_key.clone();
+            } else if req.owner_scope_key != current.owner_scope_key {
                 return Err(RpcError::invalid("gateway owner scope is immutable"));
             }
             let expected = parse_resource_version(&req.expected_resource_version, 0)?;
@@ -8776,6 +8781,11 @@ impl RpcService {
         {
             return Err(RpcError::FailedPrecondition(
                 "predecessor route resource version is stale".to_string(),
+            ));
+        }
+        if !predecessor.enabled {
+            return Err(RpcError::FailedPrecondition(
+                "predecessor route must be enabled before replacement".to_string(),
             ));
         }
         if req.spec.as_ref().is_some_and(|spec| spec.enabled) {
@@ -13079,12 +13089,18 @@ impl RpcService {
             .ok_or_else(|| RpcError::not_found("binding"))?;
         self.writable_storage_owner(auth, &binding.owner_scope_key)
             .await?;
-        let current = self
-            .db
-            .binding_credential_revision(binding.id, &req.purpose, req.generation)
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("binding credential"))?;
+        let current = if req.generation == 0 {
+            self.db
+                .current_binding_credential(binding.id, &req.purpose)
+                .await
+                .map_err(RpcError::internal)?
+        } else {
+            self.db
+                .binding_credential_revision(binding.id, &req.purpose, req.generation)
+                .await
+                .map_err(RpcError::internal)?
+        }
+        .ok_or_else(|| RpcError::not_found("binding credential"))?;
         let expected = parse_resource_version(
             &req.expected_resource_version,
             current.head_resource_version,
@@ -13100,7 +13116,7 @@ impl RpcService {
         let operation_id = hex::encode(Sha256::digest(
             format!(
                 "storage-credential-probe-v1\0{}\0{}\0{}\0{}\0{}",
-                binding.stable_id, req.purpose, req.generation, expected, req.idempotency_key
+                binding.stable_id, req.purpose, current.generation, expected, req.idempotency_key
             )
             .as_bytes(),
         ));
@@ -13113,7 +13129,7 @@ impl RpcService {
                     binding_id: binding.id,
                     binding_resource_version: binding.resource_version,
                     purpose: req.purpose,
-                    generation: req.generation,
+                    generation: current.generation,
                     credential_head_resource_version: expected,
                 },
             )
@@ -13182,10 +13198,11 @@ impl RpcService {
             .ok_or_else(|| RpcError::not_found("binding"))?;
         let owner_scope_key = binding.owner_scope_key.clone();
         self.writable_storage_owner(auth, &owner_scope_key).await?;
-        if req.resource_generation != binding.resource_version {
-            return Err(RpcError::FailedPrecondition(
-                "binding generation is stale".to_string(),
-            ));
+        // Bindings are stable, non-generational grant targets. Their mutable
+        // resource version is carried separately by grant update requests and
+        // must not be confused with the generation field used by gateways.
+        if req.resource_generation != 0 {
+            return Err(RpcError::invalid("binding resourceGeneration must be zero"));
         }
         let grants = self
             .db
@@ -15363,8 +15380,15 @@ impl RpcService {
         ),
         RpcError,
     > {
-        self.require_control_plan_permission(auth, &req.plan_id, Permission::PlacementManage)
+        let (plan, input): (_, PlacementPolicyMutationPlanInput) = self
+            .load_control_plan(auth, &req.plan_id, plan_kind, Some(&req.confirmation_hash))
             .await?;
+        self.require_delivery_scope(
+            auth,
+            &input.owner_scope_key,
+            Permission::PlacementPolicyManage,
+        )
+        .await?;
         self.begin_control_plan_apply(
             auth,
             &req.plan_id,
@@ -15373,9 +15397,6 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, PlacementPolicyMutationPlanInput) = self
-            .load_control_plan(auth, &req.plan_id, plan_kind, Some(&req.confirmation_hash))
-            .await?;
         let (surface, _) = self
             .writable_topology_surface(auth, input.request.surface.clone())
             .await?;
@@ -17913,6 +17934,93 @@ impl RpcService {
         .await
     }
 
+    /// Pins the destination's current validated binding revision for physical copies.
+    async fn bind_placement_copy_capability(
+        &self,
+        placement: &crate::db::SurfacePlacementRecord,
+    ) -> Result<(), RpcError> {
+        if self
+            .db
+            .placement_publication_write_revision(placement.id)
+            .await
+            .map_err(RpcError::internal)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        if placement.kind != "complete" || placement.desired_state != "active" {
+            return Err(RpcError::FailedPrecondition(
+                "a physical copy destination must be an active complete placement".to_string(),
+            ));
+        }
+
+        let state = self
+            .db
+            .binding_write_state(placement.binding_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "the destination binding has no write-revision state".to_string(),
+                )
+            })?;
+        let revision_number = state.current_write_revision.ok_or_else(|| {
+            RpcError::FailedPrecondition(
+                "the destination binding has no current write revision".to_string(),
+            )
+        })?;
+        let observation = self
+            .db
+            .binding_write_observation(placement.binding_id, revision_number)
+            .await
+            .map_err(RpcError::internal)?;
+        if !observation.is_some_and(|observation| observation.state == "valid") {
+            return Err(RpcError::FailedPrecondition(
+                "the destination binding's current write revision is not valid".to_string(),
+            ));
+        }
+        let revision = self
+            .db
+            .binding_write_revision(placement.binding_id, revision_number)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "the destination binding's current write revision is missing".to_string(),
+                )
+            })?;
+        if !revision.writes_supported {
+            return Err(RpcError::FailedPrecondition(
+                "the destination binding's current revision does not support writes".to_string(),
+            ));
+        }
+        if placement.requires_conditional_writes && !revision.conditional_writes_supported {
+            return Err(RpcError::FailedPrecondition(
+                "the destination requires conditional writes but its binding revision does not support them"
+                    .to_string(),
+            ));
+        }
+        let credential = self
+            .db
+            .binding_credential_revision(
+                placement.binding_id,
+                &revision.write_credential_purpose,
+                revision.write_credential_generation,
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        if !credential.is_some_and(|credential| credential.validation_state == "valid") {
+            return Err(RpcError::FailedPrecondition(
+                "the destination binding's write credential is not valid".to_string(),
+            ));
+        }
+
+        self.db
+            .bind_surface_placement_write_capability(placement.id, revision_number)
+            .await
+            .map_err(Self::authority_mutation_error)
+    }
+
     /// Schedules replication from one placement to another on the same surface.
     async fn execute_replicate_placement(
         &self,
@@ -17943,6 +18051,12 @@ impl RpcService {
                 "an offline placement cannot receive replication".to_string(),
             ));
         }
+        if source.state != "ready" || source.completeness != "complete" {
+            return Err(RpcError::FailedPrecondition(
+                "replication requires a ready, complete source placement".to_string(),
+            ));
+        }
+        self.bind_placement_copy_capability(&destination).await?;
         self.schedule_placement_operation(
             "replicate_placement",
             &req.idempotency_key,
@@ -17977,14 +18091,34 @@ impl RpcService {
                 "placement resource version is stale".to_string(),
             ));
         }
-        let mut targets = Vec::new();
-        if !req.source_placement_name.is_empty() {
-            targets.push((
-                "source".to_string(),
-                self.topology_placement(surface, &req.source_placement_name)
-                    .await?,
+        let source = if req.source_placement_name.is_empty() {
+            self.db
+                .list_surface_placements(surface)
+                .await
+                .map_err(RpcError::internal)?
+                .into_iter()
+                .find(|placement| {
+                    placement.id != destination.id
+                        && placement.desired_state == "active"
+                        && placement.state == "ready"
+                        && placement.completeness == "complete"
+                })
+                .ok_or_else(|| {
+                    RpcError::FailedPrecondition(
+                        "repair requires another ready, complete source placement".to_string(),
+                    )
+                })?
+        } else {
+            self.topology_placement(surface, &req.source_placement_name)
+                .await?
+        };
+        if source.state != "ready" || source.completeness != "complete" {
+            return Err(RpcError::FailedPrecondition(
+                "repair requires a ready, complete source placement".to_string(),
             ));
         }
+        self.bind_placement_copy_capability(&destination).await?;
+        let mut targets = vec![("source".to_string(), source)];
         targets.push(("primary".to_string(), destination));
         self.schedule_placement_operation("repair_placement", &req.idempotency_key, targets)
             .await
@@ -20764,7 +20898,14 @@ impl RpcService {
         if !verifier
             .challenge_is_published(&current.domain, &current.txt_challenge)
             .await
-            .map_err(RpcError::internal)?
+            .map_err(|error| {
+                tracing::warn!(
+                    domain = %current.domain,
+                    error = %format!("{error:#}"),
+                    "organization-domain DNS verification unavailable"
+                );
+                RpcError::Unavailable("DNS TXT verification is temporarily unavailable".to_string())
+            })?
         {
             return Err(RpcError::FailedPrecondition(
                 "the exact DNS TXT challenge is not published".into(),
@@ -24160,12 +24301,14 @@ impl RpcService {
             }
         }
         canonical.sort();
-        if !canonical.iter().any(|object| object.3 == "immutable")
-            || !canonical.iter().any(|object| object.3 == "mutable_pointer")
-        {
-            return Err(RpcError::invalid(
-                "publication requires immutable objects and mutable pointers",
-            ));
+        // A freshly-created APR registry can consist entirely of replaceable
+        // loose Git encodings plus HEAD/info/refs. Requiring a pack, NAR, or
+        // other immutable payload here would make that valid initial signed
+        // surface impossible to publish. The immutable upload class may be
+        // empty; the pointer class is still mandatory because committing it is
+        // what makes a publication observable to readers.
+        if !canonical.iter().any(|object| object.3 == "mutable_pointer") {
+            return Err(RpcError::invalid("publication requires mutable pointers"));
         }
         let placements = self
             .db
@@ -30457,13 +30600,16 @@ impl RpcService {
             .desired
             .ok_or_else(|| RpcError::invalid("plan desired state is missing"))?;
         Self::canonicalize_retention_spec(&mut desired)?;
-        let selector_json = serde_json::to_string(
-            desired
-                .selector
-                .as_ref()
-                .ok_or_else(|| RpcError::invalid("selector is required"))?,
-        )
-        .map_err(RpcError::internal)?;
+        let selector = desired
+            .selector
+            .as_ref()
+            .ok_or_else(|| RpcError::invalid("selector is required"))?;
+        // The database binds the digest to the canonical JSON object form.
+        // Protobuf structs serialize in declaration order, which is not
+        // necessarily the map-key order produced when that document is read
+        // back as JSON. Normalize through `Value` before hashing and storing.
+        let selector_value = serde_json::to_value(selector).map_err(RpcError::internal)?;
+        let selector_json = serde_json::to_string(&selector_value).map_err(RpcError::internal)?;
         let state = self
             .db
             .cache_gc_topology_state(cache.id)
@@ -30968,6 +31114,10 @@ impl RpcService {
             .await?;
         for reason in reasons.values() {
             let mut reason = reason.clone();
+            // Superseded refreshes remain immutable during their removal-grace
+            // window, so the same logical reason must have a generation-local
+            // row identity while retaining its stable reason key.
+            reason.reason_id = retention_refresh_reason_id(&refresh_id, &reason.reason_key);
             reason.refreshed_at = now;
             if let Err(error) = self
                 .db
@@ -33427,6 +33577,11 @@ impl RpcService {
             return Err(RpcError::invalid("idempotency_key is required"));
         }
         let version = parse_resource_version(&req.expected_resource_version, 0)?;
+        self.db
+            .object_deletion_job(cache.id, &req.job_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("cache GC deletion job"))?;
         let job = self
             .db
             .retry_cache_gc_deletion_job(
@@ -35445,6 +35600,35 @@ fn write_outcome_result(outcome: SurfaceWriteOutcome) -> Result<(), RpcError> {
     }
 }
 
+/// Resolves the CLI's zero-generation sentinel to the endpoint's current target.
+fn resolve_endpoint_grant_generation(
+    requested_generation: i64,
+    desired_generation: i64,
+) -> Result<i64, RpcError> {
+    if requested_generation == 0 || requested_generation == desired_generation {
+        Ok(desired_generation)
+    } else {
+        Err(RpcError::FailedPrecondition(
+            "endpoint generation is stale".to_string(),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod endpoint_grant_generation_tests {
+    use super::{resolve_endpoint_grant_generation, RpcError};
+
+    #[test]
+    fn resolves_cli_sentinel_and_preserves_stale_generation_fence() {
+        assert_eq!(resolve_endpoint_grant_generation(0, 2).unwrap(), 2);
+        assert_eq!(resolve_endpoint_grant_generation(2, 2).unwrap(), 2);
+        assert!(matches!(
+            resolve_endpoint_grant_generation(1, 2),
+            Err(RpcError::FailedPrecondition(message)) if message == "endpoint generation is stale"
+        ));
+    }
+}
+
 /// Maps a cache-write authorization denial onto the internal write outcome.
 fn auth_denial_to_write_outcome(err: RpcError) -> SurfaceWriteOutcome {
     match err {
@@ -35918,6 +36102,15 @@ mod cache_upload_tests {
     impl crate::topology_probe::IdentityDomainVerifier for PublishedIdentityDomain {
         async fn challenge_is_published(&self, _domain: &str, _challenge: &str) -> Result<bool> {
             Ok(true)
+        }
+    }
+
+    struct UnavailableIdentityDomain;
+
+    #[async_trait::async_trait]
+    impl crate::topology_probe::IdentityDomainVerifier for UnavailableIdentityDomain {
+        async fn challenge_is_published(&self, _domain: &str, _challenge: &str) -> Result<bool> {
+            bail!("injected DNS transport failure")
         }
     }
 
@@ -37074,6 +37267,74 @@ mod cache_upload_tests {
     }
 
     #[tokio::test]
+    async fn identity_domain_dns_transport_failure_is_publicly_retryable() {
+        let (mut service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+        service.identity_domain_verifier = Some(Arc::new(UnavailableIdentityDomain));
+        db.create_org("dns-unavailable", "DNS unavailable")
+            .await
+            .unwrap();
+
+        let claim_plan = service
+            .plan_claim_organization_domain(
+                Some(&auth),
+                pb::PlanClaimOrganizationDomainRequest {
+                    org_slug: "dns-unavailable".into(),
+                    domain: "login.example.test".into(),
+                    expected_resource_version: "absent".into(),
+                    idempotency_key: "plan-domain-claim-unavailable".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let claimed = service
+            .apply_claim_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: claim_plan.plan_id,
+                    confirmation_hash: claim_plan.confirmation_hash,
+                    idempotency_key: "apply-domain-claim-unavailable".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .domain
+            .unwrap();
+        let verify_plan = service
+            .plan_verify_organization_domain(
+                Some(&auth),
+                pb::PlanVerifyOrganizationDomainRequest {
+                    org_slug: "dns-unavailable".into(),
+                    domain: claimed.domain,
+                    expected_resource_version: claimed.resource_version,
+                    idempotency_key: "plan-domain-verify-unavailable".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+
+        let error = service
+            .apply_verify_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: verify_plan.plan_id,
+                    confirmation_hash: verify_plan.confirmation_hash,
+                    idempotency_key: "apply-domain-verify-unavailable".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RpcError::Unavailable(message)
+                if message == "DNS TXT verification is temporarily unavailable"
+        ));
+    }
+
+    #[tokio::test]
     async fn invitation_acceptance_atomically_creates_membership_for_matching_user() {
         let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
         let org_id = db.create_org("invites", "Invites").await.unwrap();
@@ -37861,6 +38122,42 @@ mod cache_upload_tests {
             selector.semver.unwrap().requirement,
             "<3.0.0,>=2.0.0||=1.0.0"
         );
+    }
+
+    #[test]
+    fn retention_selector_storage_json_is_canonical_object_order() {
+        let selector = pb::RetentionSelector {
+            current_catalog: true,
+            channel_targets: Some(pb::ChannelTargetSelector {
+                all: false,
+                names: vec!["stable".into()],
+            }),
+            recent_releases: None,
+            release_tags: vec!["1.0.0".into()],
+            semver: None,
+            all_releases: false,
+        };
+
+        let value = serde_json::to_value(&selector).unwrap();
+        let stored = serde_json::to_string(&value).unwrap();
+        let reparsed: serde_json::Value = serde_json::from_str(&stored).unwrap();
+
+        assert!(reparsed.is_object());
+        assert_eq!(serde_json::to_string(&reparsed).unwrap(), stored);
+    }
+
+    #[test]
+    fn retention_reason_row_identity_is_refresh_local() {
+        let reason_key = "registry_catalog:logical-reason";
+
+        let first = super::retention_refresh_reason_id("refresh-one", reason_key);
+        let repeated = super::retention_refresh_reason_id("refresh-one", reason_key);
+        let successor = super::retention_refresh_reason_id("refresh-two", reason_key);
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, successor);
+        assert_eq!(first.len(), 64);
+        assert_eq!(successor.len(), 64);
     }
 
     #[test]
