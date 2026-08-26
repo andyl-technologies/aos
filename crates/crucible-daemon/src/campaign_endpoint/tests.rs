@@ -124,6 +124,71 @@ fn campaign_and_executor_endpoints_share_a_directory_without_sharing_authority()
 }
 
 #[test]
+fn executor_connector_authenticates_namespace_socket_and_peer() {
+    let directory = tempfile::tempdir().expect("executor endpoint directory");
+    fs::set_permissions(directory.path(), Permissions::from_mode(0o750))
+        .expect("secure executor directory mode");
+    let metadata = fs::metadata(directory.path()).expect("executor directory metadata");
+    let endpoint = ExecutorLoopbackEndpointConfig::new(
+        directory.path().join("executor.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("executor endpoint config");
+    let managed = endpoint.bind().expect("bind executor endpoint");
+
+    let client = endpoint.connect().expect("authenticate executor endpoint");
+    let (server, _) = managed.listener.accept().expect("accept executor client");
+    let peer = rustix::net::sockopt::socket_peercred(&client).expect("client peer credentials");
+    assert_eq!(peer.uid.as_raw(), endpoint.owner_user_id());
+    assert_eq!(peer.gid.as_raw(), endpoint.owner_group_id());
+
+    drop(server);
+    drop(client);
+    drop(managed);
+}
+
+#[test]
+fn executor_connector_rejects_namespace_and_socket_contract_drift() {
+    let directory = tempfile::tempdir().expect("executor endpoint directory");
+    fs::set_permissions(directory.path(), Permissions::from_mode(0o750))
+        .expect("secure executor directory mode");
+    let metadata = fs::metadata(directory.path()).expect("executor directory metadata");
+    let endpoint = ExecutorLoopbackEndpointConfig::new(
+        directory.path().join("executor.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("executor endpoint config");
+    assert!(matches!(
+        endpoint.connect_with_timeout(Duration::ZERO),
+        Err(ExecutorLoopbackEndpointError::InvalidConnectTimeout)
+    ));
+    assert!(matches!(
+        endpoint.connect_with_timeout(MAX_EXECUTOR_CONNECT_TIMEOUT + Duration::from_nanos(1)),
+        Err(ExecutorLoopbackEndpointError::InvalidConnectTimeout)
+    ));
+    let listener = UnixListener::bind(endpoint.path()).expect("bind executor socket");
+    fs::set_permissions(endpoint.path(), Permissions::from_mode(0o660))
+        .expect("install wrong executor mode");
+    assert!(matches!(
+        endpoint.connect(),
+        Err(ExecutorLoopbackEndpointError::InvalidConnectedSocket)
+    ));
+
+    drop(listener);
+    fs::remove_file(endpoint.path()).expect("remove executor socket");
+    fs::set_permissions(directory.path(), Permissions::from_mode(0o770))
+        .expect("make executor namespace writable");
+    assert!(matches!(
+        endpoint.connect(),
+        Err(ExecutorLoopbackEndpointError::ParentNamespaceWritable)
+    ));
+}
+
+#[test]
 fn endpoint_rejects_writable_or_redirected_namespaces_before_bind() {
     let (directory, config) = endpoint_fixture();
     fs::set_permissions(directory.path(), Permissions::from_mode(0o770))

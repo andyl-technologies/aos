@@ -1052,10 +1052,13 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   name and slot before I/O, prepares outside the registry mutex, fails closed
   across concurrent shutdown, and cannot retain the repository lock after the
   service owner exits. Shutdown waits for bounded in-flight preparation and
-  cancels the complete installed set before joining it. Authenticated public
-  operator transport/CLI attachment, automatic campaign discovery, shared
-  packaged-executor allocation, and additional opaque non-finite model-prior
-  adapters remain open. The first `CampaignService`
+  cancels the complete installed set before joining it. Startup and live
+  attachment now share one exact executor connector that brackets connect with
+  secure-parent, socket owner/mode/inode, and `SO_PEERCRED` authentication under
+  a finite absolute connect deadline. Authenticated public operator transport/
+  CLI attachment, automatic campaign discovery, shared packaged-executor
+  allocation, and additional opaque non-finite model-prior adapters remain
+  open. The first `CampaignService`
   checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
   bounded by-value creation, authenticated current-head reads,

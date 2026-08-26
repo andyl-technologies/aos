@@ -17,7 +17,7 @@ crucible-cas = { workspace = true }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu" }
 crucible-shmem = { path = "../crucible-shmem" }
-rustix = { workspace = true, features = ["net"] }
+rustix = { workspace = true, features = ["event", "net", "time"] }
 serde = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }

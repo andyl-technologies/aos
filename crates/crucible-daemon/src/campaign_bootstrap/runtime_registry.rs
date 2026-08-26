@@ -14,6 +14,8 @@ use std::thread::{self, JoinHandle};
 
 use crucible_campaign::{CampaignName, CampaignRepository, PlannerAuthorityKey};
 
+use crate::ExecutorLoopbackEndpointConfig;
+
 use super::{
     AttachedCanonicalCampaignRuntime, CampaignLocalServiceError, CampaignLocalServiceMode,
     CampaignLoopbackServerShutdown, CampaignStateOwner, CanonicalCampaignRuntimeConfig,
@@ -62,6 +64,43 @@ impl CampaignRuntimeAttachmentHandle {
             .as_ref()
             .ok_or(CampaignLocalServiceError::RuntimeAuthorityUnavailable)?
             .clone();
+        let prepared = prepare_canonical_campaign_runtime(
+            Arc::clone(&shared.repository),
+            planner_authority,
+            executor_stream,
+            config,
+        )?;
+        reservation.install(prepared)
+    }
+
+    /// Connects through an exact executor endpoint and attaches one runtime.
+    ///
+    /// The registry reserves the campaign and one bounded slot before any
+    /// endpoint filesystem or socket operation. The endpoint capability then
+    /// authenticates its parent namespace, named socket identity, exact owner
+    /// and mode, and connected `SO_PEERCRED` before component negotiation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError`] for the same registry, authority,
+    /// repository, and runtime failures as [`Self::attach`], or when the exact
+    /// executor endpoint cannot be authenticated and connected.
+    pub fn attach_endpoint(
+        &self,
+        endpoint: &ExecutorLoopbackEndpointConfig,
+        config: &CanonicalCampaignRuntimeConfig,
+    ) -> Result<(), CampaignLocalServiceError> {
+        let shared = self
+            .shared
+            .upgrade()
+            .ok_or(CampaignLocalServiceError::RuntimeAttachmentClosed)?;
+        let reservation = shared.reserve(config.campaign().clone(), true)?;
+        let planner_authority = shared
+            .planner_authority
+            .as_ref()
+            .ok_or(CampaignLocalServiceError::RuntimeAuthorityUnavailable)?
+            .clone();
+        let executor_stream = endpoint.connect()?;
         let prepared = prepare_canonical_campaign_runtime(
             Arc::clone(&shared.repository),
             planner_authority,

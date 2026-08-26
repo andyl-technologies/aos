@@ -4,20 +4,29 @@
 //! is exact and whose group/other write bits are clear. A lifetime `flock` on a
 //! stable lock file proves that no cooperating prior listener remains before a
 //! stale socket is removed. The bound socket's device/inode identity is retained
-//! so teardown never removes a replacement path.
+//! so teardown never removes a replacement path. The executor endpoint also
+//! owns the matching outbound connector: it brackets connect with exact
+//! namespace/socket identity checks and authenticates peer credentials.
 
 use std::fs::{self, File, Permissions};
 use std::io;
+use std::net::Shutdown;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, Instant};
 
+use rustix::event::{PollFd, PollFlags, poll};
 use rustix::fs::{FlockOperation, Mode, OFlags, flock};
+use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
+use rustix::time::Timespec;
 
 const CAMPAIGN_ENDPOINT_LOCK_FILE: &str = ".crucible-campaign-listener.lock";
 const EXECUTOR_ENDPOINT_LOCK_FILE: &str = ".crucible-executor-listener.lock";
 // Linux `sockaddr_un.sun_path` has 108 bytes including the terminating NUL.
 const MAX_ENDPOINT_PATH_BYTES: usize = 107;
+const DEFAULT_EXECUTOR_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_EXECUTOR_CONNECT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// Exact deployment contract for one managed campaign-service socket.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -268,6 +277,95 @@ impl ExecutorLoopbackEndpointConfig {
         )?;
         Ok(ManagedExecutorLoopbackListener { listener, guard })
     }
+
+    /// Connects to one exact authenticated executor-component endpoint.
+    ///
+    /// The endpoint parent must satisfy the same exact-owner, non-writable
+    /// namespace profile required for binding. The named socket must have the
+    /// configured exact owner and mode before and after connection, retain the
+    /// same device/inode identity, and report the configured effective peer
+    /// credentials through `SO_PEERCRED`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorLoopbackEndpointError`] when the parent, named socket,
+    /// connection, peer credentials, or before/after identity cannot be
+    /// authenticated exactly. A connected stream is shut down before any
+    /// post-connect authentication error is returned.
+    pub fn connect(&self) -> Result<UnixStream, ExecutorLoopbackEndpointError> {
+        self.connect_with_timeout(DEFAULT_EXECUTOR_CONNECT_TIMEOUT)
+    }
+
+    /// Connects with one finite absolute deadline and authenticates the peer.
+    ///
+    /// Unlike socket read/write timeouts, this deadline bounds the complete
+    /// nonblocking connect even if the executor's listen backlog remains full.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorLoopbackEndpointError::InvalidConnectTimeout`] when
+    /// `timeout` is zero or exceeds one hour. Other failures match
+    /// [`Self::connect`].
+    pub fn connect_with_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<UnixStream, ExecutorLoopbackEndpointError> {
+        if timeout.is_zero() || timeout > MAX_EXECUTOR_CONNECT_TIMEOUT {
+            return Err(CampaignLoopbackEndpointError::InvalidConnectTimeout);
+        }
+        let config = &self.inner;
+        let parent = config
+            .path
+            .parent()
+            .ok_or(CampaignLoopbackEndpointError::InvalidPath)?;
+        let parent_metadata = fs::symlink_metadata(parent)
+            .map_err(|source| io_error("stat-executor-endpoint-directory", parent, source))?;
+        validate_parent_metadata(config, &parent_metadata)?;
+        let parent_directory = File::open(parent)
+            .map_err(|source| io_error("open-executor-endpoint-directory", parent, source))?;
+        let parent_identity = FileIdentity::from_metadata(&parent_metadata);
+        revalidate_parent(config, parent, &parent_directory, parent_identity)?;
+
+        let before = fs::symlink_metadata(&config.path).map_err(|source| {
+            io_error(
+                "stat-executor-endpoint-before-connect",
+                &config.path,
+                source,
+            )
+        })?;
+        validate_connected_executor_socket(config, &before)?;
+        let socket_identity = FileIdentity::from_metadata(&before);
+
+        let stream = connect_executor_stream(&config.path, timeout)?;
+        let authentication = (|| {
+            let after = fs::symlink_metadata(&config.path).map_err(|source| {
+                io_error("stat-executor-endpoint-after-connect", &config.path, source)
+            })?;
+            validate_connected_executor_socket(config, &after)?;
+            if FileIdentity::from_metadata(&after) != socket_identity {
+                return Err(CampaignLoopbackEndpointError::InvalidConnectedSocket);
+            }
+            revalidate_parent(config, parent, &parent_directory, parent_identity)?;
+            let peer = rustix::net::sockopt::socket_peercred(&stream).map_err(|source| {
+                io_error(
+                    "authenticate-executor-endpoint-peer",
+                    &config.path,
+                    io::Error::from_raw_os_error(source.raw_os_error()),
+                )
+            })?;
+            if peer.uid.as_raw() != config.owner_user_id
+                || peer.gid.as_raw() != config.owner_group_id
+            {
+                return Err(CampaignLoopbackEndpointError::InvalidConnectedSocket);
+            }
+            Ok(())
+        })();
+        if let Err(source) = authentication {
+            let _ = stream.shutdown(Shutdown::Both);
+            return Err(source);
+        }
+        Ok(stream)
+    }
 }
 
 /// Bound listener retaining exact endpoint namespace ownership for its lifetime.
@@ -369,6 +467,12 @@ pub enum CampaignLoopbackEndpointError {
     /// The bound socket did not match its exact ownership/type/mode contract.
     #[error("local component endpoint bound socket is invalid")]
     InvalidBoundSocket,
+    /// A connected executor socket or peer did not match its exact contract.
+    #[error("local executor endpoint or authenticated peer is invalid")]
+    InvalidConnectedSocket,
+    /// The executor connect deadline was zero or exceeded one hour.
+    #[error("local executor endpoint connect timeout is invalid")]
+    InvalidConnectTimeout,
     /// The pinned endpoint directory changed across namespace operations.
     #[error("local component endpoint directory identity changed")]
     DirectoryIdentityChanged,
@@ -417,6 +521,110 @@ fn validate_parent_metadata(
         return Err(CampaignLoopbackEndpointError::ParentNamespaceWritable);
     }
     Ok(())
+}
+
+fn validate_connected_executor_socket(
+    config: &CampaignLoopbackEndpointConfig,
+    metadata: &fs::Metadata,
+) -> Result<(), CampaignLoopbackEndpointError> {
+    if !metadata.file_type().is_socket()
+        || metadata.uid() != config.owner_user_id
+        || metadata.gid() != config.owner_group_id
+        || metadata.mode() & 0o7777 != config.socket_mode
+    {
+        return Err(CampaignLoopbackEndpointError::InvalidConnectedSocket);
+    }
+    Ok(())
+}
+
+fn connect_executor_stream(
+    path: &Path,
+    timeout: Duration,
+) -> Result<UnixStream, CampaignLoopbackEndpointError> {
+    let socket = rustix::net::socket_with(
+        AddressFamily::UNIX,
+        SocketType::STREAM,
+        SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+        None,
+    )
+    .map_err(|source| rustix_io_error("create-executor-endpoint-socket", path, source))?;
+    let address = SocketAddrUnix::new(path)
+        .map_err(|source| rustix_io_error("encode-executor-endpoint-address", path, source))?;
+    match rustix::net::connect(&socket, &address) {
+        Ok(()) => {}
+        Err(source)
+            if source == rustix::io::Errno::INPROGRESS
+                || source == rustix::io::Errno::AGAIN
+                || source == rustix::io::Errno::INTR =>
+        {
+            wait_for_executor_connect(&socket, path, timeout)?;
+        }
+        Err(source) => {
+            return Err(rustix_io_error("connect-executor-endpoint", path, source));
+        }
+    }
+
+    let stream = UnixStream::from(socket);
+    stream
+        .set_nonblocking(false)
+        .map_err(|source| io_error("configure-executor-endpoint-stream", path, source))?;
+    Ok(stream)
+}
+
+fn wait_for_executor_connect(
+    socket: &std::os::fd::OwnedFd,
+    path: &Path,
+    timeout: Duration,
+) -> Result<(), CampaignLoopbackEndpointError> {
+    let deadline = endpoint_now()
+        .checked_add(timeout)
+        .ok_or(CampaignLoopbackEndpointError::InvalidConnectTimeout)?;
+    loop {
+        let remaining = deadline
+            .checked_duration_since(endpoint_now())
+            .ok_or_else(|| {
+                io_error(
+                    "connect-executor-endpoint-timeout",
+                    path,
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "executor endpoint connect timed out",
+                    ),
+                )
+            })?;
+        let timeout = Timespec::try_from(remaining).map_err(|source| {
+            io_error(
+                "convert-executor-endpoint-timeout",
+                path,
+                io::Error::new(io::ErrorKind::InvalidInput, source),
+            )
+        })?;
+        let mut descriptors = [PollFd::new(socket, PollFlags::OUT)];
+        match poll(&mut descriptors, Some(&timeout)) {
+            Ok(0) => {
+                return Err(io_error(
+                    "connect-executor-endpoint-timeout",
+                    path,
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "executor endpoint connect timed out",
+                    ),
+                ));
+            }
+            Ok(_) => match rustix::net::sockopt::socket_error(socket)
+                .map_err(|source| rustix_io_error("read-executor-endpoint-error", path, source))?
+            {
+                Ok(()) => return Ok(()),
+                Err(source) => {
+                    return Err(rustix_io_error("connect-executor-endpoint", path, source));
+                }
+            },
+            Err(source) if source == rustix::io::Errno::INTR => {}
+            Err(source) => {
+                return Err(rustix_io_error("poll-executor-endpoint", path, source));
+            }
+        }
+    }
 }
 
 fn validate_lock(
@@ -527,6 +735,26 @@ fn io_error(
         path: path.to_owned(),
         source,
     }
+}
+
+fn rustix_io_error(
+    operation: &'static str,
+    path: &Path,
+    source: rustix::io::Errno,
+) -> CampaignLoopbackEndpointError {
+    io_error(
+        operation,
+        path,
+        io::Error::from_raw_os_error(source.raw_os_error()),
+    )
+}
+
+// Monotonic endpoint time bounds only operational socket blocking and never
+// enters campaign semantic state or content identity.
+// crucible-lint: allow clippy-disallowed-method -- the bounded host operation is operational only and cannot enter modeled state.
+#[allow(clippy::disallowed_methods)]
+fn endpoint_now() -> Instant {
+    Instant::now()
 }
 
 #[cfg(test)]

@@ -2,7 +2,6 @@
 
 use super::*;
 
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
 
 #[path = "artifact_capture.rs"]
@@ -1185,70 +1184,18 @@ pub(super) fn open_local_campaign_service(
 }
 
 pub(super) fn connect_campaign_executor(path: &Path) -> Result<UnixStream, CliError> {
-    let bytes = path.as_os_str().as_encoded_bytes();
-    if !path.is_absolute()
-        || bytes.is_empty()
-        || bytes.len() > 4_095
-        || bytes.contains(&0)
-        || path.components().any(|component| {
-            matches!(
-                component,
-                std::path::Component::CurDir | std::path::Component::ParentDir
-            )
-        })
-    {
-        return Err(serve_error("campaign executor socket path is invalid"));
-    }
-    let before = fs::symlink_metadata(path).map_err(|error| {
-        serve_error(format!(
-            "campaign executor socket metadata error for {}: {error}",
-            path.display()
-        ))
-    })?;
     let user_id = rustix::process::geteuid().as_raw();
     let group_id = rustix::process::getegid().as_raw();
-    if !before.file_type().is_socket()
-        || before.uid() != user_id
-        || before.gid() != group_id
-        || before.mode() & 0o7777 != 0o600
-    {
-        return Err(serve_error(
-            "campaign executor socket is not an exact-owner mode-0600 Unix socket",
-        ));
-    }
-
-    let stream = UnixStream::connect(path).map_err(|error| {
-        serve_error(format!(
-            "campaign executor connection error for {}: {error}",
-            path.display()
-        ))
-    })?;
-    let after = fs::symlink_metadata(path).map_err(|error| {
-        serve_error(format!(
-            "campaign executor socket revalidation error for {}: {error}",
-            path.display()
-        ))
-    })?;
-    let peer = rustix::net::sockopt::socket_peercred(&stream).map_err(|error| {
-        serve_error(format!(
-            "campaign executor peer authentication error: {error}"
-        ))
-    })?;
-    if after.dev() != before.dev()
-        || after.ino() != before.ino()
-        || !after.file_type().is_socket()
-        || after.uid() != user_id
-        || after.gid() != group_id
-        || after.mode() & 0o7777 != 0o600
-        || peer.uid.as_raw() != user_id
-        || peer.gid.as_raw() != group_id
-    {
-        let _ = stream.shutdown(std::net::Shutdown::Both);
-        return Err(serve_error(
-            "campaign executor socket or authenticated peer changed during connection",
-        ));
-    }
-    Ok(stream)
+    let endpoint = crucible_daemon::ExecutorLoopbackEndpointConfig::new(
+        path.to_owned(),
+        user_id,
+        group_id,
+        0o600,
+    )
+    .map_err(|error| serve_error(format!("campaign executor endpoint error: {error}")))?;
+    endpoint
+        .connect()
+        .map_err(|error| serve_error(format!("campaign executor connection error: {error}")))
 }
 
 struct RunningLocalCampaignService {

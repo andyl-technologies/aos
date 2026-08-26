@@ -28,9 +28,10 @@ use tempfile::tempdir;
 
 use crate::{
     AllowAllAttemptAdmission, CanonicalPlannerProcessConfig, ExecutorCapacity,
-    LocalExecutorCapabilityService, LocalExecutorSupervisor, LoopbackCampaignService,
-    LoopbackCampaignTimeouts, LoopbackExecutorTimeouts, MAX_EXECUTOR_REQUESTS_PER_CONNECTION,
-    MemoryAssignmentLedger, serve_loopback_executor_component_connection_with_limits,
+    ExecutorLoopbackEndpointConfig, LocalExecutorCapabilityService, LocalExecutorSupervisor,
+    LoopbackCampaignService, LoopbackCampaignTimeouts, LoopbackExecutorTimeouts,
+    MAX_EXECUTOR_REQUESTS_PER_CONNECTION, MemoryAssignmentLedger,
+    serve_loopback_executor_component_connection_with_limits,
     serve_loopback_executor_component_once,
 };
 
@@ -208,21 +209,6 @@ fn executor_pair(lineage: &CampaignLineage) -> (UnixStream, thread::JoinHandle<(
     (client, worker)
 }
 
-fn executor_connection(lineage: &CampaignLineage) -> (UnixStream, thread::JoinHandle<()>) {
-    let mut service = executor_capability_service(lineage, 0x42, b"dynamic-store");
-    let (client, mut server) = UnixStream::pair().expect("executor stream pair");
-    let worker = thread::spawn(move || {
-        serve_loopback_executor_component_connection_with_limits(
-            &mut server,
-            &mut service,
-            LoopbackExecutorTimeouts::default(),
-            MAX_EXECUTOR_REQUESTS_PER_CONNECTION,
-        )
-        .expect("serve executor connection");
-    });
-    (client, worker)
-}
-
 type TestExecutorService =
     LocalExecutorCapabilityService<MemoryAssignmentLedger, AllowAllAttemptAdmission>;
 
@@ -330,24 +316,28 @@ fn runtime_attachment_requires_writable_component_authority_before_executor_io()
 
 #[test]
 fn post_bind_attachment_rejects_missing_authority_and_read_only_before_executor_io() {
-    let (_directory, config) = fixture();
+    let (directory, config) = fixture();
     let service = config.open().expect("bind service without authorities");
     let attachments = service.runtime_attachment_handle();
-    let (executor, mut peer) = UnixStream::pair().expect("executor stream pair");
+    let metadata = fs::metadata(directory.path()).expect("endpoint directory metadata");
+    let endpoint = ExecutorLoopbackEndpointConfig::new(
+        directory.path().join("missing-executor.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("missing executor endpoint contract");
     assert!(matches!(
-        attachments.attach(executor, &runtime_config()),
+        attachments.attach_endpoint(&endpoint, &runtime_config()),
         Err(CampaignLocalServiceError::RuntimeAuthorityUnavailable)
     ));
-    peer.set_nonblocking(true).expect("nonblocking peer");
-    let mut byte = [0_u8; 1];
-    assert_eq!(peer.read(&mut byte).expect("closed executor peer"), 0);
     drop(service);
     assert!(matches!(
         attachments.attached_campaigns(),
         Err(CampaignLocalServiceError::RuntimeAttachmentClosed)
     ));
 
-    let (_directory, config) = fixture();
+    let (directory, config) = fixture();
     let read_only = CampaignLocalServiceConfig::new(
         config.endpoint().clone(),
         config.state_directory(),
@@ -358,13 +348,18 @@ fn post_bind_attachment_rejects_missing_authority_and_read_only_before_executor_
     .expect("read-only service configuration");
     let service = read_only.open().expect("bind read-only service");
     let attachments = service.runtime_attachment_handle();
-    let (executor, mut peer) = UnixStream::pair().expect("executor stream pair");
+    let metadata = fs::metadata(directory.path()).expect("endpoint directory metadata");
+    let endpoint = ExecutorLoopbackEndpointConfig::new(
+        directory.path().join("missing-executor.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("missing executor endpoint contract");
     assert!(matches!(
-        attachments.attach(executor, &runtime_config()),
+        attachments.attach_endpoint(&endpoint, &runtime_config()),
         Err(CampaignLocalServiceError::RuntimeReadOnly)
     ));
-    peer.set_nonblocking(true).expect("nonblocking peer");
-    assert_eq!(peer.read(&mut byte).expect("closed executor peer"), 0);
     drop(service);
 }
 
@@ -471,9 +466,30 @@ fn post_bind_attachment_is_bounded_live_and_does_not_retain_service_ownership() 
     let shutdown = service.shutdown_handle();
     let server = thread::spawn(move || service.serve().expect("serve dynamic runtime"));
 
-    let (executor, executor_server) = executor_connection(&lineage);
+    let metadata = fs::metadata(directory.path()).expect("runtime endpoint directory metadata");
+    let endpoint = ExecutorLoopbackEndpointConfig::new(
+        directory.path().join("dynamic-executor.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("runtime executor endpoint");
+    let managed = endpoint.bind().expect("bind runtime executor endpoint");
+    let (listener, endpoint_guard) = managed.into_parts();
+    let mut executor_service = executor_capability_service(&lineage, 0x42, b"dynamic-store");
+    let executor_server = thread::spawn(move || {
+        let _endpoint_guard = endpoint_guard;
+        let (mut stream, _) = listener.accept().expect("accept runtime executor");
+        serve_loopback_executor_component_connection_with_limits(
+            &mut stream,
+            &mut executor_service,
+            LoopbackExecutorTimeouts::default(),
+            MAX_EXECUTOR_REQUESTS_PER_CONNECTION,
+        )
+        .expect("serve runtime executor connection");
+    });
     attachments
-        .attach(executor, &named_runtime_config("dynamic"))
+        .attach_endpoint(&endpoint, &named_runtime_config("dynamic"))
         .expect("attach runtime after bind");
     assert_eq!(
         attachments

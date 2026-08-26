@@ -638,8 +638,12 @@ effective UID/GID as the filesystem and peer-policy owner, takes one durable
 repository lock before opening the socket, and stops the lifecycle and campaign
 services plus the attached campaign runtime as one signal-driven lifecycle.
 The executor socket is an absolute, dot-free, exact-owner mode-`0600` Unix
-socket; attachment rechecks its inode and exact peer UID/GID around capability
-negotiation before starting planner or executor work. Restart reopens the same
+socket in an exact-owner, non-group/other-writable directory. Startup and the
+embedded post-bind owner share one endpoint capability that authenticates the
+parent identity, socket owner/mode and before/after inode, and exact peer
+UID/GID before capability negotiation or planner/executor work. The connector
+uses a nonblocking absolute 30-second default deadline rather than allowing a
+full executor backlog to pin attachment indefinitely. Restart reopens the same
 object/ref directories while stale-socket recovery remains exact-owner
 conditional.
 The separately hosted or daemon-packaged executor endpoint has one coupled lifecycle owner: a
