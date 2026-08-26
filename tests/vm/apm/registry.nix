@@ -26,81 +26,11 @@
     pkgs.zlib
   ];
   publishDeps = fixtures.commonDeps ++ nixRuntimeDeps;
-  publishSysrootImage = pkgs.mkDerivation {
-    pname = "apm-registry-publish-sysroot-image";
-    version = "1.0.0";
-    src = null;
-    buildDeps = [pkgs.coreutils pkgs.jq pkgs.zstd];
-    UKI_STORE_PATH = "${pkgs.systemd}/lib/systemd/boot/efi";
-    UKI_FILENAME = "systemd-bootx64.efi";
-    phases = [
-      {
-        name = "build";
-        script = ''
-          mkdir -p "$out"
-          filename=aos-server.img.zst
-          printf 'AOS registry publish image fixture\n' > image.raw
-          truncate -s 1MiB image.raw
-          logical_disk_sha256=$(sha256sum image.raw | cut -d ' ' -f1)
-          zstd -19 -T1 --no-progress image.raw -o "$out/$filename"
-          image_sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
-          image_size=$(stat -c %s "$out/$filename")
-          uki_sha256=$(sha256sum "$UKI_STORE_PATH/$UKI_FILENAME" | cut -d ' ' -f1)
-          uki_size=$(stat -c %s "$UKI_STORE_PATH/$UKI_FILENAME")
-          ${pkgs.jq}/bin/jq -S -n \
-            --arg filename "$filename" \
-            --arg sha256 "$image_sha256" \
-            --arg logicalDiskSha256 "$logical_disk_sha256" \
-            --arg rootfsSha256 "$logical_disk_sha256" \
-            --arg ukiFilename "$UKI_FILENAME" \
-            --arg ukiSha256 "$uki_sha256" \
-            --argjson byteSize "$image_size" \
-            --argjson ukiSize "$uki_size" \
-            '{schemaVersion: 2, name: "server", version: "1.0.0",
-              architecture: "x86_64", platform: "x86_64-linux", format: "raw",
-              filename: $filename,
-              mediaType: "application/vnd.aos.disk-image.raw+zstd", compression: "zstd",
-              byteSize: $byteSize, virtualSizeBytes: 1048576, sha256: $sha256,
-              logicalDiskSha256: $logicalDiskSha256, rootfsSha256: $rootfsSha256,
-              compatibleTargets: ["bare-metal"],
-              artifactBudgetsMiB: {root: 1, verity: 1, initrd: 1, uki: 1, esp: 34, runtimeClosure: 1, download: 2},
-              partitionTable: "gpt", kernelParams: "",
-              partitions: [{number: 1, label: "root-a", type: "root", filesystem: "fake", sizeMiB: 1, offsetBytes: 0, sizeBytes: 1048576}],
-              esp: {uki: "EFI/Linux/aos-server.efi", sdBoot: "EFI/systemd/systemd-bootx64.efi"},
-              uki: {filename: $ukiFilename, espPath: "EFI/Linux/aos-server.efi",
-                byteSize: $ukiSize, sha256: $ukiSha256, signed: false, measured: false}}' \
-            > "$out/image-info.json"
-        '';
-      }
-    ];
-  };
-  publishSysrootArtifact = {
-    pname,
-    filename,
-  }:
-    pkgs.mkDerivation {
-      inherit pname;
-      version = "1.0.0";
-      src = null;
-      buildDeps = [pkgs.coreutils publishSysrootImage];
-      phases = [
-        {
-          name = "install";
-          script = ''
-            rmdir "$out"
-            cp '${publishSysrootImage}/${filename}' "$out"
-          '';
-        }
-      ];
-    };
-  publishSysrootDisk = publishSysrootArtifact {
-    pname = "apm-registry-publish-sysroot-disk";
-    filename = "aos-server.img.zst";
-  };
-  publishSysrootInfo = publishSysrootArtifact {
-    pname = "apm-registry-publish-sysroot-info";
-    filename = "image-info.json";
-  };
+  imageFixtures = import ./image-fixtures.nix {inherit pkgs;};
+  publishSysrootImage = imageFixtures.imageRaw;
+  publishSysrootDisk = imageFixtures.imageRawDisk;
+  publishSysrootInfo = imageFixtures.imageRawInfo;
+  publishSysrootUki = imageFixtures.imageUki;
   maintainerWorkflowDeps =
     publishDeps
     ++ [
@@ -999,7 +929,14 @@ in {
   # -------------------------------------------------------------------------
   registry-publish-sysroot = testing.mkVMTest {
     name = "apm-registry-publish-sysroot";
-    rootfsDeps = publishDeps ++ [publishSysrootImage publishSysrootDisk publishSysrootInfo];
+    rootfsDeps =
+      publishDeps
+      ++ [
+        publishSysrootImage
+        publishSysrootDisk
+        publishSysrootInfo
+        publishSysrootUki
+      ];
     memory = 512;
     testScript = ''
       ${fixtures.setupPreamble}
@@ -1013,7 +950,7 @@ in {
 
       $APR publish ${aosPkg} \
         --name server \
-        --version 1.0.0 \
+        --version 2026.03 \
         --description "Published sysroot by the APR VM workflow" \
         --license MIT \
         --maintainer test \
@@ -1022,7 +959,7 @@ in {
         --image-disk ${publishSysrootDisk} \
         --image-info ${publishSysrootInfo} \
         --image-format raw \
-        --image-uki ${pkgs.systemd}/lib/systemd/boot/efi/systemd-bootx64.efi \
+        --image-uki ${publishSysrootUki}/systemd-bootx64.efi \
         --registry test-reg
 
       # Verify sysroot flag
