@@ -480,11 +480,39 @@ impl PreparedCampaignLocalService {
         runtime: PreparedCanonicalCampaignRuntime,
         executor: AttachedPackagedQemuExecutor,
     ) -> Result<CampaignLocalService, CampaignLocalServiceError> {
-        if !runtime.uses_repository(&self.repository) || !executor.uses_repository(&self.repository)
-        {
+        self.bind_with_runtimes_and_executor(vec![runtime], executor)
+    }
+
+    /// Binds the endpoint with multiple runtimes sharing one packaged executor.
+    ///
+    /// Runtime identities are validated and sorted before endpoint binding.
+    /// Every runtime and the packaged executor must belong to this exact
+    /// repository incarnation, and every runtime must use the executor's exact
+    /// native baked scenario. The executor's fixed workers and aggregate
+    /// resource ceiling are shared across the complete runtime set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError`] for an invalid runtime set,
+    /// repository or scenario mismatch, endpoint acquisition failure, or fixed
+    /// runtime startup failure.
+    pub fn bind_with_runtimes_and_executor(
+        self,
+        mut runtimes: Vec<PreparedCanonicalCampaignRuntime>,
+        executor: AttachedPackagedQemuExecutor,
+    ) -> Result<CampaignLocalService, CampaignLocalServiceError> {
+        self.validate_and_order_runtimes(&mut runtimes)?;
+        if !executor.uses_repository(&self.repository) {
             return Err(CampaignLocalServiceError::RuntimeRepositoryMismatch);
         }
-        self.bind_inner(vec![runtime], Some(executor))
+        let admitted_scenario = executor.admitted_scenario();
+        if runtimes
+            .iter()
+            .any(|runtime| runtime.scenario() != admitted_scenario)
+        {
+            return Err(CampaignLocalServiceError::RuntimeScenarioMismatch);
+        }
+        self.bind_inner(runtimes, Some(executor))
     }
 
     fn bind_inner(
@@ -512,12 +540,16 @@ impl PreparedCampaignLocalService {
             Arc::new(CampaignLocalAuthorizer { policy, mode }),
             server_config,
         )?;
+        let packaged_scope = executor
+            .as_ref()
+            .map(|executor| (executor.endpoint().to_owned(), executor.admitted_scenario()));
         let runtime_registry = CampaignRuntimeRegistryOwner::new(
             repository,
             planner_authority,
             mode,
             server.shutdown_handle(),
             state,
+            packaged_scope,
         );
         if let Some(planner_process) = runtime_control_planner {
             let controller = CanonicalCampaignRuntimeController::new(
@@ -689,6 +721,9 @@ pub enum CampaignLocalServiceError {
     /// A prepared runtime belongs to another repository instance.
     #[error("campaign runtime belongs to another repository instance")]
     RuntimeRepositoryMismatch,
+    /// A prepared runtime uses another packaged native scenario.
+    #[error("campaign runtime scenario is not admitted by the packaged executor")]
+    RuntimeScenarioMismatch,
     /// No runtime or more than the fixed attachment ceiling was supplied.
     #[error("campaign runtime attachment count is outside 1..=256")]
     InvalidRuntimeCount,

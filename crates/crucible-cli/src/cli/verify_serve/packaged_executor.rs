@@ -46,7 +46,7 @@ struct PackagedExecutorDeployment {
 pub(super) fn prepare_cli_packaged_executor(
     prepared: &crucible_daemon::PreparedCampaignLocalService,
     args: &ServeArgs,
-    campaign: &str,
+    campaigns: std::collections::BTreeSet<crucible_campaign::CampaignName>,
     executor_socket: &Path,
     deployment_path: &Path,
     lifecycle: &crucible_api::ProductionVmLifecycleConfig,
@@ -106,23 +106,14 @@ pub(super) fn prepare_cli_packaged_executor(
         deployment.maximum_execution_quanta,
     )
     .map_err(|error| serve_error(format!("campaign executor capacity error: {error}")))?;
-    let campaign = crucible_campaign::CampaignName::new(campaign)
-        .map_err(|error| serve_error(format!("campaign runtime name error: {error}")))?;
     let state = args
         .campaign_state
         .as_ref()
         .ok_or_else(|| serve_error("campaign packaged executor has no state directory"))?;
-    let mut namespace_material = Vec::new();
-    namespace_material.extend_from_slice(campaign.as_str().as_bytes());
-    namespace_material.push(0);
-    namespace_material.extend_from_slice(state.as_os_str().as_encoded_bytes());
-    let store_namespace = crucible_campaign::CampaignHash::derive(
-        "crucible.campaign.packaged-executor-store.v1",
-        &namespace_material,
-    );
+    let store_namespace = packaged_store_namespace(state);
     let daemon_epoch = fresh_daemon_epoch()?;
     let config = crucible_daemon::PackagedQemuExecutorConfig::new(
-        campaign,
+        campaigns,
         endpoint,
         crucible_daemon::ExecutorLoopbackServerConfig::default(),
         state.join("executor-ledger"),
@@ -143,6 +134,13 @@ pub(super) fn prepare_cli_packaged_executor(
         .map_err(|error| serve_error(format!("campaign executor preparation error: {error}")))?;
     crucible_daemon::AttachedPackagedQemuExecutor::start(executor)
         .map_err(|error| serve_error(format!("campaign executor startup error: {error}")))
+}
+
+fn packaged_store_namespace(state: &Path) -> crucible_campaign::CampaignHash {
+    crucible_campaign::CampaignHash::derive(
+        "crucible.campaign.packaged-executor-store.v2",
+        state.as_os_str().as_encoded_bytes(),
+    )
 }
 
 fn load_deployment(path: &Path) -> Result<PackagedExecutorDeployment, CliError> {
@@ -286,5 +284,18 @@ qemu_profile = "deterministic-tcg-v1"
         fs::write(&path, format!("{}unknown = true\n", authored())).expect("write deployment");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("secure deployment");
         assert!(load_deployment(&path).is_err());
+    }
+
+    #[test]
+    fn packaged_executor_store_namespace_is_stable_for_one_state_root() {
+        let state = Path::new("/var/lib/crucible/campaign-state");
+        assert_eq!(
+            packaged_store_namespace(state),
+            packaged_store_namespace(state)
+        );
+        assert_ne!(
+            packaged_store_namespace(state),
+            packaged_store_namespace(Path::new("/var/lib/crucible/other-state"))
+        );
     }
 }

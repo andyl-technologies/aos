@@ -7,7 +7,12 @@ use std::os::unix::net::UnixStream;
 use std::thread;
 use std::time::Duration;
 
-use crucible_campaign::ExecutorClient;
+use crucible_campaign::{
+    CampaignLineage, CampaignMode, CampaignPolicy, CampaignSeed, ConfigurationId, ExactRational,
+    ExecutorClient, ExplorerPolicy, FairnessPolicy, ProgressiveWideningPolicy, PuctPolicy,
+    RetentionPolicy, ScenarioDefId,
+};
+use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
 use crucible_qemu::{
     QemuChildProcessContract, QemuLaunchResourceRequirements, QemuNodeChild,
     QemuPreparedRunDirectory,
@@ -142,7 +147,7 @@ fn config(directory: &tempfile::TempDir, worker_count: usize) -> PackagedQemuExe
     )
     .expect("host configuration");
     PackagedQemuExecutorConfig::new(
-        CampaignName::new("packaged").expect("campaign name"),
+        BTreeSet::from([CampaignName::new("packaged").expect("campaign name")]),
         endpoint,
         ExecutorLoopbackServerConfig::default(),
         directory.path().join("ledger"),
@@ -173,8 +178,14 @@ fn packaged_executor_serves_the_exact_composed_description_and_joins() {
         )),
         Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
     ));
-    let service = compose_packaged_qemu_executor(repository, profile(), config, UnusedHostFactory)
-        .expect("compose packaged executor");
+    let service = compose_packaged_qemu_executor(
+        repository,
+        profile(),
+        scenario_artifact(),
+        config,
+        UnusedHostFactory,
+    )
+    .expect("compose packaged executor");
     let executor = AttachedPackagedQemuExecutor::start(service).expect("start packaged executor");
 
     let stream = UnixStream::connect(socket).expect("connect packaged executor");
@@ -211,7 +222,10 @@ fn packaged_executor_advertises_exact_restore_with_one_owner_per_worker() {
     ));
     let service = compose_packaged_qemu_executor_with_checkpoint_promotions(
         repository,
-        profile(),
+        PackagedCampaignBasis {
+            profile: profile(),
+            scenario: scenario_artifact(),
+        },
         config,
         UnusedHostFactory,
         vec![UnusedPromotionWorker, UnusedPromotionWorker],
@@ -244,7 +258,7 @@ fn packaged_executor_advertises_exact_restore_with_one_owner_per_worker() {
 fn packaged_executor_config_rejects_workers_beyond_slots() {
     let directory = tempfile::tempdir().expect("packaged executor directory");
     let error = PackagedQemuExecutorConfig::new(
-        config(&directory, 1).campaign.clone(),
+        config(&directory, 1).campaigns.clone(),
         config(&directory, 1).endpoint.clone(),
         ExecutorLoopbackServerConfig::default(),
         directory.path().join("ledger-overflow"),
@@ -261,6 +275,151 @@ fn packaged_executor_config_rejects_workers_beyond_slots() {
     )
     .expect_err("worker count should exceed slots");
     assert_eq!(error, PackagedQemuExecutorConfigError::WorkersExceedSlots);
+}
+
+#[test]
+fn packaged_executor_config_rejects_an_empty_campaign_set() {
+    let directory = tempfile::tempdir().expect("packaged executor directory");
+    let fixture = config(&directory, 1);
+    let error = PackagedQemuExecutorConfig::new(
+        BTreeSet::new(),
+        fixture.endpoint.clone(),
+        ExecutorLoopbackServerConfig::default(),
+        directory.path().join("ledger-empty"),
+        directory.path().join("checkpoints-empty"),
+        1,
+        DaemonEpoch::from_bytes([0x63; 16]).expect("daemon epoch"),
+        ExecutorCapacity::new(1, 1, 1, 0, 1).expect("capacity"),
+        1,
+        "x86_64",
+        "deterministic-tcg-v1",
+        CampaignHash::derive("crucible.test.packaged-executor-store.v1", b"empty"),
+        ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state"),
+        fixture.host.clone(),
+    )
+    .expect_err("empty campaign set must fail");
+    assert_eq!(error, PackagedQemuExecutorConfigError::NoCampaigns);
+}
+
+fn scenario_artifact() -> ScenarioArtifactId {
+    ScenarioArtifactId::parse(&format!(
+        "crucible.campaign.scenario-artifact@{}",
+        ContentId::for_bytes(ObjectKind::Scenario, 1, b"packaged-scenario").encode()
+    ))
+    .expect("scenario artifact ID")
+}
+
+fn repository_with_campaigns(campaigns: &[(&str, &[u8], &str)]) -> Arc<CampaignRepository> {
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "packaged-campaign-basis",
+            64 * 1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    for (name, scenario_label, qemu_build) in campaigns {
+        let scenario = ScenarioDefId::from_hash(CampaignHash::derive(
+            "crucible.test.packaged-scenario.v1",
+            scenario_label,
+        ));
+        let scenario_content = repository
+            .publish_scenario_artifact(scenario, 1, scenario_label.to_vec())
+            .expect("publish scenario artifact");
+        let genesis = ConfigurationId::from_hash(CampaignHash::derive(
+            "crucible.test.packaged-genesis.v1",
+            name.as_bytes(),
+        ));
+        let genesis_content = repository
+            .publish_configuration_artifact(
+                scenario,
+                scenario_content,
+                genesis,
+                1,
+                name.as_bytes().to_vec(),
+            )
+            .expect("publish genesis artifact");
+        let lineage = CampaignLineage::new(
+            scenario,
+            scenario_content,
+            genesis,
+            genesis_content,
+            "crucible-test",
+            *qemu_build,
+            std::collections::BTreeMap::from([(String::from("control"), 1)]),
+            1,
+            1,
+        )
+        .expect("campaign lineage");
+        let widening = ProgressiveWideningPolicy::new(
+            ExactRational::new(1, 1).expect("widening coefficient"),
+            ExactRational::new(1, 2).expect("widening exponent"),
+            1,
+            100,
+            1,
+        )
+        .expect("widening policy");
+        let policy = CampaignPolicy::new(
+            scenario,
+            CampaignSeed::from_bytes([7; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                widening: Some(widening),
+                puct: PuctPolicy::new(1_000_000, 1, 0),
+            },
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness policy"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        )
+        .expect("campaign policy");
+        repository
+            .create(name, &lineage, &policy, &std::collections::BTreeMap::new())
+            .expect("create campaign");
+    }
+    repository
+}
+
+#[test]
+fn packaged_campaign_basis_is_order_independent_and_exact() {
+    let repository = repository_with_campaigns(&[
+        ("beta", b"shared", "qemu-test"),
+        ("alpha", b"shared", "qemu-test"),
+    ]);
+    let campaigns = BTreeSet::from([
+        CampaignName::new("beta").expect("beta campaign"),
+        CampaignName::new("alpha").expect("alpha campaign"),
+    ]);
+    let basis = authenticate_packaged_campaigns(&repository, &campaigns)
+        .expect("shared packaged campaign basis");
+    let alpha = repository.head("alpha").expect("alpha head");
+    let lineage = repository
+        .load_lineage(alpha.snapshot().lineage())
+        .expect("alpha lineage");
+    assert_eq!(basis.scenario, lineage.scenario_content());
+    assert!(basis.profile.admits(&lineage));
+
+    let incompatible = repository_with_campaigns(&[
+        ("alpha", b"shared", "qemu-test"),
+        ("beta", b"shared", "different-qemu"),
+    ]);
+    assert!(matches!(
+        authenticate_packaged_campaigns(&incompatible, &campaigns),
+        Err(PackagedQemuExecutorError::CampaignCompatibilityMismatch { campaign })
+            if campaign.as_str() == "beta"
+    ));
+
+    let another_scenario = repository_with_campaigns(&[
+        ("alpha", b"alpha-scenario", "qemu-test"),
+        ("beta", b"beta-scenario", "qemu-test"),
+    ]);
+    assert!(matches!(
+        authenticate_packaged_campaigns(&another_scenario, &campaigns),
+        Err(PackagedQemuExecutorError::CampaignScenarioMismatch { campaign })
+            if campaign.as_str() == "beta"
+    ));
 }
 
 #[test]

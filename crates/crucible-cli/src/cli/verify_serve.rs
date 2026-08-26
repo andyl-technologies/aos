@@ -1126,16 +1126,22 @@ pub(super) fn open_local_campaign_service(
     apply_campaign_import_manifests(&prepared, &args.campaign_import_manifest)?;
     let packaged_executor = match args.campaign_packaged_executor.as_deref() {
         Some(deployment) => {
-            let campaign = args.campaign_runtime.first().ok_or_else(|| {
-                usage_error("--campaign-packaged-executor requires one campaign runtime")
-            })?;
+            let campaigns = args
+                .campaign_runtime
+                .iter()
+                .map(|campaign| {
+                    crucible_campaign::CampaignName::new(campaign).map_err(|error| {
+                        serve_error(format!("campaign runtime name error: {error}"))
+                    })
+                })
+                .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
             let executor_socket = args.campaign_executor_socket.first().ok_or_else(|| {
                 usage_error("--campaign-packaged-executor requires one executor socket")
             })?;
             Some(prepare_cli_packaged_executor(
                 &prepared,
                 args,
-                campaign,
+                campaigns,
                 executor_socket,
                 deployment,
                 production_qemu.ok_or_else(|| {
@@ -1180,15 +1186,7 @@ pub(super) fn open_local_campaign_service(
         None => prepared,
     };
     let service = if let Some(executor) = packaged_executor {
-        let runtime = runtimes
-            .pop()
-            .ok_or_else(|| serve_error("packaged campaign executor has no attached runtime"))?;
-        if !runtimes.is_empty() {
-            return Err(usage_error(
-                "--campaign-packaged-executor currently admits exactly one campaign runtime",
-            ));
-        }
-        prepared.bind_with_runtime_and_executor(runtime, executor)
+        prepared.bind_with_runtimes_and_executor(runtimes, executor)
     } else if runtimes.is_empty() {
         prepared.bind()
     } else {
@@ -1509,9 +1507,14 @@ fn validate_campaign_runtime_attachments(args: &ServeArgs) -> Result<(), CliErro
             ));
         }
     }
-    if args.campaign_packaged_executor.is_some() && args.campaign_runtime.len() != 1 {
+    if args.campaign_packaged_executor.is_some()
+        && args
+            .campaign_executor_socket
+            .windows(2)
+            .any(|pair| pair[0] != pair[1])
+    {
         return Err(usage_error(
-            "--campaign-packaged-executor currently admits exactly one campaign runtime",
+            "--campaign-packaged-executor requires every attached runtime to use the same executor socket",
         ));
     }
     Ok(())

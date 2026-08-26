@@ -298,8 +298,14 @@ listener routes that operation only after exact peer-principal and per-campaign
 policy checks. It reserves before executor I/O, uses the same authenticated
 endpoint connector as startup, and exactly replays an installed request without
 reconnecting to the executor. The CLI exposes that path through `campaign
-attach`; automatic campaign discovery and a shared packaged-executor allocator
-remain open.
+attach`. Startup may now bind multiple explicitly named campaigns to one fixed
+packaged-executor pool when all use the same exact compatibility profile,
+scenario artifact, and managed endpoint. The pool rechecks its scenario on
+attempt admission, and the runtime registry applies the same constraint before
+a post-bind attachment connects to that packaged endpoint. Attachments naming
+another independently authenticated executor retain that executor's own
+capability scope. Automatic campaign discovery and allocation across different
+scenario-specific pools remain open.
 
 The real-node realization boundary now has an executor-owned exact-capture
 primitive for that checkpoint path. It seals the unified event

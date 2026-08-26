@@ -546,14 +546,20 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   planner basis, prepares and sorts the complete set by canonical campaign
   name before any runtime starts, starts only after the CampaignService
   endpoint is acquired, and couples any runtime failure or process shutdown to
-  listener shutdown and complete worker join. The packaged local QEMU executor
-  remains a campaign-specific one-runtime composition.
+  listener shutdown and complete worker join. One packaged local QEMU executor
+  may now own the fixed workers and aggregate capacity for multiple explicitly
+  named campaigns. The complete set is canonicalized and authenticated before
+  host-resource acquisition; every lineage must share the exact compatibility
+  profile and scenario artifact captured by the one native baked genesis, and
+  attempt admission plus post-bind attachment through that packaged endpoint
+  recheck that boundary. Attachments naming another authenticated executor use
+  that executor's own scope.
   The authenticated service now enumerates campaign refs through an explicit
   all-campaign grant using bounded stable ref pages and validates every returned
   head closure. The nested CLI follows those checked pages under explicit page,
   entry, and response-byte budgets and emits resumable structured or human
-  reports. Dynamic attachment, a shared packaged-executor allocator, and richer
-  operational tuning remain open.
+  reports. Allocation across multiple scenario-specific packaged pools and
+  richer operational tuning remain open.
   The QEMU realization executor now exposes only a borrowed already-realized
   live-backend facade without generic VMState/process authority, and the daemon
   composes that capability with a pre-launch exact resource guard and mandatory
@@ -1062,10 +1068,14 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   authenticated listener now routes that request only after peer-principal and
   per-campaign policy checks; the bounded registry provides exact replay without
   repeated executor I/O, and `crucible campaign attach` reports attachment or
-  replay status. Automatic campaign discovery, shared packaged-executor
-  allocation, and additional opaque non-finite model-prior adapters remain
-  open. The first `CampaignService`
-  checkpoint now provides
+  replay status. Startup can now share one fixed packaged-executor pool among
+  an explicit bounded campaign set with one exact scenario artifact; the same
+  executor remains available to compatible post-bind attachments through its
+  exact endpoint and rejects other scenarios before connection or attempt
+  admission. Attachments naming another executor remain independently scoped.
+  Automatic campaign discovery, allocation across scenario-specific pools, and
+  additional opaque non-finite model-prior adapters remain open. The first
+  `CampaignService` checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
   bounded by-value creation, authenticated current-head reads,
   lifecycle/budget/policy control, and additive operator branch submission,

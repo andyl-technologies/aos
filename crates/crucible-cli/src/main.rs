@@ -1436,7 +1436,7 @@ struct ServeArgs {
         conflicts_with = "read_only"
     )]
     campaign_import_manifest: Vec<PathBuf>,
-    /// Attach the packaged planner and one local executor to an existing campaign;
+    /// Attach the packaged planner and an authenticated local executor to a campaign;
     /// repeat in executor-socket order.
     #[arg(
         long,
@@ -1458,7 +1458,7 @@ struct ServeArgs {
         conflicts_with = "read_only"
     )]
     campaign_executor_socket: Vec<PathBuf>,
-    /// Start the packaged local QEMU executor from this strict deployment file.
+    /// Start one packaged local QEMU executor pool from this strict deployment file.
     #[arg(
         long,
         value_name = "path",

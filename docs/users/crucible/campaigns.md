@@ -154,8 +154,19 @@ owner-only packaged-executor deployment file:
   --campaign-component-authority ./campaign-authority.toml \
   --campaign-runtime network-recovery \
   --campaign-executor-socket /run/user/1000/crucible/executor.sock \
+  --campaign-runtime network-recovery-canary \
+  --campaign-executor-socket /run/user/1000/crucible/executor.sock \
   --campaign-packaged-executor ./campaign-executor.toml
 ```
+
+All packaged-mode runtime entries name the same executor socket and share its
+fixed workers and aggregate resource ceiling. The daemon sorts and authenticates
+the complete campaign set before acquiring QEMU host resources. Every campaign
+must have the same exact Crucible/QEMU compatibility profile and scenario
+artifact because one pool owns one native baked genesis; use a separate daemon
+pool for another scenario. The durable store locality derives from
+`--campaign-state`, so reordering or adding a compatible campaign does not
+change the pool identity.
 
 The version-1 deployment file is strict TOML, must be an exact-owner regular
 file with mode `0600`, and is bounded to 64 KiB:
