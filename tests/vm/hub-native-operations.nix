@@ -27,6 +27,11 @@
     destination = "/value";
     text = "native-hub-webhook-secret-v1";
   };
+  cutoverRecipe = pkgs.writeTextFile {
+    name = "hub-native-operations-cutover-recipe";
+    destination = "/recipe.json";
+    text = builtins.readFile ../../docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-generation-v1.fixture.json;
+  };
 in
   testing.mkVMTest {
     name = "hub-native-operations";
@@ -40,12 +45,14 @@ in
       pkgs.git
       pkgs.iproute2
       pkgs.jq
+      pkgs.nix
       pkgs.openssh
       pkgs.sed
       jwtSecret
       probeSigners
       routeKeys
       webhookSecret
+      cutoverRecipe
     ];
     testScript = ''
       set -eu
@@ -60,6 +67,14 @@ in
       webhook_secret=$credential_dir/webhook-secret-v1
       hub_exec="${pkgs.coreutils}/bin/chroot --userspec=65534:65534 / ${pkgs.aos-hub}/bin/aos-hub"
       hub_pid=
+
+      export NIX_REMOTE=""
+      export NIX_CONF_DIR=/tmp/nix-conf
+      mkdir -p "$NIX_CONF_DIR" /nix/var/nix/db /nix/var/nix/gcroots
+      printf '%s\n' 'experimental-features = nix-command' 'sandbox = false' \
+        >"$NIX_CONF_DIR/nix.conf"
+      ${pkgs.nix}/bin/nix-store --init || true
+      ${pkgs.nix}/bin/nix-store --load-db </aos-registration
 
       cleanup() {
         if test -n "$hub_pid"; then
@@ -88,6 +103,71 @@ in
         | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)
       storage_v2_fingerprint=$(${pkgs.coreutils}/bin/sha256sum "$probe_signers" \
         | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)
+
+      echo '==> Exercise offline topology-cutover command boundaries'
+      mkdir -p /tmp/cutover-bundle/bin /tmp/cutover-source /tmp/cutover-inputs
+      ${pkgs.aos}/bin/aos --json hub topology cutover materialize-verifier \
+        --bundle /tmp/cutover-bundle \
+        --bundle-recipe ${cutoverRecipe}/recipe.json \
+        >/tmp/cutover-materialize.json
+      test -x /tmp/cutover-bundle/bin/aos
+      ${pkgs.jq}/bin/jq -e '.result == "materialized"' \
+        /tmp/cutover-materialize.json >/dev/null
+      printf '%s\n' invalid >/tmp/cutover-inputs/key
+      if ${pkgs.aos}/bin/aos --json hub topology cutover generate \
+        --bundle /tmp/cutover-bundle --bundle-source /tmp/cutover-source \
+        --bundle-recipe ${cutoverRecipe}/recipe.json \
+        --bundle-manifest-output /tmp/cutover-inputs/manifest.json \
+        --root-signing-key /tmp/cutover-inputs/key \
+        --document-signing-key /tmp/cutover-inputs/key \
+        --verification-signing-key /tmp/cutover-inputs/key \
+        --trusted-root-public-key /tmp/cutover-inputs/key \
+        --root-signer-key-id root --document-signer-key-id documents \
+        --verification-signer-key-id verification \
+        >/tmp/cutover-generate-invalid.json 2>&1; then
+        echo 'cutover generation unexpectedly accepted an incomplete source' >&2
+        exit 1
+      fi
+      ${pkgs.grep}/bin/grep -Eiq 'input|bundle|source|missing|invalid' \
+        /tmp/cutover-generate-invalid.json
+      printf '%s\n' '{}' >/tmp/cutover-inputs/manifest.json
+      if ${pkgs.aos}/bin/aos --json hub topology cutover verify \
+        --bundle /tmp/cutover-bundle \
+        --bundle-manifest /tmp/cutover-inputs/manifest.json \
+        --trusted-root-public-key /tmp/cutover-inputs/key \
+        --trusted-root-sha256 \
+          0000000000000000000000000000000000000000000000000000000000000000 \
+        >/tmp/cutover-verify-invalid.json 2>&1; then
+        echo 'cutover verification unexpectedly accepted an invalid manifest' >&2
+        exit 1
+      fi
+      ${pkgs.grep}/bin/grep -Eiq 'manifest|schema|invalid|fingerprint' \
+        /tmp/cutover-verify-invalid.json
+
+      echo '==> Exercise package credential authoring and render service boundaries'
+      printf '%s' 'production-bootstrap-secret' >/tmp/credential-plaintext
+      mkdir -p /tmp/apm-author-home /tmp/apm-render-config
+      if HOME=/tmp/apm-author-home \
+        ${pkgs.aos}/bin/apm --json credential encrypt bootstrap-token \
+          /tmp/credential-plaintext --unit bootstrap.socket \
+          >/tmp/credential-invalid-unit.json 2>&1; then
+        echo 'credential encryption unexpectedly accepted a non-service unit' >&2
+        exit 1
+      fi
+      ${pkgs.grep}/bin/grep -Eiq 'must be a service unit' \
+        /tmp/credential-invalid-unit.json
+      if APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
+        ${pkgs.aos}/bin/apm --json render-one example \
+          --manifest /tmp/nonexistent-config-manifest.json \
+          --marker-root /tmp/render-markers --staging-root /tmp/render-stage \
+          >/tmp/render-one-missing.json 2>&1; then
+        echo 'render-one unexpectedly accepted a missing eval manifest' >&2
+        exit 1
+      fi
+      ${pkgs.jq}/bin/jq -e \
+        '.op == "render-one" and .package == "example"
+          and (.error | contains("reading manifest"))' \
+        /tmp/render-one-missing.json >/dev/null
 
       echo '==> Schema is inspectable before instance creation'
       $hub_exec schema dump > /tmp/schema.json
@@ -270,6 +350,57 @@ in
         ${pkgs.grep}/bin/grep -Eiq "$pattern" "$output"
       }
 
+      echo '==> Exercise the public CLI device-login and logout ceremony'
+      cli_profile_home=/tmp/hub-cli-profile
+      mkdir -p "$cli_profile_home"
+      HOME="$cli_profile_home" ${pkgs.aos}/bin/aos hub login --hub "$hub_url" \
+        >/tmp/hub-cli-login.out 2>&1 &
+      login_pid=$!
+      device_code=
+      for attempt in $(${pkgs.coreutils}/bin/seq 1 300); do
+        device_code=$(${pkgs.grep}/bin/grep -Eo \
+          '[A-Z0-9]{4}-[A-Z0-9]{4}' /tmp/hub-cli-login.out \
+          | ${pkgs.coreutils}/bin/head -n1 || true)
+        if test -n "$device_code"; then
+          break
+        fi
+        if ! kill -0 "$login_pid" 2>/dev/null; then
+          ${pkgs.coreutils}/bin/cat /tmp/hub-cli-login.out >&2
+          wait "$login_pid"
+        fi
+        ${pkgs.coreutils}/bin/sleep 0.1
+      done
+      if test -z "$device_code"; then
+        kill "$login_pid" 2>/dev/null || true
+        ${pkgs.coreutils}/bin/cat /tmp/hub-cli-login.out >&2
+        exit 1
+      fi
+      ${pkgs.curl}/bin/curl -fsS -o /tmp/device-approval.out -X POST \
+        -H "Cookie: $cookie" -H "Origin: $hub_url" \
+        --data-urlencode "csrf=$csrf" \
+        --data-urlencode "user_code=$device_code" \
+        --data-urlencode 'decision=approve' "$hub_url/activate"
+      for attempt in $(${pkgs.coreutils}/bin/seq 1 300); do
+        if ! kill -0 "$login_pid" 2>/dev/null; then
+          break
+        fi
+        ${pkgs.coreutils}/bin/sleep 0.1
+      done
+      if kill -0 "$login_pid" 2>/dev/null; then
+        kill "$login_pid" 2>/dev/null || true
+        ${pkgs.coreutils}/bin/cat /tmp/hub-cli-login.out >&2
+        exit 1
+      fi
+      wait "$login_pid"
+      HOME="$cli_profile_home" ${pkgs.aos}/bin/aos --json hub whoami \
+        --hub "$hub_url" >/tmp/profile-whoami.json
+      ${pkgs.jq}/bin/jq -e '.data.email == "operator@example.test"' \
+        /tmp/profile-whoami.json >/dev/null
+      HOME="$cli_profile_home" ${pkgs.aos}/bin/aos --json hub logout \
+        --hub "$hub_url" >/tmp/hub-cli-logout.json
+      ${pkgs.jq}/bin/jq -e '.data.revoked == true' \
+        /tmp/hub-cli-logout.json >/dev/null
+
       echo '==> Exercise the installed aos client against the native service'
       ${pkgs.aos}/bin/aos --json hub whoami --hub "$hub_url" --token "$token" \
         >/tmp/whoami.json
@@ -352,6 +483,31 @@ in
       test -s "$producer_registry/registry.toml"
       test -s "$producer_registry/.git/HEAD"
       test -s "$producer_registry/.git/info/refs"
+      HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos}/bin/apr --json add --no-verify \
+        "file://$producer_registry" --name maintenance --no-clone \
+        >/tmp/apr-add-maintainer-config.json
+      HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos}/bin/apr --json keys register maintainer \
+        --key "$producer_key" --registry maintenance \
+        >/tmp/apr-register-maintainer-key.json
+      if ! HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos}/bin/apr --json publish ${pkgs.grep} \
+        --name qualification-grep --version 1.0.0 \
+        --description 'Hermetic package used by native Hub qualification' \
+        --license GPL-3.0-or-later \
+        --maintainer maintainer@example.test --registry maintenance \
+        --key-id maintainer \
+        >/tmp/apr-publish-package.json 2>&1; then
+        ${pkgs.coreutils}/bin/cat /tmp/apr-publish-package.json >&2
+        exit 1
+      fi
+      ${pkgs.coreutils}/bin/cat /tmp/apr-publish-package.json
+      HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos}/bin/apr --json web generate --registry maintenance \
+        --output /tmp/producer-web >/tmp/apr-web-generate.json
+      test -s /tmp/producer-web/index.html
+      test -s /tmp/producer-web/web/config.json
       producer_surface=/tmp/producer-surface
       HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos}/bin/apr --json origin upload \
@@ -360,30 +516,113 @@ in
       ${pkgs.coreutils}/bin/cat /tmp/apr-origin-upload.json
       test -s "$producer_surface/HEAD"
       test -s "$producer_surface/info/refs"
+      HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos}/bin/apr --json origin prepare-index-bundles \
+        --surface-dir "$producer_surface" \
+        >/tmp/apr-origin-index-bundles.json
       hub_cli_into /tmp/publication-upload.json registry publish upload \
         operations/maintenance --root "$producer_surface"
-      ${pkgs.coreutils}/bin/cat /tmp/publication-upload.json
+      ${pkgs.jq}/bin/jq \
+        '{publication_id: .data.publication_id, state: .data.state,
+          indexed_commit: .data.indexed_commit,
+          object_count: (.data.objects | length)}' \
+        /tmp/publication-upload.json
       publication_id=$(${pkgs.jq}/bin/jq -er .data.publication_id \
         /tmp/publication-upload.json)
       hub_cli_into /tmp/publication-show.json registry publish show "$publication_id"
-      ${pkgs.jq}/bin/jq -e \
-        '.data.state == "ready" and .data.indexed_commit != ""' \
+      ${pkgs.jq}/bin/jq -e '.data.state == "ready"' \
         /tmp/publication-show.json >/dev/null
+      hub_cli_into /tmp/registry-indexed.json registry show \
+        operations/maintenance
+      ${pkgs.jq}/bin/jq -e '.data.registry.index_state == "fresh"' \
+        /tmp/registry-indexed.json >/dev/null
+      hub_cli_into /tmp/registry-packages-indexed.json registry package list \
+        operations/maintenance
+      ${pkgs.jq}/bin/jq -e \
+        '.data | tostring | contains("qualification-grep")' \
+        /tmp/registry-packages-indexed.json >/dev/null
       hub_cli_into /tmp/publication-list.json registry publish list operations/maintenance \
         --state ready --page-size 1
       ${pkgs.jq}/bin/jq -e --arg id "$publication_id" \
         '.data.publications | any(.publication_id == $id and .state == "ready")' \
         /tmp/publication-list.json >/dev/null
+      hub_cli_into /tmp/publication-commit-idempotent.json \
+        registry publish commit "$publication_id"
+      ${pkgs.jq}/bin/jq -e '.data.state == "ready"' \
+        /tmp/publication-commit-idempotent.json >/dev/null
+
+      ${pkgs.jq}/bin/jq \
+        '.data as $publication
+          | {registry: "operations/maintenance", generation: ("a" * 64),
+             refs_digest: $publication.refs_digest,
+             default_commit: $publication.default_commit,
+             parent_publication_id: $publication.publication_id,
+             objects: [($publication.objects[]
+               | {path, sha256, byte_size, kind, media_type})][0:1]}' \
+        /tmp/publication-upload.json >/tmp/publication-abort-manifest.json
+      hub_cli_into /tmp/publication-begin.json registry publish begin \
+        operations/maintenance --manifest /tmp/publication-abort-manifest.json
+      ${pkgs.coreutils}/bin/cat /tmp/publication-begin.json
+      abort_publication_id=$(${pkgs.jq}/bin/jq -er \
+        '[.. | objects | .publication_id? // empty][0]' \
+        /tmp/publication-begin.json)
+      hub_cli_into /tmp/publication-abort.json registry publish abort \
+        "$abort_publication_id"
+      ${pkgs.coreutils}/bin/cat /tmp/publication-abort.json
+      ${pkgs.jq}/bin/jq -e '.data.state == "failed"' \
+        /tmp/publication-abort.json >/dev/null
+      hub_cli_into /tmp/registry-channels.json registry channel list \
+        operations/maintenance --page-size 1
+      ${pkgs.jq}/bin/jq -e '(.data.channels // []) == []' \
+        /tmp/registry-channels.json >/dev/null
+      expect_hub_error registry-channel-missing 'not.?found' \
+        registry channel show operations/maintenance stable
+
+      reviewed registry-mirror-set registry mirror set operations/maintenance \
+        --source https://mirror.operations.example.test/registry/ \
+        --refspec refs/heads/main --interval 1h \
+        --signature-policy required --mode full \
+        >/tmp/registry-mirror-set.json
+      hub_cli_into /tmp/registry-mirror-show.json registry mirror show \
+        operations/maintenance
+      mirror_version=$(resource_version /tmp/registry-mirror-show.json)
+      ${pkgs.jq}/bin/jq -e \
+        '.data.mirror.source_url
+          == "https://mirror.operations.example.test/registry"' \
+        /tmp/registry-mirror-show.json >/dev/null
+      reviewed registry-mirror-sync registry mirror sync operations/maintenance \
+        --if-version "$mirror_version" >/tmp/registry-mirror-sync.json
+      mirror_operation_id=$(${pkgs.jq}/bin/jq -er \
+        '.data.result.operation.operation_id
+          // .data.operation.operation_id
+          // .data.result.operation_id' /tmp/registry-mirror-sync.json)
+      if hub_cli operation watch "$mirror_operation_id" --timeout 30s \
+        >/tmp/registry-mirror-watch.json 2>&1; then
+        echo 'unreachable mirror synchronization unexpectedly succeeded' >&2
+        exit 1
+      fi
+      ${pkgs.grep}/bin/grep -Eiq 'failed|resolve|dns|mirror|timed out' \
+        /tmp/registry-mirror-watch.json
+      hub_cli_into /tmp/registry-mirror-show-failed.json registry mirror show \
+        operations/maintenance
+      mirror_version=$(resource_version /tmp/registry-mirror-show-failed.json)
+      reviewed registry-mirror-remove registry mirror remove operations/maintenance \
+        --if-version "$mirror_version" >/tmp/registry-mirror-remove.json
+      expect_hub_error registry-mirror-removed 'not.?found' \
+        registry mirror show operations/maintenance
 
       echo '==> Exercise registry consumer-cache configuration and review reads'
       hub_cli_into /tmp/cache-stack-empty.json registry cache-stack show \
         operations/maintenance
       ${pkgs.coreutils}/bin/cat /tmp/cache-stack-empty.json
-      ${pkgs.jq}/bin/jq -e \
+      if ! ${pkgs.jq}/bin/jq -e \
         '.data.stack.registry_id == "operations/maintenance"
           and (.data.stack.entries // []) == []
           and .data.stack.resource_version != ""' \
-        /tmp/cache-stack-empty.json >/dev/null
+        /tmp/cache-stack-empty.json >/dev/null; then
+        ${pkgs.coreutils}/bin/cat /tmp/aos-hub.log >&2
+        exit 1
+      fi
       cache_stack_version=$(${pkgs.jq}/bin/jq -er \
         .data.stack.resource_version /tmp/cache-stack-empty.json)
       hub_cli_into /tmp/cache-stack-validation-empty.json \
@@ -412,13 +651,14 @@ in
         operations/maintenance --url https://cache-a.example.test \
         --if-version "$cache_stack_version" >/tmp/cache-stack-external-add.json
       cache_stack_change_id=$(${pkgs.jq}/bin/jq -er \
-        '.data.change_id // .change_id' /tmp/cache-stack-external-add.json)
+        '.data.result.change_id // .data.change_id // .change_id' \
+        /tmp/cache-stack-external-add.json)
       ${pkgs.jq}/bin/jq -e \
-        '(.data.state // .state) == "draft"' \
+        '(.data.result.state // .data.state // .state) == "draft"' \
         /tmp/cache-stack-external-add.json >/dev/null
 
       hub_cli_into /tmp/config-changesets.json registry configuration changesets \
-        --scope registry:operations/maintenance --page-size 1
+        --scope "$registry_id" --page-size 1
       ${pkgs.jq}/bin/jq -e --arg id "$cache_stack_change_id" \
         '.data.changesets | any(.change_id == $id and .status == "draft")' \
         /tmp/config-changesets.json >/dev/null
@@ -443,6 +683,62 @@ in
         operations/maintenance
       ${pkgs.jq}/bin/jq -e '.data | type == "object"' \
         /tmp/config-diff.json >/dev/null
+
+      echo '==> Publish a producer-signed cache stack and draft structural edits'
+      if ! HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos}/bin/apr --json cache generate --registry maintenance \
+          --output /tmp/producer-cache-a \
+          --cache-url https://cache-a.example.test --priority 100 \
+          >/tmp/apr-cache-a.json 2>&1; then
+        ${pkgs.coreutils}/bin/cat /tmp/apr-cache-a.json >&2
+        exit 1
+      fi
+      if ! HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos}/bin/apr --json cache generate --registry maintenance \
+          --output /tmp/producer-cache-b \
+          --cache-url https://cache-b.example.test --priority 90 \
+          >/tmp/apr-cache-b.json 2>&1; then
+        ${pkgs.coreutils}/bin/cat /tmp/apr-cache-b.json >&2
+        exit 1
+      fi
+      ${pkgs.jq}/bin/jq -e \
+        '.cache_pointer_updated == true and .committed == true' \
+        /tmp/apr-cache-a.json >/dev/null
+      ${pkgs.jq}/bin/jq -e \
+        '.cache_pointer_updated == true and .committed == true' \
+        /tmp/apr-cache-b.json >/dev/null
+      HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos}/bin/apr --json origin upload \
+          --registry maintenance --upload-url "file://$producer_surface" \
+          >/tmp/apr-origin-cache-stack-upload.json
+      hub_cli_into /tmp/cache-stack-publication.json registry publish upload \
+        operations/maintenance --root "$producer_surface"
+      ${pkgs.jq}/bin/jq -e '.data.state == "ready"' \
+        /tmp/cache-stack-publication.json >/dev/null
+      hub_cli_into /tmp/cache-stack-indexed.json registry cache-stack show \
+        operations/maintenance
+      ${pkgs.jq}/bin/jq -e \
+        '.data.stack.entries | length == 2' \
+        /tmp/cache-stack-indexed.json >/dev/null
+      cache_stack_version=$(${pkgs.jq}/bin/jq -er \
+        .data.stack.resource_version /tmp/cache-stack-indexed.json)
+      cache_stack_first=$(${pkgs.jq}/bin/jq -er \
+        '.data.stack.entries[0].entry_id' /tmp/cache-stack-indexed.json)
+      cache_stack_second=$(${pkgs.jq}/bin/jq -er \
+        '.data.stack.entries[1].entry_id' /tmp/cache-stack-indexed.json)
+      reviewed cache-stack-move registry cache-stack move \
+        operations/maintenance "$cache_stack_second" \
+        --before "$cache_stack_first" --if-version "$cache_stack_version" \
+        >/tmp/cache-stack-move.json
+      ${pkgs.jq}/bin/jq -e \
+        '(.data.result.state // .data.state // .state) == "draft"' \
+        /tmp/cache-stack-move.json >/dev/null
+      reviewed cache-stack-remove registry cache-stack remove \
+        operations/maintenance "$cache_stack_first" \
+        --if-version "$cache_stack_version" >/tmp/cache-stack-remove.json
+      ${pkgs.jq}/bin/jq -e \
+        '(.data.result.state // .data.state // .state) == "draft"' \
+        /tmp/cache-stack-remove.json >/dev/null
 
       echo '==> Exercise multi-placement operations, equivalence, and policy selection'
       reviewed placement-secondary-create placement add \
@@ -474,16 +770,47 @@ in
         registry:operations/maintenance --from primary --to secondary \
         --wait --timeout 2m --if-version "$secondary_version" \
         >/tmp/placement-replicate.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data.terminal == true
+          and .data.operation.operation.state == "succeeded"' \
+        /tmp/placement-replicate.json >/dev/null
       reviewed placement-repair placement repair \
         registry:operations/maintenance secondary \
         --wait --timeout 2m --if-version "$secondary_version" \
         >/tmp/placement-repair.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data.terminal == true
+          and .data.operation.operation.state == "succeeded"' \
+        /tmp/placement-repair.json >/dev/null
       hub_cli placement show registry:operations/maintenance primary \
         >/tmp/placement-primary.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data.placement.observation.state == "ready"
+          and .data.placement.observation.completeness == "complete"' \
+        /tmp/placement-primary.json >/dev/null
       primary_version=$(resource_version /tmp/placement-primary.json)
       hub_cli placement show registry:operations/maintenance secondary \
         >/tmp/placement-secondary.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data.placement.observation.state == "ready"
+          and .data.placement.observation.completeness == "complete"' \
+        /tmp/placement-secondary.json >/dev/null
       secondary_version=$(resource_version /tmp/placement-secondary.json)
+      hub_cli placement presence registry:operations/maintenance HEAD \
+        --page-size 10 >/tmp/placement-presence-head.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data.presences
+          | any(.placement_name == "secondary" and .state == "present")' \
+        /tmp/placement-presence-head.json >/dev/null
+      sample_publication_object=$(${pkgs.jq}/bin/jq -er \
+        '.data.objects[0].path' /tmp/publication-upload.json)
+      hub_cli placement presence registry:operations/maintenance \
+        "$sample_publication_object" --page-size 10 \
+        >/tmp/placement-presence-sample.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data.presences
+          | any(.placement_name == "secondary" and .state == "present")' \
+        /tmp/placement-presence-sample.json >/dev/null
       expect_hub_error placement-equivalence-distinct \
         'different physical object identities' \
         placement-equivalence confirm \
@@ -623,6 +950,29 @@ in
       hub_cli cache retention roots operations/build-cache \
         --registry operations/maintenance --page-size 1 \
         >/tmp/cache-retention-roots.json
+      reviewed cache-retention-refresh-invalid cache retention refresh \
+        operations/build-cache --registry operations/maintenance \
+        --if-version "$retention_version" \
+        >/tmp/cache-retention-refresh-invalid.json
+      invalid_refresh_operation_id=$(${pkgs.jq}/bin/jq -er \
+        '.data.result.operation.operation_id
+          // .data.operation.operation_id
+          // .data.result.operation_id' /tmp/cache-retention-refresh-invalid.json)
+      if hub_cli operation watch "$invalid_refresh_operation_id" --timeout 30s \
+        >/tmp/cache-retention-refresh-invalid-watch.json 2>&1; then
+        echo 'invalid release selector refresh unexpectedly succeeded' >&2
+        exit 1
+      fi
+      ${pkgs.grep}/bin/grep -Eiq \
+        'failed|no complete verified artifact snapshot' \
+        /tmp/cache-retention-refresh-invalid-watch.json
+      reviewed cache-retention-current-only cache retention set \
+        operations/build-cache --registry operations/maintenance \
+        --current-catalog --removal-grace 1h \
+        --if-version "$retention_version" \
+        >/tmp/cache-retention-current-only.json
+      retention_version=$(resource_version \
+        /tmp/cache-retention-current-only.json)
       reviewed cache-retention-refresh cache retention refresh \
         operations/build-cache --registry operations/maintenance \
         --if-version "$retention_version" --wait --timeout 2m \
@@ -683,6 +1033,33 @@ in
       reviewed cache-population-run cache population run operations/build-cache \
         --registry operations/maintenance --if-version "$population_version" \
         >/tmp/cache-population-run.json
+      population_operation_id=$(${pkgs.jq}/bin/jq -er \
+        '.data.result.operation.operation_id
+          // .data.operation.operation_id
+          // .data.result.operation_id' /tmp/cache-population-run.json)
+      hub_cli operation show "$population_operation_id" \
+        >/tmp/population-operation-pending.json
+      population_operation_version=$(resource_version \
+        /tmp/population-operation-pending.json)
+      hub_cli operation cancel "$population_operation_id" \
+        --if-version "$population_operation_version" \
+        >/tmp/population-operation-cancel.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data.operation.operation.state == "cancelled"' \
+        /tmp/population-operation-cancel.json >/dev/null
+      population_operation_version=$(resource_version \
+        /tmp/population-operation-cancel.json)
+      hub_cli operation retry "$population_operation_id" \
+        --if-version "$population_operation_version" \
+        >/tmp/population-operation-retry.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data.operation.operation.state == "pending"' \
+        /tmp/population-operation-retry.json >/dev/null
+      population_operation_version=$(resource_version \
+        /tmp/population-operation-retry.json)
+      hub_cli operation cancel "$population_operation_id" \
+        --if-version "$population_operation_version" \
+        >/tmp/population-operation-recancel.json
       reviewed cache-coverage-validate cache coverage validate \
         operations/build-cache --registry operations/maintenance \
         --if-version "$population_version" \
@@ -698,6 +1075,16 @@ in
       reviewed cache-population-remove cache population remove \
         operations/build-cache --registry operations/maintenance \
         --if-version "$population_version" >/tmp/cache-population-remove.json
+      expect_hub_error cache-retention-remove-stale \
+        'retention subscription resource version is stale' \
+        cache retention remove operations/build-cache \
+        --registry operations/maintenance --if-version "$retention_version"
+      hub_cli cache retention list operations/build-cache \
+        >/tmp/cache-retention-list-current.json
+      retention_version=$(${pkgs.jq}/bin/jq -er \
+        '.data.subscriptions[]
+          | select(.registry_id == "operations/maintenance")
+          | .resource_version' /tmp/cache-retention-list-current.json)
       reviewed cache-retention-remove cache retention remove \
         operations/build-cache --registry operations/maintenance \
         --if-version "$retention_version" >/tmp/cache-retention-remove.json
@@ -727,25 +1114,9 @@ in
         '.data.result.policy.soft_max_bytes == null and .data.result.policy.soft_max_objects == null' \
         /tmp/cache-gc-policy-unbounded.json >/dev/null
 
-      hub_cli_into /tmp/cache-gc-bootstrap-plan.json \
+      expect_hub_error cache-gc-missing-retained-inventory \
+        'retained root.*is absent from the active cache inventory' \
         cache gc plan create operations/build-cache
-      gc_bootstrap_plan_id=$(${pkgs.jq}/bin/jq -er \
-        '.data.plan.plan_id' /tmp/cache-gc-bootstrap-plan.json)
-      hub_cli_into /tmp/cache-gc-bootstrap-plan-show.json \
-        cache gc plan show operations/build-cache "$gc_bootstrap_plan_id"
-      hub_cli_into /tmp/cache-gc-ack-plan.json \
-        cache gc first-sweep plan-acknowledgement \
-        operations/build-cache --gc-plan-id "$gc_bootstrap_plan_id" \
-        --idempotency-key cache-gc-first-sweep-plan
-      gc_ack_plan_id=$(${pkgs.jq}/bin/jq -er \
-        '.data.plan.plan_id' /tmp/cache-gc-ack-plan.json)
-      gc_ack_hash=$(${pkgs.jq}/bin/jq -er \
-        '.data.plan.confirmation_hash' /tmp/cache-gc-ack-plan.json)
-      expect_hub_error cache-gc-local-first-sweep \
-        'cannot enforce identity-checked deletion' \
-        cache gc first-sweep acknowledge operations/build-cache \
-        --ack-plan-id "$gc_ack_plan_id" --confirm-hash "$gc_ack_hash" \
-        --idempotency-key cache-gc-first-sweep-apply --yes
 
       reviewed cache-gc-control-create cache create operations/gc-control-cache \
         --name 'GC control qualification cache' --visibility private \
@@ -755,6 +1126,9 @@ in
         cache gc plan create operations/gc-control-cache
       gc_control_bootstrap_plan_id=$(${pkgs.jq}/bin/jq -er \
         '.data.plan.plan_id' /tmp/cache-gc-control-bootstrap-plan.json)
+      hub_cli_into /tmp/cache-gc-control-bootstrap-plan-show.json \
+        cache gc plan show operations/gc-control-cache \
+        "$gc_control_bootstrap_plan_id"
       hub_cli_into /tmp/cache-gc-control-ack-plan.json \
         cache gc first-sweep plan-acknowledgement \
         operations/gc-control-cache \
@@ -802,6 +1176,52 @@ in
       expect_hub_error cache-gc-job-abandon-missing 'not found' \
         cache gc jobs abandon operations/gc-control-cache missing-job \
         --if-version absent --plan --idempotency-key missing-job-abandon
+
+      reviewed cache-eviction-placement-create placement add \
+        cache:operations/gc-control-cache eviction-target \
+        --binding instance-default --prefix caches/gc-control-eviction \
+        --kind complete --desired-state active --read disabled \
+        >/tmp/cache-eviction-placement-create.json
+      hub_cli placement show cache:operations/gc-control-cache eviction-target \
+        >/tmp/cache-eviction-placement-show.json
+      eviction_placement_version=$(resource_version \
+        /tmp/cache-eviction-placement-show.json)
+      hub_cli placement eviction plan cache:operations/gc-control-cache \
+        eviction-target --if-version "$eviction_placement_version" \
+        --idempotency-key cache-placement-eviction-plan \
+        >/tmp/cache-placement-eviction-plan.json
+      eviction_plan_id=$(${pkgs.jq}/bin/jq -er .data.plan.plan_id \
+        /tmp/cache-placement-eviction-plan.json)
+      eviction_plan_hash=$(${pkgs.jq}/bin/jq -er .data.plan.confirmation_hash \
+        /tmp/cache-placement-eviction-plan.json)
+      hub_cli placement eviction run --plan-id "$eviction_plan_id" \
+        --confirm-hash "$eviction_plan_hash" --yes \
+        --idempotency-key cache-placement-eviction-run \
+        >/tmp/cache-placement-eviction-run.json
+      eviction_operation_id=$(${pkgs.jq}/bin/jq -er \
+        '.data.operation.operation_id' /tmp/cache-placement-eviction-run.json)
+      hub_cli operation show "$eviction_operation_id" \
+        >/tmp/cache-placement-eviction-operation.json
+      eviction_operation_version=$(resource_version \
+        /tmp/cache-placement-eviction-operation.json)
+      hub_cli operation cancel "$eviction_operation_id" \
+        --if-version "$eviction_operation_version" \
+        >/tmp/cache-placement-eviction-cancel.json
+      hub_cli placement show cache:operations/gc-control-cache eviction-target \
+        >/tmp/cache-eviction-placement-draining.json
+      eviction_placement_version=$(resource_version \
+        /tmp/cache-eviction-placement-draining.json)
+      reviewed cache-eviction-placement-remove placement remove \
+        cache:operations/gc-control-cache eviction-target \
+        --if-version "$eviction_placement_version" \
+        >/tmp/cache-eviction-placement-remove.json
+      hub_cli cache show operations/gc-control-cache \
+        >/tmp/cache-gc-control-before-delete.json
+      gc_control_cache_version=$(resource_version \
+        /tmp/cache-gc-control-before-delete.json)
+      reviewed cache-gc-control-delete cache delete operations/gc-control-cache \
+        --if-version "$gc_control_cache_version" \
+        >/tmp/cache-gc-control-delete.json
 
       echo '==> Exercise tenant inventory and ordinary reviewed CRUD'
       ${pkgs.aos}/bin/aos --json hub org show operations \
@@ -900,10 +1320,18 @@ in
       if hub_cli operation watch "$domain_verify_operation_id" --timeout 10s \
         >/tmp/domain-verify-watch.json 2>&1; then
         ${pkgs.jq}/bin/jq -e \
-          '.data.operation.operation.state == "failed" and .data.terminal == true' \
+          '.data.terminal == true
+            and (.data.operation.operation.state
+              | IN("succeeded", "failed", "cancelled"))' \
           /tmp/domain-verify-watch.json >/dev/null
       else
-        ${pkgs.grep}/bin/grep -Eiq 'not_found|unavailable|DNS' \
+        ${pkgs.jq}/bin/jq -e \
+          'select(.kind == "watch_operation_response")
+            | .data.terminal == true
+              and .data.operation.operation.state == "failed"' \
+          /tmp/domain-verify-watch.json >/dev/null
+        ${pkgs.grep}/bin/grep -Fq \
+          'domain verification requires exactly one desired HTTPS/443 terminator' \
           /tmp/domain-verify-watch.json
       fi
 
@@ -915,6 +1343,16 @@ in
         '.data.organization.stable_id' /tmp/consumer-org-show.json)
       consumer_org_version=$(${pkgs.jq}/bin/jq -er \
         '.data.organization.resource_version' /tmp/consumer-org-show.json)
+      reviewed disposable-registry-create registry create --org analytics \
+        --name disposable --visibility private \
+        >/tmp/disposable-registry-create.json
+      hub_cli registry show analytics/disposable \
+        >/tmp/disposable-registry-show.json
+      disposable_registry_version=$(resource_version \
+        /tmp/disposable-registry-show.json)
+      reviewed disposable-registry-delete registry delete analytics/disposable \
+        --if-version "$disposable_registry_version" \
+        >/tmp/disposable-registry-delete.json
       reviewed binding-create binding create --org operations --name archive \
         --kind s3 --bucket operations-archive --prefix objects \
         --endpoint https://objects.example.test --region us-test-1 --access private \
@@ -967,11 +1405,19 @@ in
       hub_cli operation list --scope "$org_scope" --page-size 1 \
         >/tmp/credential-operation-list.json
       echo '==> Wait for credential-validation terminal state'
-      hub_cli operation watch "$credential_operation_id" --timeout 10s \
-        >/tmp/credential-operation-watch.json
+      if hub_cli operation watch "$credential_operation_id" --timeout 10s \
+        >/tmp/credential-operation-watch.json 2>&1; then
+        echo 'unreachable S3 credential validation unexpectedly succeeded' >&2
+        exit 1
+      fi
       ${pkgs.jq}/bin/jq -e \
-        '.data | tostring | test("failed|succeeded|cancelled")' \
+        'select(.kind == "watch_operation_response")
+          | .data.terminal == true
+            and .data.operation.operation.state == "failed"
+            and (.data.operation.error | length > 0)' \
         /tmp/credential-operation-watch.json >/dev/null
+      ${pkgs.grep}/bin/grep -Eq 'Hub operation .* failed' \
+        /tmp/credential-operation-watch.json
 
       echo '==> Exercise network-policy revision and grant lifecycle'
       reviewed network-policy-add network-policy add operations-allowlist \
@@ -1406,7 +1852,8 @@ in
         | ${pkgs.jq}/bin/jq -e '(.data.releases // []) == []' >/dev/null
       ${pkgs.aos}/bin/aos --json hub registry package list operations/maintenance \
         --hub "$hub_url" --token "$token" \
-        | ${pkgs.jq}/bin/jq -e '(.data.packages // []) == []' >/dev/null
+        | ${pkgs.jq}/bin/jq -e \
+          '.data | tostring | contains("qualification-grep")' >/dev/null
 
       reviewed project-delete org project delete operations --path platform \
         --if-version "$project_version" \
