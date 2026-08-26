@@ -17928,6 +17928,93 @@ impl RpcService {
         .await
     }
 
+    /// Pins the destination's current validated binding revision for physical copies.
+    async fn bind_placement_copy_capability(
+        &self,
+        placement: &crate::db::SurfacePlacementRecord,
+    ) -> Result<(), RpcError> {
+        if self
+            .db
+            .placement_publication_write_revision(placement.id)
+            .await
+            .map_err(RpcError::internal)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        if placement.kind != "complete" || placement.desired_state != "active" {
+            return Err(RpcError::FailedPrecondition(
+                "a physical copy destination must be an active complete placement".to_string(),
+            ));
+        }
+
+        let state = self
+            .db
+            .binding_write_state(placement.binding_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "the destination binding has no write-revision state".to_string(),
+                )
+            })?;
+        let revision_number = state.current_write_revision.ok_or_else(|| {
+            RpcError::FailedPrecondition(
+                "the destination binding has no current write revision".to_string(),
+            )
+        })?;
+        let observation = self
+            .db
+            .binding_write_observation(placement.binding_id, revision_number)
+            .await
+            .map_err(RpcError::internal)?;
+        if !observation.is_some_and(|observation| observation.state == "valid") {
+            return Err(RpcError::FailedPrecondition(
+                "the destination binding's current write revision is not valid".to_string(),
+            ));
+        }
+        let revision = self
+            .db
+            .binding_write_revision(placement.binding_id, revision_number)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "the destination binding's current write revision is missing".to_string(),
+                )
+            })?;
+        if !revision.writes_supported {
+            return Err(RpcError::FailedPrecondition(
+                "the destination binding's current revision does not support writes".to_string(),
+            ));
+        }
+        if placement.requires_conditional_writes && !revision.conditional_writes_supported {
+            return Err(RpcError::FailedPrecondition(
+                "the destination requires conditional writes but its binding revision does not support them"
+                    .to_string(),
+            ));
+        }
+        let credential = self
+            .db
+            .binding_credential_revision(
+                placement.binding_id,
+                &revision.write_credential_purpose,
+                revision.write_credential_generation,
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        if !credential.is_some_and(|credential| credential.validation_state == "valid") {
+            return Err(RpcError::FailedPrecondition(
+                "the destination binding's write credential is not valid".to_string(),
+            ));
+        }
+
+        self.db
+            .bind_surface_placement_write_capability(placement.id, revision_number)
+            .await
+            .map_err(Self::authority_mutation_error)
+    }
+
     /// Schedules replication from one placement to another on the same surface.
     async fn execute_replicate_placement(
         &self,
@@ -17958,6 +18045,12 @@ impl RpcService {
                 "an offline placement cannot receive replication".to_string(),
             ));
         }
+        if source.state != "ready" || source.completeness != "complete" {
+            return Err(RpcError::FailedPrecondition(
+                "replication requires a ready, complete source placement".to_string(),
+            ));
+        }
+        self.bind_placement_copy_capability(&destination).await?;
         self.schedule_placement_operation(
             "replicate_placement",
             &req.idempotency_key,
@@ -18013,6 +18106,12 @@ impl RpcService {
             self.topology_placement(surface, &req.source_placement_name)
                 .await?
         };
+        if source.state != "ready" || source.completeness != "complete" {
+            return Err(RpcError::FailedPrecondition(
+                "repair requires a ready, complete source placement".to_string(),
+            ));
+        }
+        self.bind_placement_copy_capability(&destination).await?;
         let mut targets = vec![("source".to_string(), source)];
         targets.push(("primary".to_string(), destination));
         self.schedule_placement_operation("repair_placement", &req.idempotency_key, targets)

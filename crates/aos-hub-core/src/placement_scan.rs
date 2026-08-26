@@ -451,7 +451,12 @@ impl PlacementScanController {
                 .await?;
         }
 
-        let complete = unknown == 0 && corrupt == 0 && missing == 0;
+        // Completeness is defined against the logical catalog. Providers may
+        // contain control-plane objects such as draft refs that deliberately
+        // are not part of a published surface catalog. Keep reporting those
+        // objects for audit and cleanup, but do not make a byte-complete
+        // placement permanently ineligible for reads.
+        let complete = corrupt == 0 && missing == 0;
         self.db
             .finish_surface_placement_scan(
                 placement.id,
@@ -1087,6 +1092,44 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(operation.state, "succeeded", "{:?}", operation.error);
+        let placement = db.surface_placement(placement.id).await.unwrap().unwrap();
+        assert_eq!(placement.state, "ready");
+        assert_eq!(placement.completeness, "complete");
+    }
+
+    #[tokio::test]
+    async fn uncataloged_control_objects_do_not_degrade_a_complete_placement() {
+        let (db, placement, operation) =
+            scan_fixture("placement-scan-control-object", "scan-control-object").await;
+        let registry_id = placement.registry_id.unwrap();
+        let catalog_path = "objects/aa/cataloged";
+        db.create_surface_object(&SetSurfaceObject {
+            surface: SurfaceTarget::Registry(registry_id),
+            object_key: catalog_path.into(),
+            content_hash: Some(hex::encode(Sha256::digest(b"x"))),
+            size: Some(1),
+            object_kind: "immutable".into(),
+            mutable_publication_id: None,
+        })
+        .await
+        .unwrap();
+
+        let controller = PlacementScanController::new(
+            Arc::clone(&db),
+            Arc::new(LargeSurfaceProvider {
+                paths: Arc::new(vec![catalog_path.into(), "refs/hub/changes/draft".into()]),
+            }),
+        );
+        assert_eq!(controller.run_due(1).await.unwrap(), 1);
+
+        let operation = db
+            .topology_operation(&operation.operation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(operation.state, "succeeded", "{:?}", operation.error);
+        let detail: serde_json::Value = serde_json::from_str(&operation.detail_json).unwrap();
+        assert_eq!(detail["unknownObjects"], 1);
         let placement = db.surface_placement(placement.id).await.unwrap().unwrap();
         assert_eq!(placement.state, "ready");
         assert_eq!(placement.completeness, "complete");
