@@ -1162,9 +1162,11 @@ in
                 - _CFGetTypeID
                 - _CFLocaleCreateCanonicalLanguageIdentifierFromString
                 - _CFMachPortCreateRunLoopSource
+                - _CFMakeCollectable
                 - _CFNumberCreate
                 - _CFNumberGetTypeID
                 - _CFNumberGetValue
+                - _CFNumberIsFloatType
                 - _CFPropertyListCreateWithStream
                 - _CFReadStreamClose
                 - _CFReadStreamCreateWithFile
@@ -1183,6 +1185,8 @@ in
                 - _CFStringCreateWithCString
                 - _CFStringCreateWithBytes
                 - _CFStringCreateCopy
+                - _CFStringCreateMutableCopy
+                - _CFStringCreateWithCharactersNoCopy
                 - _CFStringCompare
                 - _CFStringGetBytes
                 - _CFStringGetCString
@@ -1191,6 +1195,7 @@ in
                 - _CFStringGetMaximumSizeForEncoding
                 - _CFStringGetTypeID
                 - _CFStringHasPrefix
+                - _CFStringNormalize
                 - _CFTimeZoneCopyDefault
                 - _CFTimeZoneCopySystem
                 - _CFTimeZoneGetName
@@ -1216,6 +1221,7 @@ in
                 - ___CFConstantStringClassReference
                 - ___CFStringMakeConstantString
                 - _kCFAllocatorDefault
+                - _kCFAllocatorMalloc
                 - _kCFAllocatorSystemDefault
                 - _kCFBooleanTrue
                 - _kCFRunLoopCommonModes
@@ -3787,6 +3793,7 @@ in
                 - _objc_retainAutoreleasedReturnValue
                 - _objc_storeStrong
                 - _objc_storeWeak
+                - _objc_setProperty_nonatomic
                 - _objc_terminate
                 - _object_getClass
                 - _object_setClass

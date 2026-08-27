@@ -71,13 +71,11 @@ extern NSRunLoopMode const NSDefaultRunLoopMode;
 @interface NSDictionary<KeyType, ObjectType> (AOSJDKSurface)
 + (instancetype)dictionary;
 - (NSArray<KeyType> *)allKeys;
-@end
-
-@interface NSMutableDictionary<KeyType, ObjectType> (AOSJDKSurface)
 - (NSEnumerator<KeyType> *)keyEnumerator;
 @end
 
 @interface NSSet<ObjectType> : NSObject <NSFastEnumeration>
+- (NSEnumerator<ObjectType> *)objectEnumerator;
 @end
 
 @interface NSMutableSet<ObjectType> : NSSet<ObjectType>
