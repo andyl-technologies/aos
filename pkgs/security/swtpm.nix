@@ -21,6 +21,7 @@
   stdenv,
 }: let
   version = "0.10.0";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
     pname = "swtpm";
@@ -33,19 +34,23 @@ in
       hash = "sha256-nxCuDTEjqwXDgI+MjTn2M88aDPFC1qybh7g2SmgqyEI=";
     };
 
-    buildDeps = [
-      gnumake
-      pkg-config
-      autoconf
-      automake
-      libtool
-      m4
-      gettext
-      perl
-      python3
-      glib.dev
-      glib.tools
-    ];
+    buildDeps =
+      [
+        gnumake
+        pkg-config
+        autoconf
+        automake
+        libtool
+        m4
+        gettext
+        perl
+        python3
+      ]
+      ++ (
+        if isDarwinCross
+        then [glib.tools]
+        else [glib.dev glib.tools]
+      );
     runtimeDeps =
       [
         libtpms
@@ -56,6 +61,13 @@ in
         openssl
         bash
       ]
+      ++ (
+        # GLib generators run on the build machine, but swtpm compiles and
+        # links against the target headers and package metadata.
+        if isDarwinCross
+        then [glib.dev]
+        else []
+      )
       ++ (
         if stdenv.hostPlatform.isDarwin
         then []
