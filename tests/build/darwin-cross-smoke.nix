@@ -585,6 +585,24 @@
               '  if (trust != NULL) SecTrustEvaluate(trust, &trustResult);' \
               '  SecCertificateRef certificate = trust == NULL ? NULL : SecTrustGetCertificateAtIndex(trust, 0);' \
               '  CFDataRef certificateData = certificate == NULL ? NULL : SecCertificateCopyData(certificate);' \
+              '  SecPolicyRef policy = SecPolicyCreateSSL(false, NULL);' \
+              '  CFDictionaryRef policyProperties = policy == NULL ? NULL : SecPolicyCopyProperties(policy);' \
+              '  bool policyScoped = policyProperties != NULL && CFDictionaryContainsKey(policyProperties, kSecPolicyOid);' \
+              '  bool sslPolicy = CFEqual(kSecPolicyAppleSSL, kSecPolicyAppleSSL);' \
+              '  CFMutableArrayRef subjectCertificates = CFArrayCreateMutable(NULL, 1, &kCFTypeArrayCallBacks);' \
+              '  CFArraySetValueAtIndex(subjectCertificates, 0, certificate);' \
+              '  SecTrustRef certificateTrust = NULL;' \
+              '  OSStatus createdTrust = SecTrustCreateWithCertificates(subjectCertificates, policy, &certificateTrust);' \
+              '  bool trusted = certificateTrust != NULL && SecTrustEvaluateWithError(certificateTrust, NULL);' \
+              '  CFArrayRef trustSettings = NULL;' \
+              '  OSStatus copiedTrustSettings = SecTrustSettingsCopyTrustSettings(certificate, kSecTrustSettingsDomainUser, &trustSettings);' \
+              '  const void *policyConstants[] = { kSecPolicyAppleSSL, kSecPolicyOid };' \
+              '  const void *trustSettingKeys[] = { kSecTrustSettingsApplication, kSecTrustSettingsPolicy, kSecTrustSettingsPolicyString, kSecTrustSettingsResult };' \
+              '  const void *queryKeys[] = { kSecClass, kSecMatchLimit, kSecReturnRef };' \
+              '  const void *queryValues[] = { kSecClassCertificate, kSecMatchLimitAll, kCFBooleanTrue };' \
+              '  CFDictionaryRef query = CFDictionaryCreate(kCFAllocatorDefault, queryKeys, queryValues, 3, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);' \
+              '  CFTypeRef queryResult = NULL;' \
+              '  OSStatus copiedItems = SecItemCopyMatching(query, &queryResult);' \
               '  SecKeychainRef keychain = NULL;' \
               '  SecKeychainItemRef item = NULL;' \
               '  UInt32 passwordLength = 0;' \
@@ -600,11 +618,18 @@
               '  SSLWrite(context, "aos", 3, &processed);' \
               '  SSLRead(context, NULL, 0, &processed);' \
               '  SSLClose(context);' \
+              '  if (queryResult != NULL) CFRelease(queryResult);' \
+              '  if (query != NULL) CFRelease(query);' \
+              '  if (trustSettings != NULL) CFRelease(trustSettings);' \
+              '  if (certificateTrust != NULL) CFRelease(certificateTrust);' \
+              '  if (subjectCertificates != NULL) CFRelease(subjectCertificates);' \
+              '  if (policyProperties != NULL) CFRelease(policyProperties);' \
+              '  if (policy != NULL) CFRelease(policy);' \
               '  if (error != NULL) CFRelease(error);' \
               '  if (certificateData != NULL) CFRelease(certificateData);' \
               '  if (trust != NULL) CFRelease(trust);' \
               '  if (context != NULL) CFRelease(context);' \
-              '  return trustResult == kSecTrustResultOtherError && processed == (size_t)-1 && copiedKeychain == addedPassword && foundPassword == modifiedPassword && freedPassword == deletedPassword;' \
+              '  return trustResult == kSecTrustResultOtherError && processed == (size_t)-1 && createdTrust == copiedTrustSettings && copiedItems == errSecItemNotFound && policyConstants[0] == NULL && trustSettingKeys[0] == NULL && policyScoped && sslPolicy && trusted && kSecTrustSettingsResultTrustRoot != 1 && kSecTrustSettingsResultTrustAsRoot != 2 && kSecTrustSettingsResultDeny != 3 && kSecTrustSettingsDomainAdmin != 1 && copiedKeychain == addedPassword && foundPassword == modifiedPassword && freedPassword == deletedPassword;' \
               '}' \
               > security-smoke.c
             "$CC" security-smoke.c \
