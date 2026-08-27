@@ -92,9 +92,12 @@ fn mapped_quantum_publishes_one_exact_selectable_reply() -> Result<(), Box<dyn E
 
     QemuShmemHotPathChannel::enqueue_selectable_reply(&mut hot_path, &pending, &reply)?;
 
-    let full = QemuShmemHotPathChannel::enqueue_selectable_reply(&mut hot_path, &pending, &reply)
+    let queued = QemuShmemHotPathChannel::enqueue_selectable_reply(&mut hot_path, &pending, &reply)
         .expect_err("one-entry selectable reply ring must reject pipelining");
-    assert!(full.to_string().contains("full"));
+    assert!(queued.to_string().contains("already queued"));
+
+    let region = mapped_region(6, None, &[])?;
+    let mut hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
     let wrong_sequence = SelectionReply::selected(8, [0x11; 32], [0x22; 32], b"fast".to_vec())?;
     let mismatch =
         QemuShmemHotPathChannel::enqueue_selectable_reply(&mut hot_path, &pending, &wrong_sequence)

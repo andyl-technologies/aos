@@ -160,12 +160,49 @@ flush boundary. Bits 3 through 8 remain clear, so hot fork remains unavailable,
 until their subsystem-owned barriers and reinitializers land. The query is
 observational and does not itself pause, prepare, fork, or mutate the VM.
 
+Patched QEMU also exposes the versioned, bounded internal thread-registry
+snapshot used to drive that future barrier:
+
+```text
+CrucibleHotForkThreadInventory {
+    schema-version: u32 = 1,
+    generation: u64,
+    complete: bool,
+    overflowed: bool,
+    unclassified-threads: u32,
+    threads: [
+        {
+            thread-id: positive i64,
+            name: nonempty UTF-8 string of at most 256 bytes,
+            name-valid: bool,
+            joinable: bool,
+            disposition: coordinator | unclassified,
+        },
+    ],
+}
+```
+
+`threads` MUST contain at most 65,536 entries in strictly increasing thread-ID
+order. `unclassified-threads` MUST equal the number of `unclassified` entries,
+at most one coordinator may be present, and `complete` MUST equal
+`!overflowed && all(name-valid) && coordinator-count == 1`. The process-local
+generation advances when a QEMU-created thread registers, unregisters, or
+changes disposition. The first query registers the process-lifetime QMP
+main-loop coordinator; later observational queries with no thread transition
+return the same generation and body. Every thread created through
+`qemu_thread_create()` is registered before its start routine and unregistered
+through a cleanup handler. Threads created by linked libraries or raw pthread
+calls are not silently treated as QEMU-owned.
+
 The Phase 6 host audit complements that query with bounded operational evidence
 for one exact Linux process generation. It accepts only while proof bit 2 is
-set, brackets the audit with two identical readiness reports, authenticates the
-QEMU PID/start-time/executable identity before and after, and requires two
-complete process-inventory passes to match byte-for-byte. Each pass records all
-visible thread IDs and names, descriptor numbers and link targets, and
+set, brackets the procfs capture with two identical thread-registry snapshots
+inside two identical readiness reports, authenticates the QEMU
+PID/start-time/executable identity before and after, and requires two complete
+process-inventory passes to match byte-for-byte. Each QEMU-registered thread
+MUST be present in that exact process generation. Procfs threads absent from
+the internal registry are reported separately as externally created blockers.
+Each pass also records descriptor numbers and link targets and
 `/proc/<pid>/maps` records, including writable/shared classification. A warm
 pass occurs before the two compared passes so audit-allocation growth is not
 mistaken for target drift in conformance fixtures.
@@ -176,13 +213,16 @@ per mapping record, and 16 MiB of aggregate retained record bytes. Every count,
 length, numeric identifier, mapping grammar, and aggregate addition is checked
 before retention. The aggregate limit applies to each pass; exact comparison
 retains at most two bounded passes, and the warm pass is released first.
-Exceeding a bound, changing process generation, changing the readiness report,
-or observing different inventory passes rejects the audit.
+Exceeding a bound, changing process generation, readiness, or QEMU registry,
+missing a registered thread from procfs, or observing different process passes
+rejects the audit.
 This observed fixed point is deliberately not a quiescence proof: it does not
 inventory mutex ownership, QEMU-internal AIO/BH/timer or RCU state, block/plugin
-internals, or child reinitializers; it cannot set any readiness bit, prepare a
-template, or authorize `fork(2)`. Those proofs must be produced while the
-future QEMU coordinator holds the corresponding subsystem barriers.
+internals, external-thread dispositions, or child reinitializers; the registry
+currently classifies all non-coordinator QEMU threads as `unclassified`. It
+cannot set any readiness bit, prepare a template, or authorize `fork(2)`.
+Those proofs must be produced while the future QEMU coordinator holds the
+corresponding subsystem barriers.
 
 Template realization then adds the following operations:
 

@@ -1,16 +1,63 @@
+diff --git a/include/qemu/thread.h b/include/qemu/thread.h
+index 6f800aad3..22ecfe881 100644
+--- a/include/qemu/thread.h
++++ b/include/qemu/thread.h
+@@ -198,6 +198,40 @@ bool qemu_thread_is_self(QemuThread *thread);
+ G_NORETURN void qemu_thread_exit(void *retval);
+ void qemu_thread_naming(bool enable);
+ 
++#ifdef CONFIG_POSIX
++#define QEMU_HOT_FORK_THREAD_INVENTORY_MAX 65536
++#define QEMU_HOT_FORK_THREAD_NAME_MAX 256
++
++typedef enum QemuThreadHotForkDisposition {
++    QEMU_THREAD_HOT_FORK_COORDINATOR,
++    QEMU_THREAD_HOT_FORK_UNCLASSIFIED,
++} QemuThreadHotForkDisposition;
++
++typedef struct QemuThreadHotForkInventoryEntry {
++    int64_t thread_id;
++    char *name;
++    bool joinable;
++    bool name_valid;
++    QemuThreadHotForkDisposition disposition;
++} QemuThreadHotForkInventoryEntry;
++
++typedef struct QemuThreadHotForkInventory {
++    uint64_t generation;
++    size_t entry_count;
++    size_t overflow_count;
++    QemuThreadHotForkInventoryEntry *entries;
++} QemuThreadHotForkInventory;
++
++/*
++ * Snapshot every active thread created through qemu_thread_create(), plus the
++ * QMP main-loop coordinator that invokes this function.  The bounded snapshot
++ * is audit evidence only; unclassified threads are not fork-safe.
++ */
++void qemu_thread_hot_fork_inventory(QemuThreadHotForkInventory *inventory);
++void qemu_thread_hot_fork_inventory_destroy(
++    QemuThreadHotForkInventory *inventory);
++#endif
++
+ struct Notifier;
+ /**
+  * qemu_thread_atexit_add:
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 17b283b0b..acf1396a4 100644
+index 17b283b0b..53c5f1d18 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
-@@ -20,6 +20,7 @@
+@@ -19,7 +19,9 @@
+ #include "monitor-internal.h"
  #include "monitor/qdev.h"
  #include "monitor/qmp-helpers.h"
++#include "qemu/thread.h"
  #include "system/system.h"
 +#include "system/cpu-timers.h"
  #include "system/kvm.h"
  #include "system/runstate.h"
  #include "system/runstate-action.h"
-@@ -73,6 +74,60 @@ void qmp_stop(Error **errp)
+@@ -73,6 +75,118 @@ void qmp_stop(Error **errp)
      }
  }
  
@@ -68,14 +115,72 @@ index 17b283b0b..acf1396a4 100644
 +    return report;
 +}
 +
++CrucibleHotForkThreadInventory *
++qmp_query_crucible_hot_fork_thread_inventory(Error **errp)
++{
++    CrucibleHotForkThreadInventory *report =
++        g_new0(CrucibleHotForkThreadInventory, 1);
++
++    (void)errp;
++    report->schema_version = 1;
++#ifdef CONFIG_POSIX
++    QemuThreadHotForkInventory inventory;
++    CrucibleHotForkThreadList **tail = &report->threads;
++    uint32_t coordinator_count = 0;
++    uint32_t unclassified_count = 0;
++    size_t index;
++
++    qemu_thread_hot_fork_inventory(&inventory);
++    report->generation = inventory.generation;
++    for (index = 0; index < inventory.entry_count; index++) {
++        QemuThreadHotForkInventoryEntry *source = &inventory.entries[index];
++        CrucibleHotForkThread *thread = g_new0(CrucibleHotForkThread, 1);
++        CrucibleHotForkThreadList *node = g_new0(CrucibleHotForkThreadList, 1);
++
++        thread->thread_id = source->thread_id;
++        thread->name = g_strdup(source->name);
++        thread->name_valid = source->name_valid;
++        thread->joinable = source->joinable;
++        switch (source->disposition) {
++        case QEMU_THREAD_HOT_FORK_COORDINATOR:
++            thread->disposition =
++                CRUCIBLE_HOT_FORK_THREAD_DISPOSITION_COORDINATOR;
++            coordinator_count++;
++            break;
++        case QEMU_THREAD_HOT_FORK_UNCLASSIFIED:
++            thread->disposition =
++                CRUCIBLE_HOT_FORK_THREAD_DISPOSITION_UNCLASSIFIED;
++            unclassified_count++;
++            break;
++        default:
++            g_assert_not_reached();
++        }
++        node->value = thread;
++        *tail = node;
++        tail = &node->next;
++    }
++    report->unclassified_threads = unclassified_count;
++    report->overflowed = inventory.overflow_count != 0;
++    report->complete = inventory.overflow_count == 0 &&
++                       coordinator_count == 1;
++    for (index = 0; index < inventory.entry_count; index++) {
++        report->complete &= inventory.entries[index].name_valid;
++    }
++    qemu_thread_hot_fork_inventory_destroy(&inventory);
++#else
++    report->complete = false;
++#endif
++    return report;
++}
++
  void qmp_cont(Error **errp)
  {
      BlockBackend *blk;
 diff --git a/qapi/run-state.json b/qapi/run-state.json
-index ce95cfa46..6e2024af3 100644
+index ce95cfa46..b76e3d577 100644
 --- a/qapi/run-state.json
 +++ b/qapi/run-state.json
-@@ -132,6 +132,50 @@
+@@ -132,6 +132,135 @@
  { 'command': 'query-status', 'returns': 'StatusInfo',
    'allow-preconfig': true }
  
@@ -123,6 +228,320 @@ index ce95cfa46..6e2024af3 100644
 +{ 'command': 'query-crucible-hot-fork-readiness',
 +  'returns': 'CrucibleHotForkReadiness' }
 +
++##
++# @CrucibleHotForkThreadDisposition:
++#
++# QEMU-owned fork disposition for one internally registered thread.
++#
++# @coordinator: the QMP main-loop thread designated to coordinate a future
++#     fork transaction
++#
++# @unclassified: active QEMU-created thread without a child disposition;
++#     this is never fork-ready
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'enum': 'CrucibleHotForkThreadDisposition',
++  'data': [ 'coordinator', 'unclassified' ] }
++
++##
++# @CrucibleHotForkThread:
++#
++# One active thread in QEMU's bounded internal fork registry.
++#
++# @thread-id: positive operating-system thread identifier
++#
++# @name: bounded UTF-8 QEMU thread name
++#
++# @name-valid: whether @name is the exact nonempty name supplied at creation
++#
++# @joinable: whether QEMU created the thread as joinable
++#
++# @disposition: current QEMU-owned fork disposition
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkThread',
++  'data': { 'thread-id': 'int64',
++            'name': 'str',
++            'name-valid': 'bool',
++            'joinable': 'bool',
++            'disposition': 'CrucibleHotForkThreadDisposition' } }
++
++##
++# @CrucibleHotForkThreadInventory:
++#
++# Bounded snapshot of QEMU's internal active-thread registry.  Entries are
++# sorted by @thread-id.  This report is audit evidence and does not by itself
++# acknowledge child reinitialization or authorize a fork.
++#
++# @schema-version: inventory contract version, currently 1
++#
++# @generation: monotonic process-local register/unregister/disposition counter
++#
++# @complete: true exactly when the registry did not overflow, every name was
++#     retained exactly, and exactly one coordinator is present
++#
++# @overflowed: whether one or more active QEMU-created threads exceeded the
++#     retained registry bound
++#
++# @unclassified-threads: number of active entries without a disposition
++#
++# @threads: every retained active QEMU-created thread, bounded to 65536 entries
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkThreadInventory',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'complete': 'bool',
++            'overflowed': 'bool',
++            'unclassified-threads': 'uint32',
++            'threads': [ 'CrucibleHotForkThread' ] } }
++
++##
++# @query-crucible-hot-fork-thread-inventory:
++#
++# Query the exact bounded active-thread registry owned by QEMU.  The operation
++# is observational apart from first registering the process-lifetime QMP
++# coordinator.  Unclassified or externally created threads remain blockers.
++#
++# Returns: @CrucibleHotForkThreadInventory
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'query-crucible-hot-fork-thread-inventory',
++  'returns': 'CrucibleHotForkThreadInventory' }
++
  ##
  # @SHUTDOWN:
  #
+diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
+index b2e26e212..2af870d3e 100644
+--- a/util/qemu-thread-posix.c
++++ b/util/qemu-thread-posix.c
+@@ -497,13 +497,195 @@ typedef struct {
+     void *(*start_routine)(void *);
+     void *arg;
+     char *name;
++    int mode;
+ } QemuThreadArgs;
+ 
++typedef struct QemuHotForkThreadRecord {
++    int64_t thread_id;
++    char name[QEMU_HOT_FORK_THREAD_NAME_MAX + 1];
++    bool joinable;
++    bool name_valid;
++    bool tracked;
++    QemuThreadHotForkDisposition disposition;
++} QemuHotForkThreadRecord;
++
++static pthread_mutex_t qemu_hot_fork_thread_lock = PTHREAD_MUTEX_INITIALIZER;
++static GList *qemu_hot_fork_threads;
++static size_t qemu_hot_fork_thread_count;
++static size_t qemu_hot_fork_thread_overflow;
++static uint64_t qemu_hot_fork_thread_generation;
++static int64_t qemu_hot_fork_coordinator_thread_id;
++
++static QemuHotForkThreadRecord *qemu_hot_fork_thread_register(
++    const char *name, int mode, QemuThreadHotForkDisposition disposition)
++{
++    QemuHotForkThreadRecord *record = g_new0(QemuHotForkThreadRecord, 1);
++    size_t name_length = name ?
++        strnlen(name, QEMU_HOT_FORK_THREAD_NAME_MAX + 1) : 0;
++    int err;
++
++    record->thread_id = qemu_get_thread_id();
++    record->joinable = mode == QEMU_THREAD_JOINABLE;
++    record->disposition = disposition;
++    record->name_valid = name && name_length <= QEMU_HOT_FORK_THREAD_NAME_MAX &&
++                         g_utf8_validate(name, name_length, NULL);
++    g_strlcpy(record->name, record->name_valid ? name : "<invalid>",
++              sizeof(record->name));
++
++    err = pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++    if (qemu_hot_fork_thread_count == QEMU_HOT_FORK_THREAD_INVENTORY_MAX) {
++        qemu_hot_fork_thread_overflow++;
++    } else {
++        record->tracked = true;
++        qemu_hot_fork_threads = g_list_prepend(qemu_hot_fork_threads, record);
++        qemu_hot_fork_thread_count++;
++    }
++    qemu_hot_fork_thread_generation++;
++    err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++    return record;
++}
++
++static void qemu_hot_fork_thread_unregister(void *opaque)
++{
++    QemuHotForkThreadRecord *record = opaque;
++    int err = pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++
++    if (err) {
++        error_exit(err, __func__);
++    }
++    if (record->tracked) {
++        qemu_hot_fork_threads = g_list_remove(qemu_hot_fork_threads, record);
++        assert(qemu_hot_fork_thread_count > 0);
++        qemu_hot_fork_thread_count--;
++    } else {
++        assert(qemu_hot_fork_thread_overflow > 0);
++        qemu_hot_fork_thread_overflow--;
++    }
++    qemu_hot_fork_thread_generation++;
++    err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++    g_free(record);
++}
++
++static int qemu_hot_fork_thread_entry_compare(const void *left,
++                                               const void *right)
++{
++    const QemuThreadHotForkInventoryEntry *a = left;
++    const QemuThreadHotForkInventoryEntry *b = right;
++
++    return (a->thread_id > b->thread_id) - (a->thread_id < b->thread_id);
++}
++
++static void qemu_hot_fork_register_coordinator(void)
++{
++    int64_t thread_id = qemu_get_thread_id();
++    GList *node;
++    int err = pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++
++    if (err) {
++        error_exit(err, __func__);
++    }
++    if (qemu_hot_fork_coordinator_thread_id == thread_id) {
++        err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++        if (err) {
++            error_exit(err, __func__);
++        }
++        return;
++    }
++    for (node = qemu_hot_fork_threads; node; node = node->next) {
++        QemuHotForkThreadRecord *record = node->data;
++
++        if (record->thread_id == thread_id) {
++            if (record->disposition != QEMU_THREAD_HOT_FORK_COORDINATOR) {
++                record->disposition = QEMU_THREAD_HOT_FORK_COORDINATOR;
++                qemu_hot_fork_thread_generation++;
++            }
++            qemu_hot_fork_coordinator_thread_id = thread_id;
++            err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++            if (err) {
++                error_exit(err, __func__);
++            }
++            return;
++        }
++    }
++    qemu_hot_fork_coordinator_thread_id = thread_id;
++    err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++
++    /* The QMP main-loop thread is process-lifetime authority. */
++    qemu_hot_fork_thread_register("qemu-main-loop", QEMU_THREAD_DETACHED,
++                                  QEMU_THREAD_HOT_FORK_COORDINATOR);
++}
++
++void qemu_thread_hot_fork_inventory(QemuThreadHotForkInventory *inventory)
++{
++    GList *node;
++    size_t index = 0;
++    int err;
++
++    memset(inventory, 0, sizeof(*inventory));
++    qemu_hot_fork_register_coordinator();
++
++    err = pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++    inventory->generation = qemu_hot_fork_thread_generation;
++    inventory->entry_count = qemu_hot_fork_thread_count;
++    inventory->overflow_count = qemu_hot_fork_thread_overflow;
++    inventory->entries = g_new0(QemuThreadHotForkInventoryEntry,
++                                inventory->entry_count);
++    for (node = qemu_hot_fork_threads; node; node = node->next) {
++        QemuHotForkThreadRecord *record = node->data;
++        QemuThreadHotForkInventoryEntry *entry = &inventory->entries[index++];
++
++        entry->thread_id = record->thread_id;
++        entry->name = g_strdup(record->name);
++        entry->joinable = record->joinable;
++        entry->name_valid = record->name_valid;
++        entry->disposition = record->disposition;
++    }
++    assert(index == inventory->entry_count);
++    err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++    if (inventory->entry_count > 1) {
++        qsort(inventory->entries, inventory->entry_count,
++              sizeof(*inventory->entries),
++              qemu_hot_fork_thread_entry_compare);
++    }
++}
++
++void qemu_thread_hot_fork_inventory_destroy(
++    QemuThreadHotForkInventory *inventory)
++{
++    size_t index;
++
++    for (index = 0; index < inventory->entry_count; index++) {
++        g_free(inventory->entries[index].name);
++    }
++    g_free(inventory->entries);
++    memset(inventory, 0, sizeof(*inventory));
++}
++
+ static void *qemu_thread_start(void *args)
+ {
+     QemuThreadArgs *qemu_thread_args = args;
+     void *(*start_routine)(void *) = qemu_thread_args->start_routine;
+     void *arg = qemu_thread_args->arg;
++    int mode = qemu_thread_args->mode;
++    QemuHotForkThreadRecord *hot_fork_record;
+     void *r;
+ 
+     /* Attempt to set the threads name; note that this is for debug, so
+@@ -519,6 +701,8 @@ static void *qemu_thread_start(void *args)
+ # endif
+     }
+     QEMU_TSAN_ANNOTATE_THREAD_NAME(qemu_thread_args->name);
++    hot_fork_record = qemu_hot_fork_thread_register(
++        qemu_thread_args->name, mode, QEMU_THREAD_HOT_FORK_UNCLASSIFIED);
+     g_free(qemu_thread_args->name);
+     g_free(qemu_thread_args);
+ 
+@@ -537,9 +721,11 @@ static void *qemu_thread_start(void *args)
+ #pragma GCC diagnostic ignored "-Wstringop-overflow"
+ #endif
+ 
++    pthread_cleanup_push(qemu_hot_fork_thread_unregister, hot_fork_record);
+     pthread_cleanup_push(qemu_thread_atexit_notify, NULL);
+     r = start_routine(arg);
+     pthread_cleanup_pop(1);
++    pthread_cleanup_pop(1);
+ 
+ #pragma GCC diagnostic pop
+ 
+@@ -577,6 +763,7 @@ void qemu_thread_create(QemuThread *thread, const char *name,
+     qemu_thread_args->name = g_strdup(name);
+     qemu_thread_args->start_routine = start_routine;
+     qemu_thread_args->arg = arg;
++    qemu_thread_args->mode = mode;
+ 
+     err = pthread_create(&thread->thread, &attr,
+                          qemu_thread_start, qemu_thread_args);

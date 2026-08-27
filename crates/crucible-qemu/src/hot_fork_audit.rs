@@ -14,7 +14,10 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use crate::{QemuNodeChannelError, QemuNodeError, QemuProcessIdentity, QmpHotForkReadiness};
+use crate::{
+    QemuNodeChannelError, QemuNodeError, QemuProcessIdentity, QmpHotForkReadiness,
+    QmpHotForkThreadInventory,
+};
 
 /// Maximum threads, descriptors, or mappings retained by one audit.
 pub const MAX_QEMU_HOT_FORK_INVENTORY_ENTRIES: usize = 65_536;
@@ -152,15 +155,42 @@ impl QemuHotForkProcessInventory {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuHotForkAudit {
     readiness: QmpHotForkReadiness,
+    qemu_threads: QmpHotForkThreadInventory,
     process: QemuHotForkProcessInventory,
+    externally_created_thread_ids: Vec<u32>,
 }
 
 impl QemuHotForkAudit {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         readiness: QmpHotForkReadiness,
+        qemu_threads: QmpHotForkThreadInventory,
         process: QemuHotForkProcessInventory,
-    ) -> Self {
-        Self { readiness, process }
+    ) -> Result<Self, QemuHotForkAuditError> {
+        let mut qemu_index = 0_usize;
+        let mut externally_created_thread_ids = Vec::new();
+        for process_thread in process.threads() {
+            let process_thread_id = process_thread.thread_id();
+            if qemu_threads
+                .threads()
+                .get(qemu_index)
+                .is_some_and(|thread| thread.thread_id() == process_thread_id)
+            {
+                qemu_index += 1;
+            } else {
+                externally_created_thread_ids.push(process_thread_id);
+            }
+        }
+        if let Some(thread) = qemu_threads.threads().get(qemu_index) {
+            return Err(QemuHotForkAuditError::RegisteredThreadMissing {
+                thread_id: thread.thread_id(),
+            });
+        }
+        Ok(Self {
+            readiness,
+            qemu_threads,
+            process,
+            externally_created_thread_ids,
+        })
     }
 
     /// Returns QEMU's exact versioned readiness proof report.
@@ -169,10 +199,25 @@ impl QemuHotForkAudit {
         self.readiness
     }
 
+    /// Returns QEMU's matching bounded internal active-thread registry.
+    #[must_use]
+    pub const fn qemu_threads(&self) -> &QmpHotForkThreadInventory {
+        &self.qemu_threads
+    }
+
     /// Returns the matching stable process inventory.
     #[must_use]
     pub const fn process(&self) -> &QemuHotForkProcessInventory {
         &self.process
+    }
+
+    /// Returns procfs thread IDs absent from QEMU's internal registry.
+    ///
+    /// These threads may come from linked libraries or other raw pthread users;
+    /// each remains a blocker until QEMU owns an explicit disposition for it.
+    #[must_use]
+    pub fn externally_created_thread_ids(&self) -> &[u32] {
+        &self.externally_created_thread_ids
     }
 }
 
@@ -185,12 +230,24 @@ pub enum QemuHotForkAuditError {
     /// The QMP readiness query failed.
     #[error("QEMU hot-fork readiness query failed")]
     Readiness(#[source] QemuNodeChannelError),
+    /// The QEMU-owned active-thread inventory query failed.
+    #[error("QEMU hot-fork active-thread inventory query failed")]
+    ThreadInventory(#[source] QemuNodeChannelError),
     /// QEMU was not at the exact paused/device-flush boundary.
     #[error("QEMU is not at the exact paused boundary required for hot-fork audit")]
     NotExactPausedBoundary,
     /// QEMU's proof bitmap changed around the process inventory.
     #[error("QEMU hot-fork readiness changed during process inventory")]
     ReadinessChanged,
+    /// QEMU's internal active-thread registry changed around procfs capture.
+    #[error("QEMU hot-fork active-thread inventory changed during process inventory")]
+    ThreadInventoryChanged,
+    /// A QEMU-registered thread was absent from the exact procfs inventory.
+    #[error("QEMU-registered thread {thread_id} is absent from the process inventory")]
+    RegisteredThreadMissing {
+        /// Missing registered operating-system thread identifier.
+        thread_id: u32,
+    },
     /// Linux process inventory failed.
     #[error(transparent)]
     Inventory(#[from] QemuHotForkInventoryError),
@@ -593,6 +650,8 @@ fn proc_io(operation: &'static str, path: &Path, source: io::Error) -> QemuHotFo
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use std::fs;
     use std::os::unix::fs::symlink;
 
@@ -683,6 +742,48 @@ mod tests {
             })
         ));
         assert_eq!(retained, MAX_QEMU_HOT_FORK_INVENTORY_BYTES);
+    }
+
+    #[test]
+    fn qemu_registry_is_exactly_reconciled_with_procfs_threads() {
+        let process = QemuHotForkProcessInventory {
+            process: QemuProcessIdentity {
+                process_id: 10,
+                start_time_ticks: 1,
+                executable: PathBuf::from("/qemu"),
+            },
+            threads: vec![
+                QemuHotForkThreadInventory {
+                    thread_id: 10,
+                    name: b"qmp-main-loop".to_vec(),
+                },
+                QemuHotForkThreadInventory {
+                    thread_id: 20,
+                    name: b"external".to_vec(),
+                },
+            ],
+            descriptors: Vec::new(),
+            mappings: Vec::new(),
+            retained_bytes: 26,
+        };
+        let readiness =
+            QmpHotForkReadiness::from_acknowledged_proofs(7).expect("scripted readiness bitmap");
+        let audit = QemuHotForkAudit::new(
+            readiness,
+            QmpHotForkThreadInventory::one_coordinator(10),
+            process.clone(),
+        )
+        .expect("registered coordinator should match procfs");
+        assert_eq!(audit.externally_created_thread_ids(), &[20]);
+
+        assert!(matches!(
+            QemuHotForkAudit::new(
+                readiness,
+                QmpHotForkThreadInventory::one_coordinator(30),
+                process,
+            ),
+            Err(QemuHotForkAuditError::RegisteredThreadMissing { thread_id: 30 })
+        ));
     }
 
     #[test]

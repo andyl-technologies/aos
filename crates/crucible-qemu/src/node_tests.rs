@@ -70,6 +70,7 @@ enum ChannelCall {
     QmpStop,
     QmpContinue,
     QmpHotForkReadiness,
+    QmpHotForkThreadInventory,
     QmpTerminalLifecycle {
         action: ContentHash,
         evidence: ContentHash,
@@ -113,6 +114,7 @@ struct ScriptedHostIoRuntime {
 #[derive(Clone)]
 struct ScriptedQmpMachineControl {
     log: SharedLog,
+    process_id: u32,
     fail_stop: bool,
     fail_snapshot: bool,
     timeout_snapshot: bool,
@@ -375,6 +377,18 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
                 "scripted readiness bitmap is invalid",
             )
         })
+    }
+
+    fn query_hot_fork_thread_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkThreadInventory, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkThreadInventory);
+        Ok(crate::QmpHotForkThreadInventory::one_coordinator(
+            self.process_id,
+        ))
     }
 
     fn complete_terminal_lifecycle_exit(
@@ -647,15 +661,37 @@ fn hot_fork_audit_brackets_one_exact_child_process_inventory() -> Result<(), Box
     let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
     let process_id = node.child.process_id();
 
+    // `spawn` confirms `exec`, not completion of the child's loader/runtime
+    // setup. Entering nanosleep gives the procfs fixed-point assertion a
+    // deterministic fixture rather than racing startup mappings.
+    let status_path = format!("/proc/{process_id}/status");
+    let mut sleeping = false;
+    for _ in 0..500 {
+        let status = std::fs::read_to_string(&status_path)?;
+        if status.lines().any(|line| line.starts_with("State:\tS")) {
+            sleeping = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if !sleeping {
+        return Err(format!("scripted child {process_id} did not enter sleeping state").into());
+    }
+
     let audit = node.audit_hot_fork_process()?;
     assert_eq!(audit.readiness().acknowledged_proofs(), 7);
     assert_eq!(audit.process().process().process_id, process_id);
     assert!(!audit.process().threads().is_empty());
     assert!(!audit.process().mappings().is_empty());
+    assert_eq!(audit.qemu_threads().threads().len(), 1);
+    assert_eq!(audit.qemu_threads().threads()[0].thread_id(), process_id);
+    assert!(audit.externally_created_thread_ids().is_empty());
     assert_eq!(
         recorded(&log),
         vec![
             ChannelCall::QmpHotForkReadiness,
+            ChannelCall::QmpHotForkThreadInventory,
+            ChannelCall::QmpHotForkThreadInventory,
             ChannelCall::QmpHotForkReadiness,
         ]
     );
@@ -884,6 +920,8 @@ fn scripted_node_with_fault_events(
 ) -> Result<QemuNode, Box<dyn Error>> {
     let mut events = events.into_iter();
     let staged_fault_events = events.next().into_iter().collect();
+    let child = Command::new("sleep").arg("60").spawn()?;
+    let process_id = child.id();
     let channels = QemuNodeChannels::new(
         ScriptedPluginControl {
             log: Arc::clone(&log),
@@ -902,12 +940,12 @@ fn scripted_node_with_fault_events(
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
+            process_id,
             fail_stop: false,
             fail_snapshot: false,
             timeout_snapshot: false,
         },
     );
-    let child = Command::new("sleep").arg("60").spawn()?;
     Ok(QemuNode::new(
         QemuNodeChild::new(child),
         channels,
@@ -962,6 +1000,8 @@ fn scripted_node_with_coverage(
     let quantum_coverage = quantum_coverage.into_iter().collect::<VecDeque<_>>();
     let teardown_coverage = teardown_coverage.into_iter().collect::<Vec<_>>();
     let coverage_enabled = !quantum_coverage.is_empty() || !teardown_coverage.is_empty();
+    let child = Command::new("sleep").arg("60").spawn()?;
+    let process_id = child.id();
     let channels = QemuNodeChannels::new(
         ScriptedPluginControl {
             log: Arc::clone(&log),
@@ -980,12 +1020,12 @@ fn scripted_node_with_coverage(
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
+            process_id,
             fail_stop: options.fail_qmp_stop,
             fail_snapshot: options.fail_qmp_snapshot,
             timeout_snapshot: options.qmp_snapshot_timeout,
         },
     );
-    let child = Command::new("sleep").arg("60").spawn()?;
     Ok(QemuNode::new(
         QemuNodeChild::new(child),
         channels,
