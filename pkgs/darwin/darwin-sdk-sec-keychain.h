@@ -11,6 +11,7 @@ enum {
   kSecModDateItemAttr = 'mdat',
   kSecLabelItemAttr = 'labl'
 };
+OSStatus SecKeychainOpen(const char *pathName, SecKeychainRef *keychain);
 OSStatus SecKeychainCopyDefault(SecKeychainRef *keychain);
 OSStatus SecKeychainAddGenericPassword(
   SecKeychainRef keychain,

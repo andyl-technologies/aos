@@ -34,6 +34,7 @@ exports:
       - _SecKeychainAddGenericPassword
       - _SecKeychainCopyDefault
       - _SecKeychainFindGenericPassword
+      - _SecKeychainOpen
       - _SecKeychainItemDelete
       - _SecKeychainItemFreeContent
       - _SecKeychainItemCopyContent
@@ -63,6 +64,7 @@ exports:
       - _kSecClassCertificate
       - _kSecMatchLimit
       - _kSecMatchLimitAll
+      - _kSecMatchSearchList
       - _kSecPolicyAppleSSL
       - _kSecPolicyOid
       - _kSecReturnRef

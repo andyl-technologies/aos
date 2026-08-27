@@ -1,0 +1,29 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos, arm64-macos ]
+install-name: '/System/Library/Frameworks/CoreMIDI.framework/Versions/A/CoreMIDI'
+current-version: 69.0.0
+exports:
+  - targets: [ x86_64-macos, arm64-macos ]
+    symbols:
+      - _MIDIClientCreate
+      - _MIDIFlushOutput
+      - _MIDIGetDestination
+      - _MIDIGetNumberOfDestinations
+      - _MIDIGetNumberOfSources
+      - _MIDIGetSource
+      - _MIDIInputPortCreate
+      - _MIDIObjectGetIntegerProperty
+      - _MIDIObjectGetStringProperty
+      - _MIDIOutputPortCreate
+      - _MIDIPacketListAdd
+      - _MIDIPacketListInit
+      - _MIDIPortConnectSource
+      - _MIDIPortDisconnectSource
+      - _MIDISend
+      - _kMIDIPropertyDisplayName
+      - _kMIDIPropertyDriverVersion
+      - _kMIDIPropertyManufacturer
+      - _kMIDIPropertyName
+      - _kMIDIPropertyUniqueID
+...

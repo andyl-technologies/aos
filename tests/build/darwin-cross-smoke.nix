@@ -537,6 +537,26 @@
               -lobjc \
               -o "$c/bin/aos-darwin-jdk-sdk-smoke"
 
+            cp ${./darwin-jdk25-sdk-smoke.m} jdk25-sdk-smoke.m
+            "$CC" jdk25-sdk-smoke.m \
+              -framework Foundation \
+              -framework AppKit \
+              -framework ApplicationServices \
+              -framework AudioToolbox \
+              -framework AudioUnit \
+              -framework CFNetwork \
+              -framework CoreAudio \
+              -framework CoreFoundation \
+              -framework CoreGraphics \
+              -framework CoreMIDI \
+              -framework CoreText \
+              -framework CoreVideo \
+              -framework OpenGL \
+              -framework QuartzCore \
+              -framework Security \
+              -lobjc \
+              -o "$c/bin/aos-darwin-jdk25-sdk-smoke"
+
             # Apple's split Foundation headers are valid entry points, not
             # aliases that only work after the umbrella has established the
             # base type order. Compile and link each one first in an otherwise
@@ -999,6 +1019,7 @@
               "$c/bin/aos-darwin-hypervisor-smoke" \
               "$c/bin/aos-darwin-iconv-smoke" \
               "$c/bin/aos-darwin-jdk-sdk-smoke" \
+              "$c/bin/aos-darwin-jdk25-sdk-smoke" \
               "$c/bin/aos-darwin-foundation-NSDate-smoke" \
               "$c/bin/aos-darwin-foundation-NSString-smoke" \
               "$c/bin/aos-darwin-foundation-NSValue-smoke" \

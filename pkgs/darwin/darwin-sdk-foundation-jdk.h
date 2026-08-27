@@ -24,6 +24,8 @@ typedef NSComparisonResult (^NSComparator)(id object1, id object2);
 
 extern NSExceptionName const NSInvalidArgumentException;
 extern NSExceptionName const NSMallocException;
+extern NSExceptionName const NSGenericException;
+extern NSExceptionName const NSInternalInconsistencyException;
 extern NSRunLoopMode const NSDefaultRunLoopMode;
 
 typedef void NSUncaughtExceptionHandler(NSException *exception);
@@ -210,6 +212,7 @@ typedef struct _NSZone NSZone;
 extern NSString *const NSURLIsRegularFileKey;
 
 @interface NSString (AOSJDKSurface)
+- (int)intValue;
 - (NSStringEncoding)fastestEncoding;
 - (NSUInteger)lengthOfBytesUsingEncoding:(NSStringEncoding)encoding;
 - (BOOL)hasPrefix:(NSString *)string;

@@ -324,7 +324,7 @@ enum {
   NSApplicationActivateIgnoringOtherApps = 1UL << 1,
 };
 
-enum {
+typedef NS_OPTIONS(unsigned long long, NSEventMask) {
   NSLeftMouseDownMask = 1UL << 1,
   NSLeftMouseUpMask = 1UL << 2,
   NSRightMouseDownMask = 1UL << 3,
@@ -348,7 +348,7 @@ enum {
   NSOtherMouseDownMask = 1UL << 25,
   NSOtherMouseUpMask = 1UL << 26,
   NSOtherMouseDraggedMask = 1UL << 27,
-  NSAnyEventMask = NSUIntegerMax,
+  NSAnyEventMask = ~0ULL,
 };
 
 enum {
@@ -464,7 +464,7 @@ typedef struct OpaqueIconRef *IconRef;
 - (BOOL)isKeyWindow;
 - (BOOL)isZoomed;
 - (void)setAlphaValue:(CGFloat)windowAlpha;
-- (id)contentView;
+- (__kindof NSView *)contentView;
 - (void)setContentView:(NSView *)view;
 - (void)setInitialFirstResponder:(NSView *)view;
 - (void)setLevel:(NSInteger)newLevel;
@@ -571,7 +571,7 @@ typedef struct OpaqueIconRef *IconRef;
 - (void)activateIgnoringOtherApps:(BOOL)flag;
 - (BOOL)isActive;
 - (void)postEvent:(NSEvent *)event atStart:(BOOL)flag;
-- (NSEvent *)nextEventMatchingMask:(NSUInteger)mask
+- (NSEvent *)nextEventMatchingMask:(NSEventMask)mask
                          untilDate:(NSDate *)expiration
                             inMode:(NSString *)mode
                            dequeue:(BOOL)deqFlag;
@@ -765,6 +765,10 @@ typedef struct OpaqueIconRef *IconRef;
 @interface NSControl : NSView
 @end
 
+@interface NSButton : NSControl
+@property(nullable, strong) NSImage *image;
+@end
+
 @interface NSImageRep : NSObject
 - (NSSize)size;
 - (void)setSize:(NSSize)aSize;
@@ -887,6 +891,9 @@ typedef struct OpaqueIconRef *IconRef;
 - (NSStatusItem *)statusItemWithLength:(CGFloat)length;
 - (void)removeStatusItem:(NSStatusItem *)item;
 - (CGFloat)thickness;
+@end
+
+@interface NSStatusBarButton : NSButton
 @end
 
 @interface NSStatusItem : NSObject

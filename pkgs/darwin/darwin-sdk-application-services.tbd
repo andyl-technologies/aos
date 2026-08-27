@@ -23,6 +23,8 @@ exports:
       - _LSFindApplicationForInfo
       - _LSOpenCFURLRef
       - _LSOpenFromURLSpec
+      - _PMGetDuplex
+      - _PMSetDuplex
       - _TransformProcessType
       - _UTTypeConformsTo
       - _UTTypeCopyDescription

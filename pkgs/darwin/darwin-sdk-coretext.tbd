@@ -20,6 +20,9 @@ exports:
       - _CTFontCopyTable
       - _CTFontCreateUIFontForLanguage
       - _CTFontCreatePathForGlyph
+      - _CTFontCreateCopyWithSymbolicTraits
+      - _CTFontDrawGlyphs
+      - _CTFontManagerRegisterFontsForURL
       - _CTFontDescriptorCopyAttribute
       - _CTFontGetAdvancesForGlyphs
       - _CTFontGetGlyphsForCharacters

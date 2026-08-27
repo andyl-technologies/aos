@@ -15,13 +15,16 @@ typedef uint32_t CTFontUIFontType;
 typedef uint32_t CTFontOrientation;
 typedef FourCharCode CTFontTableTag;
 typedef uint32_t CTFontTableOptions;
+typedef uint32_t CTFontSymbolicTraits;
+typedef uint32_t CTFontManagerScope;
 
 enum {
   kCTFontUIFontSystem = 2,
   kCTFontUIFontEmphasizedSystem = 3,
   kCTFontOrientationDefault = 0,
   kCTFontDefaultOrientation = kCTFontOrientationDefault,
-  kCTFontTableOptionNoOptions = 0
+  kCTFontTableOptionNoOptions = 0,
+  kCTFontManagerScopeProcess = 1
 };
 
 extern const CFStringRef kCTFontFamilyNameAttribute;
@@ -79,6 +82,25 @@ CGPathRef CTFontCreatePathForGlyph(
   CTFontRef font,
   CGGlyph glyph,
   const CGAffineTransform *matrix
+);
+CTFontRef CTFontCreateCopyWithSymbolicTraits(
+  CTFontRef font,
+  CGFloat size,
+  const CGAffineTransform *matrix,
+  CTFontSymbolicTraits value,
+  CTFontSymbolicTraits mask
+);
+void CTFontDrawGlyphs(
+  CTFontRef font,
+  const CGGlyph glyphs[],
+  const CGPoint positions[],
+  size_t count,
+  CGContextRef context
+);
+bool CTFontManagerRegisterFontsForURL(
+  CFURLRef fontURL,
+  CTFontManagerScope scope,
+  CFErrorRef *error
 );
 
 #endif
