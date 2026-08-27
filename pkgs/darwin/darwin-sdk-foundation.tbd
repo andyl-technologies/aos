@@ -1,0 +1,39 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos, arm64-macos ]
+install-name: '/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation'
+current-version: 3100.0.0
+compatibility-version: 300.0.0
+reexported-libraries:
+  - targets: [ x86_64-macos, arm64-macos ]
+    libraries:
+      - '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'
+      - '/usr/lib/libobjc.A.dylib'
+exports:
+  - targets: [ x86_64-macos, arm64-macos ]
+    symbols:
+      - _NSLog
+      - _NSSearchPathForDirectoriesInDomains
+      - '_OBJC_CLASS_$_NSArray'
+      - '_OBJC_CLASS_$_NSData'
+      - '_OBJC_CLASS_$_NSBundle'
+      - '_OBJC_CLASS_$_NSDictionary'
+      - '_OBJC_CLASS_$_NSEnumerator'
+      - '_OBJC_CLASS_$_NSAutoreleasePool'
+      - '_OBJC_CLASS_$_NSBlockOperation'
+      - '_OBJC_CLASS_$_NSException'
+      - '_OBJC_CLASS_$_NSMutableArray'
+      - '_OBJC_CLASS_$_NSMutableAttributedString'
+      - '_OBJC_CLASS_$_NSMutableDictionary'
+      - '_OBJC_CLASS_$_NSNumber'
+      - '_OBJC_CLASS_$_NSNotification'
+      - '_OBJC_CLASS_$_NSObject'
+      - '_OBJC_CLASS_$_NSProcessInfo'
+      - '_OBJC_CLASS_$_NSString'
+      - '_OBJC_CLASS_$_NSThread'
+      - '_OBJC_CLASS_$_NSURL'
+      - '_OBJC_CLASS_$_NSUserDefaults'
+      - '_OBJC_METACLASS_$_NSException'
+      - '_OBJC_METACLASS_$_NSBlockOperation'
+      - '_OBJC_METACLASS_$_NSObject'
+...

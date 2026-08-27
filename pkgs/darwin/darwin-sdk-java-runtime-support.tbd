@@ -1,0 +1,45 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos, arm64-macos ]
+install-name: '/System/Library/Frameworks/JavaVM.framework/Versions/A/Frameworks/JavaRuntimeSupport.framework/Versions/A/JavaRuntimeSupport'
+current-version: 14.9.0
+compatibility-version: 1.0.0
+reexported-libraries:
+  - targets: [ x86_64-macos, arm64-macos ]
+    libraries:
+      - '/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit'
+      - '/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices'
+exports:
+  - targets: [ x86_64-macos, arm64-macos ]
+    symbols:
+      - _JRSAccessibilityUnregisterUniqueIdForUIElement
+      - _JRSFontAlignStyleForFractionalMeasurement
+      - _JRSFontCreateFallbackFontForCharacters
+      - _JRSFontGetBoundingBoxesForGlyphsAndStyle
+      - _JRSFontGetRenderingStyleForHints
+      - _JRSFontSetRenderingStyleOnContext
+      - _JRSFontStyleUsesFractionalMetrics
+      - _JRSUIControlCreate
+      - _JRSUIControlDraw
+      - _JRSUIControlGetHitPart
+      - _JRSUIControlGetScrollBarOffsetFor
+      - _JRSUIControlGetScrollBarPartBounds
+      - _JRSUIControlRelease
+      - _JRSUIControlSetAlignmentHorizontal
+      - _JRSUIControlSetAlignmentVertical
+      - _JRSUIControlSetAnimating
+      - _JRSUIControlSetDirection
+      - _JRSUIControlSetOrientation
+      - _JRSUIControlSetScrollBarPart
+      - _JRSUIControlSetSegmentPosition
+      - _JRSUIControlSetShowArrows
+      - _JRSUIControlSetSize
+      - _JRSUIControlSetState
+      - _JRSUIControlSetValueByKey
+      - _JRSUIControlSetVariant
+      - _JRSUIControlSetWidget
+      - _JRSUIControlSetWindowType
+      - _JRSUIControlShouldScrollToClick
+      - _JRSUIGetKey
+      - _JRSUIRendererCreate
+...

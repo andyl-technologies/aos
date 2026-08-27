@@ -1,5 +1,48 @@
       - _NSDefaultRunLoopMode
       - _NSInvalidArgumentException
+      - _NSAppleScriptErrorMessage
+      - _NSFileHFSCreatorCode
+      - _NSFileHFSTypeCode
+      - _NSIntegralRect
+      - _NSEqualPoints
+      - _NSEqualSizes
+      - _NSPointInRect
+      - _NSMallocException
+      - _NSSelectorFromString
+      - _NSSetUncaughtExceptionHandler
+      - _NSZeroPoint
+      - _NSZeroRect
+      - _NSZeroSize
+      - _NSURLIsRegularFileKey
+      - '_OBJC_CLASS_$_NSAttributedString'
+      - '_OBJC_CLASS_$_NSCharacterSet'
+      - '_OBJC_CLASS_$_NSMutableString'
+      - '_OBJC_CLASS_$_NSPort'
+      - '_OBJC_CLASS_$_NSPropertyListSerialization'
+      - '_OBJC_CLASS_$_NSRunLoop'
+      - '_OBJC_METACLASS_$_NSArray'
+      - '_OBJC_METACLASS_$_NSAttributedString'
+      - '_OBJC_METACLASS_$_NSAutoreleasePool'
+      - '_OBJC_METACLASS_$_NSBundle'
+      - '_OBJC_METACLASS_$_NSCharacterSet'
+      - '_OBJC_METACLASS_$_NSData'
+      - '_OBJC_METACLASS_$_NSDictionary'
+      - '_OBJC_METACLASS_$_NSMutableArray'
+      - '_OBJC_METACLASS_$_NSMutableDictionary'
+      - '_OBJC_METACLASS_$_NSMutableString'
+      - '_OBJC_METACLASS_$_NSNumber'
+      - '_OBJC_METACLASS_$_NSPort'
+      - '_OBJC_METACLASS_$_NSProcessInfo'
+      - '_OBJC_METACLASS_$_NSPropertyListSerialization'
+      - '_OBJC_METACLASS_$_NSRunLoop'
+      - '_OBJC_METACLASS_$_NSString'
+      - '_OBJC_METACLASS_$_NSThread'
+      - '_OBJC_METACLASS_$_NSURL'
+      - '_OBJC_METACLASS_$_NSUserDefaults'
+      - '_OBJC_CLASS_$_NSAppleScript'
+      - '_OBJC_CLASS_$_NSConditionLock'
+      - '_OBJC_METACLASS_$_NSAppleScript'
+      - '_OBJC_METACLASS_$_NSConditionLock'
       - '_OBJC_CLASS_$_NSAppleEventDescriptor'
       - '_OBJC_CLASS_$_NSAppleEventManager'
       - '_OBJC_CLASS_$_NSDate'

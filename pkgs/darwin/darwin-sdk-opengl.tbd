@@ -1,0 +1,7 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos, arm64-macos ]
+install-name: '/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL'
+current-version: 17.0.0
+compatibility-version: 1.0.0
+...
