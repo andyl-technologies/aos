@@ -78,6 +78,17 @@ in
             chmod +x .aos-build-tools/cc-for-build
             export CC_FOR_BUILD="$PWD/.aos-build-tools/cc-for-build"
 
+            # gpgrt-config is a target shell script. Execute it with the native
+            # configure shell while making it resolve the target .pc metadata.
+            cat > .aos-build-tools/gpgrt-config <<EOF
+            #!$CONFIG_SHELL
+            exec "$CONFIG_SHELL" ${libgpg-error}/bin/gpgrt-config "\$@"
+            EOF
+            chmod +x .aos-build-tools/gpgrt-config
+            export GPGRT_CONFIG="$PWD/.aos-build-tools/gpgrt-config"
+            export PKG_CONFIG_LIBDIR=
+            export PKG_CONFIG_PATH="${libgpg-error}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
             ./configure \
               $configureFlags \
               --prefix=$out \
