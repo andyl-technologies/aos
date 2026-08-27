@@ -62,7 +62,6 @@ in {
     metadata."host.nix" = ''
       {
         aos.networking.hostName = "runtime-modules";
-        aos.apm.desiredPackages = [ "aos-test-agent" ];
 
         environment.etc."runtime-modules/platform.conf" = {
           text = "authority=platform\n";
