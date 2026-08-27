@@ -73,6 +73,7 @@ jsonwebtoken = { workspace = true }
 # Migration tests stage old-schema sqlite files with raw rusqlite, then reopen
 # them through the sqlx Database to assert the upgrade path (RFC-0004 Phase 5).
 rusqlite = { workspace = true }
+sqlx = { workspace = true, features = ["postgres", "mysql"] }
 tower = { workspace = true }
 http = { workspace = true }
 futures = { workspace = true }

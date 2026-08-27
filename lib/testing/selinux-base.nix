@@ -46,7 +46,6 @@
         syscalls = "restricted";
         security-label = "aos.selinux-generated";
       };
-      requires = [];
     };
   };
   generatedExpose = generatedPackage.expose;
