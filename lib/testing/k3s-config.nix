@@ -191,9 +191,11 @@ in
             grep -q '"name":"token"' "$expose/manifest.json"
             grep -q '"source":"/run/credstore/k3s-[^"]*/token"' "$expose/manifest.json"
             grep -q '"encrypted":false' "$expose/manifest.json"
-            grep -q 'EnvironmentFile=/etc/aos/packages/k3s-' "$expose/units/k3s.service"
+            grep -q 'EnvironmentFile=-/etc/aos/packages/k3s-' "$expose/units/k3s.service"
             grep -q 'ExecStart=.*/bin/k3s-k3s-' "$expose/units/k3s.service"
-            grep -q 'ExecCondition=.*/bin/k3s-k3s-' "$expose/units/k3s-preflight.service"
+            grep -q 'ExecCondition=.*/bin/k3s-k3s-' "$expose/units/k3s.service"
+            grep -q 'EnvironmentFile=-/etc/aos/packages/k3s-' "$expose/units/k3s-preflight.service"
+            test "$(grep -c '^ExecCondition=' "$expose/units/k3s-preflight.service" || true)" -eq 0
           done
 
           mkdir -p "$out"
