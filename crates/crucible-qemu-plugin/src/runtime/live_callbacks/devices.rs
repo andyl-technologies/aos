@@ -48,7 +48,7 @@ pub(super) struct LiveDeviceCallbackState {
     block: PluginBlockIo,
     block_rings: LiveDirectedRingPair,
     block_tokens: BTreeMap<BlockRequestIdentity, BlockRequestToken>,
-    block_retry_preserve: BTreeSet<BlockRequestIdentity>,
+    block_reissue_preserve: BTreeSet<BlockRequestIdentity>,
     pending_block_event: Option<PendingBlockTransportEvent>,
     ninep: PluginNinePIo,
     ninep_rings: LiveDirectedRingPair,
@@ -423,7 +423,7 @@ impl LiveDeviceCallbackState {
         let qemu_identity = BlockRequestIdentity::new(qemu_epoch, qemu_request_id);
         let plugin_identity =
             BlockRequestIdentity::new(self.block.request_epoch(), self.block.next_request_id());
-        let retry_preserve = self.block_retry_preserve.contains(&qemu_identity);
+        let retry_preserve = self.block_reissue_preserve.contains(&qemu_identity);
         if (!retry_preserve && plugin_identity != qemu_identity)
             || self.block_tokens.contains_key(&qemu_identity)
         {
@@ -469,7 +469,7 @@ impl LiveDeviceCallbackState {
         }
         self.block_tokens.insert(qemu_identity, token);
         if retry_preserve {
-            let removed = self.block_retry_preserve.remove(&qemu_identity);
+            let removed = self.block_reissue_preserve.remove(&qemu_identity);
             debug_assert!(removed, "successful preserved retry had authorization");
         }
         Ok(())
@@ -538,7 +538,7 @@ impl LiveDeviceCallbackState {
                     })
                 }
                 BlockResponseStatus::RetryPreserveId => {
-                    self.block_retry_preserve.insert(identity);
+                    self.block_reissue_preserve.insert(identity);
                     Ok(QEMU_PLUGIN_BLOCK_RETRY_PRESERVE_ID)
                 }
                 BlockResponseStatus::RetryNewId => Ok(QEMU_PLUGIN_BLOCK_RETRY_NEW_ID),
@@ -597,12 +597,12 @@ impl LiveDeviceCallbackState {
 
     fn save_block_transport(&self, output: &mut [u8]) -> Result<usize, LiveDeviceCallbackError> {
         if !self.block_tokens.is_empty()
-            || !self.block_retry_preserve.is_empty()
+            || !self.block_reissue_preserve.is_empty()
             || self.pending_block_event.is_some()
         {
             return Err(LiveDeviceCallbackError::TransportContinuationBusy {
                 block_tokens: self.block_tokens.len(),
-                retry_authorizations: self.block_retry_preserve.len(),
+                retry_authorizations: self.block_reissue_preserve.len(),
                 prepared_event: self.pending_block_event.is_some(),
             });
         }
@@ -631,12 +631,12 @@ impl LiveDeviceCallbackState {
         qemu_next_request_id: u32,
     ) -> Result<(), LiveDeviceCallbackError> {
         if !self.block_tokens.is_empty()
-            || !self.block_retry_preserve.is_empty()
+            || !self.block_reissue_preserve.is_empty()
             || self.pending_block_event.is_some()
         {
             return Err(LiveDeviceCallbackError::TransportContinuationBusy {
                 block_tokens: self.block_tokens.len(),
-                retry_authorizations: self.block_retry_preserve.len(),
+                retry_authorizations: self.block_reissue_preserve.len(),
                 prepared_event: self.pending_block_event.is_some(),
             });
         }
