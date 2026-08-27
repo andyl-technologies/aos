@@ -251,7 +251,7 @@ in {
 
           REG_DIR=$HOME/.local/share/apm/registries/runtime-reg
           mkdir -p /var/lib/runtime-module-registry-cache
-          {APR} release 1.0.0 \
+          {APR} release '${pkgs.nginx.version}' \
             --registry runtime-reg \
             --key-id release \
             --cache-url file:///var/lib/runtime-module-registry-cache \
@@ -260,7 +260,7 @@ in {
           HOME=/tmp USER=root {APM} registry --system add \
             "file://$REG_DIR" \
             --name runtime-reg \
-            --version '=1.0.0' \
+            --version '=${pkgs.nginx.version}' \
             --trust-key "$PUBKEY"
           HOME=/tmp USER=root {APM} update \
             --system --registry runtime-reg
