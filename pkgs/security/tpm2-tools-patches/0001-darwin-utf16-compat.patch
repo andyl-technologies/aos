@@ -1,0 +1,96 @@
+--- a/lib/efi_event.h
++++ b/lib/efi_event.h
+@@ -3,8 +3,15 @@
+ #define TCG_EFI_EVENT_H 1
+ 
++#include <stdint.h>
+ #include <uchar.h>
+ #include <tss2/tss2_tpm2_types.h>
+ 
++/* Darwin's C library does not expose the C11 char16_t typedef when this
++ * project is compiled in its C99 mode. EFI strings are always 16-bit units. */
++#if defined(__APPLE__) && (!defined(__STDC_VERSION__) || __STDC_VERSION__ < 201112L)
++typedef uint_least16_t char16_t;
++#endif
++
+ /*
+  * Log event types. These are spread out over 2 specs:
+  * "TCG EFI Protocol Specification For TPM Family 1.1 or 1.2" and
+--- a/lib/tpm2_eventlog_yaml.c
++++ b/lib/tpm2_eventlog_yaml.c
+@@ -20,6 +20,75 @@
+ #include <efivar/efivar.h>
+ #endif
+ 
++#ifdef __APPLE__
++/* Darwin does not provide the C11 c16rtomb interface. Keep the event-log
++ * decoder's streaming contract, including surrogate-pair state, instead of
++ * dropping EFI Unicode descriptions on this platform. */
++static size_t darwin_c16rtomb(char *output, char16_t unit, mbstate_t *state) {
++    uint16_t pending = 0;
++    uint32_t codepoint;
++
++    _Static_assert(sizeof(*state) >= sizeof(pending),
++        "mbstate_t must retain one UTF-16 code unit");
++    memcpy(&pending, state, sizeof(pending));
++
++    if (output == NULL) {
++        memset(state, 0, sizeof(*state));
++        return 1;
++    }
++
++    if (unit >= 0xd800 && unit <= 0xdbff) {
++        if (pending != 0) {
++            errno = EILSEQ;
++            return (size_t)-1;
++        }
++        pending = unit;
++        memcpy(state, &pending, sizeof(pending));
++        return 0;
++    }
++
++    if (unit >= 0xdc00 && unit <= 0xdfff) {
++        if (pending == 0) {
++            errno = EILSEQ;
++            return (size_t)-1;
++        }
++        codepoint = 0x10000 + (((uint32_t)pending - 0xd800) << 10)
++            + ((uint32_t)unit - 0xdc00);
++        memset(state, 0, sizeof(*state));
++    } else {
++        if (pending != 0) {
++            errno = EILSEQ;
++            return (size_t)-1;
++        }
++        codepoint = unit;
++    }
++
++    if (codepoint <= 0x7f) {
++        output[0] = codepoint;
++        return 1;
++    }
++    if (codepoint <= 0x7ff) {
++        output[0] = 0xc0 | (codepoint >> 6);
++        output[1] = 0x80 | (codepoint & 0x3f);
++        return 2;
++    }
++    if (codepoint <= 0xffff) {
++        output[0] = 0xe0 | (codepoint >> 12);
++        output[1] = 0x80 | ((codepoint >> 6) & 0x3f);
++        output[2] = 0x80 | (codepoint & 0x3f);
++        return 3;
++    }
++
++    output[0] = 0xf0 | (codepoint >> 18);
++    output[1] = 0x80 | ((codepoint >> 12) & 0x3f);
++    output[2] = 0x80 | ((codepoint >> 6) & 0x3f);
++    output[3] = 0x80 | (codepoint & 0x3f);
++    return 4;
++}
++
++#define c16rtomb darwin_c16rtomb
++#endif
++
+ /* Valid variable unicode names and their length */
+ #define NAME_DB "db"
+ #define NAME_DB_LEN 2
