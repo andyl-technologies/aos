@@ -213,6 +213,16 @@
         else:
             assert mirror in src, "git_repository remote not found in WORKSPACE: " + origin
 
+    # SQLite serves byte-identical release archives from both of its official
+    # hostnames. Prefer the already-supported www origin so the hermetic fetch
+    # does not require a second policy entry for the same upstream.
+    sqlite_origin = 'url = "https://sqlite.org/2023/sqlite-src-3440000.zip",'
+    sqlite_mirror = 'url = "https://www.sqlite.org/2023/sqlite-src-3440000.zip",'
+    if sqlite_origin in src:
+        src = src.replace(sqlite_origin, sqlite_mirror, 1)
+    else:
+        assert sqlite_mirror in src, "sqlite3 archive URL not found in WORKSPACE"
+
     # Idempotent: postPatchScript runs in both the fetch FOD and the build
     # phase (and possibly twice in the build phase), so bail out cleanly if the
     # WORKSPACE has already been rewritten. Injecting twice would produce a
@@ -493,7 +503,7 @@ in
     inherit scrubMap;
 
     # --- Fetch-specific ---
-    depsHash = "sha256-D6FWYyLQWnsW06xPdBLvOj2ST/GwYU+vtSI5jaTZBY8=";
+    depsHash = "sha256-cePFC9tnY+0qSwbE9nqDUV5Idj+ppFTSYNy4nTJQP9k=";
     fetchPostPatch = "";
     fetchEnv = {
       CARGO_BAZEL_REPIN = "true";
