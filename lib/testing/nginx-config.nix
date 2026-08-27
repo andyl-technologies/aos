@@ -128,10 +128,21 @@ in
       pname = "nginx-config-module-check";
       version = "0";
       src = null;
+      nginxExpose = pkgs.nginx.expose;
       phases = [
         {
           name = "check";
           script = ''
+            test -f "$nginxExpose/manifest.json"
+            grep -q '"encrypted":false,"name":"tls-certificate","optional":true,"source":"/run/credstore/nginx/tls-certificate","units":\["nginx.service"\]' \
+              "$nginxExpose/manifest.json"
+            grep -q '"encrypted":false,"name":"tls-private-key","optional":true,"source":"/run/credstore/nginx/tls-private-key","units":\["nginx.service"\]' \
+              "$nginxExpose/manifest.json"
+            if grep -Eq 'LoadCredential(Encrypted)?=tls-' "$nginxExpose/units/nginx.service"; then
+              echo "optional nginx TLS credentials must not become unconditional static unit bindings" >&2
+              exit 1
+            fi
+
             mkdir -p "$TMPDIR/state"
             sed \
               -e "s#pid /run/nginx/nginx.pid;#pid $TMPDIR/nginx.pid;#" \

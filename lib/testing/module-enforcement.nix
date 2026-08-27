@@ -791,6 +791,31 @@
     .artifacts
     .priority
     == "runtime";
+  runtimeNestedMatchesOperator = let
+    operatorValue =
+      (lib.evalModules {
+        modules = [nestedDecl];
+        operatorModules = [{config.tree.main.nested.left = "nested operator";}];
+        inherit lib;
+      })
+      .config
+      .tree
+      .main
+      .nested
+      .left;
+    runtimeValue =
+      (lib.evalModules {
+        modules = [nestedDecl];
+        runtimeModules = [{config.tree.main.nested.left = "nested operator";}];
+        inherit lib;
+      })
+      .config
+      .tree
+      .main
+      .nested
+      .left;
+  in
+    runtimeValue == operatorValue && runtimeValue == "nested operator";
   runtimeOwnershipMatchesMergePriority =
     (lib.evalModules {
       modules = [
@@ -827,6 +852,19 @@
     .config
     .artifacts
     .priority
+    == "package";
+  runtimeNestedImportKeepsNormalPriority =
+    (lib.evalModules {
+      modules = [nestedDecl];
+      packageModules = [(packageRecord {config.tree.main.nested.left = lib.mkOverride 80 "package";})];
+      runtimeModules = [{imports = [{config.tree.main.nested.left = "runtime import";}];}];
+      inherit lib;
+    })
+    .config
+    .tree
+    .main
+    .nested
+    .left
     == "package";
   runtimeProvisioningRejected =
     !(builtins.tryEval ((lib.evalModules {
@@ -1168,7 +1206,7 @@
         message = "host import ownership and priority";
       }
       {
-        ok = runtimeDirectGetsOperatorPriority && runtimeOwnershipMatchesMergePriority && runtimeImportKeepsNormalPriority && runtimeProvisioningRejected;
+        ok = runtimeDirectGetsOperatorPriority && runtimeNestedMatchesOperator && runtimeOwnershipMatchesMergePriority && runtimeImportKeepsNormalPriority && runtimeNestedImportKeepsNormalPriority && runtimeProvisioningRejected;
         message = "runtime module priority and provisioning confinement";
       }
       {

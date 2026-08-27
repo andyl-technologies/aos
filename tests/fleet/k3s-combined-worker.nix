@@ -14,56 +14,6 @@
   pkgs,
   ...
 }: let
-  # k3s's token parser (`pkg/clientaccess/token.go:251`) accepts:
-  #   - a kubeadm bootstrap token: `[a-z0-9]{6}\.[a-z0-9]{16}`
-  #   - a `username:password` pair (basic auth)
-  #   - the same forms wrapped in a `K10[<ca-hash>]::<creds>` shell
-  # ...but `k3s server` then runs `pkg/util.NormalizeToken` on the
-  # K3S_TOKEN, which rejects anything that comes out of the parser
-  # as a `BootstrapTokenString` (kubeadm form) — leaving it with
-  # only basic-auth shapes:
-  #   - `<password>`
-  #   - `K10<CA-HASH>::<USERNAME>:<PASSWORD>`
-  # We use a bare password here. The parser wraps it as
-  # `K10:::<password>`, splits to caHash="" + creds=":<password>",
-  # falls back to username:password split → ("", "<password>"), and
-  # NormalizeToken takes the password.
-  testToken = "aoscombinedfleettoken1";
-
-  # Per-node k3s config baked into the image /etc via extendModules (the
-  # baked machine configuration): /etc/rancher/k3s/k3s.env
-  # (K3S_TOKEN, +K3S_URL for the worker; mode 0600) and
-  # /etc/rancher/k3s/config.yaml (node-ip + flannel-iface, +extraConfig).
-  #
-  # See `tests/fleet/k3s-control-plane-worker.nix` for the longer rationale on
-  # both pins; the same gateway-less fleet harness forces the same workaround.
-  # Both `combined` (running `k3s server` without `--disable-agent`) and
-  # `worker` run the flannel daemon, so both need the iface pin.
-  k3sEtcModule = {
-    token,
-    ip,
-    url ? null,
-    extraConfig ? "",
-  }: {
-    environment.etc = {
-      "rancher/k3s/k3s.env" = {
-        mode = "0600";
-        text =
-          "K3S_TOKEN=${token}\n"
-          + (
-            if url == null
-            then ""
-            else "K3S_URL=${url}\n"
-          );
-      };
-      "rancher/k3s/config.yaml".text = ''
-        node-ip: ${ip}
-        flannel-iface: eth0
-        ${extraConfig}
-      '';
-    };
-  };
-
   combinedSystem = mkSystem [
     ../../systems/server.nix
     {
@@ -87,7 +37,7 @@
   ];
 in {
   name = "k3s-combined-worker";
-  timeout = 360;
+  timeout = 1200;
 
   # The fleet harness in lib/testing/fleet.nix assigns
   # `192.168.50.${i + 10}` per machine via `lib.imap` over
@@ -99,37 +49,107 @@ in {
     combined = {
       system = combinedSystem;
       packages = ["k3s-combined"];
-      # k3s starts both kube-controller-manager and its embedded cloud
-      # controller with PodCIDR allocation enabled. In the combined topology
-      # that can produce stale duplicate allocation attempts while the worker
-      # node annotations settle. Keep allocation owned by kube-controller in
-      # this smoke test; cloud-node initialization still runs.
-      extraModules = [
-        (k3sEtcModule {
-          token = testToken;
-          ip = "192.168.50.10";
-          extraConfig = ''
-            kube-cloud-controller-arg:
-              - allocate-node-cidrs=false
-          '';
-        })
-      ];
     };
 
     worker = {
       system = workerSystem;
       packages = ["k3s-worker"];
-      extraModules = [
-        (k3sEtcModule {
-          token = testToken;
-          ip = "192.168.50.11";
-          url = "https://192.168.50.10:6443";
-        })
-      ];
     };
   };
 
   testScript = ''
+    import base64
+    import shlex
+
+    APM = "${pkgs.aos}/bin/apm"
+
+
+    def apply_k3s_module(machine, name, module):
+        encoded = base64.b64encode(module.encode()).decode()
+        path = f"/run/{name}.nix"
+        cache = f"/run/{name}-cache"
+        machine.succeed(
+            f"mkdir -p {cache} && "
+            f"printf '%s' '{encoded}' | base64 -d > {path} && "
+            f"XDG_CACHE_HOME={cache} {APM} config add "
+            f"{path} --name {name}.nix && "
+            f"XDG_CACHE_HOME={cache} {APM} config apply "
+            f"--eval-root /run/{name}-eval || {{ "
+            "systemctl status --no-pager -l aos-activate.service; "
+            "journalctl -u aos-activate.service --no-pager -n 200; "
+            "exit 1; }",
+            timeout=600,
+        )
+
+
+    # Generate the shared join token only after boot, then publish it through
+    # each machine's platform system-credential namespace. The typed k3s
+    # module carries only the opaque reference.
+    token = combined.succeed(
+        "${pkgs.coreutils}/bin/head -c 24 /dev/urandom | "
+        "${pkgs.coreutils}/bin/od -An -tx1 | "
+        "${pkgs.coreutils}/bin/tr -d ' \\n'"
+    ).strip()
+    assert len(token) == 48, token
+    for machine in (combined, worker):
+        machine.succeed(
+            "mkdir -p /run/credentials/@system && "
+            f"printf %s {shlex.quote(token)} > "
+            "/run/credentials/@system/k3s-token && "
+            "chmod 0600 /run/credentials/@system/k3s-token"
+        )
+
+    combined.wait_until_succeeds(
+        "systemctl is-active --quiet aos-config.target", timeout=300
+    )
+    worker.wait_until_succeeds(
+        "systemctl is-active --quiet aos-config.target", timeout=300
+    )
+
+    # The fleet test network is intentionally gateway-less. k3s still requires
+    # a default route while discovering the host interface, even when node-ip
+    # and flannel-iface are pinned, so provide a link-scope route for discovery.
+    for machine in (combined, worker):
+        machine.succeed("${pkgs.iproute2}/sbin/ip route replace default dev eth0")
+
+    apply_k3s_module(combined, "k3s-combined", """{
+      aos.apm.desiredPackages = [ "k3s-combined" ];
+      k3s = {
+        enable = true;
+        token.ref = "system-credential:k3s-token";
+        node = {
+          name = "combined";
+          ip = "192.168.50.10";
+        };
+        networking.flannelInterface = "eth0";
+      };
+    }
+    """)
+    apply_k3s_module(worker, "k3s-worker", """{
+      aos.apm.desiredPackages = [ "k3s-worker" ];
+      k3s = {
+        enable = true;
+        serverUrl = "https://192.168.50.10:6443";
+        token.ref = "system-credential:k3s-token";
+        node = {
+          name = "worker";
+          ip = "192.168.50.11";
+        };
+        networking.flannelInterface = "eth0";
+      };
+    }
+    """)
+
+    for machine, package in (
+        (combined, "k3s-combined"),
+        (worker, "k3s-worker"),
+    ):
+        source = f"/run/credstore/{package}/token"
+        machine.succeed(f"test -s {source} && test $(stat -c %a {source}) = 600")
+        manifest = machine.succeed("cat /run/aos/manifest.json")
+        assert token not in manifest, "cluster token leaked into the manifest"
+
+
     def dump_unit(machine, unit):
         print(f"--- {machine.name}: systemctl status {unit} ---")
         print(
