@@ -38,14 +38,13 @@ in
 
     buildDeps = [gnumake pkg-config];
     runtimeDeps =
-      [
-        zlib
-        acl
-        attr
-        readline
-        libburn
-        libisofs
-      ]
+      [zlib]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then []
+        else [acl attr]
+      )
+      ++ [readline libburn libisofs]
       ++ (
         if stdenv.hostPlatform.isDarwin
         then [bash]

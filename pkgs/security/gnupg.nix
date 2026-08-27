@@ -133,6 +133,18 @@ in
             chmod +x .aos-build-tools/cc-for-build
             export CC_FOR_BUILD="$PWD/.aos-build-tools/cc-for-build"
 
+            # The installed config helpers are target shell scripts. Run the
+            # common gpgrt-config entry point with the native configure shell
+            # and resolve every target library through its .pc metadata.
+            cat > .aos-build-tools/gpgrt-config <<EOF
+            #!$CONFIG_SHELL
+            exec "$CONFIG_SHELL" ${libgpg-error}/bin/gpgrt-config "\$@"
+            EOF
+            chmod +x .aos-build-tools/gpgrt-config
+            export GPGRT_CONFIG="$PWD/.aos-build-tools/gpgrt-config"
+            export PKG_CONFIG_LIBDIR=
+            export PKG_CONFIG_PATH="${libgpg-error}/lib/pkgconfig:${libgcrypt}/lib/pkgconfig:${libassuan}/lib/pkgconfig:${libksba}/lib/pkgconfig:${npth}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
             export CPPFLAGS="-I${libusb1}/include/libusb-1.0 $CPPFLAGS"
             ./configure \
               $configureFlags \
@@ -148,7 +160,6 @@ in
               --with-libassuan-prefix=${libassuan} \
               --with-ksba-prefix=${libksba} \
               --with-npth-prefix=${npth} \
-              GPGRT_CONFIG=${libgpg-error}/bin/gpgrt-config \
               YAT2M=${buildPackages.libgpg-error}/bin/yat2m
           ''
           else ''

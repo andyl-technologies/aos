@@ -56,16 +56,38 @@ in
       ++ [
         {
           name = "configure";
-          script = ''
-            ./configure \
-              $configureFlags \
-              --prefix=$out \
-              --disable-static \
-              --enable-shared \
-              --with-libxml-prefix=${libxml2} \
-              --without-python \
-              --without-crypto
-          '';
+          script =
+            if stdenv.isCross && stdenv.hostPlatform.isDarwin
+            then ''
+              # xml2-config is installed for the target. Its prefix data is
+              # correct, but configure must interpret it with a native shell.
+              mkdir -p .aos-build-tools
+              cat > .aos-build-tools/xml2-config <<EOF
+              #!$CONFIG_SHELL
+              exec "$CONFIG_SHELL" ${libxml2}/bin/xml2-config "\$@"
+              EOF
+              chmod +x .aos-build-tools/xml2-config
+
+              XML_CONFIG="$PWD/.aos-build-tools/xml2-config" \
+                ./configure \
+                  $configureFlags \
+                  --prefix=$out \
+                  --disable-static \
+                  --enable-shared \
+                  --with-libxml-prefix=${libxml2} \
+                  --without-python \
+                  --without-crypto
+            ''
+            else ''
+              ./configure \
+                $configureFlags \
+                --prefix=$out \
+                --disable-static \
+                --enable-shared \
+                --with-libxml-prefix=${libxml2} \
+                --without-python \
+                --without-crypto
+            '';
         }
         {
           name = "build";
