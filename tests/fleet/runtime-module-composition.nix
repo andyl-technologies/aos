@@ -67,6 +67,15 @@ in {
           text = "authority=platform\n";
           mode = "0644";
         };
+
+        # This fixture deliberately installs nginx through APM. Its signed
+        # service manifest requests host networking and a bounded capability,
+        # so exercise the production admission path with an explicit host
+        # policy rather than bypassing permission checks.
+        environment.etc."aos/policy.toml" = {
+          text = "tier = \"privileged\"\\n";
+          mode = "0644";
+        };
       }
     '';
   };
