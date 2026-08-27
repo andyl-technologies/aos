@@ -3761,6 +3761,9 @@ in
                 - _objc_enumerationMutation
                 - _objc_end_catch
                 - _objc_ehtype_vtable
+                # objc4's pinned public exception ABI declares this as
+                # `OBJC_EXPORT OBJC_NORETURN void objc_exception_rethrow(void)`.
+                - _objc_exception_rethrow
                 - _objc_getClass
                 - _objc_getMetaClass
                 - _objc_getProtocol
