@@ -73,7 +73,7 @@ in {
         # so exercise the production admission path with an explicit host
         # policy rather than bypassing permission checks.
         environment.etc."aos/policy.toml" = {
-          text = "tier = \"privileged\"\\n";
+          text = "tier = \"privileged\"\n";
           mode = "0644";
         };
       }
