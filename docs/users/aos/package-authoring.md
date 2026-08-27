@@ -169,7 +169,10 @@ the package explicitly disables Bzlmod and resolves only a `WORKSPACE` graph.
 The optional empty-workspace synchronization otherwise downloads Bazel's
 built-in repositories for platforms and toolchains the target does not use;
 those bytes enlarge the fixed-output dependency closure and require needless
-network policy exceptions.
+network policy exceptions. When a pinned Git repository has a commit-identical
+official mirror on an already-used origin, prefer that mirror and verify the
+exact commit before changing the recipe. Keep fork-only commits on their
+canonical origin rather than substituting an unaffiliated mirror.
 
 ## Expose the runtime interface
 
