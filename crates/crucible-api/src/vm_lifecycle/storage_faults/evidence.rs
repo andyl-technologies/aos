@@ -441,3 +441,11 @@ pub(super) fn storage_error(
 ) -> QemuAsyncDriverRuntimeError {
     QemuAsyncDriverRuntimeError::new(operation, error.to_string())
 }
+
+#[cfg(test)]
+pub(super) fn mapped_ninep_test_servicer(
+    shared_memory: std::os::fd::BorrowedFd<'_>,
+    region_len: u64,
+) -> Result<QemuLive9pIoServicer, impl std::error::Error> {
+    QemuLive9pIoServicer::from_shmem_fd(shared_memory, region_len, 0, 0)
+}

@@ -153,7 +153,9 @@ fn world_with_declared_storage_array() -> World {
         ),
         storage_policy_artifact(
             "path-policy",
-            StoragePolicyArtifactKind::Path(production_conformance_path_policy()),
+            StoragePolicyArtifactKind::Path(
+                crate::production_fault_runtime::test_support::storage_path_fixture(),
+            ),
         ),
     ];
     let mut topology = WorldFaultTopology {

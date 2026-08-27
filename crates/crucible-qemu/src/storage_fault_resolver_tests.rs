@@ -20,19 +20,6 @@ use super::*;
 #[path = "storage_fault_resolver_tests/production_conformance.rs"]
 mod production_conformance;
 
-fn production_conformance_path_policy() -> crucible::model::StoragePolicyPath {
-    crucible::model::StoragePolicyPath {
-        selection: crucible::model::StoragePolicyPathSelection::ActivePassive,
-        maximum_attempts: BoundedCount::new(CountLimit::QueueEntries, 2)
-            .unwrap_or_else(|error| panic!("test attempts should validate: {error}")),
-        retry_delay_nanos: PositiveU64::new("retry_delay_nanos", 5)
-            .unwrap_or_else(|error| panic!("test delay should validate: {error}")),
-        recovery_probe_interval_nanos: PositiveU64::new("recovery_probe_interval_nanos", 10)
-            .unwrap_or_else(|error| panic!("test probe interval should validate: {error}")),
-        retry_results: vec![StoragePolicyResult::IoError],
-    }
-}
-
 use production_conformance::record_production_effect_rows;
 
 fn id(value: &str) -> FaultObjectId {
