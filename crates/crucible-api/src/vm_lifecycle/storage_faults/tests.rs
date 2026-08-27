@@ -125,6 +125,7 @@ fn storage_resource_limits_preserve_exact_coordinates_through_scheduler() {
     let limits = FaultResourceLimits {
         storage_pending_operations: 2,
         storage_request_bytes: 4,
+        storage_media_intervals_per_device: 5,
         ninep_sessions_per_device: 1,
         ninep_fids_per_session: 2,
         ninep_object_versions: 3,
@@ -150,23 +151,24 @@ fn storage_resource_limits_preserve_exact_coordinates_through_scheduler() {
         Ok(()) => panic!("an oversized request must exceed the authored byte ceiling"),
         Err(error) => error,
     };
-    let node = crucible_qemu::QemuNodeError::from_async_driver(
-        crucible_qemu::QemuAsyncDriverError::Runtime(request),
+    assert_eq!(
+        request.resource_limit_coordinates(),
+        Some((
+            "storage_request_bytes",
+            0,
+            5,
+            4,
+            FaultResourceLimits::compiled_maximum().storage_request_bytes,
+        ))
     );
-    let backend = crucible::BackendError::from(node);
-    let scheduler = crucible::SchedulerError::from(backend);
-    assert!(matches!(
-        scheduler,
-        crucible::SchedulerError::ResourceLimit {
-            field: "storage_request_bytes",
-            current: 0,
-            requested: 5,
-            configured: 4,
-            hard,
-        } if hard == FaultResourceLimits::compiled_maximum().storage_request_bytes
-    ));
 
     for (field, current, configured, hard) in [
+        (
+            "storage_media_intervals_per_device",
+            5,
+            limits.storage_media_intervals_per_device,
+            FaultResourceLimits::compiled_maximum().storage_media_intervals_per_device,
+        ),
         (
             "ninep_sessions_per_device",
             1,

@@ -7,6 +7,15 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 
+mod bindings;
+mod observation_journal;
+mod resource_limits;
+
+pub(super) use bindings::{
+    ProductionBlockBinding, ProductionNinepBinding, block_binding_for_vm, ninep_binding_for_vm,
+};
+use resource_limits::{reserve_storage_resource, storage_resource_error};
+
 use crucible::model::{
     ContentHash, EffectSpecification, FAULT_RUNTIME_STATE_VERSION, FaultCoordinate, FaultObjectId,
     FaultObservation, FaultObservationKind, FaultOperation, FaultOpportunity, FaultPhase,
@@ -18,7 +27,7 @@ use crucible_device::block::{
     BaseImage, BlockDurabilityConfig, BlockFaultMisdirectionDestination, BlockFaultReadTransform,
     BlockFaultWriteDisposition, BlockOp, BlockPersistenceMediaOutcome, BlockRequest,
     BlockRetainedRelease, BlockServiceCompletion, BlockStorageOutcome,
-    ResolvedBlockDeliveryDirective, ResolvedBlockExecutionDirective,
+    ResolvedBlockDeliveryDirective, ResolvedBlockExecutionDirective, ResolvedBlockMediaRule,
     ResolvedBlockRequestPersistenceDirective,
 };
 use crucible_device::{
@@ -53,360 +62,12 @@ type StorageArrayDirtyRanges = Vec<crucible_device::block::BlockArrayDirtyRange>
 type StorageArrayWriteDestinations = (StorageArrayDestinations, StorageArrayDirtyRanges);
 type DeviceRuntimeError = QemuAsyncDriverRuntimeError;
 
-fn reserve_storage_resource(
-    field: &'static str,
-    current: u64,
-    requested: u64,
-    limits: FaultResourceLimits,
-) -> Result<(), QemuAsyncDriverRuntimeError> {
-    limits
-        .reserve(field, current, requested)
-        .map_err(|error| storage_resource_error(error, limits))
-}
-
-fn storage_resource_error(
-    error: FaultResourceLimitError,
-    limits: FaultResourceLimits,
-) -> QemuAsyncDriverRuntimeError {
-    let (field, current, requested, configured, hard) = match error {
-        FaultResourceLimitError::Exceeded {
-            field,
-            current,
-            requested,
-            configured,
-            hard,
-        }
-        | FaultResourceLimitError::UsageOverflow {
-            field,
-            current,
-            requested,
-            configured,
-            hard,
-        } => (field, current, requested, configured, hard),
-        FaultResourceLimitError::Representation { field, value } => (
-            field,
-            0,
-            value,
-            limits.configured(field).unwrap_or(0),
-            FaultResourceLimits::compiled_maximum()
-                .configured(field)
-                .unwrap_or(0),
-        ),
-        FaultResourceLimitError::Zero { field } => (
-            field,
-            0,
-            1,
-            0,
-            FaultResourceLimits::compiled_maximum()
-                .configured(field)
-                .unwrap_or(0),
-        ),
-        FaultResourceLimitError::ConfiguredAboveHard {
-            field,
-            configured,
-            hard,
-        } => (field, 0, configured, configured, hard),
-        FaultResourceLimitError::UnknownField { field } => (field, 0, 1, 0, 0),
-    };
-    QemuAsyncDriverRuntimeError::resource_limit(field, current, requested, configured, hard)
-}
-
-/// Authenticated World material retained for launch and coordinator binding.
-#[derive(Clone)]
-pub(super) struct ProductionBlockBinding {
-    /// Immutable base image passed to the live servicer.
-    pub(super) base: BaseImage,
-    /// Complete World durability contract.
-    pub(super) durability: BlockDurabilityConfig,
-    /// Resolved signal target for every request opportunity.
-    pub(super) target: ResolvedFaultTarget,
-    /// Immutable World hash indexing the authoritative live device.
-    device_hash: ContentHash,
-}
-
-impl ProductionBlockBinding {
-    pub(super) fn device_hash(&self) -> ContentHash {
-        self.device_hash
-    }
-}
-
-/// Authenticated World material retained for one production 9p device.
-#[derive(Clone)]
-pub(super) struct ProductionNinepBinding {
-    /// Immutable filesystem tree passed to the live servicer.
-    pub(super) tree: FsTree,
-    /// Deterministic World-declared latency model.
-    pub(super) latency: NinepLatency,
-    /// Resolved signal target for typed 9p opportunities.
-    pub(super) target: ResolvedFaultTarget,
-}
-
-/// Resolves the optional block device owned by one World VM.
-pub(super) fn block_binding_for_vm(
-    world: &World,
-    vm: &crucible::NodeId,
-    artifacts: Option<&Arc<dyn crucible::model::DagStore>>,
-) -> Result<Option<ProductionBlockBinding>, LifecycleApiError> {
-    let blocks = world
-        .io_nodes()
-        .filter(|node| node.owner == *vm && matches!(node.kind, WorldIoNodeKind::Block { .. }))
-        .collect::<Vec<_>>();
-    if blocks.len() > 1 {
-        return Err(loop_factory_error(format!(
-            "QEMU node `{}` declares {} block devices but the current shared-memory transport has one block executor slot",
-            vm.name,
-            blocks.len()
-        )));
-    }
-    let Some(node) = blocks.first().copied() else {
-        return Ok(None);
-    };
-    let WorldIoNodeKind::Block {
-        base_image,
-        base_length,
-        ..
-    } = &node.kind
-    else {
-        return Err(loop_factory_error("selected World block node changed kind"));
-    };
-    let store = artifacts.ok_or_else(|| {
-        loop_factory_error(format!(
-            "QEMU node `{}` owns block device `{}` but no production World artifact store was configured",
-            vm.name, node.id.name
-        ))
-    })?;
-    let bytes = store.get(&base_image.hash()).map_err(|error| {
-        loop_factory_error(format!(
-            "load block base image for `{}` from the World artifact store: {error}",
-            node.id.name
-        ))
-    })?;
-    let base = BaseImage::new(bytes);
-    let actual = ContentHash { bytes: base.hash() };
-    if actual != base_image.hash() || base.len() != *base_length {
-        return Err(loop_factory_error(format!(
-            "World block base image for `{}` differs from its declared hash or length",
-            node.id.name
-        )));
-    }
-    let target = ResolvedFaultTarget::BlockDevice {
-        device: node.fault_target_hash(),
-    };
-    let durability = block_durability_config(world, &target).map_err(|error| {
-        loop_factory_error(format!(
-            "resolve block durability for `{}`: {error}",
-            node.id.name
-        ))
-    })?;
-    Ok(Some(ProductionBlockBinding {
-        base,
-        durability,
-        target,
-        device_hash: node.fault_target_hash(),
-    }))
-}
-
-/// Resolves the optional 9p device owned by one World VM.
-pub(super) fn ninep_binding_for_vm(
-    world: &World,
-    vm: &crucible::NodeId,
-    artifacts: Option<&Arc<dyn crucible::model::DagStore>>,
-) -> Result<Option<ProductionNinepBinding>, LifecycleApiError> {
-    let devices = world
-        .io_nodes()
-        .filter(|node| node.owner == *vm && matches!(node.kind, WorldIoNodeKind::NineP { .. }))
-        .collect::<Vec<_>>();
-    if devices.len() > 1 {
-        return Err(loop_factory_error(format!(
-            "QEMU node `{}` declares {} 9p devices but the shared-memory transport has one 9p executor slot",
-            vm.name,
-            devices.len()
-        )));
-    }
-    let Some(node) = devices.first().copied() else {
-        return Ok(None);
-    };
-    let WorldIoNodeKind::NineP {
-        tree: artifact,
-        latency,
-    } = &node.kind
-    else {
-        return Err(loop_factory_error("selected World 9p node changed kind"));
-    };
-    let store = artifacts.ok_or_else(|| {
-        loop_factory_error(format!(
-            "QEMU node `{}` owns 9p device `{}` but no production World artifact store was configured",
-            vm.name, node.id.name
-        ))
-    })?;
-    let bytes = store.get(&artifact.hash()).map_err(|error| {
-        loop_factory_error(format!(
-            "load 9p tree for `{}` from the World artifact store: {error}",
-            node.id.name
-        ))
-    })?;
-    let tree = FsTree::from_canonical_bytes(&bytes).map_err(|error| {
-        loop_factory_error(format!(
-            "decode canonical 9p tree for `{}`: {error}",
-            node.id.name
-        ))
-    })?;
-    let actual = ContentHash {
-        bytes: tree.content_hash(),
-    };
-    if actual != artifact.hash() {
-        return Err(loop_factory_error(format!(
-            "World 9p tree for `{}` differs from its declared hash",
-            node.id.name
-        )));
-    }
-    Ok(Some(ProductionNinepBinding {
-        tree,
-        latency: NinepLatency::new(latency.control_ns, latency.data_ns, latency.per_byte_ns),
-        target: ResolvedFaultTarget::NinePDevice {
-            device: node.fault_target_hash(),
-        },
-    }))
-}
-
 /// Globally sequenced fault-observation journal shared by every live adapter.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ProductionFaultObservationJournal {
     batches: std::collections::BTreeMap<u64, Vec<FaultObservation>>,
     observations: usize,
-}
-
-impl ProductionFaultObservationJournal {
-    fn ensure_capacity(&self, additional: usize) -> Result<(), QemuAsyncDriverRuntimeError> {
-        self.observations
-            .checked_add(additional)
-            .filter(|count| *count <= HARD_STORAGE_FAULT_OBSERVATIONS)
-            .map(|_count| ())
-            .ok_or_else(|| {
-                storage_error(
-                    "record fault observations",
-                    "fault observation journal exceeds its hard bound",
-                )
-            })
-    }
-
-    pub(super) fn append(
-        &mut self,
-        sequence: u64,
-        observations: Vec<FaultObservation>,
-    ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        self.append_observation_batches(vec![(sequence, observations)])?;
-        Ok(())
-    }
-
-    pub(super) fn append_observation_batches(
-        &mut self,
-        batches: Vec<(u64, Vec<FaultObservation>)>,
-    ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        let additional = batches
-            .iter()
-            .try_fold(0_usize, |count, (_, batch)| count.checked_add(batch.len()));
-        let additional = additional.ok_or_else(|| {
-            storage_error(
-                "record fault observations",
-                "fault observation batch count overflow",
-            )
-        })?;
-        self.ensure_capacity(additional)?;
-        self.observations += additional;
-        for (sequence, observations) in batches {
-            self.batches
-                .entry(sequence)
-                .or_default()
-                .extend(observations);
-        }
-        Ok(())
-    }
-
-    fn append_batches(
-        &mut self,
-        batches: Vec<(u64, FaultObservation)>,
-    ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        self.ensure_capacity(batches.len())?;
-        self.observations += batches.len();
-        for (sequence, observation) in batches {
-            self.batches.entry(sequence).or_default().push(observation);
-        }
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(super) fn snapshot(&self) -> Vec<FaultObservation> {
-        self.batches.values().flatten().cloned().collect()
-    }
-
-    pub(super) fn drain_ready(&mut self, frontier: u64) -> Vec<FaultObservation> {
-        let mut ready = Vec::new();
-        for (sequence, observations) in &mut self.batches {
-            let mut retained = Vec::new();
-            for (index, observation) in std::mem::take(observations).into_iter().enumerate() {
-                if observation.coordinate.virtual_nanos <= frontier {
-                    ready.push((
-                        observation.coordinate.virtual_nanos,
-                        *sequence,
-                        index,
-                        observation,
-                    ));
-                } else {
-                    retained.push(observation);
-                }
-            }
-            *observations = retained;
-        }
-        self.batches
-            .retain(|_sequence, observations| !observations.is_empty());
-        self.observations = self.batches.values().map(Vec::len).sum();
-        ready.sort_by_key(|(nanos, sequence, index, _observation)| (*nanos, *sequence, *index));
-        ready
-            .into_iter()
-            .map(|(_nanos, _sequence, _index, observation)| observation)
-            .collect()
-    }
-
-    pub(super) fn validate(&self, next_sequence: u64) -> bool {
-        let actual = self
-            .batches
-            .values()
-            .try_fold(0_usize, |count, batch| count.checked_add(batch.len()));
-        self.observations <= HARD_STORAGE_FAULT_OBSERVATIONS
-            && actual == Some(self.observations)
-            && self.batches.iter().all(|(sequence, batch)| {
-                *sequence < next_sequence
-                    && !batch.is_empty()
-                    && batch.iter().all(|observation| {
-                        observation.semantic_version == FAULT_RUNTIME_STATE_VERSION
-                            && observation.evidence != ContentHash::default()
-                    })
-            })
-    }
-
-    pub(super) fn contains_sequence(&self, sequence: u64) -> bool {
-        self.batches.contains_key(&sequence)
-    }
-
-    pub(super) fn rollback_sequence(
-        &mut self,
-        sequence: u64,
-    ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        if let Some(observations) = self.batches.remove(&sequence) {
-            self.observations = self
-                .observations
-                .checked_sub(observations.len())
-                .ok_or_else(|| {
-                    storage_error(
-                        "roll back fault observations",
-                        "fault observation journal count is inconsistent",
-                    )
-                })?;
-        }
-        Ok(())
-    }
 }
 
 /// Shared owner of the globally sequenced observation journal.
@@ -1008,6 +669,22 @@ impl ProductionBlockFaultCoordinator {
             .ok_or_else(|| storage_error("convert block icount", "virtual time overflow"))
     }
 
+    fn admit_media_rule_usage(
+        &self,
+        servicer: &QemuLiveBlockIoServicer,
+        rules: &[ResolvedBlockMediaRule],
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let (current, requested) = servicer
+            .storage_media_rule_usage(rules)
+            .map_err(|error| storage_error("measure retained block media intervals", error))?;
+        reserve_storage_resource(
+            "storage_media_intervals_per_device",
+            current,
+            requested,
+            self.resource_limits,
+        )
+    }
+
     fn retired_instructions_at(
         &self,
         nanos: u64,
@@ -1443,6 +1120,7 @@ impl ProductionBlockFaultCoordinator {
             }
         }
         directive.execution_nanos = request_nanos;
+        self.admit_media_rule_usage(servicer, &directive.media_rules)?;
         self.after_evaluation(
             "install block admission directive",
             servicer.install_storage_fault_directive(request.identity(), directive),
@@ -1518,6 +1196,7 @@ impl ProductionBlockFaultCoordinator {
                     FaultPhase::Resolve,
                 )?;
                 directive.execution_nanos = opportunity.ready_nanos;
+                self.admit_media_rule_usage(servicer, &directive.media_rules)?;
                 self.after_evaluation(
                     "install block resolve directive",
                     servicer.install_storage_execution_directive(ResolvedBlockExecutionDirective {
@@ -1589,6 +1268,7 @@ impl ProductionBlockFaultCoordinator {
                 if !directive.persistence_transforms.is_empty() {
                     directive.persistence_admitted_nanos = opportunity.ready_nanos;
                 }
+                self.admit_media_rule_usage(servicer, &directive.media_rules)?;
                 let resolved = ResolvedBlockRequestPersistenceDirective {
                     opportunity,
                     directive,

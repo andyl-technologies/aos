@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "fault_tests/resource_usage.rs"]
+mod resource_usage;
+
 fn state(durability: BlockCompletionDurability) -> BlockFaultState {
     BlockFaultState::new(BlockDurabilityConfig {
         length_bytes: 32,
@@ -18,25 +21,6 @@ fn state(durability: BlockCompletionDurability) -> BlockFaultState {
         completion_durability: durability,
     })
     .unwrap_or_else(|error| panic!("valid test state: {error}"))
-}
-
-#[test]
-fn pending_operation_usage_tracks_count_and_largest_request_extent() {
-    let mut storage = state(BlockCompletionDurability::Durable);
-    let request = BlockRequest::write(7, 3, vec![0x5a; 11]);
-    storage
-        .install(
-            request.identity(),
-            ResolvedBlockFaultDirective::fault_free(&request, 32),
-        )
-        .unwrap_or_else(|error| panic!("pending request should install: {error}"));
-
-    assert_eq!(
-        storage
-            .pending_operation_usage()
-            .unwrap_or_else(|error| panic!("pending usage should be representable: {error}")),
-        (1, 11)
-    );
 }
 
 #[test]
