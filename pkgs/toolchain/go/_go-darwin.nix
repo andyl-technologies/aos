@@ -112,6 +112,17 @@ in
               cp -a "$file" "$out/"
             fi
           done
+
+          # Go ships ELF executables as debugger and profiler test fixtures.
+          # They are data on Darwin, but upstream gives several of them an
+          # executable bit. Preserve the fixtures while preventing generic
+          # Darwin output validation from treating them as hosted programs.
+          find "$out/src" -type f -perm -u+x | while IFS= read -r fixture; do
+            magic=$(od -An -tx1 -N4 "$fixture" 2>/dev/null | tr -d ' \n')
+            if [ "$magic" = 7f454c46 ]; then
+              chmod a-x "$fixture"
+            fi
+          done
         '';
       }
     ];
