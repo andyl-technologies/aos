@@ -1596,8 +1596,19 @@ its QMP descriptor's read callback. The typed client issues this query out
 of band. The host brackets procfs capture with identical reports, requires
 every handler to name a context in the matching AioContext inventory, and
 requires every non-deleted descriptor to exist in the exact child-process
-descriptor inventory. The audit rejects incomplete thread, RCU, AioContext,
-AIO-handler, bottom-half, mutex, or timer reports. This is observational and
+descriptor inventory. QEMU now also exposes a version-1, 65,536-entry
+`BlockBackend` inventory. It reports every allocated backend, including hidden
+ones, under stable process-local backend and AioContext identities with exact
+reference count, monitor visibility/name, root/device attachment, requested and
+shared permissions, permission suppression, quiesce depth, request-queue
+policy, in-flight I/O, checked aggregates, and a structural generation. The
+typed client issues the query out of band, brackets procfs capture with
+identical reports, and requires every backend to name a context in the matching
+AioContext inventory. The query does not touch the live BQL-owned graph. It is
+an inventory prerequisite, not the drained block-graph/write-root barrier, so
+readiness bit 5 remains clear. The audit rejects incomplete thread, RCU,
+AioContext, AIO-handler, block-backend, bottom-half, mutex, or timer reports.
+This is observational and
 still does not retain a drain/park barrier across `fork(2)`; readiness bit 3
 remains clear.
 QEMU now also exposes a version-1, 65,536-entry POSIX `QemuMutex` and

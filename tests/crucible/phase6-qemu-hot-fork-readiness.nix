@@ -111,6 +111,11 @@ in
           jq -e -s 'any(.[]; has("error"))' "$out/stock-aio-handler-inventory.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible AIO-handler inventory command"
           qmp "$stock_socket" \
+            '{"exec-oob":"query-crucible-hot-fork-block-backend-inventory"}' \
+            "$out/stock-block-backend-inventory.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-block-backend-inventory.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible block-backend inventory command"
+          qmp "$stock_socket" \
             '{"exec-oob":"query-crucible-hot-fork-bottom-half-inventory"}' \
             "$out/stock-bottom-half-inventory.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-bottom-half-inventory.json" >/dev/null \
@@ -129,9 +134,11 @@ in
           wait "$qemu_pid"
           qemu_pid=""
 
+          truncate -s 64M "$TMPDIR/vmstate.raw"
           patched_socket="$TMPDIR/patched.qmp"
           ${qemuPackage}/bin/qemu-system-x86_64 \
             -machine none -nodefaults -no-user-config -display none -monitor none -serial none \
+            -drive "if=none,id=crucible-vmstate,file=$TMPDIR/vmstate.raw,format=raw" \
             -accel sim,thread=single \
             -icount shift=0,sleep=off,align=off,rr_switch_quantum=256 \
             -smp 1 -qmp "unix:$patched_socket,server=on,wait=off" \
@@ -458,6 +465,92 @@ in
             || { cat "$out/aio-handler-inventory.json" >&2; fail "QEMU AIO-handler inventory changed without a lifecycle or callback transition"; }
 
           qmp_pair "$patched_socket" \
+            '{"exec-oob":"query-crucible-hot-fork-block-backend-inventory"}' \
+            "$out/block-backend-inventory.json"
+          jq -e -s --slurpfile aio "$out/aio-inventory-1.json" '
+            [.[] | select(has("return"))][-1].return as $report |
+            ($aio | map(select(has("return"))) | .[-1].return) as $aio_report |
+            ($report | keys | sort) == [
+              "backend-count",
+              "backends",
+              "complete",
+              "device-backends",
+              "generation",
+              "in-flight",
+              "named-backends",
+              "overflowed",
+              "quiesced-backends",
+              "rooted-backends",
+              "schema-version",
+              "writable-backends"
+            ] and
+            $report."schema-version" == 1 and
+            ($report.generation | type) == "number" and
+            $report.complete == true and
+            $report.overflowed == false and
+            ($report.backends | type) == "array" and
+            ($report.backends | length) > 0 and
+            ($report.backends | length) <= 65536 and
+            ($report.backends | length) == $report."backend-count" and
+            ([ $report.backends[]."backend-id" ] ==
+             ([ $report.backends[]."backend-id" ] | sort)) and
+            ([ $report.backends[]."backend-id" ] | unique | length) ==
+              ($report.backends | length) and
+            all($report.backends[];
+              (. | keys | sort) == [
+                "backend-id",
+                "context-id",
+                "device-attached",
+                "in-flight",
+                "name",
+                "name-valid",
+                "named",
+                "permissions",
+                "permissions-disabled",
+                "quiesce-depth",
+                "reference-count",
+                "request-queuing-disabled",
+                "root-present",
+                "shared-permissions",
+                "write-permission"
+              ] and
+              (."backend-id" | type) == "number" and ."backend-id" > 0 and
+              (."context-id" | type) == "number" and ."context-id" > 0 and
+              (."reference-count" | type) == "number" and ."reference-count" > 0 and
+              (.name | type) == "string" and (.name | length) <= 255 and
+              (.named | type) == "boolean" and .named == (.name != "") and
+              (."name-valid" | type) == "boolean" and ."name-valid" and
+              (."root-present" | type) == "boolean" and
+              (."device-attached" | type) == "boolean" and
+              (.permissions | type) == "number" and .permissions >= 0 and
+              (."shared-permissions" | type) == "number" and ."shared-permissions" >= 0 and
+              (."write-permission" | type) == "boolean" and
+              ."write-permission" == ((.permissions / 2 | floor) % 2 == 1) and
+              (."permissions-disabled" | type) == "boolean" and
+              (."quiesce-depth" | type) == "number" and ."quiesce-depth" >= 0 and
+              (."in-flight" | type) == "number" and ."in-flight" >= 0 and
+              (."request-queuing-disabled" | type) == "boolean" and
+              (."context-id" as $context_id |
+               any($aio_report.contexts[]; ."context-id" == $context_id))) and
+            ([ $report.backends[] | select(.named) ] | length) == $report."named-backends" and
+            ([ $report.backends[] | select(."root-present") ] | length) == $report."rooted-backends" and
+            ([ $report.backends[] | select(."device-attached") ] | length) == $report."device-backends" and
+            ([ $report.backends[] | select(."write-permission") ] | length) == $report."writable-backends" and
+            ([ $report.backends[] | select(."quiesce-depth" > 0) ] | length) == $report."quiesced-backends" and
+            (([ $report.backends[]."in-flight" ] | add) // 0) == $report."in-flight" and
+            any($report.backends[];
+              .name == "crucible-vmstate" and .named and ."root-present" and
+              (."in-flight" == 0))
+          ' "$out/block-backend-inventory.json" >/dev/null \
+            || { cat "$out/block-backend-inventory.json" >&2; fail "QEMU block-backend inventory was not exact or AioContext-bound"; }
+          jq -e -s '
+            [.[] | select(has("return")) | .return |
+             select(has("backends"))] as $reports |
+            ($reports | length) == 2 and $reports[0] == $reports[1]
+          ' "$out/block-backend-inventory.json" >/dev/null \
+            || { cat "$out/block-backend-inventory.json" >&2; fail "QEMU block-backend inventory changed without a lifecycle or structural transition"; }
+
+          qmp_pair "$patched_socket" \
             '{"exec-oob":"query-crucible-hot-fork-bottom-half-inventory"}' \
             "$out/bottom-half-inventory.json"
           jq -e -s --slurpfile aio "$out/aio-inventory-1.json" '
@@ -691,7 +784,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0121-crucible-hot-fork-aio-handler-inventory.patch
+          patch=0122-crucible-hot-fork-block-backend-inventory.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -717,6 +810,12 @@ in
           aio_handler_inventory_stable=true
           aio_handlers_context_bound=true
           aio_handlers_descriptor_bound=true
+          block_backend_inventory_schema_version=1
+          block_backend_inventory_bound=65536
+          block_backend_inventory_stable=true
+          block_backends_context_bound=true
+          block_backends_vmstate_observed=true
+          block_snapshot_proof_acknowledged=false
           bottom_half_inventory_schema_version=1
           bottom_half_inventory_bound=65536
           bottom_half_inventory_stable=true

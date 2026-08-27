@@ -559,6 +559,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0122-crucible-hot-fork-block-backend-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

@@ -74,6 +74,7 @@ enum ChannelCall {
     QmpHotForkRcuInventory,
     QmpHotForkAioInventory,
     QmpHotForkAioHandlerInventory,
+    QmpHotForkBlockBackendInventory,
     QmpHotForkBottomHalfInventory,
     QmpHotForkMutexInventory,
     QmpHotForkTimerInventory,
@@ -429,6 +430,16 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         Ok(crate::QmpHotForkAioHandlerInventory::one_read(1, 1, 0))
     }
 
+    fn query_hot_fork_block_backend_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkBlockBackendInventory, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkBlockBackendInventory);
+        Ok(crate::QmpHotForkBlockBackendInventory::one_hidden(1, 1))
+    }
+
     fn query_hot_fork_bottom_half_inventory(
         &mut self,
     ) -> Result<crate::QmpHotForkBottomHalfInventory, QemuNodeChannelError> {
@@ -766,6 +777,8 @@ fn hot_fork_audit_brackets_one_exact_child_process_inventory() -> Result<(), Box
     assert_eq!(audit.qemu_aio_handlers().handlers().len(), 1);
     assert_eq!(audit.qemu_aio_handlers().handlers()[0].context_id(), 1);
     assert_eq!(audit.qemu_aio_handlers().handlers()[0].descriptor(), 0);
+    assert_eq!(audit.qemu_block_backends().backends().len(), 1);
+    assert_eq!(audit.qemu_block_backends().backends()[0].context_id(), 1);
     assert_eq!(audit.qemu_bottom_halves().bottom_halves().len(), 1);
     assert_eq!(
         audit.qemu_bottom_halves().bottom_halves()[0].context_id(),
@@ -786,12 +799,14 @@ fn hot_fork_audit_brackets_one_exact_child_process_inventory() -> Result<(), Box
             ChannelCall::QmpHotForkRcuInventory,
             ChannelCall::QmpHotForkAioInventory,
             ChannelCall::QmpHotForkAioHandlerInventory,
+            ChannelCall::QmpHotForkBlockBackendInventory,
             ChannelCall::QmpHotForkBottomHalfInventory,
             ChannelCall::QmpHotForkMutexInventory,
             ChannelCall::QmpHotForkTimerInventory,
             ChannelCall::QmpHotForkTimerInventory,
             ChannelCall::QmpHotForkMutexInventory,
             ChannelCall::QmpHotForkBottomHalfInventory,
+            ChannelCall::QmpHotForkBlockBackendInventory,
             ChannelCall::QmpHotForkAioHandlerInventory,
             ChannelCall::QmpHotForkAioInventory,
             ChannelCall::QmpHotForkRcuInventory,

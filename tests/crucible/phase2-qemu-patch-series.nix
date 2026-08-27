@@ -846,6 +846,13 @@
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded QMP inventory exposes every allocated POSIX AioHandler, including deferred deletion, exact AioContext and descriptor binding, callback classes, and active callback count without claiming a retained AIO-handler barrier or readiness proof";
     }
+    {
+      file = "0122-crucible-hot-fork-block-backend-inventory.patch";
+      catalogName = "crucible-hot-fork-block-backend-inventory";
+      class = "F";
+      enforces = "HFORK-3,HFORK-5";
+      capability = "a bounded OOB QMP inventory exposes every allocated BlockBackend with stable backend/AioContext identity, visibility, attachment, permission, quiesce, queue-policy, and in-flight state without claiming block-graph traversal, a retained writable-root barrier, or readiness proof";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

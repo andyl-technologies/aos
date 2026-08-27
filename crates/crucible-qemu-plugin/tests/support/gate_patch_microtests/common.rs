@@ -135,6 +135,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0119-crucible-hot-fork-timer-inventory.patch",
     "0120-crucible-hot-fork-bottom-half-inventory.patch",
     "0121-crucible-hot-fork-aio-handler-inventory.patch",
+    "0122-crucible-hot-fork-block-backend-inventory.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

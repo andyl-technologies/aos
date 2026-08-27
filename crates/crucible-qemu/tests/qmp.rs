@@ -14,6 +14,7 @@ use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT,
     QMP_HOT_FORK_REQUIRED_PROOFS, QMP_QUERY_CPUS_FAST_COMMAND,
     QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_READINESS_COMMAND,
     QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
@@ -532,6 +533,70 @@ fn hot_fork_aio_handler_inventory_rejects_malformed_contracts() -> Result<(), Bo
             client.query_hot_fork_aio_handler_inventory(),
             Err(QmpError::MalformedTypedResponse {
                 command: QmpCommandKind::QueryHotForkAioHandlerInventory,
+                ..
+            })
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn hot_fork_block_backend_inventory_is_exact_bounded_and_oob() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":11,"complete":true,"overflowed":false,"backend-count":2,"named-backends":1,"rooted-backends":2,"device-backends":1,"writable-backends":1,"quiesced-backends":1,"in-flight":3,"backends":[{"backend-id":1,"context-id":4,"reference-count":1,"name":"","named":false,"name-valid":true,"root-present":true,"device-attached":false,"permissions":2,"shared-permissions":31,"write-permission":true,"permissions-disabled":false,"quiesce-depth":0,"in-flight":0,"request-queuing-disabled":false},{"backend-id":3,"context-id":5,"reference-count":2,"name":"vmstate","named":true,"name-valid":true,"root-present":true,"device-attached":true,"permissions":1,"shared-permissions":31,"write-permission":false,"permissions-disabled":true,"quiesce-depth":2,"in-flight":3,"request-queuing-disabled":true}]}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let inventory = client.query_hot_fork_block_backend_inventory()?;
+    assert_eq!(inventory.generation(), 11);
+    assert!(inventory.complete());
+    assert!(!inventory.overflowed());
+    assert_eq!(inventory.backends().len(), 2);
+    assert_eq!(inventory.backends()[0].backend_id(), 1);
+    assert_eq!(inventory.backends()[0].context_id(), 4);
+    assert!(inventory.backends()[0].write_permission());
+    assert!(!inventory.backends()[0].named());
+    assert!(inventory.backends()[0].name_valid());
+    assert_eq!(inventory.backends()[1].name(), "vmstate");
+    assert_eq!(inventory.backends()[1].reference_count(), 2);
+    assert!(inventory.backends()[1].root_present());
+    assert!(inventory.backends()[1].device_attached());
+    assert!(inventory.backends()[1].permissions_disabled());
+    assert_eq!(inventory.backends()[1].quiesce_depth(), 2);
+    assert_eq!(inventory.backends()[1].in_flight(), 3);
+    assert!(inventory.backends()[1].request_queuing_disabled());
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    assert_eq!(
+        oob_execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND)
+    );
+    Ok(())
+}
+
+#[test]
+fn hot_fork_block_backend_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn Error>> {
+    for response in [
+        r#"{"return":{"schema-version":2,"generation":1,"complete":true,"overflowed":false,"backend-count":0,"named-backends":0,"rooted-backends":0,"device-backends":0,"writable-backends":0,"quiesced-backends":0,"in-flight":0,"backends":[]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"backend-count":1,"named-backends":0,"rooted-backends":1,"device-backends":0,"writable-backends":1,"quiesced-backends":0,"in-flight":0,"backends":[{"backend-id":1,"context-id":0,"reference-count":1,"name":"","named":false,"name-valid":true,"root-present":true,"device-attached":false,"permissions":2,"shared-permissions":31,"write-permission":true,"permissions-disabled":false,"quiesce-depth":0,"in-flight":0,"request-queuing-disabled":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"backend-count":1,"named-backends":0,"rooted-backends":1,"device-backends":0,"writable-backends":0,"quiesced-backends":0,"in-flight":0,"backends":[{"backend-id":1,"context-id":1,"reference-count":1,"name":"","named":false,"name-valid":true,"root-present":true,"device-attached":false,"permissions":2,"shared-permissions":31,"write-permission":false,"permissions-disabled":false,"quiesce-depth":0,"in-flight":0,"request-queuing-disabled":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"backend-count":1,"named-backends":1,"rooted-backends":1,"device-backends":0,"writable-backends":1,"quiesced-backends":0,"in-flight":0,"backends":[{"backend-id":1,"context-id":1,"reference-count":1,"name":"","named":true,"name-valid":true,"root-present":true,"device-attached":false,"permissions":2,"shared-permissions":31,"write-permission":true,"permissions-disabled":false,"quiesce-depth":0,"in-flight":0,"request-queuing-disabled":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"backend-count":1,"named-backends":0,"rooted-backends":1,"device-backends":0,"writable-backends":1,"quiesced-backends":0,"in-flight":1,"backends":[{"backend-id":1,"context-id":1,"reference-count":1,"name":"","named":false,"name-valid":true,"root-present":true,"device-attached":false,"permissions":2,"shared-permissions":31,"write-permission":true,"permissions-disabled":false,"quiesce-depth":0,"in-flight":0,"request-queuing-disabled":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":false,"overflowed":false,"backend-count":0,"named-backends":0,"rooted-backends":0,"device-backends":0,"writable-backends":0,"quiesced-backends":0,"in-flight":0,"backends":[]}}"#,
+    ] {
+        let mut client = QmpClient::connect(scripted_qmp([
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            response,
+        ]))?;
+        assert!(matches!(
+            client.query_hot_fork_block_backend_inventory(),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::QueryHotForkBlockBackendInventory,
                 ..
             })
         ));

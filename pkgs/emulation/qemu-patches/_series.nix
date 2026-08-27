@@ -1146,6 +1146,16 @@ let
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded versioned QMP inventory reports every allocated POSIX AioHandler, including deferred deletion, exact owning AioContext and file descriptor, installed callback classes, active callback count, and process-local lifecycle generation; the report remains observational, supplies no retained AIO-handler barrier, and leaves the AIO/BH/timer readiness proof clear";
     }
+    {
+      file = "0122-crucible-hot-fork-block-backend-inventory.patch";
+      branchSubject = "crucible: inventory block backends for hot fork";
+      branchCommit = "ecd57c611ccf0e668e8ffa4e1a326e9feebcd676";
+      branchTree = "fed38a88088b9de2d7afc642a2e71a783597de3e";
+      catalogName = "crucible-hot-fork-block-backend-inventory";
+      class = "F";
+      enforces = "HFORK-3,HFORK-5";
+      capability = "a bounded versioned OOB QMP inventory reports every allocated BlockBackend with stable process-local backend and AioContext identities, monitor visibility, root/device attachment, requested and shared permissions, permission suppression, quiesce depth, request-queue policy, and in-flight I/O; the report remains observational, does not traverse or retain the block graph, and leaves the immutable writable-root readiness proof clear";
+    }
   ];
   catalogOnlyCapabilities = [
     {
