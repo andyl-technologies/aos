@@ -194,15 +194,24 @@
     with open(path) as f:
         src = f.read()
 
-    # Dawn publishes the same commit graph through its official GitHub mirror.
-    # Use that mirror so a source-only build does not require a one-off network
-    # origin in addition to the other GitHub-hosted dependencies.
-    dawn_origin = 'remote = "https://dawn.googlesource.com/dawn.git",'
-    dawn_mirror = 'remote = "https://github.com/google/dawn.git",'
-    if dawn_origin in src:
-        src = src.replace(dawn_origin, dawn_mirror, 1)
-    else:
-        assert dawn_mirror in src, "Dawn git_repository remote not found in WORKSPACE"
+    # These repositories publish the same commit graphs through their official
+    # GitHub mirrors. Use those mirrors so the source-only build does not add
+    # redundant network origins. The Chromium-fork zlib and ICU repositories
+    # intentionally stay on their canonical origin because no official GitHub
+    # mirror carries those fork commits.
+    git_mirrors = {
+        'remote = "https://dawn.googlesource.com/dawn.git",':
+            'remote = "https://github.com/google/dawn.git",',
+        'remote = "https://chromium.googlesource.com/chromium/src/third_party/abseil-cpp.git",':
+            'remote = "https://github.com/abseil/abseil-cpp.git",',
+        'remote = "https://chromium.googlesource.com/external/github.com/Maratyszcza/FP16.git",':
+            'remote = "https://github.com/Maratyszcza/FP16.git",',
+    }
+    for origin, mirror in git_mirrors.items():
+        if origin in src:
+            src = src.replace(origin, mirror, 1)
+        else:
+            assert mirror in src, "git_repository remote not found in WORKSPACE: " + origin
 
     # Idempotent: postPatchScript runs in both the fetch FOD and the build
     # phase (and possibly twice in the build phase), so bail out cleanly if the
