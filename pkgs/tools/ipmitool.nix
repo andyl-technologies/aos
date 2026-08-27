@@ -6,6 +6,7 @@
   autoconf,
   automake,
   libtool,
+  m4,
   pkg-config,
   openssl,
   readline,
@@ -24,7 +25,7 @@ in
       hash = "sha256-SLAQ57zfk+TktuQ8U8f2CqaHPVdMvUWo2G+nqu66/5w=";
     };
 
-    buildDeps = [gnumake autoconf automake libtool pkg-config];
+    buildDeps = [gnumake autoconf automake libtool m4 pkg-config];
     runtimeDeps = [openssl readline];
     propagatedDeps = [];
 
