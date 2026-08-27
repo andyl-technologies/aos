@@ -26,16 +26,19 @@ mod unix_socket;
 mod vmstate_control;
 
 pub use hot_fork::{
+    QMP_HOT_FORK_AIO_INVENTORY_MAX, QMP_HOT_FORK_AIO_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_RCU_INVENTORY_MAX, QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_READINESS_SCHEMA_VERSION, QMP_HOT_FORK_REQUIRED_PROOFS,
     QMP_HOT_FORK_THREAD_INVENTORY_MAX, QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_THREAD_NAME_MAX_BYTES, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
+    QMP_HOT_FORK_THREAD_NAME_MAX_BYTES, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_READINESS_COMMAND,
+    QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QmpHotForkAioContext, QmpHotForkAioInventory,
     QmpHotForkProof, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
     QmpHotForkThread, QmpHotForkThreadDisposition, QmpHotForkThreadInventory,
 };
 use hot_fork::{
-    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_thread_inventory,
+    parse_hot_fork_aio_inventory, parse_hot_fork_rcu_inventory, parse_hot_fork_readiness,
+    parse_hot_fork_thread_inventory,
 };
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
@@ -490,6 +493,22 @@ where
     pub fn query_hot_fork_rcu_inventory(&mut self) -> Result<QmpHotForkRcuInventory, QmpError> {
         let response = self.send_command_return(QmpCommand::QueryHotForkRcuInventory)?;
         parse_hot_fork_rcu_inventory(&response.value)
+    }
+
+    /// Returns QEMU's exact bounded observational AioContext inventory.
+    ///
+    /// This query does not drain or park AIO, bottom halves, handlers, or
+    /// timers and does not acknowledge the AIO hot-fork proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request or response fails, or when the
+    /// response violates the closed schema, context bound, sorted unique
+    /// identifiers, home-thread profile, declared aggregates, or derived
+    /// completeness relationship.
+    pub fn query_hot_fork_aio_inventory(&mut self) -> Result<QmpHotForkAioInventory, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryHotForkAioInventory)?;
+        parse_hot_fork_aio_inventory(&response.value)
     }
 
     fn read_greeting(&mut self) -> Result<QmpGreeting, QmpError> {
@@ -979,6 +998,8 @@ pub enum QmpCommandKind {
     QueryHotForkThreadInventory,
     /// QEMU-owned hot-fork RCU-state inventory query.
     QueryHotForkRcuInventory,
+    /// QEMU-owned hot-fork AioContext activity inventory query.
+    QueryHotForkAioInventory,
     /// Graceful QEMU quit.
     Quit,
 }
@@ -1000,6 +1021,7 @@ impl QmpCommandKind {
             Self::QueryHotForkReadiness => QMP_QUERY_HOT_FORK_READINESS_COMMAND,
             Self::QueryHotForkThreadInventory => QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
             Self::QueryHotForkRcuInventory => QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
+            Self::QueryHotForkAioInventory => QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
             Self::Quit => QMP_QUIT_COMMAND_NAME,
         }
     }
@@ -1053,6 +1075,7 @@ enum QmpCommand<'a> {
     QueryHotForkReadiness,
     QueryHotForkThreadInventory,
     QueryHotForkRcuInventory,
+    QueryHotForkAioInventory,
     Quit,
 }
 
@@ -1073,6 +1096,7 @@ impl QmpCommand<'_> {
             Self::QueryHotForkReadiness => QmpCommandKind::QueryHotForkReadiness,
             Self::QueryHotForkThreadInventory => QmpCommandKind::QueryHotForkThreadInventory,
             Self::QueryHotForkRcuInventory => QmpCommandKind::QueryHotForkRcuInventory,
+            Self::QueryHotForkAioInventory => QmpCommandKind::QueryHotForkAioInventory,
             Self::Quit => QmpCommandKind::Quit,
         }
     }
@@ -1135,6 +1159,9 @@ impl QmpCommand<'_> {
             }),
             Self::QueryHotForkRcuInventory => json!({
                 "execute": QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
+            }),
+            Self::QueryHotForkAioInventory => json!({
+                "execute": QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
             }),
             Self::Quit => json!({
                 "execute": QMP_QUIT_COMMAND_NAME,

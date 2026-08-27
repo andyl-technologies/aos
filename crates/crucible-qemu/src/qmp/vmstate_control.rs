@@ -6,9 +6,9 @@ use std::os::unix::net::UnixStream;
 use crucible::Checkpoint;
 
 use super::{
-    QmpClient, QmpCommandComplete, QmpError, QmpHotForkRcuInventory, QmpHotForkReadiness,
-    QmpHotForkThreadInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind,
-    QmpSnapshotTag, QmpTimeoutStream,
+    QmpClient, QmpCommandComplete, QmpError, QmpHotForkAioInventory, QmpHotForkRcuInventory,
+    QmpHotForkReadiness, QmpHotForkThreadInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy,
+    QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use crate::{
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
@@ -159,6 +159,20 @@ where
     ) -> Result<QmpHotForkRcuInventory, QemuNodeChannelError> {
         self.client
             .query_hot_fork_rcu_inventory()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Queries QEMU's exact bounded observational AioContext inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
+    /// not satisfy the closed AIO inventory schema and bounds.
+    pub fn query_hot_fork_aio_inventory(
+        &mut self,
+    ) -> Result<QmpHotForkAioInventory, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_aio_inventory()
             .map_err(QemuNodeChannelError::from)
     }
 

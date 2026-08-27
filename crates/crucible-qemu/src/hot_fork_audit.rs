@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::{
-    QemuNodeChannelError, QemuNodeError, QemuProcessIdentity, QmpHotForkRcuInventory,
-    QmpHotForkReadiness, QmpHotForkThreadInventory,
+    QemuNodeChannelError, QemuNodeError, QemuProcessIdentity, QmpHotForkAioInventory,
+    QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkThreadInventory,
 };
 
 /// Maximum threads, descriptors, or mappings retained by one audit.
@@ -157,6 +157,7 @@ pub struct QemuHotForkAudit {
     readiness: QmpHotForkReadiness,
     qemu_threads: QmpHotForkThreadInventory,
     qemu_rcu: QmpHotForkRcuInventory,
+    qemu_aio: QmpHotForkAioInventory,
     process: QemuHotForkProcessInventory,
     externally_created_thread_ids: Vec<u32>,
 }
@@ -166,6 +167,7 @@ impl QemuHotForkAudit {
         readiness: QmpHotForkReadiness,
         qemu_threads: QmpHotForkThreadInventory,
         qemu_rcu: QmpHotForkRcuInventory,
+        qemu_aio: QmpHotForkAioInventory,
         process: QemuHotForkProcessInventory,
     ) -> Result<Self, QemuHotForkAuditError> {
         let mut qemu_index = 0_usize;
@@ -206,10 +208,26 @@ impl QemuHotForkAudit {
                 });
             }
         }
+        for context in qemu_aio.contexts() {
+            let Some(home_thread_id) = context.home_thread_id() else {
+                continue;
+            };
+            if qemu_threads
+                .threads()
+                .binary_search_by_key(&home_thread_id, |thread| thread.thread_id())
+                .is_err()
+            {
+                return Err(QemuHotForkAuditError::AioHomeThreadMissing {
+                    context_id: context.context_id(),
+                    thread_id: home_thread_id,
+                });
+            }
+        }
         Ok(Self {
             readiness,
             qemu_threads,
             qemu_rcu,
+            qemu_aio,
             process,
             externally_created_thread_ids,
         })
@@ -231,6 +249,12 @@ impl QemuHotForkAudit {
     #[must_use]
     pub const fn qemu_rcu(&self) -> &QmpHotForkRcuInventory {
         &self.qemu_rcu
+    }
+
+    /// Returns QEMU's matching bounded observational AioContext inventory.
+    #[must_use]
+    pub const fn qemu_aio(&self) -> &QmpHotForkAioInventory {
+        &self.qemu_aio
     }
 
     /// Returns the matching stable process inventory.
@@ -264,6 +288,9 @@ pub enum QemuHotForkAuditError {
     /// The QEMU-owned RCU inventory query failed.
     #[error("QEMU hot-fork RCU inventory query failed")]
     RcuInventory(#[source] QemuNodeChannelError),
+    /// The QEMU-owned AioContext inventory query failed.
+    #[error("QEMU hot-fork AioContext inventory query failed")]
+    AioInventory(#[source] QemuNodeChannelError),
     /// QEMU was not at the exact paused/device-flush boundary.
     #[error("QEMU is not at the exact paused boundary required for hot-fork audit")]
     NotExactPausedBoundary,
@@ -276,6 +303,9 @@ pub enum QemuHotForkAuditError {
     /// QEMU's observational RCU inventory changed around procfs capture.
     #[error("QEMU hot-fork RCU inventory changed during process inventory")]
     RcuInventoryChanged,
+    /// QEMU's observational AioContext inventory changed around procfs capture.
+    #[error("QEMU hot-fork AioContext inventory changed during process inventory")]
+    AioInventoryChanged,
     /// A QEMU-registered thread was absent from the exact procfs inventory.
     #[error("QEMU-registered thread {thread_id} is absent from the process inventory")]
     RegisteredThreadMissing {
@@ -286,6 +316,16 @@ pub enum QemuHotForkAuditError {
     #[error("QEMU RCU reader {thread_id} is absent from the active-thread registry")]
     RcuReaderMissing {
         /// Missing RCU reader operating-system thread identifier.
+        thread_id: u32,
+    },
+    /// An assigned AioContext home thread was absent from QEMU's thread registry.
+    #[error(
+        "QEMU AioContext {context_id} home thread {thread_id} is absent from the active-thread registry"
+    )]
+    AioHomeThreadMissing {
+        /// Process-local AioContext identifier.
+        context_id: u64,
+        /// Missing operating-system home-thread identifier.
         thread_id: u32,
     },
     /// Linux process inventory failed.
@@ -812,6 +852,7 @@ mod tests {
             readiness,
             QmpHotForkThreadInventory::one_coordinator(10),
             QmpHotForkRcuInventory::from_reader_ids(&[10]),
+            QmpHotForkAioInventory::one_idle(1, 10),
             process.clone(),
         )
         .expect("registered coordinator should match procfs");
@@ -822,6 +863,7 @@ mod tests {
                 readiness,
                 QmpHotForkThreadInventory::one_coordinator(10),
                 QmpHotForkRcuInventory::from_reader_ids(&[20]),
+                QmpHotForkAioInventory::one_idle(1, 10),
                 process.clone(),
             ),
             Err(QemuHotForkAuditError::RcuReaderMissing { thread_id: 20 })
@@ -830,8 +872,23 @@ mod tests {
         assert!(matches!(
             QemuHotForkAudit::new(
                 readiness,
+                QmpHotForkThreadInventory::one_coordinator(10),
+                QmpHotForkRcuInventory::from_reader_ids(&[10]),
+                QmpHotForkAioInventory::one_idle(7, 20),
+                process.clone(),
+            ),
+            Err(QemuHotForkAuditError::AioHomeThreadMissing {
+                context_id: 7,
+                thread_id: 20,
+            })
+        ));
+
+        assert!(matches!(
+            QemuHotForkAudit::new(
+                readiness,
                 QmpHotForkThreadInventory::one_coordinator(30),
                 QmpHotForkRcuInventory::from_reader_ids(&[30]),
+                QmpHotForkAioInventory::one_idle(1, 30),
                 process,
             ),
             Err(QemuHotForkAuditError::RegisteredThreadMissing { thread_id: 30 })

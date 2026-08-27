@@ -86,6 +86,11 @@ in
             "$out/stock-rcu-inventory.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-rcu-inventory.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible RCU inventory command"
+          qmp "$stock_socket" \
+            '{"execute":"query-crucible-hot-fork-aio-inventory"}' \
+            "$out/stock-aio-inventory.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-aio-inventory.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible AIO inventory command"
           qmp "$stock_socket" '{"execute":"quit"}' "$out/stock-quit.json"
           wait "$qemu_pid"
           qemu_pid=""
@@ -255,6 +260,81 @@ in
           ' "$out/rcu-inventory-2.json" >/dev/null \
             || { cat "$out/rcu-inventory-1.json" >&2; cat "$out/rcu-inventory-2.json" >&2; fail "QEMU RCU inventory changed without a reader transition"; }
 
+          qmp "$patched_socket" \
+            '{"execute":"query-crucible-hot-fork-aio-inventory"}' \
+            "$out/aio-inventory-1.json"
+          qmp "$patched_socket" \
+            '{"execute":"query-crucible-hot-fork-aio-inventory"}' \
+            "$out/aio-inventory-2.json"
+          jq -e -s --slurpfile threads "$out/thread-inventory-1.json" '
+            [.[] | select(has("return"))][-1].return as $report |
+            ($threads | map(select(has("return"))) | .[-1].return) as $thread_report |
+            ($report | keys | sort) == [
+              "active-bottom-halves",
+              "active-dispatches",
+              "active-polls",
+              "assigned-contexts",
+              "complete",
+              "context-count",
+              "contexts",
+              "generation",
+              "overflowed",
+              "pending-bottom-halves",
+              "queued-coroutines",
+              "schema-version"
+            ] and
+            $report."schema-version" == 1 and
+            ($report.generation | type) == "number" and
+            ($report.complete | type) == "boolean" and
+            ($report.overflowed | type) == "boolean" and
+            ($report.contexts | type) == "array" and
+            ($report.contexts | length) > 0 and
+            ($report.contexts | length) <= 65536 and
+            ($report.contexts | length) == $report."context-count" and
+            ([ $report.contexts[] | select(."home-thread-id" > 0) ] | length) ==
+              $report."assigned-contexts" and
+            ([ $report.contexts[]."context-id" ] ==
+             ([ $report.contexts[]."context-id" ] | sort)) and
+            ([ $report.contexts[]."context-id" ] | unique | length) ==
+              ($report.contexts | length) and
+            all($report.contexts[];
+              (. | keys | sort) == [
+                "active-bottom-halves",
+                "active-dispatches",
+                "active-polls",
+                "context-id",
+                "home-thread-id",
+                "notify-pending",
+                "pending-bottom-halves",
+                "queued-coroutines"
+              ] and
+              (."context-id" | type) == "number" and ."context-id" > 0 and
+              (."home-thread-id" | type) == "number" and ."home-thread-id" >= 0 and
+              (."active-polls" | type) == "number" and ."active-polls" >= 0 and
+              (."active-dispatches" | type) == "number" and ."active-dispatches" >= 0 and
+              (."pending-bottom-halves" | type) == "number" and ."pending-bottom-halves" >= 0 and
+              (."active-bottom-halves" | type) == "number" and ."active-bottom-halves" >= 0 and
+              (."queued-coroutines" | type) == "number" and ."queued-coroutines" >= 0 and
+              (."notify-pending" | type) == "boolean") and
+            ([ $report.contexts[]."active-polls" ] | add) == $report."active-polls" and
+            ([ $report.contexts[]."active-dispatches" ] | add) == $report."active-dispatches" and
+            ([ $report.contexts[]."pending-bottom-halves" ] | add) == $report."pending-bottom-halves" and
+            ([ $report.contexts[]."active-bottom-halves" ] | add) == $report."active-bottom-halves" and
+            ([ $report.contexts[]."queued-coroutines" ] | add) == $report."queued-coroutines" and
+            all($report.contexts[] | select(."home-thread-id" > 0);
+              ."home-thread-id" as $home_tid |
+              any($thread_report.threads[]; ."thread-id" == $home_tid)) and
+            $report.complete ==
+              (($report.overflowed | not) and
+               $report."assigned-contexts" == $report."context-count")
+          ' "$out/aio-inventory-1.json" >/dev/null \
+            || { cat "$out/aio-inventory-1.json" >&2; fail "QEMU AIO inventory was not exact or thread-bound"; }
+          jq -e -s --slurpfile first "$out/aio-inventory-1.json" '
+            [.[] | select(has("return"))][-1].return ==
+              ($first | map(select(has("return"))) | .[-1].return)
+          ' "$out/aio-inventory-2.json" >/dev/null \
+            || { cat "$out/aio-inventory-1.json" >&2; cat "$out/aio-inventory-2.json" >&2; fail "QEMU AIO inventory changed without a context transition"; }
+
           qmp "$patched_socket" '{"execute":"quit"}' "$out/patched-quit.json"
           wait "$qemu_pid"
           qemu_pid=""
@@ -264,7 +344,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0113-crucible-hot-fork-rcu-inventory.patch
+          patch=0114-crucible-hot-fork-aio-inventory.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -280,6 +360,11 @@ in
           rcu_inventory_stable=true
           rcu_readers_thread_bound=true
           rcu_proof_acknowledged=false
+          aio_inventory_schema_version=1
+          aio_inventory_bound=65536
+          aio_inventory_stable=true
+          aio_contexts_thread_bound=true
+          aio_proof_acknowledged=false
           incomplete_report_ready=false
           stock_commands_absent=true
           RESULT

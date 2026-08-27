@@ -13,12 +13,13 @@ use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT,
     QMP_HOT_FORK_REQUIRED_PROOFS, QMP_QUERY_CPUS_FAST_COMMAND,
-    QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_READINESS_COMMAND,
-    QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
-    QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND,
-    QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient,
-    QmpCommandKind, QmpError, QmpGreeting, QmpHotForkProof, QmpHotForkThreadDisposition,
-    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
+    QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME,
+    QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
+    QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient, QmpCommandKind, QmpError,
+    QmpGreeting, QmpHotForkProof, QmpHotForkThreadDisposition, QmpIoTimeoutPolicy,
+    QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -397,6 +398,64 @@ fn hot_fork_rcu_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn Er
             client.query_hot_fork_rcu_inventory(),
             Err(QmpError::MalformedTypedResponse {
                 command: QmpCommandKind::QueryHotForkRcuInventory,
+                ..
+            })
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn hot_fork_aio_inventory_is_exact_bounded_and_thread_bound() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":8,"complete":true,"overflowed":false,"context-count":2,"assigned-contexts":2,"active-polls":1,"active-dispatches":1,"pending-bottom-halves":2,"active-bottom-halves":1,"queued-coroutines":3,"contexts":[{"context-id":1,"home-thread-id":10,"active-polls":1,"active-dispatches":0,"pending-bottom-halves":2,"active-bottom-halves":0,"queued-coroutines":3,"notify-pending":true},{"context-id":2,"home-thread-id":11,"active-polls":0,"active-dispatches":1,"pending-bottom-halves":0,"active-bottom-halves":1,"queued-coroutines":0,"notify-pending":false}]}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let inventory = client.query_hot_fork_aio_inventory()?;
+    assert_eq!(inventory.generation(), 8);
+    assert!(inventory.complete());
+    assert!(!inventory.overflowed());
+    assert_eq!(inventory.contexts().len(), 2);
+    assert_eq!(inventory.contexts()[0].context_id(), 1);
+    assert_eq!(inventory.contexts()[0].home_thread_id(), Some(10));
+    assert_eq!(inventory.contexts()[0].active_polls(), 1);
+    assert_eq!(inventory.contexts()[0].pending_bottom_halves(), 2);
+    assert_eq!(inventory.contexts()[0].queued_coroutines(), 3);
+    assert!(inventory.contexts()[0].notify_pending());
+    assert_eq!(inventory.contexts()[1].active_dispatches(), 1);
+    assert_eq!(inventory.contexts()[1].active_bottom_halves(), 1);
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    assert_eq!(
+        execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND)
+    );
+    Ok(())
+}
+
+#[test]
+fn hot_fork_aio_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn Error>> {
+    for response in [
+        r#"{"return":{"schema-version":2,"generation":1,"complete":true,"overflowed":false,"context-count":0,"assigned-contexts":0,"active-polls":0,"active-dispatches":0,"pending-bottom-halves":0,"active-bottom-halves":0,"queued-coroutines":0,"contexts":[]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"context-count":2,"assigned-contexts":1,"active-polls":0,"active-dispatches":0,"pending-bottom-halves":0,"active-bottom-halves":0,"queued-coroutines":0,"contexts":[{"context-id":1,"home-thread-id":10,"active-polls":0,"active-dispatches":0,"pending-bottom-halves":0,"active-bottom-halves":0,"queued-coroutines":0,"notify-pending":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"context-count":2,"assigned-contexts":2,"active-polls":0,"active-dispatches":0,"pending-bottom-halves":0,"active-bottom-halves":0,"queued-coroutines":0,"contexts":[{"context-id":2,"home-thread-id":10,"active-polls":0,"active-dispatches":0,"pending-bottom-halves":0,"active-bottom-halves":0,"queued-coroutines":0,"notify-pending":false},{"context-id":1,"home-thread-id":11,"active-polls":0,"active-dispatches":0,"pending-bottom-halves":0,"active-bottom-halves":0,"queued-coroutines":0,"notify-pending":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"context-count":1,"assigned-contexts":1,"active-polls":2,"active-dispatches":0,"pending-bottom-halves":0,"active-bottom-halves":0,"queued-coroutines":0,"contexts":[{"context-id":1,"home-thread-id":10,"active-polls":1,"active-dispatches":0,"pending-bottom-halves":0,"active-bottom-halves":0,"queued-coroutines":0,"notify-pending":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"context-count":1,"assigned-contexts":0,"active-polls":0,"active-dispatches":0,"pending-bottom-halves":0,"active-bottom-halves":0,"queued-coroutines":0,"contexts":[{"context-id":1,"home-thread-id":0,"active-polls":0,"active-dispatches":0,"pending-bottom-halves":0,"active-bottom-halves":0,"queued-coroutines":0,"notify-pending":false}]}}"#,
+    ] {
+        let mut client = QmpClient::connect(scripted_qmp([
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            response,
+        ]))?;
+        assert!(matches!(
+            client.query_hot_fork_aio_inventory(),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::QueryHotForkAioInventory,
                 ..
             })
         ));
