@@ -6001,25 +6001,7 @@ fn config_publish_binding_digest(
     module: &ConfigModuleMeta,
     expose_manifest_digest: Option<&str>,
 ) -> Result<String> {
-    let base_lib = module
-        .evaluation_base_lib
-        .as_ref()
-        .context("published config module is missing its evaluation base-lib binding")?;
-    let metadata = serde_json::to_vec(module)
-        .context("serializing derived config-module metadata for provenance binding")?;
-    Ok(format!(
-        "sha256:{}",
-        sha256_hex(
-            format!(
-                "config={}\nbase-lib={}\nmetadata=sha256:{}\nexpose={}\n",
-                module.config_output.nar_hash,
-                base_lib.nar_hash,
-                sha256_hex(&metadata),
-                expose_manifest_digest.unwrap_or("")
-            )
-            .as_bytes()
-        )
-    ))
+    crate::package_attestation::config_module_binding_digest(module, expose_manifest_digest)
 }
 
 fn package_nar_root_digest(nar_hash: &str) -> String {
