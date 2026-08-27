@@ -13,6 +13,7 @@ exports:
   - targets: [ x86_64-macos, arm64-macos ]
     symbols:
       - _NSLog
+      - _NSHomeDirectory
       - _NSSearchPathForDirectoriesInDomains
       - '_OBJC_CLASS_$_NSArray'
       - '_OBJC_CLASS_$_NSData'

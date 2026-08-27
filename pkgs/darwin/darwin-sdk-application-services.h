@@ -24,6 +24,17 @@ AXError AXUIElementPostKeyboardEvent(
   Boolean keyDown
 );
 
+typedef struct OpaquePMPrintSettings *PMPrintSettings;
+typedef UInt32 PMDuplexMode;
+enum {
+  kPMDuplexNone = 0x0001,
+  kPMDuplexNoTumble = 0x0002,
+  kPMDuplexTumble = 0x0003,
+  kPMSimplexTumble = 0x0004,
+};
+OSStatus PMGetDuplex(PMPrintSettings printSettings, PMDuplexMode *duplexSetting);
+OSStatus PMSetDuplex(PMPrintSettings printSettings, PMDuplexMode duplexSetting);
+
 typedef UInt32 LSLaunchFlags;
 enum { kLSLaunchDefaults = 0x00000001 };
 

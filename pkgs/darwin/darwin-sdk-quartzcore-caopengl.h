@@ -4,6 +4,7 @@
 #import <QuartzCore/CALayer.h>
 
 @interface CAOpenGLLayer : CALayer
+@property(getter=isAsynchronous) BOOL asynchronous;
 @end
 
 #endif

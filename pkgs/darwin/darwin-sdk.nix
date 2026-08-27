@@ -179,6 +179,46 @@
       "$out/System/Library/Frameworks/JavaVM.framework/Versions/A/Frameworks/JavaRuntimeSupport.framework/Versions/A/JavaRuntimeSupport"
   '';
 
+  jdk25AudioFragment = builtins.toFile "aos-jdk25-audio-sdk-fragment.sh" ''
+    # OpenJDK's macOS sound and MIDI backends consume these public C
+    # framework ABIs. Install only the compile/link surface; the Darwin host
+    # supplies each implementation at its canonical install name.
+    cp ${./darwin-sdk-audio-midi.h} \
+      "$out/System/Library/Frameworks/CoreAudio.framework/Headers/CoreAudioTypes.h"
+    for header in CoreAudio AudioHardwareBase AudioHardware HostTime; do
+      cp ${./darwin-sdk-coreaudio.h} \
+        "$out/System/Library/Frameworks/CoreAudio.framework/Headers/$header.h"
+    done
+    for header in AudioToolbox AudioConverter; do
+      cp ${./darwin-sdk-audiotoolbox.h} \
+        "$out/System/Library/Frameworks/AudioToolbox.framework/Headers/$header.h"
+    done
+    for header in AudioUnit AUComponent AudioUnitProperties AudioOutputUnit; do
+      cp ${./darwin-sdk-audiounit.h} \
+        "$out/System/Library/Frameworks/AudioUnit.framework/Headers/$header.h"
+    done
+    for header in CoreMIDI MIDIServices; do
+      cp ${./darwin-sdk-coremidi.h} \
+        "$out/System/Library/Frameworks/CoreMIDI.framework/Headers/$header.h"
+    done
+    cp ${./darwin-sdk-coreaudio.tbd} \
+      "$out/System/Library/Frameworks/CoreAudio.framework/CoreAudio.tbd"
+    cp ${./darwin-sdk-audiotoolbox.tbd} \
+      "$out/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox.tbd"
+    cp ${./darwin-sdk-audiounit.tbd} \
+      "$out/System/Library/Frameworks/AudioUnit.framework/AudioUnit.tbd"
+    cp ${./darwin-sdk-coremidi.tbd} \
+      "$out/System/Library/Frameworks/CoreMIDI.framework/CoreMIDI.tbd"
+    for framework in CoreAudio AudioToolbox AudioUnit CoreMIDI; do
+      ln -s "../../$framework.tbd" \
+        "$out/System/Library/Frameworks/$framework.framework/Versions/A/$framework.tbd"
+      ln -s "$framework.tbd" \
+        "$out/System/Library/Frameworks/$framework.framework/Versions/A/$framework"
+    done
+  '';
+
+  coreVideoFragment = ./darwin-sdk-corevideo-fragment.sh;
+
   qemuCocoaSdkFragment = builtins.toFile "aos-qemu-cocoa-sdk-fragment.sh" ''
     # QEMU's Cocoa display presents guest scanouts with the public
     # CoreGraphics image, context, display, and event-tap APIs. Publish
@@ -703,6 +743,14 @@
           - _CGWindowLevelForKey
           - _CGWindowListCopyWindowInfo
           - _CGWindowListCreateImage
+          - _CGAffineTransformScale
+          - _CGBitmapContextGetBitmapInfo
+          - _CGDirectDisplayCopyCurrentMetalDevice
+          - _CGDisplayModeGetPixelWidth
+          - _CGEventSetFlags
+          - _CGEventSourceCreate
+          - _CGEventSourceFlagsState
+          - _CGRestorePermanentDisplayConfiguration
           - _CGRectZero
           - _CGAffineTransformIdentity
           - _kCGColorSpaceGenericGray
@@ -799,13 +847,23 @@ in
             "$out/System/Library/Frameworks/ApplicationServices.framework/Versions/A" \
             "$out/System/Library/Frameworks/AppKit.framework/Headers" \
             "$out/System/Library/Frameworks/AppKit.framework/Versions/C" \
+            "$out/System/Library/Frameworks/AudioToolbox.framework/Headers" \
+            "$out/System/Library/Frameworks/AudioToolbox.framework/Versions/A" \
+            "$out/System/Library/Frameworks/AudioUnit.framework/Headers" \
+            "$out/System/Library/Frameworks/AudioUnit.framework/Versions/A" \
             "$out/System/Library/Frameworks/Carbon.framework/Headers" \
             "$out/System/Library/Frameworks/Carbon.framework/Versions/A" \
+            "$out/System/Library/Frameworks/CFNetwork.framework/Headers" \
+            "$out/System/Library/Frameworks/CFNetwork.framework/Versions/A" \
             "$out/System/Library/Frameworks/Cocoa.framework/Headers" \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Headers" \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Versions/A" \
+            "$out/System/Library/Frameworks/CoreAudio.framework/Headers" \
+            "$out/System/Library/Frameworks/CoreAudio.framework/Versions/A" \
             "$out/System/Library/Frameworks/CoreGraphics.framework/Headers" \
             "$out/System/Library/Frameworks/CoreGraphics.framework/Versions/A" \
+            "$out/System/Library/Frameworks/CoreMIDI.framework/Headers" \
+            "$out/System/Library/Frameworks/CoreMIDI.framework/Versions/A" \
             "$out/System/Library/Frameworks/CoreServices.framework/Headers" \
             "$out/System/Library/Frameworks/CoreServices.framework/Versions/A" \
             "$out/System/Library/Frameworks/CoreText.framework/Headers" \
@@ -818,6 +876,8 @@ in
             "$out/System/Library/Frameworks/Hypervisor.framework/Versions/A" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/storage/ata" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/storage" \
+            "$out/System/Library/Frameworks/IOKit.framework/Headers/audio" \
+            "$out/System/Library/Frameworks/IOKit.framework/Headers/graphics" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/usb" \
             "$out/System/Library/Frameworks/IOSurface.framework/Headers" \
             "$out/System/Library/Frameworks/IOSurface.framework/Versions/A" \
@@ -841,6 +901,8 @@ in
           cp lib/libc/darwin/libSystem.tbd "$out/usr/lib/libSystem.tbd"
           sed -i '$i\  - targets: [ x86_64-macos, arm64-macos ]\n    symbols: [ _iconv, _iconv_close, _iconv_open ]' \
             "$out/usr/lib/libSystem.tbd"
+
+          . ${jdk25AudioFragment}
 
           # IcedTea's native font and indexed-image paths use the public
           # Accelerate umbrella for exactly two vImage operations.  Keep the
@@ -1240,6 +1302,10 @@ in
           # IOKitLib header predates that transitive declaration.
           sed -i '/#include <mach\/mach_init.h>/a #include <mach/mach_host.h>' \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/IOKitLib.h"
+          cp ${./darwin-sdk-ioaudio-types.h} \
+            "$out/System/Library/Frameworks/IOKit.framework/Headers/audio/IOAudioTypes.h"
+          cp ${./darwin-sdk-iographics-types.h} \
+            "$out/System/Library/Frameworks/IOKit.framework/Headers/graphics/IOGraphicsTypes.h"
           cp "$xnuRoot/bsd/sys/disk.h" "$out/usr/include/sys/disk.h"
           cp \
             "$ioUsbFamilyRoot/IOUSBFamily/Headers/USB.h" \
@@ -1378,6 +1444,7 @@ in
           extern const CFStringRef kSecClassCertificate;
           extern const CFStringRef kSecMatchLimit;
           extern const CFStringRef kSecMatchLimitAll;
+          extern const CFStringRef kSecMatchSearchList;
           extern const CFStringRef kSecReturnRef;
           OSStatus SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result);
           __END_DECLS
@@ -1675,6 +1742,9 @@ in
                 - _kCFTypeDictionaryValueCallBacks
           ...
           EOF
+          sed -i \
+            '/_CFArrayGetCount/r ${./darwin-sdk-corefoundation-jdk25.tbd-exports}' \
+            "$out/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation.tbd"
           # Reexported framework install names include their versioned binary
           # path. ld64.lld resolves that path directly when following a TBD
           # reexport, so retain the canonical framework layout around the
@@ -1693,6 +1763,7 @@ in
           #ifndef __CORESERVICES__
           #define __CORESERVICES__
 
+          #include <CFNetwork/CFNetwork.h>
           #include <CoreFoundation/CoreFoundation.h>
           #include <MacTypes.h>
           #include <dispatch/dispatch.h>
@@ -1947,92 +2018,7 @@ in
             "$out/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface"
 
           . ${qemuCocoaSdkFragment}
-          # Dawn maps WebGPU multiplanar formats to CoreVideo's public pixel
-          # format codes. The production sources use only these ABI constants,
-          # but Bazel still links the framework as part of the Apple backend.
-          cat > "$out/System/Library/Frameworks/CoreVideo.framework/Headers/CVPixelBuffer.h" <<'EOF'
-          #ifndef _AOS_COREVIDEO_CVPIXELBUFFER_H_
-          #define _AOS_COREVIDEO_CVPIXELBUFFER_H_
-
-          #include <CoreFoundation/CoreFoundation.h>
-
-          #ifdef __cplusplus
-          enum : OSType
-          #else
-          enum
-          #endif
-          {
-            kCVPixelFormatType_32BGRA = 'BGRA',
-            kCVPixelFormatType_32RGBA = 'RGBA',
-            kCVPixelFormatType_OneComponent8 = 'L008',
-            kCVPixelFormatType_TwoComponent8 = '2C08',
-            kCVPixelFormatType_ARGB2101010LEPacked = 'l10r',
-            kCVPixelFormatType_OneComponent16 = 'L016',
-            kCVPixelFormatType_TwoComponent16 = '2C16',
-            kCVPixelFormatType_OneComponent16Half = 'L00h',
-            kCVPixelFormatType_TwoComponent16Half = '2C0h',
-            kCVPixelFormatType_64RGBAHalf = 'RGhA',
-            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange = '420v',
-            kCVPixelFormatType_422YpCbCr8BiPlanarVideoRange = '422v',
-            kCVPixelFormatType_444YpCbCr8BiPlanarVideoRange = '444v',
-            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange = 'x420',
-            kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange = 'x422',
-            kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange = 'x444',
-            kCVPixelFormatType_420YpCbCr8VideoRange_8A_TriPlanar = 'v0a8',
-          };
-
-          #endif
-          EOF
-          cat > "$out/System/Library/Frameworks/CoreVideo.framework/Headers/CVDisplayLink.h" <<'EOF'
-          #ifndef _AOS_COREVIDEO_CVDISPLAYLINK_H_
-          #define _AOS_COREVIDEO_CVDISPLAYLINK_H_
-          #include <CoreGraphics/CoreGraphics.h>
-          #include <stdint.h>
-          typedef int32_t CVReturn;
-          typedef uint64_t CVOptionFlags;
-          typedef struct __CVDisplayLink *CVDisplayLinkRef;
-          typedef struct {
-            int64_t timeValue;
-            int32_t timeScale;
-            int32_t flags;
-          } CVTime;
-          enum { kCVTimeIsIndefinite = 1 << 0 };
-          CVReturn CVDisplayLinkCreateWithCGDisplay(CGDirectDisplayID displayID, CVDisplayLinkRef *displayLinkOut);
-          CVTime CVDisplayLinkGetNominalOutputVideoRefreshPeriod(CVDisplayLinkRef displayLink);
-          void CVDisplayLinkRelease(CVDisplayLinkRef displayLink);
-          #endif
-          EOF
-          cat > "$out/System/Library/Frameworks/CoreVideo.framework/Headers/CoreVideo.h" <<'EOF'
-          #ifndef _AOS_COREVIDEO_H_
-          #define _AOS_COREVIDEO_H_
-          #include <CoreVideo/CVPixelBuffer.h>
-          #include <CoreVideo/CVDisplayLink.h>
-          #endif
-          EOF
-          cat > "$out/System/Library/Frameworks/CoreVideo.framework/CoreVideo.tbd" <<'EOF'
-          --- !tapi-tbd
-          tbd-version: 4
-          targets: [ x86_64-macos, arm64-macos ]
-          install-name: '/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo'
-          current-version: 1.8.0
-          compatibility-version: 1.2.0
-          reexported-libraries:
-            - targets: [ x86_64-macos, arm64-macos ]
-              libraries:
-                - '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'
-                - '/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics'
-          exports:
-            - targets: [ x86_64-macos, arm64-macos ]
-              symbols:
-                - _CVDisplayLinkCreateWithCGDisplay
-                - _CVDisplayLinkGetNominalOutputVideoRefreshPeriod
-                - _CVDisplayLinkRelease
-          ...
-          EOF
-          ln -s ../../CoreVideo.tbd \
-            "$out/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo.tbd"
-          ln -s CoreVideo.tbd \
-            "$out/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo"
+          . ${coreVideoFragment}
 
           # Dawn's macOS backend is part of Workerd's normal source build.  Use
           # Darling's independently implemented public Metal declarations so
@@ -2456,6 +2442,12 @@ in
                 - '_OBJC_CLASS_$_MTLVertexAttributeDescriptor'
                 - '_OBJC_CLASS_$_MTLVertexBufferLayoutDescriptor'
                 - '_OBJC_CLASS_$_MTLVertexDescriptor'
+                - '_OBJC_METACLASS_$_MTLDepthStencilDescriptor'
+                - '_OBJC_METACLASS_$_MTLRenderPassDescriptor'
+                - '_OBJC_METACLASS_$_MTLRenderPipelineDescriptor'
+                - '_OBJC_METACLASS_$_MTLSamplerDescriptor'
+                - '_OBJC_METACLASS_$_MTLTextureDescriptor'
+                - '_OBJC_METACLASS_$_MTLVertexDescriptor'
           ...
           EOF
           ln -s ../../Metal.tbd \
@@ -2474,6 +2466,8 @@ in
           #import <CoreGraphics/CoreGraphics.h>
 
           typedef NSUInteger CAAutoresizingMask;
+          typedef NSString *CALayerContentsGravity;
+          extern CALayerContentsGravity const kCAGravityTopLeft;
           enum {
             kCALayerMinXMargin = 1U << 0,
             kCALayerWidthSizable = 1U << 1,
@@ -2497,6 +2491,9 @@ in
           @property CGRect frame;
           @property(copy) NSArray *sublayers;
           @property(retain) id contents;
+          @property CGFloat contentsScale;
+          @property(copy) CALayerContentsGravity contentsGravity;
+          @property(copy) NSDictionary *actions;
           - (void)addSublayer:(CALayer *)layer;
           - (void)removeFromSuperlayer;
           - (void)setNeedsDisplay;
@@ -2567,6 +2564,8 @@ in
                 - '_OBJC_METACLASS_$_CATransaction'
                 - '_OBJC_METACLASS_$_CALayer'
                 - '_OBJC_METACLASS_$_CAOpenGLLayer'
+                - '_OBJC_METACLASS_$_CAMetalLayer'
+                - _kCAGravityTopLeft
           ...
           EOF
           ln -s ../../QuartzCore.tbd \
@@ -2656,6 +2655,7 @@ in
           - (const char *)cStringUsingEncoding:(NSStringEncoding)encoding;
           - (NSData *)dataUsingEncoding:(NSStringEncoding)encoding;
           @property(readonly) NSUInteger length;
+          @property(readonly) int intValue;
           - (unichar)characterAtIndex:(NSUInteger)index;
           @property(readonly, copy) NSString *stringByDeletingLastPathComponent;
           - (NSComparisonResult)compare:(NSString *)string;
@@ -2775,6 +2775,7 @@ in
           @end
 
           @interface NSNotification : NSObject
+          @property(nullable, readonly, copy) NSDictionary *userInfo;
           @end
 
           @interface NSThread : NSObject
@@ -2841,7 +2842,9 @@ in
           #import <Foundation/NSDate.h>
           #import <Foundation/NSString.h>
           #import <Foundation/NSValue.h>
+          #import <Foundation/NSPathUtilities.h>
           #import <Foundation/NSJDKSurface.h>
+          #import <Foundation/NSJDK25Surface.h>
 
           #endif
           EOF
@@ -2851,8 +2854,12 @@ in
             "$out/System/Library/Frameworks/Foundation.framework/Headers/NSString.h"
           cp ${./darwin-sdk-foundation-nsvalue.h} \
             "$out/System/Library/Frameworks/Foundation.framework/Headers/NSValue.h"
+          cp ${./darwin-sdk-foundation-nspathutilities.h} \
+            "$out/System/Library/Frameworks/Foundation.framework/Headers/NSPathUtilities.h"
           cp ${./darwin-sdk-foundation-jdk.h} \
             "$out/System/Library/Frameworks/Foundation.framework/Headers/NSJDKSurface.h"
+          cp ${./darwin-sdk-foundation-jdk25.h} \
+            "$out/System/Library/Frameworks/Foundation.framework/Headers/NSJDK25Surface.h"
           cat > "$out/System/Library/Frameworks/Foundation.framework/Headers/NSObject.h" <<'EOF'
           #ifndef _AOS_FOUNDATION_NSOBJECT_H_
           #define _AOS_FOUNDATION_NSOBJECT_H_
@@ -2911,7 +2918,10 @@ in
             NSWindowStyleMaskFullScreen = 1U << 14
           };
           typedef NSUInteger NSWindowCollectionBehavior;
-          enum { NSWindowCollectionBehaviorFullScreenPrimary = 1U << 7 };
+          enum {
+            NSWindowCollectionBehaviorFullScreenPrimary = 1U << 7,
+            NSWindowCollectionBehaviorFullScreenAuxiliary = 1ULL << 8
+          };
           typedef NSUInteger NSBackingStoreType;
           enum { NSBackingStoreBuffered = 2 };
           typedef NSUInteger NSTrackingAreaOptions;
@@ -3061,8 +3071,7 @@ in
                                       backing:(NSBackingStoreType)backingStoreType
                                         defer:(BOOL)flag;
           @property(copy) NSString *title;
-          - (id)contentView;
-          - (void)setContentView:(NSView *)view;
+          @property(strong, nullable) __kindof NSView *contentView;
           @property(assign) id<NSWindowDelegate> delegate;
           @property NSWindowStyleMask styleMask;
           @property NSWindowCollectionBehavior collectionBehavior;
@@ -3257,7 +3266,9 @@ in
           @end
 
           #import <AppKit/NSOpenGL.h>
+          #import <AppKit/NSAccessibility.h>
           #import <AppKit/NSJDKSurface.h>
+          #import <AppKit/NSJDK25Surface.h>
 
           #endif
           EOF
@@ -3267,6 +3278,10 @@ in
             "$out/System/Library/Frameworks/AppKit.framework/Headers/NSFont.h"
           cp ${./darwin-sdk-appkit-nsaccessibility.h} \
             "$out/System/Library/Frameworks/AppKit.framework/Headers/NSAccessibility.h"
+          cp ${./darwin-sdk-appkit-jdk25.h} \
+            "$out/System/Library/Frameworks/AppKit.framework/Headers/NSJDK25Surface.h"
+          cp ${./darwin-sdk-appkit-wrapper.h} \
+            "$out/System/Library/Frameworks/AppKit.framework/Headers/NSTrackingArea.h"
           cp ${./darwin-sdk-appkit-nsopengl.h} \
             "$out/System/Library/Frameworks/AppKit.framework/Headers/NSOpenGL.h"
 
@@ -3292,6 +3307,9 @@ in
           sed -i \
             '/_NSLog/r ${./darwin-sdk-foundation-jdk.tbd-exports}' \
             "$out/System/Library/Frameworks/Foundation.framework/Foundation.tbd"
+          sed -i \
+            '/_NSLog/r ${./darwin-sdk-foundation-jdk25.tbd-exports}' \
+            "$out/System/Library/Frameworks/Foundation.framework/Foundation.tbd"
           ln -s ../../Foundation.tbd \
             "$out/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation.tbd"
           ln -s Foundation.tbd \
@@ -3301,6 +3319,9 @@ in
             "$out/System/Library/Frameworks/AppKit.framework/AppKit.tbd"
           sed -i \
             '/_NSBeep/r ${./darwin-sdk-appkit-jdk.tbd-exports}' \
+            "$out/System/Library/Frameworks/AppKit.framework/AppKit.tbd"
+          sed -i \
+            '/_NSBeep/r ${./darwin-sdk-appkit-jdk25.tbd-exports}' \
             "$out/System/Library/Frameworks/AppKit.framework/AppKit.tbd"
           ln -s ../../AppKit.tbd \
             "$out/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit.tbd"
@@ -3911,6 +3932,20 @@ in
           cp ${./darwin-sdk-security.tbd} \
             "$out/System/Library/Frameworks/Security.framework/Security.tbd"
 
+          # OpenJDK's native proxy selector consumes CFNetwork's documented
+          # system-proxy API. These source-backed assets describe only that
+          # public ABI; the target host provides the framework implementation.
+          cp ${./darwin-sdk-cfnetwork.h} \
+            "$out/System/Library/Frameworks/CFNetwork.framework/Headers/CFNetwork.h"
+          cp ${./darwin-sdk-cf-proxy-support.h} \
+            "$out/System/Library/Frameworks/CFNetwork.framework/Headers/CFProxySupport.h"
+          cp ${./darwin-sdk-cfnetwork.tbd} \
+            "$out/System/Library/Frameworks/CFNetwork.framework/CFNetwork.tbd"
+          ln -s ../../CFNetwork.tbd \
+            "$out/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork.tbd"
+          ln -s CFNetwork.tbd \
+            "$out/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork"
+
           cat > "$out/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration.tbd" <<'EOF'
           --- !tapi-tbd
           tbd-version: 4
@@ -3994,6 +4029,7 @@ in
                 - _objc_begin_catch
                 - _objc_copyClassList
                 - _objc_copyProtocolList
+                - _objc_copyStruct
                 - _objc_copyWeak
                 - _objc_destroyWeak
                 - _objc_disposeClassPair
@@ -4042,6 +4078,7 @@ in
             - targets: [ x86_64-macos ]
               symbols:
                 - _objc_msgSend_stret
+                - _objc_msgSendSuper2_stret
           ...
           EOF
 

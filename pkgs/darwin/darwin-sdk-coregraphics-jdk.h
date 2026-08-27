@@ -52,7 +52,8 @@ enum {
 };
 
 typedef uint32_t CGEventField;
-typedef uint32_t CGEventSourceStateID;
+typedef int32_t CGEventSourceStateID;
+typedef uint64_t CGEventFlags;
 typedef uint32_t CGScrollEventUnit;
 enum {
   kCGEventLeftMouseDown = 1,
@@ -69,6 +70,9 @@ enum {
   kCGMouseEventNumber = 0,
   kCGMouseEventClickState = 1,
   kCGEventSourceStateCombinedSessionState = 0,
+  kCGEventSourceStatePrivate = -1,
+  kCGEventSourceStateHIDSystemState = 1,
+  kCGEventFlagMaskSecondaryFn = 0x00800000,
   kCGScrollEventUnitLine = 1,
   kCGSessionEventTap = 1
 };
@@ -85,8 +89,11 @@ enum {
   kCGPopUpMenuWindowLevelKey = 11,
   kCGWindowListOptionOnScreenOnly = 1,
   kCGWindowListExcludeDesktopElements = 16,
-  kCGWindowImageDefault = 0
+  kCGWindowImageDefault = 0,
+  kCGWindowImageBestResolution = 1U << 3
 };
+
+enum { kCGBitmapByteOrderMask = 0x7000 };
 
 CGAffineTransform CGAffineTransformConcat(CGAffineTransform, CGAffineTransform);
 CGAffineTransform CGAffineTransformInvert(CGAffineTransform);
@@ -213,5 +220,16 @@ int32_t CGShieldingWindowLevel(void);
 CGWindowLevel CGWindowLevelForKey(CGWindowLevelKey);
 CFArrayRef CGWindowListCopyWindowInfo(CGWindowListOption, CGWindowID);
 CGImageRef CGWindowListCreateImage(CGRect, CGWindowListOption, CGWindowID, CGWindowImageOption);
+CGAffineTransform CGAffineTransformScale(CGAffineTransform, CGFloat, CGFloat);
+CGBitmapInfo CGBitmapContextGetBitmapInfo(CGContextRef);
+size_t CGDisplayModeGetPixelWidth(CGDisplayModeRef);
+void CGEventSetFlags(CGEventRef, CGEventFlags);
+CGEventSourceRef CGEventSourceCreate(CGEventSourceStateID);
+CGEventFlags CGEventSourceFlagsState(CGEventSourceStateID);
+void CGRestorePermanentDisplayConfiguration(void);
+#ifdef __OBJC__
+@protocol MTLDevice;
+id<MTLDevice> CGDirectDisplayCopyCurrentMetalDevice(CGDirectDisplayID);
+#endif
 
 #endif
