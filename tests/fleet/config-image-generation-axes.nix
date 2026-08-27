@@ -92,8 +92,10 @@
     ../../systems/_fleet-transition-test.nix
     {
       # Git is image-bundled fixture tooling for cloning the authenticated
-      # registry. Keep its additional root footprint local to this test.
+      # registry. Seeding that profile uses the AOS binutils helper in the
+      # initrd, so declare that exact forbidden-name fixture root as well.
       aos.image.budgets.maxRootMiB = 640;
+      aos.image.testArtifactRoots = [pkgs.binutils];
       environment.systemPackages = [pkgs.git];
       # This acceptance test runs three guests while generating and serving a
       # full closure. Give evaluation enough wall time on shared CI builders;
