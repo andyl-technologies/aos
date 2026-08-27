@@ -267,6 +267,13 @@ in {
 
           cat > /run/runtime-module-desired.toml <<'EOF'
           packages = ["nginx", "envoy", "k3s-worker"]
+
+          [config.nginx.runtime]
+          enabled = false
+          generation = "package-install"
+
+          [config.envoy.service]
+          ENVOY_ENABLED = "0"
           EOF
           HOME=/tmp USER=root {APM} install --system \
             --from /run/runtime-module-desired.toml --yes
