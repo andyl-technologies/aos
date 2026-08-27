@@ -2174,6 +2174,23 @@ impl ProductionNinepFaultCoordinator {
             .ok_or_else(|| storage_error("convert 9p icount", "virtual time overflow"))
     }
 
+    fn admit_fault_resource_usage(
+        &self,
+        servicer: &QemuLive9pIoServicer,
+    ) -> Result<crucible_device::ninep::NinepFaultResourceUsage, QemuAsyncDriverRuntimeError> {
+        let usage = servicer
+            .fault_resource_usage()
+            .map_err(|error| storage_error("measure retained 9p ownership", error))?;
+        for (field, current) in [
+            ("ninep_sessions_per_device", usage.sessions),
+            ("ninep_fids_per_session", usage.fids),
+            ("ninep_object_versions", usage.object_versions),
+        ] {
+            reserve_storage_resource(field, 0, current, self.resource_limits)?;
+        }
+        Ok(usage)
+    }
+
     fn operation(operation: NinepOperation) -> FaultOperation {
         match operation {
             NinepOperation::Read => FaultOperation::StorageRead,
@@ -2441,6 +2458,14 @@ impl ProductionNinepFaultCoordinator {
             let object = self.object(update)?;
             let policy = self.visibility_policy(visibility_policy)?;
             let data_lag_nanos = self.visibility_data_lag(visibility_policy)?;
+            let usage = self.admit_fault_resource_usage(servicer)?;
+            let requested = u64::from(!servicer.contains_visibility_update(&update_id.bytes));
+            reserve_storage_resource(
+                "ninep_object_versions",
+                usage.object_versions,
+                requested,
+                self.resource_limits,
+            )?;
             let sequence = servicer
                 .commit_visibility_update(
                     update_id.bytes,
@@ -2597,6 +2622,7 @@ impl ProductionNinepFaultCoordinator {
         guest_icount: u64,
         shared_commit_started: &mut bool,
     ) -> Result<QemuLive9pIoServiceStep, QemuAsyncDriverRuntimeError> {
+        self.admit_fault_resource_usage(servicer)?;
         let (pending_operations, largest_request) = servicer
             .pending_fault_operation_usage()
             .map_err(|error| storage_error("validate pending 9p operations", error))?;
@@ -2697,6 +2723,29 @@ impl ProductionNinepFaultCoordinator {
                 pin.opportunity.request_icount,
             )?)?;
             let selected = self.resolve_result(&pin.opportunity, &resolve.actions)?;
+            let object_result = matches!(
+                &selected,
+                NinepResultDirective::Stale(_) | NinepResultDirective::Misdirected(_)
+            );
+            let usage = self.admit_fault_resource_usage(servicer)?;
+            reserve_storage_resource(
+                "ninep_sessions_per_device",
+                usage.sessions,
+                servicer.potential_session_growth(&pin.opportunity.frame),
+                self.resource_limits,
+            )?;
+            reserve_storage_resource(
+                "ninep_fids_per_session",
+                usage.fids,
+                servicer.potential_fid_growth(&pin.opportunity.frame, object_result),
+                self.resource_limits,
+            )?;
+            reserve_storage_resource(
+                "ninep_object_versions",
+                usage.object_versions,
+                u64::from(object_result),
+                self.resource_limits,
+            )?;
             servicer
                 .install_fault_directive(
                     pin.opportunity.request_icount,

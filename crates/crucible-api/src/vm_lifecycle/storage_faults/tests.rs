@@ -125,6 +125,9 @@ fn storage_resource_limits_preserve_exact_coordinates_through_scheduler() {
     let limits = FaultResourceLimits {
         storage_pending_operations: 2,
         storage_request_bytes: 4,
+        ninep_sessions_per_device: 1,
+        ninep_fids_per_session: 2,
+        ninep_object_versions: 3,
         ..FaultResourceLimits::default()
     };
 
@@ -162,6 +165,36 @@ fn storage_resource_limits_preserve_exact_coordinates_through_scheduler() {
             hard,
         } if hard == FaultResourceLimits::compiled_maximum().storage_request_bytes
     ));
+
+    for (field, current, configured, hard) in [
+        (
+            "ninep_sessions_per_device",
+            1,
+            limits.ninep_sessions_per_device,
+            FaultResourceLimits::compiled_maximum().ninep_sessions_per_device,
+        ),
+        (
+            "ninep_fids_per_session",
+            2,
+            limits.ninep_fids_per_session,
+            FaultResourceLimits::compiled_maximum().ninep_fids_per_session,
+        ),
+        (
+            "ninep_object_versions",
+            3,
+            limits.ninep_object_versions,
+            FaultResourceLimits::compiled_maximum().ninep_object_versions,
+        ),
+    ] {
+        let error = match reserve_storage_resource(field, current, 1, limits) {
+            Ok(()) => panic!("one owner above the authored 9p ceiling must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.resource_limit_coordinates(),
+            Some((field, current, 1, configured, hard))
+        );
+    }
 }
 
 #[test]

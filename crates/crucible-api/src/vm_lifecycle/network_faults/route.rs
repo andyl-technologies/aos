@@ -1029,6 +1029,7 @@ fn apply_network_frame_actions_with_limits(
                     transition_event,
                     overflow,
                     &mut typed_response,
+                    resource_limits,
                 )?;
                 state_machine_wakeup = earliest_wakeup(state_machine_wakeup, release);
             }
@@ -1099,6 +1100,7 @@ fn apply_network_frame_actions_with_limits(
                     selector,
                     mutation,
                     &mut forwarding_recipients,
+                    resource_limits,
                 )?;
                 if forwarding_recipients.is_some() {
                     effects.mark_drop();

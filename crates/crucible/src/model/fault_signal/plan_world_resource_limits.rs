@@ -45,6 +45,33 @@ pub(super) fn validate_world_resource_limits(
             .len();
         reserve_world_usize(limits, "network_medium_participants", 0, participants)?;
     }
+    for policy in &topology.network_policy_artifacts {
+        match &policy.artifact {
+            NetworkPolicyArtifactKind::MediumAccess(access) => {
+                if let Some(contention) = &access.contention {
+                    limits
+                        .reserve(
+                            "network_retries_per_frame_per_hop",
+                            0,
+                            u64::from(contention.maximum_retries),
+                        )
+                        .map_err(FaultSignalAuthoringError::ResourceLimit)?;
+                }
+            }
+            NetworkPolicyArtifactKind::RfTransfer(transfer) => {
+                for profile in &transfer.profiles {
+                    limits
+                        .reserve(
+                            "network_retries_per_frame_per_hop",
+                            0,
+                            u64::from(profile.maximum_retries),
+                        )
+                        .map_err(FaultSignalAuthoringError::ResourceLimit)?;
+                }
+            }
+            _ => {}
+        }
+    }
     let forwarding_entries = topology
         .network_forwarders
         .iter()
@@ -166,6 +193,43 @@ pub(super) fn validate_world_resource_limits(
         )?;
     }
     Ok(())
+}
+
+pub(super) fn validate_network_effect_resource_limits(
+    limits: FaultResourceLimits,
+    binding: &FaultBinding,
+) -> Result<(), FaultSignalAuthoringError> {
+    let EffectSpecification::Network(effect) = binding.effect().specification() else {
+        return Ok(());
+    };
+    validate_network_effect_specification_resource_limits(limits, effect)
+}
+
+pub(super) fn validate_network_effect_specification_resource_limits(
+    limits: FaultResourceLimits,
+    effect: &NetworkEffectSpecification,
+) -> Result<(), FaultSignalAuthoringError> {
+    let (field, requested) = match effect {
+        NetworkEffectSpecification::Duplicate { copies, .. } => (
+            "network_duplicates_per_frame_per_hop",
+            u64::from(copies.get()),
+        ),
+        NetworkEffectSpecification::DetectedFrameError {
+            retry_limit: Some(retry_limit),
+            ..
+        } => (
+            "network_retries_per_frame_per_hop",
+            u64::from(retry_limit.get()),
+        ),
+        NetworkEffectSpecification::ForwardingMutation {
+            mutation: NetworkForwardingMutationKind::Loop { hop_limit, .. },
+            ..
+        } => ("network_loop_hops", hop_limit.get()),
+        _ => return Ok(()),
+    };
+    limits
+        .reserve(field, 0, requested)
+        .map_err(FaultSignalAuthoringError::ResourceLimit)
 }
 
 fn reserve_world_usize(

@@ -144,6 +144,39 @@ pub(super) fn network_queue_resource_usage(
     Ok((frames, bytes))
 }
 
+pub(super) fn admit_network_connection_entry(
+    state: &NetworkEffectRuntimeState,
+    owner: &NetworkEffectStateKey,
+    flow: &ContentHash,
+    table_bound: u32,
+    limits: FaultResourceLimits,
+) -> Result<(), SchedulerError> {
+    let current = state
+        .connection_tables
+        .values()
+        .try_fold(0_usize, |total, table| total.checked_add(table.len()))
+        .ok_or_else(|| {
+            map_network_resource_limit(
+                FaultResourceLimitError::Representation {
+                    field: "network_connection_entries",
+                    value: u64::MAX,
+                },
+                limits,
+            )
+        })?;
+    reserve_network_resource("network_connection_entries", current, 0, limits)?;
+
+    let table = state.connection_tables.get(owner);
+    let is_new = table.is_none_or(|entries| !entries.contains_key(flow));
+    let below_table_bound = table.is_none_or(|entries| {
+        u32::try_from(entries.len()).is_ok_and(|length| length < table_bound)
+    });
+    if is_new && below_table_bound {
+        reserve_network_resource("network_connection_entries", current, 1, limits)?;
+    }
+    Ok(())
+}
+
 fn queue_byte_representation_error(limits: FaultResourceLimits) -> SchedulerError {
     map_network_resource_limit(
         FaultResourceLimitError::Representation {

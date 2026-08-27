@@ -22,7 +22,9 @@ use super::*;
 
 #[path = "plan_world_resource_limits.rs"]
 mod world_resource_limits;
-use world_resource_limits::{reserve_usize, validate_world_resource_limits};
+use world_resource_limits::{
+    reserve_usize, validate_network_effect_resource_limits, validate_world_resource_limits,
+};
 
 /// Exact maximum signal graphs in one scenario plan.
 ///
@@ -317,6 +319,7 @@ impl FaultSignalPlan {
         let scale = 1_u64.checked_shl(u32::from(icount_shift)).unwrap_or(0);
         for binding in &self.bindings {
             validate_selector_for_world(binding.selector(), world)?;
+            validate_network_effect_resource_limits(self.resource_limits, binding)?;
             validate_network_effect_policy_references(binding, world)?;
             validate_storage_effect_policy_references(binding, world, &self.programs)?;
             let intervals = [

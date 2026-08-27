@@ -17,6 +17,11 @@ pub(super) struct NetworkFrameApplication {
     pub(super) forwarding_recipients: Option<Vec<FaultObjectId>>,
 }
 
+// crucible-lint: allow rust-allow -- forwarding admission joins frame, topology, action, opportunity, recipients, and authored limits.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "forwarding admission joins independently authenticated frame and resource owners"
+)]
 pub(in super::super) fn apply_network_forwarding_mutation(
     payload: &[u8],
     topology: &crucible::model::WorldFaultTopology,
@@ -25,6 +30,7 @@ pub(in super::super) fn apply_network_forwarding_mutation(
     selector: &FaultObjectId,
     mutation: &crucible::model::NetworkForwardingMutationKind,
     recipients: &mut Option<Vec<FaultObjectId>>,
+    resource_limits: FaultResourceLimits,
 ) -> Result<(), SchedulerError> {
     if !network_packet_selector_matches(payload, topology, selector, action)? {
         return Ok(());
@@ -50,11 +56,25 @@ pub(in super::super) fn apply_network_forwarding_mutation(
                     "forwarding mutation received a non-frame opportunity",
                 ));
             };
-            if u64::try_from(forwarding_mutation_path.len())
-                .map_or(true, |depth| depth >= hop_limit.get())
-            {
+            reserve_network_resource(
+                "network_loop_hops",
+                0,
+                forwarding_mutation_path.len(),
+                resource_limits,
+            )?;
+            let depth = u64::try_from(forwarding_mutation_path.len()).map_err(|_| {
+                map_network_resource_limit(
+                    FaultResourceLimitError::Representation {
+                        field: "network_loop_hops",
+                        value: u64::MAX,
+                    },
+                    resource_limits,
+                )
+            })?;
+            if depth >= hop_limit.get() {
                 Some(Vec::new())
             } else {
+                reserve_network_resource_u64("network_loop_hops", depth, 1, resource_limits)?;
                 Some(vec![next_hop.clone()])
             }
         }
@@ -144,10 +164,12 @@ pub(in super::super) fn apply_network_connection_state(
     transition_event: &FaultObjectId,
     overflow: &crucible::model::NetworkConnectionOverflow,
     typed_response: &mut Option<FaultObjectId>,
+    resource_limits: FaultResourceLimits,
 ) -> Result<Option<u64>, SchedulerError> {
     let flow = network_packet_key(payload, topology, flow_key, action)?;
     let owner = NetworkEffectStateKey::from_action(action);
     let initial = network_state_machine_initial(topology, state_machine, action)?;
+    admit_network_connection_entry(state, &owner, &flow, table_bound, resource_limits)?;
     let table = state.connection_tables.entry(owner).or_default();
     if !table.contains_key(&flow)
         && u32::try_from(table.len()).map_or(true, |length| length >= table_bound)
@@ -307,6 +329,14 @@ pub(in super::super) fn apply_network_shared_medium_with_limits(
         ));
     };
     let policy = policy.clone();
+    if let Some(contention) = &policy.contention {
+        reserve_network_resource_u64(
+            "network_retries_per_frame_per_hop",
+            0,
+            u64::from(contention.maximum_retries),
+            resource_limits,
+        )?;
+    }
     let OpportunityPayload::NetworkFrame { producer, .. } = opportunity.payload() else {
         return Err(network_effect_application_error(
             action,
@@ -524,6 +554,7 @@ pub(in super::super) fn apply_network_shared_medium_with_limits(
                     network_effect_application_error(action, "fixed-slot advance overflowed")
                 })?;
             }
+            let mut retries = 0_u64;
             while medium.reservations.iter().any(|existing| {
                 existing.producer == *producer
                     && intervals_overlap(
@@ -533,6 +564,21 @@ pub(in super::super) fn apply_network_shared_medium_with_limits(
                         existing.finish_nanos,
                     )
             }) {
+                reserve_network_resource_u64(
+                    "network_retries_per_frame_per_hop",
+                    retries,
+                    1,
+                    resource_limits,
+                )?;
+                retries = retries.checked_add(1).ok_or_else(|| {
+                    map_network_resource_limit(
+                        FaultResourceLimitError::Representation {
+                            field: "network_retries_per_frame_per_hop",
+                            value: u64::MAX,
+                        },
+                        resource_limits,
+                    )
+                })?;
                 start = start.checked_add(cycle).ok_or_else(|| {
                     network_effect_application_error(action, "fixed-slot retry overflowed")
                 })?;

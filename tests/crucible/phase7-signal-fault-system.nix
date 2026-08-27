@@ -471,6 +471,8 @@ in
             vm_lifecycle::storage_faults::tests::storage_resource_limits_preserve_exact_coordinates_through_scheduler
           run_exact_device_test \
             block::fault::tests::pending_operation_usage_tracks_count_and_largest_request_extent
+          run_exact_device_test \
+            ninep::fault_policy_tests::fault_resource_usage_tracks_sessions_fids_and_object_versions
           test "$(grep -Fc 'let prepared_targets = prepare_exact_checkpoint_targets(' \
             crates/crucible-api/src/vm_lifecycle/quantum_loop.rs)" -eq 1
           checkpoint_prepare_line="$(grep -Fn \

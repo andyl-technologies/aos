@@ -117,6 +117,17 @@ pub enum NinepVirtualFid {
     VisiblePath(String),
 }
 
+/// Aggregate process-private ownership charged to authored 9p resource limits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NinepFaultResourceUsage {
+    /// Distinct retained visibility sessions, including the current session.
+    pub sessions: u64,
+    /// Distinct live fid identities in the current session.
+    pub fids: u64,
+    /// Retained object-version records across visibility, directives, and fids.
+    pub object_versions: u64,
+}
+
 impl NinepVirtualFid {
     fn validate(&self) -> Result<(), DeviceError> {
         match self {

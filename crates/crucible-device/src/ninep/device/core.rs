@@ -3,6 +3,101 @@
 use super::*;
 
 impl NinepDevice {
+    /// Returns aggregate process-private 9p ownership for authored admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::InvalidNinepFaultDirective`] when an aggregate
+    /// count cannot be represented as `u64`.
+    pub fn fault_resource_usage(&self) -> Result<NinepFaultResourceUsage, DeviceError> {
+        let add = |left: usize, right: usize| {
+            left.checked_add(right)
+                .and_then(|value| u64::try_from(value).ok())
+                .ok_or(DeviceError::InvalidNinepFaultDirective {
+                    reason: "9p resource ownership count overflow",
+                })
+        };
+        let sessions = add(
+            self.visibility.session_count(),
+            usize::from(!self.visibility.contains_session(self.session_epoch)),
+        )?;
+        let fids = add(
+            self.server.fids().len(),
+            self.virtual_fids
+                .keys()
+                .filter(|fid| !self.server.fids().contains_key(fid))
+                .count(),
+        )?;
+        let directive_versions = self
+            .directives
+            .values()
+            .filter(|directive| {
+                matches!(
+                    &directive.result,
+                    NinepResultDirective::Stale(_) | NinepResultDirective::Misdirected(_)
+                )
+            })
+            .count();
+        let virtual_versions = self
+            .virtual_fids
+            .values()
+            .filter(|binding| matches!(binding, NinepVirtualFid::Exact(_)))
+            .count();
+        let object_versions = self
+            .visibility
+            .object_version_count()
+            .checked_add(directive_versions)
+            .and_then(|count| count.checked_add(virtual_versions))
+            .and_then(|count| u64::try_from(count).ok())
+            .ok_or(DeviceError::InvalidNinepFaultDirective {
+                reason: "9p object-version ownership count overflow",
+            })?;
+        Ok(NinepFaultResourceUsage {
+            sessions,
+            fids,
+            object_versions,
+        })
+    }
+
+    /// Returns whether a visibility update identity already owns a version.
+    #[must_use]
+    pub fn contains_visibility_update(&self, update_id: &[u8; 32]) -> bool {
+        self.visibility.contains_update(update_id)
+    }
+
+    /// Returns the maximum fid growth one request can commit.
+    ///
+    /// `object_result` is true when a resolved stale or misdirected result may
+    /// bind an otherwise absent fid through the signal-owned overlay.
+    #[must_use]
+    pub fn potential_fid_growth(&self, frame: &[u8], object_result: bool) -> u64 {
+        let Ok(message) = Message::decode(frame) else {
+            return 0;
+        };
+        let candidate = match message.body {
+            TMessage::Attach { fid } => Some(fid),
+            TMessage::Walk { newfid, .. } | TMessage::Xattrwalk { newfid, .. } => Some(newfid),
+            TMessage::Lopen { fid, .. } if object_result => Some(fid),
+            _ => None,
+        };
+        u64::from(candidate.is_some_and(|fid| {
+            !self.server.fids().contains_key(&fid) && !self.virtual_fids.contains_key(&fid)
+        }))
+    }
+
+    /// Returns the retained-session growth one request can commit.
+    ///
+    /// A version negotiation advances the session epoch. The old session only
+    /// remains separately owned when it already has visibility state; otherwise
+    /// the counted current-session placeholder moves to the new epoch at net
+    /// zero growth.
+    #[must_use]
+    pub fn potential_session_growth(&self, frame: &[u8]) -> u64 {
+        let begins_session = Message::decode(frame)
+            .is_ok_and(|message| matches!(message.body, TMessage::Version { .. }));
+        u64::from(begins_session && self.visibility.contains_session(self.session_epoch))
+    }
+
     /// Builds a 9p device over `tree` with the given core and latency model.
     ///
     /// The tree is held read-only and never mutated ([IO-13]); the server starts
