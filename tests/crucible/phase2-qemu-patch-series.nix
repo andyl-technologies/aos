@@ -776,6 +776,13 @@
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded versioned QMP query reports QEMU-owned precise-icount, single-threaded sim RR, and exact paused/device-flush proofs while keeping every unimplemented subsystem, mapping, and child-reinitialization proof clear so ordinary paused state can never advertise hot fork";
     }
+    {
+      file = "0112-crucible-hot-fork-thread-ownership.patch";
+      catalogName = "crucible-hot-fork-thread-ownership";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "the bounded thread registry identifies unresolved RCU callback and AIO-context workers through subsystem-owned entry-point registration while retaining both in the exact unresolved blocker count and leaving every readiness bit unchanged";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

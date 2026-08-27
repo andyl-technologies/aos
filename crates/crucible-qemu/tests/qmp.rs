@@ -278,7 +278,7 @@ fn hot_fork_thread_inventory_is_exact_bounded_and_sorted() -> Result<(), Box<dyn
     let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{"schema-version":1,"generation":9,"complete":true,"overflowed":false,"unclassified-threads":1,"threads":[{"thread-id":10,"name":"qmp-main-loop","name-valid":true,"joinable":false,"disposition":"coordinator"},{"thread-id":11,"name":"worker","name-valid":true,"joinable":true,"disposition":"unclassified"}]}}"#,
+        r#"{"return":{"schema-version":2,"generation":9,"complete":true,"overflowed":false,"unclassified-threads":3,"threads":[{"thread-id":10,"name":"qmp-main-loop","name-valid":true,"joinable":false,"disposition":"coordinator"},{"thread-id":11,"name":"call_rcu","name-valid":true,"joinable":false,"disposition":"unclassified-rcu"},{"thread-id":12,"name":"IO mon_iothread","name-valid":true,"joinable":true,"disposition":"unclassified-aio"},{"thread-id":13,"name":"worker","name-valid":true,"joinable":true,"disposition":"unclassified"}]}}"#,
     ]);
     let audit = stream.audit_handle();
     let mut client = QmpClient::connect(stream)?;
@@ -287,8 +287,8 @@ fn hot_fork_thread_inventory_is_exact_bounded_and_sorted() -> Result<(), Box<dyn
     assert_eq!(inventory.generation(), 9);
     assert!(inventory.complete());
     assert!(!inventory.overflowed());
-    assert_eq!(inventory.unclassified_threads(), 1);
-    assert_eq!(inventory.threads().len(), 2);
+    assert_eq!(inventory.unclassified_threads(), 3);
+    assert_eq!(inventory.threads().len(), 4);
     assert_eq!(inventory.threads()[0].thread_id(), 10);
     assert_eq!(inventory.threads()[0].name(), "qmp-main-loop");
     assert!(inventory.threads()[0].name_valid());
@@ -299,6 +299,14 @@ fn hot_fork_thread_inventory_is_exact_bounded_and_sorted() -> Result<(), Box<dyn
     );
     assert_eq!(
         inventory.threads()[1].disposition(),
+        QmpHotForkThreadDisposition::UnclassifiedRcu
+    );
+    assert_eq!(
+        inventory.threads()[2].disposition(),
+        QmpHotForkThreadDisposition::UnclassifiedAio
+    );
+    assert_eq!(
+        inventory.threads()[3].disposition(),
         QmpHotForkThreadDisposition::Unclassified
     );
 
@@ -314,12 +322,13 @@ fn hot_fork_thread_inventory_is_exact_bounded_and_sorted() -> Result<(), Box<dyn
 #[test]
 fn hot_fork_thread_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn Error>> {
     for response in [
-        r#"{"return":{"schema-version":2,"generation":1,"complete":false,"overflowed":false,"unclassified-threads":0,"threads":[]}}"#,
-        r#"{"return":{"schema-version":1,"generation":1,"complete":false,"overflowed":false,"unclassified-threads":0,"threads":[],"extra":0}}"#,
-        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"unclassified-threads":0,"threads":[{"thread-id":11,"name":"qmp-main-loop","name-valid":true,"joinable":false,"disposition":"coordinator"},{"thread-id":10,"name":"worker","name-valid":true,"joinable":true,"disposition":"unclassified"}]}}"#,
-        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"unclassified-threads":1,"threads":[{"thread-id":10,"name":"qmp-main-loop","name-valid":true,"joinable":false,"disposition":"coordinator"}]}}"#,
-        r#"{"return":{"schema-version":1,"generation":1,"complete":false,"overflowed":false,"unclassified-threads":0,"threads":[{"thread-id":10,"name":"qmp-main-loop","name-valid":true,"joinable":false,"disposition":"coordinator"}]}}"#,
-        r#"{"return":{"schema-version":1,"generation":1,"complete":false,"overflowed":false,"unclassified-threads":0,"threads":[{"thread-id":10,"name":"a","name-valid":true,"joinable":false,"disposition":"coordinator"},{"thread-id":11,"name":"b","name-valid":true,"joinable":false,"disposition":"coordinator"}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":false,"overflowed":false,"unclassified-threads":0,"threads":[]}}"#,
+        r#"{"return":{"schema-version":2,"generation":1,"complete":false,"overflowed":false,"unclassified-threads":0,"threads":[],"extra":0}}"#,
+        r#"{"return":{"schema-version":2,"generation":1,"complete":true,"overflowed":false,"unclassified-threads":0,"threads":[{"thread-id":11,"name":"qmp-main-loop","name-valid":true,"joinable":false,"disposition":"coordinator"},{"thread-id":10,"name":"worker","name-valid":true,"joinable":true,"disposition":"unclassified"}]}}"#,
+        r#"{"return":{"schema-version":2,"generation":1,"complete":true,"overflowed":false,"unclassified-threads":1,"threads":[{"thread-id":10,"name":"qmp-main-loop","name-valid":true,"joinable":false,"disposition":"coordinator"}]}}"#,
+        r#"{"return":{"schema-version":2,"generation":1,"complete":false,"overflowed":false,"unclassified-threads":0,"threads":[{"thread-id":10,"name":"qmp-main-loop","name-valid":true,"joinable":false,"disposition":"coordinator"}]}}"#,
+        r#"{"return":{"schema-version":2,"generation":1,"complete":false,"overflowed":false,"unclassified-threads":0,"threads":[{"thread-id":10,"name":"a","name-valid":true,"joinable":false,"disposition":"coordinator"},{"thread-id":11,"name":"b","name-valid":true,"joinable":false,"disposition":"coordinator"}]}}"#,
+        r#"{"return":{"schema-version":2,"generation":1,"complete":true,"overflowed":false,"unclassified-threads":1,"threads":[{"thread-id":10,"name":"qmp-main-loop","name-valid":true,"joinable":false,"disposition":"coordinator"},{"thread-id":11,"name":"worker","name-valid":true,"joinable":true,"disposition":"future-owner"}]}}"#,
     ] {
         let mut client = QmpClient::connect(scripted_qmp([
             r#"{"QMP":{"version":{},"capabilities":[]}}"#,

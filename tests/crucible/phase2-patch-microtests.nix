@@ -1438,6 +1438,22 @@
         '';
       };
     }
+    {
+      patch = "0112-crucible-hot-fork-thread-ownership.patch";
+      check = certifyExactPatch {
+        patchName = "0112-crucible-hot-fork-thread-ownership.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-thread-ownership";
+        liveEvidence = ''
+          grep -Fxq 'thread_inventory_schema_version=2' "$live_result"
+          grep -Fxq 'thread_inventory_stable=true' "$live_result"
+          grep -Fxq 'thread_inventory_one_coordinator=true' "$live_result"
+          grep -Fxq 'thread_inventory_rcu_owner=true' "$live_result"
+          grep -Fxq 'thread_inventory_aio_owner=true' "$live_result"
+          grep -Fxq 'incomplete_report_ready=false' "$live_result"
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

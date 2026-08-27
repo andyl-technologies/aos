@@ -146,7 +146,7 @@ in
               "threads",
               "unclassified-threads"
             ] and
-            $report."schema-version" == 1 and
+            $report."schema-version" == 2 and
             ($report.generation | type) == "number" and
             ($report.complete | type) == "boolean" and
             ($report.overflowed | type) == "boolean" and
@@ -170,10 +170,19 @@ in
               (.name | length) <= 256 and
               (."name-valid" | type) == "boolean" and
               (.joinable | type) == "boolean" and
-              (.disposition == "coordinator" or .disposition == "unclassified")) and
+              (.disposition == "coordinator" or
+               .disposition == "unclassified" or
+               .disposition == "unclassified-rcu" or
+               .disposition == "unclassified-aio")) and
             ([ $report.threads[] | select(.disposition == "coordinator") ] | length) == 1 and
-            ([ $report.threads[] | select(.disposition == "unclassified") ] | length) ==
+            ([ $report.threads[] | select(.disposition != "coordinator") ] | length) ==
               $report."unclassified-threads" and
+            ([ $report.threads[] |
+               select(.name == "call_rcu" and .disposition == "unclassified-rcu") ] |
+             length) == 1 and
+            ([ $report.threads[] |
+               select(.name == "IO mon_iothread" and .disposition == "unclassified-aio") ] |
+             length) == 1 and
             $report.complete ==
               (($report.overflowed | not) and
                all($report.threads[]; ."name-valid") and
@@ -195,15 +204,17 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0111-crucible-hot-fork-readiness.patch
+          patch=0112-crucible-hot-fork-thread-ownership.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
           ordinary_paused_exact_boundary_proof=false
-          thread_inventory_schema_version=1
+          thread_inventory_schema_version=2
           thread_inventory_bound=65536
           thread_inventory_stable=true
           thread_inventory_one_coordinator=true
+          thread_inventory_rcu_owner=true
+          thread_inventory_aio_owner=true
           incomplete_report_ready=false
           stock_commands_absent=true
           RESULT

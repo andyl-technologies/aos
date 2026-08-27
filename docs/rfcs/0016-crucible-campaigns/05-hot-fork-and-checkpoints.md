@@ -165,7 +165,7 @@ snapshot used to drive that future barrier:
 
 ```text
 CrucibleHotForkThreadInventory {
-    schema-version: u32 = 1,
+    schema-version: u32 = 2,
     generation: u64,
     complete: bool,
     overflowed: bool,
@@ -176,15 +176,19 @@ CrucibleHotForkThreadInventory {
             name: nonempty UTF-8 string of at most 256 bytes,
             name-valid: bool,
             joinable: bool,
-            disposition: coordinator | unclassified,
+            disposition:
+                coordinator |
+                unclassified |
+                unclassified-rcu |
+                unclassified-aio,
         },
     ],
 }
 ```
 
 `threads` MUST contain at most 65,536 entries in strictly increasing thread-ID
-order. `unclassified-threads` MUST equal the number of `unclassified` entries,
-at most one coordinator may be present, and `complete` MUST equal
+order. `unclassified-threads` MUST equal the number of every disposition other
+than `coordinator`, at most one coordinator may be present, and `complete` MUST equal
 `!overflowed && all(name-valid) && coordinator-count == 1`. The process-local
 generation advances when a QEMU-created thread registers, unregisters, or
 changes disposition. The first query registers the process-lifetime QMP
@@ -193,6 +197,16 @@ return the same generation and body. Every thread created through
 `qemu_thread_create()` is registered before its start routine and unregistered
 through a cleanup handler. Threads created by linked libraries or raw pthread
 calls are not silently treated as QEMU-owned.
+
+Schema version 2 assigns the `call_rcu` worker to `unclassified-rcu` and every
+QEMU `IOThread` to `unclassified-aio` through calls made by the subsystem's own
+thread entry point, not by matching diagnostic names. These values identify the
+owner that must eventually provide the barrier and child reinitializer; they
+remain included in `unclassified-threads`, remain fork blockers, and do not
+acknowledge readiness bits 3, 4, or 8. Plain `unclassified` remains the
+fail-closed value for every other `qemu_thread_create()` caller. Schema version
+1 is rejected rather than silently interpreting its smaller disposition
+registry under version-2 semantics.
 
 The Phase 6 host audit complements that query with bounded operational evidence
 for one exact Linux process generation. It accepts only while proof bit 2 is
@@ -221,8 +235,11 @@ inventory mutex ownership, QEMU-internal AIO/BH/timer or RCU state, block/plugin
 internals, external-thread dispositions, or child reinitializers; the registry
 currently classifies all non-coordinator QEMU threads as `unclassified`. It
 cannot set any readiness bit, prepare a template, or authorize `fork(2)`.
-Those proofs must be produced while the future QEMU coordinator holds the
-corresponding subsystem barriers.
+The registry identifies the live RCU callback and AIO-context workers by
+subsystem-specific unresolved dispositions, while any other non-coordinator
+remains plain `unclassified`. None is a child disposition. Those proofs must be
+produced while the future QEMU coordinator holds the corresponding subsystem
+barriers.
 
 Template realization then adds the following operations:
 

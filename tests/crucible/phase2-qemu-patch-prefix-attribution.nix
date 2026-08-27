@@ -519,6 +519,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0112-crucible-hot-fork-thread-ownership.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

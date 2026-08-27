@@ -282,6 +282,7 @@ GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
 
 CAMPAIGN HOT FORK (RFC-0016)                           class  enforces
   crucible-hot-fork-readiness QEMU-owned proof bitmap   F    HFORK-3, HFORK-4
+  crucible-hot-fork-thread-ownership subsystem owners   F    HFORK-3, HFORK-4
 
 DIAGNOSTIC-ONLY (dev, NOT shipped)                     class  enforces
   crucible-tcg-exec-diag ........ per-exec icount trace      dev  divergence debug
@@ -1606,6 +1607,31 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   fork, timer, I/O, or guest-state operation. Outside the exact deterministic
   profile it returns fewer acknowledgements and remains not ready. Existing QMP
   commands and non-Crucible execution are unchanged.
+- **Risk:** F.
+
+### crucible-hot-fork-thread-ownership — classify unresolved subsystem workers
+
+- **Patch:** `0112-crucible-hot-fork-thread-ownership.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4].
+- **Mechanism:** the RCU callback worker and every QEMU `IOThread` assign their
+  own version-2 thread-registry disposition at the start of their subsystem
+  entry point. The values remain explicitly unresolved and contribute to the
+  exact unclassified count; they identify the future barrier owner without
+  claiming a safe inherited-thread action, child reinitializer, or readiness
+  acknowledgement. All other non-coordinator threads retain the plain
+  fail-closed `unclassified` value.
+- **Micro-test:** strict Rust decoding accepts all four closed disposition
+  values and rejects version 1, unknown values, inconsistent counts, and
+  malformed ordering. The live patched-QEMU gate requires exactly one RCU owner
+  and one monitor AIO owner in the supported launch profile, stable repeated
+  snapshots, two unresolved workers, and no readiness proof beyond the existing
+  precise-sim/exact-boundary set. Patch regeneration, prefix build, and drop-one
+  attribution bind the QAPI and thread-entry changes to this exact patch.
+- **Inertness:** owner assignment mutates only the diagnostic registry
+  generation before either subsystem publishes its startup-ready condition.
+  It does not stop, park, resume, fork, or reinitialize a thread, change an AIO
+  or RCU operation, or set a hot-fork proof bit. Non-Crucible QMP and guest
+  execution are unchanged.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
