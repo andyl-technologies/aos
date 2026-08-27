@@ -35,6 +35,7 @@
   ],
   # Version-specific workarounds
   needsArc4randomFix ? true,
+  needsClOptStringFix ? false,
   extraCmakeFlags ? [],
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -123,6 +124,17 @@ in
               exec ${buildPackages.cc}/bin/c++ "$@"
               AOS_NATIVE_CXX
               chmod +x native-tools/cc native-tools/c++
+            ''
+            else ""
+          )
+          + (
+            if isDarwinCross && needsClOptStringFix
+            then ''
+              # LLVM 17's cl::opt<std::string> does not implicitly convert
+              # through nested initializer lists with current libc++.
+              sed -i \
+                's/{{ClIgnorelist}}/{{std::string(ClIgnorelist)}}/' \
+                llvm/tools/sancov/sancov.cpp
             ''
             else ""
           )
