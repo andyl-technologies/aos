@@ -72,5 +72,27 @@ nix-build -A checks.build.package-platform-support
 ```
 
 Successful Linux-hosted builds prove that the target closure can be produced
-and statically inspected. Runtime tests remain a separate macOS qualification
-gate and must not be represented as having run during cross compilation.
+and statically inspected. They do not prove that a Mach-O executable starts or
+that its language runtime behaves correctly.
+
+The focused x86_64 compatibility gate runs already-built Darwin artifacts in a
+KVM-backed AOS Linux guest through Darling:
+
+```text
+nix-build -A checks.fleet.darling-x86-runtime-smoke --no-out-link
+```
+
+`checks.fleet.darling-darwin-c-smoke` remains as a compatibility alias for the
+same derivation. The suite boots the production image with a test-only fleet
+agent, attaches an immutable payload containing Darling and the exact target
+closures, and runs each Mach-O program as an unprivileged user. The launcher is
+setuid only inside that disposable payload; its Nix store output remains
+ordinary mode `0555`. Target stdout and stderr are asserted separately from
+Darling, launchd, and darlingserver diagnostics.
+
+Darling is a compatibility smoke gate, not a macOS qualification environment.
+It currently covers x86_64 command-line runtimes and cannot establish Apple
+kernel behavior, entitlement and code-signing policy, GUI framework behavior,
+hardware integration, or AArch64 execution. Release qualification that depends
+on those contracts must still run on real macOS, and neither gate may be
+represented as having run during cross compilation.

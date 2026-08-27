@@ -155,4 +155,5 @@ in
         '';
       }
     ];
+    passthru.x86.go = x86Go;
   }

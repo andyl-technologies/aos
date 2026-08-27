@@ -64,4 +64,5 @@ in
         '';
       }
     ];
+    passthru.x86.python3 = x86.pkgs.python3;
   }
