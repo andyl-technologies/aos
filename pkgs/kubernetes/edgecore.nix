@@ -59,7 +59,7 @@ in
       version = testing.mkToolCheck {
         pname = "tool-edgecore";
         tool = self;
-        command = "edgecore --version";
+        command = "edgecore --help";
       };
     };
 

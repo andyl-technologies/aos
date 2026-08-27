@@ -10,6 +10,8 @@
   openssl,
   xz,
   libffi,
+  sqlite,
+  readline,
 }: let
   version = "3.14.3";
 
@@ -52,6 +54,8 @@ in
       # other systemd build-time scripts (elf2efi.py, generate-hwids-
       # section.py) that need it.
       libffi
+      sqlite
+      readline
     ];
     propagatedDeps = [];
 

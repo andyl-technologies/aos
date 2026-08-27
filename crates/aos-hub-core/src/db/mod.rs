@@ -22456,7 +22456,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns the same errors as the internal normalized apply primitive.
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(any(test, debug_assertions, feature = "do-e2e-test-support"))]
     #[allow(clippy::too_many_arguments)]
     pub async fn seed_registry_configuration_for_test(
         &self,

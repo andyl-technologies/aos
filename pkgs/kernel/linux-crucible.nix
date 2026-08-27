@@ -20,7 +20,9 @@
         '';
       };
     }
-    .${stdenv.hostPlatform.system}
+    .${
+      stdenv.hostPlatform.system
+    }
     or (throw "linux-crucible: unsupported system '${stdenv.hostPlatform.system}'");
   extraConfig = ''
     # Crucible test fixture kernel. This is deliberately a STOCK kernel: it

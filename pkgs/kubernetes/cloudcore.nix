@@ -59,7 +59,7 @@ in
       version = testing.mkToolCheck {
         pname = "tool-cloudcore";
         tool = self;
-        command = "cloudcore --version";
+        command = "cloudcore --help";
       };
     };
 
