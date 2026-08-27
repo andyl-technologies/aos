@@ -27,6 +27,7 @@
   bootstrapCmdsRevision = "c71d2d72f48995baaea76148f61002e5299841de";
   launchdRevision = "d448a1c8f70a61202f8705f94337f686b87c30c4";
   hfsRevision = "d1bac2f062e6e9c0dfcce302d9aacb10173d0eea";
+  libnotifyRevision = "715d461778f6b93c821d99390a0078bd6f6d8c04";
   darlingMetalRevision = "ae20248dc144beab899e38752f5a530f28a0ea56";
 
   coreFoundationSrc = fetchurl {
@@ -134,6 +135,13 @@
     hash = "sha256-rkCBjserV45xh6t27BXUy6vlGFGQOYUr863j0kAWmnA=";
   };
 
+  libnotifySrc = fetchurl {
+    urls = [
+      "https://github.com/apple-oss-distributions/Libnotify/archive/${libnotifyRevision}.tar.gz"
+    ];
+    hash = "sha256-3Y5oYWjcpcOLtnDDn00x8JLjfdbaOwMy9S4ywbjuMws=";
+  };
+
   darlingMetalSrc = fetchurl {
     urls = [
       "https://github.com/darlinghq/darling-metal/archive/${darlingMetalRevision}.tar.gz"
@@ -178,6 +186,7 @@ in
           tar xf ${bootstrapCmdsSrc}
           tar xf ${launchdSrc}
           tar xf ${hfsSrc}
+          tar xf ${libnotifySrc}
           tar xf ${darlingMetalSrc}
           cd "zig-${version}"
         '';
@@ -200,6 +209,7 @@ in
           bootstrapCmdsRoot="../bootstrap_cmds-${bootstrapCmdsRevision}"
           launchdRoot="../launchd-${launchdRevision}"
           hfsRoot="../hfs-${hfsRevision}"
+          libnotifyRoot="../Libnotify-${libnotifyRevision}"
           darlingMetalRoot="../darling-metal-${darlingMetalRevision}"
 
           mkdir -p \
@@ -363,6 +373,7 @@ in
           cp "$launchdRoot/liblaunch/bootstrap.h" \
             "$out/usr/include/servers/bootstrap.h"
           cp "$hfsRoot/core/hfs_mount.h" "$out/usr/include/hfs/"
+          cp "$libnotifyRoot/notify.h" "$out/usr/include/notify.h"
           cp "$xnuRoot/libkern/os/log.h" "$out/usr/include/os/"
           # XNU publishes the core log object surface, while the user-space
           # SDK additionally declares the enablement query used by signpost
@@ -683,6 +694,8 @@ in
             "$out/share/licenses/darwin-sdk/bootstrap_cmds-LICENSE"
           cp "$hfsRoot/APPLE_LICENSE" \
             "$out/share/licenses/darwin-sdk/hfs-LICENSE"
+          cp "$libnotifyRoot/APPLE_LICENSE" \
+            "$out/share/licenses/darwin-sdk/Libnotify-LICENSE"
 
           cat > "$out/System/Library/Frameworks/Security.framework/Headers/SecBase.h" <<'EOF'
           #ifndef _SECURITY_SECBASE_H_
