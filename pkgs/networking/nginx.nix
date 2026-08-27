@@ -171,6 +171,8 @@ in
           RuntimeDirectoryMode = "0750";
           StateDirectory = "aos-pkg-nginx";
           StateDirectoryMode = "0750";
+          LogsDirectory = "nginx";
+          LogsDirectoryMode = "0750";
           UMask = "0027";
           ExecCondition = "/bin/nginx-control enabled";
           ExecStartPre = "/bin/nginx-control prepare";

@@ -509,9 +509,11 @@ fn validate_network_policy_artifact(
         connect: expected_permissions.tcp_connect.clone(),
     };
     let expected_fs = expected_manifest_fs(&expected_permissions);
-    let expected_state_paths = expected_landlock_state_paths(package_name, artifact_root, units)
-        .with_context(|| format!("reading StateDirectory grants for package '{package_name}'"))?;
-    let expected_landlock_fs = expected_landlock_fs(&expected_permissions, &expected_state_paths);
+    let expected_service_paths =
+        expected_landlock_service_paths(package_name, artifact_root, units).with_context(|| {
+            format!("reading service directory grants for package '{package_name}'")
+        })?;
+    let expected_landlock_fs = expected_landlock_fs(&expected_permissions, &expected_service_paths);
     let policy_fs = policy.fs.unwrap_or_default();
     let policy_landlock_fs = policy.landlock.fs.unwrap_or_else(|| {
         if expected_fs == NetworkPolicyFs::default() {
@@ -1012,9 +1014,11 @@ fn validate_workload_exec_wrappers(
         return Ok(());
     }
 
-    let expected_state_paths = expected_landlock_state_paths(package_name, artifact_root, units)
-        .with_context(|| format!("reading StateDirectory grants for package '{package_name}'"))?;
-    let expected_args = expected_landlock_args(&permissions, &expected_state_paths);
+    let expected_service_paths =
+        expected_landlock_service_paths(package_name, artifact_root, units).with_context(|| {
+            format!("reading service directory grants for package '{package_name}'")
+        })?;
+    let expected_args = expected_landlock_args(&permissions, &expected_service_paths);
     let trusted_selinux_runner = trusted_selinux_runner_path()?;
     let trusted_landlock_wrapper = trusted_landlock_wrapper_path()?;
     let trusted_verity_root_guard = trusted_verity_root_guard_path()?;
@@ -1743,9 +1747,9 @@ fn requires_landlock_wrapper(package_name: &str, permissions: &PermissionsMeta) 
         != ConfinementClass::Unconfined)
 }
 
-fn expected_landlock_args(permissions: &PermissionsMeta, state_paths: &[String]) -> Vec<String> {
+fn expected_landlock_args(permissions: &PermissionsMeta, service_paths: &[String]) -> Vec<String> {
     let mut args = vec!["--require-abi".to_string(), "4".to_string()];
-    let fs = expected_landlock_fs(permissions, state_paths);
+    let fs = expected_landlock_fs(permissions, service_paths);
     for path in fs.read_only {
         args.push("--fs-ro".to_string());
         args.push(path);
@@ -1781,7 +1785,10 @@ fn expected_manifest_fs(permissions: &PermissionsMeta) -> NetworkPolicyFs {
     }
 }
 
-fn expected_landlock_fs(permissions: &PermissionsMeta, state_paths: &[String]) -> NetworkPolicyFs {
+fn expected_landlock_fs(
+    permissions: &PermissionsMeta,
+    service_paths: &[String],
+) -> NetworkPolicyFs {
     let unconfined = permissions
         .confinement
         .as_ref()
@@ -1798,7 +1805,7 @@ fn expected_landlock_fs(permissions: &PermissionsMeta, state_paths: &[String]) -
         "/var/tmp".to_string(),
         "/dev/null".to_string(),
     ];
-    for path in state_paths {
+    for path in service_paths {
         if !read_write.contains(path) {
             read_write.push(path.clone());
         }
@@ -1825,7 +1832,7 @@ fn expected_landlock_fs(permissions: &PermissionsMeta, state_paths: &[String]) -
     }
 }
 
-fn expected_landlock_state_paths(
+fn expected_landlock_service_paths(
     package_name: &str,
     artifact_root: &Path,
     units: &BTreeSet<String>,
@@ -1841,36 +1848,49 @@ fn expected_landlock_state_paths(
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading exposed unit {}", path.display()))?;
         let parsed = Parsed::parse(&text);
-        let state_paths = parsed.sections.get("Service").map_or_else(
+        let service_paths = parsed.sections.get("Service").map_or_else(
             || default_state_paths(package_name),
-            |service| landlock_state_paths_for_service(package_name, service),
+            |service| landlock_service_paths_for_service(package_name, service),
         );
-        append_unique_strings(&mut paths, state_paths);
+        append_unique_strings(&mut paths, service_paths);
     }
     Ok(paths)
 }
 
-fn landlock_state_paths_for_service(
+fn landlock_service_paths_for_service(
     package_name: &str,
     service: &BTreeMap<String, Vec<String>>,
 ) -> Vec<String> {
-    let values = service
+    let state_values = service
         .get("StateDirectory")
         .filter(|values| !values.is_empty())
         .cloned()
         .unwrap_or_else(|| vec![format!("aos-pkg-{package_name}")]);
-    state_directory_values_to_paths(&values)
+    let mut paths = service_directory_values_to_paths("/var/lib", &state_values);
+    for (key, prefix) in [
+        ("RuntimeDirectory", "/run"),
+        ("CacheDirectory", "/var/cache"),
+        ("LogsDirectory", "/var/log"),
+    ] {
+        if let Some(values) = service.get(key) {
+            append_unique_strings(
+                &mut paths,
+                service_directory_values_to_paths(prefix, values),
+            );
+        }
+    }
+    paths
 }
 
 fn default_state_paths(package_name: &str) -> Vec<String> {
     vec![format!("/var/lib/aos-pkg-{package_name}")]
 }
 
-fn state_directory_values_to_paths(values: &[String]) -> Vec<String> {
+fn service_directory_values_to_paths(prefix: &str, values: &[String]) -> Vec<String> {
     let mut paths = Vec::new();
     for value in values {
         for name in value.split_whitespace().filter(|name| !name.is_empty()) {
-            append_unique_string(&mut paths, format!("/var/lib/{name}"));
+            append_unique_string(&mut paths, format!("{prefix}/{name}"));
         }
     }
     paths
@@ -3632,10 +3652,10 @@ mod tests {
             .cloned()
             .collect::<BTreeSet<_>>();
         units.insert(apm.expose.as_ref().unwrap().target.clone());
-        let state_paths =
-            expected_landlock_state_paths(&apm.name, &Path::new(&artifact).join("units"), &units)
+        let service_paths =
+            expected_landlock_service_paths(&apm.name, &Path::new(&artifact).join("units"), &units)
                 .unwrap();
-        let landlock_fs = expected_landlock_fs(&permissions, &state_paths);
+        let landlock_fs = expected_landlock_fs(&permissions, &service_paths);
         let label = permissions.security_label.clone().unwrap();
         let mode = permissions.network.unwrap_or(NetworkPermission::Private);
         let policy = serde_json::json!({
@@ -6400,5 +6420,30 @@ mod tests {
         for path in preset_paths(tmp.path()) {
             assert_eq!(std::fs::read_to_string(path).unwrap(), "");
         }
+    }
+
+    #[test]
+    fn landlock_service_paths_include_systemd_managed_directories() {
+        let service = BTreeMap::from([
+            ("StateDirectory".into(), vec!["state-a state-b".into()]),
+            ("RuntimeDirectory".into(), vec!["runtime-a".into()]),
+            ("CacheDirectory".into(), vec!["cache-a".into()]),
+            ("LogsDirectory".into(), vec!["logs-a".into()]),
+        ]);
+
+        assert_eq!(
+            landlock_service_paths_for_service("web", &service),
+            vec![
+                "/var/lib/state-a",
+                "/var/lib/state-b",
+                "/run/runtime-a",
+                "/var/cache/cache-a",
+                "/var/log/logs-a",
+            ]
+        );
+        assert_eq!(
+            landlock_service_paths_for_service("web", &BTreeMap::new()),
+            vec!["/var/lib/aos-pkg-web"]
+        );
     }
 }

@@ -43,10 +43,10 @@ sets `nginx.enable = true` and defines at least one virtual host.
 AOS renders `/etc/nginx/nginx.conf`, validates it with `nginx -t` before the
 service starts or reloads, and reloads a running master in place when the
 configuration changes. The service uses a systemd dynamic user and package
-state directory; access and error logs go to the journal. The signed package
-permission manifest grants host networking and `CAP_NET_BIND_SERVICE`, while
-the service filesystem remains read-only except for its state and runtime
-directories.
+state directory. Access and error logs live in the systemd-managed
+`/var/log/nginx` directory. The signed package permission manifest grants host
+networking and `CAP_NET_BIND_SERVICE`, while the service filesystem remains
+read-only except for its state, runtime, and log directories.
 
 ## Compose virtual hosts and upstreams
 
