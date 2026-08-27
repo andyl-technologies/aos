@@ -38,6 +38,10 @@
 in {
   name = "runtime-module-composition";
   timeout = 1800;
+  # The full fleet umbrella boots many KVM guests concurrently. Initial host
+  # evaluation can legitimately exceed the generic 180-second readiness
+  # deadline under that load, before this test's own bounded apply steps begin.
+  bootTimeout = 600;
   systemReadyTimeout = 0;
 
   machines.runtime = {
