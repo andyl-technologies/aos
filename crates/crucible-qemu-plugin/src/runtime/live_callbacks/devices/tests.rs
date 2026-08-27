@@ -417,7 +417,7 @@ fn preserved_retry_authorization_survives_outbound_ring_backpressure() {
             .unwrap_or_else(|error| panic!("retry disposition should poll: {error}")),
         QEMU_PLUGIN_BLOCK_RETRY_PRESERVE_ID
     );
-    assert!(devices.block_retry_preserve.contains(&identity));
+    assert!(devices.block_reissue_preserve.contains(&identity));
     assert!(!devices.block_tokens.contains_key(&identity));
 
     for sequence in 0..storage.block_out_entries.len() {
@@ -442,7 +442,7 @@ fn preserved_retry_authorization_survives_outbound_ring_backpressure() {
             )
             .is_err()
     );
-    assert!(devices.block_retry_preserve.contains(&identity));
+    assert!(devices.block_reissue_preserve.contains(&identity));
     assert!(!devices.block_tokens.contains_key(&identity));
     assert_eq!(slot.snapshot().device_io_active, 0);
 
@@ -463,7 +463,7 @@ fn preserved_retry_authorization_survives_outbound_ring_backpressure() {
             4,
         )
         .unwrap_or_else(|error| panic!("preserved retry should survive backpressure: {error}"));
-    assert!(!devices.block_retry_preserve.contains(&identity));
+    assert!(!devices.block_reissue_preserve.contains(&identity));
     assert!(devices.block_tokens.contains_key(&identity));
     assert_eq!(slot.snapshot().device_io_active, 1);
 }
@@ -518,7 +518,7 @@ fn transport_continuation_rejects_every_live_callback_continuation() {
         .submit_block(&slot, 6, 0, 1, 0, 4, None, 4)
         .unwrap_or_else(|error| panic!("live continuation request should submit: {error}"));
     devices
-        .block_retry_preserve
+        .block_reissue_preserve
         .insert(crate::BlockRequestIdentity::new(0, 7));
     let event = BlockResponse::reset_event(
         crate::BlockRequestIdentity::new(0, 0),

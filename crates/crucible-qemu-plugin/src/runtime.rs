@@ -254,6 +254,7 @@ impl OwnedCallbackRuntimeState {
         queued_idle_advance: crate::QueuedIdleAdvance,
         network_rx: crate::QemuCanonicalNetworkRx,
         network_tx_next_seq: u32,
+        storage_history_limits: crate::PluginStorageHistoryLimits,
         process_generation: u64,
         fault_command_apis: crate::fault_command::QemuFaultCommandApis,
         fingerprint: Option<crate::PluginFingerprintSampling>,
@@ -346,10 +347,11 @@ impl OwnedCallbackRuntimeState {
         // SAFETY: the pinned runtime retains this unique plugin role and its
         // owning mapping for every QEMU callback.
         let accelerator_rings = unsafe { accelerator_rings.detach_for_mapping_lifetime() };
-        let callback_state = callback_state.attach_devices(
+        let callback_state = callback_state.attach_devices_with_history_limits(
             slot_index,
             block_rings,
             ninep_rings,
+            storage_history_limits,
             process_generation,
             accelerator_rings,
         )?;

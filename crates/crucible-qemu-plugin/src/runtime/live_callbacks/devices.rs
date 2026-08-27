@@ -31,6 +31,8 @@ use super::{
     StableDirectedRingHandle, abort_live_callback, callback_userdata_or_abort,
 };
 
+mod attachment;
+
 const QEMU_PLUGIN_BLOCK_POLL_PENDING: i64 = -2;
 const QEMU_PLUGIN_BLOCK_RETRY_PRESERVE_ID: i64 = -3;
 const QEMU_PLUGIN_BLOCK_RETRY_NEW_ID: i64 = -4;
@@ -46,7 +48,7 @@ pub(super) struct LiveDeviceCallbackState {
     block: PluginBlockIo,
     block_rings: LiveDirectedRingPair,
     block_tokens: BTreeMap<BlockRequestIdentity, BlockRequestToken>,
-    block_retry_preserve: BTreeSet<BlockRequestIdentity>,
+    block_reissue_preserve: BTreeSet<BlockRequestIdentity>,
     pending_block_event: Option<PendingBlockTransportEvent>,
     ninep: PluginNinePIo,
     ninep_rings: LiveDirectedRingPair,
@@ -85,44 +87,6 @@ struct PendingAcceleratorEnvelope {
 }
 
 impl LiveDeviceCallbackState {
-    pub(super) fn new(
-        vm_slot: u32,
-        block_rings: LiveDirectedRingPair,
-        ninep_rings: LiveDirectedRingPair,
-        accelerator_generation: u64,
-        accelerator_rings: DetachedPluginAcceleratorRings,
-    ) -> Result<Self, LiveDeviceCallbackError> {
-        let block = PluginBlockIo::from_directed_rings(
-            vm_slot,
-            block_rings.outbound.descriptor,
-            block_rings.inbound.descriptor,
-        )
-        .map_err(|source| LiveDeviceCallbackError::Block { source })?;
-        let ninep = PluginNinePIo::from_directed_rings(
-            vm_slot,
-            ninep_rings.outbound.descriptor,
-            ninep_rings.inbound.descriptor,
-        )
-        .map_err(|source| LiveDeviceCallbackError::NineP { source })?;
-        Ok(Self {
-            freeze: PluginDeviceIoFreeze::new(),
-            block,
-            block_rings,
-            block_tokens: BTreeMap::new(),
-            block_retry_preserve: BTreeSet::new(),
-            pending_block_event: None,
-            ninep,
-            ninep_rings,
-            ninep_tokens: BTreeMap::new(),
-            accelerator_generation,
-            accelerator_rings,
-            accelerator_pending: BTreeMap::new(),
-            accelerator_completed: BTreeMap::new(),
-            accelerator_cancelled: BTreeMap::new(),
-            accelerator_restore_staging: None,
-        })
-    }
-
     // crucible-lint: allow rust-allow -- the accelerator request preserves every fixed public envelope field.
     #[allow(
         clippy::too_many_arguments,
@@ -459,7 +423,7 @@ impl LiveDeviceCallbackState {
         let qemu_identity = BlockRequestIdentity::new(qemu_epoch, qemu_request_id);
         let plugin_identity =
             BlockRequestIdentity::new(self.block.request_epoch(), self.block.next_request_id());
-        let retry_preserve = self.block_retry_preserve.contains(&qemu_identity);
+        let retry_preserve = self.block_reissue_preserve.contains(&qemu_identity);
         if (!retry_preserve && plugin_identity != qemu_identity)
             || self.block_tokens.contains_key(&qemu_identity)
         {
@@ -505,7 +469,7 @@ impl LiveDeviceCallbackState {
         }
         self.block_tokens.insert(qemu_identity, token);
         if retry_preserve {
-            let removed = self.block_retry_preserve.remove(&qemu_identity);
+            let removed = self.block_reissue_preserve.remove(&qemu_identity);
             debug_assert!(removed, "successful preserved retry had authorization");
         }
         Ok(())
@@ -574,7 +538,7 @@ impl LiveDeviceCallbackState {
                     })
                 }
                 BlockResponseStatus::RetryPreserveId => {
-                    self.block_retry_preserve.insert(identity);
+                    self.block_reissue_preserve.insert(identity);
                     Ok(QEMU_PLUGIN_BLOCK_RETRY_PRESERVE_ID)
                 }
                 BlockResponseStatus::RetryNewId => Ok(QEMU_PLUGIN_BLOCK_RETRY_NEW_ID),
@@ -633,12 +597,12 @@ impl LiveDeviceCallbackState {
 
     fn save_block_transport(&self, output: &mut [u8]) -> Result<usize, LiveDeviceCallbackError> {
         if !self.block_tokens.is_empty()
-            || !self.block_retry_preserve.is_empty()
+            || !self.block_reissue_preserve.is_empty()
             || self.pending_block_event.is_some()
         {
             return Err(LiveDeviceCallbackError::TransportContinuationBusy {
                 block_tokens: self.block_tokens.len(),
-                retry_authorizations: self.block_retry_preserve.len(),
+                retry_authorizations: self.block_reissue_preserve.len(),
                 prepared_event: self.pending_block_event.is_some(),
             });
         }
@@ -667,12 +631,12 @@ impl LiveDeviceCallbackState {
         qemu_next_request_id: u32,
     ) -> Result<(), LiveDeviceCallbackError> {
         if !self.block_tokens.is_empty()
-            || !self.block_retry_preserve.is_empty()
+            || !self.block_reissue_preserve.is_empty()
             || self.pending_block_event.is_some()
         {
             return Err(LiveDeviceCallbackError::TransportContinuationBusy {
                 block_tokens: self.block_tokens.len(),
-                retry_authorizations: self.block_retry_preserve.len(),
+                retry_authorizations: self.block_reissue_preserve.len(),
                 prepared_event: self.pending_block_event.is_some(),
             });
         }

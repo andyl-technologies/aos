@@ -309,6 +309,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 capabilities.queued_idle_advance,
                 capabilities.network_rx,
                 args.network_tx_next_seq(),
+                args.storage_history_limits(),
                 args.process_generation(),
                 capabilities.fault_commands,
                 fingerprint,
@@ -870,27 +871,6 @@ impl LiveVcpuTimeCallbackState {
             rx_queue,
             next_tx_sequence,
         )?);
-        Ok(self)
-    }
-
-    pub(super) fn attach_devices(
-        mut self,
-        vm_slot: u32,
-        block: LiveDirectedRingPair,
-        ninep: LiveDirectedRingPair,
-        accelerator_generation: u64,
-        accelerator_rings: crucible_shmem::DetachedPluginAcceleratorRings,
-    ) -> Result<Self, LiveVcpuTimeCallbackError> {
-        self.devices = Some(Mutex::new(
-            LiveDeviceCallbackState::new(
-                vm_slot,
-                block,
-                ninep,
-                accelerator_generation,
-                accelerator_rings,
-            )
-            .map_err(LiveVcpuTimeCallbackError::live_device)?,
-        ));
         Ok(self)
     }
 

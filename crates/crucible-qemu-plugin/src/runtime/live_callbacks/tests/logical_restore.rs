@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging() {
     let args = crate::PluginArgs::parse(
-        "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=23,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=11,app_random_cap=8,app_random_node=node-a,app_random_draw_offset=2,app_random_positions=6e6f64652d612f776f726b6c6f6164:2",
+        "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=23,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=11,app_random_cap=8,app_random_node=node-a,app_random_draw_offset=2,app_random_positions=6e6f64652d612f776f726b6c6f6164:2",
     )
     .unwrap_or_else(|error| panic!("continuation configuration should parse: {error}"));
     let config = args

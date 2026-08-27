@@ -223,14 +223,28 @@ Canonical QEMU node, host-I/O, production fault-runtime, and complete VMState
 envelopes admit their representation against `fat_checkpoint_bytes` and its
 64 GiB hard ceiling before final allocation. Nested owners retain independent
 typed bounds; sequence decoders use fallible reservation even for indefinite
-hostile CBOR, and the complete VM snapshot uses a length-delimited envelope that
-borrows nested inputs rather than first materializing duplicate vectors. The
+hostile CBOR. Durable closure manifests and lifecycle objects also decode text
+through an envelope-bounded scratch buffer and reserve each final owned string
+fallibly before copying, including canonical strings larger than the CBOR
+library's default scratch space. The complete VM snapshot uses a
+length-delimited envelope that borrows nested inputs rather than first
+materializing duplicate vectors. The
 scheduler-facing network queue encoder additionally enforces
 `network_queue_frames` and the 8 GiB `network_queue_bytes` hard ceiling. Durable
 store and fresh-process load apply the identical authored ceiling to every
 large continuation and to the aggregate content-addressed closure. Allocation
 or representation failure is a LIMIT-2 outcome carrying the exact current,
 requested, configured, and hard values rather than a process abort. The raised
+resource policy also covers the closure publication transaction. Every target
+and artifact path is owned before the first QMP save, all live QEMU snapshots
+are deleted in reverse order before the closure rename, and a staging or delete
+failure cannot enter durable publication. The production rename seam admits
+the exact published count, durably removes a rejected destination, and retains
+an indeterminate identity whenever parent-directory durability cannot establish
+one outcome. Fresh-process recovery authenticates published identities and
+durably removes abandoned transaction staging before another capture.
+
+The raised
 resource policy is carried only by the versioned node-v7, host-I/O-v4,
 block-snapshot-v3, block-fault-state-v2, 9p-snapshot-v2, I/O-core-v2,
 production-runtime-v6, and VM-snapshot-v3 formats; production runtime identity

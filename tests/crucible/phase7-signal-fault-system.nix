@@ -219,6 +219,48 @@ in
               -- --exact --include-ignored --test-threads=1
           }
 
+          harness_lint_tests="$TMPDIR/harness-lint-tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-harness \
+            --test harness_lint \
+            -- --list > "$harness_lint_tests"
+          retired_surface_test=retired_fault_surfaces_cannot_reenter_executable_or_user_documentation_paths
+          grep -Fqx "$retired_surface_test: test" "$harness_lint_tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-harness \
+            --test harness_lint \
+            "$retired_surface_test" \
+            -- --exact --include-ignored --test-threads=1
+
+          feature_policy_tests="$TMPDIR/feature-policy-tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-harness \
+            --test feature_powerset \
+            -- --list > "$feature_policy_tests"
+          no_production_double_test=shipped_crates_do_not_enable_the_test_double
+          grep -Fqx "$no_production_double_test: test" "$feature_policy_tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-harness \
+            --test feature_powerset \
+            "$no_production_double_test" \
+            -- --exact --include-ignored --test-threads=1
+
           taxonomy_tests="$TMPDIR/rfc0014-taxonomy-ledger-tests"
           cargo test \
             --frozen \
@@ -452,7 +494,11 @@ in
           run_exact_api_test \
             vm_lifecycle::quantum_loop::checkpoint_capture::tests::publication_registry_retains_only_durable_or_indeterminate_owners
           run_exact_api_test \
+            vm_lifecycle::quantum_loop::checkpoint_capture::tests::production_transaction_deletes_before_publication_and_retains_failed_cleanup
+          run_exact_api_test \
             vm_lifecycle::checkpoint_store::publication::tests::publication_commit_tail_distinguishes_rollback_from_durability_uncertainty
+          run_exact_api_test \
+            vm_lifecycle::checkpoint_store::publication::tests::production_publication_rename_is_visible_only_when_admitted
           run_exact_api_test \
             vm_lifecycle::checkpoint_store::publication::tests::published_checkpoint_count_ignores_transaction_staging_directories
           run_exact_api_test \
@@ -465,6 +511,24 @@ in
             vm_lifecycle::checkpoint_store::recovery::tests::production_checkpoint_load_rejects_manifest_bytes_before_decode
           run_exact_api_test \
             vm_lifecycle::checkpoint_store::decode::tests::production_manifest_decode_rejects_hostile_target_length_before_elements
+          run_exact_api_test \
+            vm_lifecycle::checkpoint_store::decode::tests::nested_string_is_admitted_before_owned_copy_with_exact_coordinates
+          run_exact_api_test \
+            vm_lifecycle::checkpoint_store::decode::tests::string_larger_than_default_cbor_scratch_round_trips_canonically
+          run_exact_api_test \
+            vm_lifecycle::checkpoint_store::decision_wire::tests::fallible_decision_wire_preserves_canonical_bytes_and_nested_text
+          grep -Fq 'node: decode::FallibleString' \
+            crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs
+          grep -Fq 'node_generations: Vec<(decode::FallibleString, u64)>' \
+            crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs
+          grep -Fq 'node_times: Vec<(decode::FallibleString, u64)>' \
+            crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs
+          grep -Fq 'decisions: Vec<decision_wire::DecisionWire>' \
+            crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs
+          grep -Fq 'decode_cbor_with_limits(payload, limits, "malformed closure manifest")' \
+            crates/crucible-api/src/vm_lifecycle/checkpoint_store/decode.rs
+          grep -Fq 'decode::decode_cbor_with_limits(bytes, limits, "decode exact lifecycle continuation")' \
+            crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs
           run_exact_api_test \
             vm_lifecycle::checkpoint_recovery::tests::fresh_process_removes_only_abandoned_checkpoint_staging
           run_exact_api_test \
@@ -486,6 +550,8 @@ in
             'for prepared in prepared_targets {' \
             crates/crucible-api/src/vm_lifecycle/quantum_loop.rs | cut -d: -f1)"
           test "$checkpoint_prepare_line" -lt "$checkpoint_capture_line"
+          test "$(grep -Fc 'checkpoint_capture::resolve_exact_checkpoint_capture(' \
+            crates/crucible-api/src/vm_lifecycle/quantum_loop.rs)" -eq 1
           test "$(grep -Fc '    fn prepare_terminal_replacements(' \
             crates/crucible-api/src/vm_lifecycle/quantum_loop.rs)" -eq 1
           test "$(grep -Fc '    fn abort_staged_terminal_replacements(' \
@@ -574,6 +640,25 @@ in
             runtime::live_callbacks::tests::logical_restore::post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging
           run_exact_plugin_test \
             runtime::live_whitebox::app_random::tests::logical_restore_discards_priming_draws_exactly_once
+          run_exact_plugin_test \
+            args::tests::plugin_args_require_and_validate_authored_storage_history_limits
+          run_exact_plugin_test \
+            block_io::tests::resource_limits::completed_history_refuses_epochs_and_gaps_at_exact_authored_coordinates
+          run_exact_plugin_test \
+            block_io::tests::resource_limits::transport_restore_admits_history_counts_before_owned_decode
+          run_exact_qemu_test \
+            launch::plugin_config::tests::authored_storage_history_limits_are_explicit_and_fail_closed
+          run_exact_qemu_test \
+            supervision::node_step_gate::support::tests::authored_storage_history_limits_reach_the_plugin_launch_boundary
+          grep -Fq \
+            '.with_fault_resource_limits(source.plan().fault_signals().resource_limits())' \
+            crates/crucible-api/src/vm_lifecycle.rs
+          grep -Fq 'args.storage_history_limits(),' \
+            crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs
+          grep -Fq 'attach_devices_with_history_limits(' \
+            crates/crucible-qemu-plugin/src/runtime.rs
+          grep -Fq 'from_directed_rings_with_history_limits(' \
+            crates/crucible-qemu-plugin/src/runtime/live_callbacks/devices/attachment.rs
           run_exact_qemu_test \
             fault_action_sink::node_payload::tests::memory_bit_flip_rejects_authored_length_before_expanding_mask
           run_exact_qemu_test \
@@ -941,6 +1026,23 @@ in
             | sort > "$TMPDIR/expected-causal-node-effect-kinds"
           cmp "$TMPDIR/expected-causal-node-effect-kinds" "$TMPDIR/causal-node-effect-kinds"
 
+          causal_all_rows="$TMPDIR/causal-all-production-effect-rows"
+          cat \
+            "$TMPDIR/causal-network-production-effect-rows" \
+            "$TMPDIR/causal-storage-production-effect-rows" \
+            "$node_effect_rows" \
+            > "$causal_all_rows"
+          test "$(wc -l < "$causal_all_rows")" -eq \
+            "$(wc -l < "$production_matrix")"
+          test "$(sort -u "$causal_all_rows" | wc -l)" -eq \
+            "$(wc -l < "$causal_all_rows")"
+          cut -d= -f2- "$causal_all_rows" | cut -d'|' -f1 | sort \
+            > "$TMPDIR/causal-all-effect-kinds"
+          cut -d'|' -f1 "$production_matrix" | sort \
+            > "$TMPDIR/registered-all-effect-kinds"
+          cmp "$TMPDIR/registered-all-effect-kinds" \
+            "$TMPDIR/causal-all-effect-kinds"
+
           shared_result=${sharedCause}/result
           grep -Fxq PASS "$shared_result"
           grep -Fxq 'gate=gate:signal-shared-cause' "$shared_result"
@@ -1022,6 +1124,8 @@ in
             "$out/evidence/causal-storage-production-effects.txt"
           cp "$TMPDIR/causal-node-production-effect-rows" \
             "$out/evidence/causal-node-production-effects.txt"
+          cp "$TMPDIR/causal-all-production-effect-rows" \
+            "$out/evidence/causal-all-production-effects.txt"
           cp "$TMPDIR/rfc0014-taxonomy-ledger.tsv" \
             "$out/evidence/rfc0014-taxonomy-ledger.tsv"
 
@@ -1045,6 +1149,8 @@ in
           production_adapters=network,storage,node
           specification_only_domains=sensor,power
           retired_execution_paths=absent
+          retired_execution_policy=recursive-exact-identifier-scan
+          production_test_double_features=absent
           unfinished_production_paths=absent
           per_kind_metadata=admission,capability,replay-evidence,user-reference
           per_kind_production_execution_matrix=network-$matrix_network_count,storage-$matrix_storage_count,node-$matrix_node_count
@@ -1053,8 +1159,13 @@ in
           causal_network_production_effect_artifact=evidence/causal-network-production-effects.txt
           causal_storage_production_effect_count=20
           causal_storage_production_effect_artifact=evidence/causal-storage-production-effects.txt
+          plugin_completed_history_limits=authored-required-predecode-admission
+          checkpoint_owned_decode=fallible-text-and-decision-wire
+          checkpoint_publication=cleanup-before-rename-and-durable-count-admission
           causal_node_production_effect_count=20
           causal_node_production_effect_artifact=evidence/causal-node-production-effects.txt
+          causal_all_production_effects=exact-registry-identity
+          causal_all_production_effect_artifact=evidence/causal-all-production-effects.txt
           executable_taxonomy_rows=226
           executable_taxonomy_section_counts=wired-76,radio-52,satellite-20,node-41,storage-37
           executable_taxonomy_ledger=exact-section-identity-and-registered-effects

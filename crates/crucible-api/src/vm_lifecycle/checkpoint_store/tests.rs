@@ -8,6 +8,10 @@ use super::{ExactSnapshotHandle as Snapshot, *};
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt as _;
 
+fn wire_string(value: &str) -> decode::FallibleString {
+    decode::FallibleString::new(String::from(value))
+}
+
 fn manifest() -> ClosureManifest {
     ClosureManifest {
         format_version: MANIFEST_VERSION,
@@ -51,7 +55,7 @@ fn target(node: &str) -> TargetManifest {
         extents: Vec::new(),
     };
     TargetManifest {
-        node: String::from(node),
+        node: wire_string(node),
         immutable_backing: Some(ContentHash::from_bytes(b"immutable backing")),
         counter: 0,
         scheduler_time: 0,
@@ -115,7 +119,7 @@ fn snapshot_portable(mut manifest: ClosureManifest, snapshot: &Snapshot) -> Memo
     let fault_checkpoint = manifest.fault_checkpoint;
     let target = &mut manifest.targets[0];
     let node = NodeId {
-        name: target.node.clone(),
+        name: target.node.to_string(),
     };
     target.manifest_identity =
         exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
@@ -150,7 +154,7 @@ fn refresh_target_manifest_identities(manifest: &mut ClosureManifest) {
     let fault_checkpoint = manifest.fault_checkpoint;
     for target in &mut manifest.targets {
         let node = NodeId {
-            name: target.node.clone(),
+            name: target.node.to_string(),
         };
         target.manifest_identity =
             exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
@@ -401,8 +405,8 @@ fn native_checkpoint_retirement_recovers_renamed_generation() {
 fn closure_manifest_round_trip_is_canonical() {
     let mut original = manifest();
     original.targets = vec![target("a"), target("b")];
-    original.node_generations = vec![(String::from("a"), 1), (String::from("b"), 2)];
-    original.node_service_states = vec![(String::from("a"), 1), (String::from("b"), 2)];
+    original.node_generations = vec![(wire_string("a"), 1), (wire_string("b"), 2)];
+    original.node_service_states = vec![(wire_string("a"), 1), (wire_string("b"), 2)];
 
     let bytes = encode_manifest(&original).expect("encode canonical closure manifest");
     let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
@@ -472,8 +476,8 @@ fn previous_v6_dense_target_retains_its_identity_and_canonical_bytes() {
     prior_target.overlay = dense.clone();
     prior_target.vmstate = dense;
     previous.targets.push(prior_target);
-    previous.node_generations.push((String::from("a"), 1));
-    previous.node_service_states.push((String::from("a"), 1));
+    previous.node_generations.push((wire_string("a"), 1));
+    previous.node_service_states.push((wire_string("a"), 1));
     previous.identity = closure_identity(&previous).expect("derive previous target identity");
     let bytes = encode_manifest(&previous).expect("encode previous target manifest");
 
@@ -1476,8 +1480,8 @@ fn lifecycle_wire_restores_terminal_branch_and_controls() {
         .expect("build selectable plan")
     };
     let wire = LifecycleWire {
-        terminal: Some(TerminalWire::Failed(vec![String::from("failed")])),
-        terminal_cause: Some(TerminalCauseWire::Failed(vec![String::from("failed")])),
+        terminal: Some(TerminalWire::Failed(vec![wire_string("failed")])),
+        terminal_cause: Some(TerminalCauseWire::Failed(vec![wire_string("failed")])),
         initial_lifecycle_observations_pending: false,
         branch: Some(BranchWire {
             base_schedule: schedule.clone(),
@@ -1494,7 +1498,7 @@ fn lifecycle_wire_restores_terminal_branch_and_controls() {
             }],
         }],
         selectable_catalog_plans: vec![SelectableCatalogWire {
-            node: String::from("vm-0"),
+            node: wire_string("vm-0"),
             plan: selectable_plan.encode().expect("encode selectable plan"),
         }],
     };

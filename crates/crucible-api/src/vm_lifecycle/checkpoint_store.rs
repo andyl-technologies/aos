@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
+mod decision_wire;
 mod decode;
 mod io;
 use io::{BoundedReadError, read_bounded_file_with_boundary};
@@ -99,16 +100,16 @@ struct ClosureManifest {
     #[serde(deserialize_with = "decode::deserialize_vec")]
     targets: Vec<TargetManifest>,
     #[serde(deserialize_with = "decode::deserialize_vec")]
-    node_generations: Vec<(String, u64)>,
+    node_generations: Vec<(decode::FallibleString, u64)>,
     #[serde(deserialize_with = "decode::deserialize_vec")]
-    node_service_states: Vec<(String, u8)>,
+    node_service_states: Vec<(decode::FallibleString, u8)>,
     identity: ContentHash,
 }
 
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetManifest {
-    node: String,
+    node: decode::FallibleString,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     immutable_backing: Option<ContentHash>,
     counter: u64,
@@ -173,16 +174,16 @@ struct LifecycleWire {
 #[serde(rename_all = "snake_case")]
 enum TerminalWire {
     Passed,
-    Failed(#[serde(deserialize_with = "decode::deserialize_vec")] Vec<String>),
+    Failed(#[serde(deserialize_with = "decode::deserialize_vec")] Vec<decode::FallibleString>),
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum TerminalCauseWire {
     Passed,
-    Failed(#[serde(deserialize_with = "decode::deserialize_vec")] Vec<String>),
+    Failed(#[serde(deserialize_with = "decode::deserialize_vec")] Vec<decode::FallibleString>),
     BudgetExhausted,
-    BackendCrash(String),
+    BackendCrash(decode::FallibleString),
     OperatorStop,
 }
 
@@ -193,7 +194,7 @@ struct BranchWire {
     base_schedule: Vec<u8>,
     frontier: u64,
     #[serde(deserialize_with = "decode::deserialize_vec")]
-    decisions: Vec<Decision>,
+    decisions: Vec<decision_wire::DecisionWire>,
     seed: Option<[u8; 32]>,
 }
 
@@ -203,7 +204,7 @@ struct RecordedControlWire {
     #[serde(deserialize_with = "decode::deserialize_vec")]
     configuration_schedule: Vec<u8>,
     #[serde(deserialize_with = "decode::deserialize_vec")]
-    node_times: Vec<(String, u64)>,
+    node_times: Vec<(decode::FallibleString, u64)>,
     #[serde(deserialize_with = "decode::deserialize_vec")]
     control: Vec<ControlOperation>,
 }
@@ -211,7 +212,7 @@ struct RecordedControlWire {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SelectableCatalogWire {
-    node: String,
+    node: decode::FallibleString,
     #[serde(deserialize_with = "decode::deserialize_selectable_catalog_plan")]
     plan: Vec<u8>,
 }
@@ -380,7 +381,7 @@ pub(super) fn prepare_exact_checkpoint_set_with_boundary(
     for target in &manifest.targets {
         boundary()?;
         let node = NodeId {
-            name: target.node.clone(),
+            name: target.node.to_string(),
         };
         let snapshot = objects
             .snapshots
@@ -733,10 +734,10 @@ fn load_exact_checkpoint_set_with_boundary(
     .map_err(|error| loop_factory_error(format!("decode fault continuation: {error}")))?;
 
     let mut targets = BTreeMap::new();
-    for target in &manifest.targets {
+    for target in manifest.targets {
         boundary()?;
         let node = NodeId {
-            name: target.node.clone(),
+            name: target.node.into_string(),
         };
         let snapshot = ExactSnapshotHandle::from_canonical_bytes_with_limit(
             &read_object(
@@ -749,10 +750,7 @@ fn load_exact_checkpoint_set_with_boundary(
             limits.fat_checkpoint_bytes,
         )
         .map_err(|error| {
-            loop_factory_error(format!(
-                "decode QEMU snapshot for `{}`: {error}",
-                target.node
-            ))
+            loop_factory_error(format!("decode QEMU snapshot for `{}`: {error}", node.name))
         })?;
         let restored = ProductionVmExactCheckpointTarget {
             configuration: configuration.clone(),
@@ -766,17 +764,17 @@ fn load_exact_checkpoint_set_with_boundary(
                 source: ProductionCheckpointArtifactSource::ChunkStore(object_directory.clone()),
                 identity: target.overlay.identity,
                 length: target.overlay.length,
-                chunks: target.overlay.chunks.clone(),
+                chunks: target.overlay.chunks,
                 sparse: target.overlay.sparse,
-                extents: target.overlay.extents.clone(),
+                extents: target.overlay.extents,
             },
             vmstate_artifact: ProductionCheckpointArtifact {
                 source: ProductionCheckpointArtifactSource::ChunkStore(object_directory.clone()),
                 identity: target.vmstate.identity,
                 length: target.vmstate.length,
-                chunks: target.vmstate.chunks.clone(),
+                chunks: target.vmstate.chunks,
                 sparse: target.vmstate.sparse,
-                extents: target.vmstate.extents.clone(),
+                extents: target.vmstate.extents,
             },
             manifest_identity: target.manifest_identity,
         };
@@ -795,9 +793,9 @@ fn load_exact_checkpoint_set_with_boundary(
             ));
         }
     }
-    let node_generations = decode_generations(&manifest.node_generations)?;
+    let node_generations = decode_generations(manifest.node_generations)?;
     boundary()?;
-    let node_service_states = decode_service_states(&manifest.node_service_states)?;
+    let node_service_states = decode_service_states(manifest.node_service_states)?;
     validate_restored_node_sets(source, &targets, &node_generations, &node_service_states)?;
     let expected_selectable_nodes = source
         .world()
@@ -1283,7 +1281,7 @@ fn enforce_persist_limits(
     }
     for target in &manifest.targets {
         let node = NodeId {
-            name: target.node.clone(),
+            name: target.node.to_string(),
         };
         let snapshot = objects
             .snapshots
@@ -1398,7 +1396,7 @@ fn authenticate_existing_publication_with_boundary(
     for target in &expected.targets {
         boundary()?;
         let node = NodeId {
-            name: target.node.clone(),
+            name: target.node.to_string(),
         };
         let snapshot = objects
             .snapshots
@@ -1464,7 +1462,7 @@ fn install_persisted_artifact_paths(
         let manifest_target = manifest
             .targets
             .iter()
-            .find(|candidate| candidate.node == node.name)
+            .find(|candidate| candidate.node.as_str() == node.name)
             .ok_or_else(|| store_error("published closure target disappeared"))?;
         target.overlay_artifact = ProductionCheckpointArtifact {
             source: ProductionCheckpointArtifactSource::ChunkStore(object_directory.to_path_buf()),
@@ -1495,16 +1493,26 @@ fn encode_lifecycle(
             .as_ref()
             .map(|terminal| match terminal {
                 QuantumTerminalVerdict::Passed => TerminalWire::Passed,
-                QuantumTerminalVerdict::Failed(failures) => TerminalWire::Failed(failures.clone()),
+                QuantumTerminalVerdict::Failed(failures) => TerminalWire::Failed(
+                    failures
+                        .iter()
+                        .cloned()
+                        .map(decode::FallibleString::new)
+                        .collect(),
+                ),
             }),
         terminal_cause: checkpoint.terminal_cause.as_ref().map(|cause| match cause {
             CheckpointTerminalCause::Passed => TerminalCauseWire::Passed,
-            CheckpointTerminalCause::Failed(failures) => {
-                TerminalCauseWire::Failed(failures.clone())
-            }
+            CheckpointTerminalCause::Failed(failures) => TerminalCauseWire::Failed(
+                failures
+                    .iter()
+                    .cloned()
+                    .map(decode::FallibleString::new)
+                    .collect(),
+            ),
             CheckpointTerminalCause::BudgetExhausted => TerminalCauseWire::BudgetExhausted,
             CheckpointTerminalCause::BackendCrash(detail) => {
-                TerminalCauseWire::BackendCrash(detail.clone())
+                TerminalCauseWire::BackendCrash(decode::FallibleString::new(detail.clone()))
             }
             CheckpointTerminalCause::OperatorStop => TerminalCauseWire::OperatorStop,
         }),
@@ -1512,7 +1520,11 @@ fn encode_lifecycle(
         branch: checkpoint.branch.as_ref().map(|branch| BranchWire {
             base_schedule: branch.base.schedule.to_compact_binary(),
             frontier: branch.frontier.ticks,
-            decisions: branch.decisions.clone(),
+            decisions: branch
+                .decisions
+                .iter()
+                .map(decision_wire::DecisionWire::from)
+                .collect(),
             seed: branch.seed.map(Seed::bytes),
         }),
         recorded_controls: checkpoint
@@ -1523,7 +1535,9 @@ fn encode_lifecycle(
                 node_times: record
                     .node_times
                     .iter()
-                    .map(|(node, time)| (node.name.clone(), time.ticks))
+                    .map(|(node, time)| {
+                        (decode::FallibleString::new(node.name.clone()), time.ticks)
+                    })
                     .collect(),
                 control: record.control.clone(),
             })
@@ -1534,7 +1548,7 @@ fn encode_lifecycle(
             .map(|(node, plan)| {
                 plan.encode()
                     .map(|bytes| SelectableCatalogWire {
-                        node: node.name.clone(),
+                        node: decode::FallibleString::new(node.name.clone()),
                         plan: bytes,
                     })
                     .map_err(|error| {
@@ -1567,11 +1581,8 @@ fn decode_lifecycle(
     scenario: &ScenarioDef,
     limits: FaultResourceLimits,
 ) -> Result<DecodedLifecycle, LifecycleApiError> {
-    let _budget = decode::DecodeBudgetGuard::enter(limits);
-    let wire: LifecycleWire = ciborium::de::from_reader(bytes).map_err(|error| {
-        decode::map_decode_resource_error(&error)
-            .unwrap_or_else(|| loop_factory_error("decode exact lifecycle continuation"))
-    })?;
+    let wire: LifecycleWire =
+        decode::decode_cbor_with_limits(bytes, limits, "decode exact lifecycle continuation")?;
     let canonical = {
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(&wire, &mut encoded)
@@ -1585,13 +1596,25 @@ fn decode_lifecycle(
     }
     let terminal = wire.terminal.map(|terminal| match terminal {
         TerminalWire::Passed => QuantumTerminalVerdict::Passed,
-        TerminalWire::Failed(failures) => QuantumTerminalVerdict::Failed(failures),
+        TerminalWire::Failed(failures) => QuantumTerminalVerdict::Failed(
+            failures
+                .into_iter()
+                .map(decode::FallibleString::into_string)
+                .collect(),
+        ),
     });
     let terminal_cause = wire.terminal_cause.map(|cause| match cause {
         TerminalCauseWire::Passed => CheckpointTerminalCause::Passed,
-        TerminalCauseWire::Failed(failures) => CheckpointTerminalCause::Failed(failures),
+        TerminalCauseWire::Failed(failures) => CheckpointTerminalCause::Failed(
+            failures
+                .into_iter()
+                .map(decode::FallibleString::into_string)
+                .collect(),
+        ),
         TerminalCauseWire::BudgetExhausted => CheckpointTerminalCause::BudgetExhausted,
-        TerminalCauseWire::BackendCrash(detail) => CheckpointTerminalCause::BackendCrash(detail),
+        TerminalCauseWire::BackendCrash(detail) => {
+            CheckpointTerminalCause::BackendCrash(detail.into_string())
+        }
         TerminalCauseWire::OperatorStop => CheckpointTerminalCause::OperatorStop,
     });
     if !terminal_cause_matches_verdict(terminal_cause.as_ref(), terminal.as_ref()) {
@@ -1615,7 +1638,11 @@ fn decode_lifecycle(
                     frontier: VirtualTime {
                         ticks: branch.frontier,
                     },
-                    decisions: branch.decisions,
+                    decisions: branch
+                        .decisions
+                        .into_iter()
+                        .map(decision_wire::DecisionWire::into_decision)
+                        .collect(),
                     seed: branch.seed.map(Seed::from_bytes),
                 })
             },
@@ -1644,7 +1671,14 @@ fn decode_lifecycle(
             node_times: record
                 .node_times
                 .into_iter()
-                .map(|(name, ticks)| (NodeId { name }, VirtualTime { ticks }))
+                .map(|(name, ticks)| {
+                    (
+                        NodeId {
+                            name: name.into_string(),
+                        },
+                        VirtualTime { ticks },
+                    )
+                })
                 .collect(),
             control: record.control,
         });
@@ -1660,7 +1694,7 @@ fn decode_lifecycle(
     }
     let mut selectable_catalog_plans = BTreeMap::new();
     for entry in wire.selectable_catalog_plans {
-        let name = entry.node;
+        let name = entry.node.into_string();
         let plan =
             crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::decode(&entry.plan)
                 .map_err(|error| {
@@ -1742,7 +1776,7 @@ fn manifest_and_objects_with_boundary(
         let snapshot = hash_bytes_with_boundary(&bytes, boundary)?;
         snapshots.insert(node.clone(), bytes);
         targets.push(TargetManifest {
-            node: node.name.clone(),
+            node: decode::FallibleString::new(node.name.clone()),
             immutable_backing: target.immutable_backing,
             counter: target.counter,
             scheduler_time: target.scheduler_time.ticks,
@@ -1772,12 +1806,17 @@ fn manifest_and_objects_with_boundary(
         node_generations: checkpoint
             .node_generations
             .iter()
-            .map(|(node, generation)| (node.name.clone(), *generation))
+            .map(|(node, generation)| (decode::FallibleString::new(node.name.clone()), *generation))
             .collect(),
         node_service_states: checkpoint
             .node_service_states
             .iter()
-            .map(|(node, state)| (node.name.clone(), service_state_tag(*state)))
+            .map(|(node, state)| {
+                (
+                    decode::FallibleString::new(node.name.clone()),
+                    service_state_tag(*state),
+                )
+            })
             .collect(),
         identity: ContentHash::default(),
     };
@@ -3080,12 +3119,17 @@ fn hash_bytes_with_lifecycle_boundary(
 }
 
 fn decode_generations(
-    values: &[(String, u64)],
+    values: Vec<(decode::FallibleString, u64)>,
 ) -> Result<BTreeMap<NodeId, u64>, LifecycleApiError> {
     let mut decoded = BTreeMap::new();
     for (node, generation) in values {
         if decoded
-            .insert(NodeId { name: node.clone() }, *generation)
+            .insert(
+                NodeId {
+                    name: node.into_string(),
+                },
+                generation,
+            )
             .is_some()
         {
             return Err(loop_factory_error("duplicate checkpoint node generation"));
@@ -3095,7 +3139,7 @@ fn decode_generations(
 }
 
 fn decode_service_states(
-    values: &[(String, u8)],
+    values: Vec<(decode::FallibleString, u8)>,
 ) -> Result<BTreeMap<NodeId, ProductionNodeServiceState>, LifecycleApiError> {
     let mut decoded = BTreeMap::new();
     for (node, state) in values {
@@ -3106,7 +3150,12 @@ fn decode_service_states(
             _ => return Err(loop_factory_error("invalid checkpoint node service state")),
         };
         if decoded
-            .insert(NodeId { name: node.clone() }, state)
+            .insert(
+                NodeId {
+                    name: node.into_string(),
+                },
+                state,
+            )
             .is_some()
         {
             return Err(loop_factory_error(
