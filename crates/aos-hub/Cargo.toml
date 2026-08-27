@@ -78,7 +78,6 @@ tower = { workspace = true }
 http = { workspace = true }
 futures = { workspace = true }
 http-body-util = { workspace = true }
-sqlx = { workspace = true, features = ["postgres", "mysql"] }
 
 [[bin]]
 name = "aos-hub"
