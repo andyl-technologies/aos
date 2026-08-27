@@ -54,19 +54,8 @@ in
     buildDeps =
       if isDarwin
       then [
-        gnumake
-        pkg-config
-        bison
-        flex
-        perl
-        python3
-        llvm
-        buildPackages.tcl
         docbook-xml
         docbook-xsl
-        gettext
-        libxml2
-        libxslt
       ]
       else [
         gnumake
@@ -90,6 +79,7 @@ in
         bison
         flex
         coreutils
+        pkg-config
         tar
         curl
         gettext
@@ -149,6 +139,19 @@ in
         script =
           if isDarwin
           then ''
+            # Build drivers must execute on Linux without adding their native
+            # headers, libraries, or pkg-config files to the target search
+            # environment. Reference only their executables here; target
+            # counterparts remain runtime dependencies for installed PGXS.
+            export BISON=${buildPackages.bison}/bin/bison
+            export FLEX=${buildPackages.flex}/bin/flex
+            export MSGFMT=${buildPackages.gettext}/bin/msgfmt
+            export MSGMERGE=${buildPackages.gettext}/bin/msgmerge
+            export PKG_CONFIG=${buildPackages.pkg-config}/bin/pkg-config
+            export XGETTEXT=${buildPackages.gettext}/bin/xgettext
+            export XMLLINT=${buildPackages.libxml2}/bin/xmllint
+            export XSLTPROC=${buildPackages.libxslt}/bin/xsltproc
+
             # PostgreSQL needs native LLVM utilities to generate bitcode, but
             # must compile and link against the Darwin LLVM headers and dylib.
             mkdir -p .aos-native-tools
@@ -250,6 +253,8 @@ in
               -e "s|CC=$CC|CC=${llvm}/bin/clang|g" \
               -e "s|CXX=$CXX|CXX=${llvm}/bin/clang++|g" \
               -e 's|${buildPackages.llvm}|${llvm}|g' \
+              -e 's|${buildPackages.gettext}|${gettext}|g' \
+              -e 's|${buildPackages.pkg-config}|${pkg-config}|g' \
               -e 's|${buildPackages.perl}|${perl}|g' \
               -e 's|${buildPackages.python3}|${python3}|g' \
               -e 's|${buildPackages.tcl}|${tcl}|g' \
@@ -312,10 +317,16 @@ in
       }
       {
         name = "build";
-        script = ''
-          export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
-          make -j$NIX_BUILD_CORES world
-        '';
+        script =
+          if isDarwin
+          then ''
+            export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
+            ${buildPackages.gnumake}/bin/make -j$NIX_BUILD_CORES world
+          ''
+          else ''
+            export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
+            make -j$NIX_BUILD_CORES world
+          '';
       }
       {
         name = "install";
@@ -323,7 +334,7 @@ in
           if isDarwin
           then ''
             export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
-            make install-world
+            ${buildPackages.gnumake}/bin/make install-world
             test -f "$out/share/doc/html/index.html"
             test -f "$out/share/man/man1/postgres.1"
             test -n "$(find "$out/share/locale" -name '*.mo' -print -quit)"
@@ -343,6 +354,7 @@ in
               -e "s|^FLEX = .*|FLEX = ${flex}/bin/flex|" \
               -e "s|^MSGFMT  = .*|MSGFMT  = ${gettext}/bin/msgfmt|" \
               -e "s|^MSGMERGE = .*|MSGMERGE = ${gettext}/bin/msgmerge|" \
+              -e "s|^PKG_CONFIG[[:space:]]*= .*|PKG_CONFIG = ${pkg-config}/bin/pkg-config|" \
               -e "s|^TAR[[:space:]]*= .*|TAR = ${tar}/bin/tar|" \
               -e "s|^TCLSH[[:space:]]*= .*|TCLSH = ${tcl}/bin/tclsh9.0|" \
               -e "s|^XGETTEXT = .*|XGETTEXT = ${gettext}/bin/xgettext|" \
