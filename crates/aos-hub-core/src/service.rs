@@ -17038,6 +17038,9 @@ impl RpcService {
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
+        if let Err(error) = self.topology_probes.wake_controller().await {
+            tracing::warn!(error = %format!("{error:#}"), "waking write-authority controller");
+        }
         Ok(response)
     }
 
@@ -17198,6 +17201,9 @@ impl RpcService {
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
+        if let Err(error) = self.topology_probes.wake_controller().await {
+            tracing::warn!(error = %format!("{error:#}"), "waking write-authority controller");
+        }
         Ok(response)
     }
 
