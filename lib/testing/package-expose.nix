@@ -1761,7 +1761,7 @@ in
           grep -q 'WantedBy=aos-pkg-expose-smoke.target' "$unit"
           grep -q 'After=network.target aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' "$unit"
           grep -q 'Requires=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' "$unit"
-          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2eexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$unit"
+          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2eexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$unit"
           grep -q "RootDirectory=$payload" "$unit"
           grep -q 'MountAPIVFS=true' "$unit"
           grep -q 'ProtectSystem=strict' "$unit"
@@ -1945,7 +1945,7 @@ in
           grep -q '"expose-smoke.service"' "$manifest"
           grep -q '"var-lib-exposesmoke.mount"' "$manifest"
           grep -q '"modules":\["br_netfilter"\]' "$manifest"
-          grep -q '"landlock":{"abi":4,"fs":{"readOnly":\["/"\],"readWrite":\["/tmp","/var/tmp","/var/lib/aos-pkg-expose-smoke"\]}' \
+          grep -q '"landlock":{"abi":4,"fs":{"readOnly":\["/"\],"readWrite":\["/tmp","/var/tmp","/dev/null","/var/lib/aos-pkg-expose-smoke"\]}' \
             "$policy"
           grep -q '"ebpf":{"hooks":\["socket_bind","socket_connect"\],"identity":"aos.expose-smoke","tcp":{"bind":\[\],"connect":\[\]}}' \
             "$policy"
@@ -2010,7 +2010,7 @@ in
           grep -q 'Description=RFC-0001 expose minimal service' "$minimal_unit"
           grep -q "RootDirectory=$minimalPayload" "$minimal_unit"
           grep -q 'Slice=aos-pkg-expose-minimal.slice' "$minimal_unit"
-          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dminimal_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-minimal -- ${pkgs.bash}/bin/bash -c true' \
+          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dminimal_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-minimal -- ${pkgs.bash}/bin/bash -c true' \
             "$minimal_unit"
           grep -q 'PrivateNetwork=true' "$minimal_unit"
           grep -q 'PrivateDevices=true' "$minimal_unit"
@@ -2178,8 +2178,8 @@ in
           reset_unit="$landlockExecResetExposePath/units/expose-smoke-landlock-reset.service"
           grep -qx 'ExecStart=' "$reset_unit"
           grep -qx 'ExecStartPre=' "$reset_unit"
-          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$reset_unit"
-          grep -q 'ExecStartPre=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$reset_unit"
+          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$reset_unit"
+          grep -q 'ExecStartPre=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$reset_unit"
           test "$socketMissingTcpBindRejected" = ok
           test "$socketListenStreamsMissingTcpBindRejected" = ok
           test "$socketListenStreamResetAccepted" = ok
@@ -2283,9 +2283,9 @@ in
           grep -q 'Slice=aos-pkg-expose-smoke.slice' "$private_outbound_unit"
           grep -q 'PrivateNetwork=false' "$private_outbound_unit"
           grep -q 'NetworkNamespacePath=/run/netns/aos-pkg-expose-smoke' "$private_outbound_unit"
-          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
+          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
             "$private_outbound_unit"
-          grep -q 'ExecReload=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
+          grep -q 'ExecReload=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
             "$private_outbound_unit"
           grep -q 'aos-landlock' "$private_outbound_unit"
           grep -q 'Wants=aos-pkg-expose-smoke.slice expose-smoke-private-outbound.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' \
@@ -2380,11 +2380,11 @@ in
           test -f "$host_path_without_prepare_unit"
           test -f "$host_path_without_prepare_policy"
           grep -q 'BindPaths=/srv/expose-smoke-rw' "$host_path_without_prepare_unit"
-          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --fs-rw /srv/expose-smoke-rw -- ${pkgs.bash}/bin/bash -c true' \
+          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-smoke --fs-rw /srv/expose-smoke-rw -- ${pkgs.bash}/bin/bash -c true' \
             "$host_path_without_prepare_unit"
           grep -q '"fs":{"readOnly":\[\],"readWrite":\["/srv/expose-smoke-rw"\]}' \
             "$host_path_without_prepare_policy"
-          grep -q '"readWrite":\["/tmp","/var/tmp","/var/lib/aos-pkg-expose-smoke","/srv/expose-smoke-rw"\]' \
+          grep -q '"readWrite":\["/tmp","/var/tmp","/dev/null","/var/lib/aos-pkg-expose-smoke","/srv/expose-smoke-rw"\]' \
             "$host_path_without_prepare_policy"
           test ! -f "$hostPathWithoutPrepareExposePath/units/aos-pkg-expose-smoke-host-paths.service"
           if grep -q 'aos-pkg-expose-smoke-host-paths.service' "$host_path_without_prepare_target"; then

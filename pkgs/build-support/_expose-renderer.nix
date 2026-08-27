@@ -1290,7 +1290,10 @@ in rec {
     landlockFsEnabled = !rootEquivalent;
     landlockEnabled = landlockTcpEnabled || landlockFsEnabled;
     landlockDefaultReadOnlyPaths = ["/"];
-    landlockDefaultReadWritePaths = ["/tmp" "/var/tmp"];
+    # Service helpers and payloads conventionally use /dev/null for quiet
+    # probes and detached standard streams. Grant that device node itself,
+    # never its parent directory.
+    landlockDefaultReadWritePaths = ["/tmp" "/var/tmp" "/dev/null"];
     readOnlyHostPaths = builtins.map (hostPath: hostPath.path) (
       builtins.filter (hostPath: hostPath.mode == "read-only") hostPaths
     );

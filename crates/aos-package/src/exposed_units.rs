@@ -1793,7 +1793,11 @@ fn expected_landlock_fs(permissions: &PermissionsMeta, state_paths: &[String]) -
         };
     }
 
-    let mut read_write = vec!["/tmp".to_string(), "/var/tmp".to_string()];
+    let mut read_write = vec![
+        "/tmp".to_string(),
+        "/var/tmp".to_string(),
+        "/dev/null".to_string(),
+    ];
     for path in state_paths {
         if !read_write.contains(path) {
             read_write.push(path.clone());
@@ -4068,7 +4072,7 @@ mod tests {
             "web",
             root_hash,
             &root_hash_signature,
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web",
             "/bin/true",
         );
         let unit_text = format!(
@@ -4101,7 +4105,7 @@ mod tests {
             "web",
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             &root_hash_signature,
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web",
             "/bin/true",
         );
         let unit_text = format!(
@@ -4138,7 +4142,7 @@ mod tests {
             "web",
             root_hash,
             &root_hash_signature,
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web",
             "/bin/true",
         );
         let unit_text = format!(
@@ -4538,7 +4542,7 @@ mod tests {
 
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web --tcp-connect 443",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web --tcp-connect 443",
             "/bin/true",
         );
         write_service_unit(&installed, &format!("[Service]\nExecStart={exec_start}\n"));
@@ -4624,7 +4628,7 @@ mod tests {
         write_network_policy_file(&installed, &[], &[443]);
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web --tcp-connect 443",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web --tcp-connect 443",
             "/bin/true",
         );
         write_service_unit(
@@ -4684,7 +4688,7 @@ mod tests {
         write_network_policy_file(&installed, &[], &[]);
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web",
             "/bin/true",
         );
         write_service_unit(&installed, &format!("[Service]\nExecStart={exec_start}\n"));
@@ -4739,7 +4743,7 @@ mod tests {
         write_network_policy_file(&installed, &[], &[]);
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web",
             "|/bin/true",
         );
         write_service_unit(&installed, &format!("[Service]\nExecStart={exec_start}\n"));
@@ -4766,7 +4770,7 @@ mod tests {
         write_network_policy_file(&installed, &[], &[]);
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web",
             "true",
         );
         write_service_unit(&installed, &format!("[Service]\nExecStart={exec_start}\n"));
@@ -4794,12 +4798,12 @@ mod tests {
         write_network_policy_file(&installed, &[], &[443]);
         let exec_start_pre = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web --tcp-connect 443",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web --tcp-connect 443",
             "/bin/true",
         );
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web --tcp-connect 443",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web --tcp-connect 443",
             "/bin/true",
         );
         write_service_unit(
@@ -4825,7 +4829,7 @@ mod tests {
         write_network_policy_file(&installed, &[], &[]);
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web",
             "/bin/true",
         );
         write_service_unit(&installed, &format!("[Service]\nExecStart={exec_start}\n"));
@@ -5109,7 +5113,7 @@ mod tests {
         let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web",
             "/bin/true",
         );
         std::fs::write(
@@ -5152,7 +5156,7 @@ mod tests {
 
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web-worker --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web-worker --fs-rw /var/lib/aos-pkg-web",
             "/bin/true",
         );
         write_service_unit(&installed, &format!("[Service]\nExecStart={exec_start}\n"));
@@ -5275,7 +5279,7 @@ mod tests {
         write_network_policy_file(&installed, &[], &[]);
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-ro /srv/public --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web --fs-rw /srv/data",
+            "--require-abi 4 --fs-ro / --fs-ro /srv/public --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web --fs-rw /srv/data",
             "/bin/true",
         );
         write_service_unit(&installed, &format!("[Service]\nExecStart={exec_start}\n"));

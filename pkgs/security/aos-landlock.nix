@@ -55,6 +55,11 @@ mkDerivation {
           -- /bin/sh -c 'printf updated > /tmp/aos-landlock-exact-file'
         test "$(cat /tmp/aos-landlock-exact-file)" = updated
 
+        aos-landlock --require-abi 4 \
+          --fs-ro / \
+          --fs-rw /dev/null \
+          -- /bin/sh -c 'printf quiet > /dev/null'
+
         if aos-landlock --require-abi 4 \
           --fs-ro / \
           --fs-rw /tmp/aos-landlock-allow \
