@@ -57,7 +57,21 @@ in
             request="$2"
             response="$3"
             {
-              printf '%s\r\n' '{"execute":"qmp_capabilities"}'
+              printf '%s\r\n' '{"execute":"qmp_capabilities","arguments":{"enable":["oob"]}}'
+              sleep 0.1
+              printf '%s\r\n' "$request"
+              sleep 0.2
+            } | socat -T 3 - "UNIX-CONNECT:$socket" > "$response" 2> "$response.err" || true
+          }
+
+          qmp_pair() {
+            socket="$1"
+            request="$2"
+            response="$3"
+            {
+              printf '%s\r\n' '{"execute":"qmp_capabilities","arguments":{"enable":["oob"]}}'
+              sleep 0.1
+              printf '%s\r\n' "$request"
               sleep 0.1
               printf '%s\r\n' "$request"
               sleep 0.2
@@ -91,6 +105,11 @@ in
             "$out/stock-aio-inventory.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-aio-inventory.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible AIO inventory command"
+          qmp "$stock_socket" \
+            '{"exec-oob":"query-crucible-hot-fork-bottom-half-inventory"}' \
+            "$out/stock-bottom-half-inventory.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-bottom-half-inventory.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible bottom-half inventory command"
           qmp "$stock_socket" \
             '{"execute":"query-crucible-hot-fork-mutex-inventory"}' \
             "$out/stock-mutex-inventory.json"
@@ -345,6 +364,86 @@ in
           ' "$out/aio-inventory-2.json" >/dev/null \
             || { cat "$out/aio-inventory-1.json" >&2; cat "$out/aio-inventory-2.json" >&2; fail "QEMU AIO inventory changed without a context transition"; }
 
+          qmp_pair "$patched_socket" \
+            '{"exec-oob":"query-crucible-hot-fork-bottom-half-inventory"}' \
+            "$out/bottom-half-inventory.json"
+          jq -e -s --slurpfile aio "$out/aio-inventory-1.json" '
+            [.[] | select(has("return"))][-1].return as $report |
+            ($aio | map(select(has("return"))) | .[-1].return) as $aio_report |
+            ($report | keys | sort) == [
+              "active-callbacks",
+              "bottom-half-count",
+              "bottom-halves",
+              "complete",
+              "deleted-bottom-halves",
+              "generation",
+              "overflowed",
+              "pending-bottom-halves",
+              "scheduled-bottom-halves",
+              "schema-version",
+              "stable"
+            ] and
+            $report."schema-version" == 1 and
+            ($report.generation | type) == "number" and
+            ($report.complete | type) == "boolean" and
+            ($report.overflowed | type) == "boolean" and
+            ($report.stable | type) == "boolean" and
+            ($report."bottom-halves" | type) == "array" and
+            ($report."bottom-halves" | length) > 0 and
+            ($report."bottom-halves" | length) <= 65536 and
+            ($report."bottom-halves" | length) == $report."bottom-half-count" and
+            ([ $report."bottom-halves"[]."bottom-half-id" ] ==
+             ([ $report."bottom-halves"[]."bottom-half-id" ] | sort)) and
+            ([ $report."bottom-halves"[]."bottom-half-id" ] | unique | length) ==
+              ($report."bottom-halves" | length) and
+            all($report."bottom-halves"[];
+              (. | keys | sort) == [
+                "active-callbacks",
+                "bottom-half-id",
+                "context-id",
+                "deleted",
+                "idle",
+                "name",
+                "name-valid",
+                "oneshot",
+                "pending",
+                "scheduled"
+              ] and
+              (."bottom-half-id" | type) == "number" and ."bottom-half-id" > 0 and
+              (."context-id" | type) == "number" and ."context-id" > 0 and
+              (.name | type) == "string" and (.name | length) > 0 and
+              (.name | length) <= 128 and
+              (."name-valid" | type) == "boolean" and
+              (.pending | type) == "boolean" and
+              (.scheduled | type) == "boolean" and
+              (.deleted | type) == "boolean" and
+              (.oneshot | type) == "boolean" and
+              (.idle | type) == "boolean" and
+              (."active-callbacks" | type) == "number" and
+              ."active-callbacks" >= 0 and
+              (((.scheduled or .idle) | not) or .pending) and
+              (."context-id" as $context_id |
+               any($aio_report.contexts[]; ."context-id" == $context_id))) and
+            ([ $report."bottom-halves"[] | select(.pending) ] | length) ==
+              $report."pending-bottom-halves" and
+            ([ $report."bottom-halves"[] | select(.scheduled) ] | length) ==
+              $report."scheduled-bottom-halves" and
+            ([ $report."bottom-halves"[] | select(.deleted) ] | length) ==
+              $report."deleted-bottom-halves" and
+            (([ $report."bottom-halves"[]."active-callbacks" ] | add) // 0) ==
+              $report."active-callbacks" and
+            $report.complete ==
+              (($report.overflowed | not) and $report.stable and
+               all($report."bottom-halves"[]; ."name-valid"))
+          ' "$out/bottom-half-inventory.json" >/dev/null \
+            || { cat "$out/bottom-half-inventory.json" >&2; fail "QEMU bottom-half inventory was not exact or AioContext-bound"; }
+          jq -e -s '
+            [.[] | select(has("return")) | .return |
+             select(has("bottom-halves"))] as $reports |
+            ($reports | length) == 2 and $reports[0] == $reports[1]
+          ' "$out/bottom-half-inventory.json" >/dev/null \
+            || { cat "$out/bottom-half-inventory.json" >&2; fail "QEMU bottom-half inventory changed without a lifecycle or state transition"; }
+
           qmp "$patched_socket" \
             '{"execute":"query-crucible-hot-fork-mutex-inventory"}' \
             "$out/mutex-inventory-1.json"
@@ -499,7 +598,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0119-crucible-hot-fork-timer-inventory.patch
+          patch=0120-crucible-hot-fork-bottom-half-inventory.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -520,6 +619,12 @@ in
           aio_inventory_stable=true
           aio_contexts_thread_bound=true
           aio_proof_acknowledged=false
+          bottom_half_inventory_schema_version=1
+          bottom_half_inventory_bound=65536
+          bottom_half_inventory_stable=true
+          bottom_half_inventory_exact=true
+          bottom_half_contexts_aio_bound=true
+          bottom_half_proof_acknowledged=false
           mutex_inventory_schema_version=1
           mutex_inventory_bound=65536
           mutex_inventory_stable=true

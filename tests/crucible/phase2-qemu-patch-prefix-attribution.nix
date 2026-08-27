@@ -551,6 +551,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0120-crucible-hot-fork-bottom-half-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

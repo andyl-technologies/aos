@@ -88,6 +88,12 @@ where
         self.vmstate.query_hot_fork_aio_inventory()
     }
 
+    fn query_hot_fork_bottom_half_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkBottomHalfInventory, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_bottom_half_inventory()
+    }
+
     fn query_hot_fork_mutex_inventory(
         &mut self,
     ) -> Result<crate::QmpHotForkMutexInventory, QemuNodeChannelError> {

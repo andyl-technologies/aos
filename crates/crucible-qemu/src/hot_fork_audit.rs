@@ -16,8 +16,8 @@ use thiserror::Error;
 
 use crate::{
     QemuNodeChannelError, QemuNodeError, QemuProcessIdentity, QmpHotForkAioInventory,
-    QmpHotForkMutexInventory, QmpHotForkRcuInventory, QmpHotForkReadiness,
-    QmpHotForkThreadInventory, QmpHotForkTimerInventory,
+    QmpHotForkBottomHalfInventory, QmpHotForkMutexInventory, QmpHotForkRcuInventory,
+    QmpHotForkReadiness, QmpHotForkThreadInventory, QmpHotForkTimerInventory,
 };
 
 /// Maximum threads, descriptors, or mappings retained by one audit.
@@ -152,6 +152,39 @@ impl QemuHotForkProcessInventory {
     }
 }
 
+/// Cohesive QMP-side evidence captured before the matching process inventory.
+pub(crate) struct QemuHotForkQmpInventory {
+    readiness: QmpHotForkReadiness,
+    threads: QmpHotForkThreadInventory,
+    rcu: QmpHotForkRcuInventory,
+    aio: QmpHotForkAioInventory,
+    bottom_halves: QmpHotForkBottomHalfInventory,
+    mutexes: QmpHotForkMutexInventory,
+    timers: QmpHotForkTimerInventory,
+}
+
+impl QemuHotForkQmpInventory {
+    pub(crate) const fn new(
+        readiness: QmpHotForkReadiness,
+        threads: QmpHotForkThreadInventory,
+        rcu: QmpHotForkRcuInventory,
+        aio: QmpHotForkAioInventory,
+        bottom_halves: QmpHotForkBottomHalfInventory,
+        mutexes: QmpHotForkMutexInventory,
+        timers: QmpHotForkTimerInventory,
+    ) -> Self {
+        Self {
+            readiness,
+            threads,
+            rcu,
+            aio,
+            bottom_halves,
+            mutexes,
+            timers,
+        }
+    }
+}
+
 /// Exact QEMU readiness and stable Linux process evidence from one audit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuHotForkAudit {
@@ -159,6 +192,7 @@ pub struct QemuHotForkAudit {
     qemu_threads: QmpHotForkThreadInventory,
     qemu_rcu: QmpHotForkRcuInventory,
     qemu_aio: QmpHotForkAioInventory,
+    qemu_bottom_halves: QmpHotForkBottomHalfInventory,
     qemu_mutexes: QmpHotForkMutexInventory,
     qemu_timers: QmpHotForkTimerInventory,
     process: QemuHotForkProcessInventory,
@@ -167,16 +201,33 @@ pub struct QemuHotForkAudit {
 
 impl QemuHotForkAudit {
     pub(crate) fn new(
-        readiness: QmpHotForkReadiness,
-        qemu_threads: QmpHotForkThreadInventory,
-        qemu_rcu: QmpHotForkRcuInventory,
-        qemu_aio: QmpHotForkAioInventory,
-        qemu_mutexes: QmpHotForkMutexInventory,
-        qemu_timers: QmpHotForkTimerInventory,
+        qmp: QemuHotForkQmpInventory,
         process: QemuHotForkProcessInventory,
     ) -> Result<Self, QemuHotForkAuditError> {
+        let QemuHotForkQmpInventory {
+            readiness,
+            threads: qemu_threads,
+            rcu: qemu_rcu,
+            aio: qemu_aio,
+            bottom_halves: qemu_bottom_halves,
+            mutexes: qemu_mutexes,
+            timers: qemu_timers,
+        } = qmp;
+
+        if !qemu_threads.complete() {
+            return Err(QemuHotForkAuditError::ThreadInventoryIncomplete);
+        }
+        if !qemu_rcu.complete() {
+            return Err(QemuHotForkAuditError::RcuInventoryIncomplete);
+        }
+        if !qemu_aio.complete() {
+            return Err(QemuHotForkAuditError::AioInventoryIncomplete);
+        }
         if !qemu_mutexes.complete() {
             return Err(QemuHotForkAuditError::MutexInventoryIncomplete);
+        }
+        if !qemu_bottom_halves.complete() {
+            return Err(QemuHotForkAuditError::BottomHalfInventoryIncomplete);
         }
         if !qemu_timers.complete() {
             return Err(QemuHotForkAuditError::TimerInventoryIncomplete);
@@ -235,6 +286,18 @@ impl QemuHotForkAudit {
                 });
             }
         }
+        for bottom_half in qemu_bottom_halves.bottom_halves() {
+            if qemu_aio
+                .contexts()
+                .binary_search_by_key(&bottom_half.context_id(), |context| context.context_id())
+                .is_err()
+            {
+                return Err(QemuHotForkAuditError::BottomHalfContextMissing {
+                    bottom_half_id: bottom_half.bottom_half_id(),
+                    context_id: bottom_half.context_id(),
+                });
+            }
+        }
         for mutex in qemu_mutexes.mutexes() {
             let Some(owner_thread_id) = mutex.owner_thread_id() else {
                 continue;
@@ -255,6 +318,7 @@ impl QemuHotForkAudit {
             qemu_threads,
             qemu_rcu,
             qemu_aio,
+            qemu_bottom_halves,
             qemu_mutexes,
             qemu_timers,
             process,
@@ -284,6 +348,12 @@ impl QemuHotForkAudit {
     #[must_use]
     pub const fn qemu_aio(&self) -> &QmpHotForkAioInventory {
         &self.qemu_aio
+    }
+
+    /// Returns QEMU's matching bounded allocated-bottom-half inventory.
+    #[must_use]
+    pub const fn qemu_bottom_halves(&self) -> &QmpHotForkBottomHalfInventory {
+        &self.qemu_bottom_halves
     }
 
     /// Returns QEMU's matching bounded observational mutex ownership inventory.
@@ -332,6 +402,9 @@ pub enum QemuHotForkAuditError {
     /// The QEMU-owned AioContext inventory query failed.
     #[error("QEMU hot-fork AioContext inventory query failed")]
     AioInventory(#[source] QemuNodeChannelError),
+    /// The QEMU-owned allocated-bottom-half inventory query failed.
+    #[error("QEMU hot-fork bottom-half inventory query failed")]
+    BottomHalfInventory(#[source] QemuNodeChannelError),
     /// The QEMU-owned mutex inventory query failed.
     #[error("QEMU hot-fork mutex inventory query failed")]
     MutexInventory(#[source] QemuNodeChannelError),
@@ -353,6 +426,9 @@ pub enum QemuHotForkAuditError {
     /// QEMU's observational AioContext inventory changed around procfs capture.
     #[error("QEMU hot-fork AioContext inventory changed during process inventory")]
     AioInventoryChanged,
+    /// QEMU's observational bottom-half inventory changed around procfs capture.
+    #[error("QEMU hot-fork bottom-half inventory changed during process inventory")]
+    BottomHalfInventoryChanged,
     /// QEMU's observational mutex inventory changed around procfs capture.
     #[error("QEMU hot-fork mutex inventory changed during process inventory")]
     MutexInventoryChanged,
@@ -362,9 +438,21 @@ pub enum QemuHotForkAuditError {
     /// QEMU could not report every live mutex with valid ownership state.
     #[error("QEMU hot-fork mutex inventory is incomplete")]
     MutexInventoryIncomplete,
+    /// QEMU could not report every active thread with structurally valid state.
+    #[error("QEMU hot-fork active-thread inventory is incomplete")]
+    ThreadInventoryIncomplete,
+    /// QEMU could not report every RCU reader with structurally valid state.
+    #[error("QEMU hot-fork RCU inventory is incomplete")]
+    RcuInventoryIncomplete,
+    /// QEMU could not report every AioContext with structurally valid state.
+    #[error("QEMU hot-fork AioContext inventory is incomplete")]
+    AioInventoryIncomplete,
     /// QEMU could not report every live timer with structurally valid state.
     #[error("QEMU hot-fork live-timer inventory is incomplete")]
     TimerInventoryIncomplete,
+    /// QEMU could not report every allocated bottom half with stable valid state.
+    #[error("QEMU hot-fork bottom-half inventory is incomplete")]
+    BottomHalfInventoryIncomplete,
     /// A QEMU-registered thread was absent from the exact procfs inventory.
     #[error("QEMU-registered thread {thread_id} is absent from the process inventory")]
     RegisteredThreadMissing {
@@ -386,6 +474,14 @@ pub enum QemuHotForkAuditError {
         context_id: u64,
         /// Missing operating-system home-thread identifier.
         thread_id: u32,
+    },
+    /// An allocated bottom half named an absent AioContext.
+    #[error("QEMU bottom half {bottom_half_id} names absent AioContext {context_id}")]
+    BottomHalfContextMissing {
+        /// Process-local bottom-half identifier.
+        bottom_half_id: u64,
+        /// Missing process-local AioContext identifier.
+        context_id: u64,
     },
     /// A mutex owner was absent from QEMU's active-thread registry.
     #[error(
@@ -808,6 +904,18 @@ mod tests {
 
     use super::*;
 
+    fn qmp_inventory(
+        readiness: QmpHotForkReadiness,
+        threads: QmpHotForkThreadInventory,
+        rcu: QmpHotForkRcuInventory,
+        aio: QmpHotForkAioInventory,
+        bottom_halves: QmpHotForkBottomHalfInventory,
+        mutexes: QmpHotForkMutexInventory,
+        timers: QmpHotForkTimerInventory,
+    ) -> QemuHotForkQmpInventory {
+        QemuHotForkQmpInventory::new(readiness, threads, rcu, aio, bottom_halves, mutexes, timers)
+    }
+
     #[test]
     fn fixture_inventory_is_sorted_complete_and_classifies_shared_writes() {
         let directory = TempDir::new().expect("inventory fixture");
@@ -918,12 +1026,15 @@ mod tests {
         let readiness =
             QmpHotForkReadiness::from_acknowledged_proofs(7).expect("scripted readiness bitmap");
         let audit = QemuHotForkAudit::new(
-            readiness,
-            QmpHotForkThreadInventory::one_coordinator(10),
-            QmpHotForkRcuInventory::from_reader_ids(&[10]),
-            QmpHotForkAioInventory::one_idle(1, 10),
-            QmpHotForkMutexInventory::one_owned(1, 10),
-            QmpHotForkTimerInventory::empty(),
+            qmp_inventory(
+                readiness,
+                QmpHotForkThreadInventory::one_coordinator(10),
+                QmpHotForkRcuInventory::from_reader_ids(&[10]),
+                QmpHotForkAioInventory::one_idle(1, 10),
+                QmpHotForkBottomHalfInventory::one_idle(1, 1),
+                QmpHotForkMutexInventory::one_owned(1, 10),
+                QmpHotForkTimerInventory::empty(),
+            ),
             process.clone(),
         )
         .expect("registered coordinator should match procfs");
@@ -931,12 +1042,63 @@ mod tests {
 
         assert!(matches!(
             QemuHotForkAudit::new(
-                readiness,
-                QmpHotForkThreadInventory::one_coordinator(10),
-                QmpHotForkRcuInventory::from_reader_ids(&[10]),
-                QmpHotForkAioInventory::one_idle(1, 10),
-                QmpHotForkMutexInventory::incomplete(),
-                QmpHotForkTimerInventory::empty(),
+                qmp_inventory(
+                    readiness,
+                    QmpHotForkThreadInventory::incomplete(),
+                    QmpHotForkRcuInventory::from_reader_ids(&[10]),
+                    QmpHotForkAioInventory::one_idle(1, 10),
+                    QmpHotForkBottomHalfInventory::one_idle(1, 1),
+                    QmpHotForkMutexInventory::one_owned(1, 10),
+                    QmpHotForkTimerInventory::empty(),
+                ),
+                process.clone(),
+            ),
+            Err(QemuHotForkAuditError::ThreadInventoryIncomplete)
+        ));
+
+        assert!(matches!(
+            QemuHotForkAudit::new(
+                qmp_inventory(
+                    readiness,
+                    QmpHotForkThreadInventory::one_coordinator(10),
+                    QmpHotForkRcuInventory::incomplete(),
+                    QmpHotForkAioInventory::one_idle(1, 10),
+                    QmpHotForkBottomHalfInventory::one_idle(1, 1),
+                    QmpHotForkMutexInventory::one_owned(1, 10),
+                    QmpHotForkTimerInventory::empty(),
+                ),
+                process.clone(),
+            ),
+            Err(QemuHotForkAuditError::RcuInventoryIncomplete)
+        ));
+
+        assert!(matches!(
+            QemuHotForkAudit::new(
+                qmp_inventory(
+                    readiness,
+                    QmpHotForkThreadInventory::one_coordinator(10),
+                    QmpHotForkRcuInventory::from_reader_ids(&[10]),
+                    QmpHotForkAioInventory::incomplete(),
+                    QmpHotForkBottomHalfInventory::one_idle(1, 1),
+                    QmpHotForkMutexInventory::one_owned(1, 10),
+                    QmpHotForkTimerInventory::empty(),
+                ),
+                process.clone(),
+            ),
+            Err(QemuHotForkAuditError::AioInventoryIncomplete)
+        ));
+
+        assert!(matches!(
+            QemuHotForkAudit::new(
+                qmp_inventory(
+                    readiness,
+                    QmpHotForkThreadInventory::one_coordinator(10),
+                    QmpHotForkRcuInventory::from_reader_ids(&[10]),
+                    QmpHotForkAioInventory::one_idle(1, 10),
+                    QmpHotForkBottomHalfInventory::one_idle(1, 1),
+                    QmpHotForkMutexInventory::incomplete(),
+                    QmpHotForkTimerInventory::empty(),
+                ),
                 process.clone(),
             ),
             Err(QemuHotForkAuditError::MutexInventoryIncomplete)
@@ -944,12 +1106,15 @@ mod tests {
 
         assert!(matches!(
             QemuHotForkAudit::new(
-                readiness,
-                QmpHotForkThreadInventory::one_coordinator(10),
-                QmpHotForkRcuInventory::from_reader_ids(&[10]),
-                QmpHotForkAioInventory::one_idle(1, 10),
-                QmpHotForkMutexInventory::one_owned(1, 10),
-                QmpHotForkTimerInventory::incomplete(),
+                qmp_inventory(
+                    readiness,
+                    QmpHotForkThreadInventory::one_coordinator(10),
+                    QmpHotForkRcuInventory::from_reader_ids(&[10]),
+                    QmpHotForkAioInventory::one_idle(1, 10),
+                    QmpHotForkBottomHalfInventory::one_idle(1, 1),
+                    QmpHotForkMutexInventory::one_owned(1, 10),
+                    QmpHotForkTimerInventory::incomplete(),
+                ),
                 process.clone(),
             ),
             Err(QemuHotForkAuditError::TimerInventoryIncomplete)
@@ -957,12 +1122,50 @@ mod tests {
 
         assert!(matches!(
             QemuHotForkAudit::new(
-                readiness,
-                QmpHotForkThreadInventory::one_coordinator(10),
-                QmpHotForkRcuInventory::from_reader_ids(&[20]),
-                QmpHotForkAioInventory::one_idle(1, 10),
-                QmpHotForkMutexInventory::one_owned(1, 10),
-                QmpHotForkTimerInventory::empty(),
+                qmp_inventory(
+                    readiness,
+                    QmpHotForkThreadInventory::one_coordinator(10),
+                    QmpHotForkRcuInventory::from_reader_ids(&[10]),
+                    QmpHotForkAioInventory::one_idle(1, 10),
+                    QmpHotForkBottomHalfInventory::incomplete(),
+                    QmpHotForkMutexInventory::one_owned(1, 10),
+                    QmpHotForkTimerInventory::empty(),
+                ),
+                process.clone(),
+            ),
+            Err(QemuHotForkAuditError::BottomHalfInventoryIncomplete)
+        ));
+
+        assert!(matches!(
+            QemuHotForkAudit::new(
+                qmp_inventory(
+                    readiness,
+                    QmpHotForkThreadInventory::one_coordinator(10),
+                    QmpHotForkRcuInventory::from_reader_ids(&[10]),
+                    QmpHotForkAioInventory::one_idle(1, 10),
+                    QmpHotForkBottomHalfInventory::one_idle(9, 2),
+                    QmpHotForkMutexInventory::one_owned(1, 10),
+                    QmpHotForkTimerInventory::empty(),
+                ),
+                process.clone(),
+            ),
+            Err(QemuHotForkAuditError::BottomHalfContextMissing {
+                bottom_half_id: 9,
+                context_id: 2,
+            })
+        ));
+
+        assert!(matches!(
+            QemuHotForkAudit::new(
+                qmp_inventory(
+                    readiness,
+                    QmpHotForkThreadInventory::one_coordinator(10),
+                    QmpHotForkRcuInventory::from_reader_ids(&[20]),
+                    QmpHotForkAioInventory::one_idle(1, 10),
+                    QmpHotForkBottomHalfInventory::one_idle(1, 1),
+                    QmpHotForkMutexInventory::one_owned(1, 10),
+                    QmpHotForkTimerInventory::empty(),
+                ),
                 process.clone(),
             ),
             Err(QemuHotForkAuditError::RcuReaderMissing { thread_id: 20 })
@@ -970,12 +1173,15 @@ mod tests {
 
         assert!(matches!(
             QemuHotForkAudit::new(
-                readiness,
-                QmpHotForkThreadInventory::one_coordinator(10),
-                QmpHotForkRcuInventory::from_reader_ids(&[10]),
-                QmpHotForkAioInventory::one_idle(7, 20),
-                QmpHotForkMutexInventory::one_owned(1, 10),
-                QmpHotForkTimerInventory::empty(),
+                qmp_inventory(
+                    readiness,
+                    QmpHotForkThreadInventory::one_coordinator(10),
+                    QmpHotForkRcuInventory::from_reader_ids(&[10]),
+                    QmpHotForkAioInventory::one_idle(7, 20),
+                    QmpHotForkBottomHalfInventory::one_idle(1, 7),
+                    QmpHotForkMutexInventory::one_owned(1, 10),
+                    QmpHotForkTimerInventory::empty(),
+                ),
                 process.clone(),
             ),
             Err(QemuHotForkAuditError::AioHomeThreadMissing {
@@ -986,12 +1192,15 @@ mod tests {
 
         assert!(matches!(
             QemuHotForkAudit::new(
-                readiness,
-                QmpHotForkThreadInventory::one_coordinator(10),
-                QmpHotForkRcuInventory::from_reader_ids(&[10]),
-                QmpHotForkAioInventory::one_idle(1, 10),
-                QmpHotForkMutexInventory::one_owned(9, 20),
-                QmpHotForkTimerInventory::empty(),
+                qmp_inventory(
+                    readiness,
+                    QmpHotForkThreadInventory::one_coordinator(10),
+                    QmpHotForkRcuInventory::from_reader_ids(&[10]),
+                    QmpHotForkAioInventory::one_idle(1, 10),
+                    QmpHotForkBottomHalfInventory::one_idle(1, 1),
+                    QmpHotForkMutexInventory::one_owned(9, 20),
+                    QmpHotForkTimerInventory::empty(),
+                ),
                 process.clone(),
             ),
             Err(QemuHotForkAuditError::MutexOwnerThreadMissing {
@@ -1002,12 +1211,15 @@ mod tests {
 
         assert!(matches!(
             QemuHotForkAudit::new(
-                readiness,
-                QmpHotForkThreadInventory::one_coordinator(30),
-                QmpHotForkRcuInventory::from_reader_ids(&[30]),
-                QmpHotForkAioInventory::one_idle(1, 30),
-                QmpHotForkMutexInventory::one_owned(1, 30),
-                QmpHotForkTimerInventory::empty(),
+                qmp_inventory(
+                    readiness,
+                    QmpHotForkThreadInventory::one_coordinator(30),
+                    QmpHotForkRcuInventory::from_reader_ids(&[30]),
+                    QmpHotForkAioInventory::one_idle(1, 30),
+                    QmpHotForkBottomHalfInventory::one_idle(1, 1),
+                    QmpHotForkMutexInventory::one_owned(1, 30),
+                    QmpHotForkTimerInventory::empty(),
+                ),
                 process,
             ),
             Err(QemuHotForkAuditError::RegisteredThreadMissing { thread_id: 30 })

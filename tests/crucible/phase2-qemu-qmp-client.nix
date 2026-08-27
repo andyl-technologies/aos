@@ -276,8 +276,10 @@ in
             check_scope=task-level
             related_gates=gate:control-responsive,gate:replay-oracle,gate:content-address
             rust_test=crucible-qemu::qmp
-            commands=qmp_capabilities,snapshot-save,snapshot-load,snapshot-delete,query-jobs,query-crucible-hot-fork-readiness,query-crucible-hot-fork-thread-inventory,query-crucible-hot-fork-rcu-inventory,query-crucible-hot-fork-aio-inventory,query-crucible-hot-fork-mutex-inventory,query-crucible-hot-fork-timer-inventory,quit
-            public_api=connect,savevm,loadvm,delete_snapshot,query_hot_fork_readiness,query_hot_fork_thread_inventory,query_hot_fork_rcu_inventory,query_hot_fork_aio_inventory,query_hot_fork_mutex_inventory,query_hot_fork_timer_inventory,quit
+            commands=qmp_capabilities,snapshot-save,snapshot-load,snapshot-delete,query-jobs,query-crucible-hot-fork-readiness,query-crucible-hot-fork-thread-inventory,query-crucible-hot-fork-rcu-inventory,query-crucible-hot-fork-aio-inventory,query-crucible-hot-fork-bottom-half-inventory,query-crucible-hot-fork-mutex-inventory,query-crucible-hot-fork-timer-inventory,quit
+            public_api=connect,savevm,loadvm,delete_snapshot,query_hot_fork_readiness,query_hot_fork_thread_inventory,query_hot_fork_rcu_inventory,query_hot_fork_aio_inventory,query_hot_fork_bottom_half_inventory,query_hot_fork_mutex_inventory,query_hot_fork_timer_inventory,quit
+            capabilities=oob-required
+            bottom_half_transport=exec-oob
             async_events=skipped-until-return-or-error
             errors=typed-result
             snapshot_tag=checkpoint-content-address-derived

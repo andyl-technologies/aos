@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **116 patches**. This count is checked against
+The carried series contains **117 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -1775,6 +1775,34 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   operation, coordinate `fork(2)`, choose a child clock disposition, or change
   readiness bit 3. Only the future QEMU-owned coordinator may turn this
   inventory into a retained fork proof.
+- **Risk:** F.
+
+### crucible-hot-fork-bottom-half-inventory — expose every allocated QEMUBH
+
+- **Patch:** `0120-crucible-hot-fork-bottom-half-inventory.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4].
+- **Mechanism:** every allocated `QEMUBH` receives a stable process-local
+  identity and a copied bounded diagnostic name. A fixed version-1 QMP query
+  returns at most 65,536 sorted unique entries spanning inert, pending, active,
+  canceled, one-shot, and deferred-deletion instances. Each entry binds the
+  exact owning AioContext and exposes pending, scheduled, idle, deleted,
+  one-shot, and callback-active state. Lifecycle and semantic state transitions
+  advance a monotonic generation and bracket every lock-free state mutation
+  with an in-flight transition count. A report is stable only when no transition
+  is active at either copy boundary and the generation is unchanged. The
+  command permits negotiated QMP OOB execution so the inventory does not create
+  and observe its own one-shot in-band dispatch bottom half.
+- **Micro-test:** strict Rust decoding rejects unknown or additional fields,
+  changed schema, invalid or unsorted identities, missing AioContext bindings,
+  inconsistent scheduled/idle state, inconsistent completeness, and mismatched
+  aggregates. The live patched-QEMU gate requires two stable exact nonempty
+  reports and cross-checks every context against the exact AIO inventory. Stock
+  QEMU must not expose the command.
+- **Inertness:** the query and counters are observational. They do not schedule,
+  cancel, delete, run, drain, or park a bottom half, retain an AIO/BH/timer
+  barrier across another operation, coordinate `fork(2)`, choose a child
+  disposition, or change readiness bit 3. Only the future QEMU-owned
+  coordinator may turn this inventory into a retained fork proof.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

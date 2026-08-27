@@ -41,6 +41,10 @@ pub(super) fn execute_name(value: &Value) -> Option<&str> {
     value.get("execute").and_then(Value::as_str)
 }
 
+pub(super) fn oob_execute_name(value: &Value) -> Option<&str> {
+    value.get("exec-oob").and_then(Value::as_str)
+}
+
 pub(super) fn assert_timeout_budget(timeouts: &[Duration], budget: Duration) {
     assert!(!timeouts.is_empty());
     assert!(
