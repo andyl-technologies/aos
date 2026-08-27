@@ -201,7 +201,7 @@ in {
       # local authenticated registry and select it through public APM before
       # supplying any operator configuration module.
       runtime.fail(
-          f"HOME=/tmp/runtime-publisher USER=root {APM} list --installed "
+          f"HOME=/tmp USER=root {APM} list --system --installed "
           "2>&1 | grep -q '^nginx'"
       )
       runtime.succeed(textwrap.dedent(f"""
@@ -265,8 +265,11 @@ in {
           HOME=/tmp USER=root {APM} update \
             --system --registry runtime-reg
 
-          HOME=/tmp USER=root {APM} install nginx \
-            --system --registry runtime-reg --yes
+          cat > /run/runtime-module-desired.toml <<'EOF'
+          packages = ["nginx", "envoy", "k3s-worker"]
+          EOF
+          HOME=/tmp USER=root {APM} install --system \
+            --from /run/runtime-module-desired.toml --yes
 
       """), timeout=1200)
       installed = runtime.succeed(
