@@ -6,6 +6,7 @@
   autoconf,
   automake,
   libtool,
+  m4,
   perl,
   openssl,
 }: let
@@ -23,7 +24,7 @@ in
     };
 
     # perl provides pod2man, which libtpms uses to build its man pages.
-    buildDeps = [gnumake pkg-config autoconf automake libtool perl];
+    buildDeps = [gnumake pkg-config autoconf automake libtool m4 perl];
     runtimeDeps = [openssl];
     propagatedDeps = [openssl];
 
