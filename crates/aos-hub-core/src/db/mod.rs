@@ -9889,11 +9889,14 @@ impl Database {
         rows.iter().map(row_to_surface_placement).collect()
     }
 
-    /// Lists complete placements eligible to receive one registry publication.
+    /// Lists placements eligible to receive one registry publication or repair.
     ///
     /// Publication eligibility is placement-local: every returned placement has
-    /// a current, validated write capability for its own binding. It is not
-    /// inferred from the surface's single mutable write authority.
+    /// a current, validated write capability for its own binding. A degraded
+    /// placement remains eligible so an exact publication can restore missing
+    /// or corrupt objects; its incomplete observation still keeps reads and
+    /// mutable write authority disabled until a successful scan. Eligibility is
+    /// not inferred from the surface's single mutable write authority.
     ///
     /// # Errors
     ///
@@ -9908,8 +9911,9 @@ impl Database {
                 &format!(
                     "SELECT {PLACEMENT_COLUMNS} FROM surface_placement_effective p
                      WHERE p.registry_id = ?1 AND p.kind = 'complete'
-                       AND p.desired_state = 'active' AND p.state = 'ready'
-                       AND p.completeness = 'complete'
+                       AND p.desired_state = 'active'
+                       AND ((p.state = 'ready' AND p.completeness = 'complete')
+                         OR (p.state = 'degraded' AND p.completeness = 'partial'))
                        AND EXISTS (
                          SELECT 1 FROM surface_placement_write_capabilities capability
                          JOIN binding_write_revisions revision
@@ -30075,6 +30079,99 @@ source_nar_hash = ""
         }
     }
 
+    #[tokio::test]
+    async fn degraded_registry_placement_remains_eligible_for_publication_repair() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db
+            .create_org("publication-repair", "Publication repair")
+            .await
+            .unwrap();
+        let binding_id =
+            create_test_binding(&db, org_id, "publication-repair", "/tmp/publication-repair").await;
+        let registry_id = db
+            .create_managed_registry(org_id, "", "registry", "public", &[], false)
+            .await
+            .unwrap();
+        let mut placement = topology_placement(
+            SurfaceTarget::Registry(registry_id),
+            "canonical",
+            "registry",
+            0,
+        );
+        placement.binding_id = binding_id;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+        let write_generation = create_valid_write_credential(
+            &db,
+            binding_id,
+            "secret://binding/publication-repair/v1",
+        )
+        .await;
+        let write_revision = db
+            .create_binding_write_revision(&NewBindingWriteRevision {
+                binding_id,
+                write_credential_generation: write_generation,
+                writes_supported: true,
+                conditional_writes_supported: false,
+                revision_fingerprint: "publication-repair-write-v1".into(),
+                capability_fingerprint: "publication-repair-writes".into(),
+            })
+            .await
+            .unwrap();
+        db.observe_binding_write_revision(binding_id, write_revision.revision, "valid", None, None)
+            .await
+            .unwrap();
+        db.bind_surface_placement_write_capability(placement.id, write_revision.revision)
+            .await
+            .unwrap();
+
+        let ready = db
+            .observe_surface_placement(placement.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.registry_publication_write_placements(registry_id)
+                .await
+                .unwrap()
+                .iter()
+                .map(|placement| placement.id)
+                .collect::<Vec<_>>(),
+            vec![placement.id]
+        );
+
+        let degraded = db
+            .observe_surface_placement(
+                placement.id,
+                "degraded",
+                "partial",
+                ready.observation_version.unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            db.registry_publication_write_placements(registry_id)
+                .await
+                .unwrap()
+                .iter()
+                .map(|placement| placement.id)
+                .collect::<Vec<_>>(),
+            vec![placement.id]
+        );
+
+        db.observe_surface_placement(
+            placement.id,
+            "syncing",
+            "unknown",
+            degraded.observation_version.unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(db
+            .registry_publication_write_placements(registry_id)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
     #[allow(dead_code)]
     async fn set_test_placement_watermark(
         db: &Database,
@@ -30105,7 +30202,10 @@ source_nar_hash = ""
     #[tokio::test]
     async fn registry_placement_delete_detaches_only_terminal_placement_history() {
         let db = Database::open_in_memory().await.unwrap();
-        let org_id = db.create_org("placement-delete", "Placement delete").await.unwrap();
+        let org_id = db
+            .create_org("placement-delete", "Placement delete")
+            .await
+            .unwrap();
         let binding_id =
             create_test_binding(&db, org_id, "placement-delete", "/tmp/placement-delete").await;
         let registry_id = db
@@ -30218,7 +30318,11 @@ source_nar_hash = ""
             .await
             .unwrap());
         assert!(db.surface_placement(placement.id).await.unwrap().is_none());
-        assert!(db.registry_publication(publication_id).await.unwrap().is_some());
+        assert!(db
+            .registry_publication(publication_id)
+            .await
+            .unwrap()
+            .is_some());
         assert!(db.surface_object(object.id).await.unwrap().is_some());
         assert!(db
             .registry_publication_placement_records(publication_id)
