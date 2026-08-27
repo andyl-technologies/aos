@@ -9201,6 +9201,34 @@ impl Database {
         rows.first().map(row_to_surface_write_authority).transpose()
     }
 
+    /// Lists pending write-authority generations for controller reconciliation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or when `limit` cannot be represented
+    /// by the database parameter type.
+    pub async fn pending_surface_write_authorities(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<SurfaceWriteAuthorityRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        self.backend
+            .query(
+                &format!(
+                    "SELECT {WRITE_AUTHORITY_COLUMNS} FROM surface_write_authorities
+                     WHERE reconciliation_state = 'pending'
+                     ORDER BY updated_at, id LIMIT ?1"
+                ),
+                &vals![i64::try_from(limit)?],
+            )
+            .await?
+            .iter()
+            .map(row_to_surface_write_authority)
+            .collect()
+    }
+
     /// Requests promotion or credential rotation with an authority CAS.
     ///
     /// The candidate may equal the current placement when only the immutable
@@ -30241,6 +30269,10 @@ source_nar_hash = ""
             .await
             .unwrap();
         assert_eq!(pending.reconciliation_state, "pending");
+        assert_eq!(
+            db.pending_surface_write_authorities(1).await.unwrap(),
+            vec![pending.clone()]
+        );
         assert!(
             !db.surface_placement(first.id)
                 .await
@@ -30261,7 +30293,12 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
-        let pending = db
+        assert!(db
+            .pending_surface_write_authorities(1)
+            .await
+            .unwrap()
+            .is_empty());
+        let _pending = db
             .request_surface_write_promotion(
                 restored.id,
                 &restored.incarnation_id,
@@ -30277,13 +30314,16 @@ source_nar_hash = ""
             .retire_binding_write_revision(binding, revision.revision)
             .await
             .is_err());
+        assert_eq!(
+            crate::topology_probe::reconcile_colocated_write_authorities(&db, 1)
+                .await
+                .unwrap(),
+            1
+        );
         let rotated = db
-            .confirm_surface_write_authority(
-                authority.id,
-                pending.resource_version,
-                pending.desired_generation,
-            )
+            .surface_write_authority_by_id(authority.id)
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(
             rotated.observed_binding_write_revision,
