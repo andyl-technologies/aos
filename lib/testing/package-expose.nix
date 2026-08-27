@@ -2440,7 +2440,8 @@ in
           grep -q 'After=.*k3s-preflight.service' "$k3s_worker_unit"
           grep -q 'Wants=network-online.target' "$k3s_worker_unit"
           grep -q 'Environment="PATH=.*${pkgs.k3s}/bin' "$k3s_worker_unit"
-          grep -q 'EnvironmentFile=/etc/aos/packages/k3s-worker/k3s.env' "$k3s_worker_unit"
+          grep -q 'EnvironmentFile=-/etc/aos/packages/k3s-worker/k3s.env' "$k3s_worker_unit"
+          grep -q 'ExecCondition=.*/bin/k3s-k3s-worker-enabled' "$k3s_worker_unit"
           grep -q 'LoadCredential=token' "$k3s_worker_unit"
           grep -q 'LimitNOFILE=1048576' "$k3s_worker_unit"
           grep -q 'LimitNPROC=infinity' "$k3s_worker_unit"
@@ -2449,9 +2450,8 @@ in
           grep -q 'TimeoutStartSec=infinity' "$k3s_worker_unit"
           grep -q 'Restart=always' "$k3s_worker_unit"
           grep -q 'RestartSec=5s' "$k3s_worker_unit"
-          grep -q 'ConditionPathExists=/etc/aos/packages/k3s-worker/k3s.env' "$k3sWorkerExposePath/units/k3s-preflight.service"
-          grep -q 'EnvironmentFile=/etc/aos/packages/k3s-worker/k3s.env' "$k3sWorkerExposePath/units/k3s-preflight.service"
-          grep -q 'ExecCondition=.*/bin/k3s-k3s-worker-enabled' "$k3sWorkerExposePath/units/k3s-preflight.service"
+          grep -q 'EnvironmentFile=-/etc/aos/packages/k3s-worker/k3s.env' "$k3sWorkerExposePath/units/k3s-preflight.service"
+          test "$(grep -c '^ExecCondition=' "$k3sWorkerExposePath/units/k3s-preflight.service" || true)" -eq 0
           # Script-derived Exec directives point at the
           # gen-local `aos-job-scripts/<unit>:<slot>.<index>` materialization
           # (derivation `aos-job-script-<scriptName>`) instead of the legacy
@@ -2507,7 +2507,8 @@ in
             "$k3s_control_plane_unit"
           require_host_unit "k3s control-plane" "$k3s_control_plane_unit"
           grep -q 'Environment="PATH=.*${pkgs.k3s}/bin' "$k3s_control_plane_unit"
-          grep -q 'EnvironmentFile=/etc/aos/packages/k3s-control-plane/k3s.env' "$k3s_control_plane_unit"
+          grep -q 'EnvironmentFile=-/etc/aos/packages/k3s-control-plane/k3s.env' "$k3s_control_plane_unit"
+          grep -q 'ExecCondition=.*/bin/k3s-k3s-control-plane-enabled' "$k3s_control_plane_unit"
           grep -q 'LoadCredential=token' "$k3s_control_plane_unit"
           grep -q 'LimitNOFILE=1048576' "$k3s_control_plane_unit"
           grep -q 'LimitNPROC=infinity' "$k3s_control_plane_unit"
@@ -2533,7 +2534,8 @@ in
           grep -q 'ExecStart=.*/bin/k3s-k3s-combined-start' "$k3s_combined_unit"
           require_host_unit "k3s combined" "$k3s_combined_unit"
           grep -q 'Environment="PATH=.*${pkgs.k3s}/bin' "$k3s_combined_unit"
-          grep -q 'EnvironmentFile=/etc/aos/packages/k3s-combined/k3s.env' "$k3s_combined_unit"
+          grep -q 'EnvironmentFile=-/etc/aos/packages/k3s-combined/k3s.env' "$k3s_combined_unit"
+          grep -q 'ExecCondition=.*/bin/k3s-k3s-combined-enabled' "$k3s_combined_unit"
           grep -q 'LoadCredential=token' "$k3s_combined_unit"
           grep -q 'LimitNOFILE=1048576' "$k3s_combined_unit"
           grep -q 'LimitNPROC=infinity' "$k3s_combined_unit"

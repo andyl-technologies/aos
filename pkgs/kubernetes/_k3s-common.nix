@@ -69,12 +69,14 @@ in {
     "net.bridge.bridge-nf-call-ip6tables" = "1";
   };
 
-  preflightService = role: required: let
-    enabledCheck = pkgs.writeShellScriptBin "k3s-${role}-enabled" ''
+  enabledCheck = role:
+    pkgs.writeShellScriptBin "k3s-${role}-enabled" ''
       set -eu
 
       [ "''${K3S_ENABLED:-false}" = true ]
     '';
+
+  preflightService = role: required: let
     checks =
       lib.concatMapStringsSep "\n" (varName: ''
         : "''${${varName}:?[k3s-preflight] ${role}: ${varName} must be set in /etc/aos/packages/${role}/k3s.env}"
@@ -91,27 +93,21 @@ in {
     wantedBy = ["multi-user.target"];
     before = ["k3s.service"];
 
-    unitConfig = {
-      # No env file → unit goes to "skipped (Condition not met)"
-      # instead of running the script. `is-active` then reports
-      # "inactive", and k3s.service's `Requisite=` refuses to
-      # start. Net effect: a stock image with no operator-supplied
-      # k3s.env stays in `inactive (dead)` cleanly — no script
-      # invocation, no scary journal stack trace, no restart loop.
-      ConditionPathExists = "/etc/aos/packages/${role}/k3s.env";
-    };
-
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
-      EnvironmentFile = "/etc/aos/packages/${role}/k3s.env";
-      ExecCondition = "${enabledCheck}/bin/k3s-${role}-enabled";
+      EnvironmentFile = "-/etc/aos/packages/${role}/k3s.env";
       StandardOutput = "journal+console";
       StandardError = "journal+console";
     };
 
     script = ''
       set -eu
+
+      if [ "''${K3S_ENABLED:-false}" != true ]; then
+        echo "[k3s-preflight] ${role}: disabled, skipping checks"
+        exit 0
+      fi
 
       ${checks}
 

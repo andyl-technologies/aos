@@ -73,6 +73,7 @@ in
   }: let
     stateDirectoryText = builtins.concatStringsSep " " stateDirectories;
     launcher = common.launcher pname command;
+    enabledCheck = common.enabledCheck pname;
     configFields = [
       "K3S_ENABLED"
       "K3S_URL"
@@ -124,7 +125,8 @@ in
             path = common.runtimePath;
             serviceConfig = {
               Type = "notify";
-              EnvironmentFile = "/etc/aos/packages/${pname}/k3s.env";
+              EnvironmentFile = "-/etc/aos/packages/${pname}/k3s.env";
+              ExecCondition = "${enabledCheck}/bin/k3s-${pname}-enabled";
               ExecStart = "${launcher}/bin/k3s-${pname}-start";
               KillMode = "process";
               Delegate = "yes";
