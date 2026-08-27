@@ -181,7 +181,7 @@ in {
       platform_host_input = initial_manifest["inputs"]["host_nix"]
       platform_facts_input = initial_manifest["inputs"]["instance_facts"]
 
-      status = runtime.succeed(f"{APM} config status")
+      status = runtime.succeed(f"{APM} config status 2>&1")
       assert "active runtime modules: empty" in status, status
 
       # Nginx is bundled in the immutable image but deliberately absent from
