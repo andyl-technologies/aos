@@ -77,6 +77,9 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0108-crucible-deterministic-network-kick`](59-deterministic-network-kick.md) | Preserve sim-mode virtio-net transmit and interrupt-notification continuation | Determinism-critical network continuation |
 | [`0109-crucible-control-boundary-node-faults`](60-control-boundary-node-faults.md) | Dispatch halted-node PREPARE and APPLY commands at their exact drained control boundary | Determinism-critical node mutation progress |
 | [`0110-crucible-release-halted-rr-turn`](61-release-halted-rr-turn.md) | Leave an all-halted partial RR turn and commit a cursor-zero handoff for a multi-vCPU guest `PAUSE` | Determinism-critical scheduler progress |
+| [`0111-crucible-accelerator-service-schema`](62-accelerator-service-schema.md) | Admit the typed ratio-valued accelerator capacity field through the closed QEMU schema | Feature-contract correctness |
+| [`0112-crucible-compile-affected-clock-sources`](63-compile-affected-clock-sources.md) | Recompile and rearm only clock sources selected by the committed rule | Transactional clock-source correctness |
+| [`0113-crucible-restore-accelerator-rule-indexes`](64-restore-accelerator-rule-indexes.md) | Rebuild persistent accelerator rule indexes from the authenticated staged node ledger during VMState restore | Fresh-process continuation correctness |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order

@@ -513,6 +513,7 @@ in
               echo control_flow_replay_rejected=true
               echo invalid_destination_rejected=true
               echo evidence=instruction_bytes,opcode_class,pc,gpa,vcpu,rr_fingerprints,replay_ordinals,register_delta,exception_record
+              echo 'production_effect_row=cpu.instruction_transform|skip-replay-result-matrix|gate:patch-microtests|actual-patched-qemu|instruction-bytes+result+replay-ordinal'
             } > "$out/result"
           '';
         }

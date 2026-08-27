@@ -38,6 +38,7 @@ mod evidence;
 mod memory_payload;
 #[path = "fault_action_sink/node_payload.rs"]
 mod node_payload;
+pub(crate) use node_payload::rule_backed_state_machine;
 #[path = "fault_action_sink/result_validation.rs"]
 mod result_validation;
 use evidence::*;
@@ -685,7 +686,6 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
         }
 
         stage_apply_commands(self.nodes, &mut authorized, &mut authorized_typed)?;
-
         let mut applied = false;
         for authorized in authorized {
             let AuthorizedQemuNodeBatch {

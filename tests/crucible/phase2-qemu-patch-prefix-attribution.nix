@@ -512,6 +512,18 @@
       kind = "recorded";
       symbols = [];
     };
+    "0111-crucible-accelerator-service-schema.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0112-crucible-compile-affected-clock-sources.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0113-crucible-restore-accelerator-rule-indexes.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

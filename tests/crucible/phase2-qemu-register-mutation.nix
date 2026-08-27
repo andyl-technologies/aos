@@ -427,6 +427,7 @@ in
               echo live_before_instruction=true
               echo live_after_instruction=true
               echo mutation_evidence=architecture,row,phase,range,before,after,mask,value,rr,baseline_and_post_execution_fingerprints
+              echo 'production_effect_row=cpu.register_transform|architecture-register-matrix|gate:patch-microtests|actual-patched-qemu|register-before-after+rr-fingerprint'
             } > "$out/result"
           '';
         }

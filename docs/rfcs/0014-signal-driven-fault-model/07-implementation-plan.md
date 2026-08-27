@@ -518,6 +518,21 @@ produce live patched-QEMU architectural or device evidence.
   release all-halted partial RR turns to the canonical idle boundary and commit
   helper-authenticated multi-vCPU `PAUSE` yields before host work, with live SMP
   progress and a site-authenticated early-yield negative control.
+- [x] **T-QEMU-0111** Implement
+  [`crucible-accelerator-service-schema`](14-qemu-fault-patches/62-accelerator-service-schema.md):
+  admit the versioned ratio-valued accelerator capacity field through QEMU's
+  closed node-fault schema and prove the installed compute, memory-rate,
+  thermal, and power service policy through the live typed signal runtime.
+- [x] **T-QEMU-0112** Implement
+  [`crucible-compile-affected-clock-sources`](14-qemu-fault-patches/63-compile-affected-clock-sources.md):
+  bind post-commit clock compilation to the exact changed rule so an unrelated
+  source cannot reject or perturb an authenticated source transition, and prove
+  the selected transition plus timer rearm in the live typed signal runtime.
+- [x] **T-QEMU-0113** Implement
+  [`crucible-restore-accelerator-rule-indexes`](14-qemu-fault-patches/64-restore-accelerator-rule-indexes.md):
+  rebuild accelerator lifecycle, result, memory, and service indexes from the
+  authenticated staged node-rule ledger during VMState restore and prove that
+  a pre-checkpoint service rule governs all three fresh-process guest jobs.
 - [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result
