@@ -21,13 +21,11 @@ let
     "docbook-xsl"
     "edk2"
     "firmware"
-    "gnu-efi"
     "nvidia-gsp-firmware"
     "qemu-crucible-source"
     "darwin-sdk"
     "secure-boot-test-keys"
     "server-initrd-firmware"
-    "tla-plus"
     "tzdata"
   ];
 
@@ -58,6 +56,7 @@ let
     "gperf"
     "grep"
     "gzip"
+    "gnu-efi"
     "inih"
     "jansson"
     "json-c"
@@ -310,6 +309,7 @@ let
     "openjdk-7"
     "openjdk-8"
     "openjdk-9"
+    "tla-plus"
   ];
 
   # Linux-native seeds and AOS test artifacts may be used by Linux builders,
