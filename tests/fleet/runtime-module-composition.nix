@@ -340,9 +340,9 @@ in {
           {APM} config add /run/runtime-module-fixtures/10-packages.nix
           {APM} config add /run/runtime-module-fixtures/20-services.nix
       """)
-      listed = runtime.succeed(f"{APM} config list").splitlines()
+      listed = runtime.succeed(f"{APM} config list 2>&1").splitlines()
       assert listed == ["10-packages.nix", "20-services.nix"], listed
-      status = runtime.succeed(f"{APM} config status")
+      status = runtime.succeed(f"{APM} config status 2>&1")
       assert "worktree: /var/lib/aos/config/modules.d (2 entrypoints)" in status, status
 
       # `diff` and `apply --dry-run` use the same full fixpoint as activation
@@ -372,7 +372,7 @@ in {
           "10-packages.nix",
           "20-services.nix",
       ], runtime_input
-      status = runtime.succeed(f"{APM} config status")
+      status = runtime.succeed(f"{APM} config status 2>&1")
       assert runtime_input["store_path"] in status, status
       assert "active runtime modules:" in status, status
       assert "(2 entrypoints," in status, status
@@ -433,7 +433,7 @@ in {
       assert current_generation() == configured
       assert_package_configuration()
       runtime.succeed(f"{APM} config discard")
-      listed = runtime.succeed(f"{APM} config list").splitlines()
+      listed = runtime.succeed(f"{APM} config list 2>&1").splitlines()
       assert listed == ["10-packages.nix", "20-services.nix"], listed
 
       # Deliberately replace the mutable worktree with valid but hostile
@@ -449,9 +449,9 @@ in {
       )
       runtime.succeed(f"{APM} config replace 10-packages.nix /run/runtime-module-fixtures/dirty.nix")
       runtime.succeed(f"{APM} config remove 20-services.nix")
-      listed = runtime.succeed(f"{APM} config list").splitlines()
+      listed = runtime.succeed(f"{APM} config list 2>&1").splitlines()
       assert listed == ["10-packages.nix"], listed
-      status = runtime.succeed(f"{APM} config status")
+      status = runtime.succeed(f"{APM} config status 2>&1")
       assert runtime_input["store_path"] in status, status
       assert "worktree: /var/lib/aos/config/modules.d (1 entrypoints)" in status, status
 
@@ -467,7 +467,7 @@ in {
           f"{SHA256SUM} /var/lib/aos-provisioning/current/host.nix"
       ).split()[0] == platform_hash
       runtime.succeed(f"{APM} config discard")
-      listed = runtime.succeed(f"{APM} config list").splitlines()
+      listed = runtime.succeed(f"{APM} config list 2>&1").splitlines()
       assert listed == ["10-packages.nix", "20-services.nix"], listed
 
       # Removing the final entrypoint is itself an ordinary compare-and-switch
@@ -475,7 +475,7 @@ in {
       # than falling back to the previous retained set on the next boot.
       runtime.succeed(f"{APM} config remove 10-packages.nix")
       runtime.succeed(f"{APM} config remove 20-services.nix")
-      assert runtime.succeed(f"{APM} config list") == ""
+      assert runtime.succeed(f"{APM} config list 2>&1") == ""
       apply_worktree("/run/runtime-module-composition-clear")
       cleared = current_generation()
       assert cleared != configured, (configured, cleared)
@@ -488,7 +488,7 @@ in {
       assert cleared_runtime_input["store_path"].startswith("/nix/store/")
       assert cleared_runtime_input["entrypoints"] == []
       assert cleared_manifest["inputs"]["expected_current_generation"] == configured
-      status = runtime.succeed(f"{APM} config status")
+      status = runtime.succeed(f"{APM} config status 2>&1")
       assert cleared_runtime_input["store_path"] in status, status
       assert "(0 entrypoints," in status, status
       assert "worktree: /var/lib/aos/config/modules.d (0 entrypoints)" in status, status
@@ -503,10 +503,10 @@ in {
       runtime.reboot_without_metadata()
       wait_for_activation()
       assert current_generation() == cleared
-      status = runtime.succeed(f"{APM} config status")
+      status = runtime.succeed(f"{APM} config status 2>&1")
       assert cleared_runtime_input["store_path"] in status, status
       assert "(0 entrypoints," in status, status
-      assert runtime.succeed(f"{APM} config list") == ""
+      assert runtime.succeed(f"{APM} config list 2>&1") == ""
       reboot_manifest = json.loads(runtime.succeed("cat /run/aos/manifest.json"))
       assert (
           reboot_manifest["inputs"]["runtime_modules"]
