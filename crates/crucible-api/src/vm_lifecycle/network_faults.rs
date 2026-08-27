@@ -12,13 +12,19 @@ mod lifecycle;
 pub(super) mod ordered_map_entries;
 #[path = "network_faults/ordered_nested_map_entries.rs"]
 mod ordered_nested_map_entries;
+#[cfg(test)]
+mod production_evidence;
 mod resource_limits;
 mod route;
 use evidence::*;
 
+#[cfg(test)]
+pub(super) use production_evidence::record_production_effect_rows;
+
 use resource_limits::{
     admit_network_connection_entry, map_network_resource_limit, network_queue_resource_usage,
-    reserve_network_resource, reserve_network_resource_u64,
+    reserve_network_resource, reserve_network_resource_u64, stage_pending_network_output,
+    validate_pending_network_outputs,
 };
 use route::{availability_allows, earliest_wakeup, network_effect_application_error};
 
@@ -34,39 +40,6 @@ use crucible::model::{
 };
 use crucible::{BackendNetworkOutputInterceptor, SchedulerEventLogAppend};
 
-#[cfg(test)]
-fn record_production_effect_rows(
-    effects: &[crucible::model::EffectKind],
-    case_id: &str,
-    evidence: &str,
-) {
-    use std::io::Write as _;
-
-    let Some(path) = std::env::var_os("CRUCIBLE_NETWORK_PRODUCTION_EFFECT_ROWS") else {
-        return;
-    };
-    let registry = super::fault_implementation::network_effect_implementation_registry()
-        .unwrap_or_else(|error| panic!("production network registry must validate: {error}"));
-    let mut output = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .unwrap_or_else(|error| panic!("open production network evidence output: {error}"));
-    for effect in effects {
-        registry
-            .require_implemented(*effect)
-            .unwrap_or_else(|error| panic!("network effect row must be implemented: {error}"));
-        writeln!(
-            output,
-            "production_effect_row={}|{}|gate:live-network-io|production-host-network-runtime|{}",
-            effect.as_str(),
-            case_id,
-            evidence,
-        )
-        .unwrap_or_else(|error| panic!("write production network evidence row: {error}"));
-    }
-}
-
 const HARD_PENDING_NETWORK_FRAMES: usize =
     FaultResourceLimits::compiled_maximum().network_queue_frames as usize;
 const HARD_PENDING_NETWORK_BYTES: usize =
@@ -74,68 +47,6 @@ const HARD_PENDING_NETWORK_BYTES: usize =
 const HARD_CONTACT_SERVICE_ENTRIES: usize =
     FaultResourceLimits::compiled_maximum().network_contact_entries as usize;
 const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 8;
-
-fn stage_pending_network_output(
-    pending: &mut Vec<crucible::BackendNetworkOutput>,
-    output: crucible::BackendNetworkOutput,
-    limits: FaultResourceLimits,
-) -> Result<(), SchedulerError> {
-    if output.fault_continuation.protocol_expansion_path().len()
-        > crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
-    {
-        return Err(SchedulerError::BoundaryViolation {
-            message: format!(
-                "network protocol-expansion depth exceeds hard bound {}",
-                crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
-            ),
-        });
-    }
-    reserve_network_resource("network_frame_bytes", 0, output.payload.len(), limits)?;
-    reserve_network_resource("network_pending_frames", pending.len(), 1, limits)?;
-    pending.push(output);
-    Ok(())
-}
-
-fn validate_pending_network_outputs(
-    pending: &[crucible::BackendNetworkOutput],
-    limits: FaultResourceLimits,
-) -> Result<(), SchedulerError> {
-    reserve_network_resource("network_pending_frames", 0, pending.len(), limits)?;
-    if pending.iter().any(|output| {
-        output.fault_continuation.protocol_expansion_path().len()
-            > crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
-    }) {
-        return Err(SchedulerError::BoundaryViolation {
-            message: format!(
-                "restored network protocol-expansion depth exceeds hard bound {}",
-                crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
-            ),
-        });
-    }
-    if pending.iter().any(|output| {
-        let cursor = output.fault_continuation.cursor();
-        cursor.queue_priority().is_some_and(|priority| priority > 3)
-            || cursor.queue_priority().is_some()
-                && cursor.repeated_phase_effect()
-                    != Some(crucible::model::EffectKind::NetworkCustodyQueue)
-    }) {
-        return Err(SchedulerError::BoundaryViolation {
-            message: String::from(
-                "restored network queue priority is invalid or has no custody owner",
-            ),
-        });
-    }
-    for output in pending {
-        reserve_network_resource("network_frame_bytes", 0, output.payload.len(), limits)?;
-        reserve_network_resource(
-            "network_loop_hops",
-            0,
-            output.fault_continuation.forwarding_mutation_path().len(),
-            limits,
-        )?;
-    }
-    Ok(())
-}
 
 fn validate_network_adapter_checkpoint(
     checkpoint: &NetworkAdapterCheckpoint,

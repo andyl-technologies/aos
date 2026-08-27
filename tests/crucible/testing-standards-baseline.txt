@@ -52,6 +52,7 @@ crucible-api	src/debug_gateway	std::thread::sleep	1
 crucible-api	src/debug_gateway	thread::sleep	1
 crucible-api	src/vm_lifecycle/network_faults/route/custody_and_payload	retry	1
 crucible-api	src/vm_lifecycle/network_faults/route_tests	retry	1
+crucible-api	src/vm_lifecycle/network_faults/route_tests/resource_limits	retry	1
 crucible-cli	tests/serve_process	thread::sleep	1
 crucible-debug-gateway	tests/process_lifecycle	thread::sleep	1
 crucible-device	src/block/fault	retry	1
@@ -126,6 +127,8 @@ crucible-shmem	src/shmem/frame_node	retry	1
 crucible-shmem	src/shmem/frame_node/frame_entry	retry	1
 crucible	src/model/fault_signal/network_effect	retry	1
 crucible	src/model/fault_signal/node_effect	retry	1
+crucible	src/model/fault_signal/plan_test/resource_limits	retry	1
+crucible	src/model/fault_signal/plan_world_resource_limits	retry	1
 crucible	src/model/world_network_policy	retry	1
 crucible	src/model/world_storage_policy	retry	1
 crucible	src/model/world_storage_policy/media	retry	1

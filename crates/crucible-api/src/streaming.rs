@@ -38,7 +38,6 @@ pub const STREAMING_COMMAND_MAX_ACTOR_YIELDS: u64 = 128;
 #[path = "streaming/equivalence.rs"]
 mod equivalence;
 pub use equivalence::*;
-
 /// Validates that `Control` and `Watch`+`Send` expose equivalent command capabilities.
 ///
 /// # Errors

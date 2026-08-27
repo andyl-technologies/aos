@@ -1188,6 +1188,7 @@ mod tests {
             fault_runtime,
             cursor,
             observations,
+            source.plan().fault_signals().resource_limits(),
             source.world().fault_topology().clone(),
             source.world().links().to_vec(),
         );

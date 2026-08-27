@@ -342,7 +342,10 @@ in
             -p crucible-api \
             --test gate_control_client \
             -- --list \
-            | grep -Fxq 'contract_tests::transport_conformance::reference_client_conformance_drives_full_lifecycle_across_transports_with_simdouble_backend: test'
+            > "$TMPDIR/reference-client-tests.list"
+          grep -Fxq \
+            'contract_tests::transport_conformance::reference_client_conformance_drives_full_lifecycle_across_transports_with_simdouble_backend: test' \
+            "$TMPDIR/reference-client-tests.list"
           cargo test \
             --frozen \
             --offline \
@@ -358,7 +361,10 @@ in
             -p crucible-api \
             --test gate_control_client \
             -- --list \
-            | grep -Fxq 'contract_tests::rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants: test'
+            > "$TMPDIR/reference-client-tests.list"
+          grep -Fxq \
+            'contract_tests::rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants: test' \
+            "$TMPDIR/reference-client-tests.list"
           cargo test \
             --frozen \
             --offline \
@@ -374,7 +380,10 @@ in
             -p crucible-api \
             --test gate_abi_conformance \
             -- --list \
-            | grep -Fxq 'rpc_golden_vectors_cover_requests_responses_events_and_payload_kinds: test'
+            > "$TMPDIR/abi-conformance-tests.list"
+          grep -Fxq \
+            'rpc_golden_vectors_cover_requests_responses_events_and_payload_kinds: test' \
+            "$TMPDIR/abi-conformance-tests.list"
           cargo test \
             --frozen \
             --offline \
@@ -390,7 +399,10 @@ in
             -p crucible-qemu \
             --lib \
             -- --list \
-            | grep -Fxq 'node::tests::exact_lifecycle::qemu_node_satisfies_simulation_backend_trait: test'
+            > "$TMPDIR/qemu-library-tests.list"
+          grep -Fxq \
+            'node::tests::exact_lifecycle::qemu_node_satisfies_simulation_backend_trait: test' \
+            "$TMPDIR/qemu-library-tests.list"
           cargo test \
             --frozen \
             --offline \
