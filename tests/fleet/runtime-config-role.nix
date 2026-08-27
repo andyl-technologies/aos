@@ -20,6 +20,10 @@
           bundle = true;
           preset = false;
         };
+        # This production-profile image deliberately carries the fleet control
+        # agent as test infrastructure. Keep the runtime-closure audit strict
+        # for every other artifact while admitting that explicit fixture.
+        aos.image.allowTestArtifacts = true;
         aos.image.erofsCompressionLevel = 1;
       }
     ];
