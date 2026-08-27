@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "cc44bc4e7baa583d7e51793b46f01690522fe5000561895076701e3d23f85e1f";
+  patchBranchBundleSha256 = "66e2e4573cf4a61fff2ba1ce19510812b5eb046fae758fa8399e08070c2b6335";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "79920e9d7583c44e03f0469fcd8d0b70c5dbefd7";
+  patchBranchHeadCommit = "e130dd1f8c3891df306ac7a26d2b8943c5349e1d";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1065,6 +1065,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded versioned QMP inventory reports every registered RCU reader, instantaneous read-side activity, submitted-but-incomplete callbacks, and active drain operations; the report remains observational, supplies no held quiescence barrier, and leaves the RCU readiness proof clear";
+    }
+    {
+      file = "0114-crucible-hot-fork-aio-inventory.patch";
+      branchSubject = "crucible: inventory hot-fork AIO activity";
+      branchCommit = "e130dd1f8c3891df306ac7a26d2b8943c5349e1d";
+      branchTree = "fd5d33c997b1000b09646cb0c1627d0a0f317de1";
+      catalogName = "crucible-hot-fork-aio-inventory";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "a bounded versioned QMP inventory reports every registered AioContext, exact home-thread ownership, active poll and dispatch calls, queued and active bottom halves, queued coroutines, and notification state; the report remains observational, does not enumerate timers or handlers, supplies no held drain barrier, and leaves the AIO readiness proof clear";
     }
   ];
   catalogOnlyCapabilities = [

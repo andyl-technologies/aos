@@ -284,6 +284,7 @@ CAMPAIGN HOT FORK (RFC-0016)                           class  enforces
   crucible-hot-fork-readiness QEMU-owned proof bitmap   F    HFORK-3, HFORK-4
   crucible-hot-fork-thread-ownership subsystem owners   F    HFORK-3, HFORK-4
   crucible-hot-fork-rcu-inventory bounded RCU evidence  F    HFORK-3, HFORK-4
+  crucible-hot-fork-aio-inventory bounded AIO evidence  F    HFORK-3, HFORK-4
 
 DIAGNOSTIC-ONLY (dev, NOT shipped)                     class  enforces
   crucible-tcg-exec-diag ........ per-exec icount trace      dev  divergence debug
@@ -1656,6 +1657,29 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   `fork(2)`, or change readiness bit 4. Reader activity may change immediately
   after the response; only a future coordinator-held barrier may promote the
   proof.
+- **Risk:** F.
+
+### crucible-hot-fork-aio-inventory — expose bounded AioContext activity
+
+- **Patch:** `0114-crucible-hot-fork-aio-inventory.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4].
+- **Mechanism:** every `AioContext` receives a positive process-local identity
+  and enters a 65,536-entry lifecycle registry. A fixed version-1 QMP query
+  reports exact home-thread assignment, active `aio_poll()` and GLib dispatch
+  calls, enqueued and executing bottom halves, queued coroutines, pending
+  notification state, and checked aggregate counts. Context create, destroy,
+  and home-thread transitions advance a process-local generation.
+- **Micro-test:** strict Rust decoding rejects unknown or additional fields,
+  changed schema, inconsistent counts/completeness, invalid or unsorted context
+  identities, invalid home threads, and mismatched aggregates. The live
+  patched-QEMU gate requires stable repeated reports under the supported paused
+  profile and binds every assigned home thread to the exact QEMU thread
+  registry. Stock QEMU must not expose the command.
+- **Inertness:** the query and counters are observational. They do not drain or
+  park an AIO context, enumerate registered handlers or timers, hold a barrier
+  across another operation, coordinate `fork(2)`, or change readiness bit 3.
+  Activity may change immediately after the response; only a future
+  subsystem-owned barrier may promote the proof.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

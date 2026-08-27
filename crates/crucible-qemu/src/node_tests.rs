@@ -72,6 +72,7 @@ enum ChannelCall {
     QmpHotForkReadiness,
     QmpHotForkThreadInventory,
     QmpHotForkRcuInventory,
+    QmpHotForkAioInventory,
     QmpTerminalLifecycle {
         action: ContentHash,
         evidence: ContentHash,
@@ -404,6 +405,16 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         ]))
     }
 
+    fn query_hot_fork_aio_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkAioInventory, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkAioInventory);
+        Ok(crate::QmpHotForkAioInventory::one_idle(1, self.process_id))
+    }
+
     fn complete_terminal_lifecycle_exit(
         &mut self,
         action: ContentHash,
@@ -700,6 +711,11 @@ fn hot_fork_audit_brackets_one_exact_child_process_inventory() -> Result<(), Box
     assert_eq!(audit.qemu_threads().threads()[0].thread_id(), process_id);
     assert_eq!(audit.qemu_rcu().readers().len(), 1);
     assert_eq!(audit.qemu_rcu().readers()[0].thread_id(), process_id);
+    assert_eq!(audit.qemu_aio().contexts().len(), 1);
+    assert_eq!(
+        audit.qemu_aio().contexts()[0].home_thread_id(),
+        Some(process_id)
+    );
     assert!(audit.externally_created_thread_ids().is_empty());
     assert_eq!(
         recorded(&log),
@@ -707,6 +723,8 @@ fn hot_fork_audit_brackets_one_exact_child_process_inventory() -> Result<(), Box
             ChannelCall::QmpHotForkReadiness,
             ChannelCall::QmpHotForkThreadInventory,
             ChannelCall::QmpHotForkRcuInventory,
+            ChannelCall::QmpHotForkAioInventory,
+            ChannelCall::QmpHotForkAioInventory,
             ChannelCall::QmpHotForkRcuInventory,
             ChannelCall::QmpHotForkThreadInventory,
             ChannelCall::QmpHotForkReadiness,

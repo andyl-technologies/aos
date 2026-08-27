@@ -15,6 +15,8 @@ pub const QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND: &str =
     "query-crucible-hot-fork-thread-inventory";
 /// QMP command name used for QEMU's bounded RCU-state inventory.
 pub const QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND: &str = "query-crucible-hot-fork-rcu-inventory";
+/// QMP command name used for QEMU's bounded AioContext activity inventory.
+pub const QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND: &str = "query-crucible-hot-fork-aio-inventory";
 
 /// Version of the QEMU-owned hot-fork proof-bit contract.
 pub const QMP_HOT_FORK_READINESS_SCHEMA_VERSION: u32 = 1;
@@ -22,6 +24,8 @@ pub const QMP_HOT_FORK_READINESS_SCHEMA_VERSION: u32 = 1;
 pub const QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION: u32 = 2;
 /// Version of the QEMU-owned RCU-state inventory contract.
 pub const QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION: u32 = 1;
+/// Version of the QEMU-owned AioContext activity inventory contract.
+pub const QMP_HOT_FORK_AIO_INVENTORY_SCHEMA_VERSION: u32 = 1;
 
 /// Complete proof bitmap required by the version-1 hot-fork contract.
 pub const QMP_HOT_FORK_REQUIRED_PROOFS: u64 = (1_u64 << 9) - 1;
@@ -29,6 +33,8 @@ pub const QMP_HOT_FORK_REQUIRED_PROOFS: u64 = (1_u64 << 9) - 1;
 pub const QMP_HOT_FORK_THREAD_INVENTORY_MAX: usize = 65_536;
 /// Maximum registered RCU readers retained by one inventory response.
 pub const QMP_HOT_FORK_RCU_INVENTORY_MAX: usize = 65_536;
+/// Maximum registered AioContexts retained by one inventory response.
+pub const QMP_HOT_FORK_AIO_INVENTORY_MAX: usize = 65_536;
 /// Maximum UTF-8 bytes retained for one QEMU thread name.
 pub const QMP_HOT_FORK_THREAD_NAME_MAX_BYTES: usize = 256;
 
@@ -339,6 +345,126 @@ impl QmpHotForkRcuInventory {
     }
 }
 
+/// One registered QEMU AioContext and its instantaneous activity counters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QmpHotForkAioContext {
+    context_id: u64,
+    home_thread_id: Option<u32>,
+    active_polls: u32,
+    active_dispatches: u32,
+    pending_bottom_halves: u32,
+    active_bottom_halves: u32,
+    queued_coroutines: u32,
+    notify_pending: bool,
+}
+
+impl QmpHotForkAioContext {
+    /// Returns the positive process-local AioContext identifier.
+    #[must_use]
+    pub const fn context_id(self) -> u64 {
+        self.context_id
+    }
+
+    /// Returns the assigned operating-system home thread, if it has run.
+    #[must_use]
+    pub const fn home_thread_id(self) -> Option<u32> {
+        self.home_thread_id
+    }
+
+    /// Returns the number of active `aio_poll()` calls.
+    #[must_use]
+    pub const fn active_polls(self) -> u32 {
+        self.active_polls
+    }
+
+    /// Returns the number of active GLib AIO dispatch calls.
+    #[must_use]
+    pub const fn active_dispatches(self) -> u32 {
+        self.active_dispatches
+    }
+
+    /// Returns enqueued bottom halves not yet dequeued.
+    #[must_use]
+    pub const fn pending_bottom_halves(self) -> u32 {
+        self.pending_bottom_halves
+    }
+
+    /// Returns bottom-half callbacks currently executing.
+    #[must_use]
+    pub const fn active_bottom_halves(self) -> u32 {
+        self.active_bottom_halves
+    }
+
+    /// Returns coroutines queued through this context's scheduling bottom half.
+    #[must_use]
+    pub const fn queued_coroutines(self) -> u32 {
+        self.queued_coroutines
+    }
+
+    /// Returns whether this context has an unaccepted notification.
+    #[must_use]
+    pub const fn notify_pending(self) -> bool {
+        self.notify_pending
+    }
+}
+
+/// Exact bounded observational snapshot of QEMU's registered AioContexts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QmpHotForkAioInventory {
+    generation: u64,
+    complete: bool,
+    overflowed: bool,
+    contexts: Vec<QmpHotForkAioContext>,
+}
+
+impl QmpHotForkAioInventory {
+    #[cfg(test)]
+    pub(crate) fn one_idle(context_id: u64, home_thread_id: u32) -> Self {
+        Self {
+            generation: 1,
+            complete: true,
+            overflowed: false,
+            contexts: vec![QmpHotForkAioContext {
+                context_id,
+                home_thread_id: Some(home_thread_id),
+                active_polls: 0,
+                active_dispatches: 0,
+                pending_bottom_halves: 0,
+                active_bottom_halves: 0,
+                queued_coroutines: 0,
+                notify_pending: false,
+            }],
+        }
+    }
+
+    /// Returns the process-local context lifecycle and home-assignment generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns whether every retained context has a valid assigned home thread.
+    ///
+    /// Completeness is observational and does not prove that AIO, bottom
+    /// halves, handlers, or timers are drained or authorize a fork.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.complete
+    }
+
+    /// Returns whether registered contexts exceeded the inventory bound.
+    #[must_use]
+    pub const fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
+    /// Returns every retained context in ascending process-local identifier order.
+    #[must_use]
+    pub fn contexts(&self) -> &[QmpHotForkAioContext] {
+        &self.contexts
+    }
+}
+
 pub(super) fn parse_hot_fork_readiness(value: &Value) -> Result<QmpHotForkReadiness, QmpError> {
     let schema_version = value.get("schema-version").and_then(Value::as_u64);
     let required_proofs = value.get("required-proofs").and_then(Value::as_u64);
@@ -609,5 +735,163 @@ pub(super) fn parse_hot_fork_rcu_inventory(
         pending_callbacks,
         drain_active,
         readers,
+    })
+}
+
+pub(super) fn parse_hot_fork_aio_inventory(
+    value: &Value,
+) -> Result<QmpHotForkAioInventory, QmpError> {
+    let malformed = || QmpError::MalformedTypedResponse {
+        command: QmpCommandKind::QueryHotForkAioInventory,
+        response: value.to_string(),
+    };
+    let object = value.as_object().ok_or_else(&malformed)?;
+    let fields = [
+        "schema-version",
+        "generation",
+        "complete",
+        "overflowed",
+        "context-count",
+        "assigned-contexts",
+        "active-polls",
+        "active-dispatches",
+        "pending-bottom-halves",
+        "active-bottom-halves",
+        "queued-coroutines",
+        "contexts",
+    ];
+    if object.len() != fields.len() || !fields.iter().all(|field| object.contains_key(*field)) {
+        return Err(malformed());
+    }
+
+    let schema_version = object
+        .get("schema-version")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let generation = object
+        .get("generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let complete = object
+        .get("complete")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let overflowed = object
+        .get("overflowed")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let declared_contexts = object
+        .get("context-count")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_assigned = object
+        .get("assigned-contexts")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let aggregate_fields = [
+        "active-polls",
+        "active-dispatches",
+        "pending-bottom-halves",
+        "active-bottom-halves",
+        "queued-coroutines",
+    ];
+    let mut declared_aggregates = [0_u64; 5];
+    for (index, field) in aggregate_fields.iter().enumerate() {
+        declared_aggregates[index] = object
+            .get(*field)
+            .and_then(Value::as_u64)
+            .ok_or_else(&malformed)?;
+    }
+    let values = object
+        .get("contexts")
+        .and_then(Value::as_array)
+        .ok_or_else(&malformed)?;
+    if schema_version != u64::from(QMP_HOT_FORK_AIO_INVENTORY_SCHEMA_VERSION)
+        || values.len() > QMP_HOT_FORK_AIO_INVENTORY_MAX
+        || declared_contexts != values.len()
+    {
+        return Err(malformed());
+    }
+
+    let mut contexts = Vec::with_capacity(values.len());
+    let mut previous_context_id = None;
+    let mut assigned_contexts = 0_usize;
+    let mut actual_aggregates = [0_u64; 5];
+    for value in values {
+        let entry = value.as_object().ok_or_else(&malformed)?;
+        let entry_fields = [
+            "context-id",
+            "home-thread-id",
+            "active-polls",
+            "active-dispatches",
+            "pending-bottom-halves",
+            "active-bottom-halves",
+            "queued-coroutines",
+            "notify-pending",
+        ];
+        if entry.len() != entry_fields.len()
+            || !entry_fields.iter().all(|field| entry.contains_key(*field))
+        {
+            return Err(malformed());
+        }
+        let context_id = entry
+            .get("context-id")
+            .and_then(Value::as_u64)
+            .filter(|context_id| *context_id != 0)
+            .ok_or_else(&malformed)?;
+        if previous_context_id.is_some_and(|previous| previous >= context_id) {
+            return Err(malformed());
+        }
+        previous_context_id = Some(context_id);
+        let home_thread_id = match entry.get("home-thread-id").and_then(Value::as_i64) {
+            Some(0) => None,
+            Some(thread_id) => Some(
+                u32::try_from(thread_id)
+                    .ok()
+                    .filter(|thread_id| *thread_id != 0)
+                    .ok_or_else(&malformed)?,
+            ),
+            None => return Err(malformed()),
+        };
+        assigned_contexts += usize::from(home_thread_id.is_some());
+        let mut counters = [0_u32; 5];
+        for (index, field) in aggregate_fields.iter().enumerate() {
+            counters[index] = entry
+                .get(*field)
+                .and_then(Value::as_u64)
+                .and_then(|count| u32::try_from(count).ok())
+                .ok_or_else(&malformed)?;
+            actual_aggregates[index] = actual_aggregates[index]
+                .checked_add(u64::from(counters[index]))
+                .ok_or_else(&malformed)?;
+        }
+        let notify_pending = entry
+            .get("notify-pending")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        contexts.push(QmpHotForkAioContext {
+            context_id,
+            home_thread_id,
+            active_polls: counters[0],
+            active_dispatches: counters[1],
+            pending_bottom_halves: counters[2],
+            active_bottom_halves: counters[3],
+            queued_coroutines: counters[4],
+            notify_pending,
+        });
+    }
+    if declared_assigned != assigned_contexts
+        || declared_aggregates != actual_aggregates
+        || complete != (!overflowed && assigned_contexts == contexts.len())
+    {
+        return Err(malformed());
+    }
+    Ok(QmpHotForkAioInventory {
+        generation,
+        complete,
+        overflowed,
+        contexts,
     })
 }

@@ -804,6 +804,21 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Queries QEMU's exact bounded observational AioContext inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
+    /// versioned response validation fails.
+    fn query_hot_fork_aio_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkAioInventory, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query_hot_fork_aio_inventory",
+            "hot-fork AIO inventory is not implemented by this QMP channel",
+        ))
+    }
+
     /// Completes an authenticated terminal lifecycle transition without
     /// expecting QEMU to resume guest execution.
     ///
@@ -1617,9 +1632,22 @@ impl QemuNode {
             .qmp_machine_control
             .query_hot_fork_rcu_inventory()
             .map_err(crate::QemuHotForkAuditError::RcuInventory)?;
+        let aio_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_aio_inventory()
+            .map_err(crate::QemuHotForkAuditError::AioInventory)?;
 
         let inventory =
             crate::hot_fork_audit::capture_linux_qemu_hot_fork_process_inventory(&process)?;
+        let aio_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_aio_inventory()
+            .map_err(crate::QemuHotForkAuditError::AioInventory)?;
+        if aio_before != aio_after {
+            return Err(crate::QemuHotForkAuditError::AioInventoryChanged);
+        }
         let rcu_after = self
             .channels
             .qmp_machine_control
@@ -1644,7 +1672,7 @@ impl QemuNode {
         if before != after {
             return Err(crate::QemuHotForkAuditError::ReadinessChanged);
         }
-        crate::QemuHotForkAudit::new(before, threads_before, rcu_before, inventory)
+        crate::QemuHotForkAudit::new(before, threads_before, rcu_before, aio_before, inventory)
     }
 
     /// Returns numeric identity components after authenticating a preowned executable path.

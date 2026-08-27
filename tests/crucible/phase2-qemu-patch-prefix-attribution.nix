@@ -527,6 +527,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0114-crucible-hot-fork-aio-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

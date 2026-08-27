@@ -240,10 +240,55 @@ the query neither drives nor holds quiescence and therefore MUST NOT
 acknowledge proof bit 4 or authorize a fork. The future coordinator must
 establish and retain an RCU barrier across the actual process-fork operation.
 
+Patched QEMU also exposes the bounded observational AioContext activity used
+to define the AIO/BH side of the next subsystem barrier:
+
+```text
+CrucibleHotForkAioInventory {
+    schema-version: u32 = 1,
+    generation: u64,
+    complete: bool,
+    overflowed: bool,
+    context-count: u32,
+    assigned-contexts: u32,
+    active-polls: u64,
+    active-dispatches: u64,
+    pending-bottom-halves: u64,
+    active-bottom-halves: u64,
+    queued-coroutines: u64,
+    contexts: [
+        {
+            context-id: positive u64,
+            home-thread-id: nonnegative i64,
+            active-polls: u32,
+            active-dispatches: u32,
+            pending-bottom-halves: u32,
+            active-bottom-halves: u32,
+            queued-coroutines: u32,
+            notify-pending: bool,
+        },
+    ],
+}
+```
+
+`contexts` contains at most 65,536 records in strictly increasing
+`context-id` order. Zero `home-thread-id` means the context has not yet run on
+a home thread; every positive home thread MUST appear in the matching QEMU
+thread inventory. The top-level counts are exact checked sums, and `complete`
+equals `!overflowed && assigned-contexts == context-count`. The generation
+advances on context creation, destruction, or home-thread reassignment.
+
+This response is still observational. It does not enumerate AIO handlers or
+timers, drain or park a context, prevent a producer from enqueueing work after
+the query, or hold quiescence across `fork(2)`. It therefore MUST NOT
+acknowledge proof bit 3. The future coordinator must extend the inventory to
+the remaining handler/timer resources and establish a retained AIO/BH/timer
+barrier across the fork transaction.
+
 The Phase 6 host audit complements that query with bounded operational evidence
 for one exact Linux process generation. It accepts only while proof bit 2 is
-set, brackets the procfs capture with two identical thread-registry and RCU
-snapshots inside two identical readiness reports, authenticates the QEMU
+set, brackets the procfs capture with two identical thread-registry, RCU, and
+AioContext snapshots inside two identical readiness reports, authenticates the QEMU
 PID/start-time/executable identity before and after, and requires two complete
 process-inventory passes to match byte-for-byte. Each QEMU-registered thread
 MUST be present in that exact process generation. Procfs threads absent from
@@ -268,9 +313,11 @@ internals, external-thread dispositions, or child reinitializers; the registry
 currently classifies all non-coordinator QEMU threads as `unclassified`. It
 cannot set any readiness bit, prepare a template, or authorize `fork(2)`.
 The thread registry identifies the live RCU callback and AIO-context workers
-by subsystem-specific unresolved dispositions, and the RCU inventory exposes
-the exact observed reader and callback state, while any other non-coordinator
-remains plain `unclassified`. None is a child disposition or a held barrier.
+by subsystem-specific unresolved dispositions. The RCU inventory exposes the
+exact observed reader and callback state, and the AioContext inventory exposes
+home-thread binding plus instantaneous poll, dispatch, bottom-half, coroutine,
+and notification activity, while any other non-coordinator remains plain
+`unclassified`. None is a child disposition or a held barrier.
 Those proofs must be produced while the future QEMU coordinator holds the
 corresponding subsystem barriers.
 

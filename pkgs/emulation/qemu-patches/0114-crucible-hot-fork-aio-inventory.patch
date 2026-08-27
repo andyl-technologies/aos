@@ -1,0 +1,481 @@
+From e130dd1f8c3891df306ac7a26d2b8943c5349e1d Mon Sep 17 00:00:00 2001
+From: Dylan Plecki <dylan@andyl.com>
+Date: Mon, 1 Jan 2001 00:00:01 +0000
+Subject: [PATCH] crucible: inventory hot-fork AIO activity
+
+Signed-off-by: Dylan Plecki <dylan@andyl.com>
+---
+ include/block/aio.h |  38 +++++++++++++++
+ monitor/qmp-cmds.c  |  57 +++++++++++++++++++++++
+ qapi/run-state.json |  97 ++++++++++++++++++++++++++++++++++++++
+ util/aio-posix.c    |   4 ++
+ util/aio-win32.c    |   3 ++
+ util/async.c        | 110 ++++++++++++++++++++++++++++++++++++++++++++
+ 6 files changed, 309 insertions(+)
+
+diff --git a/include/block/aio.h b/include/block/aio.h
+index 99ff48420..903e3b96b 100644
+--- a/include/block/aio.h
++++ b/include/block/aio.h
+@@ -255,8 +255,46 @@ struct AioContext {
+     int epollfd;
+ 
+     const FDMonOps *fdmon_ops;
++
++    /* Crucible hot-fork observational inventory state. */
++    uint64_t crucible_hot_fork_id;
++    int64_t crucible_hot_fork_home_thread_id;
++    uint32_t crucible_hot_fork_active_polls;
++    uint32_t crucible_hot_fork_active_dispatches;
++    uint32_t crucible_hot_fork_pending_bhs;
++    uint32_t crucible_hot_fork_active_bhs;
++    uint32_t crucible_hot_fork_queued_coroutines;
++    QTAILQ_ENTRY(AioContext) crucible_hot_fork_node;
+ };
+ 
++#define QEMU_AIO_HOT_FORK_INVENTORY_MAX 65536
++
++typedef struct QemuAioHotForkInventoryEntry {
++    uint64_t context_id;
++    int64_t home_thread_id;
++    uint32_t active_polls;
++    uint32_t active_dispatches;
++    uint32_t pending_bhs;
++    uint32_t active_bhs;
++    uint32_t queued_coroutines;
++    bool notify_pending;
++} QemuAioHotForkInventoryEntry;
++
++typedef struct QemuAioHotForkInventory {
++    uint64_t generation;
++    size_t entry_count;
++    bool overflowed;
++    QemuAioHotForkInventoryEntry *entries;
++} QemuAioHotForkInventory;
++
++/*
++ * Capture bounded AioContext activity for hot-fork auditing.  This is an
++ * observation, not an AIO/BH/timer drain barrier or fork authorization.
++ */
++void qemu_aio_hot_fork_inventory(QemuAioHotForkInventory *inventory);
++void qemu_aio_hot_fork_inventory_destroy(QemuAioHotForkInventory *inventory);
++void qemu_aio_hot_fork_mark_home(AioContext *ctx);
++
+ /**
+  * aio_context_new: Allocate a new AioContext.
+  *
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index bbf5b85eb..3ccea5d5b 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -19,6 +19,7 @@
+ #include "monitor-internal.h"
+ #include "monitor/qdev.h"
+ #include "monitor/qmp-helpers.h"
++#include "block/aio.h"
+ #include "qemu/rcu.h"
+ #include "qemu/thread.h"
+ #include "system/system.h"
+@@ -251,6 +252,62 @@ qmp_query_crucible_hot_fork_rcu_inventory(Error **errp)
+     return report;
+ }
+ 
++CrucibleHotForkAioInventory *
++qmp_query_crucible_hot_fork_aio_inventory(Error **errp)
++{
++    CrucibleHotForkAioInventory *report =
++        g_new0(CrucibleHotForkAioInventory, 1);
++    QemuAioHotForkInventory inventory;
++    CrucibleHotForkAioContextList **tail = &report->contexts;
++    uint64_t previous_context_id = 0;
++    bool valid_identifiers = true;
++    size_t index;
++
++    (void)errp;
++    report->schema_version = 1;
++    qemu_aio_hot_fork_inventory(&inventory);
++    report->generation = inventory.generation;
++    for (index = 0; index < inventory.entry_count; index++) {
++        QemuAioHotForkInventoryEntry *source = &inventory.entries[index];
++        CrucibleHotForkAioContext *context =
++            g_new0(CrucibleHotForkAioContext, 1);
++        CrucibleHotForkAioContextList *node =
++            g_new0(CrucibleHotForkAioContextList, 1);
++
++        context->context_id = source->context_id;
++        context->home_thread_id = source->home_thread_id;
++        context->active_polls = source->active_polls;
++        context->active_dispatches = source->active_dispatches;
++        context->pending_bottom_halves = source->pending_bhs;
++        context->active_bottom_halves = source->active_bhs;
++        context->queued_coroutines = source->queued_coroutines;
++        context->notify_pending = source->notify_pending;
++        if (source->context_id == 0 ||
++            (index != 0 && source->context_id <= previous_context_id) ||
++            source->home_thread_id < 0) {
++            valid_identifiers = false;
++        }
++        previous_context_id = source->context_id;
++        if (source->home_thread_id > 0) {
++            report->assigned_contexts++;
++        }
++        report->active_polls += source->active_polls;
++        report->active_dispatches += source->active_dispatches;
++        report->pending_bottom_halves += source->pending_bhs;
++        report->active_bottom_halves += source->active_bhs;
++        report->queued_coroutines += source->queued_coroutines;
++        node->value = context;
++        *tail = node;
++        tail = &node->next;
++    }
++    report->context_count = inventory.entry_count;
++    report->overflowed = inventory.overflowed;
++    report->complete = !inventory.overflowed && valid_identifiers &&
++        report->assigned_contexts == report->context_count;
++    qemu_aio_hot_fork_inventory_destroy(&inventory);
++    return report;
++}
++
+ void qmp_cont(Error **errp)
+ {
+     BlockBackend *blk;
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 47b9536a9..1d917f459 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -343,6 +343,103 @@
+ { 'command': 'query-crucible-hot-fork-rcu-inventory',
+   'returns': 'CrucibleHotForkRcuInventory' }
+ 
++##
++# @CrucibleHotForkAioContext:
++#
++# One process-local AioContext and its instantaneous activity counters.
++#
++# @context-id: positive process-local context identifier
++#
++# @home-thread-id: operating-system thread identifier, or zero until the
++#     context first runs on its home thread
++#
++# @active-polls: currently active aio_poll() calls
++#
++# @active-dispatches: currently active GLib AIO dispatch calls
++#
++# @pending-bottom-halves: enqueued bottom halves not yet dequeued
++#
++# @active-bottom-halves: bottom-half callbacks currently executing
++#
++# @queued-coroutines: coroutines queued through the context scheduling BH
++#
++# @notify-pending: whether the context has an unaccepted notification
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkAioContext',
++  'data': { 'context-id': 'uint64',
++            'home-thread-id': 'int64',
++            'active-polls': 'uint32',
++            'active-dispatches': 'uint32',
++            'pending-bottom-halves': 'uint32',
++            'active-bottom-halves': 'uint32',
++            'queued-coroutines': 'uint32',
++            'notify-pending': 'bool' } }
++
++##
++# @CrucibleHotForkAioInventory:
++#
++# Bounded observational snapshot of every registered AioContext and selected
++# AIO/BH activity.  This report does not drain or park any context, enumerate
++# timers or handlers, acknowledge readiness proof bit 3, or authorize a fork.
++#
++# @schema-version: inventory contract version, currently 1
++#
++# @generation: monotonic process-local context create/destroy/home-assignment
++#     counter
++#
++# @complete: true exactly when the registry did not overflow, identifiers are
++#     valid, and every context has an assigned home thread
++#
++# @overflowed: whether one or more contexts exceeded the retained bound
++#
++# @context-count: number of retained contexts
++#
++# @assigned-contexts: retained contexts with a positive home thread identifier
++#
++# @active-polls: sum of context @active-polls values
++#
++# @active-dispatches: sum of context @active-dispatches values
++#
++# @pending-bottom-halves: sum of context @pending-bottom-halves values
++#
++# @active-bottom-halves: sum of context @active-bottom-halves values
++#
++# @queued-coroutines: sum of context @queued-coroutines values
++#
++# @contexts: every retained context, sorted by @context-id and bounded to
++#     65536 entries
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkAioInventory',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'complete': 'bool',
++            'overflowed': 'bool',
++            'context-count': 'uint32',
++            'assigned-contexts': 'uint32',
++            'active-polls': 'uint64',
++            'active-dispatches': 'uint64',
++            'pending-bottom-halves': 'uint64',
++            'active-bottom-halves': 'uint64',
++            'queued-coroutines': 'uint64',
++            'contexts': [ 'CrucibleHotForkAioContext' ] } }
++
++##
++# @query-crucible-hot-fork-aio-inventory:
++#
++# Query one bounded AioContext activity snapshot.  This command does not hold
++# an AIO/BH/timer barrier, advance readiness proof bit 3, or authorize a fork.
++#
++# Returns: @CrucibleHotForkAioInventory
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'query-crucible-hot-fork-aio-inventory',
++  'returns': 'CrucibleHotForkAioInventory' }
++
+ ##
+ # @SHUTDOWN:
+ #
+diff --git a/util/aio-posix.c b/util/aio-posix.c
+index 2e0a5dadc..cf6813f50 100644
+--- a/util/aio-posix.c
++++ b/util/aio-posix.c
+@@ -678,6 +678,8 @@ bool aio_poll(AioContext *ctx, bool blocking)
+      */
+     assert(in_aio_context_home_thread(ctx == iohandler_get_aio_context() ?
+                                       qemu_get_aio_context() : ctx));
++    qemu_aio_hot_fork_mark_home(ctx);
++    qatomic_inc(&ctx->crucible_hot_fork_active_polls);
+ 
+     qemu_lockcnt_inc(&ctx->list_lock);
+ 
+@@ -752,6 +754,8 @@ bool aio_poll(AioContext *ctx, bool blocking)
+ 
+     progress |= timerlistgroup_run_timers(&ctx->tlg);
+ 
++    qatomic_dec(&ctx->crucible_hot_fork_active_polls);
++
+     return progress;
+ }
+ 
+diff --git a/util/aio-win32.c b/util/aio-win32.c
+index 6583d5c5f..96772ffea 100644
+--- a/util/aio-win32.c
++++ b/util/aio-win32.c
+@@ -339,6 +339,8 @@ bool aio_poll(AioContext *ctx, bool blocking)
+      */
+     assert(in_aio_context_home_thread(ctx == iohandler_get_aio_context() ?
+                                       qemu_get_aio_context() : ctx));
++    qemu_aio_hot_fork_mark_home(ctx);
++    qatomic_inc(&ctx->crucible_hot_fork_active_polls);
+     progress = false;
+ 
+     /* aio_notify can avoid the expensive event_notifier_set if
+@@ -416,6 +418,7 @@ bool aio_poll(AioContext *ctx, bool blocking)
+     qemu_lockcnt_dec(&ctx->list_lock);
+ 
+     progress |= timerlistgroup_run_timers(&ctx->tlg);
++    qatomic_dec(&ctx->crucible_hot_fork_active_polls);
+     return progress;
+ }
+ 
+diff --git a/util/async.c b/util/async.c
+index 863416dee..0ae679613 100644
+--- a/util/async.c
++++ b/util/async.c
+@@ -38,6 +38,104 @@
+ #include "system/cpu-timers.h"
+ #include "trace.h"
+ 
++static QemuMutex crucible_hot_fork_aio_lock;
++static QTAILQ_HEAD(, AioContext) crucible_hot_fork_aio_contexts =
++    QTAILQ_HEAD_INITIALIZER(crucible_hot_fork_aio_contexts);
++static uint64_t crucible_hot_fork_aio_next_id = 1;
++static uint64_t crucible_hot_fork_aio_generation;
++
++static void __attribute__((__constructor__))
++crucible_hot_fork_aio_inventory_init(void)
++{
++    qemu_mutex_init(&crucible_hot_fork_aio_lock);
++}
++
++static void crucible_hot_fork_aio_register(AioContext *ctx)
++{
++    QEMU_LOCK_GUARD(&crucible_hot_fork_aio_lock);
++
++    ctx->crucible_hot_fork_id = crucible_hot_fork_aio_next_id++;
++    assert(ctx->crucible_hot_fork_id != 0);
++    QTAILQ_INSERT_TAIL(&crucible_hot_fork_aio_contexts, ctx,
++                       crucible_hot_fork_node);
++    crucible_hot_fork_aio_generation++;
++}
++
++static void crucible_hot_fork_aio_unregister(AioContext *ctx)
++{
++    QEMU_LOCK_GUARD(&crucible_hot_fork_aio_lock);
++
++    QTAILQ_REMOVE(&crucible_hot_fork_aio_contexts, ctx,
++                  crucible_hot_fork_node);
++    crucible_hot_fork_aio_generation++;
++}
++
++void qemu_aio_hot_fork_mark_home(AioContext *ctx)
++{
++    int64_t thread_id = qemu_get_thread_id();
++
++    if (qatomic_read(&ctx->crucible_hot_fork_home_thread_id) == thread_id) {
++        return;
++    }
++
++    QEMU_LOCK_GUARD(&crucible_hot_fork_aio_lock);
++    if (ctx->crucible_hot_fork_home_thread_id != thread_id) {
++        qatomic_set(&ctx->crucible_hot_fork_home_thread_id, thread_id);
++        crucible_hot_fork_aio_generation++;
++    }
++}
++
++void qemu_aio_hot_fork_inventory(QemuAioHotForkInventory *inventory)
++{
++    AioContext *ctx;
++    size_t count = 0;
++
++    *inventory = (QemuAioHotForkInventory) { 0 };
++    QEMU_LOCK_GUARD(&crucible_hot_fork_aio_lock);
++    inventory->generation = crucible_hot_fork_aio_generation;
++    QTAILQ_FOREACH(ctx, &crucible_hot_fork_aio_contexts,
++                   crucible_hot_fork_node) {
++        if (count == QEMU_AIO_HOT_FORK_INVENTORY_MAX) {
++            inventory->overflowed = true;
++            break;
++        }
++        count++;
++    }
++
++    inventory->entries = g_new0(QemuAioHotForkInventoryEntry, count);
++    inventory->entry_count = count;
++    count = 0;
++    QTAILQ_FOREACH(ctx, &crucible_hot_fork_aio_contexts,
++                   crucible_hot_fork_node) {
++        QemuAioHotForkInventoryEntry *entry;
++
++        if (count == inventory->entry_count) {
++            break;
++        }
++        entry = &inventory->entries[count++];
++        entry->context_id = ctx->crucible_hot_fork_id;
++        entry->home_thread_id =
++            qatomic_read(&ctx->crucible_hot_fork_home_thread_id);
++        entry->active_polls =
++            qatomic_read(&ctx->crucible_hot_fork_active_polls);
++        entry->active_dispatches =
++            qatomic_read(&ctx->crucible_hot_fork_active_dispatches);
++        entry->pending_bhs =
++            qatomic_read(&ctx->crucible_hot_fork_pending_bhs);
++        entry->active_bhs =
++            qatomic_read(&ctx->crucible_hot_fork_active_bhs);
++        entry->queued_coroutines =
++            qatomic_read(&ctx->crucible_hot_fork_queued_coroutines);
++        entry->notify_pending = qatomic_read(&ctx->notified);
++    }
++}
++
++void qemu_aio_hot_fork_inventory_destroy(QemuAioHotForkInventory *inventory)
++{
++    g_free(inventory->entries);
++    *inventory = (QemuAioHotForkInventory) { 0 };
++}
++
+ /***********************************************************/
+ /* bottom halves (can be seen as timers which expire ASAP) */
+ 
+@@ -82,6 +180,7 @@ static void aio_bh_enqueue(QEMUBH *bh, unsigned new_flags)
+     old_flags = qatomic_fetch_or(&bh->flags, BH_PENDING | new_flags);
+ 
+     if (!(old_flags & BH_PENDING)) {
++        qatomic_inc(&ctx->crucible_hot_fork_pending_bhs);
+         /*
+          * At this point the bottom half becomes visible to aio_bh_poll().
+          * This insertion thus synchronizes with QSLIST_MOVE_ATOMIC in
+@@ -123,6 +222,7 @@ static QEMUBH *aio_bh_dequeue(BHList *head, unsigned *flags)
+      */
+     *flags = qatomic_fetch_and(&bh->flags,
+                               ~(BH_PENDING | BH_SCHEDULED | BH_IDLE));
++    qatomic_dec(&bh->ctx->crucible_hot_fork_pending_bhs);
+     return bh;
+ }
+ 
+@@ -169,7 +269,9 @@ void aio_bh_call(QEMUBH *bh)
+         reentrancy_guard->engaged_in_io = true;
+     }
+ 
++    qatomic_inc(&bh->ctx->crucible_hot_fork_active_bhs);
+     bh->cb(bh->opaque);
++    qatomic_dec(&bh->ctx->crucible_hot_fork_active_bhs);
+ 
+     if (reentrancy_guard) {
+         reentrancy_guard->engaged_in_io = last_engaged_in_io;
+@@ -358,7 +460,10 @@ aio_ctx_dispatch(GSource     *source,
+     AioContext *ctx = (AioContext *) source;
+ 
+     assert(callback == NULL);
++    qemu_aio_hot_fork_mark_home(ctx);
++    qatomic_inc(&ctx->crucible_hot_fork_active_dispatches);
+     aio_dispatch(ctx);
++    qatomic_dec(&ctx->crucible_hot_fork_active_dispatches);
+     return true;
+ }
+ 
+@@ -369,6 +474,7 @@ aio_ctx_finalize(GSource     *source)
+     QEMUBH *bh;
+     unsigned flags;
+ 
++    crucible_hot_fork_aio_unregister(ctx);
+     thread_pool_free_aio(ctx->thread_pool);
+ 
+ #ifdef CONFIG_LINUX_AIO
+@@ -568,6 +674,7 @@ static void co_schedule_bh_cb(void *opaque)
+ 
+         /* Protected by write barrier in qemu_aio_coroutine_enter */
+         qatomic_set(&co->scheduled, NULL);
++        qatomic_dec(&ctx->crucible_hot_fork_queued_coroutines);
+         qemu_aio_coroutine_enter(ctx, co);
+     }
+ }
+@@ -619,6 +726,7 @@ AioContext *aio_context_new(Error **errp)
+     ctx->thread_pool_max = THREAD_POOL_MAX_THREADS_DEFAULT;
+ 
+     register_aiocontext(ctx);
++    crucible_hot_fork_aio_register(ctx);
+ 
+     return ctx;
+ fail:
+@@ -638,6 +746,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
+                 __func__, scheduled);
+         abort();
+     }
++    qatomic_inc(&ctx->crucible_hot_fork_queued_coroutines);
+ 
+     /* The coroutine might run and release the last ctx reference before we
+      * invoke qemu_bh_schedule().  Take a reference to keep ctx alive until
+@@ -740,6 +849,7 @@ void qemu_set_current_aio_context(AioContext *ctx)
+ {
+     assert(!get_my_aiocontext());
+     set_my_aiocontext(ctx);
++    qemu_aio_hot_fork_mark_home(ctx);
+ }
+ 
+ void aio_context_set_thread_pool_params(AioContext *ctx, int64_t min,
+-- 
+2.48.1
+

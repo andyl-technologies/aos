@@ -1566,7 +1566,15 @@ register/unregister generation. The host brackets procfs capture with identical
 RCU reports and requires every reader to be present in the matching thread
 registry. This closes the authoritative RCU-state inventory prerequisite but
 does not hold quiescence across `fork(2)`; readiness bit 4 remains clear.
-This is an executable T-CAM-6.1 audit prerequisite, not completion of the task:
+QEMU now also exposes a version-1, 65,536-context AioContext inventory with
+stable process-local identities, exact home-thread ownership, active poll and
+GLib dispatch counts, queued and active bottom halves, queued coroutines, and
+notification state. The host brackets procfs capture with identical reports,
+checks every assigned home thread against the QEMU thread registry, and rejects
+changed context state. This is observational and still omits AIO handlers,
+timers, a retained drain/park barrier, and child reinitializers; readiness bit 3
+therefore remains clear.
+These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
 no safe non-coordinator child disposition, and none of the views can prove QEMU
 mutex, AIO/BH/timer, RCU barrier, block, plugin, external-thread, or

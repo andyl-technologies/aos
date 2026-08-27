@@ -790,6 +790,13 @@
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded QMP inventory exposes every registered RCU reader plus instantaneous read-side, callback, and drain state without claiming a held barrier or acknowledging the RCU readiness proof";
     }
+    {
+      file = "0114-crucible-hot-fork-aio-inventory.patch";
+      catalogName = "crucible-hot-fork-aio-inventory";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "a bounded QMP inventory exposes every registered AioContext plus instantaneous poll, dispatch, bottom-half, coroutine, and notification activity without claiming a held barrier or acknowledging the AIO readiness proof";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
