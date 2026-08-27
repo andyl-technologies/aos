@@ -1206,6 +1206,8 @@ in {
         "config-image-generation-axes"
         "config-secret-reference"
         "install-from-image"
+        "k3s-combined-worker"
+        "k3s-control-plane-worker"
         "measured-boot"
         "on-host-config-eval"
         "package-attestation-quote"
