@@ -1093,6 +1093,12 @@ in {
       serverModule = ./systems/server.nix;
     };
     config-source-gc = import ./lib/testing/config-source-gc.nix {inherit pkgs lib;};
+    container = {
+      phase0 = import ./tests/containers/phase0.nix {
+        inherit pkgs lib;
+        goldenRoots = discoverSystems.server.config.environment.systemPackages;
+      };
+    };
     config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
     config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};
     # Complete non-KVM on-host configuration gate. The image lifecycle and
