@@ -279,6 +279,13 @@
               -framework CoreServices \
               -o "$c/bin/aos-darwin-coreservices-cfnetwork-smoke"
 
+            # OpenJDK's libnio likewise relies on CoreServices to carry the
+            # canonical nested LaunchServices framework for legacy UTI APIs.
+            "$CC" ${./darwin-coreservices-launchservices-smoke.c} \
+              -framework CoreFoundation \
+              -framework CoreServices \
+              -o "$c/bin/aos-darwin-coreservices-launchservices-smoke"
+
             # Match Clang's plugin topology: a dylib records the versioned
             # CoreServices install name, then a flat-namespace bundle links
             # that dylib and makes ld64 follow the transitive framework edge.
