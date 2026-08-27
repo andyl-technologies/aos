@@ -706,9 +706,12 @@ in
           __BEGIN_DECLS
           typedef int32_t OSStatus;
           typedef struct __SecCertificate *SecCertificateRef;
+          typedef struct __SecPolicy *SecPolicyRef;
           typedef struct __SecTrust *SecTrustRef;
           CFStringRef SecCopyErrorMessageString(OSStatus status, void *reserved);
           enum {
+            errSecSuccess = 0,
+            errSecItemNotFound = -25300,
             errSSLClosedGraceful = -9805,
             errSSLPeerAuthCompleted = -9841,
             errSSLServerAuthCompleted = errSSLPeerAuthCompleted
@@ -723,6 +726,34 @@ in
           #include <Security/SecBase.h>
           __BEGIN_DECLS
           CFDataRef SecCertificateCopyData(SecCertificateRef certificate);
+          __END_DECLS
+          #endif
+          EOF
+
+          cat > "$out/System/Library/Frameworks/Security.framework/Headers/SecItem.h" <<'EOF'
+          #ifndef _SECURITY_SECITEM_H_
+          #define _SECURITY_SECITEM_H_
+          #include <Security/SecBase.h>
+          __BEGIN_DECLS
+          extern const CFStringRef kSecClass;
+          extern const CFStringRef kSecClassCertificate;
+          extern const CFStringRef kSecMatchLimit;
+          extern const CFStringRef kSecMatchLimitAll;
+          extern const CFStringRef kSecReturnRef;
+          OSStatus SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result);
+          __END_DECLS
+          #endif
+          EOF
+
+          cat > "$out/System/Library/Frameworks/Security.framework/Headers/SecPolicy.h" <<'EOF'
+          #ifndef _SECURITY_SECPOLICY_H_
+          #define _SECURITY_SECPOLICY_H_
+          #include <Security/SecBase.h>
+          __BEGIN_DECLS
+          extern const CFStringRef kSecPolicyAppleSSL;
+          extern const CFStringRef kSecPolicyOid;
+          CFDictionaryRef SecPolicyCopyProperties(SecPolicyRef policy);
+          SecPolicyRef SecPolicyCreateSSL(Boolean server, CFStringRef hostname);
           __END_DECLS
           #endif
           EOF
@@ -742,8 +773,48 @@ in
             kSecTrustResultFatalTrustFailure = 6,
             kSecTrustResultOtherError = 7
           } SecTrustResultType;
+          OSStatus SecTrustCreateWithCertificates(
+            CFTypeRef certificates,
+            CFTypeRef policies,
+            SecTrustRef *trust
+          );
           OSStatus SecTrustEvaluate(SecTrustRef trust, SecTrustResultType *result);
+          bool SecTrustEvaluateWithError(SecTrustRef trust, CFErrorRef *error);
           SecCertificateRef SecTrustGetCertificateAtIndex(SecTrustRef trust, CFIndex index);
+          __END_DECLS
+          #endif
+          EOF
+
+          cat > "$out/System/Library/Frameworks/Security.framework/Headers/SecTrustSettings.h" <<'EOF'
+          #ifndef _SECURITY_SECTRUSTSETTINGS_H_
+          #define _SECURITY_SECTRUSTSETTINGS_H_
+          #include <Security/SecBase.h>
+
+          #define kSecTrustSettingsPolicy CFSTR("kSecTrustSettingsPolicy")
+          #define kSecTrustSettingsApplication CFSTR("kSecTrustSettingsApplication")
+          #define kSecTrustSettingsPolicyString CFSTR("kSecTrustSettingsPolicyString")
+          #define kSecTrustSettingsResult CFSTR("kSecTrustSettingsResult")
+
+          typedef CF_ENUM(uint32_t, SecTrustSettingsResult) {
+            kSecTrustSettingsResultInvalid = 0,
+            kSecTrustSettingsResultTrustRoot = 1,
+            kSecTrustSettingsResultTrustAsRoot = 2,
+            kSecTrustSettingsResultDeny = 3,
+            kSecTrustSettingsResultUnspecified = 4
+          };
+
+          typedef CF_ENUM(uint32_t, SecTrustSettingsDomain) {
+            kSecTrustSettingsDomainUser = 0,
+            kSecTrustSettingsDomainAdmin = 1,
+            kSecTrustSettingsDomainSystem = 2
+          };
+
+          __BEGIN_DECLS
+          OSStatus SecTrustSettingsCopyTrustSettings(
+            SecCertificateRef certificate,
+            SecTrustSettingsDomain domain,
+            CFArrayRef *trustSettings
+          );
           __END_DECLS
           #endif
           EOF
@@ -851,9 +922,12 @@ in
           #define _SECURITY_H_
           #include <Security/SecBase.h>
           #include <Security/SecCertificate.h>
+          #include <Security/SecItem.h>
           #include <Security/SecKeychain.h>
+          #include <Security/SecPolicy.h>
           #include <Security/SecTask.h>
           #include <Security/SecTrust.h>
+          #include <Security/SecTrustSettings.h>
           #include <Security/SecureTransport.h>
           #endif
           EOF
@@ -915,6 +989,7 @@ in
                 - _CFArrayCreateMutable
                 - _CFArrayInsertValueAtIndex
                 - _CFArrayRemoveAllValues
+                - _CFArraySetValueAtIndex
                 - _CFBooleanGetTypeID
                 - _CFBooleanGetValue
                 - _CFBundleCopyExecutableURL
@@ -927,10 +1002,13 @@ in
                 - _CFDataGetLength
                 - _CFDataGetTypeID
                 - _CFDictionaryAddValue
+                - _CFDictionaryContainsKey
+                - _CFDictionaryCreate
                 - _CFDictionaryCreateMutable
                 - _CFDictionaryGetValue
                 - _CFDictionaryGetValueIfPresent
                 - _CFDictionarySetValue
+                - _CFEqual
                 - _CFGetTypeID
                 - _CFLocaleCreateCanonicalLanguageIdentifierFromString
                 - _CFNumberCreate
@@ -2824,6 +2902,7 @@ in
                 - _SSLWrite
                 - _SecCertificateCopyData
                 - _SecCopyErrorMessageString
+                - _SecItemCopyMatching
                 - _SecKeychainAddGenericPassword
                 - _SecKeychainCopyDefault
                 - _SecKeychainFindGenericPassword
@@ -2836,8 +2915,20 @@ in
                 - _SecTaskCreateFromSelf
                 - _SecTaskCreateWithAuditToken
                 - _SecTaskGetTypeID
+                - _SecPolicyCopyProperties
+                - _SecPolicyCreateSSL
+                - _SecTrustCreateWithCertificates
                 - _SecTrustEvaluate
+                - _SecTrustEvaluateWithError
                 - _SecTrustGetCertificateAtIndex
+                - _SecTrustSettingsCopyTrustSettings
+                - _kSecClass
+                - _kSecClassCertificate
+                - _kSecMatchLimit
+                - _kSecMatchLimitAll
+                - _kSecPolicyAppleSSL
+                - _kSecPolicyOid
+                - _kSecReturnRef
           ...
           EOF
 
