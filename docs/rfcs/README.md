@@ -30,5 +30,6 @@ topic files.
 | [0012](0012-hub-surface-topology/README.md) | 2026-08-03 | AOS Hub surface topology — multiple placements, simultaneous routes, and principled registry/cache relationships | Proposed; signed system-image distribution implemented and native/Worker E2E-tested |
 | [0013](0013-recovery-uki/README.md) | 2026-08-17 | A/B-aware signed recovery UKIs and initrd fail-closed hardening | Proposed — phased plan in [`implementation.md`](0013-recovery-uki/implementation.md) |
 | [0014](0014-hermetic-cargo-artifacts.md) | 2026-08-21 | Hermetic Cargo artifact graphs and parallel Rust testing | Implemented |
+| [0015](0015-oci-containers/README.md) | 2026-08-27 | Scratch OCI containers built from AOS package closures and published through AOS Hub | Proposed — phased plan in [`implementation-plan.md`](0015-oci-containers/implementation-plan.md) |
 
 Numbering is chronological by the date the design entered the tree.
