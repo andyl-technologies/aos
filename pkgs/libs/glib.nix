@@ -93,6 +93,16 @@ in
                 's/    if glib_have_os_x_9_or_later/    if true/' \
                 gio/meson.build
 
+              # Carbon.h is intentionally a header-only compatibility
+              # surface for consumers of the legacy keyboard constants. It
+              # does not imply that the removed Carbon framework is linkable.
+              # Upstream treats a successful header compile as proof of the
+              # framework and later makes the framework dependency required;
+              # keep its probe result aligned with the SDK's actual ABI.
+              sed -i \
+                "/name : 'Mac OS X Carbon support')/a\\  glib_have_carbon = false" \
+                meson.build
+
               # Meson links GLib and GIO with the C driver after compiling
               # their Cocoa sources separately. Unlike a combined
               # Objective-C link, that driver does not add libobjc
