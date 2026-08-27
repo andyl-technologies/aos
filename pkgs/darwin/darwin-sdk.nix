@@ -1315,11 +1315,29 @@ in
           #define __CORESERVICES__
 
           #include <CoreFoundation/CoreFoundation.h>
+          #include <MacTypes.h>
           #include <dispatch/dispatch.h>
           #include <stdint.h>
           #include <sys/types.h>
 
           CF_EXTERN_C_BEGIN
+
+          /*
+           * Apple's public MacLocales.h declares this legacy locale mapping
+           * API with a NUL-terminated ASCII locale string and MacTypes ABI
+           * result codes. CPack uses it to encode Script Manager region codes
+           * in multilingual disk-image license resources.
+           */
+          enum {
+            kLocalesBufferTooSmallErr = -30001,
+            kLocalesTableFormatErr = -30002,
+            kLocalesDefaultDisplayStatus = -30029
+          };
+          OSStatus LocaleStringToLangAndRegionCodes(
+            const char localeString[],
+            LangCode *lang,
+            RegionCode *region
+          );
 
           Boolean UTTypeEqual(CFStringRef inUTI1, CFStringRef inUTI2);
           Boolean UTTypeConformsTo(CFStringRef inUTI, CFStringRef inConformsToUTI);
@@ -1453,6 +1471,7 @@ in
                 - _FSEventsGetCurrentEventId
                 - _FSEventsPurgeEventsForDeviceUpToEventId
                 - _LSOpenCFURLRef
+                - _LocaleStringToLangAndRegionCodes
           ...
           EOF
           ln -s ../../CoreServices.tbd \

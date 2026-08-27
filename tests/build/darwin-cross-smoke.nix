@@ -205,6 +205,9 @@
               '  CFURLRef filePath = CFURLCreateFilePathURL(kCFAllocatorDefault, reference, NULL);' \
               '  Boolean reachable = CFURLResourceIsReachable(filePath, NULL);' \
               '  Boolean propertySet = CFURLSetResourcePropertyForKey(filePath, CFSTR("aos"), kCFBooleanTrue, NULL);' \
+              '  LangCode language = 0;' \
+              '  RegionCode region = 0;' \
+              '  OSStatus localeStatus = LocaleStringToLangAndRegionCodes("en_US", &language, &region);' \
               '  FSEventStreamContext context = { 0, NULL, NULL, NULL, NULL };' \
               '  FSEventStreamRef stream = FSEventStreamCreate(kCFAllocatorDefault, aos_fsevent_callback, &context, immutable, kFSEventStreamEventIdSinceNow, 0.1, kFSEventStreamCreateFlagFileEvents);' \
               '  CFRunLoopRef runLoop = CFRunLoopGetCurrent();' \
@@ -229,7 +232,7 @@
               '  if (mutable != NULL) CFRelease(mutable);' \
               '  if (immutable != NULL) CFRelease(immutable);' \
               '  if (text != NULL) CFRelease(text);' \
-              '  return reachable && propertySet && started && purged && waiting && current == 0 && dataBytes == NULL;' \
+              '  return reachable && propertySet && started && purged && waiting && localeStatus == kLocalesTableFormatErr && language == 0 && region == 0 && current == 0 && dataBytes == NULL;' \
               '}' \
               > coreservices-smoke.c
             # CoreServices is an umbrella and must carry its CoreFoundation
