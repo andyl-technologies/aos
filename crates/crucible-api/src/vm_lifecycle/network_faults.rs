@@ -17,8 +17,8 @@ mod route;
 use evidence::*;
 
 use resource_limits::{
-    map_network_resource_limit, network_queue_resource_usage, reserve_network_resource,
-    reserve_network_resource_u64,
+    admit_network_connection_entry, map_network_resource_limit, network_queue_resource_usage,
+    reserve_network_resource, reserve_network_resource_u64,
 };
 use route::{availability_allows, earliest_wakeup, network_effect_application_error};
 
@@ -127,6 +127,12 @@ fn validate_pending_network_outputs(
     }
     for output in pending {
         reserve_network_resource("network_frame_bytes", 0, output.payload.len(), limits)?;
+        reserve_network_resource(
+            "network_loop_hops",
+            0,
+            output.fault_continuation.forwarding_mutation_path().len(),
+            limits,
+        )?;
     }
     Ok(())
 }
@@ -167,29 +173,29 @@ fn validate_network_adapter_checkpoint(
         .ok_or_else(|| SchedulerError::BoundaryViolation {
             message: String::from("network connection checkpoint count overflowed"),
         })?;
-    if connection_entries > 4_194_304
-        || checkpoint
-            .effect_state
-            .connection_tables
-            .iter()
-            .any(|(key, table)| {
-                key.effect != crucible::model::EffectKind::NetworkConnectionState
-                    || table.len() > 4_194_304
-                    || table.values().any(|entry| {
-                        entry.machine.current.as_str().is_empty()
-                            || entry.machine.pending.len() > 65_536
-                            || entry
-                                .machine
-                                .pending
-                                .iter()
-                                .any(|pending| pending.state.as_str().is_empty())
-                            || entry
-                                .machine
-                                .pending
-                                .windows(2)
-                                .any(|pair| pair[0].commit_nanos > pair[1].commit_nanos)
-                    })
-            })
+    reserve_network_resource("network_connection_entries", 0, connection_entries, limits)?;
+    if checkpoint
+        .effect_state
+        .connection_tables
+        .iter()
+        .any(|(key, table)| {
+            key.effect != crucible::model::EffectKind::NetworkConnectionState
+                || table.len() > 4_194_304
+                || table.values().any(|entry| {
+                    entry.machine.current.as_str().is_empty()
+                        || entry.machine.pending.len() > 65_536
+                        || entry
+                            .machine
+                            .pending
+                            .iter()
+                            .any(|pending| pending.state.as_str().is_empty())
+                        || entry
+                            .machine
+                            .pending
+                            .windows(2)
+                            .any(|pair| pair[0].commit_nanos > pair[1].commit_nanos)
+                })
+        })
     {
         return Err(SchedulerError::BoundaryViolation {
             message: String::from("network connection checkpoint exceeds hard bounds"),

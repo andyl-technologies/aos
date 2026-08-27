@@ -74,6 +74,30 @@ pub enum NinepVisibilityLookup {
 }
 
 impl NinepVisibilityState {
+    /// Returns the number of retained session-frontier pairs.
+    #[must_use]
+    pub fn session_count(&self) -> usize {
+        self.session_metadata_frontiers.len()
+    }
+
+    /// Returns whether one session already owns retained visibility state.
+    #[must_use]
+    pub fn contains_session(&self, session: u64) -> bool {
+        self.session_metadata_frontiers.contains_key(&session)
+    }
+
+    /// Returns the number of retained committed object versions.
+    #[must_use]
+    pub fn object_version_count(&self) -> usize {
+        self.updates.len()
+    }
+
+    /// Returns whether an authenticated update identity is already committed.
+    #[must_use]
+    pub fn contains_update(&self, update_id: &[u8; 32]) -> bool {
+        self.identities.contains_key(update_id)
+    }
+
     /// Returns collection sizes needed for bounded checkpoint admission.
     pub(crate) fn checkpoint_collection_counts(&self) -> [usize; 4] {
         [

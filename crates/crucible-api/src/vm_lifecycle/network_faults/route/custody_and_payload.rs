@@ -1189,6 +1189,20 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
                 *probability,
                 network_effect_draw(scenario_seed, opportunity, action, "duplicate", 0),
             ) {
+                reserve_network_resource(
+                    "network_duplicates_per_frame_per_hop",
+                    effects.duplicate_gaps_nanos().len(),
+                    usize::try_from(copies.get()).map_err(|_| {
+                        map_network_resource_limit(
+                            FaultResourceLimitError::Representation {
+                                field: "network_duplicates_per_frame_per_hop",
+                                value: u64::MAX,
+                            },
+                            resource_limits,
+                        )
+                    })?,
+                    resource_limits,
+                )?;
                 for copy in 1..=copies.get() {
                     let gap = gap_nanos.checked_mul(u64::from(copy)).ok_or_else(|| {
                         network_effect_application_error(action, "duplicate gap overflowed")
@@ -1277,6 +1291,12 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
             retry_succeeds: Some(retry_succeeds),
             ..
         } => {
+            reserve_network_resource_u64(
+                "network_retries_per_frame_per_hop",
+                0,
+                u64::from(retry_attempts.get()),
+                resource_limits,
+            )?;
             let retry_delay = retry_delay_nanos
                 .get()
                 .checked_mul(u64::from(retry_attempts.get()))
@@ -1590,6 +1610,12 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
                     network_effect_application_error(action, "RF SINR precedes every profile")
                 })?;
             let profile = &transfer.profiles[profile_index];
+            reserve_network_resource_u64(
+                "network_retries_per_frame_per_hop",
+                0,
+                u64::from(profile.maximum_retries),
+                resource_limits,
+            )?;
             effects
                 .constrain_rate(profile.rate_bps.get())
                 .map_err(map_effect_error)?;

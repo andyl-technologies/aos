@@ -264,6 +264,38 @@ impl QemuLive9pIoServicer {
         self.device.session_epoch()
     }
 
+    /// Returns aggregate process-private 9p ownership for authored admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLive9pIoServicerError::Device`] when a device-owned count
+    /// cannot be represented.
+    pub fn fault_resource_usage(
+        &self,
+    ) -> Result<crucible_device::ninep::NinepFaultResourceUsage, QemuLive9pIoServicerError> {
+        self.device
+            .fault_resource_usage()
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })
+    }
+
+    /// Returns whether a visibility update already owns a retained version.
+    #[must_use]
+    pub fn contains_visibility_update(&self, update_id: &[u8; 32]) -> bool {
+        self.device.contains_visibility_update(update_id)
+    }
+
+    /// Returns the maximum fid growth one request can commit.
+    #[must_use]
+    pub fn potential_fid_growth(&self, frame: &[u8], object_result: bool) -> u64 {
+        self.device.potential_fid_growth(frame, object_result)
+    }
+
+    /// Returns the retained-session growth one request can commit.
+    #[must_use]
+    pub fn potential_session_growth(&self, frame: &[u8]) -> u64 {
+        self.device.potential_session_growth(frame)
+    }
+
     /// Captures host-private state touched before one shared-ring commit.
     ///
     /// This token deliberately excludes the live SPSC rings. They may only be

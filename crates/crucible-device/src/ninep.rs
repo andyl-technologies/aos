@@ -54,8 +54,8 @@ pub use codec::{
     StatfsReply, TMessage,
 };
 pub use device::{
-    MAX_NINEP_SNAPSHOT_BYTES, NinepDevice, NinepLatency, NinepSnapshot, NinepSnapshotCodecError,
-    NinepVirtualFid,
+    MAX_NINEP_SNAPSHOT_BYTES, NinepDevice, NinepFaultResourceUsage, NinepLatency, NinepSnapshot,
+    NinepSnapshotCodecError, NinepVirtualFid,
 };
 pub use fault::*;
 pub use server::{FidEntry, FidState, MAX_MSIZE, MIN_MSIZE, NinepServer, NinepServerSnapshot};

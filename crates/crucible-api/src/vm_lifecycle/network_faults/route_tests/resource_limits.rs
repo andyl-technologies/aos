@@ -85,6 +85,124 @@ fn pending_network_output_admission_uses_frame_and_pending_limits() {
             hard,
         }) if hard == FaultResourceLimits::compiled_maximum().network_pending_frames
     ));
+
+    let mut looped = pending_medium_frame(
+        &opportunity,
+        10,
+        crucible::ResolvedNetworkFrameEffects::default(),
+        vec![1],
+    );
+    for sequence in 0..2 {
+        looped.fault_continuation = looped
+            .fault_continuation
+            .forwarding_mutation(
+                ContentHash::from_bytes(&[sequence]),
+                crucible::NodeId {
+                    name: String::from("receiver"),
+                },
+            )
+            .unwrap_or_else(|| panic!("test forwarding ancestry should fit the hard bound"));
+    }
+    let limits = FaultResourceLimits {
+        network_loop_hops: 1,
+        ..FaultResourceLimits::default()
+    };
+    assert!(matches!(
+        validate_pending_network_outputs(&[looped], limits),
+        Err(SchedulerError::ResourceLimit {
+            field: "network_loop_hops",
+            current: 0,
+            requested: 2,
+            configured: 1,
+            hard,
+        }) if hard == FaultResourceLimits::compiled_maximum().network_loop_hops
+    ));
+
+    let duplicate = action_with_network_effect(NetworkEffectSpecification::Duplicate {
+        probability: crucible::model::ProbabilityMillionths::new(1_000_000)
+            .unwrap_or_else(|error| panic!("duplicate probability: {error}")),
+        gap_nanos: 1,
+        copies: crucible::model::BoundedCount::new(CountLimit::DuplicatesOrInstructionReplay, 2)
+            .unwrap_or_else(|error| panic!("duplicate copies: {error}")),
+    });
+    let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+    let mut payload = vec![1];
+    let mut state = NetworkEffectRuntimeState::default();
+    let limits = FaultResourceLimits {
+        network_duplicates_per_frame_per_hop: 3,
+        ..FaultResourceLimits::default()
+    };
+    apply_network_frame_action_with_limits(
+        &mut payload,
+        &mut effects,
+        &duplicate,
+        &opportunity,
+        ContentHash::from_bytes(b"duplicate-resource-limit"),
+        &crucible::model::WorldFaultTopology::default(),
+        &mut state,
+        limits,
+    )
+    .unwrap_or_else(|error| panic!("first duplicate contribution should fit: {error}"));
+    assert!(matches!(
+        apply_network_frame_action_with_limits(
+            &mut payload,
+            &mut effects,
+            &duplicate,
+            &opportunity,
+            ContentHash::from_bytes(b"duplicate-resource-limit"),
+            &crucible::model::WorldFaultTopology::default(),
+            &mut state,
+            limits,
+        ),
+        Err(SchedulerError::ResourceLimit {
+            field: "network_duplicates_per_frame_per_hop",
+            current: 2,
+            requested: 2,
+            configured: 3,
+            hard,
+        }) if hard == FaultResourceLimits::compiled_maximum()
+            .network_duplicates_per_frame_per_hop
+    ));
+
+    let retry = action_with_network_effect(NetworkEffectSpecification::DetectedFrameError {
+        kind: crucible::model::DetectedFrameErrorKind::Crc,
+        receiver_action: crucible::model::DetectedFrameErrorAction::Retry,
+        retry_delay_nanos: Some(positive(1)),
+        retry_limit: Some(
+            crucible::model::BoundedCount::new(CountLimit::DuplicatesOrInstructionReplay, 2)
+                .unwrap_or_else(|error| panic!("retry limit: {error}")),
+        ),
+        retry_attempts: Some(
+            crucible::model::BoundedCount::new(CountLimit::DuplicatesOrInstructionReplay, 2)
+                .unwrap_or_else(|error| panic!("retry attempts: {error}")),
+        ),
+        retry_succeeds: Some(false),
+        reset_nanos: None,
+    });
+    let limits = FaultResourceLimits {
+        network_retries_per_frame_per_hop: 1,
+        ..FaultResourceLimits::default()
+    };
+    assert!(matches!(
+        apply_network_frame_action_with_limits(
+            &mut payload,
+            &mut crucible::ResolvedNetworkFrameEffects::default(),
+            &retry,
+            &opportunity,
+            ContentHash::from_bytes(b"retry-resource-limit"),
+            &crucible::model::WorldFaultTopology::default(),
+            &mut state,
+            limits,
+        ),
+        Err(SchedulerError::ResourceLimit {
+            field: "network_retries_per_frame_per_hop",
+            current: 0,
+            requested: 2,
+            configured: 1,
+            hard,
+        }) if hard == FaultResourceLimits::compiled_maximum()
+            .network_retries_per_frame_per_hop
+    ));
 }
 
 #[test]
@@ -314,6 +432,79 @@ fn contact_and_restore_admission_use_authored_aggregate_coordinates() {
             configured: 1,
             hard,
         } if hard == FaultResourceLimits::compiled_maximum().network_contact_entries
+    ));
+
+    let action = action_with_network_effect(NetworkEffectSpecification::ConnectionState {
+        kind: crucible::model::NetworkConnectionKind::Conntrack,
+        table_bound: crucible::model::BoundedCount::new(CountLimit::LargeStateEntries, 2)
+            .unwrap_or_else(|error| panic!("connection table bound: {error}")),
+        flow_key: id("flow-key"),
+        state_machine: id("flow-machine"),
+        transition_event: id("flow-event"),
+        overflow: crucible::model::NetworkConnectionOverflow::DropNewest,
+    });
+    let owner = NetworkEffectStateKey::from_action(&action);
+    let first_flow = ContentHash::from_bytes(b"first-flow");
+    let second_flow = ContentHash::from_bytes(b"second-flow");
+    let entry = NetworkConnectionEntry {
+        machine: NetworkStateMachineRuntime {
+            current: id("cold"),
+            pending: Vec::new(),
+            transition_sequence: 0,
+        },
+        created_by: ContentHash::from_bytes(b"connection-opportunity"),
+        last_used_nanos: 0,
+    };
+    let mut state = NetworkEffectRuntimeState::default();
+    state
+        .connection_tables
+        .insert(owner.clone(), BTreeMap::from([(first_flow, entry.clone())]));
+    let limits = FaultResourceLimits {
+        network_connection_entries: 1,
+        ..FaultResourceLimits::default()
+    };
+    let error = scheduler_error(
+        admit_network_connection_entry(&state, &owner, &second_flow, 2, limits),
+        "a second aggregate connection entry must honor the authored ceiling",
+    );
+    assert!(matches!(
+        error,
+        SchedulerError::ResourceLimit {
+            field: "network_connection_entries",
+            current: 1,
+            requested: 1,
+            configured: 1,
+            hard,
+        } if hard == FaultResourceLimits::compiled_maximum().network_connection_entries
+    ));
+
+    state
+        .connection_tables
+        .get_mut(&owner)
+        .unwrap_or_else(|| panic!("connection table"))
+        .insert(second_flow, entry);
+    let checkpoint = NetworkAdapterCheckpoint {
+        semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
+        coordinate: None,
+        coordinate_sequence: 0,
+        journal_sequence: 0,
+        observations:
+            super::super::super::storage_faults::ProductionFaultObservationJournal::default(),
+        effect_state: state,
+    };
+    let error = scheduler_error(
+        validate_network_adapter_checkpoint(&checkpoint, limits),
+        "restored connection ownership must honor the authored ceiling",
+    );
+    assert!(matches!(
+        error,
+        SchedulerError::ResourceLimit {
+            field: "network_connection_entries",
+            current: 0,
+            requested: 2,
+            configured: 1,
+            hard,
+        } if hard == FaultResourceLimits::compiled_maximum().network_connection_entries
     ));
 
     let action = queue_action();
