@@ -791,6 +791,25 @@
     .artifacts
     .priority
     == "runtime";
+  runtimeOwnershipMatchesMergePriority =
+    (lib.evalModules {
+      modules = [
+        ({lib, ...}: {
+          options.artifacts = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = {};
+          };
+          options.observed = lib.mkOption {type = lib.types.str;};
+        })
+        ({provenance, ...}: {config.observed = provenance.ownerOfAttr ["artifacts"] "priority";})
+      ];
+      packageModules = [(packageRecord {config.artifacts.priority = lib.mkOverride 80 "package";})];
+      runtimeModules = [{config.artifacts.priority = "runtime";}];
+      inherit lib;
+    })
+    .config
+    .observed
+    == "@host";
   runtimeImportKeepsNormalPriority =
     (lib.evalModules {
       modules = [
@@ -1149,7 +1168,7 @@
         message = "host import ownership and priority";
       }
       {
-        ok = runtimeDirectGetsOperatorPriority && runtimeImportKeepsNormalPriority && runtimeProvisioningRejected;
+        ok = runtimeDirectGetsOperatorPriority && runtimeOwnershipMatchesMergePriority && runtimeImportKeepsNormalPriority && runtimeProvisioningRejected;
         message = "runtime module priority and provisioning confinement";
       }
       {

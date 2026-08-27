@@ -159,7 +159,7 @@ pub struct RuntimeModulesAttInput {
     pub nar_hash: String,
     /// Ordered direct entrypoints.
     pub entrypoints: Vec<String>,
-    /// `local-root` or `signed`.
+    /// `local-root`; signed mode is reserved until signature receipts exist.
     pub trust_mode: String,
     /// Trusted signer fingerprint in signed mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1123,10 +1123,10 @@ pub fn verify_gen_attestation(
 
         let trusted = match runtime.trust_mode.as_str() {
             "local-root" => runtime.signer_key.is_none() && policy.allow_local_root_runtime_modules,
-            "signed" => runtime
-                .signer_key
-                .as_ref()
-                .is_some_and(|key| policy.trusted_config_keys.contains(key)),
+            // Signed ingestion is reserved until the record carries a verified
+            // signature receipt binding the descriptor to this exact source.
+            // A caller-supplied signer fingerprint alone is not evidence.
+            "signed" => false,
             _ => false,
         };
         if !trusted {
@@ -1819,6 +1819,22 @@ mod tests {
         let malformed = computed_with_inputs(malformed_inputs);
         assert_eq!(
             verify_gen_attestation(&malformed, &MockChecker, &policy, b"nonce-xyz", None)
+                .unwrap_err(),
+            GenAttestationFailure::RuntimeModulesIdentity
+        );
+
+        let mut unsigned_claim_inputs = sample_inputs();
+        unsigned_claim_inputs.runtime_modules = Some(RuntimeModulesAttInput {
+            schema: "aos.runtime-module-set/v1".to_string(),
+            store_path: "/nix/store/99999999999999999999999999999999-runtime-modules".to_string(),
+            nar_hash: format!("sha256:{}", "ab".repeat(32)),
+            entrypoints: vec!["10-packages.nix".to_string()],
+            trust_mode: "signed".to_string(),
+            signer_key: Some("0badf00d".to_string()),
+        });
+        let unsigned_claim = computed_with_inputs(unsigned_claim_inputs);
+        assert_eq!(
+            verify_gen_attestation(&unsigned_claim, &MockChecker, &policy, b"nonce-xyz", None)
                 .unwrap_err(),
             GenAttestationFailure::RuntimeModulesIdentity
         );

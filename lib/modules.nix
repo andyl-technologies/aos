@@ -1184,7 +1184,7 @@
       defBasePriority = d:
         if isOverride d.value
         then d.value._priority
-        else if (d.provenance or "@base") == "@host"
+        else if builtins.elem (d.provenance or "@base") ["@host" "@runtime"]
         then 75
         else 100;
 

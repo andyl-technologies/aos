@@ -1129,6 +1129,10 @@ pub struct EvalCommand {
     pub host_nix: PathBuf,
     /// Ordered runtime operator module entrypoints from one immutable set.
     pub runtime_modules: Vec<PathBuf>,
+    /// Immutable runtime source root, including when the ordered set is empty.
+    pub runtime_module_root: Option<PathBuf>,
+    /// Active generation sampled before evaluation for activation CAS.
+    pub expected_current_generation: Option<u32>,
     /// The in-image module library store path.
     pub base_lib: PathBuf,
     /// Optional normalized metadata facts file.
@@ -1147,6 +1151,9 @@ pub struct EvalCommand {
     /// `trusted-config-keys.d/<op>.pub`.
     pub trusted_config_keys_dirs: Vec<PathBuf>,
 
+    /// Previously validated platform-host and facts evidence retained verbatim.
+    pub retained_host_inputs: Option<RetainedHostInputs>,
+
     /// Treats `host_nix` as the image-authored empty fallback module.
     ///
     /// This is used only by the boot service when neither current metadata nor
@@ -1161,6 +1168,15 @@ pub struct EvalCommand {
     /// metadata. Signed mode is fail-closed when anchors or signatures are
     /// missing or invalid.
     pub require_signed_host_nix: bool,
+}
+
+/// Validated host and facts identity carried forward without reclassifying trust.
+#[derive(Debug, Clone)]
+pub struct RetainedHostInputs {
+    /// Exact retained host identity and authorization evidence.
+    pub host_nix: materialize::HostNixInput,
+    /// Exact retained instance-facts identity.
+    pub instance_facts: materialize::InstanceFactsInput,
 }
 
 fn enforce_host_nix_trust_policy(cmd: &EvalCommand) -> Result<()> {
@@ -1746,7 +1762,39 @@ fn enrich_manifest(
     let (config_registry, config_release_tag, config_tag_signer_key, config_realization) =
         config_module_release_identity(&outcome.working_set)?;
     let host_store_path = add_fixed_input_to_store(&cmd.host_nix)?;
-    let runtime_modules = runtime_module_manifest_input(&cmd.runtime_modules)?;
+    let runtime_modules =
+        runtime_module_manifest_input(&cmd.runtime_modules, cmd.runtime_module_root.as_deref())?;
+
+    let computed_host_hash = sha256_identity(&host_bytes);
+    let computed_facts_hash = sha256_identity(&facts_identity);
+    let (host_input, facts_input) = if let Some(retained) = &cmd.retained_host_inputs {
+        anyhow::ensure!(
+            retained.host_nix.content_hash == computed_host_hash
+                && retained.host_nix.store_path == host_store_path.to_string_lossy(),
+            "retained host identity does not match the evaluated host input"
+        );
+        anyhow::ensure!(
+            retained.instance_facts.facts_hash == computed_facts_hash
+                && retained.instance_facts.store_path == facts_store_path.to_string_lossy(),
+            "retained facts identity does not match the evaluated facts input"
+        );
+        (retained.host_nix.clone(), retained.instance_facts.clone())
+    } else {
+        (
+            materialize::HostNixInput {
+                content_hash: computed_host_hash,
+                trust_mode,
+                platform: platform.clone(),
+                signer_key,
+                store_path: host_store_path.to_string_lossy().into_owned(),
+            },
+            materialize::InstanceFactsInput {
+                facts_hash: computed_facts_hash,
+                platform,
+                store_path: facts_store_path.to_string_lossy().into_owned(),
+            },
+        )
+    };
 
     if runtime_modules.is_some() {
         object.insert(
@@ -1779,26 +1827,17 @@ fn enrich_manifest(
             "module_abi_compat": config_abi_compat,
             "authorizations": config_authorizations,
         },
-        "host_nix": {
-            "content_hash": sha256_identity(&host_bytes),
-            "trust_mode": trust_mode,
-            "platform": platform,
-            "signer_key": signer_key,
-            "store_path": host_store_path,
-        },
-        "instance_facts": {
-            "facts_hash": sha256_identity(&facts_identity),
-            "platform": platform,
-            "store_path": facts_store_path,
-        },
+        "host_nix": host_input,
+        "instance_facts": facts_input,
     });
     if let Some(runtime_modules) = runtime_modules {
         inputs
             .as_object_mut()
             .context("manifest inputs did not serialize as an object")?
             .insert("runtime_modules".into(), runtime_modules);
-        let expected =
-            current_config_generation_number(Path::new("/var/lib/profiles/system/state.json"))?;
+        let expected = cmd.expected_current_generation.context(
+            "runtime-module evaluation requires a caller-supplied active generation snapshot",
+        )?;
         inputs
             .as_object_mut()
             .context("manifest inputs did not serialize as an object")?
@@ -1814,7 +1853,7 @@ fn enrich_manifest(
     Ok(manifest)
 }
 
-fn current_config_generation_number(state_path: &Path) -> Result<u32> {
+pub(crate) fn current_config_generation_number(state_path: &Path) -> Result<u32> {
     match std::fs::read(state_path) {
         Ok(bytes) => {
             let state: crate::types::ConfigGenerationState = serde_json::from_slice(&bytes)
@@ -1828,12 +1867,27 @@ fn current_config_generation_number(state_path: &Path) -> Result<u32> {
     }
 }
 
-fn runtime_module_manifest_input(paths: &[PathBuf]) -> Result<Option<serde_json::Value>> {
-    if paths.is_empty() {
+fn runtime_module_manifest_input(
+    paths: &[PathBuf],
+    root_hint: Option<&Path>,
+) -> Result<Option<serde_json::Value>> {
+    if paths.is_empty() && root_hint.is_none() {
         return Ok(None);
     }
 
-    let mut root: Option<&str> = None;
+    let root_hint = root_hint
+        .map(|path| {
+            let text = path
+                .to_str()
+                .with_context(|| format!("runtime module root is not UTF-8: {}", path.display()))?;
+            let root = manifest_store_root(text).with_context(|| {
+                format!("runtime module root is not a canonical store path: {text}")
+            })?;
+            anyhow::ensure!(root == text, "runtime module root must name one store root");
+            Ok::<_, anyhow::Error>(root)
+        })
+        .transpose()?;
+    let mut root = root_hint;
     let mut entrypoints = Vec::with_capacity(paths.len());
     for path in paths {
         let text = path
@@ -2493,7 +2547,9 @@ pub fn reeval_cross_abi(
     Ok(())
 }
 
-fn retained_runtime_modules(manifest: &materialize::ConfigManifest) -> Result<Vec<PathBuf>> {
+pub(crate) fn retained_runtime_modules(
+    manifest: &materialize::ConfigManifest,
+) -> Result<Vec<PathBuf>> {
     let Some(runtime) = &manifest.inputs.runtime_modules else {
         return Ok(Vec::new());
     };

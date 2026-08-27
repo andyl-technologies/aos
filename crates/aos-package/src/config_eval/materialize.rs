@@ -862,6 +862,7 @@ pub(crate) fn expose_config_schema_hash(config: &crate::types::ExposeConfigMeta)
                 "name": credential.name,
                 "units": credential.units,
                 "encrypted": credential.encrypted,
+                "optional": credential.optional,
             });
             let object = value
                 .as_object_mut()
@@ -1170,7 +1171,7 @@ pub struct ManifestInputs {
 pub struct RuntimeModulesInput {
     /// Descriptor schema covered by the set identity.
     pub schema: String,
-    /// `local-root` or `signed`.
+    /// `local-root`; signed mode is reserved until signature receipts exist.
     pub trust_mode: String,
     /// Recursive source-root store path.
     pub store_path: String,
@@ -1188,28 +1189,34 @@ impl RuntimeModulesInput {
         if self.schema != "aos.runtime-module-set/v1" {
             bail!("unsupported runtime module set schema {:?}", self.schema);
         }
-        if !matches!(self.trust_mode.as_str(), "local-root" | "signed") {
+        if self.trust_mode != "local-root" {
             bail!(
-                "unsupported runtime module trust mode {:?}",
+                "unsupported runtime module trust mode {:?}; signed ingestion requires signature evidence and is not implemented",
                 self.trust_mode
             );
         }
-        if (self.trust_mode == "signed") != self.signer_key.is_some() {
-            bail!("signed runtime module sets require exactly one signer identity");
+        if self.signer_key.is_some() {
+            bail!("local-root runtime module sets cannot claim a signer identity");
         }
         validate_canonical_store_path(&self.store_path)?;
         validate_content_sha256(&self.nar_hash)?;
-        if self.entrypoints.is_empty() {
-            bail!("runtime module set must contain at least one entrypoint");
-        }
         let mut seen = BTreeSet::new();
         for entry in &self.entrypoints {
             let path = Path::new(entry);
             if path.is_absolute()
                 || path.extension().and_then(|value| value.to_str()) != Some("nix")
-                || path
-                    .components()
-                    .any(|component| !matches!(component, std::path::Component::Normal(_)))
+                || path.components().any(|component| match component {
+                    std::path::Component::Normal(value) => match value.to_str() {
+                        Some(value) => {
+                            value.is_empty()
+                                || !value.chars().all(|ch| {
+                                    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.')
+                                })
+                        }
+                        None => true,
+                    },
+                    _ => true,
+                })
                 || !seen.insert(entry)
             {
                 bail!("runtime module entrypoint is unsafe or duplicated: {entry:?}");
@@ -2637,6 +2644,30 @@ mod tests {
                 .to_string()
                 .contains("duplicated")
         );
+
+        manifest
+            .inputs
+            .runtime_modules
+            .as_mut()
+            .unwrap()
+            .entrypoints = vec!["bad name.nix".to_string()];
+        assert!(
+            manifest
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("unsafe")
+        );
+
+        manifest
+            .inputs
+            .runtime_modules
+            .as_mut()
+            .unwrap()
+            .entrypoints = Vec::new();
+        manifest
+            .validate()
+            .expect("an explicit empty set remains a valid CAS transaction");
     }
 
     #[test]

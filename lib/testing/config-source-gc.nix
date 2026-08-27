@@ -151,7 +151,7 @@ in
               -I "$facts_store" \
               -I "$config_module_store" \
               "$entry" \
-              > "$destination"
+              > "$destination" || return $?
           }
 
           nix_store --init
@@ -272,8 +272,12 @@ in
             "$base_v2_store"; do
             assert_collected "$collected"
           done
-          if eval_entry "$work/abi-2-entry.nix" "$work/unrooted-eval.json" \
-            > "$work/unrooted-eval.stdout" 2> "$work/unrooted-eval.stderr"; then
+          set +e
+          eval_entry "$work/abi-2-entry.nix" "$work/unrooted-eval.json" \
+            > "$work/unrooted-eval.stdout" 2> "$work/unrooted-eval.stderr"
+          unrooted_status=$?
+          set -e
+          if [ "$unrooted_status" -eq 0 ]; then
             fail "cross-ABI re-evaluation succeeded after its inputs were collected"
           fi
           test ! -s "$work/unrooted-eval.json" \
