@@ -3,13 +3,14 @@
   lib,
   qemuPackage ? pkgs.qemu-crucible,
   patchName ? "0079-crucible-stopped-state-control-progress.patch",
+  exactSnapshotRestore ?
+    import ./phase2-qemu-exact-snapshot-restore.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase2.qemuStoppedStateControlProgress.liveRestore";
+      taskIds = ["T-QEMU-0079"];
+    },
 }: let
   patchSource = builtins.readFile (../../pkgs/emulation/qemu-patches + "/${patchName}");
-  exactSnapshotRestore = import ./phase2-qemu-exact-snapshot-restore.nix {
-    inherit pkgs lib;
-    attrPath = "checks.crucible.phase2.qemuFingerprintStateDomains.liveRestore";
-    taskIds = ["T-QEMU-0078"];
-  };
   inherit (import ./_lib.nix {inherit lib;}) failuresFor;
   failures = failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
     {

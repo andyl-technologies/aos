@@ -3,13 +3,14 @@
   lib,
   qemuPackage ? pkgs.qemu-crucible,
   patchName ? "0078-crucible-fingerprint-guest-state-domains.patch",
+  exactSnapshotRestore ?
+    import ./phase2-qemu-exact-snapshot-restore.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase2.qemuFingerprintStateDomains.liveRestore";
+      taskIds = ["T-QEMU-0078"];
+    },
 }: let
   patchSource = builtins.readFile (../../pkgs/emulation/qemu-patches + "/${patchName}");
-  exactSnapshotRestore = import ./phase2-qemu-exact-snapshot-restore.nix {
-    inherit pkgs lib;
-    attrPath = "checks.crucible.phase2.qemuFingerprintStateDomains.liveRestore";
-    taskIds = ["T-QEMU-0078"];
-  };
   inherit (import ./_lib.nix {inherit lib;}) failuresFor;
   failures = failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
     {

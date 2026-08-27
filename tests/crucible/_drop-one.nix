@@ -37,6 +37,7 @@
   expectTestFixtureEvidence ? [],
   # RTC clock mode for the behavioral sim-divergence probe (see _sim-diverge.nix).
   rtcClock ? "vm",
+  simDivergeDependencies ? [],
   dropOneRepository ?
     import ./_qemu-drop-one-repository.nix {
       inherit pkgs lib qemuPackage;
@@ -62,6 +63,7 @@
     import ./_sim-diverge.nix {
       inherit pkgs lib index qemuPackage buildDrv rtcClock;
       attrPath = "${attrPath}.simDiverge";
+      dependencies = simDivergeDependencies;
     },
 }: let
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
@@ -115,7 +117,7 @@ in
     # Only behavioral (no-symbol) patches consult the sim-divergence probe; for
     # symbol patches this stays empty so the probe is never built.
     SIM_DIVERGE =
-      if hasSymbols
+      if hasSymbols || expectTestFixtureEvidence != []
       then ""
       else "${simDiverge}";
 
@@ -243,12 +245,20 @@ in
               else
                 # Sim-gated behavioral patch (no exported ABI symbol). Boot the
                 # full-minus-N variant under the shared sim workload and read
-                # the live divergence classification.
-                cp "$SIM_DIVERGE/result" "$out/sim-diverge.result"
-                cp "$SIM_DIVERGE/variant-fingerprints" "$out/variant-fingerprints" 2>/dev/null || true
-                cls=$(gawk -F= '/^sim_discriminator_classification=/ { print $2 }' "$SIM_DIVERGE/result")
-                rtd=$(gawk -F= '/^runs_to_diverge=/ { print $2 }' "$SIM_DIVERGE/result")
-                sf=$(gawk -F= '/^semantic_form=/ { print $2 }' "$SIM_DIVERGE/result")
+                # the live divergence classification. Catalogued test-fixture
+                # patches bypass this irrelevant boot: their byte-identical
+                # shipped binary and exact source loss are checked below.
+                if [ -s "$testFixtureEvidenceMaterialPath" ]; then
+                  cls=none
+                  rtd=0
+                  sf=""
+                else
+                  cp "$SIM_DIVERGE/result" "$out/sim-diverge.result"
+                  cp "$SIM_DIVERGE/variant-fingerprints" "$out/variant-fingerprints" 2>/dev/null || true
+                  cls=$(gawk -F= '/^sim_discriminator_classification=/ { print $2 }' "$SIM_DIVERGE/result")
+                  rtd=$(gawk -F= '/^runs_to_diverge=/ { print $2 }' "$SIM_DIVERGE/result")
+                  sf=$(gawk -F= '/^semantic_form=/ { print $2 }' "$SIM_DIVERGE/result")
+                fi
                 case "$cls" in
                   diverges)
                     # N suppresses a nondeterminism that reappears without it:

@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase2.qemuExactSnapshotRestore",
   taskIds ? ["T-QEMU-5"],
+  dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -177,14 +178,16 @@ in
       pname = "crucible-phase2-qemu-exact-snapshot-restore";
       version = "0";
       src = crucibleSrc;
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.crucible-qemu-plugin
-        pkgs.grep
-        pkgs.qemu-crucible
-        pkgs.rust
-        pkgs.sed
-      ];
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.crucible-qemu-plugin
+          pkgs.grep
+          pkgs.qemu-crucible
+          pkgs.rust
+          pkgs.sed
+        ]
+        ++ dependencies;
       GUEST_KERNEL = "${busySmpGuest}/smp-idle-guest.elf";
       GUEST_KERNEL_IS_FILE = "1";
       DISKLESS_INITRD = "";

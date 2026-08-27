@@ -28,6 +28,9 @@
     inherit pkgs lib;
     attrPath = "${attrPath}.exactBoundaryVcpuIntrospection.liveNetwork";
     taskIds = ["T-QEMU-0089"];
+    # Run the heavyweight live certificates in one bounded sequence. Parallel
+    # patch variants can otherwise starve a correct guest progress loop.
+    dependencies = [qemuExactSnapshotRestore];
   };
   qemuLivePluginQuantumSmp = import ./phase2-qemu-live-plugin-quantum-smp.nix {
     inherit pkgs lib;
@@ -121,6 +124,7 @@
   };
   qemuExactSnapshotRestore = import ./phase2-qemu-exact-snapshot-restore.nix {
     inherit pkgs lib;
+    dependencies = [qemuPatchDropOne qemuLiveFaultHardware];
   };
   s1Fingerprint = import ./phase0-s1.nix {inherit pkgs lib;};
   qemuInstructionFaults = import ./phase2-qemu-instruction-faults.nix {
@@ -1093,18 +1097,21 @@
       patch = "0077-crucible-serialize-rr-cursor.patch";
       check = import ./phase2-qemu-rr-cursor-vmstate.nix {
         inherit pkgs lib qemuPackage;
+        exactSnapshotRestore = qemuExactSnapshotRestore;
       };
     }
     {
       patch = "0078-crucible-fingerprint-guest-state-domains.patch";
       check = import ./phase2-qemu-fingerprint-state-domains.nix {
         inherit pkgs lib qemuPackage;
+        exactSnapshotRestore = qemuExactSnapshotRestore;
       };
     }
     {
       patch = "0079-crucible-stopped-state-control-progress.patch";
       check = import ./phase2-qemu-stopped-state-control-progress.nix {
         inherit pkgs lib qemuPackage;
+        exactSnapshotRestore = qemuExactSnapshotRestore;
       };
     }
     {

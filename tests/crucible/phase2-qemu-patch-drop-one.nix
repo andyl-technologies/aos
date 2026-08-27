@@ -236,6 +236,13 @@
     ];
   };
 
+  hasSymbolDiscriminator = patch:
+    builtins.hasAttr patch symbolDiscriminators
+    && symbolDiscriminators.${patch} != [];
+  needsSimDiscriminator = patch:
+    !hasSymbolDiscriminator patch
+    && !builtins.hasAttr patch testFixtureDiscriminators;
+
   dropOnes =
     lib.imap (i: patch: let
       index = i + 1;
@@ -258,10 +265,31 @@
         if patch == "0007-crucible-block-rtc-read.patch"
         then "host"
         else "vm";
+      buildDrv = import ./_drop-one-build.nix {
+        inherit pkgs lib qemuPackage index dropOneRepository;
+        attrPath = "${attrPath}.p${toString index}.build";
+      };
+      priorBehavioralIndexes = builtins.filter (
+        prior:
+          needsSimDiscriminator (builtins.elemAt patchFiles prior)
+      ) (lib.genList (prior: prior) i);
+      previousBehavioralDependency =
+        if priorBehavioralIndexes == []
+        then []
+        else let
+          prior = builtins.elemAt priorBehavioralIndexes (
+            builtins.length priorBehavioralIndexes - 1
+          );
+        in [(builtins.elemAt dropOnes prior).simDiverge];
+      simDiverge = import ./_sim-diverge.nix {
+        inherit pkgs lib index qemuPackage buildDrv rtcClock;
+        attrPath = "${attrPath}.p${toString index}.simDiverge";
+        dependencies = previousBehavioralDependency;
+      };
     in {
-      inherit index patch symbols;
+      inherit index patch symbols simDiverge;
       drv = import ./_drop-one.nix {
-        inherit pkgs lib qemuPackage index rtcClock dropOneRepository;
+        inherit pkgs lib qemuPackage index rtcClock dropOneRepository buildDrv simDiverge;
         expectAbsentSymbols = symbols;
         expectInternalBuildFailures = internalBuildFailures;
         expectTestFixtureEvidence = testFixtureEvidence;
