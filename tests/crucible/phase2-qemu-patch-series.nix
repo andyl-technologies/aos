@@ -860,6 +860,13 @@
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "a fixed OOB QMP report binds the sealed Crucible plugin resource manifest to QEMU-observed callback registration, exact control/wake descriptors, shared-memory identity and topology, and optional modes without claiming an executing-callback count, ring freeze, callback parking, child reconstruction, or readiness proof";
     }
+    {
+      file = "0124-crucible-hot-fork-plugin-callback-barrier.patch";
+      catalogName = "crucible-hot-fork-plugin-callback-barrier";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "a versioned OOB QMP operation holds, observes, and releases the plugin-owned reversible callback-admission barrier; holding rejects new registered callback work and reports already-admitted in-flight callbacks without blocking QMP, while readiness bit 6 remains clear until host ring writers, plugin workers, and child reconstruction are also frozen";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

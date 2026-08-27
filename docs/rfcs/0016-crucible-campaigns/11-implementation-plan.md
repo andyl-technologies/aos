@@ -1626,6 +1626,16 @@ plugin-resource inventory prerequisite, not an executing-callback count, ring
 freeze, callback barrier, process-lifetime heap disposition, or child
 reinitializer; readiness bit 6 remains clear and the GPL/Apache process
 boundary is unchanged.
+The GPL plugin now also registers one process-lifetime reversible callback
+barrier backed by its existing teardown admission counter. A version-1 OOB QMP
+operation holds, observes, and releases that barrier. Holding is accepted only
+at the exact paused/device-flush boundary, rejects later live device and
+coverage callbacks without blocking QMP, and exposes the exact already-admitted
+in-flight count until it reaches zero. Release cannot reopen permanent teardown
+closure. This is the first retained T-CAM-6.2 subsystem barrier, but it still
+does not freeze host ring producers, drain plugin workers, retain a complete
+template transaction, or reconstruct child resources. Readiness bit 6 therefore
+remains clear and T-CAM-6.2 remains unchecked.
 QEMU now also exposes a version-1, 65,536-entry POSIX `QemuMutex` and
 `QemuRecMutex` inventory. It reports sorted lifecycle identities, owner thread,
 recursion depth, acquisition and condition waiters, active unlock transitions,

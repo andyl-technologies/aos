@@ -463,7 +463,7 @@ in
               -p crucible-shmem \
               --test gate_abi_conformance \
               -- --test-threads=1
-            require_test_set 11 protocol \
+            require_test_set 18 protocol \
               protocol_abi_conformance_runs_named_checks \
               -p crucible-protocol --test gate_abi_conformance
             cargo test \
@@ -518,7 +518,7 @@ in
               -p crucible-qemu-plugin \
               --lib io_wire_fuzz \
               -- --test-threads=1
-            require_test_set 39 plugin-doorbell \
+            require_test_set 54 plugin-doorbell \
               whitebox_doorbell::tests::whitebox_registration_off_mode_installs_no_trap_and_preserves_black_box \
               -p crucible-qemu-plugin --lib whitebox_doorbell
             cargo test \

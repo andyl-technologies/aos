@@ -7,7 +7,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 
 use crucible_protocol::{
@@ -28,6 +28,8 @@ static TIME_CONTROL_REQUESTS: AtomicU64 = AtomicU64::new(0);
 static WAKE_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
 static REGISTERED_WAKE_FD: AtomicI32 = AtomicI32::new(-1);
 static RESOURCE_MANIFEST: Mutex<Option<crate::QemuPluginResourceManifest>> = Mutex::new(None);
+static HOT_FORK_BARRIER_CALLBACK: AtomicUsize = AtomicUsize::new(0);
+static HOT_FORK_BARRIER_USERDATA: AtomicUsize = AtomicUsize::new(0);
 static TIME_CONTROL_TOKEN: u8 = 1;
 
 pub(super) struct LiveInstallFixture {
@@ -253,6 +255,7 @@ pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
         register_time_advance_cb: Some(test_register_time_advance_cb),
         register_wake_fd: test_register_wake_fd,
         register_resource_manifest: test_register_resource_manifest,
+        register_hot_fork_barrier: test_register_hot_fork_barrier,
         request_shutdown: test_request_shutdown,
         basic_block_coverage: None,
         register_vcpu_init: Some(test_register_vcpu_init),
@@ -277,6 +280,8 @@ pub(super) fn reset_capability_call_counts() {
     *RESOURCE_MANIFEST
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    HOT_FORK_BARRIER_CALLBACK.store(0, Ordering::SeqCst);
+    HOT_FORK_BARRIER_USERDATA.store(0, Ordering::SeqCst);
 }
 
 pub(super) fn time_control_request_count() -> u64 {
@@ -419,6 +424,35 @@ extern "C" fn test_register_resource_manifest(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(manifest);
     0
+}
+
+extern "C" fn test_register_hot_fork_barrier(
+    _plugin_id: crate::QemuPluginId,
+    callback: Option<crate::QemuPluginHotForkBarrierCbFn>,
+    userdata: *mut std::ffi::c_void,
+) -> i32 {
+    let Some(callback) = callback else {
+        return -1;
+    };
+    HOT_FORK_BARRIER_CALLBACK.store(callback as usize, Ordering::SeqCst);
+    HOT_FORK_BARRIER_USERDATA.store(userdata as usize, Ordering::SeqCst);
+    0
+}
+
+pub(super) fn invoke_hot_fork_barrier(
+    action: u32,
+) -> Result<crate::QemuPluginHotForkBarrierStatus, i32> {
+    let callback = HOT_FORK_BARRIER_CALLBACK.load(Ordering::SeqCst);
+    if callback == 0 {
+        return Err(-1);
+    }
+    // SAFETY: the registration stub stored this exact callback function type.
+    let callback =
+        unsafe { std::mem::transmute::<usize, crate::QemuPluginHotForkBarrierCbFn>(callback) };
+    let userdata = HOT_FORK_BARRIER_USERDATA.load(Ordering::SeqCst) as *mut std::ffi::c_void;
+    let mut status = crate::QemuPluginHotForkBarrierStatus::default();
+    let result = callback(action, std::ptr::from_mut(&mut status), userdata);
+    if result == 0 { Ok(status) } else { Err(result) }
 }
 
 extern "C" fn test_register_tcg_exec_cb(

@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "9c8c49e1782096816a5235d2aa8810c600c058d5141ea0fccd7596b4e4f649a4";
+  patchBranchBundleSha256 = "492d21b82cd7b6542a80ea3972f947eebd36b8f3d142ee9092805a0351f04da0";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "051e7c05ca6068d92a3cde393ec5f22191c694c9";
+  patchBranchHeadCommit = "852bc9d253f7e7ea94d2083ccfdc9232d3e667e9";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1164,7 +1164,17 @@ let
       catalogName = "crucible-hot-fork-plugin-resource-inventory";
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-5";
-      capability = "a fixed versioned OOB QMP report binds the sealed Crucible plugin resource manifest to QEMU-observed callback registration, exact control and wake descriptors, shared-memory identity and topology, optional plugin modes, and instantaneous active callbacks; the report remains observational and leaves plugin ring freeze, callback parking, and child reconstruction proofs clear";
+      capability = "a fixed versioned OOB QMP report binds the sealed Crucible plugin resource manifest to QEMU-observed callback registration, exact control and wake descriptors, shared-memory identity and topology, and optional plugin modes; the report remains observational and leaves executing-callback accounting, plugin ring freeze, callback parking, and child reconstruction proofs clear";
+    }
+    {
+      file = "0124-crucible-hot-fork-plugin-callback-barrier.patch";
+      branchSubject = "crucible: hold plugin callbacks for hot fork";
+      branchCommit = "852bc9d253f7e7ea94d2083ccfdc9232d3e667e9";
+      branchTree = "a4ffb31708841d192e4bb645008996b875d3be62";
+      catalogName = "crucible-hot-fork-plugin-callback-barrier";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "a versioned OOB QMP operation holds, observes, and releases the plugin-owned reversible callback-admission barrier; holding rejects new registered callback work and reports already-admitted in-flight callbacks without blocking QMP, while readiness bit 6 remains clear until host ring writers, plugin workers, and child reconstruction are also frozen";
     }
   ];
   catalogOnlyCapabilities = [

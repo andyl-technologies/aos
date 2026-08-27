@@ -93,6 +93,9 @@ pub const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL: &str = "qemu_plugin_register_wake
 /// QEMU plugin API symbol used to seal the fixed resource manifest.
 pub const QEMU_PLUGIN_REGISTER_RESOURCE_MANIFEST_SYMBOL: &str =
     "qemu_plugin_crucible_register_resource_manifest";
+/// QEMU plugin API symbol used to register the reversible hot-fork callback barrier.
+pub const QEMU_PLUGIN_REGISTER_HOT_FORK_BARRIER_SYMBOL: &str =
+    "qemu_plugin_crucible_register_hot_fork_barrier";
 /// QEMU plugin API symbol used to request a clean or fail-loud process shutdown.
 pub const QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL: &str = "qemu_plugin_request_shutdown";
 /// QEMU plugin API symbol that binds the immutable process generation.
@@ -134,6 +137,8 @@ const QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL_C: &[u8] = b"qemu_plugin_request_vmstop\
 const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL_C: &[u8] = b"qemu_plugin_register_wake_fd\0";
 const QEMU_PLUGIN_REGISTER_RESOURCE_MANIFEST_SYMBOL_C: &[u8] =
     b"qemu_plugin_crucible_register_resource_manifest\0";
+const QEMU_PLUGIN_REGISTER_HOT_FORK_BARRIER_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_register_hot_fork_barrier\0";
 const QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL_C: &[u8] = b"qemu_plugin_request_shutdown\0";
 const QEMU_PLUGIN_SET_PROCESS_GENERATION_SYMBOL_C: &[u8] =
     b"qemu_plugin_crucible_lifecycle_set_process_generation\0";
@@ -377,6 +382,41 @@ pub struct QemuPluginResourceManifest {
 
 /// QEMU function that validates and seals the plugin resource manifest.
 pub type QemuRegisterResourceManifestFn = extern "C" fn(*const QemuPluginResourceManifest) -> c_int;
+/// Hot-fork barrier callback action that acquires the reversible hold.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD: u32 = 1;
+/// Hot-fork barrier callback action that observes the current state.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY: u32 = 2;
+/// Hot-fork barrier callback action that releases the reversible hold.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE: u32 = 3;
+/// Current fixed-layout callback-barrier status schema.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION: u32 = 1;
+/// Callback-barrier status flag indicating that the reversible hold is active.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_HELD: u32 = 1_u32 << 0;
+/// Callback-barrier status flag indicating permanent teardown closure.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_TEARDOWN: u32 = 1_u32 << 1;
+
+/// Fixed-layout status copied from the plugin callback-admission owner.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct QemuPluginHotForkBarrierStatus {
+    /// Status schema version, currently one.
+    pub schema_version: u32,
+    /// Exact C ABI structure size.
+    pub struct_size: u32,
+    /// Closed flag mask describing held and teardown state.
+    pub flags: u32,
+    /// Reserved field that must remain zero.
+    pub reserved: u32,
+    /// Exact callbacks admitted but not yet returned at the snapshot instant.
+    pub in_flight: u64,
+}
+
+/// Plugin callback that changes or observes the callback-admission barrier.
+pub type QemuPluginHotForkBarrierCbFn =
+    extern "C" fn(u32, *mut QemuPluginHotForkBarrierStatus, *mut c_void) -> c_int;
+/// QEMU function that registers the process-lifetime hot-fork barrier callback.
+pub type QemuRegisterHotForkBarrierFn =
+    extern "C" fn(QemuPluginId, Option<QemuPluginHotForkBarrierCbFn>, *mut c_void) -> c_int;
 /// QEMU shutdown request function; nonzero selects the fail-loud host-error path.
 pub type QemuRequestShutdownFn = extern "C" fn(c_int);
 /// QEMU immutable process-generation provisioning function.
@@ -1655,6 +1695,28 @@ pub const fn resolve_qemu_register_resource_manifest_symbol()
     None
 }
 
+/// Resolves QEMU's reversible hot-fork callback-barrier registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_hot_fork_barrier_symbol() -> Option<QemuRegisterHotForkBarrierFn> {
+    let symbol = resolve_process_symbol(QEMU_PLUGIN_REGISTER_HOT_FORK_BARRIER_SYMBOL_C);
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the non-null address was resolved by the exact patched-QEMU
+        // symbol whose callback and argument types match this ABI declaration.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterHotForkBarrierFn>(symbol) })
+    }
+}
+
+/// Returns no hot-fork barrier registration export on non-Unix hosts.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_hot_fork_barrier_symbol() -> Option<QemuRegisterHotForkBarrierFn>
+{
+    None
+}
+
 /// Resolves QEMU's plugin-initiated shutdown export from the loaded process.
 #[cfg(unix)]
 #[must_use]
@@ -2250,6 +2312,10 @@ fn install_owned_boundary(
         resolve_qemu_register_resource_manifest_symbol(),
         QEMU_PLUGIN_REGISTER_RESOURCE_MANIFEST_SYMBOL,
     )?;
+    let register_hot_fork_barrier = require_runtime_api(
+        resolve_qemu_register_hot_fork_barrier_symbol(),
+        QEMU_PLUGIN_REGISTER_HOT_FORK_BARRIER_SYMBOL,
+    )?;
     let request_shutdown = resolve_qemu_request_shutdown_symbol();
     let set_process_generation = resolve_qemu_set_process_generation_symbol();
     let register_tcg_exec_cb = resolve_qemu_register_tcg_exec_cb_symbol();
@@ -2314,6 +2380,7 @@ fn install_owned_boundary(
         register_time_advance_cb,
         register_wake_fd: runtime_apis.register_wake_fd(),
         register_resource_manifest,
+        register_hot_fork_barrier,
         request_shutdown,
         basic_block_coverage,
         register_vcpu_init,

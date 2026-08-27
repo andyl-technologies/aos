@@ -1891,6 +1891,33 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   coordinator can acknowledge plugin readiness.
 - **Risk:** F.
 
+### crucible-hot-fork-plugin-callback-barrier — retain callback quiescence
+
+- **Patch:** `0124-crucible-hot-fork-plugin-callback-barrier.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4].
+- **Mechanism:** after every covered Rust callback shares one admission counter,
+  the plugin registers a process-lifetime barrier operation with QEMU. A fixed
+  version-1 OOB QMP command holds, queries, or releases the reversible barrier.
+  Hold is accepted only at the exact paused/device-flush boundary, atomically
+  rejects later callbacks, and reports already-admitted callbacks without
+  blocking QMP. Release cannot reopen permanent teardown closure. QEMU binds
+  the barrier to the sealed manifest's plugin identity and derives quiescence
+  from exact held, teardown, and in-flight state.
+- **Micro-test:** plugin tests cover admission races, reversible drain/reopen,
+  and teardown precedence. Strict Rust QMP tests reject unknown fields,
+  malformed unregistered state, contradictory quiescence, and wrong-action
+  responses. The live patched-QEMU gate requires a stable exact unregistered
+  query shape and rejects release without a registered plugin; stock QEMU must
+  not expose the command.
+- **Inertness:** registration and query are dormant unless the Crucible plugin
+  is loaded and an authorized OOB caller invokes the command. Holding covers
+  only plugin callbacks already registered in the sealed manifest. It does not
+  freeze host ring writers, drain plugin workers, clone shared-memory state,
+  reconstruct child resources, coordinate `fork(2)`, or change readiness bit
+  6. The future QEMU-owned coordinator must compose and roll back every
+  remaining owner before acknowledging plugin readiness.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

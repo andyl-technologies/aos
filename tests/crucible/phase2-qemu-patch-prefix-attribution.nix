@@ -567,6 +567,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0124-crucible-hot-fork-plugin-callback-barrier.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

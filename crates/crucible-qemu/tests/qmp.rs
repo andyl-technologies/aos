@@ -12,7 +12,7 @@ use std::time::Duration;
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT,
-    QMP_HOT_FORK_REQUIRED_PROOFS, QMP_QUERY_CPUS_FAST_COMMAND,
+    QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_REQUIRED_PROOFS, QMP_QUERY_CPUS_FAST_COMMAND,
     QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
@@ -668,6 +668,85 @@ fn hot_fork_plugin_resource_inventory_rejects_malformed_contracts() -> Result<()
             })
         ));
     }
+    Ok(())
+}
+
+#[test]
+fn hot_fork_plugin_barrier_holds_queries_and_releases_oob() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"registered":true,"manifest-consistent":true,"held":true,"teardown-closed":false,"in-flight":1,"quiescent":false}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"registered":true,"manifest-consistent":true,"held":true,"teardown-closed":false,"in-flight":0,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":3,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let held = client.hold_hot_fork_plugin_barrier()?;
+    assert!(held.registered());
+    assert!(held.manifest_consistent());
+    assert!(held.held());
+    assert_eq!(held.in_flight(), 1);
+    assert!(!held.quiescent());
+    let drained = client.query_hot_fork_plugin_barrier()?;
+    assert_eq!(drained.generation(), 2);
+    assert!(drained.quiescent());
+    let released = client.release_hot_fork_plugin_barrier()?;
+    assert!(!released.held());
+    assert!(!released.teardown_closed());
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    for (index, action) in [(1, "hold"), (2, "query"), (3, "release")] {
+        assert_eq!(
+            oob_execute_name(json_line(&lines, index)),
+            Some(QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND)
+        );
+        assert_eq!(
+            json_line(&lines, index)
+                .pointer("/arguments/action")
+                .and_then(Value::as_str),
+            Some(action)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn hot_fork_plugin_barrier_rejects_malformed_or_wrong_action_state() -> Result<(), Box<dyn Error>> {
+    for response in [
+        r#"{"return":{"schema-version":2,"generation":2,"registered":true,"manifest-consistent":true,"held":true,"teardown-closed":false,"in-flight":0,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"registered":true,"manifest-consistent":true,"held":true,"teardown-closed":false,"in-flight":1,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":0,"registered":false,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false}}"#,
+    ] {
+        let mut client = QmpClient::connect(scripted_qmp([
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            response,
+        ]))?;
+        assert!(matches!(
+            client.hold_hot_fork_plugin_barrier(),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkPluginBarrier,
+                ..
+            })
+        ));
+    }
+
+    let mut client = QmpClient::connect(scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":0,"registered":false,"manifest-consistent":false,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false}}"#,
+    ]))?;
+    assert!(matches!(
+        client.release_hot_fork_plugin_barrier(),
+        Err(QmpError::MalformedTypedResponse {
+            command: QmpCommandKind::HotForkPluginBarrier,
+            ..
+        })
+    ));
     Ok(())
 }
 

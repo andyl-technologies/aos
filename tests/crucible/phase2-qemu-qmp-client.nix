@@ -85,6 +85,18 @@
         needle = "pub fn quit";
       }
       {
+        label = "hot-fork plugin barrier hold API";
+        needle = "pub fn hold_hot_fork_plugin_barrier";
+      }
+      {
+        label = "hot-fork plugin barrier query API";
+        needle = "pub fn query_hot_fork_plugin_barrier";
+      }
+      {
+        label = "hot-fork plugin barrier release API";
+        needle = "pub fn release_hot_fork_plugin_barrier";
+      }
+      {
         label = "query-jobs wire command";
         needle = "QMP_QUERY_JOBS_COMMAND";
       }
@@ -200,6 +212,14 @@
         label = "typed error test";
         needle = "qmp_error_response_is_typed_result_error";
       }
+      {
+        label = "hot-fork plugin barrier command test";
+        needle = "hot_fork_plugin_barrier_holds_queries_and_releases_oob";
+      }
+      {
+        label = "hot-fork plugin barrier malformed-response test";
+        needle = "hot_fork_plugin_barrier_rejects_malformed_or_wrong_action_state";
+      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -276,8 +296,8 @@ in
             check_scope=task-level
             related_gates=gate:control-responsive,gate:replay-oracle,gate:content-address
             rust_test=crucible-qemu::qmp
-            commands=qmp_capabilities,snapshot-save,snapshot-load,snapshot-delete,query-jobs,query-crucible-hot-fork-readiness,query-crucible-hot-fork-thread-inventory,query-crucible-hot-fork-rcu-inventory,query-crucible-hot-fork-aio-inventory,query-crucible-hot-fork-aio-handler-inventory,query-crucible-hot-fork-block-backend-inventory,query-crucible-hot-fork-plugin-resource-inventory,query-crucible-hot-fork-bottom-half-inventory,query-crucible-hot-fork-mutex-inventory,query-crucible-hot-fork-timer-inventory,quit
-            public_api=connect,savevm,loadvm,delete_snapshot,query_hot_fork_readiness,query_hot_fork_thread_inventory,query_hot_fork_rcu_inventory,query_hot_fork_aio_inventory,query_hot_fork_aio_handler_inventory,query_hot_fork_block_backend_inventory,query_hot_fork_bottom_half_inventory,query_hot_fork_mutex_inventory,query_hot_fork_timer_inventory,quit
+            commands=qmp_capabilities,snapshot-save,snapshot-load,snapshot-delete,query-jobs,crucible-hot-fork-plugin-barrier,query-crucible-hot-fork-readiness,query-crucible-hot-fork-thread-inventory,query-crucible-hot-fork-rcu-inventory,query-crucible-hot-fork-aio-inventory,query-crucible-hot-fork-aio-handler-inventory,query-crucible-hot-fork-block-backend-inventory,query-crucible-hot-fork-plugin-resource-inventory,query-crucible-hot-fork-bottom-half-inventory,query-crucible-hot-fork-mutex-inventory,query-crucible-hot-fork-timer-inventory,quit
+            public_api=connect,savevm,loadvm,delete_snapshot,hold_hot_fork_plugin_barrier,query_hot_fork_plugin_barrier,release_hot_fork_plugin_barrier,query_hot_fork_readiness,query_hot_fork_thread_inventory,query_hot_fork_rcu_inventory,query_hot_fork_aio_inventory,query_hot_fork_aio_handler_inventory,query_hot_fork_block_backend_inventory,query_hot_fork_bottom_half_inventory,query_hot_fork_mutex_inventory,query_hot_fork_timer_inventory,quit
             capabilities=oob-required
             aio_handler_transport=exec-oob
             block_backend_transport=exec-oob
