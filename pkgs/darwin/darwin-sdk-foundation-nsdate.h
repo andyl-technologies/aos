@@ -3,6 +3,7 @@
 #import <Foundation/Foundation.h>
 
 typedef double NSTimeInterval;
+#define NSTimeIntervalSince1970 978307200.0
 
 @interface NSDate : NSObject <NSCopying>
 + (instancetype)dateWithTimeIntervalSince1970:(NSTimeInterval)seconds;

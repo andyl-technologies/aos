@@ -49,9 +49,20 @@ AOS_SUBCLASS(AOSSmokeValue, NSValue)
 }
 @end
 
+@interface AOSSmokeNonatomicProperty : NSObject {
+  id _object;
+}
+@property(nonatomic, retain) id object;
+@end
+
+@implementation AOSSmokeNonatomicProperty
+@synthesize object = _object;
+@end
+
 int main(int argc, char **argv) {
   NSDate *date = [NSDate dateWithTimeIntervalSince1970:0.0];
   NSTimeInterval interval = [date timeIntervalSince1970];
+  NSTimeInterval absoluteInterval = interval + NSTimeIntervalSince1970;
   NSString *string = [NSString stringWithString:[NSString stringWithUTF8String:"aos"]];
   unichar character = 0;
   [string getCharacters:&character];
@@ -70,10 +81,13 @@ int main(int argc, char **argv) {
 
   NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
   [dictionary setObject:string forKey:string];
-  NSEnumerator *keyEnumerator = [dictionary keyEnumerator];
+  NSDictionary *baseDictionary = dictionary;
+  NSEnumerator *keyEnumerator = [baseDictionary keyEnumerator];
   NSArray *keys = [dictionary allKeys];
   NSMutableSet *set = [[NSMutableSet alloc] init];
   [set addObject:[NSNull null]];
+  NSSet *baseSet = set;
+  NSEnumerator *setEnumerator = [baseSet objectEnumerator];
 
   NSFileManager *fileManager = [NSFileManager defaultManager];
   const char *path = [fileManager fileSystemRepresentationWithPath:string];
@@ -118,6 +132,9 @@ int main(int argc, char **argv) {
 
   NSImage *image = [[NSImage alloc] initWithData:data];
   NSData *tiff = [image TIFFRepresentation];
+  AOSSmokeNonatomicProperty *propertySmoke = [[AOSSmokeNonatomicProperty alloc] init];
+  propertySmoke.object = string;
+  BOOL propertyRetained = propertySmoke.object == string;
   const void *volatile dataSymbols[] = {
     NSDefaultRunLoopMode,
     NSInvalidArgumentException,
@@ -141,5 +158,6 @@ int main(int argc, char **argv) {
   [bytesString release];
   [objects autorelease];
   [image release];
-  return argv == NULL || character == 0 || interval < 0 || number == nil || data.length == 0 || objectEnumerator == nil || keyEnumerator == nil || keys.count == 0 || set == nil || roundTrip == nil || returnValue == NULL || size.width != point.x || range.length == rect.size.height || indexed == nil || keyword == 0 || aeDesc == NULL || descriptorData == nil || integer == 0 || boolean || itemCount < 0 || descriptorType == 0 || tiff == nil || dataSymbols[0] == NULL;
+  [propertySmoke release];
+  return argv == NULL || character == 0 || absoluteInterval < NSTimeIntervalSince1970 || number == nil || data.length == 0 || objectEnumerator == nil || keyEnumerator == nil || setEnumerator == nil || keys.count == 0 || set == nil || roundTrip == nil || returnValue == NULL || size.width != point.x || range.length == rect.size.height || indexed == nil || keyword == 0 || aeDesc == NULL || descriptorData == nil || integer == 0 || boolean || itemCount < 0 || descriptorType == 0 || tiff == nil || !propertyRetained || dataSymbols[0] == NULL;
 }
