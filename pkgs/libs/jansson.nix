@@ -2,11 +2,13 @@
 {
   mkDerivation,
   fetchurl,
+  stdenv,
   gnumake,
   cmake,
   ninja,
 }: let
   version = "2.15.0";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
     pname = "jansson";
@@ -30,10 +32,24 @@ in
     phases = [
       {
         name = "unpack";
-        script = ''
-          tar xf $src
-          cd jansson-${version}
-        '';
+        script =
+          if isDarwinCross
+          then ''
+            tar xf $src
+            cd jansson-${version}
+
+            # Cross CMake uses static-library try-compiles, which falsely
+            # report ELF symbol-version linker switches as supported. Mach-O
+            # shared libraries do not use GNU symbol-version scripts.
+            sed -i \
+              -e 's/if (SYMVER_WORKS)/if (SYMVER_WORKS AND NOT APPLE)/' \
+              -e 's/if (VSCRIPT_WORKS)/if (VSCRIPT_WORKS AND NOT APPLE)/' \
+              CMakeLists.txt
+          ''
+          else ''
+            tar xf $src
+            cd jansson-${version}
+          '';
       }
       {
         name = "configure";
