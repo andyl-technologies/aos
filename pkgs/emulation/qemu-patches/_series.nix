@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "492d21b82cd7b6542a80ea3972f947eebd36b8f3d142ee9092805a0351f04da0";
+  patchBranchBundleSha256 = "0d8c2a4bb34a18044e88d1707977f632f6e4f759813f021a676d48caae91e29d";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "852bc9d253f7e7ea94d2083ccfdc9232d3e667e9";
+  patchBranchHeadCommit = "08f0f9f07cbaaf02370b38e072c459118af0c8c4";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1175,6 +1175,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4";
       capability = "a versioned OOB QMP operation holds, observes, and releases the plugin-owned reversible callback-admission barrier; holding rejects new registered callback work and reports already-admitted in-flight callbacks without blocking QMP, while readiness bit 6 remains clear until host ring writers, plugin workers, and child reconstruction are also frozen";
+    }
+    {
+      file = "0125-crucible-hot-fork-template-coordinator.patch";
+      branchSubject = "crucible: coordinate hot-fork template preparation";
+      branchCommit = "08f0f9f07cbaaf02370b38e072c459118af0c8c4";
+      branchTree = "9fd170957f39e963c5ce05553370d344ae5d38db";
+      catalogName = "crucible-hot-fork-template-coordinator";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "a serialized versioned OOB QMP coordinator owns retained template preparation, acquires the plugin callback barrier only at the exact paused/device-flush boundary, reports draining without blocking QMP, rolls every acquired barrier back when complete readiness remains unavailable, and refuses to claim prepared until all nine proof bits are present in one retained transaction";
     }
   ];
   catalogOnlyCapabilities = [

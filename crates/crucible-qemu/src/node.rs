@@ -864,6 +864,51 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Starts or advances QEMU's retained hot-fork template transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QMP operation, subsystem
+    /// barrier acquisition or rollback, or strict response validation fails.
+    fn prepare_hot_fork_template(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "prepare_hot_fork_template",
+            "hot-fork template coordination is not implemented by this QMP channel",
+        ))
+    }
+
+    /// Queries QEMU's retained hot-fork template transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
+    /// response validation fails.
+    fn query_hot_fork_template(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query_hot_fork_template",
+            "hot-fork template coordination is not implemented by this QMP channel",
+        ))
+    }
+
+    /// Aborts QEMU's retained hot-fork template transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QMP operation, barrier
+    /// rollback, or strict response validation fails.
+    fn abort_hot_fork_template(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "abort_hot_fork_template",
+            "hot-fork template coordination is not implemented by this QMP channel",
+        ))
+    }
+
     /// Queries QEMU's exact bounded allocated-bottom-half inventory.
     ///
     /// # Errors
@@ -1857,6 +1902,48 @@ impl QemuNode {
             ),
             inventory,
         )
+    }
+
+    /// Starts or advances QEMU's retained hot-fork template transaction.
+    ///
+    /// This does not fork a process. A blocked result proves that QEMU acquired
+    /// and then rolled back every currently implemented subsystem barrier after
+    /// the complete readiness bitmap remained unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU cannot acquire, observe, or
+    /// roll back the transaction or violates the closed response contract.
+    pub fn prepare_hot_fork_template(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.channels
+            .qmp_machine_control
+            .prepare_hot_fork_template()
+    }
+
+    /// Queries QEMU's retained hot-fork template transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O or strict response
+    /// validation fails.
+    pub fn query_hot_fork_template(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.channels.qmp_machine_control.query_hot_fork_template()
+    }
+
+    /// Aborts QEMU's retained hot-fork template transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU cannot roll back every
+    /// acquired subsystem barrier or violates the closed abort response.
+    pub fn abort_hot_fork_template(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.channels.qmp_machine_control.abort_hot_fork_template()
     }
 
     /// Returns numeric identity components after authenticating a preowned executable path.

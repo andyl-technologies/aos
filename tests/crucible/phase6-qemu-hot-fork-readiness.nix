@@ -126,6 +126,11 @@ in
           jq -e -s 'any(.[]; has("error"))' "$out/stock-plugin-barrier.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible plugin callback-barrier command"
           qmp "$stock_socket" \
+            '{"exec-oob":"crucible-hot-fork-template","arguments":{"action":"query"}}' \
+            "$out/stock-template-coordinator.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-template-coordinator.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible hot-fork template coordinator"
+          qmp "$stock_socket" \
             '{"exec-oob":"query-crucible-hot-fork-bottom-half-inventory"}' \
             "$out/stock-bottom-half-inventory.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-bottom-half-inventory.json" >/dev/null \
@@ -648,6 +653,57 @@ in
             || { cat "$out/plugin-barrier-release.json" >&2; fail "QEMU released an unregistered plugin barrier"; }
 
           qmp_pair "$patched_socket" \
+            '{"exec-oob":"crucible-hot-fork-template","arguments":{"action":"query"}}' \
+            "$out/template-coordinator-query.json"
+          jq -e -s '
+            [.[] | select(has("return")) | .return |
+             select(has("transaction-active"))] as $reports |
+            ($reports | length) == 2 and $reports[0] == $reports[1] and
+            $reports[0] == {
+              "schema-version": 1,
+              "generation": 0,
+              "outcome": "idle",
+              "transaction-active": false,
+              "required-proofs": 511,
+              "acknowledged-proofs": 3,
+              "missing-proofs": 508,
+              "plugin-barrier": {
+                "schema-version": 1,
+                "generation": 0,
+                "registered": false,
+                "manifest-consistent": false,
+                "held": false,
+                "teardown-closed": false,
+                "in-flight": 0,
+                "quiescent": false
+              },
+              "rollback-complete": true,
+              "ready": false
+            }
+          ' "$out/template-coordinator-query.json" >/dev/null \
+            || { cat "$out/template-coordinator-query.json" >&2; fail "QEMU template coordinator idle state was not exact and stable"; }
+          qmp "$patched_socket" \
+            '{"exec-oob":"crucible-hot-fork-template","arguments":{"action":"prepare"}}' \
+            "$out/template-coordinator-prepare.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/template-coordinator-prepare.json" >/dev/null \
+            || { cat "$out/template-coordinator-prepare.json" >&2; fail "QEMU prepared a hot-fork template outside the exact boundary"; }
+          qmp "$patched_socket" \
+            '{"exec-oob":"crucible-hot-fork-template","arguments":{"action":"query"}}' \
+            "$out/template-coordinator-after-rejection.json"
+          jq -e -s '
+            [.[] | select(has("return")) | .return |
+             select(has("transaction-active"))] as $reports |
+            ($reports | length) == 1 and
+            $reports[0].generation == 0 and
+            $reports[0].outcome == "idle" and
+            $reports[0]."transaction-active" == false and
+            $reports[0]."rollback-complete" == true and
+            $reports[0].ready == false and
+            $reports[0]."plugin-barrier".held == false
+          ' "$out/template-coordinator-after-rejection.json" >/dev/null \
+            || { cat "$out/template-coordinator-after-rejection.json" >&2; fail "QEMU retained state after rejecting template preparation"; }
+
+          qmp_pair "$patched_socket" \
             '{"exec-oob":"query-crucible-hot-fork-bottom-half-inventory"}' \
             "$out/bottom-half-inventory.json"
           jq -e -s --slurpfile aio "$out/aio-inventory-1.json" '
@@ -881,7 +937,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0124-crucible-hot-fork-plugin-callback-barrier.patch
+          patch=0125-crucible-hot-fork-template-coordinator.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -921,6 +977,12 @@ in
           plugin_barrier_unregistered_shape=true
           plugin_barrier_release_unregistered_rejected=true
           plugin_ring_proof_acknowledged=false
+          template_coordinator_schema_version=1
+          template_coordinator_idle_stable=true
+          template_coordinator_unregistered_shape=true
+          template_prepare_without_exact_boundary_rejected=true
+          template_transaction_active=false
+          template_ready=false
           bottom_half_inventory_schema_version=1
           bottom_half_inventory_bound=65536
           bottom_half_inventory_stable=true

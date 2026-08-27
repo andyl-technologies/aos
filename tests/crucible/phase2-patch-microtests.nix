@@ -1672,6 +1672,23 @@
         '';
       };
     }
+    {
+      patch = "0125-crucible-hot-fork-template-coordinator.patch";
+      check = certifyExactPatch {
+        patchName = "0125-crucible-hot-fork-template-coordinator.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-template-coordinator";
+        liveEvidence = ''
+          grep -Fxq 'template_coordinator_schema_version=1' "$live_result"
+          grep -Fxq 'template_coordinator_idle_stable=true' "$live_result"
+          grep -Fxq 'template_coordinator_unregistered_shape=true' "$live_result"
+          grep -Fxq 'template_prepare_without_exact_boundary_rejected=true' "$live_result"
+          grep -Fxq 'template_transaction_active=false' "$live_result"
+          grep -Fxq 'template_ready=false' "$live_result"
+          grep -Fxq 'incomplete_report_ready=false' "$live_result"
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

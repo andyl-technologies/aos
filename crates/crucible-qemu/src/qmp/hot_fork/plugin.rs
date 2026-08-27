@@ -474,8 +474,15 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
 pub(crate) fn parse_hot_fork_plugin_barrier_state(
     value: &Value,
 ) -> Result<QmpHotForkPluginBarrierState, QmpError> {
+    parse_hot_fork_plugin_barrier_state_for(QmpCommandKind::HotForkPluginBarrier, value)
+}
+
+pub(super) fn parse_hot_fork_plugin_barrier_state_for(
+    command: QmpCommandKind,
+    value: &Value,
+) -> Result<QmpHotForkPluginBarrierState, QmpError> {
     let malformed = || QmpError::MalformedTypedResponse {
-        command: QmpCommandKind::HotForkPluginBarrier,
+        command,
         response: value.to_string(),
     };
     let object = value.as_object().ok_or_else(&malformed)?;
