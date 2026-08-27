@@ -1909,7 +1909,9 @@ in
           compatibility-version: 1.0.0
           reexported-libraries:
             - targets: [ x86_64-macos, arm64-macos ]
-              libraries: [ '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation' ]
+              libraries:
+                - '/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork'
+                - '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'
           exports:
             - targets: [ x86_64-macos, arm64-macos ]
               symbols:
