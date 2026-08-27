@@ -69,6 +69,7 @@
   rust,
   wasm-bindgen-cli,
   nodejs,
+  stdenv,
   buildPackages,
   # Extra cargo feature flags for purpose-built test artifacts. Space-separated;
   # empty for the default production build.
@@ -84,6 +85,55 @@
   buildCc = buildPackages.cc;
   buildConsoleDist = buildPackages.aos-hub-console-dist;
   buildMiniflare = buildPackages.miniflare;
+  nativeRustTarget = stdenv.buildPlatform.config;
+  nativeRustCargoPrefix = lib.toUpper (builtins.replaceStrings ["-"] ["_"] nativeRustTarget);
+  nativeRustCcPrefix = builtins.replaceStrings ["-"] ["_"] nativeRustTarget;
+  nativeRustToolchain = buildPackages.mkDerivation {
+    pname = "aos-hub-worker-native-rust-toolchain";
+    version = "0";
+    src = null;
+    runtimeDeps = [buildCc];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/bin"
+
+          write_wrapper() {
+            tool=$1
+            wrapper=$2
+            {
+              printf '%s\n' '#!${buildPackages.bash}/bin/bash'
+              printf '%s\n' \
+                'unset AOS_CROSS_COMPILING AOS_GOARCH AOS_GOOS' \
+                'unset AOS_HARDENING_DISABLE AOS_HARDENING_ENABLE' \
+                'unset AOS_OBJECT_FORMAT AOS_RUST_TARGET' \
+                'unset AOS_TARGET_ARCH AOS_TARGET_PLATFORM' \
+                'unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH' \
+                'unset LIBRARY_PATH MACOSX_DEPLOYMENT_TARGET SDKROOT' \
+                'unset NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS'
+              printf 'exec %s "$@"\n' "$tool"
+            } > "$out/bin/$wrapper"
+            chmod +x "$out/bin/$wrapper"
+          }
+
+          write_wrapper ${buildCc}/bin/cc cc
+          write_wrapper ${buildCc}/bin/c++ c++
+          write_wrapper ${buildCc}/bin/ar ar
+          write_wrapper ${buildCc}/bin/ranlib ranlib
+        '';
+      }
+    ];
+  };
+  nativeRustToolchainEnv = lib.optionalAttrs stdenv.isCross {
+    "CARGO_TARGET_${nativeRustCargoPrefix}_LINKER" = "${nativeRustToolchain}/bin/cc";
+    "CARGO_TARGET_${nativeRustCargoPrefix}_AR" = "${nativeRustToolchain}/bin/ar";
+    "CC_${nativeRustCcPrefix}" = "${nativeRustToolchain}/bin/cc";
+    "CXX_${nativeRustCcPrefix}" = "${nativeRustToolchain}/bin/c++";
+    "AR_${nativeRustCcPrefix}" = "${nativeRustToolchain}/bin/ar";
+    "RANLIB_${nativeRustCcPrefix}" = "${nativeRustToolchain}/bin/ranlib";
+  };
+  mkHubDerivation = args: mkDerivation (args // nativeRustToolchainEnv);
 
   # The Cargo workspace plus its generated API-manifest input are the source.
   # `aos-proto-types` validates that manifest in its build script, so the Worker
@@ -146,7 +196,7 @@
     buildDeps = [buildProtobuf buildCc buildConsoleDist];
   };
 in
-  mkDerivation {
+  mkHubDerivation {
     pname = "aos-hub-worker-dist";
     inherit version src;
 
