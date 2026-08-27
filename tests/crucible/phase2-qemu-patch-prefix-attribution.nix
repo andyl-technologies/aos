@@ -563,6 +563,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0123-crucible-hot-fork-plugin-resource-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

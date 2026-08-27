@@ -17,7 +17,7 @@ use std::time::Duration;
 
 pub use self::error::QemuLiveNetworkIoGateError;
 use self::support::{
-    GateSendAuthorizer, acknowledgement_offset_icount, bounded_drive_polls, certify_run,
+    DrivePollBudget, GateSendAuthorizer, acknowledgement_offset_icount, certify_run,
     connect_qmp_priming_main_loop, deterministic_projection, node_id, path_text, probe_emit_icount,
     reap_child, vm_launch_config,
 };

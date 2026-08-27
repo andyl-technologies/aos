@@ -853,6 +853,13 @@
       enforces = "HFORK-3,HFORK-5";
       capability = "a bounded OOB QMP inventory exposes every allocated BlockBackend with stable backend/AioContext identity, visibility, attachment, permission, quiesce, queue-policy, and in-flight state without claiming block-graph traversal, a retained writable-root barrier, or readiness proof";
     }
+    {
+      file = "0123-crucible-hot-fork-plugin-resource-inventory.patch";
+      catalogName = "crucible-hot-fork-plugin-resource-inventory";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "a fixed OOB QMP report binds the sealed Crucible plugin resource manifest to QEMU-observed callback registration, exact control/wake descriptors, shared-memory identity and topology, and optional modes without claiming an executing-callback count, ring freeze, callback parking, child reconstruction, or readiness proof";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

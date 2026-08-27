@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "8bca3011804115e2fb1ff7372b091787911f7bb79838a9d0e26c78c45ccb159e";
+  patchBranchBundleSha256 = "9c8c49e1782096816a5235d2aa8810c600c058d5141ea0fccd7596b4e4f649a4";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "d2b92ba1d107de82c36729f8ea369ae2ffbcab9a";
+  patchBranchHeadCommit = "051e7c05ca6068d92a3cde393ec5f22191c694c9";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1149,12 +1149,22 @@ let
     {
       file = "0122-crucible-hot-fork-block-backend-inventory.patch";
       branchSubject = "crucible: inventory block backends for hot fork";
-      branchCommit = "ecd57c611ccf0e668e8ffa4e1a326e9feebcd676";
+      branchCommit = "cac1288401fc126be15068bef1a207ab2ee131f3";
       branchTree = "fed38a88088b9de2d7afc642a2e71a783597de3e";
       catalogName = "crucible-hot-fork-block-backend-inventory";
       class = "F";
       enforces = "HFORK-3,HFORK-5";
       capability = "a bounded versioned OOB QMP inventory reports every allocated BlockBackend with stable process-local backend and AioContext identities, monitor visibility, root/device attachment, requested and shared permissions, permission suppression, quiesce depth, request-queue policy, and in-flight I/O; the report remains observational, does not traverse or retain the block graph, and leaves the immutable writable-root readiness proof clear";
+    }
+    {
+      file = "0123-crucible-hot-fork-plugin-resource-inventory.patch";
+      branchSubject = "crucible: inventory plugin resources for hot fork";
+      branchCommit = "051e7c05ca6068d92a3cde393ec5f22191c694c9";
+      branchTree = "011b8dd139f2cbff8ed446abbae0369ea6fb5ece";
+      catalogName = "crucible-hot-fork-plugin-resource-inventory";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "a fixed versioned OOB QMP report binds the sealed Crucible plugin resource manifest to QEMU-observed callback registration, exact control and wake descriptors, shared-memory identity and topology, optional plugin modes, and instantaneous active callbacks; the report remains observational and leaves plugin ring freeze, callback parking, and child reconstruction proofs clear";
     }
   ];
   catalogOnlyCapabilities = [

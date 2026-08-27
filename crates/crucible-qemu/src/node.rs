@@ -849,6 +849,21 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Queries QEMU's exact sealed Crucible plugin-resource inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
+    /// versioned response validation fails.
+    fn query_hot_fork_plugin_resource_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkPluginResourceInventory, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query_hot_fork_plugin_resource_inventory",
+            "hot-fork plugin-resource inventory is not implemented by this QMP channel",
+        ))
+    }
+
     /// Queries QEMU's exact bounded allocated-bottom-half inventory.
     ///
     /// # Errors
@@ -1724,6 +1739,11 @@ impl QemuNode {
             .qmp_machine_control
             .query_hot_fork_block_backend_inventory()
             .map_err(crate::QemuHotForkAuditError::BlockBackendInventory)?;
+        let plugin_resources_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_plugin_resource_inventory()
+            .map_err(crate::QemuHotForkAuditError::PluginResourceInventory)?;
         let bottom_halves_before = self
             .channels
             .qmp_machine_control
@@ -1765,6 +1785,14 @@ impl QemuNode {
             .map_err(crate::QemuHotForkAuditError::BottomHalfInventory)?;
         if bottom_halves_before != bottom_halves_after {
             return Err(crate::QemuHotForkAuditError::BottomHalfInventoryChanged);
+        }
+        let plugin_resources_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_plugin_resource_inventory()
+            .map_err(crate::QemuHotForkAuditError::PluginResourceInventory)?;
+        if plugin_resources_before != plugin_resources_after {
+            return Err(crate::QemuHotForkAuditError::PluginResourceInventoryChanged);
         }
         let block_backends_after = self
             .channels
@@ -1822,6 +1850,7 @@ impl QemuNode {
                 aio_before,
                 aio_handlers_before,
                 block_backends_before,
+                plugin_resources_before,
                 bottom_halves_before,
                 mutexes_before,
                 timers_before,

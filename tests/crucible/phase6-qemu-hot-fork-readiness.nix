@@ -116,6 +116,11 @@ in
           jq -e -s 'any(.[]; has("error"))' "$out/stock-block-backend-inventory.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible block-backend inventory command"
           qmp "$stock_socket" \
+            '{"exec-oob":"query-crucible-hot-fork-plugin-resource-inventory"}' \
+            "$out/stock-plugin-resource-inventory.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-plugin-resource-inventory.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible plugin-resource inventory command"
+          qmp "$stock_socket" \
             '{"exec-oob":"query-crucible-hot-fork-bottom-half-inventory"}' \
             "$out/stock-bottom-half-inventory.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-bottom-half-inventory.json" >/dev/null \
@@ -551,6 +556,68 @@ in
             || { cat "$out/block-backend-inventory.json" >&2; fail "QEMU block-backend inventory changed without a lifecycle or structural transition"; }
 
           qmp_pair "$patched_socket" \
+            '{"exec-oob":"query-crucible-hot-fork-plugin-resource-inventory"}' \
+            "$out/plugin-resource-inventory.json"
+          jq -e -s '
+            [.[] | select(has("return"))][-1].return as $report |
+            ($report | keys | sort) == [
+              "app-random",
+              "callback-mask",
+              "callback-mask-consistent",
+              "complete",
+              "control-fd",
+              "coverage",
+              "fingerprint",
+              "generation",
+              "node-count",
+              "observed-callback-mask",
+              "plugin-id",
+              "process-generation",
+              "registered",
+              "resource-mask",
+              "schema-version",
+              "shmem-device",
+              "shmem-inode",
+              "shmem-length",
+              "slot-index",
+              "state-dump",
+              "wake-fd",
+              "whitebox"
+            ] and
+            $report == {
+              "schema-version": 1,
+              "generation": 0,
+              "registered": false,
+              "complete": false,
+              "process-generation": 0,
+              "plugin-id": 0,
+              "resource-mask": 0,
+              "callback-mask": 0,
+              "observed-callback-mask": 0,
+              "callback-mask-consistent": true,
+              "shmem-device": 0,
+              "shmem-inode": 0,
+              "shmem-length": 0,
+              "slot-index": 0,
+              "node-count": 0,
+              "control-fd": 0,
+              "wake-fd": 0,
+              "coverage": false,
+              "whitebox": false,
+              "fingerprint": false,
+              "state-dump": false,
+              "app-random": false
+            }
+          ' "$out/plugin-resource-inventory.json" >/dev/null \
+            || { cat "$out/plugin-resource-inventory.json" >&2; fail "QEMU unregistered plugin-resource inventory was not exact and fail-closed"; }
+          jq -e -s '
+            [.[] | select(has("return")) | .return |
+             select(has("resource-mask"))] as $reports |
+            ($reports | length) == 2 and $reports[0] == $reports[1]
+          ' "$out/plugin-resource-inventory.json" >/dev/null \
+            || { cat "$out/plugin-resource-inventory.json" >&2; fail "QEMU plugin-resource inventory changed without registration"; }
+
+          qmp_pair "$patched_socket" \
             '{"exec-oob":"query-crucible-hot-fork-bottom-half-inventory"}' \
             "$out/bottom-half-inventory.json"
           jq -e -s --slurpfile aio "$out/aio-inventory-1.json" '
@@ -784,7 +851,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0122-crucible-hot-fork-block-backend-inventory.patch
+          patch=0123-crucible-hot-fork-plugin-resource-inventory.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -816,6 +883,10 @@ in
           block_backends_context_bound=true
           block_backends_vmstate_observed=true
           block_snapshot_proof_acknowledged=false
+          plugin_resource_inventory_schema_version=1
+          plugin_resource_inventory_stable=true
+          plugin_resource_inventory_unregistered_shape=true
+          plugin_ring_proof_acknowledged=false
           bottom_half_inventory_schema_version=1
           bottom_half_inventory_bound=65536
           bottom_half_inventory_stable=true

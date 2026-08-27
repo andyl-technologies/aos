@@ -1607,10 +1607,25 @@ identical reports, and requires every backend to name a context in the matching
 AioContext inventory. The query does not touch the live BQL-owned graph. It is
 an inventory prerequisite, not the drained block-graph/write-root barrier, so
 readiness bit 5 remains clear. The audit rejects incomplete thread, RCU,
-AioContext, AIO-handler, block-backend, bottom-half, mutex, or timer reports.
+AioContext, AIO-handler, block-backend, plugin-resource, bottom-half, mutex, or
+timer reports.
 This is observational and
 still does not retain a drain/park barrier across `fork(2)`; readiness bit 3
 remains clear.
+The GPL plugin now also seals a version-1 fixed resource manifest after callback,
+wake-descriptor, and fault-admission setup but before successful readiness. It
+binds the exact process/plugin generation, closed required/optional resource and
+callback masks, shared-memory device/inode/length, topology slot/count, and
+control/wake descriptor numbers. Patched QEMU independently records every
+required and optional callback registration, rejects a mismatched plugin or
+mask, retains the manifest by value, and exposes one strict OOB scalar query.
+The Apache host brackets procfs capture with identical query results,
+authenticates both descriptor target classes, and requires the matching
+writable/shared mapping bytes to equal the sealed length. This is a concrete
+plugin-resource inventory prerequisite, not an executing-callback count, ring
+freeze, callback barrier, process-lifetime heap disposition, or child
+reinitializer; readiness bit 6 remains clear and the GPL/Apache process
+boundary is unchanged.
 QEMU now also exposes a version-1, 65,536-entry POSIX `QemuMutex` and
 `QemuRecMutex` inventory. It reports sorted lifecycle identities, owner thread,
 recursion depth, acquisition and condition waiters, active unlock transitions,
@@ -1631,7 +1646,8 @@ reinitializers, so readiness bit 3 remains clear.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
 no safe non-coordinator child disposition, and none of the views can prove a
-retained mutex, AIO/BH/timer, or RCU barrier, block, plugin, external-thread, or
+retained mutex, AIO/BH/timer, plugin, or RCU barrier, block write-root boundary,
+process-lifetime plugin ownership, external-thread disposition, or
 child-reinitialization state. They cannot promote a readiness bit. T-CAM-6.1
 remains unchecked until the complete supported-profile registry and all
 subsystem-owned proofs are implemented and accepted in the Phase 6 lab.

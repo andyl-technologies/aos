@@ -90,6 +90,9 @@ pub const QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL: &str = "qemu_plugin_force_vcpu_exi
 pub const QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL: &str = "qemu_plugin_request_vmstop";
 /// QEMU plugin API symbol used to register the setup wake fd with QEMU.
 pub const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL: &str = "qemu_plugin_register_wake_fd";
+/// QEMU plugin API symbol used to seal the fixed resource manifest.
+pub const QEMU_PLUGIN_REGISTER_RESOURCE_MANIFEST_SYMBOL: &str =
+    "qemu_plugin_crucible_register_resource_manifest";
 /// QEMU plugin API symbol used to request a clean or fail-loud process shutdown.
 pub const QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL: &str = "qemu_plugin_request_shutdown";
 /// QEMU plugin API symbol that binds the immutable process generation.
@@ -129,6 +132,8 @@ const QEMU_PLUGIN_ICOUNT_RAW_SYMBOL_C: &[u8] = b"qemu_plugin_icount_raw\0";
 const QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL_C: &[u8] = b"qemu_plugin_force_vcpu_exit\0";
 const QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL_C: &[u8] = b"qemu_plugin_request_vmstop\0";
 const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL_C: &[u8] = b"qemu_plugin_register_wake_fd\0";
+const QEMU_PLUGIN_REGISTER_RESOURCE_MANIFEST_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_register_resource_manifest\0";
 const QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL_C: &[u8] = b"qemu_plugin_request_shutdown\0";
 const QEMU_PLUGIN_SET_PROCESS_GENERATION_SYMBOL_C: &[u8] =
     b"qemu_plugin_crucible_lifecycle_set_process_generation\0";
@@ -337,6 +342,41 @@ pub type QemuForceVcpuExitFn = extern "C" fn();
 pub type QemuRequestVmstopFn = extern "C" fn() -> c_int;
 /// QEMU wake-fd registration exported by `crucible-plugin-wake-fd`.
 pub type QemuRegisterWakeFdFn = extern "C" fn(c_int) -> c_int;
+
+/// Fixed-layout scalar plugin resource manifest consumed by patched QEMU.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct QemuPluginResourceManifest {
+    /// Manifest schema version, currently one.
+    pub schema_version: u32,
+    /// Exact C ABI structure size.
+    pub struct_size: u32,
+    /// Nonzero host-supervised QEMU process generation.
+    pub process_generation: u64,
+    /// Nonzero QEMU plugin identity.
+    pub plugin_id: u64,
+    /// Closed plugin-owned resource-class mask.
+    pub resource_mask: u64,
+    /// Closed callback-registration-class mask.
+    pub callback_mask: u64,
+    /// Shared-memory backing device number captured before mmap.
+    pub shmem_device: u64,
+    /// Shared-memory backing inode captured before mmap.
+    pub shmem_inode: u64,
+    /// Exact shared-memory mapping length.
+    pub shmem_length: u64,
+    /// Assigned VM slot index.
+    pub slot_index: u32,
+    /// Shared-memory topology node count.
+    pub node_count: u32,
+    /// Plugin control-socket descriptor number.
+    pub control_fd: i32,
+    /// QEMU-registered wake descriptor number.
+    pub wake_fd: i32,
+}
+
+/// QEMU function that validates and seals the plugin resource manifest.
+pub type QemuRegisterResourceManifestFn = extern "C" fn(*const QemuPluginResourceManifest) -> c_int;
 /// QEMU shutdown request function; nonzero selects the fail-loud host-error path.
 pub type QemuRequestShutdownFn = extern "C" fn(c_int);
 /// QEMU immutable process-generation provisioning function.
@@ -1593,6 +1633,28 @@ pub const fn resolve_qemu_register_wake_fd_symbol() -> Option<QemuRegisterWakeFd
     None
 }
 
+/// Resolves QEMU's fixed plugin resource-manifest registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_resource_manifest_symbol() -> Option<QemuRegisterResourceManifestFn> {
+    let symbol = resolve_process_symbol(QEMU_PLUGIN_REGISTER_RESOURCE_MANIFEST_SYMBOL_C);
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the non-null address was resolved by the exact patched-QEMU
+        // symbol whose C structure and return type match this ABI declaration.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterResourceManifestFn>(symbol) })
+    }
+}
+
+/// Returns no resource-manifest registration export on non-Unix hosts.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_resource_manifest_symbol()
+-> Option<QemuRegisterResourceManifestFn> {
+    None
+}
+
 /// Resolves QEMU's plugin-initiated shutdown export from the loaded process.
 #[cfg(unix)]
 #[must_use]
@@ -2184,6 +2246,10 @@ fn install_owned_boundary(
     let force_vcpu_exit = resolve_qemu_force_vcpu_exit_symbol();
     let request_vmstop = resolve_qemu_request_vmstop_symbol();
     let register_wake_fd = resolve_qemu_register_wake_fd_symbol();
+    let register_resource_manifest = require_runtime_api(
+        resolve_qemu_register_resource_manifest_symbol(),
+        QEMU_PLUGIN_REGISTER_RESOURCE_MANIFEST_SYMBOL,
+    )?;
     let request_shutdown = resolve_qemu_request_shutdown_symbol();
     let set_process_generation = resolve_qemu_set_process_generation_symbol();
     let register_tcg_exec_cb = resolve_qemu_register_tcg_exec_cb_symbol();
@@ -2247,6 +2313,7 @@ fn install_owned_boundary(
         advance_time_ns,
         register_time_advance_cb,
         register_wake_fd: runtime_apis.register_wake_fd(),
+        register_resource_manifest,
         request_shutdown,
         basic_block_coverage,
         register_vcpu_init,

@@ -431,6 +431,72 @@ overlay reconstruction. It therefore MUST NOT acknowledge proof bit 5. The
 future QEMU-owned coordinator must combine the complete backend registry with a
 drained, retained block-graph/write-root barrier and exact child disposition.
 
+Patched QEMU and the loaded Crucible plugin additionally establish one sealed,
+scalar plugin-resource inventory. The plugin registers this manifest only after
+all callback families, the wake descriptor, and fault admission are installed,
+and before it sends the successful setup acknowledgement. QEMU independently
+records callback registration and exposes the joined state through an
+out-of-band query:
+
+```text
+CrucibleHotForkPluginResourceInventory {
+    schema-version: u32 = 1,
+    generation: u64,
+    registered: bool,
+    complete: bool,
+    process-generation: u64,
+    plugin-id: u64,
+    resource-mask: u64,
+    callback-mask: u64,
+    observed-callback-mask: u64,
+    callback-mask-consistent: bool,
+    shmem-device: u64,
+    shmem-inode: u64,
+    shmem-length: u64,
+    slot-index: u32,
+    node-count: u32,
+    control-fd: i64,
+    wake-fd: i64,
+    coverage: bool,
+    whitebox: bool,
+    fingerprint: bool,
+    state-dump: bool,
+    app-random: bool,
+}
+```
+
+Resource-mask bits 0 through 9 are mandatory and respectively mean control
+socket, shared-memory mapping, wake descriptor, time control, vCPU callbacks,
+network callbacks, block callbacks, 9p callbacks, accelerator callbacks, and
+fault transport. Optional bits 10 through 14 respectively mean coverage,
+white-box, fingerprint, raw state dump, and app-random resources; no other bit
+is valid. Callback-mask bits 0 and 2 through 11 are mandatory and respectively
+mean vCPU initialization, idle/resume, control boundary, sim shared memory,
+time advance, network, block submit/poll, block event/continuation, block wait,
+9p, and accelerator callbacks. Bit 1 records the legacy TCG-execution hook when
+installed; the current runtime deliberately leaves it clear. Optional bits 12
+and 13 respectively mean TB translation and flush callbacks; no other bit is
+valid. Coverage requires both feature callback bits, white-box requires TB
+translation, and the five feature booleans MUST equal their resource bits.
+
+A registered shape requires nonzero process/plugin identity, inode, mapping
+length, and node count; a slot below that node count; two distinct nonnegative
+descriptors; every mandatory mask bit; exact equality between plugin-declared
+and QEMU-observed callback masks; and the optional relationships above.
+`complete` MUST equal that full predicate. Before registration, every manifest
+field and feature boolean is zero/false and `complete` is false. The host
+requires the control and wake descriptors to exist in the exact process
+inventory with Unix-socket and eventfd targets, and decodes `shmem-device` as
+Linux `dev_t`. Every mapping of that device/inode MUST be writable and shared,
+and their checked aggregate length MUST equal `shmem-length`.
+
+The manifest is by-value GPL-side process state and the host receives only this
+versioned QMP response; it does not place a Rust layout or native pointer in a
+cross-process protocol. The response inventories installed resources but does
+not count executing callbacks, freeze a ring, stop future callbacks, retain a
+process-lifetime barrier, or define child dispositions. It therefore MUST NOT
+acknowledge proof bit 6 or authorize a fork.
+
 The AioContext, bottom-half, AIO-handler, and block-backend responses are still
 observational. They do not drain or park a context, prevent a producer from
 enqueueing work after a query, hold a callback barrier, or hold quiescence
@@ -536,8 +602,8 @@ the timer and AIO/BH barriers across the fork transaction.
 The Phase 6 host audit complements that query with bounded operational evidence
 for one exact Linux process generation. It accepts only while proof bit 2 is
 set, brackets the procfs capture with two identical thread-registry, RCU,
-AioContext, AIO-handler, block-backend, bottom-half, mutex, and timer snapshots
-inside two identical readiness reports,
+AioContext, AIO-handler, block-backend, plugin-resource, bottom-half, mutex, and
+timer snapshots inside two identical readiness reports,
 authenticates the QEMU PID/start-time/executable identity before and after, and
 rejects any incomplete QMP inventory before requiring two complete
 process-inventory passes to match byte-for-byte. Every
@@ -560,11 +626,11 @@ Exceeding a bound, changing process generation, readiness, or QEMU registry,
 missing a registered thread from procfs, or observing different process passes
 rejects the audit.
 This observed fixed point is deliberately not a quiescence proof: it does not
-retain a mutex or QEMU-internal AIO/BH/timer barrier, traverse the BQL-owned
-block graph, inventory plugin internals, resolve external-thread dispositions,
-or run child reinitializers. The block inventory cannot prove an immutable
-writable-root boundary. It cannot set any readiness bit, prepare a template, or
-authorize `fork(2)`.
+retain a mutex or QEMU-internal AIO/BH/timer/plugin barrier, traverse the
+BQL-owned block graph, inventory process-lifetime plugin heap ownership, resolve
+external-thread dispositions, or run child reinitializers. The block inventory
+cannot prove an immutable writable-root boundary. It cannot set any readiness
+bit, prepare a template, or authorize `fork(2)`.
 The thread registry identifies the live RCU callback and AIO-context workers
 by subsystem-specific unresolved dispositions. The RCU inventory exposes the
 exact observed reader and callback state, the AioContext inventory exposes

@@ -3,9 +3,11 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::thread;
 
 use crucible_protocol::{
@@ -24,6 +26,8 @@ use super::super::LiveInstallCapabilities;
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 static TIME_CONTROL_REQUESTS: AtomicU64 = AtomicU64::new(0);
 static WAKE_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
+static REGISTERED_WAKE_FD: AtomicI32 = AtomicI32::new(-1);
+static RESOURCE_MANIFEST: Mutex<Option<crate::QemuPluginResourceManifest>> = Mutex::new(None);
 static TIME_CONTROL_TOKEN: u8 = 1;
 
 pub(super) struct LiveInstallFixture {
@@ -100,6 +104,21 @@ impl LiveInstallFixture {
             self.plugin.as_raw_fd()
         ))
         .unwrap_or_else(|error| panic!("test white-box plugin args should parse: {error}"))
+    }
+
+    pub(super) fn resource_manifest_basis(&self) -> (u64, u64, u64, u32, i32, i32) {
+        let metadata = self
+            .region_file
+            .metadata()
+            .unwrap_or_else(|error| panic!("test region metadata should read: {error}"));
+        (
+            metadata.dev(),
+            metadata.ino(),
+            self.region_len,
+            self.node_count,
+            self.plugin.as_raw_fd(),
+            self.wake_file.as_raw_fd(),
+        )
     }
 
     pub(super) fn spawn_host(&self, expected_status: u8) -> thread::JoinHandle<()> {
@@ -233,6 +252,7 @@ pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
         advance_time_ns: Some(test_direct_advance),
         register_time_advance_cb: Some(test_register_time_advance_cb),
         register_wake_fd: test_register_wake_fd,
+        register_resource_manifest: test_register_resource_manifest,
         request_shutdown: test_request_shutdown,
         basic_block_coverage: None,
         register_vcpu_init: Some(test_register_vcpu_init),
@@ -253,6 +273,10 @@ pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
 pub(super) fn reset_capability_call_counts() {
     TIME_CONTROL_REQUESTS.store(0, Ordering::SeqCst);
     WAKE_REGISTRATIONS.store(0, Ordering::SeqCst);
+    REGISTERED_WAKE_FD.store(-1, Ordering::SeqCst);
+    *RESOURCE_MANIFEST
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
 pub(super) fn time_control_request_count() -> u64 {
@@ -261,6 +285,16 @@ pub(super) fn time_control_request_count() -> u64 {
 
 pub(super) fn wake_registration_count() -> u64 {
     WAKE_REGISTRATIONS.load(Ordering::SeqCst)
+}
+
+pub(super) fn registered_wake_fd() -> i32 {
+    REGISTERED_WAKE_FD.load(Ordering::SeqCst)
+}
+
+pub(super) fn registered_resource_manifest() -> Option<crate::QemuPluginResourceManifest> {
+    *RESOURCE_MANIFEST
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 pub(super) fn join_host(host: thread::JoinHandle<()>) {
@@ -366,8 +400,24 @@ pub(super) extern "C" fn test_request_vmstop() -> std::os::raw::c_int {
     0
 }
 
-extern "C" fn test_register_wake_fd(_fd: i32) -> i32 {
+extern "C" fn test_register_wake_fd(fd: i32) -> i32 {
+    REGISTERED_WAKE_FD.store(fd, Ordering::SeqCst);
     WAKE_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
+    0
+}
+
+extern "C" fn test_register_resource_manifest(
+    manifest: *const crate::QemuPluginResourceManifest,
+) -> i32 {
+    if manifest.is_null() {
+        return -1;
+    }
+    // SAFETY: the synchronous registration call retains the manifest value
+    // for this callback invocation, and this test copies it before returning.
+    let manifest = unsafe { *manifest };
+    *RESOURCE_MANIFEST
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(manifest);
     0
 }
 

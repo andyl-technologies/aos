@@ -1,0 +1,664 @@
+diff --git a/MAINTAINERS b/MAINTAINERS
+index ac1b6993b..0ab11430d 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -3839,6 +3839,7 @@ S: Maintained
+ F: docs/devel/tcg-plugins.rst
+ F: plugins/
+ F: include/qemu/crucible-fault.h
++F: include/qemu/crucible-hot-fork-plugin.h
+ F: plugins/crucible-fault-instruction.c
+ F: plugins/crucible-fault-memory.c
+ F: tests/tcg/plugins/crucible-instruction.c
+diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
+index d4e5c8d67..e1abdecb3 100644
+--- a/accel/tcg/tcg-accel-ops-sim-shmem.c
++++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
+@@ -4,6 +4,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/qemu-plugin.h"
++#include "qemu/crucible-hot-fork-plugin.h"
+ #include "qemu/plugin.h"
+ #include "tcg-accel-ops-sim-shmem.h"
+ 
+@@ -24,6 +25,10 @@ void qemu_plugin_register_sim_shmem_dispatch_cb(
+     crucible_sim_shmem_userdata = userdata;
+     crucible_max_advance_icount_cb = max_advance_icount_cb;
+     crucible_publish_icount_cb = publish_icount_cb;
++    if (publish_icount_cb && max_advance_icount_cb) {
++        qemu_plugin_crucible_callback_registered(
++            0, QEMU_PLUGIN_CRUCIBLE_CALLBACK_SIM_SHMEM);
++    }
+ }
+ 
+ void qemu_plugin_register_sim_shmem_observer_cb(
+diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
+index 6d33dc601..fbb79a315 100644
+--- a/block/crucible-shmem.c
++++ b/block/crucible-shmem.c
+@@ -24,6 +24,7 @@
+ #include "block/block-io.h"
+ #include "block/block_int.h"
+ #include "qemu/qemu-plugin.h"
++#include "qemu/crucible-hot-fork-plugin.h"
+ #include "qemu/plugin.h"
+ 
+ #define CRUCIBLE_SHMEM_OPT_SIZE BLOCK_OPT_SIZE
+@@ -97,6 +98,10 @@ void qemu_plugin_register_blk_cb(qemu_plugin_blk_submit_cb_t submit_cb,
+     crucible_blk_userdata = userdata;
+     crucible_blk_poll_cb = poll_cb;
+     crucible_blk_submit_cb = submit_cb;
++    if (submit_cb && poll_cb) {
++        qemu_plugin_crucible_callback_registered(
++            0, QEMU_PLUGIN_CRUCIBLE_CALLBACK_BLOCK);
++    }
+ }
+ 
+ void qemu_plugin_register_blk_wait_cb(qemu_plugin_blk_wait_cb_t wait_cb,
+@@ -104,6 +109,10 @@ void qemu_plugin_register_blk_wait_cb(qemu_plugin_blk_wait_cb_t wait_cb,
+ {
+     crucible_blk_wait_userdata = userdata;
+     crucible_blk_wait_cb = wait_cb;
++    if (wait_cb) {
++        qemu_plugin_crucible_callback_registered(
++            0, QEMU_PLUGIN_CRUCIBLE_CALLBACK_BLOCK_WAIT);
++    }
+ }
+ 
+ void qemu_plugin_register_blk_event_cb(
+@@ -118,6 +127,10 @@ void qemu_plugin_register_blk_event_cb(
+     crucible_blk_event_commit_cb = commit_cb;
+     crucible_blk_transport_save_cb = save_cb;
+     crucible_blk_transport_restore_cb = restore_cb;
++    if (event_cb && commit_cb && save_cb && restore_cb) {
++        qemu_plugin_crucible_callback_registered(
++            0, QEMU_PLUGIN_CRUCIBLE_CALLBACK_BLOCK_EVENT);
++    }
+ }
+ 
+ static bool crucible_blk_callbacks_ready(void)
+diff --git a/hw/9pfs/virtio-9p-device.c b/hw/9pfs/virtio-9p-device.c
+index 923c8ddfd..852dc9ab4 100644
+--- a/hw/9pfs/virtio-9p-device.c
++++ b/hw/9pfs/virtio-9p-device.c
+@@ -27,6 +27,7 @@
+ #include "qemu/iov.h"
+ #include "qemu/module.h"
+ #include "qemu/qemu-plugin.h"
++#include "qemu/crucible-hot-fork-plugin.h"
+ #include "qemu/plugin.h"
+ #include "system/crucible-plugin-wake.h"
+ #include "system/runstate.h"
+@@ -49,6 +50,10 @@ void qemu_plugin_register_9p_cb(qemu_plugin_9p_burst_cb_t burst_start_cb,
+     crucible_9p_poll_cb = poll_cb;
+     crucible_9p_submit_cb = submit_cb;
+     crucible_9p_burst_start_cb = burst_start_cb;
++    if (burst_start_cb && submit_cb && poll_cb && burst_done_cb) {
++        qemu_plugin_crucible_callback_registered(
++            0, QEMU_PLUGIN_CRUCIBLE_CALLBACK_9P);
++    }
+ }
+ 
+ static bool crucible_9p_callbacks_ready(void)
+diff --git a/hw/virtio/virtio-crucible-accelerator.c b/hw/virtio/virtio-crucible-accelerator.c
+index d74054192..5cc2e0fdf 100644
+--- a/hw/virtio/virtio-crucible-accelerator.c
++++ b/hw/virtio/virtio-crucible-accelerator.c
+@@ -14,6 +14,7 @@
+ #include "qemu/module.h"
+ #include "qemu/crucible-fault.h"
+ #include "qemu/qemu-plugin.h"
++#include "qemu/crucible-hot-fork-plugin.h"
+ #include "qemu/plugin.h"
+ #include "hw/virtio/virtio-crucible-accelerator.h"
+ #include "migration/qemu-file-types.h"
+@@ -61,6 +62,11 @@ void qemu_plugin_register_accelerator_cb(
+     accelerator_restore_abort_cb = restore_abort_cb;
+     accelerator_cancel_cb = cancel_cb;
+     accelerator_userdata = userdata;
++    if (submit_cb && poll_cb && wait_cb && restore_begin_cb && restore_cb &&
++        restore_commit_cb && restore_abort_cb && cancel_cb) {
++        qemu_plugin_crucible_callback_registered(
++            0, QEMU_PLUGIN_CRUCIBLE_CALLBACK_ACCELERATOR);
++    }
+ }
+ 
+ static bool accelerator_callbacks_ready(void)
+diff --git a/include/qemu/crucible-hot-fork-plugin.h b/include/qemu/crucible-hot-fork-plugin.h
+new file mode 100644
+index 000000000..78ad15c8b
+--- /dev/null
++++ b/include/qemu/crucible-hot-fork-plugin.h
+@@ -0,0 +1,26 @@
++/*
++ * Crucible plugin resource inventory shared by QEMU subsystems and QMP.
++ *
++ * Copyright (c) Andyl, Inc.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef QEMU_CRUCIBLE_HOT_FORK_PLUGIN_H
++#define QEMU_CRUCIBLE_HOT_FORK_PLUGIN_H
++
++#include "qemu/qemu-plugin.h"
++
++typedef struct QemuPluginCrucibleHotForkInventory {
++    struct qemu_plugin_crucible_resource_manifest manifest;
++    uint64_t generation;
++    uint64_t observed_callback_mask;
++    bool registered;
++    bool complete;
++} QemuPluginCrucibleHotForkInventory;
++
++void qemu_plugin_crucible_callback_registered(qemu_plugin_id_t plugin_id,
++                                              uint64_t callback_mask);
++void qemu_plugin_crucible_hot_fork_inventory(
++    QemuPluginCrucibleHotForkInventory *inventory);
++
++#endif
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index e17585095..c8699e8bd 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1151,6 +1151,76 @@ int qemu_plugin_inject_preemption(uint64_t at_icount,
+ QEMU_PLUGIN_API
+ int qemu_plugin_register_wake_fd(int fd);
+ 
++/* Versioned Crucible plugin resource manifest. */
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_VERSION 1
++
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_CONTROL_SOCKET (UINT64_C(1) << 0)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_SHMEM_MAPPING (UINT64_C(1) << 1)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_WAKE_FD (UINT64_C(1) << 2)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_TIME_CONTROL (UINT64_C(1) << 3)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_VCPU (UINT64_C(1) << 4)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_NETWORK (UINT64_C(1) << 5)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_BLOCK (UINT64_C(1) << 6)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_9P (UINT64_C(1) << 7)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_ACCELERATOR (UINT64_C(1) << 8)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_FAULT_TRANSPORT (UINT64_C(1) << 9)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_COVERAGE (UINT64_C(1) << 10)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_WHITEBOX (UINT64_C(1) << 11)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_FINGERPRINT (UINT64_C(1) << 12)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_STATE_DUMP (UINT64_C(1) << 13)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_APP_RANDOM (UINT64_C(1) << 14)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_ALL ((UINT64_C(1) << 15) - 1)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_REQUIRED ((UINT64_C(1) << 10) - 1)
++
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_VCPU_INIT (UINT64_C(1) << 0)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_TCG_EXEC (UINT64_C(1) << 1)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_VCPU_IDLE_RESUME (UINT64_C(1) << 2)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_CONTROL_BOUNDARY (UINT64_C(1) << 3)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_SIM_SHMEM (UINT64_C(1) << 4)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_TIME_ADVANCE (UINT64_C(1) << 5)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_NETWORK (UINT64_C(1) << 6)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_BLOCK (UINT64_C(1) << 7)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_BLOCK_EVENT (UINT64_C(1) << 8)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_BLOCK_WAIT (UINT64_C(1) << 9)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_9P (UINT64_C(1) << 10)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_ACCELERATOR (UINT64_C(1) << 11)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_TB_TRANSLATION (UINT64_C(1) << 12)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_FLUSH (UINT64_C(1) << 13)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_ALL ((UINT64_C(1) << 14) - 1)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_REQUIRED \
++    (((UINT64_C(1) << 12) - 1) & \
++     ~QEMU_PLUGIN_CRUCIBLE_CALLBACK_TCG_EXEC)
++
++struct qemu_plugin_crucible_resource_manifest {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    uint64_t process_generation;
++    uint64_t plugin_id;
++    uint64_t resource_mask;
++    uint64_t callback_mask;
++    uint64_t shmem_device;
++    uint64_t shmem_inode;
++    uint64_t shmem_length;
++    uint32_t slot_index;
++    uint32_t node_count;
++    int32_t control_fd;
++    int32_t wake_fd;
++};
++
++/**
++ * qemu_plugin_crucible_register_resource_manifest() - seal plugin resources
++ * @manifest: complete versioned scalar manifest retained by QEMU
++ *
++ * The call succeeds once, only after every mandatory callback and the exact
++ * wake descriptor are registered. QEMU cross-checks its observed callback set
++ * and retains a by-value copy for the out-of-band hot-fork query.
++ *
++ * Returns zero on success or a negative errno-style status on failure.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_register_resource_manifest(
++    const struct qemu_plugin_crucible_resource_manifest *manifest);
++
+ /**
+  * qemu_plugin_request_shutdown() - request plugin-owned QEMU teardown
+  * @failure: nonzero selects a fail-loud host-error exit
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index efd498d2d..e3e469de6 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -15,6 +15,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/plugin.h"
++#include "qemu/crucible-hot-fork-plugin.h"
+ #include "qemu/sockets.h"
+ #include "monitor-internal.h"
+ #include "monitor/qdev.h"
+@@ -435,6 +436,49 @@ qmp_query_crucible_hot_fork_block_backend_inventory(Error **errp)
+     return report;
+ }
+ 
++CrucibleHotForkPluginResourceInventory *
++qmp_query_crucible_hot_fork_plugin_resource_inventory(Error **errp)
++{
++    CrucibleHotForkPluginResourceInventory *report =
++        g_new0(CrucibleHotForkPluginResourceInventory, 1);
++    QemuPluginCrucibleHotForkInventory inventory;
++    const struct qemu_plugin_crucible_resource_manifest *manifest;
++
++    (void)errp;
++    qemu_plugin_crucible_hot_fork_inventory(&inventory);
++    manifest = &inventory.manifest;
++    report->schema_version =
++        QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_VERSION;
++    report->generation = inventory.generation;
++    report->registered = inventory.registered;
++    report->complete = inventory.complete;
++    report->process_generation = manifest->process_generation;
++    report->plugin_id = manifest->plugin_id;
++    report->resource_mask = manifest->resource_mask;
++    report->callback_mask = manifest->callback_mask;
++    report->observed_callback_mask = inventory.observed_callback_mask;
++    report->callback_mask_consistent =
++        manifest->callback_mask == inventory.observed_callback_mask;
++    report->shmem_device = manifest->shmem_device;
++    report->shmem_inode = manifest->shmem_inode;
++    report->shmem_length = manifest->shmem_length;
++    report->slot_index = manifest->slot_index;
++    report->node_count = manifest->node_count;
++    report->control_fd = manifest->control_fd;
++    report->wake_fd = manifest->wake_fd;
++    report->coverage = (manifest->resource_mask &
++        QEMU_PLUGIN_CRUCIBLE_RESOURCE_COVERAGE) != 0;
++    report->whitebox = (manifest->resource_mask &
++        QEMU_PLUGIN_CRUCIBLE_RESOURCE_WHITEBOX) != 0;
++    report->fingerprint = (manifest->resource_mask &
++        QEMU_PLUGIN_CRUCIBLE_RESOURCE_FINGERPRINT) != 0;
++    report->state_dump = (manifest->resource_mask &
++        QEMU_PLUGIN_CRUCIBLE_RESOURCE_STATE_DUMP) != 0;
++    report->app_random = (manifest->resource_mask &
++        QEMU_PLUGIN_CRUCIBLE_RESOURCE_APP_RANDOM) != 0;
++    return report;
++}
++
+ CrucibleHotForkMutexInventory *
+ qmp_query_crucible_hot_fork_mutex_inventory(Error **errp)
+ {
+diff --git a/net/net.c b/net/net.c
+index 727bd63a4..2e5463332 100644
+--- a/net/net.c
++++ b/net/net.c
+@@ -48,6 +48,7 @@
+ #include "qemu/qemu-print.h"
+ #include "qemu/main-loop.h"
+ #include "qemu/qemu-plugin.h"
++#include "qemu/crucible-hot-fork-plugin.h"
+ #include "qemu/option.h"
+ #include "qemu/keyval.h"
+ #include "qapi/error.h"
+@@ -87,6 +88,10 @@ void qemu_plugin_register_net_tx_cb(qemu_plugin_net_tx_cb_t tx_cb,
+ {
+     crucible_net_tx_userdata = userdata;
+     crucible_net_tx_cb = tx_cb;
++    if (tx_cb) {
++        qemu_plugin_crucible_callback_registered(
++            0, QEMU_PLUGIN_CRUCIBLE_CALLBACK_NETWORK);
++    }
+ }
+ 
+ static bool crucible_net_tx_callback_ready(NetClientState *sender)
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index d410ed751..f96c7ecc8 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -25,6 +25,7 @@
+ #include "qemu/timer.h"
+ #include "qemu/plugin-memory.h"
+ #include "qemu/plugin.h"
++#include "qemu/crucible-hot-fork-plugin.h"
+ #include "qemu/crucible-fault.h"
+ #include "system/cpu-timers.h"
+ #include "system/crucible-sim-preemption.h"
+@@ -117,6 +118,121 @@ static int qemu_plugin_time_advance_pending;
+ static int qemu_plugin_time_advance_status;
+ static int64_t qemu_plugin_time_advance_target;
+ static int qemu_plugin_wake_fd = -1;
++static QemuMutex qemu_plugin_crucible_resource_lock;
++static QemuPluginCrucibleHotForkInventory
++    qemu_plugin_crucible_resource_inventory;
++static qemu_plugin_id_t qemu_plugin_crucible_observed_plugin_id;
++static bool qemu_plugin_crucible_callback_plugin_conflict;
++
++static void __attribute__((__constructor__))
++qemu_plugin_crucible_resource_inventory_init(void)
++{
++    qemu_mutex_init(&qemu_plugin_crucible_resource_lock);
++}
++
++void qemu_plugin_crucible_callback_registered(qemu_plugin_id_t plugin_id,
++                                              uint64_t callback_mask)
++{
++    QEMU_LOCK_GUARD(&qemu_plugin_crucible_resource_lock);
++
++    if (callback_mask == 0 ||
++        (callback_mask & ~QEMU_PLUGIN_CRUCIBLE_CALLBACK_ALL) != 0) {
++        return;
++    }
++    if (plugin_id != 0) {
++        if (qemu_plugin_crucible_observed_plugin_id == 0) {
++            qemu_plugin_crucible_observed_plugin_id = plugin_id;
++        } else if (qemu_plugin_crucible_observed_plugin_id != plugin_id) {
++            qemu_plugin_crucible_callback_plugin_conflict = true;
++        }
++    }
++    if ((qemu_plugin_crucible_resource_inventory.observed_callback_mask &
++         callback_mask) != callback_mask) {
++        qemu_plugin_crucible_resource_inventory.observed_callback_mask |=
++            callback_mask;
++        qemu_plugin_crucible_resource_inventory.generation++;
++    }
++}
++
++int qemu_plugin_crucible_register_resource_manifest(
++    const struct qemu_plugin_crucible_resource_manifest *manifest)
++{
++    uint64_t optional_callbacks;
++    uint64_t observed_callbacks;
++    QEMU_LOCK_GUARD(&qemu_plugin_crucible_resource_lock);
++
++    observed_callbacks =
++        qemu_plugin_crucible_resource_inventory.observed_callback_mask;
++
++    if (!manifest ||
++        manifest->schema_version !=
++            QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_VERSION ||
++        manifest->struct_size != sizeof(*manifest) ||
++        manifest->process_generation == 0 || manifest->plugin_id == 0 ||
++        manifest->node_count == 0 ||
++        manifest->slot_index >= manifest->node_count ||
++        manifest->control_fd < 0 || manifest->wake_fd < 0 ||
++        manifest->control_fd == manifest->wake_fd ||
++        manifest->shmem_inode == 0 || manifest->shmem_length == 0 ||
++        (manifest->resource_mask & ~QEMU_PLUGIN_CRUCIBLE_RESOURCE_ALL) != 0 ||
++        (manifest->callback_mask & ~QEMU_PLUGIN_CRUCIBLE_CALLBACK_ALL) != 0 ||
++        (manifest->resource_mask & QEMU_PLUGIN_CRUCIBLE_RESOURCE_REQUIRED) !=
++            QEMU_PLUGIN_CRUCIBLE_RESOURCE_REQUIRED ||
++        (manifest->callback_mask & QEMU_PLUGIN_CRUCIBLE_CALLBACK_REQUIRED) !=
++            QEMU_PLUGIN_CRUCIBLE_CALLBACK_REQUIRED) {
++        return -EINVAL;
++    }
++    if (qemu_plugin_crucible_resource_inventory.registered) {
++        return memcmp(&qemu_plugin_crucible_resource_inventory.manifest,
++                      manifest, sizeof(*manifest)) == 0 ? 0 : -EALREADY;
++    }
++    if (qemu_plugin_crucible_callback_plugin_conflict ||
++        qemu_plugin_crucible_observed_plugin_id != manifest->plugin_id ||
++        qemu_plugin_wake_fd != manifest->wake_fd ||
++        observed_callbacks != manifest->callback_mask) {
++        error_report("Crucible resource manifest mismatch: conflict=%d "
++                     "observed_plugin=%" PRIu64 " manifest_plugin=%" PRIu64 " "
++                     "observed_wake=%d manifest_wake=%d "
++                     "observed_callbacks=%" PRIx64
++                     " manifest_callbacks=%" PRIx64,
++                     qemu_plugin_crucible_callback_plugin_conflict,
++                     qemu_plugin_crucible_observed_plugin_id,
++                     manifest->plugin_id, qemu_plugin_wake_fd,
++                     manifest->wake_fd,
++                     observed_callbacks, manifest->callback_mask);
++        return -EPROTO;
++    }
++
++    optional_callbacks = manifest->callback_mask &
++        ~QEMU_PLUGIN_CRUCIBLE_CALLBACK_REQUIRED;
++    if (((manifest->resource_mask &
++          (QEMU_PLUGIN_CRUCIBLE_RESOURCE_COVERAGE |
++           QEMU_PLUGIN_CRUCIBLE_RESOURCE_WHITEBOX)) != 0) !=
++        ((optional_callbacks &
++          QEMU_PLUGIN_CRUCIBLE_CALLBACK_TB_TRANSLATION) != 0) ||
++        ((manifest->resource_mask & QEMU_PLUGIN_CRUCIBLE_RESOURCE_COVERAGE) !=
++         0) !=
++        ((optional_callbacks & QEMU_PLUGIN_CRUCIBLE_CALLBACK_FLUSH) != 0)) {
++        return -EPROTO;
++    }
++
++    qemu_plugin_crucible_resource_inventory.manifest = *manifest;
++    qemu_plugin_crucible_resource_inventory.registered = true;
++    qemu_plugin_crucible_resource_inventory.complete = true;
++    qemu_plugin_crucible_resource_inventory.generation++;
++    return 0;
++}
++
++void qemu_plugin_crucible_hot_fork_inventory(
++    QemuPluginCrucibleHotForkInventory *inventory)
++{
++    QEMU_LOCK_GUARD(&qemu_plugin_crucible_resource_lock);
++
++    *inventory = qemu_plugin_crucible_resource_inventory;
++    inventory->complete = inventory->registered && inventory->complete &&
++        !qemu_plugin_crucible_callback_plugin_conflict &&
++        inventory->manifest.callback_mask == inventory->observed_callback_mask;
++}
+ static NotifierList qemu_plugin_wake_notifiers =
+     NOTIFIER_LIST_INITIALIZER(qemu_plugin_wake_notifiers);
+ qemu_plugin_tcg_exec_cb_t qemu_plugin_tcg_exec_cb;
+@@ -216,6 +332,10 @@ int qemu_plugin_register_time_advance_cb(qemu_plugin_time_advance_cb_t cb,
+ 
+     qemu_plugin_time_advance_userdata = userdata;
+     qemu_plugin_time_advance_cb = cb;
++    if (cb) {
++        qemu_plugin_crucible_callback_registered(
++            0, QEMU_PLUGIN_CRUCIBLE_CALLBACK_TIME_ADVANCE);
++    }
+     return 0;
+ }
+ 
+@@ -723,6 +843,10 @@ void qemu_plugin_register_tcg_exec_cb(qemu_plugin_tcg_exec_cb_t cb,
+ {
+     qemu_plugin_tcg_exec_userdata = userdata;
+     qemu_plugin_tcg_exec_cb = cb;
++    if (cb) {
++        qemu_plugin_crucible_callback_registered(
++            0, QEMU_PLUGIN_CRUCIBLE_CALLBACK_TCG_EXEC);
++    }
+ }
+ 
+ void qemu_plugin_fire_tcg_exec_cb(CPUState *cpu)
+@@ -744,6 +868,10 @@ void qemu_plugin_register_vcpu_idle_resume_cb(qemu_plugin_vcpu_idle_resume_cb_t
+     qemu_plugin_vcpu_idle_resume_userdata = userdata;
+     qemu_plugin_vcpu_idle_resume_resume_cb = resume_cb;
+     qemu_plugin_vcpu_idle_resume_idle_cb = idle_cb;
++    if (idle_cb && resume_cb) {
++        qemu_plugin_crucible_callback_registered(
++            0, QEMU_PLUGIN_CRUCIBLE_CALLBACK_VCPU_IDLE_RESUME);
++    }
+ }
+ 
+ void qemu_plugin_fire_vcpu_idle_cb(CPUState *cpu)
+@@ -775,6 +903,10 @@ void qemu_plugin_register_control_boundary_cb(
+ {
+     qemu_plugin_control_boundary_userdata = userdata;
+     qemu_plugin_control_boundary_cb = cb;
++    if (cb) {
++        qemu_plugin_crucible_callback_registered(
++            0, QEMU_PLUGIN_CRUCIBLE_CALLBACK_CONTROL_BOUNDARY);
++    }
+ }
+ 
+ void qemu_plugin_fire_control_boundary_cb(CPUState *cpu)
+diff --git a/plugins/api.c b/plugins/api.c
+index d24c61f3f..40768c65f 100644
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -39,6 +39,7 @@
+ #include "block/aio.h"
+ #include "qemu/main-loop.h"
+ #include "qemu/plugin.h"
++#include "qemu/crucible-hot-fork-plugin.h"
+ #include "qemu/error-report.h"
+ #include "qemu/log.h"
+ #include "qapi/error.h"
+@@ -85,6 +86,10 @@ void qemu_plugin_register_vcpu_init_cb(qemu_plugin_id_t id,
+                                        qemu_plugin_vcpu_simple_cb_t cb)
+ {
+     plugin_register_cb(id, QEMU_PLUGIN_EV_VCPU_INIT, cb);
++    if (cb) {
++        qemu_plugin_crucible_callback_registered(
++            id, QEMU_PLUGIN_CRUCIBLE_CALLBACK_VCPU_INIT);
++    }
+ }
+ 
+ void qemu_plugin_register_vcpu_exit_cb(qemu_plugin_id_t id,
+@@ -207,6 +212,10 @@ void qemu_plugin_register_vcpu_tb_trans_cb(qemu_plugin_id_t id,
+                                            qemu_plugin_vcpu_tb_trans_cb_t cb)
+ {
+     plugin_register_cb(id, QEMU_PLUGIN_EV_VCPU_TB_TRANS, cb);
++    if (cb) {
++        qemu_plugin_crucible_callback_registered(
++            id, QEMU_PLUGIN_CRUCIBLE_CALLBACK_TB_TRANSLATION);
++    }
+ }
+ 
+ void qemu_plugin_register_vcpu_syscall_cb(qemu_plugin_id_t id,
+diff --git a/plugins/core.c b/plugins/core.c
+index eb9281fe5..24013eb57 100644
+--- a/plugins/core.c
++++ b/plugins/core.c
+@@ -15,6 +15,7 @@
+ #include "qemu/lockable.h"
+ #include "qemu/option.h"
+ #include "qemu/plugin.h"
++#include "qemu/crucible-hot-fork-plugin.h"
+ #include "qemu/queue.h"
+ #include "qemu/rcu_queue.h"
+ #include "qemu/rcu.h"
+@@ -555,6 +556,10 @@ void qemu_plugin_register_flush_cb(qemu_plugin_id_t id,
+                                    qemu_plugin_simple_cb_t cb)
+ {
+     plugin_register_cb(id, QEMU_PLUGIN_EV_FLUSH, cb);
++    if (cb) {
++        qemu_plugin_crucible_callback_registered(
++            id, QEMU_PLUGIN_CRUCIBLE_CALLBACK_FLUSH);
++    }
+ }
+ 
+ static bool free_dyn_cb_arr(void *p, uint32_t h, void *userp)
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index a607a618b..d54dd9517 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -661,6 +661,99 @@
+   'returns': 'CrucibleHotForkBlockBackendInventory',
+   'allow-oob': true }
+ 
++##
++# @CrucibleHotForkPluginResourceInventory:
++#
++# Exact scalar inventory sealed by the loaded Crucible plugin and
++# independently cross-checked against QEMU-observed callback registration.
++# This report is observational: it does not park callbacks, freeze rings,
++# acknowledge readiness proof bit 6, or authorize a fork.
++#
++# @schema-version: inventory contract version, currently 1
++#
++# @generation: process-local registration-state generation
++#
++# @registered: whether one complete manifest was sealed
++#
++# @complete: whether the manifest is registered and agrees with QEMU state
++#
++# @process-generation: nonzero host-provisioned process generation
++#
++# @plugin-id: nonzero QEMU plugin identity
++#
++# @resource-mask: closed plugin resource-class mask
++#
++# @callback-mask: callback-class mask sealed by the plugin
++#
++# @observed-callback-mask: callback classes observed by QEMU registration APIs
++#
++# @callback-mask-consistent: whether the two callback masks are equal
++#
++# @shmem-device: st_dev of the mapped shared-memory backing object
++#
++# @shmem-inode: nonzero st_ino of the mapped shared-memory backing object
++#
++# @shmem-length: positive mapped byte length
++#
++# @slot-index: plugin VM slot in the shared-memory topology
++#
++# @node-count: positive shared-memory topology node count
++#
++# @control-fd: plugin control-socket descriptor number
++#
++# @wake-fd: QEMU-registered nonblocking wake descriptor number
++#
++# @coverage: whether the manifest owns coverage resources
++#
++# @whitebox: whether the manifest owns white-box resources
++#
++# @fingerprint: whether the manifest owns fingerprint resources
++#
++# @state-dump: whether the manifest owns raw-state-dump resources
++#
++# @app-random: whether the manifest owns app-random resources
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkPluginResourceInventory',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'registered': 'bool',
++            'complete': 'bool',
++            'process-generation': 'uint64',
++            'plugin-id': 'uint64',
++            'resource-mask': 'uint64',
++            'callback-mask': 'uint64',
++            'observed-callback-mask': 'uint64',
++            'callback-mask-consistent': 'bool',
++            'shmem-device': 'uint64',
++            'shmem-inode': 'uint64',
++            'shmem-length': 'uint64',
++            'slot-index': 'uint32',
++            'node-count': 'uint32',
++            'control-fd': 'int',
++            'wake-fd': 'int',
++            'coverage': 'bool',
++            'whitebox': 'bool',
++            'fingerprint': 'bool',
++            'state-dump': 'bool',
++            'app-random': 'bool' } }
++
++##
++# @query-crucible-hot-fork-plugin-resource-inventory:
++#
++# Query the sealed Crucible plugin resource manifest and QEMU-observed
++# callback state. This OOB command is observational and cannot acknowledge
++# the plugin freeze/ring readiness proof.
++#
++# Returns: @CrucibleHotForkPluginResourceInventory
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'query-crucible-hot-fork-plugin-resource-inventory',
++  'returns': 'CrucibleHotForkPluginResourceInventory',
++  'allow-oob': true }
++
+ ##
+ # @CrucibleHotForkMutex:
+ #

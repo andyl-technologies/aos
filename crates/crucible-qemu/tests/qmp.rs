@@ -16,13 +16,14 @@ use crucible_qemu::{
     QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_READINESS_COMMAND,
-    QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
-    QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME,
-    QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
-    QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient, QmpCommandKind, QmpError,
-    QmpGreeting, QmpHotForkProof, QmpHotForkThreadDisposition, QmpHotForkTimerClock,
-    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
+    QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND,
+    QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient,
+    QmpCommandKind, QmpError, QmpGreeting, QmpHotForkProof, QmpHotForkThreadDisposition,
+    QmpHotForkTimerClock, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag,
+    QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -597,6 +598,72 @@ fn hot_fork_block_backend_inventory_rejects_malformed_contracts() -> Result<(), 
             client.query_hot_fork_block_backend_inventory(),
             Err(QmpError::MalformedTypedResponse {
                 command: QmpCommandKind::QueryHotForkBlockBackendInventory,
+                ..
+            })
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn hot_fork_plugin_resource_inventory_is_exact_and_oob() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"state-dump":false,"app-random":false}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let inventory = client.query_hot_fork_plugin_resource_inventory()?;
+    assert_eq!(inventory.generation(), 7);
+    assert!(inventory.registered());
+    assert!(inventory.complete());
+    assert_eq!(inventory.process_generation(), 9);
+    assert_eq!(inventory.plugin_id(), 12);
+    assert_eq!(inventory.resource_mask(), 1023);
+    assert_eq!(inventory.callback_mask(), 4093);
+    assert_eq!(inventory.observed_callback_mask(), 4093);
+    assert_eq!(inventory.shmem_device(), 1);
+    assert_eq!(inventory.shmem_inode(), 2);
+    assert_eq!(inventory.shmem_length(), 4096);
+    assert_eq!(inventory.slot_index(), 0);
+    assert_eq!(inventory.node_count(), 1);
+    assert_eq!(inventory.control_fd(), 3);
+    assert_eq!(inventory.wake_fd(), 4);
+    assert!(!inventory.coverage());
+    assert!(!inventory.whitebox());
+    assert!(!inventory.fingerprint());
+    assert!(!inventory.state_dump());
+    assert!(!inventory.app_random());
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    assert_eq!(
+        oob_execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND)
+    );
+    Ok(())
+}
+
+#[test]
+fn hot_fork_plugin_resource_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn Error>> {
+    for response in [
+        r#"{"return":{"schema-version":2,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"state-dump":false,"app-random":false}}"#,
+        r#"{"return":{"schema-version":1,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":33791,"callback-mask":4093,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"state-dump":false,"app-random":false}}"#,
+        r#"{"return":{"schema-version":1,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"observed-callback-mask":4092,"callback-mask-consistent":false,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"state-dump":false,"app-random":false}}"#,
+        r#"{"return":{"schema-version":1,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":true,"whitebox":false,"fingerprint":false,"state-dump":false,"app-random":false}}"#,
+        r#"{"return":{"schema-version":1,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"state-dump":false,"app-random":false,"extra":0}}"#,
+    ] {
+        let mut client = QmpClient::connect(scripted_qmp([
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            response,
+        ]))?;
+        assert!(matches!(
+            client.query_hot_fork_plugin_resource_inventory(),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::QueryHotForkPluginResourceInventory,
                 ..
             })
         ));

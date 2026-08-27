@@ -30,6 +30,7 @@ pub(crate) fn scripted_node_with_live_host_runtime(
             fail_stop: false,
             fail_snapshot: false,
             timeout_snapshot: false,
+            plugin_resources: None,
         },
     );
     Ok(QemuNode::new(

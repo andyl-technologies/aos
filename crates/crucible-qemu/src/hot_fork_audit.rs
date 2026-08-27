@@ -17,8 +17,8 @@ use thiserror::Error;
 use crate::{
     QemuNodeChannelError, QemuNodeError, QemuProcessIdentity, QmpHotForkAioHandlerInventory,
     QmpHotForkAioInventory, QmpHotForkBlockBackendInventory, QmpHotForkBottomHalfInventory,
-    QmpHotForkMutexInventory, QmpHotForkRcuInventory, QmpHotForkReadiness,
-    QmpHotForkThreadInventory, QmpHotForkTimerInventory,
+    QmpHotForkMutexInventory, QmpHotForkPluginResourceInventory, QmpHotForkRcuInventory,
+    QmpHotForkReadiness, QmpHotForkThreadInventory, QmpHotForkTimerInventory,
 };
 
 /// Maximum threads, descriptors, or mappings retained by one audit.
@@ -80,6 +80,22 @@ pub struct QemuHotForkMappingInventory {
     record: Vec<u8>,
     writable: bool,
     shared: bool,
+    start: u64,
+    end: u64,
+    device_major: u64,
+    device_minor: u64,
+    inode: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ValidatedMappingRecord {
+    writable: bool,
+    shared: bool,
+    start: u64,
+    end: u64,
+    device_major: u64,
+    device_minor: u64,
+    inode: u64,
 }
 
 impl QemuHotForkMappingInventory {
@@ -99,6 +115,10 @@ impl QemuHotForkMappingInventory {
     #[must_use]
     pub const fn shared(&self) -> bool {
         self.shared
+    }
+
+    const fn length(&self) -> u64 {
+        self.end - self.start
     }
 }
 
@@ -161,6 +181,7 @@ pub(crate) struct QemuHotForkQmpInventory {
     aio: QmpHotForkAioInventory,
     aio_handlers: QmpHotForkAioHandlerInventory,
     block_backends: QmpHotForkBlockBackendInventory,
+    plugin_resources: QmpHotForkPluginResourceInventory,
     bottom_halves: QmpHotForkBottomHalfInventory,
     mutexes: QmpHotForkMutexInventory,
     timers: QmpHotForkTimerInventory,
@@ -169,7 +190,7 @@ pub(crate) struct QemuHotForkQmpInventory {
 impl QemuHotForkQmpInventory {
     #[allow(
         clippy::too_many_arguments,
-        reason = "the constructor preserves the one-to-one order of the nine exact QMP inventories"
+        reason = "the constructor preserves the one-to-one order of the ten exact QMP inventories"
     )]
     pub(crate) const fn new(
         readiness: QmpHotForkReadiness,
@@ -178,6 +199,7 @@ impl QemuHotForkQmpInventory {
         aio: QmpHotForkAioInventory,
         aio_handlers: QmpHotForkAioHandlerInventory,
         block_backends: QmpHotForkBlockBackendInventory,
+        plugin_resources: QmpHotForkPluginResourceInventory,
         bottom_halves: QmpHotForkBottomHalfInventory,
         mutexes: QmpHotForkMutexInventory,
         timers: QmpHotForkTimerInventory,
@@ -189,6 +211,7 @@ impl QemuHotForkQmpInventory {
             aio,
             aio_handlers,
             block_backends,
+            plugin_resources,
             bottom_halves,
             mutexes,
             timers,
@@ -205,6 +228,7 @@ pub struct QemuHotForkAudit {
     qemu_aio: QmpHotForkAioInventory,
     qemu_aio_handlers: QmpHotForkAioHandlerInventory,
     qemu_block_backends: QmpHotForkBlockBackendInventory,
+    qemu_plugin_resources: QmpHotForkPluginResourceInventory,
     qemu_bottom_halves: QmpHotForkBottomHalfInventory,
     qemu_mutexes: QmpHotForkMutexInventory,
     qemu_timers: QmpHotForkTimerInventory,
@@ -224,6 +248,7 @@ impl QemuHotForkAudit {
             aio: qemu_aio,
             aio_handlers: qemu_aio_handlers,
             block_backends: qemu_block_backends,
+            plugin_resources: qemu_plugin_resources,
             bottom_halves: qemu_bottom_halves,
             mutexes: qemu_mutexes,
             timers: qemu_timers,
@@ -243,6 +268,9 @@ impl QemuHotForkAudit {
         }
         if !qemu_block_backends.complete() {
             return Err(QemuHotForkAuditError::BlockBackendInventoryIncomplete);
+        }
+        if !qemu_plugin_resources.complete() {
+            return Err(QemuHotForkAuditError::PluginResourceInventoryIncomplete);
         }
         if !qemu_mutexes.complete() {
             return Err(QemuHotForkAuditError::MutexInventoryIncomplete);
@@ -354,6 +382,7 @@ impl QemuHotForkAudit {
                 });
             }
         }
+        validate_plugin_resource_process_bindings(&qemu_plugin_resources, &process)?;
         for mutex in qemu_mutexes.mutexes() {
             let Some(owner_thread_id) = mutex.owner_thread_id() else {
                 continue;
@@ -376,6 +405,7 @@ impl QemuHotForkAudit {
             qemu_aio,
             qemu_aio_handlers,
             qemu_block_backends,
+            qemu_plugin_resources,
             qemu_bottom_halves,
             qemu_mutexes,
             qemu_timers,
@@ -418,6 +448,12 @@ impl QemuHotForkAudit {
     #[must_use]
     pub const fn qemu_block_backends(&self) -> &QmpHotForkBlockBackendInventory {
         &self.qemu_block_backends
+    }
+
+    /// Returns QEMU's matching sealed Crucible plugin-resource inventory.
+    #[must_use]
+    pub const fn qemu_plugin_resources(&self) -> &QmpHotForkPluginResourceInventory {
+        &self.qemu_plugin_resources
     }
 
     /// Returns QEMU's matching bounded allocated-bottom-half inventory.
@@ -478,6 +514,9 @@ pub enum QemuHotForkAuditError {
     /// The QEMU-owned allocated-block-backend inventory query failed.
     #[error("QEMU hot-fork block-backend inventory query failed")]
     BlockBackendInventory(#[source] QemuNodeChannelError),
+    /// The QEMU-owned sealed plugin-resource inventory query failed.
+    #[error("QEMU hot-fork plugin-resource inventory query failed")]
+    PluginResourceInventory(#[source] QemuNodeChannelError),
     /// The QEMU-owned allocated-bottom-half inventory query failed.
     #[error("QEMU hot-fork bottom-half inventory query failed")]
     BottomHalfInventory(#[source] QemuNodeChannelError),
@@ -508,6 +547,9 @@ pub enum QemuHotForkAuditError {
     /// QEMU's block-backend inventory changed around procfs capture.
     #[error("QEMU hot-fork block-backend inventory changed during process inventory")]
     BlockBackendInventoryChanged,
+    /// QEMU's sealed plugin-resource inventory changed around procfs capture.
+    #[error("QEMU hot-fork plugin-resource inventory changed during process inventory")]
+    PluginResourceInventoryChanged,
     /// QEMU's observational bottom-half inventory changed around procfs capture.
     #[error("QEMU hot-fork bottom-half inventory changed during process inventory")]
     BottomHalfInventoryChanged,
@@ -535,6 +577,9 @@ pub enum QemuHotForkAuditError {
     /// QEMU could not report every allocated block backend with valid state.
     #[error("QEMU hot-fork block-backend inventory is incomplete")]
     BlockBackendInventoryIncomplete,
+    /// QEMU did not report one complete internally consistent plugin manifest.
+    #[error("QEMU hot-fork plugin-resource inventory is incomplete")]
+    PluginResourceInventoryIncomplete,
     /// QEMU could not report every live timer with structurally valid state.
     #[error("QEMU hot-fork live-timer inventory is incomplete")]
     TimerInventoryIncomplete,
@@ -586,6 +631,54 @@ pub enum QemuHotForkAuditError {
         backend_id: u64,
         /// Missing process-local AioContext identifier.
         context_id: u64,
+    },
+    /// A descriptor sealed into the plugin manifest was absent from procfs.
+    #[error("QEMU plugin {role} descriptor {descriptor} is absent from the process inventory")]
+    PluginDescriptorMissing {
+        /// Stable plugin descriptor role.
+        role: &'static str,
+        /// Missing process-local descriptor number.
+        descriptor: i32,
+    },
+    /// A sealed plugin descriptor did not have its required Linux object type.
+    #[error("QEMU plugin {role} descriptor {descriptor} has an invalid procfs target")]
+    PluginDescriptorTargetInvalid {
+        /// Stable plugin descriptor role.
+        role: &'static str,
+        /// Process-local descriptor number with the wrong target type.
+        descriptor: i32,
+    },
+    /// The shared-memory object sealed by the plugin had no process mapping.
+    #[error(
+        "QEMU plugin shared-memory object {device_major:x}:{device_minor:x}/{inode} has no process mapping"
+    )]
+    PluginSharedMappingMissing {
+        /// Linux device major number decoded from the manifest's `dev_t`.
+        device_major: u64,
+        /// Linux device minor number decoded from the manifest's `dev_t`.
+        device_minor: u64,
+        /// Linux backing-object inode.
+        inode: u64,
+    },
+    /// A plugin shared-memory mapping lacked writable shared permissions.
+    #[error(
+        "QEMU plugin shared-memory object {device_major:x}:{device_minor:x}/{inode} is not entirely writable and shared"
+    )]
+    PluginSharedMappingPermissions {
+        /// Linux device major number decoded from the manifest's `dev_t`.
+        device_major: u64,
+        /// Linux device minor number decoded from the manifest's `dev_t`.
+        device_minor: u64,
+        /// Linux backing-object inode.
+        inode: u64,
+    },
+    /// Plugin shared-memory mappings did not cover the sealed byte length.
+    #[error("QEMU plugin shared-memory mappings cover {actual} bytes, expected exactly {expected}")]
+    PluginSharedMappingLengthMismatch {
+        /// Sealed shared-memory byte length.
+        expected: u64,
+        /// Aggregate matching process-mapping length.
+        actual: u64,
     },
     /// An allocated bottom half named an absent AioContext.
     #[error("QEMU bottom half {bottom_half_id} names absent AioContext {context_id}")]
@@ -807,12 +900,17 @@ fn capture_mappings(
                 limit: MAX_QEMU_HOT_FORK_INVENTORY_ENTRIES,
             });
         }
-        let (writable, shared) = validate_mapping_record(&record)?;
+        let validated = validate_mapping_record(&record)?;
         charge_bytes(retained_bytes, record.len())?;
         mappings.push(QemuHotForkMappingInventory {
             record,
-            writable,
-            shared,
+            writable: validated.writable,
+            shared: validated.shared,
+            start: validated.start,
+            end: validated.end,
+            device_major: validated.device_major,
+            device_minor: validated.device_minor,
+            inode: validated.inode,
         });
     }
     Ok(mappings)
@@ -919,7 +1017,9 @@ fn read_bounded_line<R: BufRead>(
     }
 }
 
-fn validate_mapping_record(record: &[u8]) -> Result<(bool, bool), QemuHotForkInventoryError> {
+fn validate_mapping_record(
+    record: &[u8],
+) -> Result<ValidatedMappingRecord, QemuHotForkInventoryError> {
     let mut fields = record
         .split(|byte| byte.is_ascii_whitespace())
         .filter(|field| !field.is_empty());
@@ -944,7 +1044,13 @@ fn validate_mapping_record(record: &[u8]) -> Result<(bool, bool), QemuHotForkInv
             category: "mapping",
         });
     };
-    if !valid_hex(start) || !valid_hex(end) || permissions.len() != 4 || !valid_hex(offset) {
+    let start = parse_hex_u64(start).ok_or(QemuHotForkInventoryError::Malformed {
+        category: "mapping",
+    })?;
+    let end = parse_hex_u64(end).ok_or(QemuHotForkInventoryError::Malformed {
+        category: "mapping",
+    })?;
+    if start >= end || permissions.len() != 4 || parse_hex_u64(offset).is_none() {
         return Err(QemuHotForkInventoryError::Malformed {
             category: "mapping",
         });
@@ -954,11 +1060,16 @@ fn validate_mapping_record(record: &[u8]) -> Result<(bool, bool), QemuHotForkInv
             category: "mapping",
         });
     };
-    if !valid_hex(major)
-        || !valid_hex(minor)
-        || inode.is_empty()
-        || !inode.iter().all(|byte| byte.is_ascii_digit())
-        || !matches!(permissions[0], b'r' | b'-')
+    let device_major = parse_hex_u64(major).ok_or(QemuHotForkInventoryError::Malformed {
+        category: "mapping",
+    })?;
+    let device_minor = parse_hex_u64(minor).ok_or(QemuHotForkInventoryError::Malformed {
+        category: "mapping",
+    })?;
+    let inode = parse_decimal_u64(inode).ok_or(QemuHotForkInventoryError::Malformed {
+        category: "mapping",
+    })?;
+    if !matches!(permissions[0], b'r' | b'-')
         || !matches!(permissions[1], b'w' | b'-')
         || !matches!(permissions[2], b'x' | b'-')
         || !matches!(permissions[3], b'p' | b's')
@@ -967,17 +1078,120 @@ fn validate_mapping_record(record: &[u8]) -> Result<(bool, bool), QemuHotForkInv
             category: "mapping",
         });
     }
-    Ok((permissions[1] == b'w', permissions[3] == b's'))
+    Ok(ValidatedMappingRecord {
+        writable: permissions[1] == b'w',
+        shared: permissions[3] == b's',
+        start,
+        end,
+        device_major,
+        device_minor,
+        inode,
+    })
 }
 
-fn valid_hex(bytes: &[u8]) -> bool {
-    !bytes.is_empty() && bytes.iter().all(|byte| byte.is_ascii_hexdigit())
+fn parse_hex_u64(bytes: &[u8]) -> Option<u64> {
+    if bytes.is_empty() {
+        return None;
+    }
+    bytes.iter().try_fold(0_u64, |value, byte| {
+        let digit = match byte {
+            b'0'..=b'9' => u64::from(byte - b'0'),
+            b'a'..=b'f' => u64::from(byte - b'a') + 10,
+            b'A'..=b'F' => u64::from(byte - b'A') + 10,
+            _ => return None,
+        };
+        value.checked_mul(16)?.checked_add(digit)
+    })
+}
+
+fn parse_decimal_u64(bytes: &[u8]) -> Option<u64> {
+    if bytes.is_empty() || (bytes.len() > 1 && bytes[0] == b'0') {
+        return None;
+    }
+    bytes.iter().try_fold(0_u64, |value, byte| {
+        byte.is_ascii_digit()
+            .then_some(())
+            .and_then(|()| value.checked_mul(10))
+            .and_then(|value| value.checked_add(u64::from(byte - b'0')))
+    })
 }
 
 fn split_once_byte(bytes: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])> {
     let index = bytes.iter().position(|byte| *byte == delimiter)?;
     let (before, after) = bytes.split_at(index);
     Some((before, &after[1..]))
+}
+
+fn validate_plugin_resource_process_bindings(
+    plugin: &QmpHotForkPluginResourceInventory,
+    process: &QemuHotForkProcessInventory,
+) -> Result<(), QemuHotForkAuditError> {
+    for (role, descriptor) in [("control", plugin.control_fd()), ("wake", plugin.wake_fd())] {
+        let descriptor_key = u32::try_from(descriptor)
+            .map_err(|_| QemuHotForkAuditError::PluginDescriptorMissing { role, descriptor })?;
+        let index = process
+            .descriptors()
+            .binary_search_by_key(&descriptor_key, |entry| entry.descriptor())
+            .map_err(|_| QemuHotForkAuditError::PluginDescriptorMissing { role, descriptor })?;
+        let target = process.descriptors()[index].target();
+        let target_valid = match role {
+            "control" => socket_target_inode(target).is_some(),
+            "wake" => target == b"anon_inode:[eventfd]",
+            _ => false,
+        };
+        if !target_valid {
+            return Err(QemuHotForkAuditError::PluginDescriptorTargetInvalid { role, descriptor });
+        }
+    }
+
+    let (device_major, device_minor) = linux_device_components(plugin.shmem_device());
+    let mut found = false;
+    let mut actual = 0_u64;
+    for mapping in process.mappings().iter().filter(|mapping| {
+        mapping.device_major == device_major
+            && mapping.device_minor == device_minor
+            && mapping.inode == plugin.shmem_inode()
+    }) {
+        found = true;
+        if !mapping.writable() || !mapping.shared() {
+            return Err(QemuHotForkAuditError::PluginSharedMappingPermissions {
+                device_major,
+                device_minor,
+                inode: plugin.shmem_inode(),
+            });
+        }
+        actual = actual.checked_add(mapping.length()).ok_or(
+            QemuHotForkAuditError::PluginSharedMappingLengthMismatch {
+                expected: plugin.shmem_length(),
+                actual: u64::MAX,
+            },
+        )?;
+    }
+    if !found {
+        return Err(QemuHotForkAuditError::PluginSharedMappingMissing {
+            device_major,
+            device_minor,
+            inode: plugin.shmem_inode(),
+        });
+    }
+    if actual != plugin.shmem_length() {
+        return Err(QemuHotForkAuditError::PluginSharedMappingLengthMismatch {
+            expected: plugin.shmem_length(),
+            actual,
+        });
+    }
+    Ok(())
+}
+
+fn socket_target_inode(target: &[u8]) -> Option<u64> {
+    let inode = target.strip_prefix(b"socket:[")?.strip_suffix(b"]")?;
+    parse_decimal_u64(inode).filter(|inode| *inode != 0)
+}
+
+const fn linux_device_components(device: u64) -> (u64, u64) {
+    let major = ((device & 0x0000_0000_000f_ff00) >> 8) | ((device & 0xffff_f000_0000_0000) >> 32);
+    let minor = (device & 0x0000_0000_0000_00ff) | ((device & 0x0000_0fff_fff0_0000) >> 12);
+    (major, minor)
 }
 
 fn charge_bytes(retained: &mut usize, amount: usize) -> Result<(), QemuHotForkInventoryError> {
@@ -1036,6 +1250,7 @@ mod tests {
             aio,
             QmpHotForkAioHandlerInventory::one_read(1, context_id, 3),
             QmpHotForkBlockBackendInventory::one_hidden(1, context_id),
+            QmpHotForkPluginResourceInventory::one_complete(1),
             bottom_halves,
             mutexes,
             timers,
@@ -1090,7 +1305,15 @@ mod tests {
     fn mapping_parser_rejects_alternate_or_oversized_records() {
         assert_eq!(
             validate_mapping_record(b"1000-2000 rw-s 0 00:01 7 /ring").expect("canonical mapping"),
-            (true, true)
+            ValidatedMappingRecord {
+                writable: true,
+                shared: true,
+                start: 0x1000,
+                end: 0x2000,
+                device_major: 0,
+                device_minor: 1,
+                inode: 7,
+            }
         );
         assert!(matches!(
             validate_mapping_record(b"1000-2000 rw-z 0 00:01 7 /ring"),
@@ -1145,11 +1368,26 @@ mod tests {
                     name: b"external".to_vec(),
                 },
             ],
-            descriptors: vec![QemuHotForkDescriptorInventory {
-                descriptor: 3,
-                target: b"anon_inode:[eventfd]".to_vec(),
+            descriptors: vec![
+                QemuHotForkDescriptorInventory {
+                    descriptor: 3,
+                    target: b"socket:[7]".to_vec(),
+                },
+                QemuHotForkDescriptorInventory {
+                    descriptor: 4,
+                    target: b"anon_inode:[eventfd]".to_vec(),
+                },
+            ],
+            mappings: vec![QemuHotForkMappingInventory {
+                record: b"1000-2000 rw-s 00000000 00:01 2 /ring".to_vec(),
+                writable: true,
+                shared: true,
+                start: 0x1000,
+                end: 0x2000,
+                device_major: 0,
+                device_minor: 1,
+                inode: 2,
             }],
-            mappings: Vec::new(),
             retained_bytes: 26,
         };
         let readiness =
@@ -1436,6 +1674,80 @@ mod tests {
                 process,
             ),
             Err(QemuHotForkAuditError::RegisteredThreadMissing { thread_id: 30 })
+        ));
+    }
+
+    #[test]
+    fn plugin_manifest_is_bound_to_exact_descriptors_and_shared_mapping() {
+        let qmp = || {
+            qmp_inventory(
+                QmpHotForkReadiness::from_acknowledged_proofs(7)
+                    .expect("scripted readiness bitmap"),
+                QmpHotForkThreadInventory::one_coordinator(10),
+                QmpHotForkRcuInventory::from_reader_ids(&[10]),
+                QmpHotForkAioInventory::one_idle(1, 10),
+                QmpHotForkBottomHalfInventory::one_idle(1, 1),
+                QmpHotForkMutexInventory::one_owned(1, 10),
+                QmpHotForkTimerInventory::empty(),
+            )
+        };
+        let process = |descriptors: Vec<QemuHotForkDescriptorInventory>,
+                       writable: bool,
+                       end: u64| QemuHotForkProcessInventory {
+            process: QemuProcessIdentity {
+                process_id: 10,
+                start_time_ticks: 1,
+                executable: PathBuf::from("/qemu"),
+            },
+            threads: vec![QemuHotForkThreadInventory {
+                thread_id: 10,
+                name: b"qmp-main-loop".to_vec(),
+            }],
+            descriptors,
+            mappings: vec![QemuHotForkMappingInventory {
+                record: b"1000-2000 rw-s 00000000 00:01 2 /ring".to_vec(),
+                writable,
+                shared: true,
+                start: 0x1000,
+                end,
+                device_major: 0,
+                device_minor: 1,
+                inode: 2,
+            }],
+            retained_bytes: 0,
+        };
+        let descriptors = || {
+            vec![
+                QemuHotForkDescriptorInventory {
+                    descriptor: 3,
+                    target: b"socket:[7]".to_vec(),
+                },
+                QemuHotForkDescriptorInventory {
+                    descriptor: 4,
+                    target: b"anon_inode:[eventfd]".to_vec(),
+                },
+            ]
+        };
+
+        QemuHotForkAudit::new(qmp(), process(descriptors(), true, 0x2000))
+            .expect("exact plugin process bindings should validate");
+        assert!(matches!(
+            QemuHotForkAudit::new(qmp(), process(descriptors()[..1].to_vec(), true, 0x2000)),
+            Err(QemuHotForkAuditError::PluginDescriptorMissing {
+                role: "wake",
+                descriptor: 4,
+            })
+        ));
+        assert!(matches!(
+            QemuHotForkAudit::new(qmp(), process(descriptors(), false, 0x2000)),
+            Err(QemuHotForkAuditError::PluginSharedMappingPermissions { .. })
+        ));
+        assert!(matches!(
+            QemuHotForkAudit::new(qmp(), process(descriptors(), true, 0x3000)),
+            Err(QemuHotForkAuditError::PluginSharedMappingLengthMismatch {
+                expected: 4096,
+                actual: 8192,
+            })
         ));
     }
 
