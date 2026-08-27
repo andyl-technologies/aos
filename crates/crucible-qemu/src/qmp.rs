@@ -1,11 +1,11 @@
 //! Minimal typed QMP client.
 //!
 //! RFC-0010 QEMU-19 limits QMP use to capability negotiation, typed VM
-//! status/topology and hot-fork-readiness observation, VM snapshot
-//! save/load/delete, snapshot job polling, and graceful quit. The client parses
-//! JSON-line QMP responses internally, skips asynchronous event objects while
-//! waiting for a command response, and exposes no public arbitrary-command
-//! execution path.
+//! status/topology, hot-fork-readiness observation, and the bounded QEMU-owned
+//! thread inventory, plus VM snapshot save/load/delete, snapshot job polling,
+//! and graceful quit. The client parses JSON-line QMP responses internally,
+//! skips asynchronous event objects while waiting for a command response, and
+//! exposes no public arbitrary-command execution path.
 
 use std::io::{self, BufReader, ErrorKind, Read, Write};
 use std::net::TcpStream;
@@ -25,11 +25,14 @@ mod snapshot_tag;
 mod unix_socket;
 mod vmstate_control;
 
-use hot_fork::parse_hot_fork_readiness;
 pub use hot_fork::{
     QMP_HOT_FORK_READINESS_SCHEMA_VERSION, QMP_HOT_FORK_REQUIRED_PROOFS,
-    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QmpHotForkProof, QmpHotForkReadiness,
+    QMP_HOT_FORK_THREAD_INVENTORY_MAX, QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION,
+    QMP_HOT_FORK_THREAD_NAME_MAX_BYTES, QMP_QUERY_HOT_FORK_READINESS_COMMAND,
+    QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QmpHotForkProof, QmpHotForkReadiness,
+    QmpHotForkThread, QmpHotForkThreadDisposition, QmpHotForkThreadInventory,
 };
+use hot_fork::{parse_hot_fork_readiness, parse_hot_fork_thread_inventory};
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
 
@@ -451,6 +454,23 @@ where
     pub fn query_hot_fork_readiness(&mut self) -> Result<QmpHotForkReadiness, QmpError> {
         let response = self.send_command_return(QmpCommand::QueryHotForkReadiness)?;
         parse_hot_fork_readiness(&response.value)
+    }
+
+    /// Returns QEMU's exact bounded active-thread registry.
+    ///
+    /// The query is audit-only. A structurally complete registry may still
+    /// contain unclassified threads and cannot authorize a fork.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request or response fails, or when the
+    /// response violates the closed schema, count/name bounds, sorted unique
+    /// thread IDs, disposition vocabulary, or derived completeness fields.
+    pub fn query_hot_fork_thread_inventory(
+        &mut self,
+    ) -> Result<QmpHotForkThreadInventory, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryHotForkThreadInventory)?;
+        parse_hot_fork_thread_inventory(&response.value)
     }
 
     fn read_greeting(&mut self) -> Result<QmpGreeting, QmpError> {
@@ -936,6 +956,8 @@ pub enum QmpCommandKind {
     QueryCpusFast,
     /// QEMU-owned hot-fork readiness query.
     QueryHotForkReadiness,
+    /// QEMU-owned hot-fork active-thread inventory query.
+    QueryHotForkThreadInventory,
     /// Graceful QEMU quit.
     Quit,
 }
@@ -955,6 +977,7 @@ impl QmpCommandKind {
             Self::CompleteTerminalLifecycle => QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND,
             Self::QueryCpusFast => QMP_QUERY_CPUS_FAST_COMMAND,
             Self::QueryHotForkReadiness => QMP_QUERY_HOT_FORK_READINESS_COMMAND,
+            Self::QueryHotForkThreadInventory => QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
             Self::Quit => QMP_QUIT_COMMAND_NAME,
         }
     }
@@ -1006,6 +1029,7 @@ enum QmpCommand<'a> {
     },
     QueryCpusFast,
     QueryHotForkReadiness,
+    QueryHotForkThreadInventory,
     Quit,
 }
 
@@ -1024,6 +1048,7 @@ impl QmpCommand<'_> {
             Self::CompleteTerminalLifecycle { .. } => QmpCommandKind::CompleteTerminalLifecycle,
             Self::QueryCpusFast => QmpCommandKind::QueryCpusFast,
             Self::QueryHotForkReadiness => QmpCommandKind::QueryHotForkReadiness,
+            Self::QueryHotForkThreadInventory => QmpCommandKind::QueryHotForkThreadInventory,
             Self::Quit => QmpCommandKind::Quit,
         }
     }
@@ -1080,6 +1105,9 @@ impl QmpCommand<'_> {
             }),
             Self::QueryHotForkReadiness => json!({
                 "execute": QMP_QUERY_HOT_FORK_READINESS_COMMAND,
+            }),
+            Self::QueryHotForkThreadInventory => json!({
+                "execute": QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
             }),
             Self::Quit => json!({
                 "execute": QMP_QUIT_COMMAND_NAME,

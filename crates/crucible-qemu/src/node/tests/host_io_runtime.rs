@@ -6,6 +6,8 @@ pub(crate) fn scripted_node_with_live_host_runtime(
     host_io_runtime: crate::supervision::QemuLiveHostIoRuntime,
 ) -> Result<QemuNode, Box<dyn Error>> {
     let log = shared_log();
+    let child = Command::new("sleep").arg("60").spawn()?;
+    let process_id = child.id();
     let channels = QemuNodeChannels::new(
         ScriptedPluginControl {
             log: Arc::clone(&log),
@@ -24,12 +26,12 @@ pub(crate) fn scripted_node_with_live_host_runtime(
         },
         ScriptedQmpMachineControl {
             log,
+            process_id,
             fail_stop: false,
             fail_snapshot: false,
             timeout_snapshot: false,
         },
     );
-    let child = Command::new("sleep").arg("60").spawn()?;
     Ok(QemuNode::new(
         QemuNodeChild::new(child),
         channels,

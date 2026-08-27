@@ -1432,7 +1432,9 @@
           grep -Fxq 'schema_version=1' "$live_result"
           grep -Fxq 'required_proofs=511' "$live_result"
           grep -Fxq 'ordinary_paused_exact_boundary_proof=false' "$live_result"
-          grep -Fxq 'stock_command_absent=true' "$live_result"
+          grep -Fxq 'thread_inventory_stable=true' "$live_result"
+          grep -Fxq 'thread_inventory_one_coordinator=true' "$live_result"
+          grep -Fxq 'stock_commands_absent=true' "$live_result"
         '';
       };
     }

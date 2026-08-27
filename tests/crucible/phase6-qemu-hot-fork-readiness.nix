@@ -76,6 +76,11 @@ in
             "$out/stock-readiness.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-readiness.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible readiness command"
+          qmp "$stock_socket" \
+            '{"execute":"query-crucible-hot-fork-thread-inventory"}' \
+            "$out/stock-thread-inventory.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-thread-inventory.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible thread inventory command"
           qmp "$stock_socket" '{"execute":"quit"}' "$out/stock-quit.json"
           wait "$qemu_pid"
           qemu_pid=""
@@ -125,6 +130,62 @@ in
           ' "$out/ordinary-paused-readiness.json" >/dev/null \
             || { cat "$out/ordinary-paused-readiness.json" >&2; fail "ordinary pause gained an exact-boundary proof"; }
 
+          qmp "$patched_socket" \
+            '{"execute":"query-crucible-hot-fork-thread-inventory"}' \
+            "$out/thread-inventory-1.json"
+          qmp "$patched_socket" \
+            '{"execute":"query-crucible-hot-fork-thread-inventory"}' \
+            "$out/thread-inventory-2.json"
+          jq -e -s '
+            [.[] | select(has("return"))][-1].return as $report |
+            ($report | keys | sort) == [
+              "complete",
+              "generation",
+              "overflowed",
+              "schema-version",
+              "threads",
+              "unclassified-threads"
+            ] and
+            $report."schema-version" == 1 and
+            ($report.generation | type) == "number" and
+            ($report.complete | type) == "boolean" and
+            ($report.overflowed | type) == "boolean" and
+            ($report.threads | type) == "array" and
+            ($report.threads | length) > 0 and
+            ($report.threads | length) <= 65536 and
+            ([ $report.threads[]."thread-id" ] ==
+             ([ $report.threads[]."thread-id" ] | sort)) and
+            ([ $report.threads[]."thread-id" ] | unique | length) ==
+              ($report.threads | length) and
+            all($report.threads[];
+              (. | keys | sort) == [
+                "disposition",
+                "joinable",
+                "name",
+                "name-valid",
+                "thread-id"
+              ] and
+              (."thread-id" | type) == "number" and ."thread-id" > 0 and
+              (.name | type) == "string" and (.name | length) > 0 and
+              (.name | length) <= 256 and
+              (."name-valid" | type) == "boolean" and
+              (.joinable | type) == "boolean" and
+              (.disposition == "coordinator" or .disposition == "unclassified")) and
+            ([ $report.threads[] | select(.disposition == "coordinator") ] | length) == 1 and
+            ([ $report.threads[] | select(.disposition == "unclassified") ] | length) ==
+              $report."unclassified-threads" and
+            $report.complete ==
+              (($report.overflowed | not) and
+               all($report.threads[]; ."name-valid") and
+               ([ $report.threads[] | select(.disposition == "coordinator") ] | length) == 1)
+          ' "$out/thread-inventory-1.json" >/dev/null \
+            || { cat "$out/thread-inventory-1.json" >&2; fail "QEMU thread inventory was not exact"; }
+          jq -e -s --slurpfile first "$out/thread-inventory-1.json" '
+            [.[] | select(has("return"))][-1].return ==
+              ($first | map(select(has("return"))) | .[-1].return)
+          ' "$out/thread-inventory-2.json" >/dev/null \
+            || { cat "$out/thread-inventory-1.json" >&2; cat "$out/thread-inventory-2.json" >&2; fail "QEMU thread inventory changed without a thread transition"; }
+
           qmp "$patched_socket" '{"execute":"quit"}' "$out/patched-quit.json"
           wait "$qemu_pid"
           qemu_pid=""
@@ -139,8 +200,12 @@ in
           required_proofs=511
           precise_sim_rr_proofs=3
           ordinary_paused_exact_boundary_proof=false
+          thread_inventory_schema_version=1
+          thread_inventory_bound=65536
+          thread_inventory_stable=true
+          thread_inventory_one_coordinator=true
           incomplete_report_ready=false
-          stock_command_absent=true
+          stock_commands_absent=true
           RESULT
         '';
       }

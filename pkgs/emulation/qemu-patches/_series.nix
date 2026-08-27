@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "bcd50d7c441cd7155255ea0c075e098841edad1a7f857913fe6ce25271a75fb2";
+  patchBranchBundleSha256 = "09604023d04d55cd140710a5ff44284dca0043b66c3717dbed9c29f3865430f5";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "3196464e9afced68cc07e8e2056e8e2481239dde";
+  patchBranchHeadCommit = "7ff04305e4fde33c1889e392a16f1090bdac6225";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1039,12 +1039,12 @@ let
     {
       file = "0111-crucible-hot-fork-readiness.patch";
       branchSubject = "crucible: report hot-fork readiness proofs";
-      branchCommit = "3196464e9afced68cc07e8e2056e8e2481239dde";
-      branchTree = "a533c90c6066376ddae73c9eeae1c405cd68db49";
+      branchCommit = "7ff04305e4fde33c1889e392a16f1090bdac6225";
+      branchTree = "b34e3cec1b80e0cf66065de560fdb59052c13d52";
       catalogName = "crucible-hot-fork-readiness";
       class = "F";
       enforces = "HFORK-3,HFORK-4";
-      capability = "a bounded versioned QMP query reports QEMU-owned precise-icount, single-threaded sim RR, and exact paused/device-flush proofs while keeping every unimplemented subsystem, mapping, and child-reinitialization proof clear so ordinary paused state can never advertise hot fork";
+      capability = "bounded versioned QMP queries report QEMU-owned precise-icount, single-threaded sim RR, and exact paused/device-flush proofs plus a sorted generation-tagged registry of every active qemu_thread_create thread and the sole QMP coordinator; every non-coordinator remains unclassified and every unimplemented subsystem, mapping, external thread, and child-reinitialization proof stays clear so the audit cannot advertise hot fork";
     }
   ];
   catalogOnlyCapabilities = [
