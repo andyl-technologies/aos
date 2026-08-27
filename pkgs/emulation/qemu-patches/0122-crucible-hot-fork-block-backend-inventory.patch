@@ -1,16 +1,3 @@
-From ecd57c611ccf0e668e8ffa4e1a326e9feebcd676 Mon Sep 17 00:00:00 2001
-From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 27 Aug 2026 12:22:03 +0000
-Subject: [PATCH] crucible: inventory block backends for hot fork
-
-Signed-off-by: Dylan Plecki <dylan@andyl.com>
----
- block/block-backend.c                       | 170 ++++++++++++++++++++
- include/system/block-backend-global-state.h |  36 +++++
- monitor/qmp-cmds.c                          |  64 ++++++++
- qapi/run-state.json                         | 119 ++++++++++++++
- 4 files changed, 389 insertions(+)
-
 diff --git a/block/block-backend.c b/block/block-backend.c
 index a402db13f..e9ad4b55d 100644
 --- a/block/block-backend.c
@@ -579,5 +566,3 @@ index 42e9f99ab..a607a618b 100644
  ##
  # @CrucibleHotForkMutex:
  #
--- 
-2.48.1

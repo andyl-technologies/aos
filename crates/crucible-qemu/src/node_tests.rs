@@ -75,6 +75,7 @@ enum ChannelCall {
     QmpHotForkAioInventory,
     QmpHotForkAioHandlerInventory,
     QmpHotForkBlockBackendInventory,
+    QmpHotForkPluginResourceInventory,
     QmpHotForkBottomHalfInventory,
     QmpHotForkMutexInventory,
     QmpHotForkTimerInventory,
@@ -125,6 +126,7 @@ struct ScriptedQmpMachineControl {
     fail_stop: bool,
     fail_snapshot: bool,
     timeout_snapshot: bool,
+    plugin_resources: Option<crate::QmpHotForkPluginResourceInventory>,
 }
 
 impl QemuPluginIpcControlChannel for ScriptedPluginControl {
@@ -440,6 +442,21 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         Ok(crate::QmpHotForkBlockBackendInventory::one_hidden(1, 1))
     }
 
+    fn query_hot_fork_plugin_resource_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkPluginResourceInventory, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkPluginResourceInventory);
+        self.plugin_resources.clone().ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "query_hot_fork_plugin_resource_inventory",
+                "scripted plugin-resource inventory is unavailable",
+            )
+        })
+    }
+
     fn query_hot_fork_bottom_half_inventory(
         &mut self,
     ) -> Result<crate::QmpHotForkBottomHalfInventory, QemuNodeChannelError> {
@@ -738,7 +755,8 @@ fn qemu_node_owns_one_child_and_exactly_three_channel_roles() -> Result<(), Box<
 
 #[cfg(target_os = "linux")]
 #[test]
-fn hot_fork_audit_brackets_one_exact_child_process_inventory() -> Result<(), Box<dyn Error>> {
+fn hot_fork_audit_brackets_plugin_inventory_around_one_exact_child_process()
+-> Result<(), Box<dyn Error>> {
     let log = shared_log();
     let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
     let process_id = node.child.process_id();
@@ -760,37 +778,10 @@ fn hot_fork_audit_brackets_one_exact_child_process_inventory() -> Result<(), Box
         return Err(format!("scripted child {process_id} did not enter sleeping state").into());
     }
 
-    let audit = node.audit_hot_fork_process()?;
-    assert_eq!(audit.readiness().acknowledged_proofs(), 7);
-    assert_eq!(audit.process().process().process_id, process_id);
-    assert!(!audit.process().threads().is_empty());
-    assert!(!audit.process().mappings().is_empty());
-    assert_eq!(audit.qemu_threads().threads().len(), 1);
-    assert_eq!(audit.qemu_threads().threads()[0].thread_id(), process_id);
-    assert_eq!(audit.qemu_rcu().readers().len(), 1);
-    assert_eq!(audit.qemu_rcu().readers()[0].thread_id(), process_id);
-    assert_eq!(audit.qemu_aio().contexts().len(), 1);
-    assert_eq!(
-        audit.qemu_aio().contexts()[0].home_thread_id(),
-        Some(process_id)
-    );
-    assert_eq!(audit.qemu_aio_handlers().handlers().len(), 1);
-    assert_eq!(audit.qemu_aio_handlers().handlers()[0].context_id(), 1);
-    assert_eq!(audit.qemu_aio_handlers().handlers()[0].descriptor(), 0);
-    assert_eq!(audit.qemu_block_backends().backends().len(), 1);
-    assert_eq!(audit.qemu_block_backends().backends()[0].context_id(), 1);
-    assert_eq!(audit.qemu_bottom_halves().bottom_halves().len(), 1);
-    assert_eq!(
-        audit.qemu_bottom_halves().bottom_halves()[0].context_id(),
-        1
-    );
-    assert_eq!(audit.qemu_mutexes().mutexes().len(), 1);
-    assert_eq!(
-        audit.qemu_mutexes().mutexes()[0].owner_thread_id(),
-        Some(process_id)
-    );
-    assert!(audit.qemu_timers().timers().is_empty());
-    assert!(audit.externally_created_thread_ids().is_empty());
+    assert!(matches!(
+        node.audit_hot_fork_process(),
+        Err(crate::QemuHotForkAuditError::PluginDescriptorTargetInvalid { .. })
+    ));
     assert_eq!(
         recorded(&log),
         vec![
@@ -800,12 +791,14 @@ fn hot_fork_audit_brackets_one_exact_child_process_inventory() -> Result<(), Box
             ChannelCall::QmpHotForkAioInventory,
             ChannelCall::QmpHotForkAioHandlerInventory,
             ChannelCall::QmpHotForkBlockBackendInventory,
+            ChannelCall::QmpHotForkPluginResourceInventory,
             ChannelCall::QmpHotForkBottomHalfInventory,
             ChannelCall::QmpHotForkMutexInventory,
             ChannelCall::QmpHotForkTimerInventory,
             ChannelCall::QmpHotForkTimerInventory,
             ChannelCall::QmpHotForkMutexInventory,
             ChannelCall::QmpHotForkBottomHalfInventory,
+            ChannelCall::QmpHotForkPluginResourceInventory,
             ChannelCall::QmpHotForkBlockBackendInventory,
             ChannelCall::QmpHotForkAioHandlerInventory,
             ChannelCall::QmpHotForkAioInventory,
@@ -1063,6 +1056,11 @@ fn scripted_node_with_fault_events(
             fail_stop: false,
             fail_snapshot: false,
             timeout_snapshot: false,
+            plugin_resources: Some(
+                crate::QmpHotForkPluginResourceInventory::one_complete_with_bindings(
+                    1, 1, 2, 4096, 0, 1,
+                ),
+            ),
         },
     );
     Ok(QemuNode::new(
@@ -1143,6 +1141,11 @@ fn scripted_node_with_coverage(
             fail_stop: options.fail_qmp_stop,
             fail_snapshot: options.fail_qmp_snapshot,
             timeout_snapshot: options.qmp_snapshot_timeout,
+            plugin_resources: Some(
+                crate::QmpHotForkPluginResourceInventory::one_complete_with_bindings(
+                    1, 1, 2, 4096, 0, 1,
+                ),
+            ),
         },
     );
     Ok(QemuNode::new(

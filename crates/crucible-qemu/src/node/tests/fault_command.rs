@@ -105,6 +105,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 fail_stop: false,
                 fail_snapshot: false,
                 timeout_snapshot: false,
+                plugin_resources: None,
             },
         );
         let mut node = QemuNode::new(

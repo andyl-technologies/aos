@@ -12,7 +12,7 @@
 #[cfg(unix)]
 use std::io::Write;
 #[cfg(unix)]
-use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 
 use thiserror::Error;
 
@@ -170,6 +170,8 @@ impl RegisteredWakeFd {
 pub struct PluginSetupCompletion {
     mapped_region: MappedSetupRegion,
     validated_region: ValidatedSetupRegion,
+    shared_memory_device: u64,
+    shared_memory_inode: u64,
     wake_fd: ArmedWakeFd,
     app_random_branch_plan: AppRandomBranchPlan,
     selectable_catalog_plan: Option<SelectableCatalogPlan>,
@@ -193,6 +195,18 @@ impl PluginSetupCompletion {
     #[must_use]
     pub const fn validated_region(&self) -> ValidatedSetupRegion {
         self.validated_region
+    }
+
+    /// Returns the backing object's stable device number captured before mmap.
+    #[must_use]
+    pub const fn shared_memory_device(&self) -> u64 {
+        self.shared_memory_device
+    }
+
+    /// Returns the backing object's nonzero inode captured before mmap.
+    #[must_use]
+    pub const fn shared_memory_inode(&self) -> u64 {
+        self.shared_memory_inode
     }
 
     /// Returns the armed wake fd token.
@@ -312,6 +326,15 @@ where
     let wake_fd = setup.descriptors.wake_fd;
     let plugin_setup_plan_fd = setup.descriptors.plugin_setup_plan_fd;
 
+    let (shared_memory_device, shared_memory_inode) = match shared_memory_identity(shmem_fd.as_fd())
+    {
+        Ok(identity) => identity,
+        Err(errno) => {
+            send_setup_failure_ack(writer, PluginSetupFailureStage::MapRegion)?;
+            return Err(PluginSetupError::InspectSharedMemory { errno });
+        }
+    };
+
     let decoded_plans =
         match read_plugin_setup_plan(plugin_setup_plan_fd, handshake.proto_version()) {
             Ok(plans) => plans,
@@ -352,11 +375,35 @@ where
     Ok(PluginSetupCompletion {
         mapped_region,
         validated_region,
+        shared_memory_device,
+        shared_memory_inode,
         wake_fd,
         app_random_branch_plan: decoded_plans.app_random_branch_plan,
         selectable_catalog_plan: decoded_plans.selectable_catalog_plan,
         registered_wake_fd: None,
     })
+}
+
+#[cfg(unix)]
+fn shared_memory_identity(fd: BorrowedFd<'_>) -> Result<(u64, u64), i32> {
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    let status = unsafe {
+        // SAFETY: `fd` is live and `metadata` points to writable stat storage.
+        libc::fstat(fd.as_raw_fd(), metadata.as_mut_ptr())
+    };
+    if status != 0 {
+        return Err(last_errno());
+    }
+    let metadata = unsafe {
+        // SAFETY: successful fstat initialized the complete stat value.
+        metadata.assume_init()
+    };
+    let device = metadata.st_dev;
+    let inode = metadata.st_ino;
+    if inode == 0 {
+        return Err(libc::EINVAL);
+    }
+    Ok((device, inode))
 }
 
 #[cfg(unix)]
@@ -867,6 +914,12 @@ pub enum PluginSetupError {
     ReceiveSetup {
         /// Underlying descriptor-handover error.
         source: DescriptorHandoverError,
+    },
+    /// Inspecting the shared-memory backing identity failed.
+    #[error("inspecting setup shared-memory identity failed with errno {errno}")]
+    InspectSharedMemory {
+        /// Raw operating-system errno, or EINVAL for a zero inode.
+        errno: i32,
     },
     /// Mapping the setup shared-memory descriptor failed.
     #[error("setup shared-memory mmap failed")]

@@ -115,7 +115,8 @@ pub(super) fn wait_for_prime_ceiling(
     timeout: Duration,
     ceiling: u64,
 ) -> Result<(), QemuLiveNetworkIoGateError> {
-    for _ in 0..bounded_drive_polls(timeout) {
+    let mut budget = DrivePollBudget::new(timeout);
+    while budget.begin_attempt() {
         let snapshot = servicer
             .vm_node_snapshot()
             .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
@@ -129,7 +130,7 @@ pub(super) fn wait_for_prime_ceiling(
         {
             break;
         }
-        thread::park_timeout(DRIVE_POLL_INTERVAL);
+        budget.park();
     }
     let evidence = servicer.vm_node_snapshot().map_or_else(
         |error| format!("node_snapshot_error={error}"),

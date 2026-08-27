@@ -705,7 +705,8 @@ impl PluginRegistrationSequence {
 const fn setup_error_registration_step(source: &PluginSetupError) -> PluginRegistrationStep {
     match source {
         PluginSetupError::ReceiveSetup { .. } => PluginRegistrationStep::ReceiveSetup,
-        PluginSetupError::MapRegion { .. }
+        PluginSetupError::InspectSharedMemory { .. }
+        | PluginSetupError::MapRegion { .. }
         | PluginSetupError::ValidateRegion { .. }
         | PluginSetupError::ValidatePluginSetupPlan { .. }
         | PluginSetupError::NodeCountMismatch { .. }

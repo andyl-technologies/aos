@@ -1641,6 +1641,21 @@
         '';
       };
     }
+    {
+      patch = "0123-crucible-hot-fork-plugin-resource-inventory.patch";
+      check = certifyExactPatch {
+        patchName = "0123-crucible-hot-fork-plugin-resource-inventory.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-plugin-resource-inventory";
+        liveEvidence = ''
+          grep -Fxq 'plugin_resource_inventory_schema_version=1' "$live_result"
+          grep -Fxq 'plugin_resource_inventory_stable=true' "$live_result"
+          grep -Fxq 'plugin_resource_inventory_unregistered_shape=true' "$live_result"
+          grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
+          grep -Fxq 'incomplete_report_ready=false' "$live_result"
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

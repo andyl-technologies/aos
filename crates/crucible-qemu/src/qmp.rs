@@ -32,27 +32,30 @@ pub use hot_fork::{
     QMP_HOT_FORK_BLOCK_BACKEND_NAME_MAX_BYTES, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX,
     QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES,
     QMP_HOT_FORK_MUTEX_INVENTORY_MAX, QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_RCU_INVENTORY_MAX, QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_READINESS_SCHEMA_VERSION, QMP_HOT_FORK_REQUIRED_PROOFS,
-    QMP_HOT_FORK_THREAD_INVENTORY_MAX, QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_THREAD_NAME_MAX_BYTES, QMP_HOT_FORK_TIMER_INVENTORY_MAX,
-    QMP_HOT_FORK_TIMER_INVENTORY_SCHEMA_VERSION, QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
+    QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_RCU_INVENTORY_MAX,
+    QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_READINESS_SCHEMA_VERSION,
+    QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_THREAD_INVENTORY_MAX,
+    QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_THREAD_NAME_MAX_BYTES,
+    QMP_HOT_FORK_TIMER_INVENTORY_MAX, QMP_HOT_FORK_TIMER_INVENTORY_SCHEMA_VERSION,
+    QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_READINESS_COMMAND,
-    QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
-    QmpHotForkAioContext, QmpHotForkAioHandler, QmpHotForkAioHandlerInventory,
-    QmpHotForkAioInventory, QmpHotForkBlockBackend, QmpHotForkBlockBackendInventory,
-    QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory, QmpHotForkMutex, QmpHotForkMutexInventory,
-    QmpHotForkProof, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
-    QmpHotForkThread, QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer,
-    QmpHotForkTimerClock, QmpHotForkTimerInventory,
+    QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QmpHotForkAioContext, QmpHotForkAioHandler,
+    QmpHotForkAioHandlerInventory, QmpHotForkAioInventory, QmpHotForkBlockBackend,
+    QmpHotForkBlockBackendInventory, QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory,
+    QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkPluginResourceInventory, QmpHotForkProof,
+    QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness, QmpHotForkThread,
+    QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock,
+    QmpHotForkTimerInventory,
 };
 use hot_fork::{
     parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,
     parse_hot_fork_block_backend_inventory, parse_hot_fork_bottom_half_inventory,
-    parse_hot_fork_mutex_inventory, parse_hot_fork_rcu_inventory, parse_hot_fork_readiness,
-    parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
+    parse_hot_fork_mutex_inventory, parse_hot_fork_plugin_resource_inventory,
+    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_thread_inventory,
+    parse_hot_fork_timer_inventory,
 };
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
@@ -561,6 +564,24 @@ where
     ) -> Result<QmpHotForkBlockBackendInventory, QmpError> {
         let response = self.send_command_return(QmpCommand::QueryHotForkBlockBackendInventory)?;
         parse_hot_fork_block_backend_inventory(&response.value)
+    }
+
+    /// Returns QEMU's exact sealed inventory of Crucible plugin resources.
+    ///
+    /// The OOB query binds the plugin/process identity, shared-memory backing,
+    /// descriptors, feature resources, and plugin/QEMU callback masks. It is
+    /// observational and cannot acknowledge hot-fork proof bit 6.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request or response fails, or when the
+    /// response violates the closed schema, masks, identities, descriptor
+    /// relationships, feature derivations, or completeness rule.
+    pub fn query_hot_fork_plugin_resource_inventory(
+        &mut self,
+    ) -> Result<QmpHotForkPluginResourceInventory, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryHotForkPluginResourceInventory)?;
+        parse_hot_fork_plugin_resource_inventory(&response.value)
     }
 
     /// Returns QEMU's exact bounded inventory of every allocated bottom half.
@@ -1105,6 +1126,8 @@ pub enum QmpCommandKind {
     QueryHotForkAioHandlerInventory,
     /// QEMU-owned hot-fork allocated-block-backend inventory query.
     QueryHotForkBlockBackendInventory,
+    /// QEMU-owned sealed plugin-resource inventory query.
+    QueryHotForkPluginResourceInventory,
     /// QEMU-owned hot-fork allocated-bottom-half inventory query.
     QueryHotForkBottomHalfInventory,
     /// QEMU-owned hot-fork mutex ownership inventory query.
@@ -1138,6 +1161,9 @@ impl QmpCommandKind {
             }
             Self::QueryHotForkBlockBackendInventory => {
                 QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND
+            }
+            Self::QueryHotForkPluginResourceInventory => {
+                QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND
             }
             Self::QueryHotForkBottomHalfInventory => {
                 QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND
@@ -1200,6 +1226,7 @@ enum QmpCommand<'a> {
     QueryHotForkAioInventory,
     QueryHotForkAioHandlerInventory,
     QueryHotForkBlockBackendInventory,
+    QueryHotForkPluginResourceInventory,
     QueryHotForkBottomHalfInventory,
     QueryHotForkMutexInventory,
     QueryHotForkTimerInventory,
@@ -1229,6 +1256,9 @@ impl QmpCommand<'_> {
             }
             Self::QueryHotForkBlockBackendInventory => {
                 QmpCommandKind::QueryHotForkBlockBackendInventory
+            }
+            Self::QueryHotForkPluginResourceInventory => {
+                QmpCommandKind::QueryHotForkPluginResourceInventory
             }
             Self::QueryHotForkBottomHalfInventory => {
                 QmpCommandKind::QueryHotForkBottomHalfInventory
@@ -1309,6 +1339,9 @@ impl QmpCommand<'_> {
             }),
             Self::QueryHotForkBlockBackendInventory => json!({
                 "exec-oob": QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
+            }),
+            Self::QueryHotForkPluginResourceInventory => json!({
+                "exec-oob": QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND,
             }),
             Self::QueryHotForkBottomHalfInventory => json!({
                 "exec-oob": QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND,

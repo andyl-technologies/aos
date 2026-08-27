@@ -836,6 +836,7 @@ impl OwnedCallbackRegistrar for PartiallyPanickingCallbackRegistrar {
 #[test]
 fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     let _runtime_state = isolate_runtime_state_for_test();
+    reset_capability_call_counts();
     let fixture = LiveInstallFixture::new();
     let host = fixture.spawn_host(SETUP_ACK_STATUS_READY);
     let mut reservation =
@@ -854,6 +855,26 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     assert_eq!(runtime.args().slot(), 0);
     assert_eq!(runtime.lifecycle_phase(), PluginLifecyclePhase::Active);
     assert!(runtime._retained_control.is_some());
+    let manifest = registered_resource_manifest()
+        .unwrap_or_else(|| panic!("plugin resource manifest should be sealed before readiness"));
+    let (device, inode, length, node_count, control_fd, _sender_wake_fd) =
+        fixture.resource_manifest_basis();
+    assert_eq!(manifest.schema_version, PLUGIN_RESOURCE_MANIFEST_VERSION);
+    assert_eq!(
+        manifest.struct_size,
+        std::mem::size_of::<crate::QemuPluginResourceManifest>() as u32
+    );
+    assert_eq!(manifest.process_generation, 1);
+    assert_eq!(manifest.plugin_id, 41);
+    assert_eq!(manifest.resource_mask, PLUGIN_RESOURCE_REQUIRED);
+    assert_eq!(manifest.callback_mask, PLUGIN_CALLBACK_REQUIRED);
+    assert_eq!(manifest.shmem_device, device);
+    assert_eq!(manifest.shmem_inode, inode);
+    assert_eq!(manifest.shmem_length, length);
+    assert_eq!(manifest.slot_index, 0);
+    assert_eq!(manifest.node_count, node_count);
+    assert_eq!(manifest.control_fd, control_fd);
+    assert_eq!(manifest.wake_fd, registered_wake_fd());
     let teardown_handle = runtime
         ._callbacks
         .control_teardown_handle(0)

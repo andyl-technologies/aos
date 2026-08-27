@@ -8,9 +8,9 @@ use crucible::Checkpoint;
 use super::{
     QmpClient, QmpCommandComplete, QmpError, QmpHotForkAioHandlerInventory, QmpHotForkAioInventory,
     QmpHotForkBlockBackendInventory, QmpHotForkBottomHalfInventory, QmpHotForkMutexInventory,
-    QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkThreadInventory,
-    QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind,
-    QmpSnapshotTag, QmpTimeoutStream,
+    QmpHotForkPluginResourceInventory, QmpHotForkRcuInventory, QmpHotForkReadiness,
+    QmpHotForkThreadInventory, QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy,
+    QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use crate::{
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
@@ -203,6 +203,20 @@ where
     ) -> Result<QmpHotForkBlockBackendInventory, QemuNodeChannelError> {
         self.client
             .query_hot_fork_block_backend_inventory()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Queries QEMU's exact sealed Crucible plugin-resource inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
+    /// not satisfy the closed plugin-resource schema and relationships.
+    pub fn query_hot_fork_plugin_resource_inventory(
+        &mut self,
+    ) -> Result<QmpHotForkPluginResourceInventory, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_plugin_resource_inventory()
             .map_err(QemuNodeChannelError::from)
     }
 

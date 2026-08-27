@@ -1861,6 +1861,36 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   child reconstruction contract.
 - **Risk:** F.
 
+### crucible-hot-fork-plugin-resource-inventory — bind plugin resources to QEMU state
+
+- **Patch:** `0123-crucible-hot-fork-plugin-resource-inventory.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the Crucible plugin seals one fixed version-1 scalar manifest
+  only after setup, wake-descriptor registration, and all required callback
+  registrations succeed. The manifest binds the exact plugin and process
+  generations, shared-memory device/inode/length and topology, control and wake
+  descriptors, required resource classes, optional feature modes, and callback
+  classes. QEMU independently records callback registration, rejects mixed
+  plugin identities or inconsistent masks, and exposes the sealed and observed
+  values through a strict OOB QMP query. The host brackets the report around
+  one exact-child `/proc` inventory and binds the descriptors and writable
+  shared mappings to the sealed values.
+- **Micro-test:** strict Rust decoding rejects unknown or additional fields,
+  changed schema, unknown masks, inconsistent optional modes, mismatched
+  callback masks, impossible descriptor/topology values, and incomplete
+  reports. Plugin runtime tests require the registered manifest to match the
+  exact receiver-side wake descriptor and mapped file identity. Host audit
+  tests reject missing or mistyped descriptors and missing, private, read-only,
+  or length-mismatched mappings. The live patched-QEMU gate requires two exact
+  stable unregistered reports; stock QEMU must not expose the command.
+- **Inertness:** the report is observational. It does not count executing
+  callbacks, freeze a plugin ring, park or drain callbacks, retain a barrier
+  across another operation,
+  reconstruct child-side resources, coordinate `fork(2)`, or change readiness
+  bit 6. Those proofs remain mandatory before the QEMU-owned hot-fork
+  coordinator can acknowledge plugin readiness.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

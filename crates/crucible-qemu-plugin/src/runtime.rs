@@ -879,6 +879,7 @@ pub(crate) struct LiveInstallCapabilities {
     pub(crate) advance_time_ns: Option<QemuAdvanceTimeNsFn>,
     pub(crate) register_time_advance_cb: Option<crate::QemuRegisterTimeAdvanceCbFn>,
     pub(crate) register_wake_fd: QemuRegisterWakeFdFn,
+    pub(crate) register_resource_manifest: crate::QemuRegisterResourceManifestFn,
     pub(crate) request_shutdown: QemuRequestShutdownFn,
     pub(crate) basic_block_coverage: Option<QemuBasicBlockCoverageApis>,
     pub(crate) register_vcpu_init: Option<crate::QemuRegisterVcpuInitCbFn>,
@@ -893,6 +894,68 @@ pub(crate) struct LiveInstallCapabilities {
     pub(crate) register_ninep: Option<crate::QemuRegisterNinePCbFn>,
     pub(crate) register_accelerator: Option<crate::QemuRegisterAcceleratorCbFn>,
     pub(crate) fault_commands: crate::fault_command::QemuFaultCommandApis,
+}
+
+const PLUGIN_RESOURCE_MANIFEST_VERSION: u32 = 1;
+const PLUGIN_RESOURCE_REQUIRED: u64 = (1_u64 << 10) - 1;
+const PLUGIN_RESOURCE_COVERAGE: u64 = 1_u64 << 10;
+const PLUGIN_RESOURCE_WHITEBOX: u64 = 1_u64 << 11;
+const PLUGIN_RESOURCE_FINGERPRINT: u64 = 1_u64 << 12;
+const PLUGIN_RESOURCE_STATE_DUMP: u64 = 1_u64 << 13;
+const PLUGIN_RESOURCE_APP_RANDOM: u64 = 1_u64 << 14;
+const PLUGIN_CALLBACK_REQUIRED: u64 = ((1_u64 << 12) - 1) & !(1_u64 << 1);
+const PLUGIN_CALLBACK_TB_TRANSLATION: u64 = 1_u64 << 12;
+const PLUGIN_CALLBACK_FLUSH: u64 = 1_u64 << 13;
+
+fn plugin_resource_manifest(
+    plugin_id: QemuPluginId,
+    args: &PluginArgs,
+    callbacks: &RequiredOwnedCallbacksRegistered,
+) -> Result<crate::QemuPluginResourceManifest, PluginRuntimeInstallError> {
+    let setup = callbacks.setup();
+    let node_count = setup.mapped_region().header_snapshot().node_count;
+    let wake_fd = setup
+        .registered_wake_fd()
+        .ok_or(PluginRuntimeInstallError::ResourceManifestShape)?
+        .as_raw_fd();
+    let struct_size = u32::try_from(std::mem::size_of::<crate::QemuPluginResourceManifest>())
+        .map_err(|_error| PluginRuntimeInstallError::ResourceManifestShape)?;
+
+    let mut resource_mask = PLUGIN_RESOURCE_REQUIRED;
+    let mut callback_mask = PLUGIN_CALLBACK_REQUIRED;
+    if args.coverage().is_on() {
+        resource_mask |= PLUGIN_RESOURCE_COVERAGE;
+        callback_mask |= PLUGIN_CALLBACK_TB_TRANSLATION | PLUGIN_CALLBACK_FLUSH;
+    }
+    if args.whitebox().is_on() {
+        resource_mask |= PLUGIN_RESOURCE_WHITEBOX;
+        callback_mask |= PLUGIN_CALLBACK_TB_TRANSLATION;
+    }
+    if args.fingerprint().is_on() {
+        resource_mask |= PLUGIN_RESOURCE_FINGERPRINT;
+    }
+    if args.state_dump().is_some() {
+        resource_mask |= PLUGIN_RESOURCE_STATE_DUMP;
+    }
+    if args.app_random().is_some() {
+        resource_mask |= PLUGIN_RESOURCE_APP_RANDOM;
+    }
+
+    Ok(crate::QemuPluginResourceManifest {
+        schema_version: PLUGIN_RESOURCE_MANIFEST_VERSION,
+        struct_size,
+        process_generation: args.process_generation(),
+        plugin_id,
+        resource_mask,
+        callback_mask,
+        shmem_device: setup.shared_memory_device(),
+        shmem_inode: setup.shared_memory_inode(),
+        shmem_length: setup.mapped_region().region_len(),
+        slot_index: args.slot(),
+        node_count,
+        control_fd: args.sim_fd(),
+        wake_fd,
+    })
 }
 
 /// Registers the callback families whose C adapters own live device behavior.
@@ -942,6 +1005,7 @@ enum PostRegistrationStage {
     RequireCallbackCapabilities,
     RegisterWakeFd,
     AdmitFaultCapabilities,
+    SealResourceManifest,
     SendReadyAck,
     WaitBootBarrier,
     Finalize,
@@ -970,6 +1034,7 @@ impl PostRegistrationStage {
             Self::RequireCallbackCapabilities => "RequireCallbackCapabilities",
             Self::RegisterWakeFd => "RegisterWakeFd",
             Self::AdmitFaultCapabilities => "AdmitFaultCapabilities",
+            Self::SealResourceManifest => "SealResourceManifest",
             Self::SendReadyAck => "SendReadyAck",
             Self::WaitBootBarrier => "WaitBootBarrier",
             Self::Finalize => "Finalize",
@@ -1419,6 +1484,30 @@ where
             ));
         }
 
+        post_registration_stage = PostRegistrationStage::SealResourceManifest;
+        maybe_inject_post_registration_panic(post_registration_stage);
+        let resource_manifest =
+            match plugin_resource_manifest(plugin_id, &args, retained.registered()) {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    return Err(fail_post_registration_before_ready_ack_lifecycle(
+                        &mut control_stream,
+                        error,
+                        &mut acknowledgement_state,
+                    ));
+                }
+            };
+        let manifest_status = (capabilities.register_resource_manifest)(&resource_manifest);
+        if manifest_status != 0 {
+            return Err(fail_post_registration_before_ready_ack_lifecycle(
+                &mut control_stream,
+                PluginRuntimeInstallError::ResourceManifestRejected {
+                    status: manifest_status,
+                },
+                &mut acknowledgement_state,
+            ));
+        }
+
         post_registration_stage = PostRegistrationStage::SendReadyAck;
         maybe_inject_post_registration_panic(post_registration_stage);
         acknowledgement_state = PostRegistrationAckState::ReadyAttempted;
@@ -1740,6 +1829,15 @@ pub enum PluginRuntimeInstallError {
     FaultCapabilityAdmission {
         /// Exact bridge or QEMU capability failure.
         source: LiveVcpuTimeCallbackError,
+    },
+    /// The fixed plugin resource manifest could not be represented.
+    #[error("plugin resource manifest shape is not representable")]
+    ResourceManifestShape,
+    /// QEMU rejected the fixed plugin resource manifest.
+    #[error("QEMU rejected the plugin resource manifest with status {status}")]
+    ResourceManifestRejected {
+        /// Negative errno-style status returned by patched QEMU.
+        status: i32,
     },
     /// The callback failure could not be acknowledged to the host.
     #[error(
