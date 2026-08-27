@@ -52,14 +52,25 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --with-pcap=${captureBackend} \
-            --disable-static \
-            --enable-shared
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --with-pcap=${captureBackend} \
+              --disable-universal \
+              --disable-static \
+              --enable-shared
+          ''
+          else ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --with-pcap=${captureBackend} \
+              --disable-static \
+              --enable-shared
+          '';
       }
       {
         name = "build";
