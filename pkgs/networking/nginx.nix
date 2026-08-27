@@ -239,16 +239,6 @@ in
         "nginx.workerConnections"
         "nginx.workerProcesses"
       ];
-      ownsRoots = [
-        {
-          root = "nginx";
-          interfaceAbi = 1;
-          contributable = [
-            "upstreams.*"
-            "virtualHosts.*"
-          ];
-        }
-      ];
       # This is the scoped-artifact contract consumed by the evaluator. It
       # grants exact names, never authority over a structural-core root.
       artifacts = {

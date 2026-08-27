@@ -300,17 +300,6 @@ in
         "envoy.runtimeLayers"
         "envoy.telemetry"
       ];
-      ownsRoots = [
-        {
-          root = "envoy";
-          interfaceAbi = 1;
-          contributable = [
-            "clusters.*"
-            "listeners.*"
-            "runtimeLayers.*"
-          ];
-        }
-      ];
     };
 
     expose = {
