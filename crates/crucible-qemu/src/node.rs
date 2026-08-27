@@ -834,6 +834,21 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Queries QEMU's exact bounded allocated-block-backend inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
+    /// versioned response validation fails.
+    fn query_hot_fork_block_backend_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkBlockBackendInventory, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query_hot_fork_block_backend_inventory",
+            "hot-fork block-backend inventory is not implemented by this QMP channel",
+        ))
+    }
+
     /// Queries QEMU's exact bounded allocated-bottom-half inventory.
     ///
     /// # Errors
@@ -1704,6 +1719,11 @@ impl QemuNode {
             .qmp_machine_control
             .query_hot_fork_aio_handler_inventory()
             .map_err(crate::QemuHotForkAuditError::AioHandlerInventory)?;
+        let block_backends_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_block_backend_inventory()
+            .map_err(crate::QemuHotForkAuditError::BlockBackendInventory)?;
         let bottom_halves_before = self
             .channels
             .qmp_machine_control
@@ -1745,6 +1765,14 @@ impl QemuNode {
             .map_err(crate::QemuHotForkAuditError::BottomHalfInventory)?;
         if bottom_halves_before != bottom_halves_after {
             return Err(crate::QemuHotForkAuditError::BottomHalfInventoryChanged);
+        }
+        let block_backends_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_block_backend_inventory()
+            .map_err(crate::QemuHotForkAuditError::BlockBackendInventory)?;
+        if block_backends_before != block_backends_after {
+            return Err(crate::QemuHotForkAuditError::BlockBackendInventoryChanged);
         }
         let aio_handlers_after = self
             .channels
@@ -1793,6 +1821,7 @@ impl QemuNode {
                 rcu_before,
                 aio_before,
                 aio_handlers_before,
+                block_backends_before,
                 bottom_halves_before,
                 mutexes_before,
                 timers_before,

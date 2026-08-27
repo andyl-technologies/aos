@@ -1624,6 +1624,23 @@
         '';
       };
     }
+    {
+      patch = "0122-crucible-hot-fork-block-backend-inventory.patch";
+      check = certifyExactPatch {
+        patchName = "0122-crucible-hot-fork-block-backend-inventory.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-block-backend-inventory";
+        liveEvidence = ''
+          grep -Fxq 'block_backend_inventory_schema_version=1' "$live_result"
+          grep -Fxq 'block_backend_inventory_bound=65536' "$live_result"
+          grep -Fxq 'block_backend_inventory_stable=true' "$live_result"
+          grep -Fxq 'block_backends_context_bound=true' "$live_result"
+          grep -Fxq 'block_backends_vmstate_observed=true' "$live_result"
+          grep -Fxq 'block_snapshot_proof_acknowledged=false' "$live_result"
+          grep -Fxq 'incomplete_report_ready=false' "$live_result"
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

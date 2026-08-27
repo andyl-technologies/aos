@@ -372,7 +372,66 @@ because the out-of-band query itself executes inside its QMP descriptor's read
 callback. The command is executed out of band so its own QMP dispatch cannot
 create an in-band bottom-half observation.
 
-The AioContext, bottom-half, and AIO-handler responses are still
+Patched QEMU also exposes every allocated `BlockBackend`, including hidden
+backends, through an out-of-band query:
+
+```text
+CrucibleHotForkBlockBackendInventory {
+    schema-version: u32 = 1,
+    generation: u64,
+    complete: bool,
+    overflowed: bool,
+    backend-count: u32,
+    named-backends: u32,
+    rooted-backends: u32,
+    device-backends: u32,
+    writable-backends: u32,
+    quiesced-backends: u32,
+    in-flight: u64,
+    backends: [
+        {
+            backend-id: positive u64,
+            context-id: positive u64,
+            reference-count: positive u32,
+            name: UTF-8 string of at most 255 bytes,
+            named: bool,
+            name-valid: bool,
+            root-present: bool,
+            device-attached: bool,
+            permissions: u64,
+            shared-permissions: u64,
+            write-permission: bool,
+            permissions-disabled: bool,
+            quiesce-depth: u32,
+            in-flight: u32,
+            request-queuing-disabled: bool,
+        },
+    ],
+}
+```
+
+`backends` contains at most 65,536 records in strictly increasing
+`backend-id` order. Every `context-id` MUST appear in the matching AioContext
+inventory. `named` equals whether `name` is nonempty, and every complete report
+requires `name-valid`. `write-permission` equals whether `permissions` contains
+QEMU `BLK_PERM_WRITE` (`0x02`). All top-level counts and the checked in-flight
+sum are exact. `complete` equals `!overflowed && all(name-valid)`. Allocation,
+final free, reference-count, AioContext, monitor-name, root/device attachment,
+permission, and permission-suppression changes advance the process-local
+generation. Quiesce depth, in-flight I/O, and request-queue policy are
+instantaneous atomic observations; the host therefore requires the entire
+response to match across its procfs capture. Structural fields are copied into
+a dedicated registry under the BQL transition that owns them, so the OOB query
+does not dereference the live BQL-owned block graph.
+
+This inventory is not the immutable writable-root proof. It does not enumerate
+the complete `BlockDriverState` graph, freeze producers, drain I/O, create an
+external snapshot, retain root identities across `fork(2)`, or define child
+overlay reconstruction. It therefore MUST NOT acknowledge proof bit 5. The
+future QEMU-owned coordinator must combine the complete backend registry with a
+drained, retained block-graph/write-root barrier and exact child disposition.
+
+The AioContext, bottom-half, AIO-handler, and block-backend responses are still
 observational. They do not drain or park a context, prevent a producer from
 enqueueing work after a query, hold a callback barrier, or hold quiescence
 across `fork(2)`. They therefore MUST NOT acknowledge proof bit 3. The future

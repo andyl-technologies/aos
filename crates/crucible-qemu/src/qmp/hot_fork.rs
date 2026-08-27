@@ -20,6 +20,9 @@ pub const QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND: &str = "query-crucible-hot-f
 /// QMP command name used for QEMU's bounded allocated-AIO-handler inventory.
 pub const QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND: &str =
     "query-crucible-hot-fork-aio-handler-inventory";
+/// QMP command name used for QEMU's bounded allocated-block-backend inventory.
+pub const QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND: &str =
+    "query-crucible-hot-fork-block-backend-inventory";
 /// QMP command name used for QEMU's bounded allocated-bottom-half inventory.
 pub const QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND: &str =
     "query-crucible-hot-fork-bottom-half-inventory";
@@ -40,6 +43,8 @@ pub const QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION: u32 = 1;
 pub const QMP_HOT_FORK_AIO_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned allocated-AIO-handler inventory contract.
 pub const QMP_HOT_FORK_AIO_HANDLER_INVENTORY_SCHEMA_VERSION: u32 = 1;
+/// Version of the QEMU-owned allocated-block-backend inventory contract.
+pub const QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned allocated-bottom-half inventory contract.
 pub const QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned mutex ownership inventory contract.
@@ -57,6 +62,8 @@ pub const QMP_HOT_FORK_RCU_INVENTORY_MAX: usize = 65_536;
 pub const QMP_HOT_FORK_AIO_INVENTORY_MAX: usize = 65_536;
 /// Maximum allocated AIO handlers retained by one inventory response.
 pub const QMP_HOT_FORK_AIO_HANDLER_INVENTORY_MAX: usize = 65_536;
+/// Maximum allocated block backends retained by one inventory response.
+pub const QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_MAX: usize = 65_536;
 /// Maximum allocated bottom halves retained by one inventory response.
 pub const QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX: usize = 65_536;
 /// Maximum registered mutexes retained by one inventory response.
@@ -67,6 +74,8 @@ pub const QMP_HOT_FORK_TIMER_INVENTORY_MAX: usize = 65_536;
 pub const QMP_HOT_FORK_THREAD_NAME_MAX_BYTES: usize = 256;
 /// Maximum UTF-8 bytes retained for one QEMU bottom-half diagnostic name.
 pub const QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES: usize = 128;
+/// Maximum UTF-8 bytes retained for one block-backend monitor name.
+pub const QMP_HOT_FORK_BLOCK_BACKEND_NAME_MAX_BYTES: usize = 255;
 
 /// One independently acknowledged hot-fork readiness proof.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -679,6 +688,191 @@ impl QmpHotForkAioHandlerInventory {
     #[must_use]
     pub fn handlers(&self) -> &[QmpHotForkAioHandler] {
         &self.handlers
+    }
+}
+
+/// One allocated QEMU block backend and its instantaneous operational state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QmpHotForkBlockBackend {
+    backend_id: u64,
+    context_id: u64,
+    reference_count: u32,
+    name: String,
+    named: bool,
+    name_valid: bool,
+    root_present: bool,
+    device_attached: bool,
+    permissions: u64,
+    shared_permissions: u64,
+    write_permission: bool,
+    permissions_disabled: bool,
+    quiesce_depth: u32,
+    in_flight: u32,
+    request_queuing_disabled: bool,
+}
+
+impl QmpHotForkBlockBackend {
+    /// Returns the positive stable process-local backend identifier.
+    #[must_use]
+    pub const fn backend_id(&self) -> u64 {
+        self.backend_id
+    }
+
+    /// Returns the positive process-local identity of the owning AioContext.
+    #[must_use]
+    pub const fn context_id(&self) -> u64 {
+        self.context_id
+    }
+
+    /// Returns the current positive backend reference count.
+    #[must_use]
+    pub const fn reference_count(&self) -> u32 {
+        self.reference_count
+    }
+
+    /// Returns the bounded monitor name, or an empty string for a hidden backend.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns whether the backend is visible through the monitor namespace.
+    #[must_use]
+    pub const fn named(&self) -> bool {
+        self.named
+    }
+
+    /// Returns whether the copied monitor name is complete and canonical.
+    #[must_use]
+    pub const fn name_valid(&self) -> bool {
+        self.name_valid
+    }
+
+    /// Returns whether the backend currently has a block-graph root.
+    #[must_use]
+    pub const fn root_present(&self) -> bool {
+        self.root_present
+    }
+
+    /// Returns whether the backend is attached to a device model.
+    #[must_use]
+    pub const fn device_attached(&self) -> bool {
+        self.device_attached
+    }
+
+    /// Returns the requested QEMU `BLK_PERM_*` bit mask.
+    #[must_use]
+    pub const fn permissions(&self) -> u64 {
+        self.permissions
+    }
+
+    /// Returns the QEMU `BLK_PERM_*` mask shareable with other users.
+    #[must_use]
+    pub const fn shared_permissions(&self) -> u64 {
+        self.shared_permissions
+    }
+
+    /// Returns whether the requested mask includes `BLK_PERM_WRITE`.
+    #[must_use]
+    pub const fn write_permission(&self) -> bool {
+        self.write_permission
+    }
+
+    /// Returns whether inactive or migration state suppresses requested permissions.
+    #[must_use]
+    pub const fn permissions_disabled(&self) -> bool {
+        self.permissions_disabled
+    }
+
+    /// Returns the instantaneous nested drained-section depth.
+    #[must_use]
+    pub const fn quiesce_depth(&self) -> u32 {
+        self.quiesce_depth
+    }
+
+    /// Returns the instantaneous number of in-flight backend I/O requests.
+    #[must_use]
+    pub const fn in_flight(&self) -> u32 {
+        self.in_flight
+    }
+
+    /// Returns whether drained requests fail instead of waiting in the queue.
+    #[must_use]
+    pub const fn request_queuing_disabled(&self) -> bool {
+        self.request_queuing_disabled
+    }
+}
+
+/// Exact bounded observational snapshot of every allocated QEMU block backend.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QmpHotForkBlockBackendInventory {
+    generation: u64,
+    complete: bool,
+    overflowed: bool,
+    backends: Vec<QmpHotForkBlockBackend>,
+}
+
+impl QmpHotForkBlockBackendInventory {
+    #[cfg(test)]
+    pub(crate) fn one_hidden(backend_id: u64, context_id: u64) -> Self {
+        Self {
+            generation: 1,
+            complete: true,
+            overflowed: false,
+            backends: vec![QmpHotForkBlockBackend {
+                backend_id,
+                context_id,
+                reference_count: 1,
+                name: String::new(),
+                named: false,
+                name_valid: true,
+                root_present: true,
+                device_attached: false,
+                permissions: 2,
+                shared_permissions: u64::MAX,
+                write_permission: true,
+                permissions_disabled: false,
+                quiesce_depth: 0,
+                in_flight: 0,
+                request_queuing_disabled: false,
+            }],
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn incomplete() -> Self {
+        Self {
+            generation: 1,
+            complete: false,
+            overflowed: true,
+            backends: Vec::new(),
+        }
+    }
+
+    /// Returns the process-local lifecycle and structural-state generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns whether every allocated backend fit and was structurally valid.
+    ///
+    /// Completeness remains observational and cannot authorize a fork.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.complete
+    }
+
+    /// Returns whether allocated backends exceeded the inventory bound.
+    #[must_use]
+    pub const fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
+    /// Returns every allocated backend in ascending identifier order.
+    #[must_use]
+    pub fn backends(&self) -> &[QmpHotForkBlockBackend] {
+        &self.backends
     }
 }
 
@@ -1732,6 +1926,233 @@ pub(super) fn parse_hot_fork_aio_handler_inventory(
         complete,
         overflowed,
         handlers,
+    })
+}
+
+pub(super) fn parse_hot_fork_block_backend_inventory(
+    value: &Value,
+) -> Result<QmpHotForkBlockBackendInventory, QmpError> {
+    let malformed = || QmpError::MalformedTypedResponse {
+        command: QmpCommandKind::QueryHotForkBlockBackendInventory,
+        response: value.to_string(),
+    };
+    let object = value.as_object().ok_or_else(&malformed)?;
+    let fields = [
+        "schema-version",
+        "generation",
+        "complete",
+        "overflowed",
+        "backend-count",
+        "named-backends",
+        "rooted-backends",
+        "device-backends",
+        "writable-backends",
+        "quiesced-backends",
+        "in-flight",
+        "backends",
+    ];
+    if object.len() != fields.len() || !fields.iter().all(|field| object.contains_key(*field)) {
+        return Err(malformed());
+    }
+
+    let schema_version = object
+        .get("schema-version")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let generation = object
+        .get("generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let complete = object
+        .get("complete")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let overflowed = object
+        .get("overflowed")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let declared_count = object
+        .get("backend-count")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let aggregate_fields = [
+        "named-backends",
+        "rooted-backends",
+        "device-backends",
+        "writable-backends",
+        "quiesced-backends",
+    ];
+    let mut declared_aggregates = [0_usize; 5];
+    for (index, field) in aggregate_fields.iter().enumerate() {
+        declared_aggregates[index] = object
+            .get(*field)
+            .and_then(Value::as_u64)
+            .and_then(|count| usize::try_from(count).ok())
+            .ok_or_else(&malformed)?;
+    }
+    let declared_in_flight = object
+        .get("in-flight")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let values = object
+        .get("backends")
+        .and_then(Value::as_array)
+        .ok_or_else(&malformed)?;
+    if schema_version != u64::from(QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_SCHEMA_VERSION)
+        || values.len() > QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_MAX
+        || declared_count != values.len()
+    {
+        return Err(malformed());
+    }
+
+    let entry_fields = [
+        "backend-id",
+        "context-id",
+        "reference-count",
+        "name",
+        "named",
+        "name-valid",
+        "root-present",
+        "device-attached",
+        "permissions",
+        "shared-permissions",
+        "write-permission",
+        "permissions-disabled",
+        "quiesce-depth",
+        "in-flight",
+        "request-queuing-disabled",
+    ];
+    let mut backends = Vec::with_capacity(values.len());
+    let mut previous_backend_id = None;
+    let mut actual_aggregates = [0_usize; 5];
+    let mut actual_in_flight = 0_u64;
+    let mut valid_entries = true;
+    for value in values {
+        let entry = value.as_object().ok_or_else(&malformed)?;
+        if entry.len() != entry_fields.len()
+            || !entry_fields.iter().all(|field| entry.contains_key(*field))
+        {
+            return Err(malformed());
+        }
+
+        let backend_id = entry
+            .get("backend-id")
+            .and_then(Value::as_u64)
+            .filter(|identifier| *identifier != 0)
+            .ok_or_else(&malformed)?;
+        if previous_backend_id.is_some_and(|previous| previous >= backend_id) {
+            return Err(malformed());
+        }
+        previous_backend_id = Some(backend_id);
+        let context_id = entry
+            .get("context-id")
+            .and_then(Value::as_u64)
+            .filter(|identifier| *identifier != 0)
+            .ok_or_else(&malformed)?;
+        let reference_count = entry
+            .get("reference-count")
+            .and_then(Value::as_u64)
+            .and_then(|count| u32::try_from(count).ok())
+            .filter(|count| *count != 0)
+            .ok_or_else(&malformed)?;
+        let name = entry
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| name.len() <= QMP_HOT_FORK_BLOCK_BACKEND_NAME_MAX_BYTES)
+            .ok_or_else(&malformed)?;
+        let named = entry
+            .get("named")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let name_valid = entry
+            .get("name-valid")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        if named == name.is_empty() {
+            return Err(malformed());
+        }
+        valid_entries &= name_valid;
+        let root_present = entry
+            .get("root-present")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let device_attached = entry
+            .get("device-attached")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let permissions = entry
+            .get("permissions")
+            .and_then(Value::as_u64)
+            .ok_or_else(&malformed)?;
+        let shared_permissions = entry
+            .get("shared-permissions")
+            .and_then(Value::as_u64)
+            .ok_or_else(&malformed)?;
+        let write_permission = entry
+            .get("write-permission")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        if write_permission != (permissions & 0x02 != 0) {
+            return Err(malformed());
+        }
+        let permissions_disabled = entry
+            .get("permissions-disabled")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let quiesce_depth = entry
+            .get("quiesce-depth")
+            .and_then(Value::as_u64)
+            .and_then(|depth| u32::try_from(depth).ok())
+            .ok_or_else(&malformed)?;
+        let in_flight = entry
+            .get("in-flight")
+            .and_then(Value::as_u64)
+            .and_then(|count| u32::try_from(count).ok())
+            .ok_or_else(&malformed)?;
+        let request_queuing_disabled = entry
+            .get("request-queuing-disabled")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+
+        actual_aggregates[0] += usize::from(named);
+        actual_aggregates[1] += usize::from(root_present);
+        actual_aggregates[2] += usize::from(device_attached);
+        actual_aggregates[3] += usize::from(write_permission);
+        actual_aggregates[4] += usize::from(quiesce_depth != 0);
+        actual_in_flight = actual_in_flight
+            .checked_add(u64::from(in_flight))
+            .ok_or_else(&malformed)?;
+        backends.push(QmpHotForkBlockBackend {
+            backend_id,
+            context_id,
+            reference_count,
+            name: name.to_owned(),
+            named,
+            name_valid,
+            root_present,
+            device_attached,
+            permissions,
+            shared_permissions,
+            write_permission,
+            permissions_disabled,
+            quiesce_depth,
+            in_flight,
+            request_queuing_disabled,
+        });
+    }
+    if declared_aggregates != actual_aggregates
+        || declared_in_flight != actual_in_flight
+        || complete != (!overflowed && valid_entries)
+    {
+        return Err(malformed());
+    }
+
+    Ok(QmpHotForkBlockBackendInventory {
+        generation,
+        complete,
+        overflowed,
+        backends,
     })
 }
 

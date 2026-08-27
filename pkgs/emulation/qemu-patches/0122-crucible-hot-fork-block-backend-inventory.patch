@@ -1,0 +1,583 @@
+From ecd57c611ccf0e668e8ffa4e1a326e9feebcd676 Mon Sep 17 00:00:00 2001
+From: Dylan Plecki <dylan@andyl.com>
+Date: Thu, 27 Aug 2026 12:22:03 +0000
+Subject: [PATCH] crucible: inventory block backends for hot fork
+
+Signed-off-by: Dylan Plecki <dylan@andyl.com>
+---
+ block/block-backend.c                       | 170 ++++++++++++++++++++
+ include/system/block-backend-global-state.h |  36 +++++
+ monitor/qmp-cmds.c                          |  64 ++++++++
+ qapi/run-state.json                         | 119 ++++++++++++++
+ 4 files changed, 389 insertions(+)
+
+diff --git a/block/block-backend.c b/block/block-backend.c
+index a402db13f..e9ad4b55d 100644
+--- a/block/block-backend.c
++++ b/block/block-backend.c
+@@ -92,6 +92,20 @@ struct BlockBackend {
+      * Accessed with atomic ops.
+      */
+     unsigned int in_flight;
++
++    /* Crucible hot-fork observational inventory state. */
++    uint64_t crucible_hot_fork_id;
++    uint64_t crucible_hot_fork_context_id;
++    uint32_t crucible_hot_fork_reference_count;
++    uint64_t crucible_hot_fork_permissions;
++    uint64_t crucible_hot_fork_shared_permissions;
++    bool crucible_hot_fork_named;
++    bool crucible_hot_fork_name_valid;
++    bool crucible_hot_fork_root_present;
++    bool crucible_hot_fork_device_attached;
++    bool crucible_hot_fork_permissions_disabled;
++    char crucible_hot_fork_name[QEMU_BLOCK_BACKEND_HOT_FORK_NAME_MAX + 1];
++    QTAILQ_ENTRY(BlockBackend) crucible_hot_fork_node;
+ };
+ 
+ typedef struct BlockBackendAIOCB {
+@@ -118,6 +132,142 @@ static QTAILQ_HEAD(, BlockBackend) block_backends =
+ static QTAILQ_HEAD(, BlockBackend) monitor_block_backends =
+     QTAILQ_HEAD_INITIALIZER(monitor_block_backends);
+ 
++static QemuMutex crucible_hot_fork_block_backend_lock;
++static QTAILQ_HEAD(, BlockBackend) crucible_hot_fork_block_backends =
++    QTAILQ_HEAD_INITIALIZER(crucible_hot_fork_block_backends);
++static uint64_t crucible_hot_fork_block_backend_next_id = 1;
++static uint64_t crucible_hot_fork_block_backend_generation;
++
++static void __attribute__((__constructor__))
++crucible_hot_fork_block_backend_inventory_init(void)
++{
++    qemu_mutex_init(&crucible_hot_fork_block_backend_lock);
++}
++
++static bool crucible_hot_fork_block_backend_sync_locked(BlockBackend *blk)
++{
++    const char *name = blk->name ?: "";
++    size_t name_length = strlen(name);
++    bool name_valid = name_length <= QEMU_BLOCK_BACKEND_HOT_FORK_NAME_MAX &&
++                      g_utf8_validate(name, name_length, NULL);
++    uint64_t context_id = blk->ctx->crucible_hot_fork_id;
++    bool changed =
++        blk->crucible_hot_fork_context_id != context_id ||
++        blk->crucible_hot_fork_reference_count != blk->refcnt ||
++        blk->crucible_hot_fork_permissions != blk->perm ||
++        blk->crucible_hot_fork_shared_permissions != blk->shared_perm ||
++        blk->crucible_hot_fork_named != (blk->name != NULL) ||
++        blk->crucible_hot_fork_name_valid != name_valid ||
++        blk->crucible_hot_fork_root_present != (blk->root != NULL) ||
++        blk->crucible_hot_fork_device_attached != (blk->dev != NULL) ||
++        blk->crucible_hot_fork_permissions_disabled != blk->disable_perm ||
++        strcmp(blk->crucible_hot_fork_name,
++               name_valid ? name : "<invalid>") != 0;
++
++    blk->crucible_hot_fork_context_id = context_id;
++    blk->crucible_hot_fork_reference_count = blk->refcnt;
++    blk->crucible_hot_fork_permissions = blk->perm;
++    blk->crucible_hot_fork_shared_permissions = blk->shared_perm;
++    blk->crucible_hot_fork_named = blk->name != NULL;
++    blk->crucible_hot_fork_name_valid = name_valid;
++    blk->crucible_hot_fork_root_present = blk->root != NULL;
++    blk->crucible_hot_fork_device_attached = blk->dev != NULL;
++    blk->crucible_hot_fork_permissions_disabled = blk->disable_perm;
++    g_strlcpy(blk->crucible_hot_fork_name,
++              name_valid ? name : "<invalid>",
++              sizeof(blk->crucible_hot_fork_name));
++    return changed;
++}
++
++static void crucible_hot_fork_block_backend_changed(BlockBackend *blk)
++{
++    QEMU_LOCK_GUARD(&crucible_hot_fork_block_backend_lock);
++
++    if (crucible_hot_fork_block_backend_sync_locked(blk)) {
++        crucible_hot_fork_block_backend_generation++;
++    }
++}
++
++static void crucible_hot_fork_block_backend_register(BlockBackend *blk)
++{
++    QEMU_LOCK_GUARD(&crucible_hot_fork_block_backend_lock);
++
++    blk->crucible_hot_fork_id =
++        crucible_hot_fork_block_backend_next_id++;
++    assert(blk->crucible_hot_fork_id != 0);
++    crucible_hot_fork_block_backend_sync_locked(blk);
++    QTAILQ_INSERT_TAIL(&crucible_hot_fork_block_backends, blk,
++                       crucible_hot_fork_node);
++    crucible_hot_fork_block_backend_generation++;
++}
++
++static void crucible_hot_fork_block_backend_unregister(BlockBackend *blk)
++{
++    QEMU_LOCK_GUARD(&crucible_hot_fork_block_backend_lock);
++
++    QTAILQ_REMOVE(&crucible_hot_fork_block_backends, blk,
++                  crucible_hot_fork_node);
++    crucible_hot_fork_block_backend_generation++;
++}
++
++void qemu_block_backend_hot_fork_inventory(
++    QemuBlockBackendHotForkInventory *inventory)
++{
++    BlockBackend *blk;
++    size_t count = 0;
++
++    *inventory = (QemuBlockBackendHotForkInventory) { 0 };
++    QEMU_LOCK_GUARD(&crucible_hot_fork_block_backend_lock);
++    inventory->generation = crucible_hot_fork_block_backend_generation;
++    QTAILQ_FOREACH(blk, &crucible_hot_fork_block_backends,
++                   crucible_hot_fork_node) {
++        if (count == QEMU_BLOCK_BACKEND_HOT_FORK_INVENTORY_MAX) {
++            inventory->overflowed = true;
++            break;
++        }
++        count++;
++    }
++
++    inventory->entries =
++        g_new0(QemuBlockBackendHotForkInventoryEntry, count);
++    inventory->entry_count = count;
++    count = 0;
++    QTAILQ_FOREACH(blk, &crucible_hot_fork_block_backends,
++                   crucible_hot_fork_node) {
++        QemuBlockBackendHotForkInventoryEntry *entry;
++
++        if (count == inventory->entry_count) {
++            break;
++        }
++        entry = &inventory->entries[count++];
++        entry->backend_id = blk->crucible_hot_fork_id;
++        entry->context_id = blk->crucible_hot_fork_context_id;
++        entry->reference_count = blk->crucible_hot_fork_reference_count;
++        entry->permissions = blk->crucible_hot_fork_permissions;
++        entry->shared_permissions =
++            blk->crucible_hot_fork_shared_permissions;
++        entry->quiesce_depth = qatomic_read(&blk->quiesce_counter);
++        entry->in_flight = qatomic_read(&blk->in_flight);
++        entry->named = blk->crucible_hot_fork_named;
++        entry->name_valid = blk->crucible_hot_fork_name_valid;
++        entry->root_present = blk->crucible_hot_fork_root_present;
++        entry->device_attached = blk->crucible_hot_fork_device_attached;
++        entry->permissions_disabled =
++            blk->crucible_hot_fork_permissions_disabled;
++        entry->request_queuing_disabled =
++            qatomic_read(&blk->disable_request_queuing);
++        g_strlcpy(entry->name, blk->crucible_hot_fork_name,
++                  sizeof(entry->name));
++    }
++}
++
++void qemu_block_backend_hot_fork_inventory_destroy(
++    QemuBlockBackendHotForkInventory *inventory)
++{
++    g_free(inventory->entries);
++    *inventory = (QemuBlockBackendHotForkInventory) { 0 };
++}
++
+ static int coroutine_mixed_fn GRAPH_RDLOCK
+ blk_set_perm_locked(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
+                     Error **errp);
+@@ -198,6 +348,7 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
+     }
+ 
+     blk->disable_perm = false;
++    crucible_hot_fork_block_backend_changed(blk);
+ 
+     /*
+      * blk->shared_perm contains the permissions we want to share once
+@@ -212,9 +363,11 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
+     if (local_err) {
+         error_propagate(errp, local_err);
+         blk->disable_perm = true;
++        crucible_hot_fork_block_backend_changed(blk);
+         return;
+     }
+     blk->shared_perm = saved_shared_perm;
++    crucible_hot_fork_block_backend_changed(blk);
+ 
+     if (runstate_check(RUN_STATE_INMIGRATE)) {
+         /* Activation can happen when migration process is still active, for
+@@ -231,6 +384,7 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
+     if (local_err) {
+         error_propagate(errp, local_err);
+         blk->disable_perm = true;
++        crucible_hot_fork_block_backend_changed(blk);
+         return;
+     }
+ }
+@@ -273,6 +427,7 @@ static int GRAPH_RDLOCK blk_root_inactivate(BdrvChild *child)
+     }
+ 
+     blk->disable_perm = true;
++    crucible_hot_fork_block_backend_changed(blk);
+     if (blk->root) {
+         bdrv_child_try_set_perm(blk->root, 0, BLK_PERM_ALL, &error_abort);
+     }
+@@ -376,6 +531,7 @@ BlockBackend *blk_new(AioContext *ctx, uint64_t perm, uint64_t shared_perm)
+     notifier_list_init(&blk->insert_bs_notifiers);
+     QLIST_INIT(&blk->aio_notifiers);
+ 
++    crucible_hot_fork_block_backend_register(blk);
+     QTAILQ_INSERT_TAIL(&block_backends, blk, link);
+     return blk;
+ }
+@@ -498,6 +654,7 @@ static void blk_delete(BlockBackend *blk)
+     QTAILQ_REMOVE(&block_backends, blk, link);
+     drive_info_del(blk->legacy_dinfo);
+     block_acct_cleanup(&blk->stats);
++    crucible_hot_fork_block_backend_unregister(blk);
+     g_free(blk);
+ }
+ 
+@@ -525,6 +682,7 @@ void blk_ref(BlockBackend *blk)
+     assert(blk->refcnt > 0);
+     GLOBAL_STATE_CODE();
+     blk->refcnt++;
++    crucible_hot_fork_block_backend_changed(blk);
+ }
+ 
+ /*
+@@ -539,6 +697,7 @@ void blk_unref(BlockBackend *blk)
+         assert(blk->refcnt > 0);
+         if (blk->refcnt > 1) {
+             blk->refcnt--;
++            crucible_hot_fork_block_backend_changed(blk);
+         } else {
+             blk_drain(blk);
+             /* blk_drain() cannot resurrect blk, nobody held a reference */
+@@ -705,6 +864,7 @@ bool monitor_add_blk(BlockBackend *blk, const char *name, Error **errp)
+ 
+     blk->name = g_strdup(name);
+     QTAILQ_INSERT_TAIL(&monitor_block_backends, blk, monitor_link);
++    crucible_hot_fork_block_backend_changed(blk);
+     return true;
+ }
+ 
+@@ -723,6 +883,7 @@ void monitor_remove_blk(BlockBackend *blk)
+     QTAILQ_REMOVE(&monitor_block_backends, blk, monitor_link);
+     g_free(blk->name);
+     blk->name = NULL;
++    crucible_hot_fork_block_backend_changed(blk);
+ }
+ 
+ /*
+@@ -888,6 +1049,7 @@ void blk_remove_bs(BlockBackend *blk)
+     blk_drain(blk);
+     root = blk->root;
+     blk->root = NULL;
++    crucible_hot_fork_block_backend_changed(blk);
+ 
+     bdrv_graph_wrlock();
+     bdrv_root_unref_child(root);
+@@ -920,8 +1082,10 @@ int blk_insert_bs(BlockBackend *blk, BlockDriverState *bs, Error **errp)
+                                        perm, shared_perm, blk, errp);
+     bdrv_graph_wrunlock();
+     if (blk->root == NULL) {
++        crucible_hot_fork_block_backend_changed(blk);
+         return -EPERM;
+     }
++    crucible_hot_fork_block_backend_changed(blk);
+ 
+     notifier_list_notify(&blk->insert_bs_notifiers, blk);
+     if (tgm->throttle_state) {
+@@ -960,6 +1124,7 @@ blk_set_perm_locked(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
+ 
+     blk->perm = perm;
+     blk->shared_perm = shared_perm;
++    crucible_hot_fork_block_backend_changed(blk);
+ 
+     return 0;
+ }
+@@ -996,10 +1161,12 @@ int blk_attach_dev(BlockBackend *blk, DeviceState *dev)
+      * job or NBD server writing to the image for storage migration. */
+     if (runstate_check(RUN_STATE_INMIGRATE)) {
+         blk->disable_perm = true;
++        crucible_hot_fork_block_backend_changed(blk);
+     }
+ 
+     blk_ref(blk);
+     blk->dev = dev;
++    crucible_hot_fork_block_backend_changed(blk);
+     blk_iostatus_reset(blk);
+ 
+     return 0;
+@@ -1014,6 +1181,7 @@ void blk_detach_dev(BlockBackend *blk, DeviceState *dev)
+     assert(blk->dev == dev);
+     GLOBAL_STATE_CODE();
+     blk->dev = NULL;
++    crucible_hot_fork_block_backend_changed(blk);
+     blk->dev_ops = NULL;
+     blk->dev_opaque = NULL;
+     blk_set_perm(blk, 0, BLK_PERM_ALL, &error_abort);
+@@ -2387,6 +2555,7 @@ int blk_set_aio_context(BlockBackend *blk, AioContext *new_context,
+ 
+     if (!bs) {
+         qatomic_set(&blk->ctx, new_context);
++        crucible_hot_fork_block_backend_changed(blk);
+         return 0;
+     }
+ 
+@@ -2416,6 +2585,7 @@ static void blk_root_set_aio_ctx_commit(void *opaque)
+     ThrottleGroupMember *tgm = &blk->public.throttle_group_member;
+ 
+     qatomic_set(&blk->ctx, new_context);
++    crucible_hot_fork_block_backend_changed(blk);
+     if (tgm->throttle_state) {
+         throttle_group_detach_aio_context(tgm);
+         throttle_group_attach_aio_context(tgm, new_context);
+diff --git a/include/system/block-backend-global-state.h b/include/system/block-backend-global-state.h
+index 35b5e8380..f3a987f27 100644
+--- a/include/system/block-backend-global-state.h
++++ b/include/system/block-backend-global-state.h
+@@ -15,6 +15,42 @@
+ 
+ #include "block-backend-common.h"
+ 
++#define QEMU_BLOCK_BACKEND_HOT_FORK_INVENTORY_MAX 65536
++#define QEMU_BLOCK_BACKEND_HOT_FORK_NAME_MAX 255
++
++typedef struct QemuBlockBackendHotForkInventoryEntry {
++    uint64_t backend_id;
++    uint64_t context_id;
++    uint32_t reference_count;
++    uint64_t permissions;
++    uint64_t shared_permissions;
++    uint32_t quiesce_depth;
++    uint32_t in_flight;
++    bool named;
++    bool name_valid;
++    bool root_present;
++    bool device_attached;
++    bool permissions_disabled;
++    bool request_queuing_disabled;
++    char name[QEMU_BLOCK_BACKEND_HOT_FORK_NAME_MAX + 1];
++} QemuBlockBackendHotForkInventoryEntry;
++
++typedef struct QemuBlockBackendHotForkInventory {
++    uint64_t generation;
++    bool overflowed;
++    size_t entry_count;
++    QemuBlockBackendHotForkInventoryEntry *entries;
++} QemuBlockBackendHotForkInventory;
++
++/*
++ * Capture every allocated BlockBackend for hot-fork auditing.  This is an
++ * observational snapshot, not a block-graph drain or retained fork barrier.
++ */
++void qemu_block_backend_hot_fork_inventory(
++    QemuBlockBackendHotForkInventory *inventory);
++void qemu_block_backend_hot_fork_inventory_destroy(
++    QemuBlockBackendHotForkInventory *inventory);
++
+ /*
+  * Global state (GS) API. These functions run under the BQL.
+  *
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 9ebdfed65..efd498d2d 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -371,6 +371,70 @@ qmp_query_crucible_hot_fork_aio_handler_inventory(Error **errp)
+ #endif
+ }
+ 
++CrucibleHotForkBlockBackendInventory *
++qmp_query_crucible_hot_fork_block_backend_inventory(Error **errp)
++{
++    CrucibleHotForkBlockBackendInventory *report =
++        g_new0(CrucibleHotForkBlockBackendInventory, 1);
++    QemuBlockBackendHotForkInventory inventory;
++    CrucibleHotForkBlockBackendList **tail = &report->backends;
++    uint64_t previous_backend_id = 0;
++    bool valid_entries = true;
++    size_t index;
++
++    (void)errp;
++    report->schema_version = 1;
++    qemu_block_backend_hot_fork_inventory(&inventory);
++    report->generation = inventory.generation;
++    for (index = 0; index < inventory.entry_count; index++) {
++        QemuBlockBackendHotForkInventoryEntry *source =
++            &inventory.entries[index];
++        CrucibleHotForkBlockBackend *backend =
++            g_new0(CrucibleHotForkBlockBackend, 1);
++        CrucibleHotForkBlockBackendList *node =
++            g_new0(CrucibleHotForkBlockBackendList, 1);
++
++        backend->backend_id = source->backend_id;
++        backend->context_id = source->context_id;
++        backend->reference_count = source->reference_count;
++        backend->name = g_strdup(source->name);
++        backend->named = source->named;
++        backend->name_valid = source->name_valid;
++        backend->root_present = source->root_present;
++        backend->device_attached = source->device_attached;
++        backend->permissions = source->permissions;
++        backend->shared_permissions = source->shared_permissions;
++        backend->write_permission =
++            (source->permissions & BLK_PERM_WRITE) != 0;
++        backend->permissions_disabled = source->permissions_disabled;
++        backend->quiesce_depth = source->quiesce_depth;
++        backend->in_flight = source->in_flight;
++        backend->request_queuing_disabled =
++            source->request_queuing_disabled;
++        if (source->backend_id == 0 || source->context_id == 0 ||
++            source->reference_count == 0 || !source->name_valid ||
++            source->named != (source->name[0] != '\0') ||
++            (index != 0 && source->backend_id <= previous_backend_id)) {
++            valid_entries = false;
++        }
++        previous_backend_id = source->backend_id;
++        report->named_backends += source->named;
++        report->rooted_backends += source->root_present;
++        report->device_backends += source->device_attached;
++        report->writable_backends += backend->write_permission;
++        report->quiesced_backends += source->quiesce_depth != 0;
++        report->in_flight += source->in_flight;
++        node->value = backend;
++        *tail = node;
++        tail = &node->next;
++    }
++    report->backend_count = inventory.entry_count;
++    report->overflowed = inventory.overflowed;
++    report->complete = !inventory.overflowed && valid_entries;
++    qemu_block_backend_hot_fork_inventory_destroy(&inventory);
++    return report;
++}
++
+ CrucibleHotForkMutexInventory *
+ qmp_query_crucible_hot_fork_mutex_inventory(Error **errp)
+ {
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 42e9f99ab..a607a618b 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -542,6 +542,125 @@
+   'returns': 'CrucibleHotForkAioHandlerInventory',
+   'allow-oob': true }
+ 
++##
++# @CrucibleHotForkBlockBackend:
++#
++# One allocated BlockBackend in the process-local registry.
++#
++# @backend-id: positive stable process-local backend identity
++#
++# @context-id: positive process-local owning AioContext identity
++#
++# @reference-count: current positive backend reference count
++#
++# @name: monitor name, empty for a hidden backend
++#
++# @named: whether this backend is monitor-visible
++#
++# @name-valid: whether @name was bounded and valid UTF-8
++#
++# @root-present: whether a block graph root is attached
++#
++# @device-attached: whether a device model is attached
++#
++# @permissions: requested BLK_PERM_* mask
++#
++# @shared-permissions: shareable BLK_PERM_* mask
++#
++# @write-permission: whether @permissions contains BLK_PERM_WRITE
++#
++# @permissions-disabled: whether migration or inactive state suppresses the
++#     requested permissions
++#
++# @quiesce-depth: instantaneous nested drained-section depth
++#
++# @in-flight: instantaneous backend I/O request count
++#
++# @request-queuing-disabled: whether requests fail instead of waiting while
++#     the backend is drained
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkBlockBackend',
++  'data': { 'backend-id': 'uint64',
++            'context-id': 'uint64',
++            'reference-count': 'uint32',
++            'name': 'str',
++            'named': 'bool',
++            'name-valid': 'bool',
++            'root-present': 'bool',
++            'device-attached': 'bool',
++            'permissions': 'uint64',
++            'shared-permissions': 'uint64',
++            'write-permission': 'bool',
++            'permissions-disabled': 'bool',
++            'quiesce-depth': 'uint32',
++            'in-flight': 'uint32',
++            'request-queuing-disabled': 'bool' } }
++
++##
++# @CrucibleHotForkBlockBackendInventory:
++#
++# Bounded observational snapshot of every allocated BlockBackend.  This
++# report does not traverse the block graph, drain I/O, retain immutable write
++# roots, acknowledge readiness proof bit 5, or authorize a fork.
++#
++# @schema-version: inventory contract version, currently 1
++#
++# @generation: monotonic process-local backend lifecycle and structural-state
++#     generation; quiesce and in-flight counts are instantaneous
++#
++# @complete: true exactly when the registry did not overflow and every entry
++#     is structurally valid
++#
++# @overflowed: whether allocated backends exceeded the retained bound
++#
++# @backend-count: number of retained allocated backends
++#
++# @named-backends: retained monitor-visible backends
++#
++# @rooted-backends: retained backends with an attached graph root
++#
++# @device-backends: retained backends attached to a device model
++#
++# @writable-backends: retained backends requesting BLK_PERM_WRITE
++#
++# @quiesced-backends: retained backends with nonzero @quiesce-depth
++#
++# @in-flight: checked sum of retained @in-flight values
++#
++# @backends: allocated backends sorted by @backend-id and bounded to 65536
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkBlockBackendInventory',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'complete': 'bool',
++            'overflowed': 'bool',
++            'backend-count': 'uint32',
++            'named-backends': 'uint32',
++            'rooted-backends': 'uint32',
++            'device-backends': 'uint32',
++            'writable-backends': 'uint32',
++            'quiesced-backends': 'uint32',
++            'in-flight': 'uint64',
++            'backends': [ 'CrucibleHotForkBlockBackend' ] } }
++
++##
++# @query-crucible-hot-fork-block-backend-inventory:
++#
++# Query every allocated BlockBackend.  This OOB command is observational and
++# cannot acknowledge the immutable writable-block-root readiness proof.
++#
++# Returns: @CrucibleHotForkBlockBackendInventory
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'query-crucible-hot-fork-block-backend-inventory',
++  'returns': 'CrucibleHotForkBlockBackendInventory',
++  'allow-oob': true }
++
+ ##
+ # @CrucibleHotForkMutex:
+ #
+-- 
+2.48.1

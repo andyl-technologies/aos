@@ -1834,6 +1834,33 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   inventory into a retained fork proof.
 - **Risk:** F.
 
+### crucible-hot-fork-block-backend-inventory — expose every block backend
+
+- **Patch:** `0122-crucible-hot-fork-block-backend-inventory.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-5].
+- **Mechanism:** every allocated `BlockBackend`, including hidden backends,
+  receives a stable positive process-local identity and enters a 65,536-entry
+  lifecycle registry. A fixed version-1 QMP query returns sorted unique entries
+  bound to the exact AioContext identity, monitor visibility/name, graph-root
+  and device attachment, requested and shared `BLK_PERM_*` masks, effective
+  permission suppression, drained-section depth, request-queue policy, and
+  in-flight I/O. Structural state is copied under a dedicated registry lock;
+  quiesce and in-flight values are instantaneous atomics. The command permits
+  negotiated QMP OOB execution and never dereferences the BQL-owned block graph.
+- **Micro-test:** strict Rust decoding rejects unknown or additional fields,
+  changed schema, invalid or unsorted identities, missing AioContext bindings,
+  invalid monitor names, inconsistent write classification/completeness, and
+  mismatched aggregates. The live patched-QEMU gate requires two stable exact
+  reports, binds every backend to the exact AIO inventory, and observes the
+  configured VMState backend. Stock QEMU must not expose the command.
+- **Inertness:** the query is observational. It does not traverse or mutate the
+  block graph, start or drain I/O, retain immutable writable roots, hold a
+  barrier across another operation, coordinate `fork(2)`, choose a child
+  disposition, or change readiness bit 5. Only the future QEMU-owned
+  coordinator may combine the registry with a drained block-graph snapshot and
+  child reconstruction contract.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

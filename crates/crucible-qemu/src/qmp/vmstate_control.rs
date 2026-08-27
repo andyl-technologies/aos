@@ -7,9 +7,10 @@ use crucible::Checkpoint;
 
 use super::{
     QmpClient, QmpCommandComplete, QmpError, QmpHotForkAioHandlerInventory, QmpHotForkAioInventory,
-    QmpHotForkBottomHalfInventory, QmpHotForkMutexInventory, QmpHotForkRcuInventory,
-    QmpHotForkReadiness, QmpHotForkThreadInventory, QmpHotForkTimerInventory, QmpIoTimeoutPolicy,
-    QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QmpHotForkBlockBackendInventory, QmpHotForkBottomHalfInventory, QmpHotForkMutexInventory,
+    QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkThreadInventory,
+    QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind,
+    QmpSnapshotTag, QmpTimeoutStream,
 };
 use crate::{
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
@@ -188,6 +189,20 @@ where
     ) -> Result<QmpHotForkAioHandlerInventory, QemuNodeChannelError> {
         self.client
             .query_hot_fork_aio_handler_inventory()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Queries QEMU's exact bounded allocated-block-backend inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
+    /// not satisfy the closed block-backend inventory schema and bounds.
+    pub fn query_hot_fork_block_backend_inventory(
+        &mut self,
+    ) -> Result<QmpHotForkBlockBackendInventory, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_block_backend_inventory()
             .map_err(QemuNodeChannelError::from)
     }
 
