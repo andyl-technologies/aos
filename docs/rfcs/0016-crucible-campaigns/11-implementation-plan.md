@@ -1540,8 +1540,8 @@ acknowledges only precise icount, single-threaded sim RR, and an authenticated
 exact paused/device-flush boundary. It deliberately leaves the AIO/BH/timer,
 RCU, block-snapshot, plugin-ring, mapping/descriptor, and child-reinitialization
 proofs clear, so no hot-fork capability can be advertised yet. The remaining
-T-CAM-6.1 inventory and T-CAM-6.2 coordinator work must move those bits through
-subsystem-owned barriers rather than weakening this fail-closed query.
+T-CAM-6.1 inventory and T-CAM-6.2 barrier work must move those bits through the
+QEMU-owned coordinator rather than weakening this fail-closed query.
 
 Patched QEMU now also owns a bounded active-thread registry. Every
 `qemu_thread_create()` start routine is bracketed by register/unregister cleanup,
@@ -1636,6 +1636,18 @@ closure. This is the first retained T-CAM-6.2 subsystem barrier, but it still
 does not freeze host ring producers, drain plugin workers, retain a complete
 template transaction, or reconstruct child resources. Readiness bit 6 therefore
 remains clear and T-CAM-6.2 remains unchecked.
+Patched QEMU now also owns the first versioned `PrepareForkTemplate`
+transaction. Its serialized OOB coordinator starts only at the exact
+paused/device-flush boundary, retains the plugin callback barrier while admitted
+callbacks drain, and lets the Apache client query or abort that retained state
+without blocking QMP. A quiescent transaction is reported as `prepared` only
+when all nine readiness bits are present in the same generation; otherwise QEMU
+releases every acquired barrier and reports exact rollback as `blocked`.
+Standalone plugin hold/release cannot steal coordinator-owned state, and a
+release failure leaves ownership retained for a later query/abort retry. The
+current coordinator composes only the plugin callback barrier, so readiness bit
+6 and the other unresolved bits remain clear, every drained preparation rolls
+back, no fork operation exists, and T-CAM-6.2 remains unchecked.
 QEMU now also exposes a version-1, 65,536-entry POSIX `QemuMutex` and
 `QemuRecMutex` inventory. It reports sorted lifecycle identities, owner thread,
 recursion depth, acquisition and condition waiters, active unlock transitions,

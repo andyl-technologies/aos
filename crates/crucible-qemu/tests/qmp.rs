@@ -12,7 +12,8 @@ use std::time::Duration;
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT,
-    QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_REQUIRED_PROOFS, QMP_QUERY_CPUS_FAST_COMMAND,
+    QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_REQUIRED_PROOFS,
+    QMP_HOT_FORK_TEMPLATE_COMMAND, QMP_QUERY_CPUS_FAST_COMMAND,
     QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
@@ -21,9 +22,9 @@ use crucible_qemu::{
     QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
     QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND,
     QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient,
-    QmpCommandKind, QmpError, QmpGreeting, QmpHotForkProof, QmpHotForkThreadDisposition,
-    QmpHotForkTimerClock, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag,
-    QmpTimeoutStream,
+    QmpCommandKind, QmpError, QmpGreeting, QmpHotForkProof, QmpHotForkTemplateOutcome,
+    QmpHotForkThreadDisposition, QmpHotForkTimerClock, QmpIoTimeoutPolicy, QmpJobPollPolicy,
+    QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -744,6 +745,123 @@ fn hot_fork_plugin_barrier_rejects_malformed_or_wrong_action_state() -> Result<(
         client.release_hot_fork_plugin_barrier(),
         Err(QmpError::MalformedTypedResponse {
             command: QmpCommandKind::HotForkPluginBarrier,
+            ..
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn hot_fork_template_coordinator_retains_draining_and_rolls_back_blocked()
+-> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":4,"outcome":"draining","transaction-active":true,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":8,"registered":true,"manifest-consistent":true,"held":true,"teardown-closed":false,"in-flight":2,"quiescent":false},"rollback-complete":false,"ready":false}}"#,
+        r#"{"return":{"schema-version":1,"generation":4,"outcome":"draining","transaction-active":true,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":8,"registered":true,"manifest-consistent":true,"held":true,"teardown-closed":false,"in-flight":0,"quiescent":true},"rollback-complete":false,"ready":false}}"#,
+        r#"{"return":{"schema-version":1,"generation":4,"outcome":"blocked","transaction-active":false,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":9,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false},"rollback-complete":true,"ready":false}}"#,
+        r#"{"return":{"schema-version":1,"generation":4,"outcome":"idle","transaction-active":false,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":9,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false},"rollback-complete":true,"ready":false}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let draining = client.prepare_hot_fork_template()?;
+    assert_eq!(draining.outcome(), QmpHotForkTemplateOutcome::Draining);
+    assert!(draining.transaction_active());
+    assert_eq!(draining.plugin_barrier().in_flight(), 2);
+    assert!(!draining.rollback_complete());
+
+    let drained = client.query_hot_fork_template()?;
+    assert_eq!(drained.outcome(), QmpHotForkTemplateOutcome::Draining);
+    assert!(drained.plugin_barrier().quiescent());
+
+    let blocked = client.prepare_hot_fork_template()?;
+    assert_eq!(blocked.outcome(), QmpHotForkTemplateOutcome::Blocked);
+    assert_eq!(blocked.generation(), 4);
+    assert_eq!(blocked.acknowledged_proofs(), 7);
+    assert_eq!(blocked.missing_proofs(), 504);
+    assert!(!blocked.transaction_active());
+    assert!(blocked.rollback_complete());
+    assert!(!blocked.plugin_barrier().held());
+    assert!(!blocked.ready());
+
+    assert_eq!(
+        client.query_hot_fork_template()?.outcome(),
+        QmpHotForkTemplateOutcome::Idle
+    );
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    for (index, action) in [(1, "prepare"), (2, "query"), (3, "prepare"), (4, "query")] {
+        assert_eq!(
+            oob_execute_name(json_line(&lines, index)),
+            Some(QMP_HOT_FORK_TEMPLATE_COMMAND)
+        );
+        assert_eq!(
+            json_line(&lines, index)
+                .pointer("/arguments/action")
+                .and_then(Value::as_str),
+            Some(action)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn hot_fork_template_abort_is_exact_and_malformed_states_fail_closed() -> Result<(), Box<dyn Error>>
+{
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":5,"outcome":"aborted","transaction-active":false,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":10,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false},"rollback-complete":true,"ready":false}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+    let aborted = client.abort_hot_fork_template()?;
+    assert_eq!(aborted.outcome(), QmpHotForkTemplateOutcome::Aborted);
+    assert!(aborted.rollback_complete());
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    assert_eq!(
+        oob_execute_name(json_line(&lines, 1)),
+        Some(QMP_HOT_FORK_TEMPLATE_COMMAND)
+    );
+    assert_eq!(
+        json_line(&lines, 1)
+            .pointer("/arguments/action")
+            .and_then(Value::as_str),
+        Some("abort")
+    );
+
+    for response in [
+        r#"{"return":{"schema-version":2,"generation":4,"outcome":"blocked","transaction-active":false,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":9,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false},"rollback-complete":true,"ready":false}}"#,
+        r#"{"return":{"schema-version":1,"generation":4,"outcome":"blocked","transaction-active":false,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":503,"plugin-barrier":{"schema-version":1,"generation":9,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false},"rollback-complete":true,"ready":false}}"#,
+        r#"{"return":{"schema-version":1,"generation":4,"outcome":"blocked","transaction-active":false,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":9,"registered":true,"manifest-consistent":true,"held":true,"teardown-closed":false,"in-flight":0,"quiescent":true},"rollback-complete":false,"ready":false}}"#,
+        r#"{"return":{"schema-version":1,"generation":4,"outcome":"prepared","transaction-active":true,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":9,"registered":true,"manifest-consistent":true,"held":true,"teardown-closed":false,"in-flight":0,"quiescent":true},"rollback-complete":false,"ready":true}}"#,
+    ] {
+        let mut client = QmpClient::connect(scripted_qmp([
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            response,
+        ]))?;
+        assert!(matches!(
+            client.prepare_hot_fork_template(),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkTemplate,
+                ..
+            })
+        ));
+    }
+
+    let mut client = QmpClient::connect(scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":4,"outcome":"blocked","transaction-active":false,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":9,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false},"rollback-complete":true,"ready":false}}"#,
+    ]))?;
+    assert!(matches!(
+        client.query_hot_fork_template(),
+        Err(QmpError::MalformedTypedResponse {
+            command: QmpCommandKind::HotForkTemplate,
             ..
         })
     ));

@@ -867,6 +867,13 @@
       enforces = "HFORK-3,HFORK-4";
       capability = "a versioned OOB QMP operation holds, observes, and releases the plugin-owned reversible callback-admission barrier; holding rejects new registered callback work and reports already-admitted in-flight callbacks without blocking QMP, while readiness bit 6 remains clear until host ring writers, plugin workers, and child reconstruction are also frozen";
     }
+    {
+      file = "0125-crucible-hot-fork-template-coordinator.patch";
+      catalogName = "crucible-hot-fork-template-coordinator";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "a serialized versioned OOB QMP coordinator owns retained template preparation, acquires the plugin callback barrier only at the exact paused/device-flush boundary, reports draining without blocking QMP, rolls every acquired barrier back when complete readiness remains unavailable, and refuses to claim prepared until all nine proof bits are present in one retained transaction";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

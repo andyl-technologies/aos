@@ -106,6 +106,24 @@ where
         self.vmstate.query_hot_fork_plugin_resource_inventory()
     }
 
+    fn prepare_hot_fork_template(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.vmstate.prepare_hot_fork_template()
+    }
+
+    fn query_hot_fork_template(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_template()
+    }
+
+    fn abort_hot_fork_template(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.vmstate.abort_hot_fork_template()
+    }
+
     fn query_hot_fork_bottom_half_inventory(
         &mut self,
     ) -> Result<crate::QmpHotForkBottomHalfInventory, QemuNodeChannelError> {

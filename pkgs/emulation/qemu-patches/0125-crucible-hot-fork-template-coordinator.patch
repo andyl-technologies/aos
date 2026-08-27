@@ -1,0 +1,407 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 0836d7cad..f5456c0ef 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -110,12 +110,10 @@ static bool crucible_hot_fork_exact_paused_boundary(void)
+         qemu_plugin_crucible_vmstop_flush_status() == 0;
+ }
+ 
+-CrucibleHotForkReadiness *qmp_query_crucible_hot_fork_readiness(Error **errp)
++static uint64_t crucible_hot_fork_acknowledged_proofs(void)
+ {
+-    CrucibleHotForkReadiness *report = g_new0(CrucibleHotForkReadiness, 1);
+     uint64_t acknowledged = 0;
+ 
+-    (void)errp;
+     if (icount_enabled() == ICOUNT_PRECISE) {
+         acknowledged |= CRUCIBLE_HOT_FORK_PROOF_PRECISE_ICOUNT;
+     }
+@@ -131,6 +129,15 @@ CrucibleHotForkReadiness *qmp_query_crucible_hot_fork_readiness(Error **errp)
+      * subsystem-owned barriers and child reconstruction hooks land.  In
+      * particular, ordinary paused state is not evidence for any of them.
+      */
++    return acknowledged;
++}
++
++CrucibleHotForkReadiness *qmp_query_crucible_hot_fork_readiness(Error **errp)
++{
++    CrucibleHotForkReadiness *report = g_new0(CrucibleHotForkReadiness, 1);
++    uint64_t acknowledged = crucible_hot_fork_acknowledged_proofs();
++
++    (void)errp;
+     report->schema_version = 1;
+     report->required_proofs = CRUCIBLE_HOT_FORK_REQUIRED_PROOFS;
+     report->acknowledged_proofs = acknowledged;
+@@ -138,38 +145,14 @@ CrucibleHotForkReadiness *qmp_query_crucible_hot_fork_readiness(Error **errp)
+     return report;
+ }
+ 
+-CrucibleHotForkPluginBarrierState *
+-qmp_crucible_hot_fork_plugin_barrier(
+-    CrucibleHotForkPluginBarrierAction action, Error **errp)
++static CrucibleHotForkPluginBarrierState *
++crucible_hot_fork_plugin_barrier(uint32_t operation, Error **errp)
+ {
+     CrucibleHotForkPluginBarrierState *report =
+         g_new0(CrucibleHotForkPluginBarrierState, 1);
+     QemuPluginCrucibleHotForkBarrierInventory inventory;
+-    uint32_t operation;
+     int status;
+ 
+-    switch (action) {
+-    case CRUCIBLE_HOT_FORK_PLUGIN_BARRIER_ACTION_HOLD:
+-        if (!crucible_hot_fork_exact_paused_boundary()) {
+-            error_setg(errp, "Crucible hot-fork plugin barrier requires "
+-                       "an exact paused/device-flush boundary");
+-            g_free(report);
+-            return NULL;
+-        }
+-        operation = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD;
+-        break;
+-    case CRUCIBLE_HOT_FORK_PLUGIN_BARRIER_ACTION_QUERY:
+-        operation = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY;
+-        break;
+-    case CRUCIBLE_HOT_FORK_PLUGIN_BARRIER_ACTION_RELEASE:
+-        operation = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE;
+-        break;
+-    default:
+-        error_setg(errp, "Unknown Crucible hot-fork plugin barrier action");
+-        g_free(report);
+-        return NULL;
+-    }
+-
+     status = qemu_plugin_crucible_hot_fork_barrier(operation, &inventory);
+     if (status != 0) {
+         error_setg_errno(errp, -status,
+@@ -193,6 +176,217 @@ qmp_crucible_hot_fork_plugin_barrier(
+     return report;
+ }
+ 
++static GMutex crucible_hot_fork_template_lock;
++static uint64_t crucible_hot_fork_template_generation;
++static bool crucible_hot_fork_template_active;
++
++CrucibleHotForkPluginBarrierState *
++qmp_crucible_hot_fork_plugin_barrier(
++    CrucibleHotForkPluginBarrierAction action, Error **errp)
++{
++    CrucibleHotForkPluginBarrierState *report = NULL;
++    uint32_t operation;
++
++    g_mutex_lock(&crucible_hot_fork_template_lock);
++    switch (action) {
++    case CRUCIBLE_HOT_FORK_PLUGIN_BARRIER_ACTION_HOLD:
++        if (crucible_hot_fork_template_active) {
++            error_setg(errp, "Crucible hot-fork template transaction owns "
++                       "the plugin barrier");
++            goto out;
++        }
++        if (!crucible_hot_fork_exact_paused_boundary()) {
++            error_setg(errp, "Crucible hot-fork plugin barrier requires "
++                       "an exact paused/device-flush boundary");
++            goto out;
++        }
++        operation = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD;
++        break;
++    case CRUCIBLE_HOT_FORK_PLUGIN_BARRIER_ACTION_QUERY:
++        operation = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY;
++        break;
++    case CRUCIBLE_HOT_FORK_PLUGIN_BARRIER_ACTION_RELEASE:
++        if (crucible_hot_fork_template_active) {
++            error_setg(errp, "Crucible hot-fork template transaction owns "
++                       "the plugin barrier");
++            goto out;
++        }
++        operation = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE;
++        break;
++    default:
++        error_setg(errp, "Unknown Crucible hot-fork plugin barrier action");
++        goto out;
++    }
++
++    report = crucible_hot_fork_plugin_barrier(operation, errp);
++out:
++    g_mutex_unlock(&crucible_hot_fork_template_lock);
++    return report;
++}
++
++static CrucibleHotForkTemplateState *
++crucible_hot_fork_template_report(
++    CrucibleHotForkTemplateOutcome outcome,
++    CrucibleHotForkPluginBarrierState *plugin_barrier)
++{
++    CrucibleHotForkTemplateState *report =
++        g_new0(CrucibleHotForkTemplateState, 1);
++    uint64_t acknowledged = crucible_hot_fork_acknowledged_proofs();
++
++    report->schema_version = 1;
++    report->generation = crucible_hot_fork_template_generation;
++    report->outcome = outcome;
++    report->transaction_active = crucible_hot_fork_template_active;
++    report->required_proofs = CRUCIBLE_HOT_FORK_REQUIRED_PROOFS;
++    report->acknowledged_proofs = acknowledged;
++    report->missing_proofs = CRUCIBLE_HOT_FORK_REQUIRED_PROOFS & ~acknowledged;
++    report->plugin_barrier = plugin_barrier;
++    report->rollback_complete = !report->transaction_active &&
++        !plugin_barrier->held;
++    report->ready = outcome == CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_PREPARED &&
++        report->transaction_active && plugin_barrier->quiescent &&
++        report->missing_proofs == 0;
++    return report;
++}
++
++CrucibleHotForkTemplateState *
++qmp_crucible_hot_fork_template(
++    CrucibleHotForkTemplateAction action, Error **errp)
++{
++    CrucibleHotForkPluginBarrierState *plugin_barrier = NULL;
++    CrucibleHotForkTemplateState *report = NULL;
++    CrucibleHotForkTemplateOutcome outcome;
++
++    g_mutex_lock(&crucible_hot_fork_template_lock);
++    switch (action) {
++    case CRUCIBLE_HOT_FORK_TEMPLATE_ACTION_PREPARE:
++        if (!crucible_hot_fork_template_active) {
++            if (!crucible_hot_fork_exact_paused_boundary()) {
++                error_setg(errp, "Crucible hot-fork template preparation "
++                           "requires an exact paused/device-flush boundary");
++                goto out;
++            }
++            plugin_barrier = crucible_hot_fork_plugin_barrier(
++                QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, errp);
++            if (!plugin_barrier) {
++                goto out;
++            }
++            if (plugin_barrier->held) {
++                error_setg(errp, "Crucible hot-fork plugin barrier was held "
++                           "outside the template coordinator");
++                g_free(plugin_barrier);
++                plugin_barrier = NULL;
++                goto out;
++            }
++            g_free(plugin_barrier);
++            plugin_barrier = crucible_hot_fork_plugin_barrier(
++                QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD, errp);
++            if (!plugin_barrier) {
++                goto out;
++            }
++            crucible_hot_fork_template_active = true;
++            crucible_hot_fork_template_generation++;
++            assert(crucible_hot_fork_template_generation != 0);
++        } else {
++            plugin_barrier = crucible_hot_fork_plugin_barrier(
++                QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, errp);
++            if (!plugin_barrier) {
++                goto out;
++            }
++        }
++        if (!plugin_barrier->held || plugin_barrier->teardown_closed) {
++            error_setg(errp, "Crucible hot-fork template lost its retained "
++                       "plugin barrier");
++            g_free(plugin_barrier);
++            plugin_barrier = NULL;
++            goto out;
++        }
++        if (!plugin_barrier->quiescent) {
++            outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
++            break;
++        }
++        if (crucible_hot_fork_acknowledged_proofs() ==
++            CRUCIBLE_HOT_FORK_REQUIRED_PROOFS) {
++            outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_PREPARED;
++            break;
++        }
++
++        g_free(plugin_barrier);
++        plugin_barrier = crucible_hot_fork_plugin_barrier(
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE, errp);
++        if (!plugin_barrier) {
++            goto out;
++        }
++        crucible_hot_fork_template_active = false;
++        outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_BLOCKED;
++        break;
++    case CRUCIBLE_HOT_FORK_TEMPLATE_ACTION_QUERY:
++        plugin_barrier = crucible_hot_fork_plugin_barrier(
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, errp);
++        if (!plugin_barrier) {
++            goto out;
++        }
++        if (crucible_hot_fork_template_active &&
++            (!plugin_barrier->held || plugin_barrier->teardown_closed)) {
++            error_setg(errp, "Crucible hot-fork template lost its retained "
++                       "plugin barrier");
++            g_free(plugin_barrier);
++            plugin_barrier = NULL;
++            goto out;
++        }
++        if (!crucible_hot_fork_template_active && plugin_barrier->held) {
++            error_setg(errp, "Crucible hot-fork plugin barrier was held "
++                       "outside the template coordinator");
++            g_free(plugin_barrier);
++            plugin_barrier = NULL;
++            goto out;
++        }
++        if (!crucible_hot_fork_template_active) {
++            outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_IDLE;
++        } else if (plugin_barrier->quiescent &&
++                   crucible_hot_fork_acknowledged_proofs() ==
++                       CRUCIBLE_HOT_FORK_REQUIRED_PROOFS) {
++            outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_PREPARED;
++        } else {
++            outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
++        }
++        break;
++    case CRUCIBLE_HOT_FORK_TEMPLATE_ACTION_ABORT:
++        if (!crucible_hot_fork_template_active) {
++            plugin_barrier = crucible_hot_fork_plugin_barrier(
++                QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, errp);
++            if (!plugin_barrier) {
++                goto out;
++            }
++            if (plugin_barrier->held) {
++                error_setg(errp, "Crucible hot-fork plugin barrier was held "
++                           "outside the template coordinator");
++                g_free(plugin_barrier);
++                plugin_barrier = NULL;
++                goto out;
++            }
++            outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_IDLE;
++            break;
++        }
++        plugin_barrier = crucible_hot_fork_plugin_barrier(
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE, errp);
++        if (!plugin_barrier) {
++            goto out;
++        }
++        crucible_hot_fork_template_active = false;
++        outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_ABORTED;
++        break;
++    default:
++        error_setg(errp, "Unknown Crucible hot-fork template action");
++        goto out;
++    }
++
++    report = crucible_hot_fork_template_report(outcome, plugin_barrier);
++out:
++    g_mutex_unlock(&crucible_hot_fork_template_lock);
++    return report;
++}
++
+ CrucibleHotForkThreadInventory *
+ qmp_query_crucible_hot_fork_thread_inventory(Error **errp)
+ {
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 7c171f8d3..ea457c3cc 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -824,6 +824,109 @@
+   'returns': 'CrucibleHotForkPluginBarrierState',
+   'allow-oob': true }
+ 
++##
++# @CrucibleHotForkTemplateAction:
++#
++# Operation over QEMU's retained hot-fork template preparation transaction.
++#
++# @prepare: acquire registered subsystem barriers, poll them, and either retain
++#     a draining/prepared transaction or roll every acquired barrier back when
++#     the complete readiness proof is unavailable
++#
++# @query: observe the current transaction without acquiring or releasing a
++#     barrier
++#
++# @abort: release every acquired barrier and return the coordinator to idle
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'enum': 'CrucibleHotForkTemplateAction',
++  'data': [ 'prepare', 'query', 'abort' ] }
++
++##
++# @CrucibleHotForkTemplateOutcome:
++#
++# Exact outcome of one hot-fork template coordinator operation.
++#
++# @idle: no retained transaction or acquired barrier exists
++#
++# @draining: the transaction retains its acquired barrier while admitted work
++#     drains or while the caller asks @prepare to evaluate readiness again
++#
++# @blocked: preparation reached a stable barrier but the complete readiness
++#     bitmap was unavailable, so all acquired barriers were rolled back
++#
++# @prepared: every required proof was acknowledged and the transaction remains
++#     retained for a future fork operation
++#
++# @aborted: an active transaction was explicitly rolled back
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'enum': 'CrucibleHotForkTemplateOutcome',
++  'data': [ 'idle', 'draining', 'blocked', 'prepared', 'aborted' ] }
++
++##
++# @CrucibleHotForkTemplateState:
++#
++# QEMU-owned state for one retained template-preparation transaction. Version 1
++# acquires only the Crucible plugin callback barrier. Because that barrier does
++# not freeze host ring producers or provide child reconstruction, proof bit 6
++# remains clear and a drained transaction rolls back as @blocked.
++#
++# @schema-version: transaction contract version, currently 1
++#
++# @generation: positive process-local transaction generation after the first
++#     successful prepare, or zero before any transaction
++#
++# @outcome: exact result of the requested coordinator operation
++#
++# @transaction-active: whether QEMU still owns acquired barrier state
++#
++# @required-proofs: complete proof bitmap required before preparation succeeds
++#
++# @acknowledged-proofs: subset currently attested by QEMU
++#
++# @missing-proofs: exact @required-proofs bits not acknowledged
++#
++# @plugin-barrier: plugin barrier state after the operation and any rollback
++#
++# @rollback-complete: whether no transaction barrier remains acquired
++#
++# @ready: true exactly for a retained @prepared transaction with every proof
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkTemplateState',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'outcome': 'CrucibleHotForkTemplateOutcome',
++            'transaction-active': 'bool',
++            'required-proofs': 'uint64',
++            'acknowledged-proofs': 'uint64',
++            'missing-proofs': 'uint64',
++            'plugin-barrier': 'CrucibleHotForkPluginBarrierState',
++            'rollback-complete': 'bool',
++            'ready': 'bool' } }
++
++##
++# @crucible-hot-fork-template:
++#
++# Drives QEMU's retained hot-fork template preparation coordinator. Preparation
++# begins only at the exact paused/device-flush boundary. The command never forks
++# a process; incomplete readiness rolls acquired barriers back fail-closed.
++#
++# @action: requested coordinator operation
++#
++# Returns: @CrucibleHotForkTemplateState
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'crucible-hot-fork-template',
++  'data': { 'action': 'CrucibleHotForkTemplateAction' },
++  'returns': 'CrucibleHotForkTemplateState',
++  'allow-oob': true }
++
+ ##
+ # @CrucibleHotForkMutex:
+ #

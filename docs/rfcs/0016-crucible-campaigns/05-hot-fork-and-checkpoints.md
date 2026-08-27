@@ -123,10 +123,9 @@ template itself.
 ## 05.5 Control protocol
 
 The Apache host and GPL QEMU process communicate through new versioned messages.
-Before template preparation exists, the host uses the bounded
-`query-crucible-hot-fork-readiness` QMP command to read QEMU's own proof state;
-it never infers readiness from launch arguments or ordinary paused status. The
-version-1 response is:
+The host uses the bounded `query-crucible-hot-fork-readiness` QMP command to
+read QEMU's own proof state; it never infers readiness from launch arguments or
+ordinary paused status. The version-1 response is:
 
 ```text
 CrucibleHotForkReadiness {
@@ -532,9 +531,51 @@ manifest, including live device and coverage callbacks, but it is not the
 complete plugin-ring proof. It does not prevent the Apache host from producing
 new shared-memory commands, drain or park the fingerprint digest worker, freeze
 the control-reader/teardown threads, clone ring bytes, or provide child-side
-resource reconstruction. QEMU therefore keeps readiness bit 6 clear. The future
-`PrepareForkTemplate` coordinator must compose this barrier with those remaining
-owners and release it on every rollback path.
+resource reconstruction. QEMU therefore keeps readiness bit 6 clear.
+
+The first `PrepareForkTemplate` checkpoint is the version-1 OOB
+`crucible-hot-fork-template` coordinator:
+
+```text
+CrucibleHotForkTemplateAction = prepare | query | abort
+
+CrucibleHotForkTemplateOutcome =
+    idle | draining | blocked | prepared | aborted
+
+CrucibleHotForkTemplateState {
+    schema-version: u32 = 1,
+    generation: u64,
+    outcome: CrucibleHotForkTemplateOutcome,
+    transaction-active: bool,
+    required-proofs: u64 = 0x01ff,
+    acknowledged-proofs: u64,
+    missing-proofs: u64,
+    plugin-barrier: CrucibleHotForkPluginBarrierState,
+    rollback-complete: bool,
+    ready: bool,
+}
+```
+
+`prepare` starts only at the authenticated exact paused/device-flush boundary.
+QEMU serializes the transaction, acquires the plugin callback barrier, and
+retains it while previously admitted callbacks drain. A repeated `prepare`
+reevaluates the retained transaction. Once that barrier is quiescent, QEMU
+either reports `prepared` only when all nine required bits are present in the
+same transaction, or releases every acquired barrier and reports `blocked`.
+`query` is observational. `abort` releases an active transaction and reports
+`aborted`; aborting an idle coordinator reports `idle`. Standalone plugin hold
+or release cannot mutate a barrier owned by the coordinator. A failed release
+does not discard coordinator ownership: the command fails and the caller must
+retry query/abort while QEMU continues to own the retained state.
+
+`missing-proofs` MUST equal `required-proofs & ~acknowledged-proofs`.
+`rollback-complete` is true exactly when no transaction is active and the
+plugin barrier is not held. `ready` is true exactly for an active `prepared`
+transaction whose plugin barrier is quiescent and whose missing bitmap is zero.
+Version 1 intentionally owns only the plugin callback barrier. It does not yet
+compose the remaining ring, AIO, RCU, block, descriptor/mapping, or child
+reinitialization barriers; therefore it rolls a drained transaction back as
+`blocked` and cannot advertise a usable hot-fork template.
 
 The AioContext, bottom-half, AIO-handler, and block-backend responses are still
 observational. They do not drain or park a context, prevent a producer from
@@ -681,10 +722,10 @@ and the timer inventory exposes every pending timer and active callback, while
 any other non-coordinator remains plain `unclassified`. None is a child
 disposition or a
 held barrier.
-Those proofs must be produced while the future QEMU coordinator holds the
-corresponding subsystem barriers.
+Those proofs must be produced while a later version of the QEMU coordinator
+holds the corresponding subsystem barriers.
 
-Template realization then adds the following operations:
+Later template realization adds the remaining operations:
 
 ```text
 PrepareForkTemplate

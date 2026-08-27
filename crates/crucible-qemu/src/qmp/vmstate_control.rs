@@ -9,8 +9,9 @@ use super::{
     QmpClient, QmpCommandComplete, QmpError, QmpHotForkAioHandlerInventory, QmpHotForkAioInventory,
     QmpHotForkBlockBackendInventory, QmpHotForkBottomHalfInventory, QmpHotForkMutexInventory,
     QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory, QmpHotForkRcuInventory,
-    QmpHotForkReadiness, QmpHotForkThreadInventory, QmpHotForkTimerInventory, QmpIoTimeoutPolicy,
-    QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QmpHotForkReadiness, QmpHotForkTemplateState, QmpHotForkThreadInventory,
+    QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind,
+    QmpSnapshotTag, QmpTimeoutStream,
 };
 use crate::{
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
@@ -259,6 +260,49 @@ where
     ) -> Result<QmpHotForkPluginBarrierState, QemuNodeChannelError> {
         self.client
             .release_hot_fork_plugin_barrier()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Starts or advances QEMU's retained hot-fork template transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O fails, a subsystem barrier
+    /// cannot be acquired or rolled back, or QEMU violates the closed
+    /// transaction schema.
+    pub fn prepare_hot_fork_template(
+        &mut self,
+    ) -> Result<QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.client
+            .prepare_hot_fork_template()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Queries QEMU's retained hot-fork template transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O fails, coordinator
+    /// ownership was lost, or the response violates the closed schema.
+    pub fn query_hot_fork_template(
+        &mut self,
+    ) -> Result<QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_template()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Aborts QEMU's retained hot-fork template transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU cannot roll back an acquired
+    /// barrier or the response violates the closed abort postcondition.
+    pub fn abort_hot_fork_template(
+        &mut self,
+    ) -> Result<QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.client
+            .abort_hot_fork_template()
             .map_err(QemuNodeChannelError::from)
     }
 

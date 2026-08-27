@@ -1,18 +1,25 @@
 //! Versioned QEMU-owned hot-fork readiness proofs.
 //!
-//! The report is deliberately observational: it authenticates which
-//! quiescence classes patched QEMU can prove at the current boundary, but it
-//! does not prepare or fork a template. Unknown proof contracts fail closed.
+//! The readiness report and inventories authenticate which quiescence classes
+//! patched QEMU can prove at the current boundary. The template coordinator
+//! additionally owns the retained acquisition and rollback of implemented
+//! subsystem barriers. Unknown proof and transaction contracts fail closed.
 
 use serde_json::Value;
 
 use super::{QmpCommandKind, QmpError};
 
 mod plugin;
+mod template;
 
 pub use plugin::{QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory};
 pub(super) use plugin::{
     parse_hot_fork_plugin_barrier_state, parse_hot_fork_plugin_resource_inventory,
+};
+pub(crate) use template::parse_hot_fork_template_state;
+pub use template::{
+    QMP_HOT_FORK_TEMPLATE_COMMAND, QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION, QmpHotForkTemplateOutcome,
+    QmpHotForkTemplateState,
 };
 
 /// QMP command name used for the versioned QEMU-owned hot-fork readiness report.

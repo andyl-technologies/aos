@@ -1918,6 +1918,34 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   remaining owner before acknowledging plugin readiness.
 - **Risk:** F.
 
+### crucible-hot-fork-template-coordinator — own retained preparation
+
+- **Patch:** `0125-crucible-hot-fork-template-coordinator.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** a serialized version-1 OOB QMP coordinator owns one retained
+  template-preparation generation. `prepare` begins only at the authenticated
+  exact paused/device-flush boundary, acquires the plugin callback barrier, and
+  reports `draining` while already-admitted callbacks finish. A later prepare
+  reports `prepared` only when all nine readiness bits are present in that same
+  retained transaction. If the acquired barrier is quiescent but any proof is
+  missing, QEMU releases every acquired barrier and reports exact `blocked`
+  rollback. Query is observational, abort releases retained state, standalone
+  plugin hold/release cannot mutate coordinator-owned state, and a release
+  failure retains ownership for retry.
+- **Micro-test:** strict Rust decoding binds the action-specific outcome,
+  generation, active/rollback state, exact proof and missing bitmaps, and nested
+  plugin-barrier state; it rejects changed schemas, unknown fields,
+  contradictory readiness, forged rollback, and wrong-action outcomes. The
+  live patched-QEMU gate requires stable exact idle state, rejects preparation
+  outside the exact boundary without acquiring state, and requires stock QEMU
+  not to expose the command.
+- **Inertness:** version 1 composes only the plugin callback barrier. It does
+  not freeze host ring writers, drain AIO/RCU/block owners, retain mapping or
+  descriptor dispositions, run child reinitializers, or call `fork(2)`.
+  Readiness bit 6 and every other unresolved bit remain clear, so a drained
+  transaction rolls back as `blocked` and no template can become usable.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
