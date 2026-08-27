@@ -2213,6 +2213,7 @@ in
 
           @interface NSString : NSObject
           + (instancetype)stringWithCString:(const char *)bytes encoding:(NSStringEncoding)encoding;
+          + (instancetype)stringWithCharacters:(const unichar *)characters length:(NSUInteger)length;
           + (instancetype)stringWithFormat:(NSString *)format, ...;
           + (instancetype)stringWithUTF8String:(const char *)bytes;
           - (instancetype)initWithUTF8String:(const char *)bytes;
@@ -2266,6 +2267,12 @@ in
           @property(readonly) ObjectType firstObject;
           - (ObjectType)objectAtIndex:(NSUInteger)index;
           @end
+
+          @interface NSException : NSObject
+          @property(readonly, copy) NSArray<NSString *> *callStackSymbols;
+          @end
+
+          extern void NSLog(NSString *format, ...);
 
           @interface NSMutableArray<ObjectType> : NSArray<ObjectType>
           + (instancetype)arrayWithCapacity:(NSUInteger)numItems;
@@ -2770,6 +2777,7 @@ in
           exports:
             - targets: [ x86_64-macos, arm64-macos ]
               symbols:
+                - _NSLog
                 - _NSSearchPathForDirectoriesInDomains
                 - '_OBJC_CLASS_$_NSArray'
                 - '_OBJC_CLASS_$_NSData'
@@ -2777,6 +2785,7 @@ in
                 - '_OBJC_CLASS_$_NSDictionary'
                 - '_OBJC_CLASS_$_NSEnumerator'
                 - '_OBJC_CLASS_$_NSAutoreleasePool'
+                - '_OBJC_CLASS_$_NSException'
                 - '_OBJC_CLASS_$_NSMutableArray'
                 - '_OBJC_CLASS_$_NSMutableAttributedString'
                 - '_OBJC_CLASS_$_NSMutableDictionary'
@@ -2788,6 +2797,7 @@ in
                 - '_OBJC_CLASS_$_NSThread'
                 - '_OBJC_CLASS_$_NSURL'
                 - '_OBJC_CLASS_$_NSUserDefaults'
+                - '_OBJC_METACLASS_$_NSException'
                 - '_OBJC_METACLASS_$_NSObject'
           ...
           EOF
@@ -3742,12 +3752,15 @@ in
                 - _objc_autoreleasePoolPop
                 - _objc_autoreleasePoolPush
                 - _objc_autoreleaseReturnValue
+                - _objc_begin_catch
                 - _objc_copyClassList
                 - _objc_copyProtocolList
                 - _objc_copyWeak
                 - _objc_destroyWeak
                 - _objc_disposeClassPair
                 - _objc_enumerationMutation
+                - _objc_end_catch
+                - _objc_ehtype_vtable
                 - _objc_getClass
                 - _objc_getMetaClass
                 - _objc_getProtocol

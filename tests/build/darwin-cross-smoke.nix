@@ -415,7 +415,18 @@
               '#import <CoreServices/CoreServices.h>' \
               '#import <Foundation/Foundation.h>' \
               '#import <AppKit/AppKit.h>' \
+              '@interface AOSFoundationSmokeException : NSException' \
+              '@end' \
+              '@implementation AOSFoundationSmokeException' \
+              '@end' \
               'int main(void) {' \
+              '  const unichar characters[] = { 0x41, 0x4f, 0x53 };' \
+              '  NSString *characterString = [NSString stringWithCharacters:characters length:3];' \
+              '  @try {' \
+              '    NSLog(@"%@", characterString);' \
+              '  } @catch (NSException *exception) {' \
+              '    NSLog(@"%@", exception.callStackSymbols);' \
+              '  }' \
               '  NSSearchPathDirectory mediaDirectories[] = { NSMoviesDirectory, NSMusicDirectory, NSPicturesDirectory, NSSharedPublicDirectory };' \
               '  NSArray<NSString *> *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, true);' \
               '  NSString *path = paths.firstObject;' \
@@ -454,7 +465,7 @@
               '  FSRef legacyApplication;' \
               '  OSStatus findStatus = LSFindApplicationForInfo(kLSUnknownCreator, CFSTR("com.andyl.aos"), NULL, &legacyApplication, NULL);' \
               '  [pool drain];' \
-              '  return image == nil || defaultValue == nil || !synchronized || decodedPath == nil || number.unsignedLongLongValue != 42 || enumeratedValue == nil || path.UTF8String == NULL || bundlePath == NULL || mediaDirectories[0] == 0 || handlers == NULL || roleHandlers == NULL || roleHandler == NULL || schemeHandler == NULL || uti == NULL || tag == NULL || utiDescription == NULL || utiMatches || !utiConforms || launchStatus == -1 || findStatus < kLSApplicationNotFoundErr;' \
+              '  return characterString == nil || image == nil || defaultValue == nil || !synchronized || decodedPath == nil || number.unsignedLongLongValue != 42 || enumeratedValue == nil || path.UTF8String == NULL || bundlePath == NULL || mediaDirectories[0] == 0 || handlers == NULL || roleHandlers == NULL || roleHandler == NULL || schemeHandler == NULL || uti == NULL || tag == NULL || utiDescription == NULL || utiMatches || !utiConforms || launchStatus == -1 || findStatus < kLSApplicationNotFoundErr;' \
               '}' \
               > foundation-appkit-smoke.m
             "$CC" foundation-appkit-smoke.m \
