@@ -14,9 +14,10 @@ use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_CONT_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
-    QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND,
-    QMP_SNAPSHOT_SAVE_COMMAND, QemuExactSnapshotPolicy, QemuQmpVmStateControlChannel,
-    QmpCommandKind, QmpHotForkProof, QmpSnapshotTag, QmpTimeoutStream,
+    QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME,
+    QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND, QemuExactSnapshotPolicy,
+    QemuQmpVmStateControlChannel, QmpCommandKind, QmpHotForkProof, QmpSnapshotTag,
+    QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -178,6 +179,33 @@ fn vmstate_control_forwards_exact_hot_fork_mutex_inventory() -> Result<(), Box<d
     assert_eq!(
         execute_name(json_line(&lines, 1)),
         Some(QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND)
+    );
+    Ok(())
+}
+
+#[test]
+fn vmstate_control_forwards_exact_hot_fork_timer_inventory() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":7,"complete":true,"overflowed":false,"timer-count":1,"pending-timers":1,"active-callbacks":0,"timers":[{"timer-id":2,"timer-list-id":1,"clock":"virtual","expire-time-ns":4096,"scale":1,"attributes":0,"pending":true,"callback-active":false}]}}"#,
+    ]);
+    let written = Arc::clone(&stream.written);
+    let mut control = QemuQmpVmStateControlChannel::connect(stream)?;
+
+    let inventory = control.query_hot_fork_timer_inventory()?;
+    assert_eq!(inventory.generation(), 7);
+    assert_eq!(inventory.timers()[0].expire_time_ns(), Some(4096));
+
+    drop(control);
+    let lines = written_json_lines(
+        &written
+            .lock()
+            .expect("scripted QMP write audit should remain available"),
+    )?;
+    assert_eq!(
+        execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND)
     );
     Ok(())
 }

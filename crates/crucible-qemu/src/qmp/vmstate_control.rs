@@ -7,8 +7,9 @@ use crucible::Checkpoint;
 
 use super::{
     QmpClient, QmpCommandComplete, QmpError, QmpHotForkAioInventory, QmpHotForkMutexInventory,
-    QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkThreadInventory, QmpIoTimeoutPolicy,
-    QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkThreadInventory,
+    QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind,
+    QmpSnapshotTag, QmpTimeoutStream,
 };
 use crate::{
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
@@ -187,6 +188,20 @@ where
     ) -> Result<QmpHotForkMutexInventory, QemuNodeChannelError> {
         self.client
             .query_hot_fork_mutex_inventory()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Queries QEMU's exact bounded observational live-timer inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
+    /// not satisfy the closed timer inventory schema and bounds.
+    pub fn query_hot_fork_timer_inventory(
+        &mut self,
+    ) -> Result<QmpHotForkTimerInventory, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_timer_inventory()
             .map_err(QemuNodeChannelError::from)
     }
 

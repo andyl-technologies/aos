@@ -15,10 +15,11 @@ use crucible_qemu::{
     QMP_HOT_FORK_REQUIRED_PROOFS, QMP_QUERY_CPUS_FAST_COMMAND,
     QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_READINESS_COMMAND,
-    QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
-    QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND,
-    QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient,
-    QmpCommandKind, QmpError, QmpGreeting, QmpHotForkProof, QmpHotForkThreadDisposition,
+    QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
+    QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME,
+    QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
+    QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient, QmpCommandKind, QmpError,
+    QmpGreeting, QmpHotForkProof, QmpHotForkThreadDisposition, QmpHotForkTimerClock,
     QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use serde_json::Value;
@@ -517,6 +518,68 @@ fn hot_fork_mutex_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn 
             client.query_hot_fork_mutex_inventory(),
             Err(QmpError::MalformedTypedResponse {
                 command: QmpCommandKind::QueryHotForkMutexInventory,
+                ..
+            })
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn hot_fork_timer_inventory_is_exact_bounded_and_sorted() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":10,"complete":true,"overflowed":false,"timer-count":2,"pending-timers":2,"active-callbacks":1,"timers":[{"timer-id":1,"timer-list-id":4,"clock":"virtual","expire-time-ns":9000,"scale":1,"attributes":0,"pending":true,"callback-active":false},{"timer-id":3,"timer-list-id":5,"clock":"realtime","expire-time-ns":12000,"scale":1000000,"attributes":1,"pending":true,"callback-active":true}]}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let inventory = client.query_hot_fork_timer_inventory()?;
+    assert_eq!(inventory.generation(), 10);
+    assert!(inventory.complete());
+    assert!(!inventory.overflowed());
+    assert_eq!(inventory.timers().len(), 2);
+    assert_eq!(inventory.timers()[0].timer_id(), 1);
+    assert_eq!(inventory.timers()[0].timer_list_id(), 4);
+    assert_eq!(inventory.timers()[0].clock(), QmpHotForkTimerClock::Virtual);
+    assert_eq!(inventory.timers()[0].expire_time_ns(), Some(9_000));
+    assert_eq!(inventory.timers()[0].scale(), 1);
+    assert_eq!(inventory.timers()[0].attributes(), 0);
+    assert!(inventory.timers()[0].pending());
+    assert!(!inventory.timers()[0].callback_active());
+    assert_eq!(inventory.timers()[1].timer_id(), 3);
+    assert!(inventory.timers()[1].callback_active());
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    assert_eq!(
+        execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND)
+    );
+    Ok(())
+}
+
+#[test]
+fn hot_fork_timer_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn Error>> {
+    for response in [
+        r#"{"return":{"schema-version":2,"generation":1,"complete":true,"overflowed":false,"timer-count":0,"pending-timers":0,"active-callbacks":0,"timers":[]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"timer-count":2,"pending-timers":1,"active-callbacks":0,"timers":[{"timer-id":1,"timer-list-id":1,"clock":"virtual","expire-time-ns":1,"scale":1,"attributes":0,"pending":true,"callback-active":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"timer-count":2,"pending-timers":2,"active-callbacks":0,"timers":[{"timer-id":2,"timer-list-id":1,"clock":"virtual","expire-time-ns":1,"scale":1,"attributes":0,"pending":true,"callback-active":false},{"timer-id":1,"timer-list-id":1,"clock":"virtual","expire-time-ns":2,"scale":1,"attributes":0,"pending":true,"callback-active":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"timer-count":1,"pending-timers":1,"active-callbacks":0,"timers":[{"timer-id":1,"timer-list-id":0,"clock":"virtual","expire-time-ns":1,"scale":1,"attributes":0,"pending":true,"callback-active":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"timer-count":1,"pending-timers":0,"active-callbacks":0,"timers":[{"timer-id":1,"timer-list-id":1,"clock":"virtual","expire-time-ns":-1,"scale":1,"attributes":0,"pending":false,"callback-active":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"timer-count":1,"pending-timers":1,"active-callbacks":0,"timers":[{"timer-id":1,"timer-list-id":1,"clock":"virtual","expire-time-ns":-1,"scale":1,"attributes":0,"pending":true,"callback-active":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":false,"overflowed":false,"timer-count":1,"pending-timers":0,"active-callbacks":1,"timers":[{"timer-id":1,"timer-list-id":1,"clock":"future","expire-time-ns":-1,"scale":1,"attributes":0,"pending":false,"callback-active":true}]}}"#,
+    ] {
+        let mut client = QmpClient::connect(scripted_qmp([
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            response,
+        ]))?;
+        assert!(matches!(
+            client.query_hot_fork_timer_inventory(),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::QueryHotForkTimerInventory,
                 ..
             })
         ));

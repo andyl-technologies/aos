@@ -19,6 +19,10 @@
     patchStackRepository = qemuPatchStackRepository;
   };
   qemuPatchSeries = import ./phase2-qemu-patch-series.nix {inherit pkgs lib;};
+  qemuHotForkReadiness = import ./phase6-qemu-hot-fork-readiness.nix {
+    inherit pkgs lib qemuPackage;
+    attrPath = "checks.crucible.phase6.qemuHotForkReadiness";
+  };
   qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix {inherit pkgs lib;};
   qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
   qemuDetIpi = import ./phase2-qemu-det-ipi.nix {inherit pkgs lib;};
@@ -1562,6 +1566,22 @@
           grep -Fxq 'mutex_inventory_stable=true' "$live_result"
           grep -Fxq 'mutex_owners_thread_bound=true' "$live_result"
           grep -Fxq 'mutex_proof_acknowledged=false' "$live_result"
+          grep -Fxq 'incomplete_report_ready=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0119-crucible-hot-fork-timer-inventory.patch";
+      check = certifyExactPatch {
+        patchName = "0119-crucible-hot-fork-timer-inventory.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-timer-inventory";
+        liveEvidence = ''
+          grep -Fxq 'timer_inventory_schema_version=1' "$live_result"
+          grep -Fxq 'timer_inventory_bound=65536' "$live_result"
+          grep -Fxq 'timer_inventory_stable=true' "$live_result"
+          grep -Fxq 'timer_inventory_exact=true' "$live_result"
+          grep -Fxq 'timer_proof_acknowledged=false' "$live_result"
           grep -Fxq 'incomplete_report_ready=false' "$live_result"
         '';
       };

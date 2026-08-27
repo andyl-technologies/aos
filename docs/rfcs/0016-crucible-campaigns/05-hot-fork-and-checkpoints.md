@@ -278,12 +278,12 @@ thread inventory. The top-level counts are exact checked sums, and `complete`
 equals `!overflowed && assigned-contexts == context-count`. The generation
 advances on context creation, destruction, or home-thread reassignment.
 
-This response is still observational. It does not enumerate AIO handlers or
-timers, drain or park a context, prevent a producer from enqueueing work after
-the query, or hold quiescence across `fork(2)`. It therefore MUST NOT
-acknowledge proof bit 3. The future coordinator must extend the inventory to
-the remaining handler/timer resources and establish a retained AIO/BH/timer
-barrier across the fork transaction.
+This response is still observational. It does not enumerate AIO handlers,
+drain or park a context, prevent a producer from enqueueing work after the
+query, or hold quiescence across `fork(2)`. It therefore MUST NOT acknowledge
+proof bit 3. The future coordinator must extend the inventory to the remaining
+handler resources and establish a retained AIO/BH/timer barrier across the fork
+transaction.
 
 Patched POSIX QEMU also exposes the bounded observational mutex inventory used
 to define the process-private lock side of the child-reinitialization proof:
@@ -334,10 +334,56 @@ MUST NOT acknowledge proof bit 8. The future coordinator must retain the
 appropriate subsystem barriers and explicitly account for every omitted
 process-private resource before authorizing a fork.
 
+Patched POSIX QEMU also exposes the bounded observational live-timer inventory
+used to define the timer side of the AIO/BH barrier:
+
+```text
+CrucibleHotForkTimerInventory {
+    schema-version: u32 = 1,
+    generation: u64,
+    complete: bool,
+    overflowed: bool,
+    timer-count: u32,
+    pending-timers: u32,
+    active-callbacks: u32,
+    timers: [
+        {
+            timer-id: positive u64,
+            timer-list-id: positive u64,
+            clock: realtime | virtual | host | virtual-realtime,
+            expire-time-ns: i64,
+            scale: positive u32,
+            attributes: u32,
+            pending: bool,
+            callback-active: bool,
+        },
+    ],
+}
+```
+
+`timers` contains at most 65,536 records in strictly increasing `timer-id`
+order. It contains every pending timer and every callback active at the
+inventory instant; an initialized timer that is neither pending nor executing
+is inert and is intentionally absent. `expire-time-ns` is nonnegative exactly
+when `pending` is true and is otherwise `-1`. `pending-timers` and
+`active-callbacks` are exact checked counts, and `complete` equals
+`!overflowed`. Stable process-local timer and timer-list identities are assigned
+at initialization. Pending-state and callback begin/end transitions advance the
+generation. Pending records expose a registry-owned expiry copy rather than
+racing the timer-list lock, and callback registry entries own copied metadata
+rather than a timer pointer, so a callback may legally free its enclosing timer
+before the inventory entry is removed.
+
+This response is still observational. It does not prevent a timer from being
+armed, canceled, or fired after the query, retain a timer-list or AIO barrier
+across `fork(2)`, select a child disposition, or reinitialize clock state. It
+therefore MUST NOT acknowledge proof bit 3. The future coordinator must retain
+the timer and AIO/BH barriers across the fork transaction.
+
 The Phase 6 host audit complements that query with bounded operational evidence
 for one exact Linux process generation. It accepts only while proof bit 2 is
 set, brackets the procfs capture with two identical thread-registry, RCU,
-AioContext, and mutex snapshots inside two identical readiness reports,
+AioContext, mutex, and timer snapshots inside two identical readiness reports,
 authenticates the QEMU PID/start-time/executable identity before and after, and
 requires two complete process-inventory passes to match byte-for-byte. Each
 QEMU-registered thread
@@ -365,8 +411,9 @@ The thread registry identifies the live RCU callback and AIO-context workers
 by subsystem-specific unresolved dispositions. The RCU inventory exposes the
 exact observed reader and callback state, the AioContext inventory exposes
 home-thread binding plus instantaneous poll, dispatch, bottom-half, coroutine,
-and notification activity, and the mutex inventory exposes instantaneous owner,
-recursion, waiter, and unlock-transition state, while any other
+and notification activity, the mutex inventory exposes instantaneous owner,
+recursion, waiter, and unlock-transition state, and the timer inventory exposes
+every pending timer and active callback, while any other
 non-coordinator remains plain `unclassified`. None is a child disposition or a
 held barrier.
 Those proofs must be produced while the future QEMU coordinator holds the
