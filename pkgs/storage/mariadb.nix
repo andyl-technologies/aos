@@ -52,7 +52,10 @@
       hash = "sha256-1r7xLZWYFqOcemly8/FsByTkx/8JJ+tZo1JH3IJntgk=";
     };
 
-    buildDeps = [cmake];
+    buildDeps =
+      if stdenv.isCross
+      then [buildPackages.cmake]
+      else [cmake];
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -195,20 +198,32 @@ in
 
     src = source;
 
-    buildDeps = [
-      gnumake
-      cmake
-      bison
-      pkg-config
-      perl
-      python3
-      boost.dev
-      rpcsvc-proto
-    ];
+    buildDeps =
+      if isDarwin
+      then [
+        buildPackages.gnumake
+        buildPackages.cmake
+        buildPackages.bison
+        buildPackages.pkg-config
+        buildPackages.perl
+        buildPackages.python3
+        buildPackages.rpcsvc-proto
+      ]
+      else [
+        gnumake
+        cmake
+        bison
+        pkg-config
+        perl
+        python3
+        boost.dev
+        rpcsvc-proto
+      ];
     runtimeDeps =
       if isDarwin
       then [
         boost
+        boost.dev
         bzip2
         curl
         fmt
