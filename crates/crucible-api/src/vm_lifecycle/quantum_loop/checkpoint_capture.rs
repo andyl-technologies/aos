@@ -17,7 +17,7 @@ pub(in crate::vm_lifecycle) enum ExactCheckpointPublicationState {
 }
 
 /// Transaction outcome before or across durable closure publication.
-pub(super) enum ExactCheckpointTransactionError {
+pub(super) enum ExactCheckpointTransactionError<T = CapturedExactCheckpointTarget> {
     /// No authenticated closure became visible.
     Unpublished(SchedulerError),
     /// Cleanup or durability could not establish one committed outcome.
@@ -25,7 +25,7 @@ pub(super) enum ExactCheckpointTransactionError {
         /// Known closure identity when the manifest rename completed.
         identity: Option<ContentHash>,
         /// Exact snapshot handles retained when live cleanup was incomplete.
-        captures: Vec<CapturedExactCheckpointTarget>,
+        captures: Vec<T>,
         /// Primary transaction or cleanup failure.
         source: SchedulerError,
     },
@@ -196,7 +196,7 @@ impl CapturedExactCheckpointTarget {
     }
 }
 
-impl From<SchedulerError> for ExactCheckpointTransactionError {
+impl<T> From<SchedulerError> for ExactCheckpointTransactionError<T> {
     fn from(error: SchedulerError) -> Self {
         Self::Unpublished(error)
     }
@@ -377,6 +377,68 @@ fn cleanup_exact_captures_with<T, E>(
         captured.retain(pending);
     }
     first_error.map_or(Ok(()), Err)
+}
+
+/// Resolves staged capture, live-snapshot cleanup, and durable publication.
+///
+/// This is the single production ordering seam after the first QMP save. It
+/// always attempts every live-snapshot deletion before either publishing a
+/// completed checkpoint or returning a clean unpublished error.
+///
+/// # Errors
+///
+/// Returns [`ExactCheckpointTransactionError::Unpublished`] when staging fails
+/// and every snapshot is deleted, or
+/// [`ExactCheckpointTransactionError::Indeterminate`] when cleanup or durable
+/// publication cannot establish one outcome.
+pub(super) fn resolve_exact_checkpoint_capture<T>(
+    mut captured: Vec<T>,
+    staged: Result<(), SchedulerError>,
+    mut delete: impl FnMut(&mut T) -> Result<(), SchedulerError>,
+    mut mark_complete: impl FnMut(&mut T),
+    pending: impl Fn(&T) -> bool,
+    publish: impl FnOnce(Vec<T>) -> Result<ContentHash, PersistExactCheckpointError>,
+) -> Result<ContentHash, ExactCheckpointTransactionError<T>> {
+    let cleanup = cleanup_exact_captures_with(
+        &mut captured,
+        |capture| delete(capture),
+        |capture| mark_complete(capture),
+        pending,
+    );
+
+    if let Err(cleanup) = cleanup {
+        let source = match staged {
+            Ok(()) => cleanup,
+            Err(staging) => SchedulerError::BoundaryViolation {
+                message: format!(
+                    "exact checkpoint capture failed ({staging}); snapshot cleanup was indeterminate ({cleanup})"
+                ),
+            },
+        };
+        return Err(ExactCheckpointTransactionError::Indeterminate {
+            identity: None,
+            captures: captured,
+            source,
+        });
+    }
+
+    if let Err(error) = staged {
+        return Err(ExactCheckpointTransactionError::Unpublished(error));
+    }
+
+    match publish(captured) {
+        Ok(identity) => Ok(identity),
+        Err(PersistExactCheckpointError::Unpublished(source)) => {
+            Err(ExactCheckpointTransactionError::Unpublished(source))
+        }
+        Err(PersistExactCheckpointError::Indeterminate { identity, source }) => {
+            Err(ExactCheckpointTransactionError::Indeterminate {
+                identity: Some(identity),
+                captures: Vec::new(),
+                source,
+            })
+        }
+    }
 }
 
 fn missing_publication_owner() -> SchedulerError {

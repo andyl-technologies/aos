@@ -151,6 +151,47 @@ pub(super) fn finalize_published_checkpoint(
     sync_parent().map_err(|source| PersistExactCheckpointError::Indeterminate { identity, source })
 }
 
+/// Atomically publishes one prepared closure and makes its parent durable.
+///
+/// The staging directory rename is the publication boundary. A count rejection
+/// removes the new destination and flushes that removal before returning a
+/// clean unpublished outcome.
+///
+/// # Errors
+///
+/// Returns [`PersistExactCheckpointError::Unpublished`] when the rename fails
+/// or an over-limit publication is durably removed, and
+/// [`PersistExactCheckpointError::Indeterminate`] when a visible destination
+/// cannot be durably admitted or removed.
+pub(super) fn publish_checkpoint_closure(
+    staging: tempfile::TempDir,
+    destination: &Path,
+    closure_parent: &Path,
+    identity: ContentHash,
+    limits: FaultResourceLimits,
+) -> Result<(), PersistExactCheckpointError> {
+    fs::rename(staging.path(), destination).map_err(|error| {
+        PersistExactCheckpointError::Unpublished(store_error(format!(
+            "publish exact checkpoint closure {}: {error}",
+            destination.display()
+        )))
+    })?;
+    let count_result = enforce_published_checkpoint_count(closure_parent, limits);
+    finalize_published_checkpoint(
+        identity,
+        count_result,
+        || {
+            fs::remove_dir_all(destination).map_err(|cleanup| {
+                store_error(format!(
+                    "roll back over-limit checkpoint publication {}: {cleanup}",
+                    destination.display()
+                ))
+            })
+        },
+        || sync_directory(closure_parent),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,5 +310,66 @@ mod tests {
             }) if observed == identity
         ));
         assert_eq!(*calls.borrow(), ["remove", "sync"]);
+    }
+
+    #[test]
+    fn production_publication_rename_is_visible_only_when_admitted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parent = tempfile::tempdir()?;
+        let identity = ContentHash::from_bytes(b"admitted closure");
+        let destination = parent.path().join(identity.to_hex());
+        let staging = tempfile::Builder::new()
+            .prefix(".closure-")
+            .tempdir_in(parent.path())?;
+        fs::write(staging.path().join("manifest.cbor"), b"manifest")?;
+
+        if publish_checkpoint_closure(
+            staging,
+            &destination,
+            parent.path(),
+            identity,
+            FaultResourceLimits {
+                checkpoint_count: 1,
+                ..FaultResourceLimits::default()
+            },
+        )
+        .is_err()
+        {
+            return Err("an admitted closure failed publication".into());
+        }
+        assert_eq!(fs::read(destination.join("manifest.cbor"))?, b"manifest");
+
+        let rejected = ContentHash::from_bytes(b"rejected closure");
+        let rejected_destination = parent.path().join(rejected.to_hex());
+        let staging = tempfile::Builder::new()
+            .prefix(".closure-")
+            .tempdir_in(parent.path())?;
+        fs::write(staging.path().join("manifest.cbor"), b"rejected")?;
+        let error = match publish_checkpoint_closure(
+            staging,
+            &rejected_destination,
+            parent.path(),
+            rejected,
+            FaultResourceLimits {
+                checkpoint_count: 1,
+                ..FaultResourceLimits::default()
+            },
+        ) {
+            Ok(()) => return Err("an over-limit closure remained published".into()),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            PersistExactCheckpointError::Unpublished(SchedulerError::ResourceLimit {
+                field: "checkpoint_count",
+                current: 1,
+                requested: 1,
+                configured: 1,
+                ..
+            })
+        ));
+        assert!(!rejected_destination.exists());
+        assert!(destination.exists());
+        Ok(())
     }
 }

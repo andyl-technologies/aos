@@ -452,7 +452,11 @@ in
           run_exact_api_test \
             vm_lifecycle::quantum_loop::checkpoint_capture::tests::publication_registry_retains_only_durable_or_indeterminate_owners
           run_exact_api_test \
+            vm_lifecycle::quantum_loop::checkpoint_capture::tests::production_transaction_deletes_before_publication_and_retains_failed_cleanup
+          run_exact_api_test \
             vm_lifecycle::checkpoint_store::publication::tests::publication_commit_tail_distinguishes_rollback_from_durability_uncertainty
+          run_exact_api_test \
+            vm_lifecycle::checkpoint_store::publication::tests::production_publication_rename_is_visible_only_when_admitted
           run_exact_api_test \
             vm_lifecycle::checkpoint_store::publication::tests::published_checkpoint_count_ignores_transaction_staging_directories
           run_exact_api_test \
@@ -504,6 +508,8 @@ in
             'for prepared in prepared_targets {' \
             crates/crucible-api/src/vm_lifecycle/quantum_loop.rs | cut -d: -f1)"
           test "$checkpoint_prepare_line" -lt "$checkpoint_capture_line"
+          test "$(grep -Fc 'checkpoint_capture::resolve_exact_checkpoint_capture(' \
+            crates/crucible-api/src/vm_lifecycle/quantum_loop.rs)" -eq 1
           test "$(grep -Fc '    fn prepare_terminal_replacements(' \
             crates/crucible-api/src/vm_lifecycle/quantum_loop.rs)" -eq 1
           test "$(grep -Fc '    fn abort_staged_terminal_replacements(' \
@@ -1092,6 +1098,7 @@ in
           causal_storage_production_effect_artifact=evidence/causal-storage-production-effects.txt
           plugin_completed_history_limits=authored-required-predecode-admission
           checkpoint_owned_decode=fallible-text-and-decision-wire
+          checkpoint_publication=cleanup-before-rename-and-durable-count-admission
           causal_node_production_effect_count=20
           causal_node_production_effect_artifact=evidence/causal-node-production-effects.txt
           executable_taxonomy_rows=226
