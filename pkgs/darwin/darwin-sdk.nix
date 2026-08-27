@@ -364,6 +364,93 @@ in
             "$out/usr/include/servers/bootstrap.h"
           cp "$hfsRoot/core/hfs_mount.h" "$out/usr/include/hfs/"
           cp "$xnuRoot/libkern/os/log.h" "$out/usr/include/os/"
+          # XNU publishes the core log object surface, while the user-space
+          # SDK additionally declares the enablement query used by signpost
+          # clients. The matching libSystem export is supplied by Zig's
+          # canonical TAPI input.
+          sed -i '/^__END_DECLS$/i\
+          OS_EXPORT OS_NOTHROW OS_WARN_RESULT\
+          bool\
+          os_log_type_enabled(os_log_t log, os_log_type_t type);\
+          ' "$out/usr/include/os/log.h"
+          # os/signpost.h is part of the public Darwin SDK but not the open XNU
+          # header set. Install the canonical public types, reserved IDs, and
+          # formatted event ABI required by V8. Clang's os-log builtins retain
+          # the format metadata and dynamic payload consumed by Instruments.
+          cat > "$out/usr/include/os/signpost.h" <<'EOF'
+          #ifndef __os_signpost_h
+          #define __os_signpost_h
+
+          #include <os/log.h>
+          #include <stdint.h>
+
+          typedef uint64_t os_signpost_id_t;
+
+          #define OS_SIGNPOST_ID_NULL ((os_signpost_id_t)0)
+          #define OS_SIGNPOST_ID_INVALID ((os_signpost_id_t)~0ull)
+          #define OS_SIGNPOST_ID_EXCLUSIVE ((os_signpost_id_t)0xEEEEB0B5B2B2EEEEull)
+
+          OS_ENUM(os_signpost_type, uint8_t,
+              OS_SIGNPOST_EVENT          = 0x00,
+              OS_SIGNPOST_INTERVAL_BEGIN = 0x01,
+              OS_SIGNPOST_INTERVAL_END   = 0x02);
+
+          __BEGIN_DECLS
+
+          OS_EXPORT OS_NOTHROW OS_WARN_RESULT
+          bool
+          os_signpost_enabled(os_log_t log);
+
+          OS_EXPORT OS_NOTHROW OS_WARN_RESULT
+          os_signpost_id_t
+          os_signpost_id_generate(os_log_t log);
+
+          OS_EXPORT OS_NOTHROW OS_WARN_RESULT
+          os_signpost_id_t
+          os_signpost_id_make_with_pointer(os_log_t log, const void *pointer);
+
+          OS_EXPORT OS_NOTHROW
+          void
+          _os_signpost_emit_with_name_impl(void *dso, os_log_t log,
+              os_signpost_type_t type, os_signpost_id_t signpost_id,
+              const char *name, const char *format, uint8_t *buffer,
+              uint32_t buffer_size);
+
+          __END_DECLS
+
+          #define os_signpost_emit_with_type(log, type, signpost_id, name, format, ...) \
+              __extension__({ \
+                  os_log_t _os_signpost_log = (log); \
+                  os_signpost_type_t _os_signpost_type = (type); \
+                  os_signpost_id_t _os_signpost_id = (signpost_id); \
+                  if (_os_signpost_id != OS_SIGNPOST_ID_NULL && \
+                      _os_signpost_id != OS_SIGNPOST_ID_INVALID && \
+                      os_signpost_enabled(_os_signpost_log)) { \
+                      _Static_assert(__builtin_constant_p(name), \
+                          "signpost name must be constant"); \
+                      _Static_assert(__builtin_constant_p(format), \
+                          "format string must be constant"); \
+                      __attribute__((section("__TEXT,__oslogstring,cstring_literals"))) \
+                      static const char _os_signpost_name[] = name; \
+                      __attribute__((section("__TEXT,__oslogstring,cstring_literals"))) \
+                      static const char _os_signpost_format[] = format; \
+                      uint8_t _Alignas(16) _os_signpost_buffer[ \
+                          __builtin_os_log_format_buffer_size(format, ##__VA_ARGS__)]; \
+                      _os_signpost_emit_with_name_impl(&__dso_handle, \
+                          _os_signpost_log, _os_signpost_type, _os_signpost_id, \
+                          _os_signpost_name, _os_signpost_format, \
+                          (uint8_t *)__builtin_os_log_format( \
+                              _os_signpost_buffer, format, ##__VA_ARGS__), \
+                          (uint32_t)sizeof(_os_signpost_buffer)); \
+                  } \
+              })
+
+          #define os_signpost_event_emit(log, signpost_id, name, format, ...) \
+              os_signpost_emit_with_type(log, OS_SIGNPOST_EVENT, signpost_id, \
+                  name, format, ##__VA_ARGS__)
+
+          #endif
+          EOF
           cp \
             "$libcRoot/include/readpassphrase.h" \
             "$libcRoot/include/utmp.h" \
@@ -493,6 +580,9 @@ in
           cp \
             "$systemConfigurationRoot/SystemConfiguration.fproj/SCDynamicStore.h" \
             "$systemConfigurationRoot/SystemConfiguration.fproj/SCDynamicStoreCopySpecific.h" \
+            "$systemConfigurationRoot/SystemConfiguration.fproj/SCNetwork.h" \
+            "$systemConfigurationRoot/SystemConfiguration.fproj/SCNetworkConfiguration.h" \
+            "$systemConfigurationRoot/SystemConfiguration.fproj/SCNetworkReachability.h" \
             "$systemConfigurationRoot/SystemConfiguration.fproj/SCSchemaDefinitions.h" \
             "$out/System/Library/Frameworks/SystemConfiguration.framework/Headers/"
           cp "$coreFoundationRoot/LICENSE" \
@@ -784,8 +874,13 @@ in
           cat > "$out/System/Library/Frameworks/SystemConfiguration.framework/Headers/SystemConfiguration.h" <<'EOF'
           #ifndef _SYSTEMCONFIGURATION_H
           #define _SYSTEMCONFIGURATION_H
+          #include <CoreFoundation/CoreFoundation.h>
+          typedef const struct __SCPreferences *SCPreferencesRef;
           #include <SystemConfiguration/SCDynamicStore.h>
           #include <SystemConfiguration/SCDynamicStoreCopySpecific.h>
+          #include <SystemConfiguration/SCNetwork.h>
+          #include <SystemConfiguration/SCNetworkReachability.h>
+          #include <SystemConfiguration/SCNetworkConfiguration.h>
           #include <SystemConfiguration/SCSchemaDefinitions.h>
           #endif
           EOF

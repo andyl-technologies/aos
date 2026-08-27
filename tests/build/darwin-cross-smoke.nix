@@ -49,7 +49,10 @@
               '#include <sys/syscall.h>' \
               '#include <sys/ttydev.h>' \
               '#include <sys/xattr.h>' \
+              '#include <SystemConfiguration/SCNetworkConfiguration.h>' \
               '#include <SystemConfiguration/SystemConfiguration.h>' \
+              '_Static_assert(kSCNetworkFlagsReachable == (1u << 1), "legacy reachability flag");' \
+              '_Static_assert(kSCNetworkReachabilityFlagsConnectionOnTraffic == (1u << 3), "on-traffic reachability flag");' \
               'int main(void) {' \
               '  CFStringRef label = CFSTR("aos Darwin SDK");' \
               '  CFStringRef canonicalLanguage = CFLocaleCreateCanonicalLanguageIdentifierFromString(kCFAllocatorDefault, label);' \
@@ -455,6 +458,22 @@
             "$CC" command-line-sdk-smoke.c \
               -o "$c/bin/aos-darwin-command-line-sdk-smoke"
 
+            # Match V8's Darwin system-instrumentation surface exactly: the
+            # public macro must preserve its formatted payload and link the
+            # libSystem trace exports without a private framework dependency.
+            printf '%s\n' \
+              '#include <os/signpost.h>' \
+              'int main(void) {' \
+              '  os_log_t provider = os_log_create("v8", "");' \
+              '  bool enabled = os_log_type_enabled(provider, OS_LOG_TYPE_DEFAULT);' \
+              '  os_signpost_event_emit(provider, OS_SIGNPOST_ID_EXCLUSIVE, "", "%s, cpu_duration: %d", "aos", 1);' \
+              '  os_release(provider);' \
+              '  return enabled && OS_SIGNPOST_ID_EXCLUSIVE == OS_SIGNPOST_ID_INVALID;' \
+              '}' \
+              > signpost-smoke.cc
+            "$CXX" signpost-smoke.cc \
+              -o "$cxx/bin/aos-darwin-signpost-smoke"
+
             printf '%s\n' \
               '#include <objc/runtime.h>' \
               'extern void *objc_autoreleasePoolPush(void);' \
@@ -649,7 +668,8 @@
               "$c/lib/libaos-darwin-cmake-smoke.dylib" \
               "$cxx/libaos-darwin-cmake-cxx-smoke.dylib" \
               "$cxx/aos-darwin-flat-namespace.bundle" \
-              "$cxx/bin/aos-darwin-cxx-smoke"; do
+              "$cxx/bin/aos-darwin-cxx-smoke" \
+              "$cxx/bin/aos-darwin-signpost-smoke"; do
               header=$("$OBJDUMP" --macho --private-header "$executable")
               if ! printf '%s\n' "$header" | grep -q '${expectedCpu}'; then
                 echo "unexpected Mach-O architecture in $executable: expected ${expectedCpu}" >&2
