@@ -99,6 +99,11 @@ in
           linker = "${crossCc}/bin/cc"
           ar = "${crossCc}/bin/ar"
           ranlib = "${crossCc}/bin/ranlib"
+          # Stage-0 local rebuilds invoke the bootstrap compiler directly, so
+          # bootstrap's RUSTC_DEBUGINFO_MAP wrapper does not remap std source
+          # locations despite rust.remap-debuginfo. Preserve those locations
+          # under Rust's canonical virtual source prefix instead.
+          rustflags = ["--remap-path-prefix=$PWD=/rustc/${version}"]
           optimized-compiler-builtins = true
           split-debuginfo = "unpacked"
           TOML

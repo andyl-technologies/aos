@@ -172,6 +172,10 @@ in
             # demand Clang to cross-compile compiler-rt C for wasm — we only ship
             # gcc as the host cc, which x.py rejects for wasm C builds.
             [target.wasm32-unknown-unknown]
+            # x.py's global remap does not reach stage-0 target std builds. Keep
+            # their debuginfo while moving source paths under Rust's canonical
+            # virtual prefix so downstream embedded Wasm has no /build refs.
+            rustflags = ["--remap-path-prefix=$PWD=/rustc/${version}"]
             optimized-compiler-builtins = false
             TOML
           '';
@@ -185,6 +189,11 @@ in
             export OPENSSL_INCLUDE_DIR=${openssl}/include
             export OPENSSL_NO_VENDOR=1
             export OPENSSL_STATIC=0
+            # profiler_builtins compiles compiler-rt C/C++ sources through the
+            # cc crate, outside rustc's target rustflags. Remap those sources
+            # with the corresponding target-specific compiler environment too.
+            export CFLAGS_wasm32_unknown_unknown="-ffile-prefix-map=$PWD=/rustc/${version}"
+            export CXXFLAGS_wasm32_unknown_unknown="-ffile-prefix-map=$PWD=/rustc/${version}"
             python3 x.py build -j $NIX_BUILD_CORES
           '';
         }
@@ -197,6 +206,8 @@ in
                     export OPENSSL_INCLUDE_DIR=${openssl}/include
                     export OPENSSL_NO_VENDOR=1
                     export OPENSSL_STATIC=0
+                    export CFLAGS_wasm32_unknown_unknown="-ffile-prefix-map=$PWD=/rustc/${version}"
+                    export CXXFLAGS_wasm32_unknown_unknown="-ffile-prefix-map=$PWD=/rustc/${version}"
                     # Installs the default extended set selected by `tools` —
                     # including the rust-src component ("src" in tools), consumed
                     # by rust-analyzer via RUST_SRC_PATH. NOT a separate
