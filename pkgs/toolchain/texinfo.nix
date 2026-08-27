@@ -4,8 +4,38 @@
   fetchurl,
   gnumake,
   perl,
+  stdenv,
 }: let
   version = "7.2";
+  darwinNativeCompilerSetup =
+    if stdenv.isCross && stdenv.hostPlatform.isDarwin
+    then ''
+      # Texinfo's tools/gnulib subtree builds helper programs for the Linux
+      # build machine. Keep that native compiler isolated from the target SDK
+      # and arm64-only PAC hardening inherited from the surrounding Darwin
+      # cross environment.
+      native_cc="$BUILD_CC"
+      mkdir -p .aos-build-tools
+      cat > .aos-build-tools/cc-for-build <<EOF
+      #!$CONFIG_SHELL
+      native_hardening=
+      for token in \$AOS_HARDENING_ENABLE; do
+        case "\$token" in
+          pacret) ;;
+          *) native_hardening="\$native_hardening \$token" ;;
+        esac
+      done
+      export AOS_HARDENING_ENABLE="\$native_hardening"
+      unset AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+      unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
+      unset MACOSX_DEPLOYMENT_TARGET NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT
+      exec "$native_cc" "\$@"
+      EOF
+      chmod +x .aos-build-tools/cc-for-build
+      export CC_FOR_BUILD="$PWD/.aos-build-tools/cc-for-build"
+      export BUILD_CC="$CC_FOR_BUILD"
+    ''
+    else "";
 in
   mkDerivation {
     pname = "texinfo";
@@ -48,7 +78,7 @@ in
       }
       {
         name = "configure";
-        script = ''
+        script = darwinNativeCompilerSetup + ''
           ./configure \
             $configureFlags \
             --prefix=$out \
