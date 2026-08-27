@@ -14309,6 +14309,7 @@ impl RpcService {
     /// Returns the first stable metadata-deletion precondition.
     fn placement_delete_blocker_error(
         blockers: crate::db::SurfacePlacementBlockers,
+        registry_placement: bool,
     ) -> Option<RpcError> {
         if blockers.direct_route {
             Some(RpcError::FailedPrecondition(
@@ -14318,11 +14319,15 @@ impl RpcService {
             Some(RpcError::FailedPrecondition(
                 "placement is referenced by a placement policy".to_string(),
             ))
-        } else if blockers.object_presence {
+        } else if blockers.object_presence && !registry_placement {
             Some(RpcError::FailedPrecondition(
                 "placement has object-presence inventory".to_string(),
             ))
-        } else if blockers.publication {
+        } else if blockers.active_publication {
+            Some(RpcError::FailedPrecondition(
+                "placement has active registry-publication state".to_string(),
+            ))
+        } else if blockers.publication && !registry_placement {
             Some(RpcError::FailedPrecondition(
                 "placement has registry-publication state".to_string(),
             ))
@@ -18241,7 +18246,10 @@ impl RpcService {
             .surface_placement_blockers(current.id)
             .await
             .map_err(RpcError::internal)?;
-        if let Some(error) = Self::placement_delete_blocker_error(blockers) {
+        if let Some(error) = Self::placement_delete_blocker_error(
+            blockers,
+            matches!(surface, SurfaceTarget::Registry(_)),
+        ) {
             return Err(error);
         }
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
@@ -18347,15 +18355,23 @@ impl RpcService {
             .surface_placement_blockers(current.id)
             .await
             .map_err(RpcError::internal)?;
-        if let Some(error) = Self::placement_delete_blocker_error(blockers) {
+        if let Some(error) = Self::placement_delete_blocker_error(
+            blockers,
+            matches!(surface, SurfaceTarget::Registry(_)),
+        ) {
             return Err(error);
         }
-        if !self
-            .db
-            .delete_surface_placement(current.id, input.baseline_resource_version)
-            .await
-            .map_err(RpcError::internal)?
-        {
+        let deleted = if matches!(surface, SurfaceTarget::Registry(_)) {
+            self.db
+                .delete_registry_surface_placement(current.id, input.baseline_resource_version)
+                .await
+        } else {
+            self.db
+                .delete_surface_placement(current.id, input.baseline_resource_version)
+                .await
+        }
+        .map_err(RpcError::internal)?;
+        if !deleted {
             return Err(RpcError::FailedPrecondition(
                 "placement changed while deletion was applied".to_string(),
             ));
@@ -38156,6 +38172,13 @@ mod cache_upload_tests {
             ),
             (
                 SurfacePlacementBlockers {
+                    active_publication: true,
+                    ..Default::default()
+                },
+                "placement has active registry-publication state",
+            ),
+            (
+                SurfacePlacementBlockers {
                     deletion_job: true,
                     ..Default::default()
                 },
@@ -38170,11 +38193,33 @@ mod cache_upload_tests {
             ),
         ];
         for (blockers, expected) in cases {
-            let error = RpcService::placement_delete_blocker_error(blockers).unwrap();
+            let error = RpcService::placement_delete_blocker_error(blockers, false).unwrap();
             assert_eq!(error.code(), "failed_precondition");
             assert_eq!(error.message(), expected);
             assert!(!error.message().contains("FOREIGN KEY"));
         }
+
+        assert!(RpcService::placement_delete_blocker_error(
+            SurfacePlacementBlockers {
+                object_presence: true,
+                publication: true,
+                ..Default::default()
+            },
+            true,
+        )
+        .is_none());
+        assert_eq!(
+            RpcService::placement_delete_blocker_error(
+                SurfacePlacementBlockers {
+                    active_publication: true,
+                    ..Default::default()
+                },
+                true,
+            )
+            .unwrap()
+            .message(),
+            "placement has active registry-publication state"
+        );
     }
 
     #[test]
