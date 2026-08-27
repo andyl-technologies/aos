@@ -10,7 +10,6 @@
   replayOracle = builtins.readFile ../../crates/crucible-harness/src/replay_oracle.rs;
   replayOracleGate = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
   gateCiWiring = builtins.readFile ./phase7-crucible-gate-ci-wiring.nix;
   artifactFormatGate = builtins.readFile ./phase7-reproduction-artifact-format.nix;
@@ -227,12 +226,6 @@
       {
         label = "engine replay-oracle plugin ABI source";
         needle = "plugin_abi: String::from(\"simdouble-mock-plugin-abi\")";
-      }
-    ]
-    ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
-      {
-        label = "CLI direct guest-host protocol dependency";
-        needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [

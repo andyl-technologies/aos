@@ -1,12 +1,13 @@
 //! Binary-cache physical inventory and normalized publication.
 //!
 //! A cache inventory is cache-wide, but its evidence is placement-scoped.
-//! [`rescan_cache`] snapshots every non-offline placement, enumerates and
-//! hashes every object from each one, publishes one manifest per placement,
-//! and advances the cache-wide inventory only after the complete selected set
+//! [`rescan_cache`] snapshots every non-offline placement, reuses previously
+//! byte-verified evidence when a provider's strong version is unchanged,
+//! hashes new or changed objects, publishes one manifest per placement, and
+//! advances the cache-wide inventory only after the complete selected set
 //! succeeds. Mirrors may have equal manifests; shards are expected to differ.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use anyhow::{bail, Context, Result};
 use base64::Engine as _;
@@ -14,11 +15,13 @@ use sha2::{Digest, Sha256};
 
 use crate::clock;
 use crate::db::{
-    BinaryCache, CacheInventoryNarinfoCandidate, CacheObjectPresenceObservation,
-    CacheWriteTicketRecord, Database, SurfaceObjectRecord, SurfacePlacementRecord, SurfaceTarget,
-    WriteObjectIdentity,
+    BinaryCache, CacheInventoryListedObject, CacheInventoryNarinfoCandidate,
+    CacheObjectPresenceObservation, CacheWriteTicketRecord, Database, ReusablePlacementEvidence,
+    SurfaceObjectRecord, SurfacePlacementRecord, SurfaceTarget, WriteObjectIdentity,
 };
-use crate::fetch::{SurfaceListingBudget, SurfaceObjectEvidence, SurfaceProvider};
+use crate::fetch::{
+    SurfaceListedEvidence, SurfaceListingBudget, SurfaceObjectEvidence, SurfaceProvider,
+};
 use crate::surface_write::{MultipartAbortOutcome, SurfaceWriteProvider};
 
 /// Maximum expired writes or tombstones cleaned by one scheduled pass.
@@ -437,7 +440,19 @@ async fn build_inventory(
     let mut scans = Vec::with_capacity(placements.len());
     let mut aggregate_listing_budget = SurfaceListingBudget::default();
     let mut retained_budget = InventoryRetainedBudget::default();
+    let surface_objects = db
+        .list_cache_surface_objects(cache.id)
+        .await?
+        .into_iter()
+        .map(|object| (object.object_key.clone(), object))
+        .collect::<BTreeMap<_, _>>();
     for placement in placements {
+        let reusable = db
+            .reusable_placement_scan_evidence(placement.id)
+            .await?
+            .into_iter()
+            .map(|evidence| (evidence.surface_object_id, evidence))
+            .collect::<BTreeMap<_, _>>();
         let fetch = surfaces
             .placement_fetcher(&placement)
             .await
@@ -483,6 +498,8 @@ async fn build_inventory(
                 .await
                 .with_context(|| format!("listing cache placement '{}'", placement.name))?;
             page.validate(page_limit, cursor.as_deref())?;
+            let listed_evidence = &page.evidence;
+            let mut page_observations = Vec::with_capacity(page.paths.len());
             for path in &page.paths {
                 let heartbeat_at = clock::now_unix_secs();
                 if heartbeat_at >= next_heartbeat_at {
@@ -512,18 +529,30 @@ async fn build_inventory(
                 object_count = object_count
                     .checked_add(1)
                     .context("cache inventory object count overflowed")?;
-                let observed = fetch
-                    .inventory_evidence(path)
-                    .await
-                    .with_context(|| {
-                        format!("observing '{path}' in cache placement '{}'", placement.name)
-                    })?
-                    .with_context(|| {
-                        format!(
-                            "cache placement '{}' listed '{path}' but it disappeared before observation",
-                            placement.name
-                        )
-                    })?;
+                let observed = match surface_objects.get(path).and_then(|object| {
+                    reusable_inventory_evidence(
+                        object,
+                        listed_evidence.get(path),
+                        reusable.get(&object.id),
+                    )
+                }) {
+                    Some(observed) => observed,
+                    None => fetch
+                        .inventory_evidence(path)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "observing '{path}' in cache placement '{}'",
+                                placement.name
+                            )
+                        })?
+                        .with_context(|| {
+                            format!(
+                                "cache placement '{}' listed '{path}' but it disappeared before observation",
+                                placement.name
+                            )
+                        })?,
+                };
                 content_hasher.update(path.as_bytes());
                 content_hasher.update(b":");
                 content_hasher.update(hex::encode(observed.sha256).as_bytes());
@@ -533,21 +562,30 @@ async fn build_inventory(
                 content_hasher.update(observed.strong_etag.as_deref().unwrap_or("-").as_bytes());
                 content_hasher.update(b"\n");
                 prior_path = Some(path.clone());
-                db.stage_cache_inventory_listed_object(
-                    cache.id,
-                    generation,
-                    placement.id,
-                    owner_token,
-                    path,
-                    &hex::encode(observed.sha256),
-                    observed.size,
-                    observed.strong_etag.as_deref(),
-                )
-                .await?;
 
-                let staged_surface_object = if let Some(surface_object) = db
-                    .surface_object_named(SurfaceTarget::BinaryCache(cache.id), path)
-                    .await?
+                page_observations.push((path.clone(), observed));
+            }
+
+            let listed_objects = page_observations
+                .iter()
+                .map(|(path, observed)| CacheInventoryListedObject {
+                    object_key: path.clone(),
+                    observed_sha256: hex::encode(observed.sha256),
+                    observed_size: observed.size,
+                    etag: observed.strong_etag.clone(),
+                })
+                .collect::<Vec<_>>();
+            db.stage_cache_inventory_listed_objects(
+                cache.id,
+                generation,
+                placement.id,
+                owner_token,
+                &listed_objects,
+            )
+            .await?;
+
+            for (path, observed) in &page_observations {
+                let staged_surface_object = if let Some(surface_object) = surface_objects.get(path)
                 {
                     Some(
                         stage_existing_cache_surface_object(
@@ -853,6 +891,55 @@ async fn stage_observed_surface_object(
     .await
 }
 
+fn reusable_inventory_evidence(
+    object: &SurfaceObjectRecord,
+    listed: Option<&SurfaceListedEvidence>,
+    prior: Option<&ReusablePlacementEvidence>,
+) -> Option<SurfaceObjectEvidence> {
+    let listed = listed?;
+    let prior = prior?;
+    if prior.state != "present"
+        || object.content_hash.is_none()
+        || prior.observed_hash != object.content_hash
+        || prior.observed_size != object.size
+        || object.size != Some(listed.size)
+    {
+        return None;
+    }
+
+    let listed_etag = crate::surface_write::strong_if_match_etag(&listed.strong_etag).ok()?;
+    let prior_etag = crate::surface_write::strong_if_match_etag(prior.etag.as_deref()?).ok()?;
+    if listed_etag != prior_etag {
+        return None;
+    }
+    let sha256 = canonical_sha256_digest(prior.observed_hash.as_deref()?)?;
+
+    Some(SurfaceObjectEvidence {
+        sha256,
+        size: listed.size,
+        strong_etag: Some(listed_etag),
+    })
+}
+
+fn canonical_sha256_digest(hash: &str) -> Option<[u8; 32]> {
+    let hash = hash.trim();
+    let bytes = if let Some(encoded) = hash.strip_prefix("sha256-") {
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .ok()?
+    } else {
+        let encoded = hash.strip_prefix("sha256:").unwrap_or(hash);
+        match encoded.len() {
+            64 if encoded.bytes().all(|byte| byte.is_ascii_hexdigit()) => {
+                hex::decode(encoded).ok()?
+            }
+            52 => decode_nix_base32(encoded)?,
+            _ => return None,
+        }
+    };
+    bytes.try_into().ok()
+}
+
 fn sha256_hash_matches(expected: &str, digest: &[u8; 32]) -> bool {
     if expected.len() == 64 && expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return expected.eq_ignore_ascii_case(&hex::encode(digest));
@@ -869,6 +956,27 @@ fn sha256_hash_matches(expected: &str, digest: &[u8; 32]) -> bool {
 }
 
 const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
+
+fn decode_nix_base32(encoded: &str) -> Option<Vec<u8>> {
+    let len = encoded.len() * 5 / 8;
+    let mut out = vec![0u8; len];
+    for (n, character) in encoded.chars().rev().enumerate() {
+        let digit = NIX_BASE32
+            .iter()
+            .position(|byte| char::from(*byte) == character)? as u16;
+        let bit = n * 5;
+        let index = bit / 8;
+        let shift = bit % 8;
+        *out.get_mut(index)? |= (digit << shift) as u8;
+        let carry = digit >> (8 - shift);
+        match out.get_mut(index + 1) {
+            Some(next) => *next |= carry as u8,
+            None if carry != 0 => return None,
+            None => {}
+        }
+    }
+    Some(out)
+}
 
 fn encode_nix_base32(bytes: &[u8]) -> String {
     let len = (bytes.len() * 8).div_ceil(5);
@@ -1104,6 +1212,44 @@ mod tests {
     }
 
     #[test]
+    fn inventory_reuses_only_exact_strong_provider_versions() {
+        let digest: [u8; 32] = Sha256::digest(b"unchanged-cache-object").into();
+        let object = SurfaceObjectRecord {
+            id: 7,
+            registry_id: None,
+            cache_id: Some(1),
+            object_key: "nar/fixture.nar.zst".into(),
+            content_hash: Some(format!("sha256:{}", hex::encode(digest))),
+            size: Some(22),
+            object_kind: "immutable".into(),
+            mutable_publication_id: None,
+            lifecycle_state: "active".into(),
+            tombstoned_at: None,
+            created_at: 0,
+            updated_at: 0,
+            resource_version: 1,
+        };
+        let listed = SurfaceListedEvidence {
+            size: 22,
+            strong_etag: "provider-version".into(),
+        };
+        let mut prior = ReusablePlacementEvidence {
+            surface_object_id: object.id,
+            state: "present".into(),
+            observed_hash: object.content_hash.clone(),
+            observed_size: object.size,
+            etag: Some("\"provider-version\"".into()),
+        };
+
+        let reused = reusable_inventory_evidence(&object, Some(&listed), Some(&prior)).unwrap();
+        assert_eq!(reused.sha256, digest);
+        assert_eq!(reused.strong_etag.as_deref(), Some("\"provider-version\""));
+
+        prior.etag = Some("different-version".into());
+        assert!(reusable_inventory_evidence(&object, Some(&listed), Some(&prior)).is_none());
+    }
+
+    #[test]
     fn completing_intent_fails_closed_without_positive_replacement_evidence() {
         assert!(
             completing_replacement_evidence(ExpiredWriteClassification::NoReplacement, None,)
@@ -1187,6 +1333,10 @@ mod tests {
             &format!("sha256:{}", hex::encode(digest)),
             &digest
         ));
+        assert_eq!(
+            canonical_sha256_digest(&format!("sha256:{}", encode_nix_base32(&digest))),
+            Some(digest)
+        );
         assert!(sha256_hash_matches(
             &format!("sha256:{}", encode_nix_base32(&digest)),
             &digest

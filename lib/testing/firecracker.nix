@@ -103,12 +103,18 @@
       mount -t tmpfs tmpfs /tmp
       mount -t tmpfs tmpfs /run
 
-      # Run the test script; capture exit code
+      # Run the test in a child shell, then capture its exit code. Placing a
+      # shell compound command directly on the left side of `||` suppresses
+      # errexit throughout that compound command, so failed assertions could
+      # otherwise fall through to TEST_RESULT:PASS.
+      cat > /run/aos-vm-test << 'AOS_VM_TEST_EOF'
+      set -e
+      ${testScript}
+      AOS_VM_TEST_EOF
+      chmod 0700 /run/aos-vm-test
+
       test_result=0
-      (
-        set -e
-        ${testScript}
-      ) || test_result=1
+      ${bashPkg}/bin/bash /run/aos-vm-test || test_result=$?
 
       if [ "$test_result" -eq 0 ]; then
         echo 'TEST_RESULT:PASS'
@@ -148,6 +154,7 @@
       buildDeps = [
         pkgs.e2fsprogs
         pkgs.coreutils
+        pkgs.fakeroot
       ];
 
       exportReferencesGraph = flatGraphPairs;
@@ -164,6 +171,10 @@
           name = "build-rootfs";
           script = ''
                         mkdir -p rootfs/nix/store
+                        # Preserve the real store's trusted-parent mode. The
+                        # ownership is normalized under fakeroot when mkfs
+                        # records the staging tree in the guest image.
+                        chmod 0755 rootfs/nix rootfs/nix/store
                         # FHS-looking paths in this builder are staged under
                         # ./rootfs and become the guest VM filesystem only.
                         mkdir -p rootfs/bin rootfs/sbin rootfs/usr/bin rootfs/usr/sbin rootfs/usr/local/bin
@@ -364,7 +375,13 @@
                         # stdenv setup.sh creates $out as a directory; remove it so
                         # mkfs.ext4 can write a flat image file there.
                         rm -rf "$out"
-                        mkfs.ext4 -d rootfs -L rootfs -m 1 -q $out ''${IMAGE_MB}M
+                        # Nix builders do not run as uid 0, but the populated
+                        # guest root filesystem must. In particular, native
+                        # services reject secrets beneath store parents owned
+                        # by an unrelated build uid. fakeroot makes mkfs record
+                        # production-like uid/gid values without a host mount.
+                        fakeroot -- mkfs.ext4 -d rootfs -L rootfs -m 1 -q \
+                          "$out" "''${IMAGE_MB}M"
           '';
         }
       ];

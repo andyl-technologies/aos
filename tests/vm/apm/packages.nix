@@ -4528,7 +4528,7 @@ in {
       assert_file_contains "$REG_DIR/packages/s/source-alt.toml" \
         "$SOURCE_STORE" "published metadata records source drv path"
       assert_file_contains "$REG_DIR/packages/s/source-alt.toml" \
-        'source_nar_hash = "sha256-' "published metadata records source NAR hash"
+        'source_nar_hash = "sha256:' "published metadata records source NAR hash"
 
       $APR cache generate \
         --registry source-alt-reg \
@@ -5109,6 +5109,16 @@ in {
           and .store_path == $store
           and (.dependencies | index("surface-leaf"))' \
         /tmp/surface-show-json.out >/dev/null
+      run_ok info "$APM" info surfacepkg
+      assert_file_contains /tmp/surface-info.out "Surface command fixture" \
+        "apm info prints real package metadata"
+      run_ok info-permissions "$APM" info surfacepkg --permissions
+      assert_file_contains /tmp/surface-info-permissions.out "surfacepkg" \
+        "apm info --permissions resolves the real package"
+      run_ok info-json "$APM" --json info surfacepkg
+      "$JQ" -e --arg store "$SURFACE_STORE" \
+        '.name == "surfacepkg" and .version == "1.0.0" and .store_path == $store' \
+        /tmp/surface-info-json.out >/dev/null
       run_ok list "$APM" list
       assert_file_contains /tmp/surface-list.out "surfacepkg/surface-reg" "apm list includes registry package"
       run_ok list-installed "$APM" list --installed
@@ -5240,7 +5250,7 @@ in {
           and .source_drv == $source
           and .installed == true
           and .installed_store_path == $store
-          and (.source_nar_hash | startswith("sha256-"))' \
+          and (.source_nar_hash | startswith("sha256:"))' \
         /tmp/surface-source-sourceful-json.out >/dev/null
       run_ok source-sourceful-show-drv "$APM" source sourceful --show-drv
       assert_file_contains /tmp/surface-source-sourceful-show-drv.out "$SOURCE_V1_SRC_STORE" \
@@ -5252,7 +5262,7 @@ in {
           and .source_drv == $source
           and .installed == true
           and .installed_store_path == $store
-          and (.source_nar_hash | startswith("sha256-"))' \
+          and (.source_nar_hash | startswith("sha256:"))' \
         /tmp/surface-source-sourceful-show-drv-json.out >/dev/null
       run_ok source-sourceful-fetch-json-missing "$APM" --json source sourceful --fetch
       "$JQ" -e --arg source "$SOURCE_V1_SRC_STORE" --arg store "$SOURCE_V1_STORE" \
@@ -5262,7 +5272,7 @@ in {
           and .installed == true
           and .installed_store_path == $store
           and .realised_path == $source
-          and (.source_nar_hash | startswith("sha256-"))' \
+          and (.source_nar_hash | startswith("sha256:"))' \
         /tmp/surface-source-sourceful-fetch-json-missing.out >/dev/null
       assert_file_not_contains /tmp/surface-source-sourceful-fetch-json-missing.out "Fetching source" \
         "apm --json source --fetch emits clean JSON while downloading source"
@@ -5284,7 +5294,7 @@ in {
           and .installed == true
           and .installed_store_path == $store
           and .realised_path == $source
-          and (.source_nar_hash | startswith("sha256-"))' \
+          and (.source_nar_hash | startswith("sha256:"))' \
         /tmp/surface-source-sourceful-fetch-json.out >/dev/null
       run_ok source-sourceful-verify "$APM" source sourceful --verify
       assert_file_contains /tmp/surface-source-sourceful-verify.out "$SOURCE_V1_SRC_STORE" \
@@ -5337,7 +5347,7 @@ in {
           and .version == "1.0.0"
           and .store_path == $store
           and .verified == true
-          and (.expected_nar_hash | startswith("sha256-"))
+          and (.expected_nar_hash | startswith("sha256:"))
           and (.actual_nar_hash | startswith("sha256:"))' \
         /tmp/surface-verify-json.out >/dev/null
 

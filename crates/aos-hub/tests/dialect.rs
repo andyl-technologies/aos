@@ -932,14 +932,13 @@ async fn mysql_contract() {
 /// connect re-runs all migrations from scratch and the run is idempotent.
 #[cfg(feature = "postgres")]
 async fn reset_pg_schema(url: &str) {
-    use sqlx::{Connection, Executor, PgConnection};
+    use sqlx::{Executor as _, PgPool};
 
-    let mut connection = PgConnection::connect(url)
+    let pool = PgPool::connect(url)
         .await
         .expect("connecting to postgres for schema reset");
     // The public schema cascade is the cleanest full reset for a test database.
-    connection
-        .execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    pool.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
         .await
         .expect("dropping public schema");
 }
@@ -948,28 +947,24 @@ async fn reset_pg_schema(url: &str) {
 /// re-runs all migrations from scratch and the run is idempotent.
 #[cfg(feature = "mysql")]
 async fn reset_mysql_schema(url: &str) {
-    use std::str::FromStr;
+    use sqlx::{Connection as _, MySqlConnection};
 
-    use sqlx::mysql::{MySqlConnectOptions, MySqlConnection};
-    use sqlx::{Connection, Executor};
-
-    let options = MySqlConnectOptions::from_str(url).expect("parsing mysql url for schema reset");
-    let db_name = options.get_database().map(str::to_string);
-    let mut connection = MySqlConnection::connect_with(&options)
+    let db_name = url.rsplit_once('/').map(|(_, name)| name.to_string());
+    let mut connection = MySqlConnection::connect(url)
         .await
         .expect("connecting to mysql for reset");
     if let Some(db) = db_name {
         // Drop and recreate the whole database — the simplest idempotent reset.
-        connection
-            .execute(format!("DROP DATABASE IF EXISTS `{db}`").as_str())
+        sqlx::query(&format!("DROP DATABASE IF EXISTS `{db}`"))
+            .execute(&mut connection)
             .await
             .expect("dropping mysql database");
-        connection
-            .execute(format!("CREATE DATABASE `{db}`").as_str())
+        sqlx::query(&format!("CREATE DATABASE `{db}`"))
+            .execute(&mut connection)
             .await
             .expect("creating mysql database");
-        connection
-            .execute(format!("USE `{db}`").as_str())
+        sqlx::query(&format!("USE `{db}`"))
+            .execute(&mut connection)
             .await
             .expect("selecting mysql database");
     }

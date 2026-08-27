@@ -592,6 +592,12 @@ enum HubTopologyMethod {
     ResolveImage,
     /// Selects placement-aware publication admission.
     BeginRegistryPublication,
+    /// Selects resumable publication-manifest admission.
+    BeginRegistryPublicationManifest,
+    /// Selects one bounded publication-manifest append.
+    AppendRegistryPublicationManifest,
+    /// Selects publication-manifest sealing.
+    SealRegistryPublicationManifest,
     /// Selects multipart admission for one large registry publication object.
     BeginRegistryPublicationMultipartUpload,
     /// Selects multipart abort for one registry publication object.
@@ -1061,6 +1067,15 @@ impl HubTopologyMethod {
             GetImage => "aos.hub.v1.ImageService/GetImage",
             ResolveImage => "aos.hub.v1.ImageService/ResolveImage",
             BeginRegistryPublication => "aos.hub.v1.PublishService/BeginRegistryPublication",
+            BeginRegistryPublicationManifest => {
+                "aos.hub.v1.PublishService/BeginRegistryPublicationManifest"
+            }
+            AppendRegistryPublicationManifest => {
+                "aos.hub.v1.PublishService/AppendRegistryPublicationManifest"
+            }
+            SealRegistryPublicationManifest => {
+                "aos.hub.v1.PublishService/SealRegistryPublicationManifest"
+            }
             BeginRegistryPublicationMultipartUpload => {
                 "aos.hub.v1.PublishService/BeginRegistryPublicationMultipartUpload"
             }
@@ -1445,6 +1460,9 @@ pub mod hub_rpc {
         GetImage: GetImageRequest => GetImageResponse;
         ResolveImage: ResolveImageRequest => GetImageResponse;
         BeginRegistryPublication: BeginRegistryPublicationRequest => RegistryPublication;
+        BeginRegistryPublicationManifest: BeginRegistryPublicationManifestRequest => RegistryPublicationManifestSession;
+        AppendRegistryPublicationManifest: AppendRegistryPublicationManifestRequest => RegistryPublicationManifestSession;
+        SealRegistryPublicationManifest: SealRegistryPublicationManifestRequest => RegistryPublication;
         BeginRegistryPublicationMultipartUpload: BeginRegistryPublicationMultipartUploadRequest => BeginRegistryPublicationMultipartUploadResponse;
         AbortRegistryPublicationMultipartUpload: AbortRegistryPublicationMultipartUploadRequest => RegistryPublicationMultipartUploadResponse;
         ListRegistryPublications: ListRegistryPublicationsRequest => ListRegistryPublicationsResponse;

@@ -752,7 +752,7 @@
             # Source
             src =
               if src != null
-              then builtins.toString src
+              then src
               else "";
 
             # Environment variables for the build

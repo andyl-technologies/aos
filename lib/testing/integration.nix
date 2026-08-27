@@ -164,7 +164,8 @@
   in
     mkVMTest {
       name = pname;
-      rootfsDeps = deps;
+      rootfsDeps = [pkgs.gcc] ++ deps;
+      memory = 512;
       testScript = ''
                 export C_INCLUDE_PATH="${includePath}:$C_INCLUDE_PATH"
                 export CPLUS_INCLUDE_PATH="${includePath}:$CPLUS_INCLUDE_PATH"
@@ -176,7 +177,7 @@
         TESTSRC
 
                 echo "==> Compiling C++ test program"
-                g++ ${flags} -o /tmp/test /tmp/test.cpp
+                ${pkgs.gcc}/bin/g++ ${flags} -o /tmp/test /tmp/test.cpp
                 echo "==> Running test program"
                 /tmp/test
                 echo "==> Test program exited successfully"

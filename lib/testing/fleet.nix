@@ -164,10 +164,20 @@
   in {
     # Fleet machines are driven through the guest agent (virtio-serial), never
     # an interactive serial console. The debug profile's initrd serial debug
-    # shell runs `agetty --autologin` on ttyS0 with TTYVHangup, which corrupts
-    # the serial log the harness captures and obscures stage-1 boot output.
-    # Mask it (harmless if the debug profile isn't present).
-    boot.initrd.systemd.maskedUnits = ["debug-shell-serial.service"];
+    # shells run persistent Bash processes on ttyS0 and tty0. The former
+    # corrupts the serial log, while the latter makes switch-root wait for its
+    # 90-second stop timeout. Fleet tests have no interactive console, so mask
+    # both (harmless if the debug profile isn't present).
+    boot.initrd.systemd.maskedUnits = [
+      "debug-shell-console.service"
+      "debug-shell-serial.service"
+    ];
+
+    # Direct-kernel tests boot a mutable ext4 rootfs assembled by mkTestDisk;
+    # it has no UKI-authenticated roothash and therefore cannot satisfy the
+    # production dm-verity identity gate. Image-boot tests keep the system's
+    # real verity setting and exercise the complete signed boot chain.
+    aos.security.verity.enable = lib.mkIf (m.bootMode == "kernel") (lib.mkForce false);
 
     # Image-boot machines take their cmdline from the UKI, not the driver's
     # `-append`; match the kernel-boot append so the serial log stays
@@ -280,14 +290,15 @@
         effectiveSystem = mkEffectiveSystem {inherit m hostsEntries sshAuthorizedKey;};
         compressedImage = effectiveSystem.config.system.build.image.raw;
         compressedImageName = "aos-${effectiveSystem.config.aos.system.name}.img.zst";
-        imageDisk = pkgs.runCommand "aos-fleet-${m.name}-image-disk" {
-          buildDeps = [pkgs.zstd];
-        } ''
-          mkdir -p "$out"
-          zstd -d --sparse --no-progress \
-            ${compressedImage}/${compressedImageName} \
-            -o "$out/disk.img"
-        '';
+        imageDisk =
+          pkgs.runCommand "aos-fleet-${m.name}-image-disk" {
+            buildDeps = [pkgs.zstd];
+          } ''
+            mkdir -p "$out"
+            zstd -d --sparse --no-progress \
+              ${compressedImage}/${compressedImageName} \
+              -o "$out/disk.img"
+          '';
         metadataNames = builtins.attrNames m.metadata;
         invalidMetadataNames =
           builtins.filter

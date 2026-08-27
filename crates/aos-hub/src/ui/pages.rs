@@ -76,7 +76,7 @@ pub fn registry_home(
         registry,
         status,
         channels,
-        packages,
+        packages.len(),
         caches,
         roster,
         validations,
