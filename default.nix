@@ -339,7 +339,7 @@
       specModule = import (./tests/fleet + "/${filename}");
       availableArgs = {
         inherit lib pkgs mkSystem;
-        inherit (testing) dataUrl;
+        inherit (testing) dataUrl mkDarlingFleetSpec;
         systems = discoverSystems;
       };
       raw = specModule (
