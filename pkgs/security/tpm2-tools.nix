@@ -9,6 +9,7 @@
   curl,
   tpm2-tss,
   stdenv,
+  buildPackages,
 }: let
   version = "5.7";
 in
@@ -28,7 +29,13 @@ in
       then [./tpm2-tools-patches/0001-darwin-utf16-compat.patch]
       else [];
 
-    buildDeps = [gnumake pkg-config];
+    buildDeps =
+      [gnumake pkg-config]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [buildPackages.autoconf]
+        else []
+      );
     runtimeDeps = [bash openssl curl tpm2-tss];
     propagatedDeps = [openssl curl tpm2-tss];
 
@@ -55,6 +62,17 @@ in
             # define be64toh OSSwapBigToHostInt64\
             #elif defined __FreeBSD__ || defined __DragonFly__
                           ' lib/tpm2_systemdeps.h
+
+                          # These GNU ld hardening switches describe ELF
+                          # relocation behavior and have no Mach-O equivalent.
+                          # Keep every other upstream hardening check enabled.
+                          sed -i '
+                            /add_hardened_ld_flag(\[\[-Wl,-z,relro\]\])/d
+                            /add_hardened_ld_flag(\[\[-Wl,-z,now\]\])/d
+                          ' configure.ac
+                          touch aclocal.m4
+                          autoconf
+                          touch Makefile.in lib/config.h.in
           ''
           else ''
             tar xf $src
@@ -69,13 +87,9 @@ in
         script =
           if stdenv.hostPlatform.isDarwin
           then ''
-            # Upstream's hardening probe is expressed in GNU ld flags. The
-            # AOS compiler wrapper still applies the platform-appropriate
-            # Darwin hardening policy independently of this configure knob.
             ./configure \
               $configureFlags \
               --prefix=$out \
-              --disable-hardening \
               --disable-static \
               --disable-unit \
               --with-bashcompdir=$out/share/bash-completion/completions
