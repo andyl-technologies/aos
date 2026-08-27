@@ -1545,10 +1545,13 @@ subsystem-owned barriers rather than weakening this fail-closed query.
 
 Patched QEMU now also owns a bounded active-thread registry. Every
 `qemu_thread_create()` start routine is bracketed by register/unregister cleanup,
-the QMP main loop is the sole coordinator, all other active QEMU threads remain
-explicitly `unclassified`, and a versioned QMP query returns a sorted snapshot,
-overflow/name completeness, exact unclassified count, and process-local
-generation. The Apache host brackets its bounded two-pass Linux process
+the QMP main loop is the sole coordinator, and a version-2 QMP query returns a
+sorted snapshot, overflow/name completeness, exact unresolved count, and
+process-local generation. The RCU callback and AIO-context thread entry points
+assign their own `unclassified-rcu` and `unclassified-aio` owners; every other
+non-coordinator remains plain `unclassified`. These owner labels stay blockers
+and do not claim barriers or child dispositions. The Apache host brackets its
+bounded two-pass Linux process
 inventory with two identical registry snapshots inside the exact QEMU
 readiness reports. It requires every registered thread to exist in procfs,
 reports externally created threads as blockers, records every visible thread,
@@ -1557,9 +1560,10 @@ aggregate-body limits, retains at most two compared passes, rejects process,
 registry, or inventory drift, and exposes writable/shared mapping counts for
 lab review.
 This is an executable T-CAM-6.1 audit prerequisite, not completion of the task:
-the internal registry has no non-coordinator dispositions yet, and neither view
-can prove QEMU mutex, AIO/BH/timer, RCU, block, plugin, external-thread, or
-child-reinitialization state. They cannot promote a readiness bit. T-CAM-6.1
+the internal registry identifies two non-coordinator subsystem owners but has
+no safe non-coordinator child disposition, and neither view can prove QEMU
+mutex, AIO/BH/timer, RCU, block, plugin, external-thread, or child-reinitialization
+state. They cannot promote a readiness bit. T-CAM-6.1
 remains unchecked until the complete supported-profile registry and all
 subsystem-owned proofs are implemented and accepted in the Phase 6 lab.
 

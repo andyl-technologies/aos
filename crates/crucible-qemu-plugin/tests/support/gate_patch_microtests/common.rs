@@ -125,6 +125,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0109-crucible-control-boundary-node-faults.patch",
     "0110-crucible-release-halted-rr-turn.patch",
     "0111-crucible-hot-fork-readiness.patch",
+    "0112-crucible-hot-fork-thread-ownership.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "09604023d04d55cd140710a5ff44284dca0043b66c3717dbed9c29f3865430f5";
+  patchBranchBundleSha256 = "1deab3c71e4a3fc75de050ba3d339d2829d06d867bbd9a7954a04287e43a6249";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "7ff04305e4fde33c1889e392a16f1090bdac6225";
+  patchBranchHeadCommit = "4ee02f149151c2cedc56bfbd3254980e09397c58";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1045,6 +1045,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4";
       capability = "bounded versioned QMP queries report QEMU-owned precise-icount, single-threaded sim RR, and exact paused/device-flush proofs plus a sorted generation-tagged registry of every active qemu_thread_create thread and the sole QMP coordinator; every non-coordinator remains unclassified and every unimplemented subsystem, mapping, external thread, and child-reinitialization proof stays clear so the audit cannot advertise hot fork";
+    }
+    {
+      file = "0112-crucible-hot-fork-thread-ownership.patch";
+      branchSubject = "crucible: classify unresolved hot-fork threads";
+      branchCommit = "4ee02f149151c2cedc56bfbd3254980e09397c58";
+      branchTree = "d2ba34f80ea4c35593ed4e4c4e3122cf7dcde8ca";
+      catalogName = "crucible-hot-fork-thread-ownership";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "the bounded thread-registry schema explicitly assigns the RCU callback worker and every QEMU IOThread to unresolved subsystem-specific ownership classes while retaining them in the exact unclassified blocker count; no owner class supplies a barrier or child disposition and no readiness proof changes";
     }
   ];
   catalogOnlyCapabilities = [
