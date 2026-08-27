@@ -291,6 +291,26 @@
               -lobjc \
               -o "$c/bin/aos-darwin-cocoa-smoke"
 
+            # QEMU's Cocoa frontend includes Carbon only for HIToolbox's
+            # stable virtual-key constants. Compile representatives from each
+            # key family it consumes so a missing umbrella cannot pass SDK
+            # validation; QEMU itself compiles the complete table.
+            printf '%s\n' \
+              '#include <Carbon/Carbon.h>' \
+              '_Static_assert(kVK_ANSI_A == 0x00, "ANSI key ABI");' \
+              '_Static_assert(kVK_ANSI_Keypad9 == 0x5c, "keypad ABI");' \
+              '_Static_assert(kVK_RightCommand == 0x36, "modifier ABI");' \
+              '_Static_assert(kVK_UpArrow == 0x7e, "navigation ABI");' \
+              '_Static_assert(kVK_JIS_Kana == 0x68, "JIS key ABI");' \
+              'int main(void) {' \
+              '  int ansi = kVK_ANSI_A + kVK_ANSI_0 + kVK_ANSI_Grave + kVK_ANSI_Keypad9;' \
+              '  int controls = kVK_Return + kVK_RightCommand + kVK_F1 + kVK_F15 + kVK_UpArrow;' \
+              '  int jis = kVK_JIS_Yen + kVK_JIS_Underscore + kVK_JIS_KeypadComma + kVK_JIS_Eisu + kVK_JIS_Kana;' \
+              '  return ansi + controls + jis == 0;' \
+              '}' \
+              > carbon-smoke.c
+            "$CC" carbon-smoke.c -o "$c/bin/aos-darwin-carbon-smoke"
+
             printf '%s\n' \
               '#import <ApplicationServices/ApplicationServices.h>' \
               '#import <CoreServices/CoreServices.h>' \
@@ -712,6 +732,7 @@
 
             for executable in \
               "$c/bin/aos-darwin-c-smoke" \
+              "$c/bin/aos-darwin-carbon-smoke" \
               "$c/bin/aos-darwin-command-line-sdk-smoke" \
               "$c/bin/aos-darwin-corefoundation-stream-smoke" \
               "$c/bin/aos-darwin-coreservices-smoke" \
