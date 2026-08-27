@@ -26,6 +26,7 @@ mod unix_socket;
 mod vmstate_control;
 
 pub use hot_fork::{
+    QMP_HOT_FORK_AIO_HANDLER_INVENTORY_MAX, QMP_HOT_FORK_AIO_HANDLER_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_AIO_INVENTORY_MAX, QMP_HOT_FORK_AIO_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES, QMP_HOT_FORK_MUTEX_INVENTORY_MAX,
@@ -34,19 +35,21 @@ pub use hot_fork::{
     QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_THREAD_INVENTORY_MAX,
     QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_THREAD_NAME_MAX_BYTES,
     QMP_HOT_FORK_TIMER_INVENTORY_MAX, QMP_HOT_FORK_TIMER_INVENTORY_SCHEMA_VERSION,
-    QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QmpHotForkAioContext, QmpHotForkAioInventory,
-    QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory, QmpHotForkMutex, QmpHotForkMutexInventory,
-    QmpHotForkProof, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
-    QmpHotForkThread, QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer,
-    QmpHotForkTimerClock, QmpHotForkTimerInventory,
+    QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_READINESS_COMMAND,
+    QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
+    QmpHotForkAioContext, QmpHotForkAioHandler, QmpHotForkAioHandlerInventory,
+    QmpHotForkAioInventory, QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory, QmpHotForkMutex,
+    QmpHotForkMutexInventory, QmpHotForkProof, QmpHotForkRcuInventory, QmpHotForkRcuReader,
+    QmpHotForkReadiness, QmpHotForkThread, QmpHotForkThreadDisposition, QmpHotForkThreadInventory,
+    QmpHotForkTimer, QmpHotForkTimerClock, QmpHotForkTimerInventory,
 };
 use hot_fork::{
-    parse_hot_fork_aio_inventory, parse_hot_fork_bottom_half_inventory,
-    parse_hot_fork_mutex_inventory, parse_hot_fork_rcu_inventory, parse_hot_fork_readiness,
-    parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
+    parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,
+    parse_hot_fork_bottom_half_inventory, parse_hot_fork_mutex_inventory,
+    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_thread_inventory,
+    parse_hot_fork_timer_inventory,
 };
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
@@ -517,6 +520,25 @@ where
     pub fn query_hot_fork_aio_inventory(&mut self) -> Result<QmpHotForkAioInventory, QmpError> {
         let response = self.send_command_return(QmpCommand::QueryHotForkAioInventory)?;
         parse_hot_fork_aio_inventory(&response.value)
+    }
+
+    /// Returns QEMU's exact bounded inventory of every allocated AIO handler.
+    ///
+    /// The query includes handlers awaiting deferred deletion, their exact
+    /// AioContext and descriptor binding, installed callback classes, and
+    /// active callback count. It does not drain or park callbacks and cannot
+    /// acknowledge hot-fork proof bit 3.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request or response fails, or when the
+    /// response violates the closed schema, bound, identifier ordering,
+    /// descriptor profile, declared aggregates, or completeness rule.
+    pub fn query_hot_fork_aio_handler_inventory(
+        &mut self,
+    ) -> Result<QmpHotForkAioHandlerInventory, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryHotForkAioHandlerInventory)?;
+        parse_hot_fork_aio_handler_inventory(&response.value)
     }
 
     /// Returns QEMU's exact bounded inventory of every allocated bottom half.
@@ -1057,6 +1079,8 @@ pub enum QmpCommandKind {
     QueryHotForkRcuInventory,
     /// QEMU-owned hot-fork AioContext activity inventory query.
     QueryHotForkAioInventory,
+    /// QEMU-owned hot-fork allocated-AIO-handler inventory query.
+    QueryHotForkAioHandlerInventory,
     /// QEMU-owned hot-fork allocated-bottom-half inventory query.
     QueryHotForkBottomHalfInventory,
     /// QEMU-owned hot-fork mutex ownership inventory query.
@@ -1085,6 +1109,9 @@ impl QmpCommandKind {
             Self::QueryHotForkThreadInventory => QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
             Self::QueryHotForkRcuInventory => QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
             Self::QueryHotForkAioInventory => QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
+            Self::QueryHotForkAioHandlerInventory => {
+                QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND
+            }
             Self::QueryHotForkBottomHalfInventory => {
                 QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND
             }
@@ -1144,6 +1171,7 @@ enum QmpCommand<'a> {
     QueryHotForkThreadInventory,
     QueryHotForkRcuInventory,
     QueryHotForkAioInventory,
+    QueryHotForkAioHandlerInventory,
     QueryHotForkBottomHalfInventory,
     QueryHotForkMutexInventory,
     QueryHotForkTimerInventory,
@@ -1168,6 +1196,9 @@ impl QmpCommand<'_> {
             Self::QueryHotForkThreadInventory => QmpCommandKind::QueryHotForkThreadInventory,
             Self::QueryHotForkRcuInventory => QmpCommandKind::QueryHotForkRcuInventory,
             Self::QueryHotForkAioInventory => QmpCommandKind::QueryHotForkAioInventory,
+            Self::QueryHotForkAioHandlerInventory => {
+                QmpCommandKind::QueryHotForkAioHandlerInventory
+            }
             Self::QueryHotForkBottomHalfInventory => {
                 QmpCommandKind::QueryHotForkBottomHalfInventory
             }
@@ -1241,6 +1272,9 @@ impl QmpCommand<'_> {
             }),
             Self::QueryHotForkAioInventory => json!({
                 "execute": QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
+            }),
+            Self::QueryHotForkAioHandlerInventory => json!({
+                "exec-oob": QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND,
             }),
             Self::QueryHotForkBottomHalfInventory => json!({
                 "exec-oob": QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND,

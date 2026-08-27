@@ -11,13 +11,14 @@ use std::time::Duration;
 
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
-    QMP_CAPABILITIES_COMMAND, QMP_CONT_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_READINESS_COMMAND,
-    QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
-    QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND,
-    QMP_SNAPSHOT_SAVE_COMMAND, QemuExactSnapshotPolicy, QemuQmpVmStateControlChannel,
-    QmpCommandKind, QmpHotForkProof, QmpSnapshotTag, QmpTimeoutStream,
+    QMP_CAPABILITIES_COMMAND, QMP_CONT_COMMAND, QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME,
+    QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND, QemuExactSnapshotPolicy,
+    QemuQmpVmStateControlChannel, QmpCommandKind, QmpHotForkProof, QmpSnapshotTag,
+    QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -152,6 +153,33 @@ fn vmstate_control_forwards_exact_hot_fork_aio_inventory() -> Result<(), Box<dyn
     assert_eq!(
         execute_name(json_line(&lines, 1)),
         Some(QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND)
+    );
+    Ok(())
+}
+
+#[test]
+fn vmstate_control_forwards_exact_hot_fork_aio_handler_inventory() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":6,"complete":true,"overflowed":false,"handler-count":1,"read-handlers":1,"write-handlers":0,"poll-handlers":0,"deleted-handlers":0,"active-callbacks":0,"handlers":[{"handler-id":2,"context-id":1,"fd":3,"deleted":false,"read-callback":true,"write-callback":false,"poll-callback":false,"poll-ready-callback":false,"poll-begin-callback":false,"poll-end-callback":false,"active-callbacks":0}]}}"#,
+    ]);
+    let written = Arc::clone(&stream.written);
+    let mut control = QemuQmpVmStateControlChannel::connect(stream)?;
+
+    let inventory = control.query_hot_fork_aio_handler_inventory()?;
+    assert_eq!(inventory.generation(), 6);
+    assert_eq!(inventory.handlers()[0].context_id(), 1);
+
+    drop(control);
+    let lines = written_json_lines(
+        &written
+            .lock()
+            .expect("scripted QMP write audit should remain available"),
+    )?;
+    assert_eq!(
+        oob_execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND)
     );
     Ok(())
 }

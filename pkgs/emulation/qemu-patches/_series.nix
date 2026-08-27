@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "caf32f19f3e4fd569180fe299e39c9908d7ef4a2285bb4456c2223df29f49052";
+  patchBranchBundleSha256 = "8bca3011804115e2fb1ff7372b091787911f7bb79838a9d0e26c78c45ccb159e";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "17bced64c6eed1e17aa1ab5e388951ea1af1318e";
+  patchBranchHeadCommit = "d2b92ba1d107de82c36729f8ea369ae2ffbcab9a";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1135,6 +1135,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded versioned QMP inventory reports every allocated bottom half, including inert, pending, active, canceled, one-shot, idle, and deferred-deletion instances, under stable process-local bottom-half and AioContext identities; the report remains observational, supplies no retained bottom-half barrier, and leaves the AIO/BH/timer readiness proof clear";
+    }
+    {
+      file = "0121-crucible-hot-fork-aio-handler-inventory.patch";
+      branchSubject = "crucible: inventory hot-fork AIO handlers";
+      branchCommit = "d2b92ba1d107de82c36729f8ea369ae2ffbcab9a";
+      branchTree = "23498a2beef07a58ed036b7089e886db9fca5b9f";
+      catalogName = "crucible-hot-fork-aio-handler-inventory";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "a bounded versioned QMP inventory reports every allocated POSIX AioHandler, including deferred deletion, exact owning AioContext and file descriptor, installed callback classes, active callback count, and process-local lifecycle generation; the report remains observational, supplies no retained AIO-handler barrier, and leaves the AIO/BH/timer readiness proof clear";
     }
   ];
   catalogOnlyCapabilities = [

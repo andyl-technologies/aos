@@ -13,15 +13,15 @@ use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT,
     QMP_HOT_FORK_REQUIRED_PROOFS, QMP_QUERY_CPUS_FAST_COMMAND,
-    QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
-    QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND,
-    QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient,
-    QmpCommandKind, QmpError, QmpGreeting, QmpHotForkProof, QmpHotForkThreadDisposition,
-    QmpHotForkTimerClock, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag,
-    QmpTimeoutStream,
+    QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_READINESS_COMMAND,
+    QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
+    QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME,
+    QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
+    QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient, QmpCommandKind, QmpError,
+    QmpGreeting, QmpHotForkProof, QmpHotForkThreadDisposition, QmpHotForkTimerClock,
+    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -464,6 +464,74 @@ fn hot_fork_aio_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn Er
             client.query_hot_fork_aio_inventory(),
             Err(QmpError::MalformedTypedResponse {
                 command: QmpCommandKind::QueryHotForkAioInventory,
+                ..
+            })
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn hot_fork_aio_handler_inventory_is_exact_bounded_and_oob() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":9,"complete":true,"overflowed":false,"handler-count":2,"read-handlers":1,"write-handlers":1,"poll-handlers":1,"deleted-handlers":1,"active-callbacks":2,"handlers":[{"handler-id":1,"context-id":4,"fd":3,"deleted":false,"read-callback":true,"write-callback":false,"poll-callback":false,"poll-ready-callback":false,"poll-begin-callback":false,"poll-end-callback":false,"active-callbacks":0},{"handler-id":3,"context-id":4,"fd":5,"deleted":true,"read-callback":false,"write-callback":true,"poll-callback":true,"poll-ready-callback":true,"poll-begin-callback":true,"poll-end-callback":true,"active-callbacks":2}]}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let inventory = client.query_hot_fork_aio_handler_inventory()?;
+    assert_eq!(inventory.generation(), 9);
+    assert!(inventory.complete());
+    assert!(!inventory.overflowed());
+    assert_eq!(inventory.handlers().len(), 2);
+    assert_eq!(inventory.handlers()[0].handler_id(), 1);
+    assert_eq!(inventory.handlers()[0].context_id(), 4);
+    assert_eq!(inventory.handlers()[0].descriptor(), 3);
+    assert!(inventory.handlers()[0].read_callback());
+    assert!(!inventory.handlers()[0].deleted());
+    assert_eq!(inventory.handlers()[1].handler_id(), 3);
+    assert_eq!(inventory.handlers()[1].descriptor(), 5);
+    assert!(inventory.handlers()[1].write_callback());
+    assert!(inventory.handlers()[1].poll_callback());
+    assert!(inventory.handlers()[1].poll_ready_callback());
+    assert!(inventory.handlers()[1].poll_begin_callback());
+    assert!(inventory.handlers()[1].poll_end_callback());
+    assert!(inventory.handlers()[1].deleted());
+    assert_eq!(inventory.handlers()[1].active_callbacks(), 2);
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    assert_eq!(
+        oob_execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND)
+    );
+    Ok(())
+}
+
+#[test]
+fn hot_fork_aio_handler_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn Error>> {
+    for response in [
+        r#"{"return":{"schema-version":2,"generation":1,"complete":true,"overflowed":false,"handler-count":0,"read-handlers":0,"write-handlers":0,"poll-handlers":0,"deleted-handlers":0,"active-callbacks":0,"handlers":[]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"handler-count":2,"read-handlers":1,"write-handlers":0,"poll-handlers":0,"deleted-handlers":0,"active-callbacks":0,"handlers":[{"handler-id":1,"context-id":1,"fd":3,"deleted":false,"read-callback":true,"write-callback":false,"poll-callback":false,"poll-ready-callback":false,"poll-begin-callback":false,"poll-end-callback":false,"active-callbacks":0}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"handler-count":2,"read-handlers":2,"write-handlers":0,"poll-handlers":0,"deleted-handlers":0,"active-callbacks":0,"handlers":[{"handler-id":2,"context-id":1,"fd":3,"deleted":false,"read-callback":true,"write-callback":false,"poll-callback":false,"poll-ready-callback":false,"poll-begin-callback":false,"poll-end-callback":false,"active-callbacks":0},{"handler-id":1,"context-id":1,"fd":4,"deleted":false,"read-callback":true,"write-callback":false,"poll-callback":false,"poll-ready-callback":false,"poll-begin-callback":false,"poll-end-callback":false,"active-callbacks":0}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"handler-count":1,"read-handlers":1,"write-handlers":0,"poll-handlers":0,"deleted-handlers":0,"active-callbacks":0,"handlers":[{"handler-id":1,"context-id":0,"fd":3,"deleted":false,"read-callback":true,"write-callback":false,"poll-callback":false,"poll-ready-callback":false,"poll-begin-callback":false,"poll-end-callback":false,"active-callbacks":0}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"handler-count":1,"read-handlers":1,"write-handlers":0,"poll-handlers":0,"deleted-handlers":0,"active-callbacks":0,"handlers":[{"handler-id":1,"context-id":1,"fd":-1,"deleted":false,"read-callback":true,"write-callback":false,"poll-callback":false,"poll-ready-callback":false,"poll-begin-callback":false,"poll-end-callback":false,"active-callbacks":0}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"handler-count":1,"read-handlers":0,"write-handlers":0,"poll-handlers":0,"deleted-handlers":0,"active-callbacks":0,"handlers":[{"handler-id":1,"context-id":1,"fd":3,"deleted":false,"read-callback":false,"write-callback":false,"poll-callback":false,"poll-ready-callback":true,"poll-begin-callback":false,"poll-end-callback":false,"active-callbacks":0}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"handler-count":1,"read-handlers":1,"write-handlers":0,"poll-handlers":0,"deleted-handlers":0,"active-callbacks":1,"handlers":[{"handler-id":1,"context-id":1,"fd":3,"deleted":false,"read-callback":true,"write-callback":false,"poll-callback":false,"poll-ready-callback":false,"poll-begin-callback":false,"poll-end-callback":false,"active-callbacks":0}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":false,"overflowed":false,"handler-count":0,"read-handlers":0,"write-handlers":0,"poll-handlers":0,"deleted-handlers":0,"active-callbacks":0,"handlers":[]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":false,"overflowed":true,"handler-count":0,"read-handlers":0,"write-handlers":0,"poll-handlers":0,"deleted-handlers":0,"active-callbacks":0,"handlers":[],"extra":0}}"#,
+    ] {
+        let mut client = QmpClient::connect(scripted_qmp([
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            response,
+        ]))?;
+        assert!(matches!(
+            client.query_hot_fork_aio_handler_inventory(),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::QueryHotForkAioHandlerInventory,
                 ..
             })
         ));

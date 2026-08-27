@@ -555,6 +555,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0121-crucible-hot-fork-aio-handler-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

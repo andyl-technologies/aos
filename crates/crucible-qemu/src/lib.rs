@@ -264,7 +264,8 @@ pub use production_fault_runtime::{
 pub use production_fault_sink::ProductionFaultActionSink;
 pub use qmp::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_CONT_COMMAND,
-    QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QMP_GREETING_TIMEOUT, QMP_HOT_FORK_AIO_INVENTORY_MAX,
+    QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QMP_GREETING_TIMEOUT, QMP_HOT_FORK_AIO_HANDLER_INVENTORY_MAX,
+    QMP_HOT_FORK_AIO_HANDLER_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_AIO_INVENTORY_MAX,
     QMP_HOT_FORK_AIO_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX,
     QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES,
     QMP_HOT_FORK_MUTEX_INVENTORY_MAX, QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION,
@@ -273,7 +274,8 @@ pub use qmp::{
     QMP_HOT_FORK_THREAD_INVENTORY_MAX, QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_THREAD_NAME_MAX_BYTES, QMP_HOT_FORK_TIMER_INVENTORY_MAX,
     QMP_HOT_FORK_TIMER_INVENTORY_SCHEMA_VERSION, QMP_JOB_DISMISS_COMMAND, QMP_JOB_QUERY_INTERVAL,
-    QMP_JOB_QUERY_LIMIT, QMP_QUERY_CPUS_FAST_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
+    QMP_JOB_QUERY_LIMIT, QMP_QUERY_CPUS_FAST_COMMAND,
+    QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_READINESS_COMMAND,
     QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
@@ -281,12 +283,12 @@ pub use qmp::{
     QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
     QMP_SNAPSHOT_VMSTATE_DEVICE, QMP_STOP_COMMAND, QemuQmpVmStateControlChannel, QmpClient,
     QmpCommandComplete, QmpCommandKind, QmpCpuTopology, QmpError, QmpGreeting,
-    QmpHotForkAioContext, QmpHotForkAioInventory, QmpHotForkBottomHalf,
-    QmpHotForkBottomHalfInventory, QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkProof,
-    QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness, QmpHotForkThread,
-    QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock,
-    QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunState, QmpRunStateKind,
-    QmpSnapshotTag, QmpTimeoutStream,
+    QmpHotForkAioContext, QmpHotForkAioHandler, QmpHotForkAioHandlerInventory,
+    QmpHotForkAioInventory, QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory, QmpHotForkMutex,
+    QmpHotForkMutexInventory, QmpHotForkProof, QmpHotForkRcuInventory, QmpHotForkRcuReader,
+    QmpHotForkReadiness, QmpHotForkThread, QmpHotForkThreadDisposition, QmpHotForkThreadInventory,
+    QmpHotForkTimer, QmpHotForkTimerClock, QmpHotForkTimerInventory, QmpIoTimeoutPolicy,
+    QmpJobPollPolicy, QmpRunState, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 pub use quantum::{
     QemuDeviceIoFreezeObservation, QemuDeviceIoFreezeReport, QemuInboundFrame, QemuOutboundFrame,

@@ -15,9 +15,10 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::{
-    QemuNodeChannelError, QemuNodeError, QemuProcessIdentity, QmpHotForkAioInventory,
-    QmpHotForkBottomHalfInventory, QmpHotForkMutexInventory, QmpHotForkRcuInventory,
-    QmpHotForkReadiness, QmpHotForkThreadInventory, QmpHotForkTimerInventory,
+    QemuNodeChannelError, QemuNodeError, QemuProcessIdentity, QmpHotForkAioHandlerInventory,
+    QmpHotForkAioInventory, QmpHotForkBottomHalfInventory, QmpHotForkMutexInventory,
+    QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkThreadInventory,
+    QmpHotForkTimerInventory,
 };
 
 /// Maximum threads, descriptors, or mappings retained by one audit.
@@ -158,17 +159,23 @@ pub(crate) struct QemuHotForkQmpInventory {
     threads: QmpHotForkThreadInventory,
     rcu: QmpHotForkRcuInventory,
     aio: QmpHotForkAioInventory,
+    aio_handlers: QmpHotForkAioHandlerInventory,
     bottom_halves: QmpHotForkBottomHalfInventory,
     mutexes: QmpHotForkMutexInventory,
     timers: QmpHotForkTimerInventory,
 }
 
 impl QemuHotForkQmpInventory {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the constructor preserves the one-to-one order of the eight exact QMP inventories"
+    )]
     pub(crate) const fn new(
         readiness: QmpHotForkReadiness,
         threads: QmpHotForkThreadInventory,
         rcu: QmpHotForkRcuInventory,
         aio: QmpHotForkAioInventory,
+        aio_handlers: QmpHotForkAioHandlerInventory,
         bottom_halves: QmpHotForkBottomHalfInventory,
         mutexes: QmpHotForkMutexInventory,
         timers: QmpHotForkTimerInventory,
@@ -178,6 +185,7 @@ impl QemuHotForkQmpInventory {
             threads,
             rcu,
             aio,
+            aio_handlers,
             bottom_halves,
             mutexes,
             timers,
@@ -192,6 +200,7 @@ pub struct QemuHotForkAudit {
     qemu_threads: QmpHotForkThreadInventory,
     qemu_rcu: QmpHotForkRcuInventory,
     qemu_aio: QmpHotForkAioInventory,
+    qemu_aio_handlers: QmpHotForkAioHandlerInventory,
     qemu_bottom_halves: QmpHotForkBottomHalfInventory,
     qemu_mutexes: QmpHotForkMutexInventory,
     qemu_timers: QmpHotForkTimerInventory,
@@ -209,6 +218,7 @@ impl QemuHotForkAudit {
             threads: qemu_threads,
             rcu: qemu_rcu,
             aio: qemu_aio,
+            aio_handlers: qemu_aio_handlers,
             bottom_halves: qemu_bottom_halves,
             mutexes: qemu_mutexes,
             timers: qemu_timers,
@@ -222,6 +232,9 @@ impl QemuHotForkAudit {
         }
         if !qemu_aio.complete() {
             return Err(QemuHotForkAuditError::AioInventoryIncomplete);
+        }
+        if !qemu_aio_handlers.complete() {
+            return Err(QemuHotForkAuditError::AioHandlerInventoryIncomplete);
         }
         if !qemu_mutexes.complete() {
             return Err(QemuHotForkAuditError::MutexInventoryIncomplete);
@@ -298,6 +311,29 @@ impl QemuHotForkAudit {
                 });
             }
         }
+        for handler in qemu_aio_handlers.handlers() {
+            if qemu_aio
+                .contexts()
+                .binary_search_by_key(&handler.context_id(), |context| context.context_id())
+                .is_err()
+            {
+                return Err(QemuHotForkAuditError::AioHandlerContextMissing {
+                    handler_id: handler.handler_id(),
+                    context_id: handler.context_id(),
+                });
+            }
+            if !handler.deleted()
+                && process
+                    .descriptors()
+                    .binary_search_by_key(&handler.descriptor(), |entry| entry.descriptor())
+                    .is_err()
+            {
+                return Err(QemuHotForkAuditError::AioHandlerDescriptorMissing {
+                    handler_id: handler.handler_id(),
+                    descriptor: handler.descriptor(),
+                });
+            }
+        }
         for mutex in qemu_mutexes.mutexes() {
             let Some(owner_thread_id) = mutex.owner_thread_id() else {
                 continue;
@@ -318,6 +354,7 @@ impl QemuHotForkAudit {
             qemu_threads,
             qemu_rcu,
             qemu_aio,
+            qemu_aio_handlers,
             qemu_bottom_halves,
             qemu_mutexes,
             qemu_timers,
@@ -348,6 +385,12 @@ impl QemuHotForkAudit {
     #[must_use]
     pub const fn qemu_aio(&self) -> &QmpHotForkAioInventory {
         &self.qemu_aio
+    }
+
+    /// Returns QEMU's matching bounded allocated-AIO-handler inventory.
+    #[must_use]
+    pub const fn qemu_aio_handlers(&self) -> &QmpHotForkAioHandlerInventory {
+        &self.qemu_aio_handlers
     }
 
     /// Returns QEMU's matching bounded allocated-bottom-half inventory.
@@ -402,6 +445,9 @@ pub enum QemuHotForkAuditError {
     /// The QEMU-owned AioContext inventory query failed.
     #[error("QEMU hot-fork AioContext inventory query failed")]
     AioInventory(#[source] QemuNodeChannelError),
+    /// The QEMU-owned allocated-AIO-handler inventory query failed.
+    #[error("QEMU hot-fork AIO-handler inventory query failed")]
+    AioHandlerInventory(#[source] QemuNodeChannelError),
     /// The QEMU-owned allocated-bottom-half inventory query failed.
     #[error("QEMU hot-fork bottom-half inventory query failed")]
     BottomHalfInventory(#[source] QemuNodeChannelError),
@@ -426,6 +472,9 @@ pub enum QemuHotForkAuditError {
     /// QEMU's observational AioContext inventory changed around procfs capture.
     #[error("QEMU hot-fork AioContext inventory changed during process inventory")]
     AioInventoryChanged,
+    /// QEMU's observational AIO-handler inventory changed around procfs capture.
+    #[error("QEMU hot-fork AIO-handler inventory changed during process inventory")]
+    AioHandlerInventoryChanged,
     /// QEMU's observational bottom-half inventory changed around procfs capture.
     #[error("QEMU hot-fork bottom-half inventory changed during process inventory")]
     BottomHalfInventoryChanged,
@@ -447,6 +496,9 @@ pub enum QemuHotForkAuditError {
     /// QEMU could not report every AioContext with structurally valid state.
     #[error("QEMU hot-fork AioContext inventory is incomplete")]
     AioInventoryIncomplete,
+    /// QEMU could not report every allocated AIO handler with valid state.
+    #[error("QEMU hot-fork AIO-handler inventory is incomplete")]
+    AioHandlerInventoryIncomplete,
     /// QEMU could not report every live timer with structurally valid state.
     #[error("QEMU hot-fork live-timer inventory is incomplete")]
     TimerInventoryIncomplete,
@@ -474,6 +526,22 @@ pub enum QemuHotForkAuditError {
         context_id: u64,
         /// Missing operating-system home-thread identifier.
         thread_id: u32,
+    },
+    /// An allocated AIO handler named an absent AioContext.
+    #[error("QEMU AIO handler {handler_id} names absent AioContext {context_id}")]
+    AioHandlerContextMissing {
+        /// Process-local AIO-handler identifier.
+        handler_id: u64,
+        /// Missing process-local AioContext identifier.
+        context_id: u64,
+    },
+    /// A live AIO handler named a descriptor absent from the process inventory.
+    #[error("QEMU AIO handler {handler_id} names absent descriptor {descriptor}")]
+    AioHandlerDescriptorMissing {
+        /// Process-local AIO-handler identifier.
+        handler_id: u64,
+        /// Missing process-local descriptor number.
+        descriptor: u32,
     },
     /// An allocated bottom half named an absent AioContext.
     #[error("QEMU bottom half {bottom_half_id} names absent AioContext {context_id}")]
@@ -913,7 +981,20 @@ mod tests {
         mutexes: QmpHotForkMutexInventory,
         timers: QmpHotForkTimerInventory,
     ) -> QemuHotForkQmpInventory {
-        QemuHotForkQmpInventory::new(readiness, threads, rcu, aio, bottom_halves, mutexes, timers)
+        let context_id = aio
+            .contexts()
+            .first()
+            .map_or(1, |context| context.context_id());
+        QemuHotForkQmpInventory::new(
+            readiness,
+            threads,
+            rcu,
+            aio,
+            QmpHotForkAioHandlerInventory::one_read(1, context_id, 3),
+            bottom_halves,
+            mutexes,
+            timers,
+        )
     }
 
     #[test]
@@ -1019,7 +1100,10 @@ mod tests {
                     name: b"external".to_vec(),
                 },
             ],
-            descriptors: Vec::new(),
+            descriptors: vec![QemuHotForkDescriptorInventory {
+                descriptor: 3,
+                target: b"anon_inode:[eventfd]".to_vec(),
+            }],
             mappings: Vec::new(),
             retained_bytes: 26,
         };
@@ -1088,6 +1172,21 @@ mod tests {
             Err(QemuHotForkAuditError::AioInventoryIncomplete)
         ));
 
+        let mut incomplete_handlers = qmp_inventory(
+            readiness,
+            QmpHotForkThreadInventory::one_coordinator(10),
+            QmpHotForkRcuInventory::from_reader_ids(&[10]),
+            QmpHotForkAioInventory::one_idle(1, 10),
+            QmpHotForkBottomHalfInventory::one_idle(1, 1),
+            QmpHotForkMutexInventory::one_owned(1, 10),
+            QmpHotForkTimerInventory::empty(),
+        );
+        incomplete_handlers.aio_handlers = QmpHotForkAioHandlerInventory::incomplete();
+        assert!(matches!(
+            QemuHotForkAudit::new(incomplete_handlers, process.clone()),
+            Err(QemuHotForkAuditError::AioHandlerInventoryIncomplete)
+        ));
+
         assert!(matches!(
             QemuHotForkAudit::new(
                 qmp_inventory(
@@ -1152,6 +1251,42 @@ mod tests {
             Err(QemuHotForkAuditError::BottomHalfContextMissing {
                 bottom_half_id: 9,
                 context_id: 2,
+            })
+        ));
+
+        let mut missing_handler_context = qmp_inventory(
+            readiness,
+            QmpHotForkThreadInventory::one_coordinator(10),
+            QmpHotForkRcuInventory::from_reader_ids(&[10]),
+            QmpHotForkAioInventory::one_idle(1, 10),
+            QmpHotForkBottomHalfInventory::one_idle(1, 1),
+            QmpHotForkMutexInventory::one_owned(1, 10),
+            QmpHotForkTimerInventory::empty(),
+        );
+        missing_handler_context.aio_handlers = QmpHotForkAioHandlerInventory::one_read(9, 2, 3);
+        assert!(matches!(
+            QemuHotForkAudit::new(missing_handler_context, process.clone()),
+            Err(QemuHotForkAuditError::AioHandlerContextMissing {
+                handler_id: 9,
+                context_id: 2,
+            })
+        ));
+
+        let mut missing_handler_descriptor = qmp_inventory(
+            readiness,
+            QmpHotForkThreadInventory::one_coordinator(10),
+            QmpHotForkRcuInventory::from_reader_ids(&[10]),
+            QmpHotForkAioInventory::one_idle(1, 10),
+            QmpHotForkBottomHalfInventory::one_idle(1, 1),
+            QmpHotForkMutexInventory::one_owned(1, 10),
+            QmpHotForkTimerInventory::empty(),
+        );
+        missing_handler_descriptor.aio_handlers = QmpHotForkAioHandlerInventory::one_read(9, 1, 4);
+        assert!(matches!(
+            QemuHotForkAudit::new(missing_handler_descriptor, process.clone()),
+            Err(QemuHotForkAuditError::AioHandlerDescriptorMissing {
+                handler_id: 9,
+                descriptor: 4,
             })
         ));
 
