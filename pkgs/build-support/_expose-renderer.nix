@@ -1299,18 +1299,23 @@ in rec {
     );
     readWriteHostPaths =
       builtins.map (hostPath: hostPath.path) rwHostPaths;
-    stateDirectoryNamesForUnit = unit: let
+    serviceDirectoryNamesForUnit = option: fallback: unit: let
       authoredServiceConfig = unit.serviceConfig or {};
-      values = asList (authoredServiceConfig.StateDirectory or "aos-pkg-${packageName}");
+      values = asList (authoredServiceConfig.${option} or fallback);
     in
       builtins.filter (name: name != "") (
         lib.concatMap (value: lib.splitString " " value) values
       );
-    stateDirectoryPaths = uniqueUnits (
+    serviceDirectoryPathsForUnit = unit:
+      builtins.map (name: "/var/lib/${name}") (serviceDirectoryNamesForUnit "StateDirectory" "aos-pkg-${packageName}" unit)
+      ++ builtins.map (name: "/run/${name}") (serviceDirectoryNamesForUnit "RuntimeDirectory" [] unit)
+      ++ builtins.map (name: "/var/cache/${name}") (serviceDirectoryNamesForUnit "CacheDirectory" [] unit)
+      ++ builtins.map (name: "/var/log/${name}") (serviceDirectoryNamesForUnit "LogsDirectory" [] unit);
+    serviceDirectoryPaths = uniqueUnits (
       lib.concatMap (
         unitName:
           if lib.hasSuffix ".service" unitName
-          then builtins.map (name: "/var/lib/${name}") (stateDirectoryNamesForUnit units.${unitName})
+          then serviceDirectoryPathsForUnit units.${unitName}
           else []
       )
       (builtins.attrNames units)
@@ -1319,7 +1324,7 @@ in rec {
       if landlockFsEnabled
       then
         uniqueUnits (
-          landlockDefaultReadWritePaths ++ stateDirectoryPaths ++ readWriteHostPaths
+          landlockDefaultReadWritePaths ++ serviceDirectoryPaths ++ readWriteHostPaths
         )
       else [];
     landlockReadOnlyPaths =

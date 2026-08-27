@@ -142,11 +142,19 @@ in
               echo "optional nginx TLS credentials must not become unconditional static unit bindings" >&2
               exit 1
             fi
+            grep -qx 'LogsDirectory=nginx' "$nginxExpose/units/nginx.service"
+            grep -qx 'LogsDirectoryMode=0750' "$nginxExpose/units/nginx.service"
+            grep -q -- '--fs-rw /run/nginx' "$nginxExpose/units/nginx.service"
+            grep -q -- '--fs-rw /var/log/nginx' "$nginxExpose/units/nginx.service"
+            grep -q '"readWrite":\["/tmp","/var/tmp","/dev/null","/var/lib/aos-pkg-nginx","/run/nginx","/var/log/nginx"\]' \
+              "$nginxExpose/network-policy.json"
 
             mkdir -p "$TMPDIR/state"
+            mkdir -p "$TMPDIR/log"
             sed \
               -e "s#pid /run/nginx/nginx.pid;#pid $TMPDIR/nginx.pid;#" \
               -e "s#/var/lib/aos-pkg-nginx#$TMPDIR/state#g" \
+              -e "s#/var/log/nginx#$TMPDIR/log#g" \
               ${renderedFile}/nginx.conf > "$TMPDIR/nginx.conf"
             ${pkgs.nginx}/bin/nginx -t -c "$TMPDIR/nginx.conf"
             mkdir -p "$out"

@@ -296,7 +296,7 @@
     };
       access_log ${
       if cfg.accessLog
-      then "/dev/stdout"
+      then "/var/log/nginx/access.log"
       else "off"
     };
       client_body_temp_path /var/lib/aos-pkg-nginx/client_body;
@@ -340,7 +340,7 @@ in {
     accessLog = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Write the HTTP access log to the service journal.";
+      description = "Write the HTTP access log to nginx's managed log directory.";
     };
     upstreams = lib.mkOption {
       type = lib.types.attrsOf upstreamType;
