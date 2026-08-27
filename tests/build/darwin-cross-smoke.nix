@@ -272,6 +272,13 @@
             "$CC" coreservices-smoke.c -framework CoreServices \
               -o "$c/bin/aos-darwin-coreservices-smoke"
 
+            # OpenJDK's libnet links the documented CoreServices umbrella,
+            # whose CFNetwork import must also carry the framework reexport.
+            "$CC" ${./darwin-coreservices-cfnetwork-smoke.c} \
+              -framework CoreFoundation \
+              -framework CoreServices \
+              -o "$c/bin/aos-darwin-coreservices-cfnetwork-smoke"
+
             # Match Clang's plugin topology: a dylib records the versioned
             # CoreServices install name, then a flat-namespace bundle links
             # that dylib and makes ld64 follow the transitive framework edge.
