@@ -10,7 +10,7 @@ shape-line|crates/crucible-api/src/rpc_abi.rs|812
 shape-line|crates/crucible-api/src/server.rs|2930
 shape-line|crates/crucible-api/src/streaming.rs|1252
 shape-line|crates/crucible-api/src/vm_lifecycle.rs|1562
-shape-line|crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs|2121
+shape-line|crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs|1901
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults.rs|2786
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/boundary.rs|1841
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/route.rs|1215

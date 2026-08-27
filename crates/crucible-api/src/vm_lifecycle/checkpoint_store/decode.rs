@@ -1,7 +1,7 @@
 //! Fallible owned decoding for exact-checkpoint CBOR envelopes.
 
 use super::*;
-use serde::de::{SeqAccess, Visitor};
+use serde::de::{DeserializeOwned, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::cell::Cell;
 use std::fmt;
@@ -35,6 +35,69 @@ thread_local! {
 /// Restores the prior decoder budget when one bounded decode ends.
 pub(super) struct DecodeBudgetGuard {
     prior: Option<DecodeBudget>,
+}
+
+/// Allocation-bounded owned text used by the exact-checkpoint wire structs.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(transparent)]
+pub(super) struct FallibleString(String);
+
+impl FallibleString {
+    /// Wraps controller-owned text for canonical serialization.
+    pub(super) fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    /// Borrows the decoded text.
+    pub(super) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Transfers the decoded text without another allocation.
+    pub(super) fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Display for FallibleString {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::ops::Deref for FallibleString {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+impl<'de> Deserialize<'de> for FallibleString {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct StringVisitor;
+
+        impl Visitor<'_> for StringVisitor {
+            type Value = FallibleString;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("allocation-bounded exact-checkpoint text")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                let requested = u64::try_from(value.len()).unwrap_or(u64::MAX);
+                let current = admit_owned(requested).map_err(E::custom)?;
+                let mut owned = String::new();
+                owned
+                    .try_reserve_exact(value.len())
+                    .map_err(|_| E::custom(resource_message(current, requested)))?;
+                owned.push_str(value);
+                Ok(FallibleString(owned))
+            }
+        }
+
+        deserializer.deserialize_str(StringVisitor)
+    }
 }
 
 impl DecodeBudgetGuard {
@@ -76,11 +139,8 @@ pub(super) fn decode_manifest_with_limits(
         ));
     }
 
-    let _budget = DecodeBudgetGuard::enter(limits);
-    let manifest: ClosureManifest = ciborium::de::from_reader(payload).map_err(|error| {
-        map_decode_resource_error(&error)
-            .unwrap_or_else(|| loop_factory_error("malformed closure manifest"))
-    })?;
+    let manifest: ClosureManifest =
+        decode_cbor_with_limits(payload, limits, "malformed closure manifest")?;
     let canonical =
         encode_manifest(&manifest).map_err(|error| loop_factory_error(error.to_string()))?;
     if canonical != bytes {
@@ -88,6 +148,39 @@ pub(super) fn decode_manifest_with_limits(
     }
     validate_manifest_shape(&manifest).map_err(loop_factory_error)?;
     Ok(manifest)
+}
+
+/// Decodes one admitted CBOR object without Ciborium-owned string growth.
+///
+/// The scratch buffer is bounded by the already-admitted envelope length. Wire
+/// strings then deserialize through [`FallibleString`] and reserve their final
+/// ownership against the same authored byte budget before copying.
+///
+/// # Errors
+///
+/// Returns an exact resource-limit error for envelope, scratch, collection, or
+/// string allocation refusal, and a loop-factory error for malformed CBOR.
+pub(super) fn decode_cbor_with_limits<T: DeserializeOwned>(
+    bytes: &[u8],
+    limits: FaultResourceLimits,
+    malformed: &'static str,
+) -> Result<T, LifecycleApiError> {
+    let requested = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    let hard = FaultResourceLimits::compiled_maximum().fat_checkpoint_bytes;
+    if requested > limits.fat_checkpoint_bytes || requested > hard {
+        return Err(decode_resource_limit(0, requested, limits, hard));
+    }
+
+    let mut scratch = Vec::new();
+    scratch
+        .try_reserve_exact(bytes.len())
+        .map_err(|_| decode_resource_limit(0, requested, limits, hard))?;
+    scratch.resize(bytes.len(), 0);
+
+    let _budget = DecodeBudgetGuard::enter(limits);
+    ciborium::de::from_reader_with_buffer(bytes, &mut scratch).map_err(|error| {
+        map_decode_resource_error(&error).unwrap_or_else(|| loop_factory_error(malformed))
+    })
 }
 
 /// Deserializes one definite sequence through explicit resource admission.
@@ -208,6 +301,21 @@ fn resource_message(current: u64, requested: u64) -> String {
     })
 }
 
+fn decode_resource_limit(
+    current: u64,
+    requested: u64,
+    limits: FaultResourceLimits,
+    hard: u64,
+) -> LifecycleApiError {
+    LifecycleApiError::ResourceLimit(crate::LifecycleResourceLimit {
+        field: "fat_checkpoint_bytes",
+        current,
+        requested,
+        configured: limits.fat_checkpoint_bytes,
+        hard,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +329,9 @@ mod tests {
             Ok(Self)
         }
     }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct FallibleStringVector(#[serde(deserialize_with = "deserialize_vec")] Vec<FallibleString>);
 
     #[test]
     fn hostile_sequence_length_hint_is_rejected_before_owned_allocation() {
@@ -248,6 +359,70 @@ mod tests {
                 hard,
             })) if hard == FaultResourceLimits::compiled_maximum().fat_checkpoint_bytes
         ));
+    }
+
+    #[test]
+    fn nested_string_is_admitted_before_owned_copy_with_exact_coordinates() {
+        let vector_bytes = u64::try_from(mem::size_of::<FallibleString>())
+            .unwrap_or_else(|_| panic!("fallible string size is representable"));
+        let configured = vector_bytes + 8;
+        let limits = FaultResourceLimits {
+            fat_checkpoint_bytes: configured,
+            ..FaultResourceLimits::default()
+        };
+        let bytes = [
+            0x81, 0x69, b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8',
+        ];
+
+        let error = match decode_cbor_with_limits::<FallibleStringVector>(
+            &bytes,
+            limits,
+            "decode string fixture",
+        ) {
+            Ok(_) => panic!("the vector slot plus nested string must exceed the owned budget"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            LifecycleApiError::ResourceLimit(crate::LifecycleResourceLimit {
+                field: "fat_checkpoint_bytes",
+                current,
+                requested: 9,
+                configured: observed_configured,
+                hard,
+            }) if current == vector_bytes
+                && observed_configured == configured
+                && hard == FaultResourceLimits::compiled_maximum().fat_checkpoint_bytes
+        ));
+    }
+
+    #[test]
+    fn string_larger_than_default_cbor_scratch_round_trips_canonically() {
+        let model = vec!["x".repeat(5_000)];
+        let original =
+            FallibleStringVector(model.iter().cloned().map(FallibleString::new).collect());
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&original, &mut bytes)
+            .unwrap_or_else(|error| panic!("encode long checkpoint string: {error}"));
+        let mut model_bytes = Vec::new();
+        ciborium::ser::into_writer(&model, &mut model_bytes)
+            .unwrap_or_else(|error| panic!("encode model checkpoint string: {error}"));
+        assert_eq!(bytes, model_bytes);
+        let limits = FaultResourceLimits {
+            fat_checkpoint_bytes: 16_384,
+            ..FaultResourceLimits::default()
+        };
+
+        let decoded: FallibleStringVector =
+            decode_cbor_with_limits(&bytes, limits, "decode long checkpoint string")
+                .unwrap_or_else(|error| panic!("decode long checkpoint string: {error}"));
+        let mut canonical = Vec::new();
+        ciborium::ser::into_writer(&decoded, &mut canonical)
+            .unwrap_or_else(|error| panic!("re-encode long checkpoint string: {error}"));
+
+        assert_eq!(decoded.0[0].as_str().len(), 5_000);
+        assert_eq!(canonical, bytes);
     }
 
     #[test]

@@ -466,6 +466,24 @@ in
           run_exact_api_test \
             vm_lifecycle::checkpoint_store::decode::tests::production_manifest_decode_rejects_hostile_target_length_before_elements
           run_exact_api_test \
+            vm_lifecycle::checkpoint_store::decode::tests::nested_string_is_admitted_before_owned_copy_with_exact_coordinates
+          run_exact_api_test \
+            vm_lifecycle::checkpoint_store::decode::tests::string_larger_than_default_cbor_scratch_round_trips_canonically
+          run_exact_api_test \
+            vm_lifecycle::checkpoint_store::decision_wire::tests::fallible_decision_wire_preserves_canonical_bytes_and_nested_text
+          grep -Fq 'node: decode::FallibleString' \
+            crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs
+          grep -Fq 'node_generations: Vec<(decode::FallibleString, u64)>' \
+            crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs
+          grep -Fq 'node_times: Vec<(decode::FallibleString, u64)>' \
+            crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs
+          grep -Fq 'decisions: Vec<decision_wire::DecisionWire>' \
+            crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs
+          grep -Fq 'decode_cbor_with_limits(payload, limits, "malformed closure manifest")' \
+            crates/crucible-api/src/vm_lifecycle/checkpoint_store/decode.rs
+          grep -Fq 'decode::decode_cbor_with_limits(bytes, limits, "decode exact lifecycle continuation")' \
+            crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs
+          run_exact_api_test \
             vm_lifecycle::checkpoint_recovery::tests::fresh_process_removes_only_abandoned_checkpoint_staging
           run_exact_api_test \
             vm_lifecycle::storage_faults::tests::ambiguous_shared_ninep_commit_poisons_runtime_before_return
@@ -1073,6 +1091,7 @@ in
           causal_storage_production_effect_count=20
           causal_storage_production_effect_artifact=evidence/causal-storage-production-effects.txt
           plugin_completed_history_limits=authored-required-predecode-admission
+          checkpoint_owned_decode=fallible-text-and-decision-wire
           causal_node_production_effect_count=20
           causal_node_production_effect_artifact=evidence/causal-node-production-effects.txt
           executable_taxonomy_rows=226
