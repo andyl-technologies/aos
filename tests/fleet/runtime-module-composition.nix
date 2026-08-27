@@ -92,6 +92,7 @@ in {
       CURL = "${pkgs.curl}/bin/curl"
       JQ = "${pkgs.jq}/bin/jq"
       SHA256SUM = "${pkgs.coreutils}/bin/sha256sum"
+      XDG_CACHE_HOME = "/var/cache/aos-runtime-module-test"
 
 
       def wait_for_activation():
@@ -122,7 +123,8 @@ in {
       def apply_worktree(eval_root, dry_run=False):
           dry_run_flag = " --dry-run" if dry_run else ""
           runtime.succeed(
-              f"{APM} config apply{dry_run_flag} --eval-root '{eval_root}'",
+              f"XDG_CACHE_HOME={XDG_CACHE_HOME} {APM} config apply{dry_run_flag} "
+              f"--eval-root '{eval_root}'",
               timeout=600,
           )
 
@@ -180,6 +182,7 @@ in {
 
       wait_for_activation()
       runtime.succeed("systemctl is-active --quiet multi-user.target")
+      runtime.succeed(f"install -d -m 0700 {XDG_CACHE_HOME}")
       platform_hash = runtime.succeed(
           f"{SHA256SUM} /run/aos-metadata/host.nix"
       ).split()[0]
@@ -348,7 +351,8 @@ in {
       # `diff` and `apply --dry-run` use the same full fixpoint as activation
       # but must leave both the current pointer and live files untouched.
       runtime.succeed(
-          f"{APM} config diff --eval-root /run/runtime-module-composition-diff",
+          f"XDG_CACHE_HOME={XDG_CACHE_HOME} {APM} config diff "
+          "--eval-root /run/runtime-module-composition-diff",
           timeout=600,
       )
       apply_worktree("/run/runtime-module-composition-dry-run", dry_run=True)
@@ -390,7 +394,8 @@ in {
       # no-op generation to prove all three input identities survive.
       previous_configured = configured
       runtime.succeed(
-          f"{APM} switch --eval-root /run/runtime-module-composition-no-op",
+          f"XDG_CACHE_HOME={XDG_CACHE_HOME} {APM} switch "
+          "--eval-root /run/runtime-module-composition-no-op",
           timeout=600,
       )
       configured = current_generation()
@@ -423,7 +428,7 @@ in {
       )
       runtime.succeed(textwrap.dedent(f"""
           set -eu
-          if {APM} config apply \\
+          if XDG_CACHE_HOME={XDG_CACHE_HOME} {APM} config apply \\
             --eval-root /run/runtime-module-composition-invalid \\
             >/run/runtime-module-composition-invalid.out 2>&1; then
             echo 'invalid runtime module candidate unexpectedly succeeded' >&2
