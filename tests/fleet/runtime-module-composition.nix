@@ -249,31 +249,6 @@ in {
             --registry runtime-reg \
             --key-id release
 
-          mkdir -p "$HOME/.local/share/apm/remote"
-          cp -a "$HOME/.local/share/apm/registries/runtime-reg" \
-            "$HOME/.local/share/apm/remote/runtime-reg"
-          cat > "$HOME/.config/apm/registries.d/runtime-reg.toml" <<'EOF'
-          [registry]
-          name = "runtime-reg"
-          url = "file:///tmp/runtime-publisher/.local/share/apm/registries/runtime-reg"
-          priority = 500
-          enabled = true
-
-          [registry.signing]
-          required = false
-          EOF
-
-          {APM} install nginx --registry runtime-reg --yes
-
-          cat > "$HOME/.config/apm/registries.d/runtime-reg.toml" <<EOF
-          [registry]
-          name = "runtime-reg"
-          url = "file://$HOME/.local/share/apm/registries/runtime-reg"
-
-          [registry.signing_keys]
-          release = "$KEY"
-          EOF
-
           REG_DIR=$HOME/.local/share/apm/registries/runtime-reg
           mkdir -p /var/lib/runtime-module-registry-cache
           {APR} release 1.0.0 \
@@ -290,9 +265,12 @@ in {
           HOME=/tmp USER=root {APM} update \
             --system --registry runtime-reg
 
+          HOME=/tmp USER=root {APM} install nginx \
+            --system --registry runtime-reg --yes
+
       """), timeout=1200)
       installed = runtime.succeed(
-          f"HOME=/tmp/runtime-publisher USER=root {APM} list --installed 2>&1"
+          f"HOME=/tmp USER=root {APM} list --system --installed 2>&1"
       )
       assert "nginx" in installed, installed
 
