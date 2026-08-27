@@ -172,7 +172,11 @@ those bytes enlarge the fixed-output dependency closure and require needless
 network policy exceptions. When a pinned Git repository has a commit-identical
 official mirror on an already-used origin, prefer that mirror and verify the
 exact commit before changing the recipe. Keep fork-only commits on their
-canonical origin rather than substituting an unaffiliated mirror.
+canonical origin rather than substituting an unaffiliated mirror. Apply the
+same rule to release archives: when one upstream owns multiple official
+hostnames, verify that the pinned payloads are byte-identical and select the
+hostname already used by the dependency closure instead of widening its
+network-origin set.
 
 ## Expose the runtime interface
 
