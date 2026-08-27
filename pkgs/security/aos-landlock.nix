@@ -41,12 +41,19 @@ mkDerivation {
         echo "aos-landlock max ABI: $abi"
 
         mkdir -p /tmp/aos-landlock-allow /tmp/aos-landlock-deny
+        printf original > /tmp/aos-landlock-exact-file
 
         aos-landlock --require-abi 4 \
           --fs-ro / \
           --fs-rw /tmp/aos-landlock-allow \
           -- ${pkgs.coreutils}/bin/touch /tmp/aos-landlock-allow/ok
         test -f /tmp/aos-landlock-allow/ok
+
+        aos-landlock --require-abi 4 \
+          --fs-ro / \
+          --fs-rw /tmp/aos-landlock-exact-file \
+          -- /bin/sh -c 'printf updated > /tmp/aos-landlock-exact-file'
+        test "$(cat /tmp/aos-landlock-exact-file)" = updated
 
         if aos-landlock --require-abi 4 \
           --fs-ro / \
