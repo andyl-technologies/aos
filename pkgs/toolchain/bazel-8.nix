@@ -61,5 +61,5 @@ in
   mkBazel {
     version = "8.6.0";
     srcHash = "sha256-E6hFhkKbYISxO9UEDXje2ljVIwEhUecefUvgxj3YMfk=";
-    vendorDepsHash = "sha256-A6dxFcUJ7wUEoDW1m60V837KsbB3BUCjNddlwVypUxA=";
+    vendorDepsHash = "sha256-vfJK+o/us+cwar8YVr+7c85qn2Umsx0qUrcUcj7XjeM=";
   }

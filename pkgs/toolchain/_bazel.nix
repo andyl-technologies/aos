@@ -339,6 +339,12 @@
                 rm -f "$out/rules_go~~go_sdk~go_default_sdk/versions.json" 2>/dev/null || true
                 rm -f "$out/bazel-external" 2>/dev/null || true
 
+                # The generated Maven maintenance helper records HTTP proxy
+                # arguments, including ephemeral relay ports, but is not used by
+                # offline consumers of the vendor tree. Remove it so identical
+                # dependencies produce identical fixed-output contents.
+                rm -f "$out/rules_jvm_external~~maven~maven/outdated.sh"
+
                 # Remove files/directories that reference Nix store paths.
                 # FODs must not contain store path references. Marker files from
                 # rules_python and similar repo rules record the build environment
