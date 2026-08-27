@@ -235,6 +235,7 @@ impl ProductionVmLifecycleLoop {
                 Arc::clone(&self.storage_fault_observations),
                 self.source.world().clone(),
                 binding.target.clone(),
+                self.source.plan().fault_signals().resource_limits(),
                 self.icount_shift,
             ))
         });

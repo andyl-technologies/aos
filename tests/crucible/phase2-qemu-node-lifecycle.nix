@@ -5,6 +5,7 @@
   patchName ? "0056-crucible-node-lifecycle-faults.patch",
   attrPath ? "checks.crucible.phase2.qemuNodeLifecycle",
   taskIds ? ["T-QEMU-0056"],
+  dependencies ? [],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
@@ -54,18 +55,20 @@ in
       pname = "crucible-phase2-qemu-node-lifecycle";
       version = "0";
       src = null;
-      buildDeps = [
-        pkgs.binutils
-        pkgs.coreutils
-        pkgs.glib
-        pkgs.glib.dev
-        pkgs.llvm
-        pkgs.pkg-config
-        pkgs.qemu
-        pkgs.jq
-        pkgs.socat
-        qemuPackage
-      ];
+      buildDeps =
+        [
+          pkgs.binutils
+          pkgs.coreutils
+          pkgs.glib
+          pkgs.glib.dev
+          pkgs.llvm
+          pkgs.pkg-config
+          pkgs.qemu
+          pkgs.jq
+          pkgs.socat
+          qemuPackage
+        ]
+        ++ dependencies;
       phases = [
         {
           name = "build-live-fixtures";
@@ -176,7 +179,11 @@ in
             wait_for_socket() {
               socket="$1"
               attempts=0
-              while test "$attempts" -lt 600; do
+              # This is a host-liveness bound only. Aggregate Nix evaluation
+              # can run many hermetic compilers beside this real-QEMU gate, so
+              # leave enough wall time for the guest to receive CPU without
+              # changing its virtual-time or instruction-count contract.
+              while test "$attempts" -lt 3000; do
                 test -S "$socket" && return 0
                 sleep 0.1
                 attempts=$((attempts + 1))
@@ -188,7 +195,7 @@ in
               marker="$1"
               log="$2"
               attempts=0
-              while test "$attempts" -lt 1200; do
+              while test "$attempts" -lt 6000; do
                 grep -Fq "$marker" "$log" && return 0
                 kill -0 "$qemu_pid" 2>/dev/null || return 1
                 sleep 0.1

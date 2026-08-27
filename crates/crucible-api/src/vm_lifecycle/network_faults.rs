@@ -12,9 +12,14 @@ mod lifecycle;
 pub(super) mod ordered_map_entries;
 #[path = "network_faults/ordered_nested_map_entries.rs"]
 mod ordered_nested_map_entries;
+mod resource_limits;
 mod route;
 use evidence::*;
 
+use resource_limits::{
+    admit_network_connection_entry, map_network_resource_limit, network_queue_resource_usage,
+    reserve_network_resource, reserve_network_resource_u64,
+};
 use route::{availability_allows, earliest_wakeup, network_effect_application_error};
 
 use std::collections::BTreeSet;
@@ -24,20 +29,56 @@ use super::*;
 use crucible::model::{
     BindingActionKind, ContentHash, EffectSpecification, FAULT_RUNTIME_STATE_VERSION,
     FaultObjectId, FaultObservation, FaultObservationKind, FaultOpportunity, FaultPhase,
-    NetworkAvailabilityState, NetworkEffectSpecification, NetworkInFlightPolicy,
-    OpportunityPayload, ResolvedBindingAction,
+    FaultResourceLimitError, FaultResourceLimits, NetworkAvailabilityState,
+    NetworkEffectSpecification, NetworkInFlightPolicy, OpportunityPayload, ResolvedBindingAction,
 };
 use crucible::{BackendNetworkOutputInterceptor, SchedulerEventLogAppend};
 
-const HARD_PENDING_NETWORK_FRAMES: usize = 65_536;
-const HARD_PENDING_NETWORK_BYTES: usize = 1_073_741_824;
-const HARD_CONTACT_SERVICE_RESERVATIONS: usize = 262_144;
-const HARD_CONTACT_SERVICE_STATES: usize = 262_144;
-const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 7;
+#[cfg(test)]
+fn record_production_effect_rows(
+    effects: &[crucible::model::EffectKind],
+    case_id: &str,
+    evidence: &str,
+) {
+    use std::io::Write as _;
+
+    let Some(path) = std::env::var_os("CRUCIBLE_NETWORK_PRODUCTION_EFFECT_ROWS") else {
+        return;
+    };
+    let registry = super::fault_implementation::network_effect_implementation_registry()
+        .unwrap_or_else(|error| panic!("production network registry must validate: {error}"));
+    let mut output = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .unwrap_or_else(|error| panic!("open production network evidence output: {error}"));
+    for effect in effects {
+        registry
+            .require_implemented(*effect)
+            .unwrap_or_else(|error| panic!("network effect row must be implemented: {error}"));
+        writeln!(
+            output,
+            "production_effect_row={}|{}|gate:live-network-io|production-host-network-runtime|{}",
+            effect.as_str(),
+            case_id,
+            evidence,
+        )
+        .unwrap_or_else(|error| panic!("write production network evidence row: {error}"));
+    }
+}
+
+const HARD_PENDING_NETWORK_FRAMES: usize =
+    FaultResourceLimits::compiled_maximum().network_queue_frames as usize;
+const HARD_PENDING_NETWORK_BYTES: usize =
+    FaultResourceLimits::compiled_maximum().network_queue_bytes as usize;
+const HARD_CONTACT_SERVICE_ENTRIES: usize =
+    FaultResourceLimits::compiled_maximum().network_contact_entries as usize;
+const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 8;
 
 fn stage_pending_network_output(
     pending: &mut Vec<crucible::BackendNetworkOutput>,
     output: crucible::BackendNetworkOutput,
+    limits: FaultResourceLimits,
 ) -> Result<(), SchedulerError> {
     if output.fault_continuation.protocol_expansion_path().len()
         > crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
@@ -49,38 +90,17 @@ fn stage_pending_network_output(
             ),
         });
     }
-    if pending.len() == HARD_PENDING_NETWORK_FRAMES {
-        return Err(SchedulerError::BoundaryViolation {
-            message: format!(
-                "signal-driven pending network frame count exceeds hard bound {HARD_PENDING_NETWORK_FRAMES}"
-            ),
-        });
-    }
-    let occupied = pending.iter().try_fold(0_usize, |total, queued| {
-        total.checked_add(queued.payload.len())
-    });
-    let required = occupied.and_then(|total| total.checked_add(output.payload.len()));
-    if required.is_none_or(|bytes| bytes > HARD_PENDING_NETWORK_BYTES) {
-        return Err(SchedulerError::BoundaryViolation {
-            message: format!(
-                "signal-driven pending network bytes exceed hard bound {HARD_PENDING_NETWORK_BYTES}"
-            ),
-        });
-    }
+    reserve_network_resource("network_frame_bytes", 0, output.payload.len(), limits)?;
+    reserve_network_resource("network_pending_frames", pending.len(), 1, limits)?;
     pending.push(output);
     Ok(())
 }
 
 fn validate_pending_network_outputs(
     pending: &[crucible::BackendNetworkOutput],
+    limits: FaultResourceLimits,
 ) -> Result<(), SchedulerError> {
-    if pending.len() > HARD_PENDING_NETWORK_FRAMES {
-        return Err(SchedulerError::BoundaryViolation {
-            message: format!(
-                "restored pending network frame count exceeds hard bound {HARD_PENDING_NETWORK_FRAMES}"
-            ),
-        });
-    }
+    reserve_network_resource("network_pending_frames", 0, pending.len(), limits)?;
     if pending.iter().any(|output| {
         output.fault_continuation.protocol_expansion_path().len()
             > crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
@@ -105,21 +125,21 @@ fn validate_pending_network_outputs(
             ),
         });
     }
-    let bytes = pending.iter().try_fold(0_usize, |total, output| {
-        total.checked_add(output.payload.len())
-    });
-    if bytes.is_none_or(|bytes| bytes > HARD_PENDING_NETWORK_BYTES) {
-        return Err(SchedulerError::BoundaryViolation {
-            message: format!(
-                "restored pending network bytes exceed hard bound {HARD_PENDING_NETWORK_BYTES}"
-            ),
-        });
+    for output in pending {
+        reserve_network_resource("network_frame_bytes", 0, output.payload.len(), limits)?;
+        reserve_network_resource(
+            "network_loop_hops",
+            0,
+            output.fault_continuation.forwarding_mutation_path().len(),
+            limits,
+        )?;
     }
     Ok(())
 }
 
 fn validate_network_adapter_checkpoint(
     checkpoint: &NetworkAdapterCheckpoint,
+    limits: FaultResourceLimits,
 ) -> Result<(), SchedulerError> {
     if checkpoint.semantic_version != NETWORK_ADAPTER_CHECKPOINT_VERSION
         || checkpoint.coordinate.is_none() && checkpoint.coordinate_sequence != 0
@@ -137,7 +157,7 @@ fn validate_network_adapter_checkpoint(
         || checkpoint.effect_state.shared_media.len() > 65_536
         || checkpoint.effect_state.backpressure.len() > 65_536
         || checkpoint.effect_state.custody_queues.len() > 65_536
-        || checkpoint.effect_state.contact_services.len() > HARD_CONTACT_SERVICE_STATES
+        || checkpoint.effect_state.contact_services.len() > HARD_CONTACT_SERVICE_ENTRIES
     {
         return Err(SchedulerError::BoundaryViolation {
             message: String::from(
@@ -153,29 +173,29 @@ fn validate_network_adapter_checkpoint(
         .ok_or_else(|| SchedulerError::BoundaryViolation {
             message: String::from("network connection checkpoint count overflowed"),
         })?;
-    if connection_entries > 4_194_304
-        || checkpoint
-            .effect_state
-            .connection_tables
-            .iter()
-            .any(|(key, table)| {
-                key.effect != crucible::model::EffectKind::NetworkConnectionState
-                    || table.len() > 4_194_304
-                    || table.values().any(|entry| {
-                        entry.machine.current.as_str().is_empty()
-                            || entry.machine.pending.len() > 65_536
-                            || entry
-                                .machine
-                                .pending
-                                .iter()
-                                .any(|pending| pending.state.as_str().is_empty())
-                            || entry
-                                .machine
-                                .pending
-                                .windows(2)
-                                .any(|pair| pair[0].commit_nanos > pair[1].commit_nanos)
-                    })
-            })
+    reserve_network_resource("network_connection_entries", 0, connection_entries, limits)?;
+    if checkpoint
+        .effect_state
+        .connection_tables
+        .iter()
+        .any(|(key, table)| {
+            key.effect != crucible::model::EffectKind::NetworkConnectionState
+                || table.len() > 4_194_304
+                || table.values().any(|entry| {
+                    entry.machine.current.as_str().is_empty()
+                        || entry.machine.pending.len() > 65_536
+                        || entry
+                            .machine
+                            .pending
+                            .iter()
+                            .any(|pending| pending.state.as_str().is_empty())
+                        || entry
+                            .machine
+                            .pending
+                            .windows(2)
+                            .any(|pair| pair[0].commit_nanos > pair[1].commit_nanos)
+                })
+        })
     {
         return Err(SchedulerError::BoundaryViolation {
             message: String::from("network connection checkpoint exceeds hard bounds"),
@@ -224,6 +244,17 @@ fn validate_network_adapter_checkpoint(
         .ok_or_else(|| SchedulerError::BoundaryViolation {
             message: String::from("network medium checkpoint reservation count overflowed"),
         })?;
+    let medium_bytes = checkpoint
+        .effect_state
+        .shared_media
+        .values()
+        .flat_map(|medium| &medium.reservations)
+        .try_fold(0_u64, |total, reservation| {
+            total.checked_add(reservation.bytes)
+        })
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("network medium checkpoint payload bytes overflowed"),
+        })?;
     if medium_key_bytes > HARD_PENDING_NETWORK_BYTES
         || medium_reservations > HARD_PENDING_NETWORK_FRAMES
         || checkpoint
@@ -240,6 +271,7 @@ fn validate_network_adapter_checkpoint(
                     || medium.reservations.iter().any(|reservation| {
                         reservation.producer.as_str().is_empty()
                             || reservation.arbitration_key.len() > HARD_PENDING_NETWORK_BYTES
+                            || reservation.bytes == 0
                             || reservation.arrival_nanos > reservation.start_nanos
                             || reservation.start_nanos >= reservation.finish_nanos
                             || reservation.duration_nanos
@@ -333,6 +365,29 @@ fn validate_network_adapter_checkpoint(
             });
         }
     }
+    let queued_frames = checkpoint
+        .effect_state
+        .queues
+        .values()
+        .try_fold(0_u64, |total, queue| {
+            u64::try_from(queue.reservations.len())
+                .ok()
+                .and_then(|count| total.checked_add(count))
+        })
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("network queue checkpoint frame count overflowed"),
+        })?;
+    let queued_bytes = checkpoint
+        .effect_state
+        .queues
+        .values()
+        .flat_map(|queue| &queue.reservations)
+        .try_fold(0_u64, |total, reservation| {
+            total.checked_add(reservation.bytes)
+        })
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("network queue checkpoint payload bytes overflowed"),
+        })?;
     if checkpoint
         .effect_state
         .backpressure
@@ -368,8 +423,106 @@ fn validate_network_adapter_checkpoint(
         .ok_or_else(|| SchedulerError::BoundaryViolation {
             message: String::from("network contact reservation count overflowed"),
         })?;
+    let custody_bytes = checkpoint
+        .effect_state
+        .custody_queues
+        .values()
+        .flat_map(|queue| {
+            queue
+                .reservations
+                .iter()
+                .map(|reservation| reservation.bytes)
+                .chain(
+                    queue
+                        .overflow_timeouts
+                        .iter()
+                        .map(|timeout| timeout.bundle.length_bytes),
+                )
+        })
+        .try_fold(0_u64, |total, bytes| total.checked_add(bytes))
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("network custody checkpoint payload bytes overflowed"),
+        })?;
+    let queue_frames = u64::try_from(medium_reservations)
+        .ok()
+        .and_then(|medium| medium.checked_add(queued_frames))
+        .and_then(|total| {
+            u64::try_from(custody_entries)
+                .ok()
+                .and_then(|count| total.checked_add(count))
+        })
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("network aggregate queue frame count overflowed"),
+        })?;
+    let queue_bytes = medium_bytes
+        .checked_add(queued_bytes)
+        .and_then(|total| total.checked_add(custody_bytes))
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("network aggregate queue byte count overflowed"),
+        })?;
+    for bytes in checkpoint
+        .effect_state
+        .shared_media
+        .values()
+        .flat_map(|medium| {
+            medium
+                .reservations
+                .iter()
+                .map(|reservation| reservation.bytes)
+        })
+        .chain(checkpoint.effect_state.queues.values().flat_map(|queue| {
+            queue
+                .reservations
+                .iter()
+                .map(|reservation| reservation.bytes)
+        }))
+        .chain(
+            checkpoint
+                .effect_state
+                .custody_queues
+                .values()
+                .flat_map(|queue| {
+                    queue
+                        .reservations
+                        .iter()
+                        .map(|reservation| reservation.bytes)
+                        .chain(
+                            queue
+                                .overflow_timeouts
+                                .iter()
+                                .map(|timeout| timeout.bundle.length_bytes),
+                        )
+                }),
+        )
+        .chain(
+            checkpoint
+                .effect_state
+                .contact_services
+                .values()
+                .flat_map(|service| {
+                    service
+                        .reservations
+                        .iter()
+                        .map(|reservation| reservation.bytes)
+                }),
+        )
+    {
+        reserve_network_resource_u64("network_frame_bytes", 0, bytes, limits)?;
+    }
+    reserve_network_resource_u64("network_queue_frames", 0, queue_frames, limits)?;
+    reserve_network_resource_u64("network_queue_bytes", 0, queue_bytes, limits)?;
+    reserve_network_resource("network_custody_bundles", 0, custody_entries, limits)?;
+    let contact_entries = checkpoint
+        .effect_state
+        .contact_services
+        .len()
+        .checked_add(contact_reservations)
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("network contact checkpoint entry count overflowed"),
+        })?;
+    reserve_network_resource("network_contact_entries", 0, contact_entries, limits)?;
     if custody_entries > HARD_PENDING_NETWORK_FRAMES
-        || contact_reservations > HARD_CONTACT_SERVICE_RESERVATIONS
+        || contact_entries > HARD_CONTACT_SERVICE_ENTRIES
         || checkpoint
             .effect_state
             .custody_queues
@@ -640,6 +793,7 @@ struct NetworkMediumReservation {
     opportunity: ContentHash,
     producer: FaultObjectId,
     arbitration_key: Vec<u8>,
+    bytes: u64,
     arrival_nanos: u64,
     start_nanos: u64,
     finish_nanos: u64,
@@ -812,6 +966,7 @@ struct StagedNetworkRestore {
 fn stage_network_restore(
     checkpoint: &ProductionFaultRuntimeCheckpoint,
     scheduler: &SingleScheduler,
+    limits: FaultResourceLimits,
 ) -> Result<StagedNetworkRestore, SchedulerError> {
     let network =
         checkpoint
@@ -824,7 +979,7 @@ fn stage_network_restore(
             })?;
     let (scheduler_state, committed_frontier, pending_outputs, adapter_bytes, identity) =
         network.into_parts();
-    validate_pending_network_outputs(&pending_outputs)?;
+    validate_pending_network_outputs(&pending_outputs, limits)?;
     if scheduler.network_checkpoint() != scheduler_state {
         return Err(SchedulerError::BoundaryViolation {
             message: String::from("scheduler and production-fault network continuations differ"),
@@ -836,7 +991,7 @@ fn stage_network_restore(
                 message: format!("decode production network adapter checkpoint: {error}"),
             }
         })?;
-    validate_network_adapter_checkpoint(&adapter)?;
+    validate_network_adapter_checkpoint(&adapter, limits)?;
     validate_medium_pending_links(&adapter.effect_state, &pending_outputs)?;
     let staged_scheduler = scheduler.clone();
     let actual = network_state_digest_from_parts(NetworkStateDigestView {
@@ -1311,6 +1466,7 @@ pub(super) struct ProductionFaultNetworkInterceptor {
     runtime: Arc<Mutex<ProductionFaultRuntime>>,
     cursor: SharedProductionFaultEvaluationCursor,
     observations: super::storage_faults::ProductionStorageObservations,
+    resource_limits: FaultResourceLimits,
     topology: crucible::model::WorldFaultTopology,
     links: Vec<crucible::LinkDef>,
     transition_ledger: BTreeMap<ContentHash, NetworkAvailabilityTransitionRecord>,
@@ -1368,12 +1524,14 @@ impl ProductionFaultNetworkInterceptor {
         topology: crucible::model::WorldFaultTopology,
         links: Vec<crucible::LinkDef>,
     ) -> Self {
+        let resource_limits = runtime.resource_limits();
         Self::with_shared_runtime(
             Arc::new(Mutex::new(runtime)),
             Arc::new(Mutex::new(ProductionFaultEvaluationCursor::default())),
             Arc::new(Mutex::new(
                 super::storage_faults::ProductionFaultObservationJournal::default(),
             )),
+            resource_limits,
             topology,
             links,
         )
@@ -1384,6 +1542,7 @@ impl ProductionFaultNetworkInterceptor {
         runtime: Arc<Mutex<ProductionFaultRuntime>>,
         cursor: SharedProductionFaultEvaluationCursor,
         observations: super::storage_faults::ProductionStorageObservations,
+        resource_limits: FaultResourceLimits,
         topology: crucible::model::WorldFaultTopology,
         links: Vec<crucible::LinkDef>,
     ) -> Self {
@@ -1391,6 +1550,7 @@ impl ProductionFaultNetworkInterceptor {
             runtime,
             cursor,
             observations,
+            resource_limits,
             topology,
             links,
             transition_ledger: BTreeMap::new(),
@@ -1423,7 +1583,8 @@ impl ProductionFaultNetworkInterceptor {
         pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
         observations: super::storage_faults::ProductionStorageObservations,
     ) -> Result<(Self, VirtualTime), SchedulerError> {
-        let staged = stage_network_restore(&checkpoint, scheduler)?;
+        let resource_limits = plan.resource_limits();
+        let staged = stage_network_restore(&checkpoint, scheduler, resource_limits)?;
         staged
             .adapter
             .effect_state
@@ -1472,6 +1633,7 @@ impl ProductionFaultNetworkInterceptor {
                 journal_sequence: staged.adapter.journal_sequence,
             })),
             observations,
+            resource_limits,
             topology,
             links,
             transition_ledger: BTreeMap::new(),

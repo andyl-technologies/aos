@@ -40,6 +40,11 @@ fn flap_blocks_frames_until_the_exact_recovery_boundary() {
         )
         .unwrap_or_else(|error| panic!("test frame should resolve: {error}"));
     assert!(!recovered.is_dropped());
+    crate::vm_lifecycle::network_faults::record_production_effect_rows(
+        &[crucible::model::EffectKind::NetworkFlap],
+        "flap-outage-recovery-boundary",
+        "blocked-before+recovered-at-coordinate",
+    );
 }
 
 #[test]
@@ -91,6 +96,11 @@ fn negotiated_mode_trains_then_constrains_real_frame_service() {
         .unwrap_or_else(|error| panic!("test active frame should resolve: {error}"));
     assert!(!active.is_dropped());
     assert_eq!(active.serialization_rate_cap_bps(), Some(123));
+    crate::vm_lifecycle::network_faults::record_production_effect_rows(
+        &[crucible::model::EffectKind::NetworkNegotiatedMode],
+        "negotiated-training-service",
+        "training-drop+mode-ledger+rate-cap",
+    );
 }
 
 #[test]
@@ -122,6 +132,11 @@ fn forwarder_clear_addresses_owned_queues_and_tables() {
         }
     ));
     assert!(application.drain_queued_targets.is_empty());
+    crate::vm_lifecycle::network_faults::record_production_effect_rows(
+        &[crucible::model::EffectKind::NetworkForwarderLifecycle],
+        "forwarder-clear-ownership",
+        "queue+table-clear-targets",
+    );
 }
 
 #[test]
@@ -213,6 +228,11 @@ fn contact_plan_exposes_acquisition_open_and_teardown_boundaries() {
     assert!(contact.carries_traffic(179));
     assert!(!contact.carries_traffic(180));
     assert_eq!(contact.next_boundary(180), Some(200));
+    crate::vm_lifecycle::network_faults::record_production_effect_rows(
+        &[crucible::model::EffectKind::NetworkContact],
+        "contact-acquire-open-teardown",
+        "exact-boundaries+traffic-state",
+    );
 }
 
 #[test]
@@ -277,6 +297,11 @@ fn association_executes_residence_authentication_and_handoff_timers() {
         .unwrap_or_else(|| panic!("association state should remain active"));
     assert_eq!(association.phase, AssociationPhase::Associated);
     assert_eq!(association.current.as_ref(), Some(&id("segment-b")));
+    crate::vm_lifecycle::network_faults::record_production_effect_rows(
+        &[crucible::model::EffectKind::NetworkAssociation],
+        "association-handoff-state-machine",
+        "residence+authentication+handoff+address-discontinuity",
+    );
 }
 
 #[test]
@@ -333,6 +358,14 @@ fn control_service_queues_executes_and_reports_overflow_without_bypasses() {
     assert_eq!(
         state.route_path_override(&id("route-a"), 10),
         Some(&id("route-b"))
+    );
+    crate::vm_lifecycle::network_faults::record_production_effect_rows(
+        &[
+            crucible::model::EffectKind::NetworkControlPlaneService,
+            crucible::model::EffectKind::NetworkRouteTransition,
+        ],
+        "control-service-route-transition",
+        "queue+overflow+release+route-owner",
     );
 }
 

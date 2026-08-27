@@ -2114,6 +2114,7 @@ dependencies = [
  "crucible-protocol",
  "crucible-qemu",
  "crucible-session",
+ "crucible-shmem",
  "futures-util",
  "hyper-util",
  "reqwest",

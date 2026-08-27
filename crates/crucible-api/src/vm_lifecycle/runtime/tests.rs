@@ -692,6 +692,7 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         Arc::clone(&fault_runtime),
         Arc::clone(&fault_evaluation_cursor),
         Arc::clone(&storage_fault_observations),
+        source.plan().fault_signals().resource_limits(),
         source.world().fault_topology().clone(),
         source.world().links().to_vec(),
     );
