@@ -420,6 +420,7 @@
               '#include <mach/mach.h>' \
               '#include <mach/mach_vm.h>' \
               '#include <membership.h>' \
+              '#include <notify.h>' \
               '#include <os/log.h>' \
               '#include <readpassphrase.h>' \
               '#include <fstab.h>' \
@@ -451,8 +452,12 @@
               '  (const void *)&mbr_gid_to_uuid,' \
               '};' \
               'int main(void) {' \
+              '  int notify_fd = -1;' \
+              '  int notify_token = NOTIFY_TOKEN_INVALID;' \
+              '  uint32_t notify_status = notify_register_file_descriptor("aos.cares.config", &notify_fd, 0, &notify_token);' \
+              '  if (notify_status == NOTIFY_STATUS_OK) notify_cancel(notify_token);' \
               '  os_log(OS_LOG_DEFAULT, "aos Darwin command-line SDK smoke");' \
-              '  return sizeof(struct utmp) == 0 || UNKNOWNUID != 99 || aos_darwin_symbols[0] == 0;' \
+              '  return sizeof(struct utmp) == 0 || UNKNOWNUID != 99 || NOTIFY_STATUS_OK != 0 || aos_darwin_symbols[0] == 0;' \
               '}' \
               > command-line-sdk-smoke.c
             "$CC" command-line-sdk-smoke.c \
