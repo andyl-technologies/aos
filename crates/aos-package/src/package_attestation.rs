@@ -690,7 +690,9 @@ fn package_manifest_digest(root: &Path, apm: &ApmMeta) -> Result<String> {
         }
     }
 
-    if let Some(module) = &apm.config_module {
+    if let Some(module) = &apm.config_module
+        && module.evaluation_base_lib.is_some()
+    {
         return config_module_binding_digest(module, expose_manifest_digest.as_deref());
     }
 
@@ -3043,7 +3045,7 @@ mod tests {
     }
 
     #[test]
-    fn package_measurement_accepts_config_module_binding_measurement() {
+    fn package_measurement_selects_authenticated_config_module_binding() {
         let tmp = TempDir::new().expect("tempdir");
         let manifest = br#"{"permissions":{"network":"private"}}"#;
         let mut installed = installed_fixture(&tmp, manifest);
@@ -3073,6 +3075,26 @@ mod tests {
             provides_capabilities: Vec::new(),
         };
         let manifest_digest = package_manifest_digest_bytes(manifest);
+
+        let mut image_seed = installed_fixture(&tmp, manifest);
+        let seed_apm = image_seed.apm.as_mut().expect("seed APM metadata");
+        let mut unbound_module = module.clone();
+        unbound_module.evaluation_base_lib = None;
+        seed_apm.config_module = Some(unbound_module);
+        seed_apm.attestation = AttestationMeta {
+            root_digest: Some(root_hash.into()),
+            root_hash: Some(root_hash.into()),
+            root_hash_sig: Some("root.roothash.p7s".into()),
+            provenance: None,
+            measurement: Some(package_measurement_digest(
+                &seed_apm.name,
+                &seed_apm.version,
+                root_hash,
+                &manifest_digest,
+            )),
+        };
+        measurement_events(tmp.path(), &[image_seed]).expect("image-seed measurement");
+
         let binding_digest =
             config_module_binding_digest(&module, Some(&manifest_digest)).expect("binding digest");
         apm.config_module = Some(module);
