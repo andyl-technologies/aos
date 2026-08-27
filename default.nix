@@ -339,7 +339,7 @@
       specModule = import (./tests/fleet + "/${filename}");
       availableArgs = {
         inherit lib pkgs mkSystem;
-        inherit (testing) dataUrl mkDarlingFleetSpec;
+        inherit (testing) dataUrl mkDarlingFleetSpec mkDarlingFleetSuite;
         systems = discoverSystems;
       };
       raw = specModule (
@@ -1072,6 +1072,7 @@ in {
         config-provenance
         config-materialize
         config-parity
+        darling-harness
       ];
       phases = [
         {
@@ -1182,6 +1183,7 @@ in {
         }
       ];
     };
+    darling-harness = import ./lib/testing/darling-check.nix {inherit pkgs lib;};
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
@@ -1258,6 +1260,9 @@ in {
     in
       base
       // {
+        # Keep the first Darling gate stable for callers while the canonical
+        # suite expands runtime coverage. Both attrs point to one KVM build.
+        darling-darwin-c-smoke = base.darling-x86-runtime-smoke;
         runtime-config-all = pkgs.mkDerivation {
           pname = "runtime-config-fleet-all";
           version = "0";
