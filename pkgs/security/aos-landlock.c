@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -276,6 +277,7 @@ static int add_path_rules(int ruleset_fd, const struct path_list *paths)
 
     for (i = 0; i < paths->len; i++) {
         int path_fd;
+        struct stat path_stat;
         struct landlock_path_beneath_attr rule = {
             .allowed_access = paths->items[i].access,
         };
@@ -285,6 +287,22 @@ static int add_path_rules(int ruleset_fd, const struct path_list *paths)
             fprintf(stderr, "aos-landlock: failed to open %s: %s\n",
                 paths->items[i].path, strerror(errno));
             return -1;
+        }
+
+        if (fstat(path_fd, &path_stat) != 0) {
+            fprintf(stderr, "aos-landlock: failed to stat %s: %s\n",
+                paths->items[i].path, strerror(errno));
+            close(path_fd);
+            return -1;
+        }
+
+        /* Landlock rejects directory-only access rights on non-directories.
+         * Keep exact file grants narrow instead of requiring callers to grant
+         * the containing directory. */
+        if (!S_ISDIR(path_stat.st_mode)) {
+            rule.allowed_access &= LANDLOCK_ACCESS_FS_EXECUTE
+                | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_READ_FILE
+                | LANDLOCK_ACCESS_FS_TRUNCATE;
         }
 
         rule.parent_fd = path_fd;
