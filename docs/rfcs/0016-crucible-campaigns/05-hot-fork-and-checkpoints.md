@@ -497,6 +497,45 @@ not count executing callbacks, freeze a ring, stop future callbacks, retain a
 process-lifetime barrier, or define child dispositions. It therefore MUST NOT
 acknowledge proof bit 6 or authorize a fork.
 
+The next plugin checkpoint adds a distinct reversible callback barrier. The
+plugin registers one process-lifetime operation only after every covered
+callback owns the same admission counter. QEMU exposes the operation through
+the out-of-band `crucible-hot-fork-plugin-barrier` command:
+
+```text
+CrucibleHotForkPluginBarrierAction = hold | query | release
+
+CrucibleHotForkPluginBarrierState {
+    schema-version: u32 = 1,
+    generation: u64,
+    registered: bool,
+    manifest-consistent: bool,
+    held: bool,
+    teardown-closed: bool,
+    in-flight: u64,
+    quiescent: bool,
+}
+```
+
+`hold` is accepted only at QEMU's authenticated exact paused/device-flush
+boundary. It atomically rejects later covered callbacks and returns immediately;
+callbacks admitted before the hold remain in `in-flight`. `query` observes the
+counter without changing it. `release` removes only the reversible hold and
+MUST NOT reopen admission after permanent teardown closure. `quiescent` equals
+`registered && manifest-consistent && held && !teardown-closed && in-flight ==
+0`. The process-local generation is positive after registration and advances
+when the held/teardown flags change. An unregistered response has generation
+zero and every other field zero or false.
+
+This is a retained barrier over the callback classes covered by the sealed
+manifest, including live device and coverage callbacks, but it is not the
+complete plugin-ring proof. It does not prevent the Apache host from producing
+new shared-memory commands, drain or park the fingerprint digest worker, freeze
+the control-reader/teardown threads, clone ring bytes, or provide child-side
+resource reconstruction. QEMU therefore keeps readiness bit 6 clear. The future
+`PrepareForkTemplate` coordinator must compose this barrier with those remaining
+owners and release it on every rollback path.
+
 The AioContext, bottom-half, AIO-handler, and block-backend responses are still
 observational. They do not drain or park a context, prevent a producer from
 enqueueing work after a query, hold a callback barrier, or hold quiescence

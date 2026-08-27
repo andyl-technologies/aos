@@ -8,9 +8,9 @@ use crucible::Checkpoint;
 use super::{
     QmpClient, QmpCommandComplete, QmpError, QmpHotForkAioHandlerInventory, QmpHotForkAioInventory,
     QmpHotForkBlockBackendInventory, QmpHotForkBottomHalfInventory, QmpHotForkMutexInventory,
-    QmpHotForkPluginResourceInventory, QmpHotForkRcuInventory, QmpHotForkReadiness,
-    QmpHotForkThreadInventory, QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy,
-    QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory, QmpHotForkRcuInventory,
+    QmpHotForkReadiness, QmpHotForkThreadInventory, QmpHotForkTimerInventory, QmpIoTimeoutPolicy,
+    QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use crate::{
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
@@ -217,6 +217,48 @@ where
     ) -> Result<QmpHotForkPluginResourceInventory, QemuNodeChannelError> {
         self.client
             .query_hot_fork_plugin_resource_inventory()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Holds the reversible plugin callback barrier without waiting for drain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU is not at the exact paused
+    /// boundary or the barrier exchange/postcondition fails.
+    pub fn hold_hot_fork_plugin_barrier(
+        &mut self,
+    ) -> Result<QmpHotForkPluginBarrierState, QemuNodeChannelError> {
+        self.client
+            .hold_hot_fork_plugin_barrier()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Queries the reversible plugin callback barrier without changing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
+    /// not satisfy the closed barrier schema.
+    pub fn query_hot_fork_plugin_barrier(
+        &mut self,
+    ) -> Result<QmpHotForkPluginBarrierState, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_plugin_barrier()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Releases the reversible plugin callback barrier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or QEMU does not
+    /// report the required released postcondition.
+    pub fn release_hot_fork_plugin_barrier(
+        &mut self,
+    ) -> Result<QmpHotForkPluginBarrierState, QemuNodeChannelError> {
+        self.client
+            .release_hot_fork_plugin_barrier()
             .map_err(QemuNodeChannelError::from)
     }
 

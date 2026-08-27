@@ -875,6 +875,22 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     assert_eq!(manifest.node_count, node_count);
     assert_eq!(manifest.control_fd, control_fd);
     assert_eq!(manifest.wake_fd, registered_wake_fd());
+    let held = invoke_hot_fork_barrier(crate::QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD)
+        .unwrap_or_else(|status| panic!("hot-fork barrier hold should succeed: {status}"));
+    assert_eq!(
+        held.schema_version,
+        crate::QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION
+    );
+    assert_eq!(held.reserved, 0);
+    assert_eq!(held.in_flight, 0);
+    assert_eq!(held.flags, crate::QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_HELD);
+    let queried = invoke_hot_fork_barrier(crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY)
+        .unwrap_or_else(|status| panic!("hot-fork barrier query should succeed: {status}"));
+    assert_eq!(queried, held);
+    let released = invoke_hot_fork_barrier(crate::QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE)
+        .unwrap_or_else(|status| panic!("hot-fork barrier release should succeed: {status}"));
+    assert_eq!(released.flags, 0);
+    assert_eq!(released.in_flight, 0);
     let teardown_handle = runtime
         ._callbacks
         .control_teardown_handle(0)
@@ -1074,6 +1090,40 @@ fn callback_capability_failure_is_fatal_after_registration_begins() {
     assert!(matches!(
         error,
         PluginRuntimeInstallError::Registration { .. }
+    ));
+    join_host(host);
+}
+
+extern "C" fn reject_hot_fork_barrier_registration(
+    _plugin_id: QemuPluginId,
+    _callback: Option<crate::QemuPluginHotForkBarrierCbFn>,
+    _userdata: *mut std::ffi::c_void,
+) -> i32 {
+    -libc::EBUSY
+}
+
+#[test]
+fn hot_fork_barrier_registration_failure_is_fatal_after_callbacks_exist() {
+    let _runtime_state = isolate_runtime_state_for_test();
+    let fixture = LiveInstallFixture::new();
+    let host = fixture.spawn_host(SETUP_ACK_STATUS_SETUP_FAILED);
+    let mut capabilities = test_capabilities();
+    capabilities.register_hot_fork_barrier = reject_hot_fork_barrier_registration;
+    let mut reservation =
+        reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
+
+    let error = install_expecting_post_registration_fatal(
+        48,
+        &fixture,
+        capabilities,
+        &SuccessfulCallbackRegistrar,
+        &mut reservation,
+    );
+
+    assert!(matches!(
+        error,
+        PluginRuntimeInstallError::HotForkBarrierRejected { status }
+            if status == -libc::EBUSY
     ));
     join_host(host);
 }

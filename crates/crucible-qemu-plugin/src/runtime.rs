@@ -563,6 +563,10 @@ impl RequiredOwnedCallbacksRegistered {
         &self.state.as_ref().get_ref().setup
     }
 
+    fn userdata(&mut self) -> *mut std::ffi::c_void {
+        self.state.as_mut().userdata()
+    }
+
     /// Processes the mandatory setup-time fault capability query.
     ///
     /// # Errors
@@ -880,6 +884,7 @@ pub(crate) struct LiveInstallCapabilities {
     pub(crate) register_time_advance_cb: Option<crate::QemuRegisterTimeAdvanceCbFn>,
     pub(crate) register_wake_fd: QemuRegisterWakeFdFn,
     pub(crate) register_resource_manifest: crate::QemuRegisterResourceManifestFn,
+    pub(crate) register_hot_fork_barrier: crate::QemuRegisterHotForkBarrierFn,
     pub(crate) request_shutdown: QemuRequestShutdownFn,
     pub(crate) basic_block_coverage: Option<QemuBasicBlockCoverageApis>,
     pub(crate) register_vcpu_init: Option<crate::QemuRegisterVcpuInitCbFn>,
@@ -1005,10 +1010,49 @@ enum PostRegistrationStage {
     RequireCallbackCapabilities,
     RegisterWakeFd,
     AdmitFaultCapabilities,
+    RegisterHotForkBarrier,
     SealResourceManifest,
     SendReadyAck,
     WaitBootBarrier,
     Finalize,
+}
+
+extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
+    action: u32,
+    status: *mut crate::QemuPluginHotForkBarrierStatus,
+    userdata: *mut std::ffi::c_void,
+) -> std::os::raw::c_int {
+    if status.is_null() || userdata.is_null() {
+        return -libc::EINVAL;
+    }
+    // SAFETY: registration passes the stable pinned runtime-owner address, and
+    // production retains that allocation for the QEMU process lifetime.
+    let state = unsafe { &*userdata.cast::<OwnedCallbackRuntimeState>() };
+    let snapshot = match action {
+        crate::QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD => state.quiescence.hold_hot_fork(),
+        crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY => state.quiescence.snapshot(),
+        crate::QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE => state.quiescence.release_hot_fork(),
+        _ => return -libc::EINVAL,
+    };
+    let Ok(struct_size) =
+        u32::try_from(std::mem::size_of::<crate::QemuPluginHotForkBarrierStatus>())
+    else {
+        return -libc::EOVERFLOW;
+    };
+    let flags = (u32::from(snapshot.hot_fork_held) * crate::QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_HELD)
+        | (u32::from(snapshot.teardown_closed) * crate::QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_TEARDOWN);
+    // SAFETY: the caller supplied a non-null out pointer for this synchronous
+    // callback. The fixed C/Rust ABI layouts are checked by QEMU before use.
+    unsafe {
+        status.write(crate::QemuPluginHotForkBarrierStatus {
+            schema_version: crate::QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION,
+            struct_size,
+            flags,
+            reserved: 0,
+            in_flight: snapshot.in_flight,
+        });
+    }
+    0
 }
 
 #[cfg(test)]
@@ -1034,6 +1078,7 @@ impl PostRegistrationStage {
             Self::RequireCallbackCapabilities => "RequireCallbackCapabilities",
             Self::RegisterWakeFd => "RegisterWakeFd",
             Self::AdmitFaultCapabilities => "AdmitFaultCapabilities",
+            Self::RegisterHotForkBarrier => "RegisterHotForkBarrier",
             Self::SealResourceManifest => "SealResourceManifest",
             Self::SendReadyAck => "SendReadyAck",
             Self::WaitBootBarrier => "WaitBootBarrier",
@@ -1484,6 +1529,23 @@ where
             ));
         }
 
+        post_registration_stage = PostRegistrationStage::RegisterHotForkBarrier;
+        maybe_inject_post_registration_panic(post_registration_stage);
+        let barrier_status = (capabilities.register_hot_fork_barrier)(
+            plugin_id,
+            Some(crucible_qemu_plugin_hot_fork_barrier),
+            retained.registered_mut().userdata(),
+        );
+        if barrier_status != 0 {
+            return Err(fail_post_registration_before_ready_ack_lifecycle(
+                &mut control_stream,
+                PluginRuntimeInstallError::HotForkBarrierRejected {
+                    status: barrier_status,
+                },
+                &mut acknowledgement_state,
+            ));
+        }
+
         post_registration_stage = PostRegistrationStage::SealResourceManifest;
         maybe_inject_post_registration_panic(post_registration_stage);
         let resource_manifest =
@@ -1837,6 +1899,12 @@ pub enum PluginRuntimeInstallError {
     #[error("QEMU rejected the plugin resource manifest with status {status}")]
     ResourceManifestRejected {
         /// Negative errno-style status returned by patched QEMU.
+        status: i32,
+    },
+    /// QEMU rejected the process-lifetime callback-barrier registration.
+    #[error("QEMU rejected the hot-fork callback barrier with status {status}")]
+    HotForkBarrierRejected {
+        /// Negative errno-style QEMU status.
         status: i32,
     },
     /// The callback failure could not be acknowledged to the host.
