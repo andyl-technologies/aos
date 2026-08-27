@@ -2,13 +2,9 @@
 {
   mkDerivation,
   fetchurl,
-  gnumake,
-  autoconf,
-  automake,
-  pkg-config,
+  buildPackages,
   openssl,
   util-linux,
-  binutils,
   gnu-efi,
   stdenv,
 }: let
@@ -34,11 +30,11 @@ in
     };
 
     buildDeps = [
-      gnumake
-      autoconf
-      automake
-      pkg-config
-      binutils
+      buildPackages.gnumake
+      buildPackages.autoconf
+      buildPackages.automake
+      buildPackages.pkg-config
+      buildPackages.binutils
       gnu-efi
     ];
     runtimeDeps =
@@ -160,7 +156,7 @@ in
           + ''
 
             # Run autotools (include pkg-config's m4 macros for PKG_CHECK_MODULES)
-            aclocal -I ${pkg-config}/share/aclocal
+            aclocal -I ${buildPackages.pkg-config}/share/aclocal
             autoheader
             autoconf
             automake --add-missing -Wno-portability
