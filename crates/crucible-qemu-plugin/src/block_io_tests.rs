@@ -4,36 +4,8 @@ use super::*;
 
 use crucible_shmem::{KIND_VM, RegionConfig, RegionLayout, ReservedExecutorSlot};
 
-#[test]
-fn completed_identity_history_compacts_contiguous_ids_and_retains_gaps() {
-    let mut history = CompletedIdentityHistory::default();
-    let third = BlockRequestIdentity::new(7, 2);
-    history
-        .ensure_record_capacity(third)
-        .unwrap_or_else(|error| panic!("history should admit a gap: {error}"));
-    history.record(third);
-    assert!(history.contains(third));
-    assert_eq!(history.gaps, 1);
-
-    for request_id in [0, 1] {
-        let identity = BlockRequestIdentity::new(7, request_id);
-        history
-            .ensure_record_capacity(identity)
-            .unwrap_or_else(|error| panic!("history should admit prefix: {error}"));
-        history.record(identity);
-    }
-
-    assert_eq!(history.gaps, 0);
-    assert_eq!(history.epochs[&7].contiguous_exclusive, 3);
-    assert!(
-        (0..=2).all(|request_id| { history.contains(BlockRequestIdentity::new(7, request_id)) })
-    );
-    assert!(!history.contains(BlockRequestIdentity::new(7, 3)));
-
-    history.clear();
-    assert!(!history.contains(third));
-    assert_eq!(history.gaps, 0);
-}
+#[path = "block_io_tests/resource_limits.rs"]
+mod resource_limits;
 
 #[test]
 fn transport_continuation_round_trips_allocator_and_exact_history() {
@@ -48,7 +20,7 @@ fn transport_continuation_round_trips_allocator_and_exact_history() {
             BlockRequestIdentity::new(7, 0),
         ] {
             history
-                .ensure_record_capacity(identity)
+                .ensure_record_capacity(identity, PluginStorageHistoryLimits::compiled_maximum())
                 .unwrap_or_else(|error| panic!("history should admit identity: {error}"));
             history.record(identity);
         }

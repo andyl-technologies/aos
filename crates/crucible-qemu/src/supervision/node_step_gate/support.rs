@@ -558,17 +558,12 @@ fn live_node_plugin_base(config: &QemuLiveNodeStepGateConfig) -> QemuLaunchPlugi
     QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
         .with_process_generation(config.process_generation)
         .with_network_tx_next_sequence(config.network_tx_next_sequence)
+        .with_storage_completed_history_limits(
+            config.storage_completed_history_epochs,
+            config.storage_completed_history_gaps,
+        )
         .with_coverage(config.coverage)
         .with_fingerprint(config.fingerprint)
-}
-
-pub(super) const fn basic_block_coverage_config(
-    coverage: QemuLaunchPluginSwitch,
-) -> BasicBlockCoverageConfig {
-    match coverage {
-        QemuLaunchPluginSwitch::Off => BasicBlockCoverageConfig::off(),
-        QemuLaunchPluginSwitch::On => BasicBlockCoverageConfig::on(),
-    }
 }
 
 /// Returns a shutdown policy with real bounded waits for a gate teardown.
@@ -594,7 +589,9 @@ pub(super) fn gate_async_policy(completion_timeout: Duration) -> QemuAsyncDriver
 
 #[path = "support/tail.rs"]
 mod tail;
-pub(super) use tail::{GateSendAuthorizer, launch_artifact, node_id, path_text};
+pub(super) use tail::{
+    GateSendAuthorizer, basic_block_coverage_config, launch_artifact, node_id, path_text,
+};
 #[cfg(test)]
 #[path = "support/tests.rs"]
 mod tests;

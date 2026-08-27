@@ -953,9 +953,8 @@ fn build_production_vm_lifecycle_loop_with_restore(
             .and_then(|checkpoint| checkpoint.node_generations.get(&vm.id))
             .copied()
             .unwrap_or(1);
-        let qemu_executable = production_qemu_executable(&config.executable, vm.arch);
         let mut launch = ProductionLiveNodeStepGateConfig::new_with_root_image(
-            qemu_executable,
+            production_qemu_executable(&config.executable, vm.arch),
             &config.plugin,
             &guest_assets.kernel,
             &guest_assets.root_image,
@@ -973,7 +972,8 @@ fn build_production_vm_lifecycle_loop_with_restore(
         .with_completion_timeout(config.completion_timeout)
         .with_console_capture()
         .with_second_run_scheduler_preemption(false)
-        .with_process_generation(generation);
+        .with_process_generation(generation)
+        .with_fault_resource_limits(source.plan().fault_signals().resource_limits());
         if let Some(capabilities) = source
             .world()
             .fault_topology()

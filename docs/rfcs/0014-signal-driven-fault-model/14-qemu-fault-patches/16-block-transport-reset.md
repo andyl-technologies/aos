@@ -129,10 +129,15 @@ closed recovery values, and exact agreement with QEMU's paired allocator fields
 before atomically replacing either live state.
 
 The plugin stores completed identities as a contiguous prefix plus bounded
-out-of-order gaps per epoch. Both epoch rows and gaps have a hard limit of
-1,048,576; exhaustion is a fail-loud run error. Losing duplicate history clears
-the complete structure atomically. Preserving it never performs eviction or
-probabilistic membership tests.
+out-of-order gaps per epoch. The host passes the plan-authored
+`storage_completed_history_epochs` and `storage_completed_history_gaps`
+ceilings as required plugin launch arguments; each is validated as nonzero and
+no greater than the immutable 1,048,576 hard limit before callbacks register.
+New completions and restored continuations are admitted against those ceilings
+before the plugin owns decoded rows, and rejection reports exact `current`,
+`requested`, `configured`, and `hard` coordinates. Losing duplicate history
+clears the complete structure atomically. Preserving it never performs eviction
+or probabilistic membership tests.
 
 ## Required tests
 

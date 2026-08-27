@@ -82,9 +82,8 @@ shape-line|crates/crucible-protocol/src/doorbell_marker.rs|821
 shape-line|crates/crucible-protocol/src/guest_introspection.rs|986
 shape-line|crates/crucible-protocol/src/lib.rs|2799
 shape-line|crates/crucible-qemu-plugin/src/abi.rs|2372
-shape-line|crates/crucible-qemu-plugin/src/args.rs|628
 shape-line|crates/crucible-qemu-plugin/src/block_io.rs|2375
-shape-line|crates/crucible-qemu-plugin/src/block_io_tests.rs|811
+shape-line|crates/crucible-qemu-plugin/src/block_io_tests.rs|783
 shape-line|crates/crucible-qemu-plugin/src/coverage.rs|1157
 shape-line|crates/crucible-qemu-plugin/src/coverage/tests.rs|673
 shape-line|crates/crucible-qemu-plugin/src/fault_command.rs|2453

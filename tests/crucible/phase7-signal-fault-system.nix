@@ -574,6 +574,25 @@ in
             runtime::live_callbacks::tests::logical_restore::post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging
           run_exact_plugin_test \
             runtime::live_whitebox::app_random::tests::logical_restore_discards_priming_draws_exactly_once
+          run_exact_plugin_test \
+            args::tests::plugin_args_require_and_validate_authored_storage_history_limits
+          run_exact_plugin_test \
+            block_io::tests::resource_limits::completed_history_refuses_epochs_and_gaps_at_exact_authored_coordinates
+          run_exact_plugin_test \
+            block_io::tests::resource_limits::transport_restore_admits_history_counts_before_owned_decode
+          run_exact_qemu_test \
+            launch::plugin_config::tests::authored_storage_history_limits_are_explicit_and_fail_closed
+          run_exact_qemu_test \
+            supervision::node_step_gate::support::tests::authored_storage_history_limits_reach_the_plugin_launch_boundary
+          grep -Fq \
+            '.with_fault_resource_limits(source.plan().fault_signals().resource_limits())' \
+            crates/crucible-api/src/vm_lifecycle.rs
+          grep -Fq 'args.storage_history_limits(),' \
+            crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs
+          grep -Fq 'attach_devices_with_history_limits(' \
+            crates/crucible-qemu-plugin/src/runtime.rs
+          grep -Fq 'from_directed_rings_with_history_limits(' \
+            crates/crucible-qemu-plugin/src/runtime/live_callbacks/devices/attachment.rs
           run_exact_qemu_test \
             fault_action_sink::node_payload::tests::memory_bit_flip_rejects_authored_length_before_expanding_mask
           run_exact_qemu_test \
@@ -1053,6 +1072,7 @@ in
           causal_network_production_effect_artifact=evidence/causal-network-production-effects.txt
           causal_storage_production_effect_count=20
           causal_storage_production_effect_artifact=evidence/causal-storage-production-effects.txt
+          plugin_completed_history_limits=authored-required-predecode-admission
           causal_node_production_effect_count=20
           causal_node_production_effect_artifact=evidence/causal-node-production-effects.txt
           executable_taxonomy_rows=226

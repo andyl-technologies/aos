@@ -1146,7 +1146,7 @@ mod tests {
 
     fn registration_ready() -> crate::PluginRegistrationReady {
         let mut sequence = crate::PluginRegistrationSequence::new();
-        let args = crate::PluginArgs::parse("simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0")
+        let args = crate::PluginArgs::parse("simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576")
             .unwrap_or_else(|error| panic!("test args should parse: {error}"));
         let mut setup_ack = None;
         for step in CANONICAL_TIME_CONTROL_REGISTRATION_ORDER {
