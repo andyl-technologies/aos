@@ -163,6 +163,14 @@ Replace `fakeHash` with the printed `sha256-...` value. Alternatively,
 the version, source URLs, and hash together in the package file. Prefer more
 than one trusted source URL when the upstream has a stable mirror.
 
+For a Bazel package built with `mkBazelPackage`, leave `populateBCR` enabled
+when the dependency graph uses Bazel modules. Set `populateBCR = false` when
+the package explicitly disables Bzlmod and resolves only a `WORKSPACE` graph.
+The optional empty-workspace synchronization otherwise downloads Bazel's
+built-in repositories for platforms and toolchains the target does not use;
+those bytes enlarge the fixed-output dependency closure and require needless
+network policy exceptions.
+
 ## Expose the runtime interface
 
 The `expose` attribute is the contract used by APM. It renders a separate

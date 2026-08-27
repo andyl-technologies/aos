@@ -152,7 +152,7 @@
     perl
     gnumake
     pkg-config
-    # workerd fetches V8, dawn, and their deps via `git_repository` (googlesource
+    # workerd fetches V8, dawn, and their deps via `git_repository` (generated
     # tarballs are non-deterministic, so the WORKSPACE clones over git). The FOD
     # fetch needs a real git on PATH; the build phase prepends a fake git for the
     # workspace-status command, which shadows this one there.
@@ -194,6 +194,16 @@
     with open(path) as f:
         src = f.read()
 
+    # Dawn publishes the same commit graph through its official GitHub mirror.
+    # Use that mirror so a source-only build does not require a one-off network
+    # origin in addition to the other GitHub-hosted dependencies.
+    dawn_origin = 'remote = "https://dawn.googlesource.com/dawn.git",'
+    dawn_mirror = 'remote = "https://github.com/google/dawn.git",'
+    if dawn_origin in src:
+        src = src.replace(dawn_origin, dawn_mirror, 1)
+    else:
+        assert dawn_mirror in src, "Dawn git_repository remote not found in WORKSPACE"
+
     # Idempotent: postPatchScript runs in both the fetch FOD and the build
     # phase (and possibly twice in the build phase), so bail out cleanly if the
     # WORKSPACE has already been rewritten. Injecting twice would produce a
@@ -202,6 +212,8 @@
     # workerd's WORKSPACE already uses `patch_cmds` for other http_archives.
     marker = "result = struct(return_code = 0 if rctx"
     if marker in src:
+        with open(path, "w") as f:
+            f.write(src)
         print("AOS-DEBUG: WORKSPACE already patched; skipping")
         sys.exit(0)
 
@@ -464,10 +476,15 @@ in
     bazelFlags = [
       "--noenable_bzlmod"
     ];
+    # The generic fetch helper can prime Bazel's built-in module repository by
+    # syncing an empty workspace. Workerd uses WORKSPACE with Bzlmod disabled,
+    # so that sync only downloads unrelated cross-platform JDK and Android R8
+    # repositories before the target graph is fetched.
+    populateBCR = false;
     inherit scrubMap;
 
     # --- Fetch-specific ---
-    depsHash = "sha256-ocxi9B0Fv1mdEGVeq6AXDuWjxdq7wKel2tDFztkeg7g=";
+    depsHash = "sha256-D6FWYyLQWnsW06xPdBLvOj2ST/GwYU+vtSI5jaTZBY8=";
     fetchPostPatch = "";
     fetchEnv = {
       CARGO_BAZEL_REPIN = "true";
