@@ -819,6 +819,21 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Queries QEMU's exact bounded allocated-bottom-half inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
+    /// versioned response validation fails.
+    fn query_hot_fork_bottom_half_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkBottomHalfInventory, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query_hot_fork_bottom_half_inventory",
+            "hot-fork bottom-half inventory is not implemented by this QMP channel",
+        ))
+    }
+
     /// Queries QEMU's exact bounded observational mutex ownership inventory.
     ///
     /// # Errors
@@ -1667,6 +1682,11 @@ impl QemuNode {
             .qmp_machine_control
             .query_hot_fork_aio_inventory()
             .map_err(crate::QemuHotForkAuditError::AioInventory)?;
+        let bottom_halves_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_bottom_half_inventory()
+            .map_err(crate::QemuHotForkAuditError::BottomHalfInventory)?;
         let mutexes_before = self
             .channels
             .qmp_machine_control
@@ -1695,6 +1715,14 @@ impl QemuNode {
             .map_err(crate::QemuHotForkAuditError::MutexInventory)?;
         if mutexes_before != mutexes_after {
             return Err(crate::QemuHotForkAuditError::MutexInventoryChanged);
+        }
+        let bottom_halves_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_bottom_half_inventory()
+            .map_err(crate::QemuHotForkAuditError::BottomHalfInventory)?;
+        if bottom_halves_before != bottom_halves_after {
+            return Err(crate::QemuHotForkAuditError::BottomHalfInventoryChanged);
         }
         let aio_after = self
             .channels
@@ -1729,12 +1757,15 @@ impl QemuNode {
             return Err(crate::QemuHotForkAuditError::ReadinessChanged);
         }
         crate::QemuHotForkAudit::new(
-            before,
-            threads_before,
-            rcu_before,
-            aio_before,
-            mutexes_before,
-            timers_before,
+            crate::hot_fork_audit::QemuHotForkQmpInventory::new(
+                before,
+                threads_before,
+                rcu_before,
+                aio_before,
+                bottom_halves_before,
+                mutexes_before,
+                timers_before,
+            ),
             inventory,
         )
     }

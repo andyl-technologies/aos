@@ -1,0 +1,457 @@
+diff --git a/include/block/aio.h b/include/block/aio.h
+index 903e3b96b..d21476f3d 100644
+--- a/include/block/aio.h
++++ b/include/block/aio.h
+@@ -295,6 +295,37 @@ void qemu_aio_hot_fork_inventory(QemuAioHotForkInventory *inventory);
+ void qemu_aio_hot_fork_inventory_destroy(QemuAioHotForkInventory *inventory);
+ void qemu_aio_hot_fork_mark_home(AioContext *ctx);
+ 
++#define QEMU_BH_HOT_FORK_INVENTORY_MAX 65536
++#define QEMU_BH_HOT_FORK_NAME_MAX 128
++
++typedef struct QemuBhHotForkInventoryEntry {
++    uint64_t bh_id;
++    uint64_t context_id;
++    uint32_t active_callbacks;
++    bool pending;
++    bool scheduled;
++    bool deleted;
++    bool oneshot;
++    bool idle;
++    bool name_valid;
++    char name[QEMU_BH_HOT_FORK_NAME_MAX + 1];
++} QemuBhHotForkInventoryEntry;
++
++typedef struct QemuBhHotForkInventory {
++    uint64_t generation;
++    size_t entry_count;
++    bool overflowed;
++    bool stable;
++    QemuBhHotForkInventoryEntry *entries;
++} QemuBhHotForkInventory;
++
++/*
++ * Capture every allocated QEMUBH for hot-fork auditing.  This remains an
++ * observation and does not drain, park, or authorize bottom-half execution.
++ */
++void qemu_bh_hot_fork_inventory(QemuBhHotForkInventory *inventory);
++void qemu_bh_hot_fork_inventory_destroy(QemuBhHotForkInventory *inventory);
++
+ /**
+  * aio_context_new: Allocate a new AioContext.
+  *
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index e1699ddef..77f15c927 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -449,6 +449,69 @@ qmp_query_crucible_hot_fork_timer_inventory(Error **errp)
+ #endif
+ }
+ 
++CrucibleHotForkBottomHalfInventory *
++qmp_query_crucible_hot_fork_bottom_half_inventory(Error **errp)
++{
++#ifdef CONFIG_POSIX
++    CrucibleHotForkBottomHalfInventory *report =
++        g_new0(CrucibleHotForkBottomHalfInventory, 1);
++    QemuBhHotForkInventory inventory;
++    CrucibleHotForkBottomHalfList **tail = &report->bottom_halves;
++    uint64_t previous_bh_id = 0;
++    bool valid_entries = true;
++    size_t index;
++
++    (void)errp;
++    report->schema_version = 1;
++    qemu_bh_hot_fork_inventory(&inventory);
++    report->generation = inventory.generation;
++    report->stable = inventory.stable;
++    for (index = 0; index < inventory.entry_count; index++) {
++        QemuBhHotForkInventoryEntry *source = &inventory.entries[index];
++        CrucibleHotForkBottomHalf *bh =
++            g_new0(CrucibleHotForkBottomHalf, 1);
++        CrucibleHotForkBottomHalfList *node =
++            g_new0(CrucibleHotForkBottomHalfList, 1);
++
++        bh->bottom_half_id = source->bh_id;
++        bh->context_id = source->context_id;
++        bh->name = g_strdup(source->name);
++        bh->name_valid = source->name_valid;
++        bh->pending = source->pending;
++        bh->scheduled = source->scheduled;
++        bh->deleted = source->deleted;
++        bh->oneshot = source->oneshot;
++        bh->idle = source->idle;
++        bh->active_callbacks = source->active_callbacks;
++        if (source->bh_id == 0 || source->context_id == 0 ||
++            (index != 0 && source->bh_id <= previous_bh_id) ||
++            !source->name_valid || source->name[0] == '\0' ||
++            strlen(source->name) > QEMU_BH_HOT_FORK_NAME_MAX ||
++            (source->scheduled && !source->pending) ||
++            (source->idle && !source->pending)) {
++            valid_entries = false;
++        }
++        previous_bh_id = source->bh_id;
++        report->pending_bottom_halves += source->pending;
++        report->scheduled_bottom_halves += source->scheduled;
++        report->deleted_bottom_halves += source->deleted;
++        report->active_callbacks += source->active_callbacks;
++        node->value = bh;
++        *tail = node;
++        tail = &node->next;
++    }
++    report->bottom_half_count = inventory.entry_count;
++    report->overflowed = inventory.overflowed;
++    report->complete = inventory.stable && !inventory.overflowed &&
++                       valid_entries;
++    qemu_bh_hot_fork_inventory_destroy(&inventory);
++    return report;
++#else
++    error_setg(errp, "Crucible hot-fork bottom-half inventory requires POSIX");
++    return NULL;
++#endif
++}
++
+ void qmp_cont(Error **errp)
+ {
+     BlockBackend *blk;
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 1f73e0a64..7570bdf59 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -635,6 +635,106 @@
+ { 'command': 'query-crucible-hot-fork-timer-inventory',
+   'returns': 'CrucibleHotForkTimerInventory' }
+ 
++##
++# @CrucibleHotForkBottomHalf:
++#
++# One allocated bottom half in the process-local registry.
++#
++# @bottom-half-id: positive stable process-local identity
++#
++# @context-id: positive process-local AioContext identity
++#
++# @name: bounded copied diagnostic callback name
++#
++# @name-valid: whether @name was nonempty, valid UTF-8, and at most 128 bytes
++#
++# @pending: whether the bottom half is enqueued for polling
++#
++# @scheduled: whether its callback remains scheduled
++#
++# @deleted: whether deferred deletion was requested
++#
++# @oneshot: whether the bottom half is freed after its first callback
++#
++# @idle: whether it is scheduled only while the event loop is idle
++#
++# @active-callbacks: number of callbacks currently executing
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkBottomHalf',
++  'data': { 'bottom-half-id': 'uint64',
++            'context-id': 'uint64',
++            'name': 'str',
++            'name-valid': 'bool',
++            'pending': 'bool',
++            'scheduled': 'bool',
++            'deleted': 'bool',
++            'oneshot': 'bool',
++            'idle': 'bool',
++            'active-callbacks': 'uint32' } }
++
++##
++# @CrucibleHotForkBottomHalfInventory:
++#
++# Bounded observational snapshot of every allocated QEMUBH, including inert,
++# pending, active, canceled, and deferred-deletion instances.  This report does
++# not drain, park, or retain a bottom-half barrier.
++#
++# @schema-version: inventory contract version, currently 1
++#
++# @generation: monotonic process-local lifecycle and state generation
++#
++# @complete: true exactly when the snapshot is stable, did not overflow, and
++#     every retained entry is structurally valid
++#
++# @overflowed: whether allocated bottom halves exceeded the retained bound
++#
++# @stable: whether no bottom-half transition raced the bounded copy
++#
++# @bottom-half-count: number of retained allocated bottom halves
++#
++# @pending-bottom-halves: retained bottom halves whose @pending field is true
++#
++# @scheduled-bottom-halves: retained bottom halves whose @scheduled field is
++#     true
++#
++# @deleted-bottom-halves: retained bottom halves whose @deleted field is true
++#
++# @active-callbacks: checked sum of retained @active-callbacks
++#
++# @bottom-halves: allocated bottom halves sorted by @bottom-half-id and bounded
++#     to 65536
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkBottomHalfInventory',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'complete': 'bool',
++            'overflowed': 'bool',
++            'stable': 'bool',
++            'bottom-half-count': 'uint32',
++            'pending-bottom-halves': 'uint32',
++            'scheduled-bottom-halves': 'uint32',
++            'deleted-bottom-halves': 'uint32',
++            'active-callbacks': 'uint64',
++            'bottom-halves': [ 'CrucibleHotForkBottomHalf' ] } }
++
++##
++# @query-crucible-hot-fork-bottom-half-inventory:
++#
++# Query every allocated QEMUBH.  This command is observational and cannot
++# acknowledge the AIO/BH/timer readiness proof.
++#
++# Returns: @CrucibleHotForkBottomHalfInventory
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'query-crucible-hot-fork-bottom-half-inventory',
++  'returns': 'CrucibleHotForkBottomHalfInventory',
++  'allow-oob': true }
++
+ ##
+ # @SHUTDOWN:
+ #
+diff --git a/util/async.c b/util/async.c
+index 0ae679613..b14da687c 100644
+--- a/util/async.c
++++ b/util/async.c
+@@ -30,6 +30,7 @@
+ #include "block/graph-lock.h"
+ #include "qemu/main-loop.h"
+ #include "qemu/atomic.h"
++#include "qemu/cutils.h"
+ #include "qemu/lockcnt.h"
+ #include "qemu/rcu_queue.h"
+ #include "block/raw-aio.h"
+@@ -165,8 +166,132 @@ struct QEMUBH {
+     QSLIST_ENTRY(QEMUBH) next;
+     unsigned flags;
+     MemReentrancyGuard *reentrancy_guard;
++    uint64_t crucible_hot_fork_id;
++    uint32_t crucible_hot_fork_active_callbacks;
++    bool crucible_hot_fork_name_valid;
++    char crucible_hot_fork_name[QEMU_BH_HOT_FORK_NAME_MAX + 1];
++    QTAILQ_ENTRY(QEMUBH) crucible_hot_fork_node;
+ };
+ 
++static QTAILQ_HEAD(, QEMUBH) crucible_hot_fork_bhs =
++    QTAILQ_HEAD_INITIALIZER(crucible_hot_fork_bhs);
++static uint64_t crucible_hot_fork_bh_next_id = 1;
++static uint64_t crucible_hot_fork_bh_generation;
++/* Bracket lock-free state writes so a reader cannot miss a late generation. */
++static uint32_t crucible_hot_fork_bh_active_transitions;
++
++static void crucible_hot_fork_bh_changed(void)
++{
++    qatomic_inc(&crucible_hot_fork_bh_generation);
++}
++
++static void crucible_hot_fork_bh_transition_begin(void)
++{
++    qatomic_inc(&crucible_hot_fork_bh_active_transitions);
++}
++
++static void crucible_hot_fork_bh_transition_end(bool changed)
++{
++    if (changed) {
++        crucible_hot_fork_bh_changed();
++    }
++    qatomic_dec(&crucible_hot_fork_bh_active_transitions);
++}
++
++static void crucible_hot_fork_bh_register(QEMUBH *bh, const char *name)
++{
++    size_t name_length = name ?
++        strnlen(name, QEMU_BH_HOT_FORK_NAME_MAX + 1) : 0;
++
++    bh->crucible_hot_fork_name_valid =
++        name_length > 0 && name_length <= QEMU_BH_HOT_FORK_NAME_MAX &&
++        g_utf8_validate(name, name_length, NULL);
++    if (bh->crucible_hot_fork_name_valid) {
++        memcpy(bh->crucible_hot_fork_name, name, name_length);
++        bh->crucible_hot_fork_name[name_length] = '\0';
++    } else {
++        pstrcpy(bh->crucible_hot_fork_name,
++                sizeof(bh->crucible_hot_fork_name), "<invalid>");
++    }
++
++    QEMU_LOCK_GUARD(&crucible_hot_fork_aio_lock);
++    bh->crucible_hot_fork_id = crucible_hot_fork_bh_next_id++;
++    assert(bh->crucible_hot_fork_id != 0);
++    QTAILQ_INSERT_TAIL(&crucible_hot_fork_bhs, bh,
++                       crucible_hot_fork_node);
++    crucible_hot_fork_bh_changed();
++}
++
++static void crucible_hot_fork_bh_free(QEMUBH *bh)
++{
++    qemu_mutex_lock(&crucible_hot_fork_aio_lock);
++    QTAILQ_REMOVE(&crucible_hot_fork_bhs, bh, crucible_hot_fork_node);
++    crucible_hot_fork_bh_changed();
++    qemu_mutex_unlock(&crucible_hot_fork_aio_lock);
++    g_free(bh);
++}
++
++void qemu_bh_hot_fork_inventory(QemuBhHotForkInventory *inventory)
++{
++    QEMUBH *bh;
++    uint64_t generation_before;
++    uint32_t transitions_before;
++    uint32_t transitions_after;
++    size_t count = 0;
++
++    *inventory = (QemuBhHotForkInventory) { 0 };
++    qemu_mutex_lock(&crucible_hot_fork_aio_lock);
++    generation_before = qatomic_read(&crucible_hot_fork_bh_generation);
++    transitions_before =
++        qatomic_read(&crucible_hot_fork_bh_active_transitions);
++    QTAILQ_FOREACH(bh, &crucible_hot_fork_bhs, crucible_hot_fork_node) {
++        if (count == QEMU_BH_HOT_FORK_INVENTORY_MAX) {
++            inventory->overflowed = true;
++            break;
++        }
++        count++;
++    }
++
++    inventory->entries = g_new0(QemuBhHotForkInventoryEntry, count);
++    inventory->entry_count = count;
++    count = 0;
++    QTAILQ_FOREACH(bh, &crucible_hot_fork_bhs, crucible_hot_fork_node) {
++        QemuBhHotForkInventoryEntry *entry;
++        unsigned flags;
++
++        if (count == inventory->entry_count) {
++            break;
++        }
++        entry = &inventory->entries[count++];
++        entry->bh_id = bh->crucible_hot_fork_id;
++        entry->context_id = bh->ctx->crucible_hot_fork_id;
++        entry->active_callbacks =
++            qatomic_read(&bh->crucible_hot_fork_active_callbacks);
++        flags = qatomic_read(&bh->flags);
++        entry->pending = flags & BH_PENDING;
++        entry->scheduled = flags & BH_SCHEDULED;
++        entry->deleted = flags & BH_DELETED;
++        entry->oneshot = flags & BH_ONESHOT;
++        entry->idle = flags & BH_IDLE;
++        entry->name_valid = bh->crucible_hot_fork_name_valid;
++        pstrcpy(entry->name, sizeof(entry->name),
++                bh->crucible_hot_fork_name);
++    }
++    transitions_after =
++        qatomic_read(&crucible_hot_fork_bh_active_transitions);
++    inventory->generation =
++        qatomic_read(&crucible_hot_fork_bh_generation);
++    inventory->stable = transitions_before == 0 && transitions_after == 0 &&
++                        generation_before == inventory->generation;
++    qemu_mutex_unlock(&crucible_hot_fork_aio_lock);
++}
++
++void qemu_bh_hot_fork_inventory_destroy(QemuBhHotForkInventory *inventory)
++{
++    g_free(inventory->entries);
++    *inventory = (QemuBhHotForkInventory) { 0 };
++}
++
+ /* Called concurrently from any thread */
+ static void aio_bh_enqueue(QEMUBH *bh, unsigned new_flags)
+ {
+@@ -177,7 +302,10 @@ static void aio_bh_enqueue(QEMUBH *bh, unsigned new_flags)
+      * Synchronizes with atomic_fetch_and() in aio_bh_dequeue(), ensuring that
+      * insertion starts after BH_PENDING is set.
+      */
++    crucible_hot_fork_bh_transition_begin();
+     old_flags = qatomic_fetch_or(&bh->flags, BH_PENDING | new_flags);
++    crucible_hot_fork_bh_transition_end(
++        (old_flags | BH_PENDING | new_flags) != old_flags);
+ 
+     if (!(old_flags & BH_PENDING)) {
+         qatomic_inc(&ctx->crucible_hot_fork_pending_bhs);
+@@ -220,8 +348,10 @@ static QEMUBH *aio_bh_dequeue(BHList *head, unsigned *flags)
+      * Synchronizes with qatomic_fetch_or() in aio_bh_enqueue(), ensuring that
+      * the removal finishes before BH_PENDING is reset.
+      */
++    crucible_hot_fork_bh_transition_begin();
+     *flags = qatomic_fetch_and(&bh->flags,
+                               ~(BH_PENDING | BH_SCHEDULED | BH_IDLE));
++    crucible_hot_fork_bh_transition_end(true);
+     qatomic_dec(&bh->ctx->crucible_hot_fork_pending_bhs);
+     return bh;
+ }
+@@ -237,6 +367,7 @@ void aio_bh_schedule_oneshot_full(AioContext *ctx, QEMUBHFunc *cb,
+         .opaque = opaque,
+         .name = name,
+     };
++    crucible_hot_fork_bh_register(bh, name);
+     aio_bh_enqueue(bh, BH_SCHEDULED | BH_ONESHOT);
+ }
+ 
+@@ -252,6 +383,7 @@ QEMUBH *aio_bh_new_full(AioContext *ctx, QEMUBHFunc *cb, void *opaque,
+         .name = name,
+         .reentrancy_guard = reentrancy_guard,
+     };
++    crucible_hot_fork_bh_register(bh, name);
+     return bh;
+ }
+ 
+@@ -269,9 +401,15 @@ void aio_bh_call(QEMUBH *bh)
+         reentrancy_guard->engaged_in_io = true;
+     }
+ 
++    crucible_hot_fork_bh_transition_begin();
++    qatomic_inc(&bh->crucible_hot_fork_active_callbacks);
+     qatomic_inc(&bh->ctx->crucible_hot_fork_active_bhs);
++    crucible_hot_fork_bh_transition_end(true);
+     bh->cb(bh->opaque);
++    crucible_hot_fork_bh_transition_begin();
+     qatomic_dec(&bh->ctx->crucible_hot_fork_active_bhs);
++    qatomic_dec(&bh->crucible_hot_fork_active_callbacks);
++    crucible_hot_fork_bh_transition_end(true);
+ 
+     if (reentrancy_guard) {
+         reentrancy_guard->engaged_in_io = last_engaged_in_io;
+@@ -321,7 +459,7 @@ int aio_bh_poll(AioContext *ctx)
+             aio_bh_call(bh);
+         }
+         if (flags & (BH_DELETED | BH_ONESHOT)) {
+-            g_free(bh);
++            crucible_hot_fork_bh_free(bh);
+         }
+     }
+ 
+@@ -342,7 +480,11 @@ void qemu_bh_schedule(QEMUBH *bh)
+  */
+ void qemu_bh_cancel(QEMUBH *bh)
+ {
+-    qatomic_and(&bh->flags, ~BH_SCHEDULED);
++    unsigned old_flags;
++
++    crucible_hot_fork_bh_transition_begin();
++    old_flags = qatomic_fetch_and(&bh->flags, ~BH_SCHEDULED);
++    crucible_hot_fork_bh_transition_end(old_flags & BH_SCHEDULED);
+ }
+ 
+ /* This func is async.The bottom half will do the delete action at the finial
+@@ -515,7 +657,7 @@ aio_ctx_finalize(GSource     *source)
+             abort();
+         }
+ 
+-        g_free(bh);
++        crucible_hot_fork_bh_free(bh);
+     }
+ 
+     aio_set_event_notifier(ctx, &ctx->notifier, NULL, NULL, NULL);

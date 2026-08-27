@@ -278,12 +278,60 @@ thread inventory. The top-level counts are exact checked sums, and `complete`
 equals `!overflowed && assigned-contexts == context-count`. The generation
 advances on context creation, destruction, or home-thread reassignment.
 
-This response is still observational. It does not enumerate AIO handlers,
-drain or park a context, prevent a producer from enqueueing work after the
-query, or hold quiescence across `fork(2)`. It therefore MUST NOT acknowledge
-proof bit 3. The future coordinator must extend the inventory to the remaining
-handler resources and establish a retained AIO/BH/timer barrier across the fork
-transaction.
+Patched POSIX QEMU separately exposes every allocated `QEMUBH`, including
+inert, pending, active, canceled, one-shot, and deferred-deletion instances:
+
+```text
+CrucibleHotForkBottomHalfInventory {
+    schema-version: u32 = 1,
+    generation: u64,
+    complete: bool,
+    overflowed: bool,
+    stable: bool,
+    bottom-half-count: u32,
+    pending-bottom-halves: u32,
+    scheduled-bottom-halves: u32,
+    deleted-bottom-halves: u32,
+    active-callbacks: u64,
+    bottom-halves: [
+        {
+            bottom-half-id: positive u64,
+            context-id: positive u64,
+            name: nonempty UTF-8 string of at most 128 bytes,
+            name-valid: bool,
+            pending: bool,
+            scheduled: bool,
+            deleted: bool,
+            oneshot: bool,
+            idle: bool,
+            active-callbacks: u32,
+        },
+    ],
+}
+```
+
+`bottom-halves` contains at most 65,536 records in strictly increasing
+`bottom-half-id` order. Every `context-id` MUST appear in the matching
+AioContext inventory. `scheduled` or `idle` implies `pending`; active and
+deleted state may coexist with pending state because a callback can rearm or
+delete itself. The top-level counts are exact checked sums. `complete` equals
+`!overflowed && stable && all(name-valid)`. Creation, final free, enqueue,
+dequeue, cancel, deletion, and callback begin/end transitions advance the
+monotonic generation. Snapshotting serializes the allocation list and accepts
+`stable` only when no lock-free state transition is active at either copy
+boundary and that generation does not change during the bounded copy.
+Diagnostic names are copied at creation rather than dereferencing callback
+metadata during the query. The command is executed out of band after explicit
+QMP OOB negotiation, so the query does not create and then observe its own
+one-shot QMP-dispatch bottom half. A peer that cannot negotiate OOB MUST fail
+closed rather than issue this inventory through ordinary in-band dispatch.
+
+The AioContext and bottom-half responses are still observational. They do not
+enumerate AIO handlers, drain or park a context, prevent a producer from
+enqueueing work after either query, or hold quiescence across `fork(2)`. They
+therefore MUST NOT acknowledge proof bit 3. The future coordinator must extend
+the inventory to the remaining handler resources and establish a retained
+AIO/BH/timer barrier across the fork transaction.
 
 Patched POSIX QEMU also exposes the bounded observational mutex inventory used
 to define the process-private lock side of the child-reinitialization proof:
@@ -383,11 +431,14 @@ the timer and AIO/BH barriers across the fork transaction.
 The Phase 6 host audit complements that query with bounded operational evidence
 for one exact Linux process generation. It accepts only while proof bit 2 is
 set, brackets the procfs capture with two identical thread-registry, RCU,
-AioContext, mutex, and timer snapshots inside two identical readiness reports,
+AioContext, bottom-half, mutex, and timer snapshots inside two identical
+readiness reports,
 authenticates the QEMU PID/start-time/executable identity before and after, and
-requires two complete process-inventory passes to match byte-for-byte. Each
-QEMU-registered thread
-MUST be present in that exact process generation. Procfs threads absent from
+rejects any incomplete QMP inventory before requiring two complete
+process-inventory passes to match byte-for-byte. Every
+bottom half MUST name a context in the matching AioContext inventory. Each
+QEMU-registered thread MUST be present in that exact process generation.
+Procfs threads absent from
 the internal registry are reported separately as externally created blockers.
 Each pass also records descriptor numbers and link targets and
 `/proc/<pid>/maps` records, including writable/shared classification. A warm
@@ -411,10 +462,12 @@ The thread registry identifies the live RCU callback and AIO-context workers
 by subsystem-specific unresolved dispositions. The RCU inventory exposes the
 exact observed reader and callback state, the AioContext inventory exposes
 home-thread binding plus instantaneous poll, dispatch, bottom-half, coroutine,
-and notification activity, the mutex inventory exposes instantaneous owner,
-recursion, waiter, and unlock-transition state, and the timer inventory exposes
-every pending timer and active callback, while any other
-non-coordinator remains plain `unclassified`. None is a child disposition or a
+and notification activity, the bottom-half inventory exposes every allocated
+instance and its exact AioContext and lifecycle state, the mutex inventory
+exposes instantaneous owner, recursion, waiter, and unlock-transition state,
+and the timer inventory exposes every pending timer and active callback, while
+any other non-coordinator remains plain `unclassified`. None is a child
+disposition or a
 held barrier.
 Those proofs must be produced while the future QEMU coordinator holds the
 corresponding subsystem barriers.

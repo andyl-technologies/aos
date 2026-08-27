@@ -832,6 +832,13 @@
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded QMP inventory exposes every pending timer and active callback with exact process-local identities, clock, expiry, scale, attributes, and state without claiming a retained timer barrier or readiness proof";
     }
+    {
+      file = "0120-crucible-hot-fork-bottom-half-inventory.patch";
+      catalogName = "crucible-hot-fork-bottom-half-inventory";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "a bounded QMP inventory exposes every allocated QEMUBH, including inert, pending, active, canceled, and deferred-deletion instances, with exact AioContext binding and state without claiming a retained AIO/BH/timer barrier or readiness proof";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

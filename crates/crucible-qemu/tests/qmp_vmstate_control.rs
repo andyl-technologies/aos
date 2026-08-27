@@ -12,12 +12,12 @@ use std::time::Duration;
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_CONT_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME,
-    QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND, QemuExactSnapshotPolicy,
-    QemuQmpVmStateControlChannel, QmpCommandKind, QmpHotForkProof, QmpSnapshotTag,
-    QmpTimeoutStream,
+    QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_READINESS_COMMAND,
+    QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
+    QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND,
+    QMP_SNAPSHOT_SAVE_COMMAND, QemuExactSnapshotPolicy, QemuQmpVmStateControlChannel,
+    QmpCommandKind, QmpHotForkProof, QmpSnapshotTag, QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -152,6 +152,33 @@ fn vmstate_control_forwards_exact_hot_fork_aio_inventory() -> Result<(), Box<dyn
     assert_eq!(
         execute_name(json_line(&lines, 1)),
         Some(QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND)
+    );
+    Ok(())
+}
+
+#[test]
+fn vmstate_control_forwards_exact_hot_fork_bottom_half_inventory() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":7,"complete":true,"overflowed":false,"stable":true,"bottom-half-count":1,"pending-bottom-halves":0,"scheduled-bottom-halves":0,"deleted-bottom-halves":0,"active-callbacks":0,"bottom-halves":[{"bottom-half-id":2,"context-id":1,"name":"co_schedule_bh","name-valid":true,"pending":false,"scheduled":false,"deleted":false,"oneshot":false,"idle":false,"active-callbacks":0}]}}"#,
+    ]);
+    let written = Arc::clone(&stream.written);
+    let mut control = QemuQmpVmStateControlChannel::connect(stream)?;
+
+    let inventory = control.query_hot_fork_bottom_half_inventory()?;
+    assert_eq!(inventory.generation(), 7);
+    assert_eq!(inventory.bottom_halves()[0].context_id(), 1);
+
+    drop(control);
+    let lines = written_json_lines(
+        &written
+            .lock()
+            .expect("scripted QMP write audit should remain available"),
+    )?;
+    assert_eq!(
+        oob_execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND)
     );
     Ok(())
 }
@@ -326,6 +353,10 @@ fn json_line(lines: &[Value], index: usize) -> &Value {
 
 fn execute_name(value: &Value) -> Option<&str> {
     value.get("execute").and_then(Value::as_str)
+}
+
+fn oob_execute_name(value: &Value) -> Option<&str> {
+    value.get("exec-oob").and_then(Value::as_str)
 }
 
 fn checkpoint_with_hash_byte(byte: u8) -> Checkpoint {

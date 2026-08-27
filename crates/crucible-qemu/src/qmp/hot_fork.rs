@@ -17,6 +17,9 @@ pub const QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND: &str =
 pub const QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND: &str = "query-crucible-hot-fork-rcu-inventory";
 /// QMP command name used for QEMU's bounded AioContext activity inventory.
 pub const QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND: &str = "query-crucible-hot-fork-aio-inventory";
+/// QMP command name used for QEMU's bounded allocated-bottom-half inventory.
+pub const QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND: &str =
+    "query-crucible-hot-fork-bottom-half-inventory";
 /// QMP command name used for QEMU's bounded mutex ownership inventory.
 pub const QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND: &str =
     "query-crucible-hot-fork-mutex-inventory";
@@ -32,6 +35,8 @@ pub const QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION: u32 = 2;
 pub const QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned AioContext activity inventory contract.
 pub const QMP_HOT_FORK_AIO_INVENTORY_SCHEMA_VERSION: u32 = 1;
+/// Version of the QEMU-owned allocated-bottom-half inventory contract.
+pub const QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned mutex ownership inventory contract.
 pub const QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned live-timer inventory contract.
@@ -45,12 +50,16 @@ pub const QMP_HOT_FORK_THREAD_INVENTORY_MAX: usize = 65_536;
 pub const QMP_HOT_FORK_RCU_INVENTORY_MAX: usize = 65_536;
 /// Maximum registered AioContexts retained by one inventory response.
 pub const QMP_HOT_FORK_AIO_INVENTORY_MAX: usize = 65_536;
+/// Maximum allocated bottom halves retained by one inventory response.
+pub const QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX: usize = 65_536;
 /// Maximum registered mutexes retained by one inventory response.
 pub const QMP_HOT_FORK_MUTEX_INVENTORY_MAX: usize = 65_536;
 /// Maximum unique pending or callback-active timers retained by one response.
 pub const QMP_HOT_FORK_TIMER_INVENTORY_MAX: usize = 65_536;
 /// Maximum UTF-8 bytes retained for one QEMU thread name.
 pub const QMP_HOT_FORK_THREAD_NAME_MAX_BYTES: usize = 256;
+/// Maximum UTF-8 bytes retained for one QEMU bottom-half diagnostic name.
+pub const QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES: usize = 128;
 
 /// One independently acknowledged hot-fork readiness proof.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -226,6 +235,17 @@ impl QmpHotForkThreadInventory {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn incomplete() -> Self {
+        Self {
+            generation: 1,
+            complete: false,
+            overflowed: true,
+            unclassified_threads: 0,
+            threads: Vec::new(),
+        }
+    }
+
     /// Returns the process-local register/unregister/disposition generation.
     #[must_use]
     pub const fn generation(&self) -> u64 {
@@ -311,6 +331,19 @@ impl QmpHotForkRcuInventory {
                     active: false,
                 })
                 .collect(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn incomplete() -> Self {
+        Self {
+            generation: 1,
+            complete: false,
+            overflowed: true,
+            active_readers: 0,
+            pending_callbacks: 0,
+            drain_active: false,
+            readers: Vec::new(),
         }
     }
 
@@ -451,6 +484,16 @@ impl QmpHotForkAioInventory {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn incomplete() -> Self {
+        Self {
+            generation: 1,
+            complete: false,
+            overflowed: true,
+            contexts: Vec::new(),
+        }
+    }
+
     /// Returns the process-local context lifecycle and home-assignment generation.
     #[must_use]
     pub const fn generation(&self) -> u64 {
@@ -476,6 +519,160 @@ impl QmpHotForkAioInventory {
     #[must_use]
     pub fn contexts(&self) -> &[QmpHotForkAioContext] {
         &self.contexts
+    }
+}
+
+/// One allocated QEMU bottom half and its instantaneous lifecycle state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QmpHotForkBottomHalf {
+    bottom_half_id: u64,
+    context_id: u64,
+    name: String,
+    name_valid: bool,
+    pending: bool,
+    scheduled: bool,
+    deleted: bool,
+    oneshot: bool,
+    idle: bool,
+    active_callbacks: u32,
+}
+
+impl QmpHotForkBottomHalf {
+    /// Returns the positive stable process-local bottom-half identifier.
+    #[must_use]
+    pub const fn bottom_half_id(&self) -> u64 {
+        self.bottom_half_id
+    }
+
+    /// Returns the positive process-local identity of the owning AioContext.
+    #[must_use]
+    pub const fn context_id(&self) -> u64 {
+        self.context_id
+    }
+
+    /// Returns the bounded copied diagnostic callback name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns whether the name is the exact nonempty creation-time value.
+    #[must_use]
+    pub const fn name_valid(&self) -> bool {
+        self.name_valid
+    }
+
+    /// Returns whether the bottom half is enqueued for dispatch.
+    #[must_use]
+    pub const fn pending(&self) -> bool {
+        self.pending
+    }
+
+    /// Returns whether the pending bottom half is scheduled rather than idle.
+    #[must_use]
+    pub const fn scheduled(&self) -> bool {
+        self.scheduled
+    }
+
+    /// Returns whether deletion was requested and final free is deferred.
+    #[must_use]
+    pub const fn deleted(&self) -> bool {
+        self.deleted
+    }
+
+    /// Returns whether the bottom half is a self-deleting one-shot callback.
+    #[must_use]
+    pub const fn oneshot(&self) -> bool {
+        self.oneshot
+    }
+
+    /// Returns whether the pending bottom half was scheduled as idle work.
+    #[must_use]
+    pub const fn idle(&self) -> bool {
+        self.idle
+    }
+
+    /// Returns the number of callbacks currently executing.
+    #[must_use]
+    pub const fn active_callbacks(&self) -> u32 {
+        self.active_callbacks
+    }
+}
+
+/// Exact bounded observational snapshot of every allocated QEMU bottom half.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QmpHotForkBottomHalfInventory {
+    generation: u64,
+    complete: bool,
+    overflowed: bool,
+    stable: bool,
+    bottom_halves: Vec<QmpHotForkBottomHalf>,
+}
+
+impl QmpHotForkBottomHalfInventory {
+    #[cfg(test)]
+    pub(crate) fn one_idle(bottom_half_id: u64, context_id: u64) -> Self {
+        Self {
+            generation: 1,
+            complete: true,
+            overflowed: false,
+            stable: true,
+            bottom_halves: vec![QmpHotForkBottomHalf {
+                bottom_half_id,
+                context_id,
+                name: "test-bottom-half".to_owned(),
+                name_valid: true,
+                pending: false,
+                scheduled: false,
+                deleted: false,
+                oneshot: false,
+                idle: false,
+                active_callbacks: 0,
+            }],
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn incomplete() -> Self {
+        Self {
+            generation: 1,
+            complete: false,
+            overflowed: false,
+            stable: false,
+            bottom_halves: Vec::new(),
+        }
+    }
+
+    /// Returns the process-local lifecycle and state generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns whether the bounded registry snapshot is stable and valid.
+    ///
+    /// Completeness remains observational and cannot authorize a fork.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.complete
+    }
+
+    /// Returns whether allocated bottom halves exceeded the inventory bound.
+    #[must_use]
+    pub const fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
+    /// Returns whether no bottom-half transition raced the bounded copy.
+    #[must_use]
+    pub const fn stable(&self) -> bool {
+        self.stable
+    }
+
+    /// Returns every allocated bottom half in ascending identifier order.
+    #[must_use]
+    pub fn bottom_halves(&self) -> &[QmpHotForkBottomHalf] {
+        &self.bottom_halves
     }
 }
 
@@ -1170,6 +1367,205 @@ pub(super) fn parse_hot_fork_aio_inventory(
         complete,
         overflowed,
         contexts,
+    })
+}
+
+pub(super) fn parse_hot_fork_bottom_half_inventory(
+    value: &Value,
+) -> Result<QmpHotForkBottomHalfInventory, QmpError> {
+    let malformed = || QmpError::MalformedTypedResponse {
+        command: QmpCommandKind::QueryHotForkBottomHalfInventory,
+        response: value.to_string(),
+    };
+    let object = value.as_object().ok_or_else(&malformed)?;
+    let fields = [
+        "schema-version",
+        "generation",
+        "complete",
+        "overflowed",
+        "stable",
+        "bottom-half-count",
+        "pending-bottom-halves",
+        "scheduled-bottom-halves",
+        "deleted-bottom-halves",
+        "active-callbacks",
+        "bottom-halves",
+    ];
+    if object.len() != fields.len() || !fields.iter().all(|field| object.contains_key(*field)) {
+        return Err(malformed());
+    }
+
+    let schema_version = object
+        .get("schema-version")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let generation = object
+        .get("generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let complete = object
+        .get("complete")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let overflowed = object
+        .get("overflowed")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let stable = object
+        .get("stable")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let declared_count = object
+        .get("bottom-half-count")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_pending = object
+        .get("pending-bottom-halves")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_scheduled = object
+        .get("scheduled-bottom-halves")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_deleted = object
+        .get("deleted-bottom-halves")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_active_callbacks = object
+        .get("active-callbacks")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let values = object
+        .get("bottom-halves")
+        .and_then(Value::as_array)
+        .ok_or_else(&malformed)?;
+    if schema_version != u64::from(QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION)
+        || values.len() > QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX
+        || declared_count != values.len()
+    {
+        return Err(malformed());
+    }
+
+    let entry_fields = [
+        "bottom-half-id",
+        "context-id",
+        "name",
+        "name-valid",
+        "pending",
+        "scheduled",
+        "deleted",
+        "oneshot",
+        "idle",
+        "active-callbacks",
+    ];
+    let mut bottom_halves = Vec::with_capacity(values.len());
+    let mut previous_bottom_half_id = None;
+    let mut pending_count = 0_usize;
+    let mut scheduled_count = 0_usize;
+    let mut deleted_count = 0_usize;
+    let mut active_callbacks = 0_u64;
+    let mut valid_entries = true;
+    for value in values {
+        let entry = value.as_object().ok_or_else(&malformed)?;
+        if entry.len() != entry_fields.len()
+            || !entry_fields.iter().all(|field| entry.contains_key(*field))
+        {
+            return Err(malformed());
+        }
+
+        let bottom_half_id = entry
+            .get("bottom-half-id")
+            .and_then(Value::as_u64)
+            .filter(|identifier| *identifier != 0)
+            .ok_or_else(&malformed)?;
+        if previous_bottom_half_id.is_some_and(|previous| previous >= bottom_half_id) {
+            return Err(malformed());
+        }
+        previous_bottom_half_id = Some(bottom_half_id);
+        let context_id = entry
+            .get("context-id")
+            .and_then(Value::as_u64)
+            .filter(|identifier| *identifier != 0)
+            .ok_or_else(&malformed)?;
+        let name = entry
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| {
+                !name.is_empty() && name.len() <= QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES
+            })
+            .ok_or_else(&malformed)?;
+        let name_valid = entry
+            .get("name-valid")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let pending = entry
+            .get("pending")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let scheduled = entry
+            .get("scheduled")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let deleted = entry
+            .get("deleted")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let oneshot = entry
+            .get("oneshot")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let idle = entry
+            .get("idle")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let entry_active_callbacks = entry
+            .get("active-callbacks")
+            .and_then(Value::as_u64)
+            .and_then(|count| u32::try_from(count).ok())
+            .ok_or_else(&malformed)?;
+        if (scheduled || idle) && !pending {
+            return Err(malformed());
+        }
+
+        pending_count += usize::from(pending);
+        scheduled_count += usize::from(scheduled);
+        deleted_count += usize::from(deleted);
+        active_callbacks = active_callbacks
+            .checked_add(u64::from(entry_active_callbacks))
+            .ok_or_else(&malformed)?;
+        valid_entries &= name_valid;
+        bottom_halves.push(QmpHotForkBottomHalf {
+            bottom_half_id,
+            context_id,
+            name: name.to_owned(),
+            name_valid,
+            pending,
+            scheduled,
+            deleted,
+            oneshot,
+            idle,
+            active_callbacks: entry_active_callbacks,
+        });
+    }
+    if declared_pending != pending_count
+        || declared_scheduled != scheduled_count
+        || declared_deleted != deleted_count
+        || declared_active_callbacks != active_callbacks
+        || complete != (!overflowed && stable && valid_entries)
+    {
+        return Err(malformed());
+    }
+
+    Ok(QmpHotForkBottomHalfInventory {
+        generation,
+        complete,
+        overflowed,
+        stable,
+        bottom_halves,
     })
 }
 

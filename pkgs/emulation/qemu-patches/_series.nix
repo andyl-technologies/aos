@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "f9285f3eb18c9431851da91351721c5b682b4890b7ec15b9e99fa0a02726827e";
+  patchBranchBundleSha256 = "caf32f19f3e4fd569180fe299e39c9908d7ef4a2285bb4456c2223df29f49052";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "f07121b0c783e61e26cdad4f4084bae9176f292c";
+  patchBranchHeadCommit = "17bced64c6eed1e17aa1ab5e388951ea1af1318e";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1125,6 +1125,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded versioned QMP inventory reports every pending timer and executing callback by stable process-local timer and timer-list identity, exact clock, expiry, scale, attributes, and rearmed-callback state; the report remains observational, supplies no retained timer barrier, and leaves the AIO/BH/timer readiness proof clear";
+    }
+    {
+      file = "0120-crucible-hot-fork-bottom-half-inventory.patch";
+      branchSubject = "crucible: inventory hot-fork bottom halves";
+      branchCommit = "17bced64c6eed1e17aa1ab5e388951ea1af1318e";
+      branchTree = "9d55b51e52826ebd6b64ba3239f3f2977e94a396";
+      catalogName = "crucible-hot-fork-bottom-half-inventory";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "a bounded versioned QMP inventory reports every allocated bottom half, including inert, pending, active, canceled, one-shot, idle, and deferred-deletion instances, under stable process-local bottom-half and AioContext identities; the report remains observational, supplies no retained bottom-half barrier, and leaves the AIO/BH/timer readiness proof clear";
     }
   ];
   catalogOnlyCapabilities = [

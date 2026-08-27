@@ -6,10 +6,10 @@ use std::os::unix::net::UnixStream;
 use crucible::Checkpoint;
 
 use super::{
-    QmpClient, QmpCommandComplete, QmpError, QmpHotForkAioInventory, QmpHotForkMutexInventory,
-    QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkThreadInventory,
-    QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind,
-    QmpSnapshotTag, QmpTimeoutStream,
+    QmpClient, QmpCommandComplete, QmpError, QmpHotForkAioInventory, QmpHotForkBottomHalfInventory,
+    QmpHotForkMutexInventory, QmpHotForkRcuInventory, QmpHotForkReadiness,
+    QmpHotForkThreadInventory, QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy,
+    QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use crate::{
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
@@ -174,6 +174,20 @@ where
     ) -> Result<QmpHotForkAioInventory, QemuNodeChannelError> {
         self.client
             .query_hot_fork_aio_inventory()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Queries QEMU's exact bounded allocated-bottom-half inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
+    /// not satisfy the closed bottom-half inventory schema and bounds.
+    pub fn query_hot_fork_bottom_half_inventory(
+        &mut self,
+    ) -> Result<QmpHotForkBottomHalfInventory, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_bottom_half_inventory()
             .map_err(QemuNodeChannelError::from)
     }
 

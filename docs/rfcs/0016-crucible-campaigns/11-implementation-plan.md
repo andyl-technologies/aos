@@ -1574,6 +1574,22 @@ checks every assigned home thread against the QEMU thread registry, and rejects
 changed context state. This is observational and still omits AIO handlers, a
 retained drain/park barrier, and child reinitializers; readiness bit 3 therefore
 remains clear.
+QEMU now also exposes a version-1, 65,536-entry allocated-`QEMUBH` inventory.
+It reports inert, pending, active, canceled, one-shot, and deferred-deletion
+instances under stable process-local bottom-half identities, with exact owning
+AioContext, copied diagnostic name, enqueue class, lifecycle state, active
+callback count, checked aggregates, and a monotonic transition generation. The
+lock-free mutations are bracketed by an in-flight transition count, so stable
+reports require no transition at either copy boundary as well as an unchanged
+generation. The typed client negotiates QMP OOB and issues this query out of
+band so it does not
+observe its own one-shot dispatch bottom half. The host brackets procfs capture
+with identical stable reports and requires every
+bottom half to name a context in the matching AioContext inventory. The audit
+rejects incomplete thread, RCU, AioContext, bottom-half, mutex, or timer
+reports. This is
+observational and still does not enumerate AIO handlers or retain a drain/park
+barrier across `fork(2)`; readiness bit 3 remains clear.
 QEMU now also exposes a version-1, 65,536-entry POSIX `QemuMutex` and
 `QemuRecMutex` inventory. It reports sorted lifecycle identities, owner thread,
 recursion depth, acquisition and condition waiters, active unlock transitions,

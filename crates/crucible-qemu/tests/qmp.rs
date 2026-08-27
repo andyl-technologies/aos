@@ -13,14 +13,15 @@ use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT,
     QMP_HOT_FORK_REQUIRED_PROOFS, QMP_QUERY_CPUS_FAST_COMMAND,
-    QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_READINESS_COMMAND,
-    QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
-    QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME,
-    QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
-    QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient, QmpCommandKind, QmpError,
-    QmpGreeting, QmpHotForkProof, QmpHotForkThreadDisposition, QmpHotForkTimerClock,
-    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
+    QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND,
+    QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient,
+    QmpCommandKind, QmpError, QmpGreeting, QmpHotForkProof, QmpHotForkThreadDisposition,
+    QmpHotForkTimerClock, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag,
+    QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -53,6 +54,12 @@ fn qmp_connect_reads_greeting_and_negotiates_capabilities() -> Result<(), Box<dy
     assert_eq!(
         execute_name(json_line(&lines, 0)),
         Some(QMP_CAPABILITIES_COMMAND)
+    );
+    assert_eq!(
+        json_line(&lines, 0)
+            .pointer("/arguments/enable/0")
+            .and_then(Value::as_str),
+        Some("oob")
     );
     assert!(!audit.read_timeouts.is_empty());
     assert!(
@@ -457,6 +464,67 @@ fn hot_fork_aio_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn Er
             client.query_hot_fork_aio_inventory(),
             Err(QmpError::MalformedTypedResponse {
                 command: QmpCommandKind::QueryHotForkAioInventory,
+                ..
+            })
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn hot_fork_bottom_half_inventory_is_exact_bounded_and_sorted() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":12,"complete":true,"overflowed":false,"stable":true,"bottom-half-count":2,"pending-bottom-halves":1,"scheduled-bottom-halves":1,"deleted-bottom-halves":1,"active-callbacks":2,"bottom-halves":[{"bottom-half-id":1,"context-id":4,"name":"co_schedule_bh","name-valid":true,"pending":false,"scheduled":false,"deleted":false,"oneshot":false,"idle":false,"active-callbacks":0},{"bottom-half-id":3,"context-id":4,"name":"aio_bh_call","name-valid":true,"pending":true,"scheduled":true,"deleted":true,"oneshot":true,"idle":false,"active-callbacks":2}]}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let inventory = client.query_hot_fork_bottom_half_inventory()?;
+    assert_eq!(inventory.generation(), 12);
+    assert!(inventory.complete());
+    assert!(!inventory.overflowed());
+    assert!(inventory.stable());
+    assert_eq!(inventory.bottom_halves().len(), 2);
+    assert_eq!(inventory.bottom_halves()[0].bottom_half_id(), 1);
+    assert_eq!(inventory.bottom_halves()[0].context_id(), 4);
+    assert_eq!(inventory.bottom_halves()[0].name(), "co_schedule_bh");
+    assert!(inventory.bottom_halves()[0].name_valid());
+    assert!(!inventory.bottom_halves()[0].pending());
+    assert!(inventory.bottom_halves()[1].scheduled());
+    assert!(inventory.bottom_halves()[1].deleted());
+    assert!(inventory.bottom_halves()[1].oneshot());
+    assert!(!inventory.bottom_halves()[1].idle());
+    assert_eq!(inventory.bottom_halves()[1].active_callbacks(), 2);
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    assert_eq!(
+        oob_execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND)
+    );
+    Ok(())
+}
+
+#[test]
+fn hot_fork_bottom_half_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn Error>> {
+    for response in [
+        r#"{"return":{"schema-version":2,"generation":1,"complete":true,"overflowed":false,"stable":true,"bottom-half-count":0,"pending-bottom-halves":0,"scheduled-bottom-halves":0,"deleted-bottom-halves":0,"active-callbacks":0,"bottom-halves":[]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"stable":true,"bottom-half-count":2,"pending-bottom-halves":0,"scheduled-bottom-halves":0,"deleted-bottom-halves":0,"active-callbacks":0,"bottom-halves":[{"bottom-half-id":1,"context-id":1,"name":"bh","name-valid":true,"pending":false,"scheduled":false,"deleted":false,"oneshot":false,"idle":false,"active-callbacks":0}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"stable":true,"bottom-half-count":2,"pending-bottom-halves":0,"scheduled-bottom-halves":0,"deleted-bottom-halves":0,"active-callbacks":0,"bottom-halves":[{"bottom-half-id":2,"context-id":1,"name":"bh2","name-valid":true,"pending":false,"scheduled":false,"deleted":false,"oneshot":false,"idle":false,"active-callbacks":0},{"bottom-half-id":1,"context-id":1,"name":"bh1","name-valid":true,"pending":false,"scheduled":false,"deleted":false,"oneshot":false,"idle":false,"active-callbacks":0}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"stable":true,"bottom-half-count":1,"pending-bottom-halves":0,"scheduled-bottom-halves":1,"deleted-bottom-halves":0,"active-callbacks":0,"bottom-halves":[{"bottom-half-id":1,"context-id":1,"name":"bh","name-valid":true,"pending":false,"scheduled":true,"deleted":false,"oneshot":false,"idle":false,"active-callbacks":0}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"stable":false,"bottom-half-count":0,"pending-bottom-halves":0,"scheduled-bottom-halves":0,"deleted-bottom-halves":0,"active-callbacks":0,"bottom-halves":[]}}"#,
+    ] {
+        let mut client = QmpClient::connect(scripted_qmp([
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            response,
+        ]))?;
+        assert!(matches!(
+            client.query_hot_fork_bottom_half_inventory(),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::QueryHotForkBottomHalfInventory,
                 ..
             })
         ));

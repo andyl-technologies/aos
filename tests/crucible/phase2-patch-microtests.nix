@@ -1586,6 +1586,23 @@
         '';
       };
     }
+    {
+      patch = "0120-crucible-hot-fork-bottom-half-inventory.patch";
+      check = certifyExactPatch {
+        patchName = "0120-crucible-hot-fork-bottom-half-inventory.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-bottom-half-inventory";
+        liveEvidence = ''
+          grep -Fxq 'bottom_half_inventory_schema_version=1' "$live_result"
+          grep -Fxq 'bottom_half_inventory_bound=65536' "$live_result"
+          grep -Fxq 'bottom_half_inventory_stable=true' "$live_result"
+          grep -Fxq 'bottom_half_inventory_exact=true' "$live_result"
+          grep -Fxq 'bottom_half_contexts_aio_bound=true' "$live_result"
+          grep -Fxq 'bottom_half_proof_acknowledged=false' "$live_result"
+          grep -Fxq 'incomplete_report_ready=false' "$live_result"
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =
