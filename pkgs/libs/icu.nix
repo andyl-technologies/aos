@@ -122,10 +122,26 @@ in
               's|${stdenv.cc}/bin/||g' \
               "$metadata_dir/Makefile.inc" \
               "$metadata_dir/pkgdata.inc"
+
+            # The same downstream metadata also records the Linux build
+            # shell and install utility. Consumers supply these build tools;
+            # publishing their native store paths would retain an unrelated
+            # Linux runtime in every target ICU closure.
+            sed -i \
+              -e 's|^SHELL = .*|SHELL = bash|' \
+              -e 's|^INSTALL_CMD=.*|INSTALL_CMD=install -c|' \
+              "$metadata_dir/Makefile.inc" \
+              "$metadata_dir/pkgdata.inc"
             if grep -F '${stdenv.cc}' \
               "$metadata_dir/Makefile.inc" \
               "$metadata_dir/pkgdata.inc"; then
               echo "ICU target metadata retains the cross compiler" >&2
+              exit 1
+            fi
+            if grep -E '/nix/store/[a-z0-9]+-(bash|coreutils)-' \
+              "$metadata_dir/Makefile.inc" \
+              "$metadata_dir/pkgdata.inc"; then
+              echo "ICU target metadata retains native build utilities" >&2
               exit 1
             fi
 
