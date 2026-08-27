@@ -6,6 +6,7 @@ use crucible::model::FaultResourceLimits;
 use std::collections::BTreeSet;
 use std::io::Read as _;
 
+mod decision_wire;
 mod decode;
 mod io;
 use io::{BoundedReadError, read_bounded_file};
@@ -52,16 +53,16 @@ struct ClosureManifest {
     #[serde(deserialize_with = "decode::deserialize_vec")]
     targets: Vec<TargetManifest>,
     #[serde(deserialize_with = "decode::deserialize_vec")]
-    node_generations: Vec<(String, u64)>,
+    node_generations: Vec<(decode::FallibleString, u64)>,
     #[serde(deserialize_with = "decode::deserialize_vec")]
-    node_service_states: Vec<(String, u8)>,
+    node_service_states: Vec<(decode::FallibleString, u8)>,
     identity: ContentHash,
 }
 
 #[derive(PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetManifest {
-    node: String,
+    node: decode::FallibleString,
     counter: u64,
     scheduler_time: u64,
     snapshot: ContentHash,
@@ -106,16 +107,16 @@ struct LifecycleWire {
 #[serde(rename_all = "snake_case")]
 enum TerminalWire {
     Passed,
-    Failed(#[serde(deserialize_with = "decode::deserialize_vec")] Vec<String>),
+    Failed(#[serde(deserialize_with = "decode::deserialize_vec")] Vec<decode::FallibleString>),
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum TerminalCauseWire {
     Passed,
-    Failed(#[serde(deserialize_with = "decode::deserialize_vec")] Vec<String>),
+    Failed(#[serde(deserialize_with = "decode::deserialize_vec")] Vec<decode::FallibleString>),
     BudgetExhausted,
-    BackendCrash(String),
+    BackendCrash(decode::FallibleString),
     OperatorStop,
 }
 
@@ -126,7 +127,7 @@ struct BranchWire {
     base_schedule: Vec<u8>,
     frontier: u64,
     #[serde(deserialize_with = "decode::deserialize_vec")]
-    decisions: Vec<Decision>,
+    decisions: Vec<decision_wire::DecisionWire>,
     seed: Option<[u8; 32]>,
 }
 
@@ -136,7 +137,7 @@ struct RecordedControlWire {
     #[serde(deserialize_with = "decode::deserialize_vec")]
     configuration_schedule: Vec<u8>,
     #[serde(deserialize_with = "decode::deserialize_vec")]
-    node_times: Vec<(String, u64)>,
+    node_times: Vec<(decode::FallibleString, u64)>,
     #[serde(deserialize_with = "decode::deserialize_vec")]
     control: Vec<ControlOperation>,
 }
@@ -270,7 +271,7 @@ pub(super) fn persist_exact_checkpoint_set(
     )?;
     for target in &manifest.targets {
         let node = NodeId {
-            name: target.node.clone(),
+            name: target.node.to_string(),
         };
         let snapshot = objects
             .snapshots
@@ -478,9 +479,9 @@ pub(super) fn load_exact_checkpoint_set(
     .map_err(|error| loop_factory_error(format!("decode fault continuation: {error}")))?;
 
     let mut targets = BTreeMap::new();
-    for target in &manifest.targets {
+    for target in manifest.targets {
         let node = NodeId {
-            name: target.node.clone(),
+            name: target.node.into_string(),
         };
         let snapshot = ExactSnapshotHandle::from_canonical_bytes_with_limit(
             &read_object(
@@ -492,10 +493,7 @@ pub(super) fn load_exact_checkpoint_set(
             limits.fat_checkpoint_bytes,
         )
         .map_err(|error| {
-            loop_factory_error(format!(
-                "decode QEMU snapshot for `{}`: {error}",
-                target.node
-            ))
+            loop_factory_error(format!("decode QEMU snapshot for `{}`: {error}", node.name))
         })?;
         let restored = ProductionVmExactCheckpointTarget {
             configuration: configuration.clone(),
@@ -508,13 +506,13 @@ pub(super) fn load_exact_checkpoint_set(
                 source: ProductionCheckpointArtifactSource::ChunkStore(object_directory.clone()),
                 identity: target.overlay.identity,
                 length: target.overlay.length,
-                chunks: target.overlay.chunks.clone(),
+                chunks: target.overlay.chunks,
             },
             vmstate_artifact: ProductionCheckpointArtifact {
                 source: ProductionCheckpointArtifactSource::ChunkStore(object_directory.clone()),
                 identity: target.vmstate.identity,
                 length: target.vmstate.length,
-                chunks: target.vmstate.chunks.clone(),
+                chunks: target.vmstate.chunks,
             },
             manifest_identity: target.manifest_identity,
         };
@@ -533,8 +531,8 @@ pub(super) fn load_exact_checkpoint_set(
             ));
         }
     }
-    let node_generations = decode_generations(&manifest.node_generations)?;
-    let node_service_states = decode_service_states(&manifest.node_service_states)?;
+    let node_generations = decode_generations(manifest.node_generations)?;
+    let node_service_states = decode_service_states(manifest.node_service_states)?;
     validate_restored_node_sets(source, &targets, &node_generations, &node_service_states)?;
     let restored = ProductionVmExactCheckpointSet {
         identity,
@@ -806,7 +804,7 @@ fn enforce_persist_limits(
     }
     for target in &manifest.targets {
         let node = NodeId {
-            name: target.node.clone(),
+            name: target.node.to_string(),
         };
         let snapshot = objects
             .snapshots
@@ -902,7 +900,7 @@ fn authenticate_existing_publication(
     }
     for target in &expected.targets {
         let node = NodeId {
-            name: target.node.clone(),
+            name: target.node.to_string(),
         };
         let snapshot = objects
             .snapshots
@@ -940,7 +938,7 @@ fn install_published_artifact_paths(
         let manifest_target = manifest
             .targets
             .iter()
-            .find(|candidate| candidate.node == node.name)
+            .find(|candidate| candidate.node.as_str() == node.name)
             .ok_or_else(|| store_error("published closure target disappeared"))?;
         target.overlay_artifact = ProductionCheckpointArtifact {
             source: ProductionCheckpointArtifactSource::ChunkStore(object_directory.to_path_buf()),
@@ -967,16 +965,26 @@ fn encode_lifecycle(
             .as_ref()
             .map(|terminal| match terminal {
                 QuantumTerminalVerdict::Passed => TerminalWire::Passed,
-                QuantumTerminalVerdict::Failed(failures) => TerminalWire::Failed(failures.clone()),
+                QuantumTerminalVerdict::Failed(failures) => TerminalWire::Failed(
+                    failures
+                        .iter()
+                        .cloned()
+                        .map(decode::FallibleString::new)
+                        .collect(),
+                ),
             }),
         terminal_cause: checkpoint.terminal_cause.as_ref().map(|cause| match cause {
             CheckpointTerminalCause::Passed => TerminalCauseWire::Passed,
-            CheckpointTerminalCause::Failed(failures) => {
-                TerminalCauseWire::Failed(failures.clone())
-            }
+            CheckpointTerminalCause::Failed(failures) => TerminalCauseWire::Failed(
+                failures
+                    .iter()
+                    .cloned()
+                    .map(decode::FallibleString::new)
+                    .collect(),
+            ),
             CheckpointTerminalCause::BudgetExhausted => TerminalCauseWire::BudgetExhausted,
             CheckpointTerminalCause::BackendCrash(detail) => {
-                TerminalCauseWire::BackendCrash(detail.clone())
+                TerminalCauseWire::BackendCrash(decode::FallibleString::new(detail.clone()))
             }
             CheckpointTerminalCause::OperatorStop => TerminalCauseWire::OperatorStop,
         }),
@@ -984,7 +992,11 @@ fn encode_lifecycle(
         branch: checkpoint.branch.as_ref().map(|branch| BranchWire {
             base_schedule: branch.base.schedule.to_compact_binary(),
             frontier: branch.frontier.ticks,
-            decisions: branch.decisions.clone(),
+            decisions: branch
+                .decisions
+                .iter()
+                .map(decision_wire::DecisionWire::from)
+                .collect(),
             seed: branch.seed.map(Seed::bytes),
         }),
         recorded_controls: checkpoint
@@ -995,7 +1007,9 @@ fn encode_lifecycle(
                 node_times: record
                     .node_times
                     .iter()
-                    .map(|(node, time)| (node.name.clone(), time.ticks))
+                    .map(|(node, time)| {
+                        (decode::FallibleString::new(node.name.clone()), time.ticks)
+                    })
                     .collect(),
                 control: record.control.clone(),
             })
@@ -1020,11 +1034,8 @@ fn decode_lifecycle(
     scenario: &ScenarioDef,
     limits: FaultResourceLimits,
 ) -> Result<DecodedLifecycle, LifecycleApiError> {
-    let _budget = decode::DecodeBudgetGuard::enter(limits);
-    let wire: LifecycleWire = ciborium::de::from_reader(bytes).map_err(|error| {
-        decode::map_decode_resource_error(&error)
-            .unwrap_or_else(|| loop_factory_error("decode exact lifecycle continuation"))
-    })?;
+    let wire: LifecycleWire =
+        decode::decode_cbor_with_limits(bytes, limits, "decode exact lifecycle continuation")?;
     let canonical = {
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(&wire, &mut encoded)
@@ -1038,13 +1049,25 @@ fn decode_lifecycle(
     }
     let terminal = wire.terminal.map(|terminal| match terminal {
         TerminalWire::Passed => QuantumTerminalVerdict::Passed,
-        TerminalWire::Failed(failures) => QuantumTerminalVerdict::Failed(failures),
+        TerminalWire::Failed(failures) => QuantumTerminalVerdict::Failed(
+            failures
+                .into_iter()
+                .map(decode::FallibleString::into_string)
+                .collect(),
+        ),
     });
     let terminal_cause = wire.terminal_cause.map(|cause| match cause {
         TerminalCauseWire::Passed => CheckpointTerminalCause::Passed,
-        TerminalCauseWire::Failed(failures) => CheckpointTerminalCause::Failed(failures),
+        TerminalCauseWire::Failed(failures) => CheckpointTerminalCause::Failed(
+            failures
+                .into_iter()
+                .map(decode::FallibleString::into_string)
+                .collect(),
+        ),
         TerminalCauseWire::BudgetExhausted => CheckpointTerminalCause::BudgetExhausted,
-        TerminalCauseWire::BackendCrash(detail) => CheckpointTerminalCause::BackendCrash(detail),
+        TerminalCauseWire::BackendCrash(detail) => {
+            CheckpointTerminalCause::BackendCrash(detail.into_string())
+        }
         TerminalCauseWire::OperatorStop => CheckpointTerminalCause::OperatorStop,
     });
     if !terminal_cause_matches_verdict(terminal_cause.as_ref(), terminal.as_ref()) {
@@ -1068,7 +1091,11 @@ fn decode_lifecycle(
                     frontier: VirtualTime {
                         ticks: branch.frontier,
                     },
-                    decisions: branch.decisions,
+                    decisions: branch
+                        .decisions
+                        .into_iter()
+                        .map(decision_wire::DecisionWire::into_decision)
+                        .collect(),
                     seed: branch.seed.map(Seed::from_bytes),
                 })
             },
@@ -1097,7 +1124,14 @@ fn decode_lifecycle(
             node_times: record
                 .node_times
                 .into_iter()
-                .map(|(name, ticks)| (NodeId { name }, VirtualTime { ticks }))
+                .map(|(name, ticks)| {
+                    (
+                        NodeId {
+                            name: name.into_string(),
+                        },
+                        VirtualTime { ticks },
+                    )
+                })
                 .collect(),
             control: record.control,
         });
@@ -1165,7 +1199,7 @@ fn manifest_and_objects(
             let snapshot = ContentHash::from_bytes(&bytes);
             snapshots.insert(node.clone(), bytes);
             Ok(TargetManifest {
-                node: node.name.clone(),
+                node: decode::FallibleString::new(node.name.clone()),
                 counter: target.counter,
                 scheduler_time: target.scheduler_time.ticks,
                 snapshot,
@@ -1194,12 +1228,17 @@ fn manifest_and_objects(
         node_generations: checkpoint
             .node_generations
             .iter()
-            .map(|(node, generation)| (node.name.clone(), *generation))
+            .map(|(node, generation)| (decode::FallibleString::new(node.name.clone()), *generation))
             .collect(),
         node_service_states: checkpoint
             .node_service_states
             .iter()
-            .map(|(node, state)| (node.name.clone(), service_state_tag(*state)))
+            .map(|(node, state)| {
+                (
+                    decode::FallibleString::new(node.name.clone()),
+                    service_state_tag(*state),
+                )
+            })
             .collect(),
         identity: ContentHash::default(),
     };
@@ -1764,12 +1803,17 @@ fn validate_file_hash(path: &Path, expected: ContentHash) -> Result<(), Schedule
 }
 
 fn decode_generations(
-    values: &[(String, u64)],
+    values: Vec<(decode::FallibleString, u64)>,
 ) -> Result<BTreeMap<NodeId, u64>, LifecycleApiError> {
     let mut decoded = BTreeMap::new();
     for (node, generation) in values {
         if decoded
-            .insert(NodeId { name: node.clone() }, *generation)
+            .insert(
+                NodeId {
+                    name: node.into_string(),
+                },
+                generation,
+            )
             .is_some()
         {
             return Err(loop_factory_error("duplicate checkpoint node generation"));
@@ -1779,7 +1823,7 @@ fn decode_generations(
 }
 
 fn decode_service_states(
-    values: &[(String, u8)],
+    values: Vec<(decode::FallibleString, u8)>,
 ) -> Result<BTreeMap<NodeId, ProductionNodeServiceState>, LifecycleApiError> {
     let mut decoded = BTreeMap::new();
     for (node, state) in values {
@@ -1790,7 +1834,12 @@ fn decode_service_states(
             _ => return Err(loop_factory_error("invalid checkpoint node service state")),
         };
         if decoded
-            .insert(NodeId { name: node.clone() }, state)
+            .insert(
+                NodeId {
+                    name: node.into_string(),
+                },
+                state,
+            )
             .is_some()
         {
             return Err(loop_factory_error(
@@ -1848,245 +1897,5 @@ fn hex_bytes(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
-    #![allow(clippy::expect_used)]
-
-    use super::*;
-
-    fn manifest() -> ClosureManifest {
-        ClosureManifest {
-            scenario: ContentHash::default(),
-            configuration: ContentHash::default(),
-            schedule: ContentHash::default(),
-            frontier: 0,
-            scheduler: ContentHash::default(),
-            event_log_segments: Vec::new(),
-            signal_artifacts: Vec::new(),
-            trigger_state: ContentHash::default(),
-            assertion_state: ContentHash::default(),
-            lifecycle_state: ContentHash::default(),
-            fault_checkpoint: ContentHash::default(),
-            targets: Vec::new(),
-            node_generations: Vec::new(),
-            node_service_states: Vec::new(),
-            identity: ContentHash::default(),
-        }
-    }
-
-    fn target(node: &str) -> TargetManifest {
-        let artifact = ArtifactManifest {
-            identity: ContentHash::from_bytes(b"artifact"),
-            length: 8,
-            chunks: vec![ContentHash::from_bytes(b"artifact")],
-        };
-        TargetManifest {
-            node: String::from(node),
-            counter: 0,
-            scheduler_time: 0,
-            snapshot: ContentHash::from_bytes(node.as_bytes()),
-            overlay: artifact.clone(),
-            vmstate: artifact,
-            manifest_identity: ContentHash::default(),
-        }
-    }
-
-    #[test]
-    fn closure_manifest_round_trip_is_canonical() {
-        let mut original = manifest();
-        original.targets = vec![target("a"), target("b")];
-        original.node_generations = vec![(String::from("a"), 1), (String::from("b"), 2)];
-        original.node_service_states = vec![(String::from("a"), 1), (String::from("b"), 2)];
-
-        let bytes = encode_manifest(&original).expect("encode canonical closure manifest");
-        let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
-            .expect("decode canonical closure manifest");
-
-        assert_eq!(
-            encode_manifest(&decoded).expect("re-encode canonical closure manifest"),
-            bytes
-        );
-    }
-
-    #[test]
-    fn closure_manifest_rejects_unsorted_or_trailing_records() {
-        let mut unsorted = manifest();
-        unsorted.targets = vec![target("b"), target("a")];
-        let bytes = encode_manifest(&unsorted).expect("encode fixture");
-        assert!(
-            decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err()
-        );
-
-        let mut trailing = encode_manifest(&manifest()).expect("encode fixture");
-        trailing.push(0);
-        assert!(
-            decode::decode_manifest_with_limits(&trailing, FaultResourceLimits::default()).is_err()
-        );
-    }
-
-    #[test]
-    fn closure_identity_excludes_only_its_identity_field() {
-        let mut original = manifest();
-        let identity = closure_identity(&original).expect("derive closure identity");
-        original.identity = ContentHash::from_bytes(b"ignored identity field");
-        assert_eq!(
-            closure_identity(&original).expect("derive closure identity again"),
-            identity
-        );
-        original.frontier = 1;
-        assert_ne!(
-            closure_identity(&original).expect("derive changed closure identity"),
-            identity
-        );
-    }
-
-    #[test]
-    fn content_store_deduplicates_equal_objects() {
-        let directory = tempfile::tempdir().expect("create object directory");
-        let bytes = b"same object";
-        let identity = ContentHash::from_bytes(bytes);
-
-        persist_object(directory.path(), identity, bytes).expect("persist first object");
-        persist_object(directory.path(), identity, bytes).expect("reuse equal object");
-        let dag_store = LocalDagStore::new(directory.path());
-        assert_eq!(
-            dag_store
-                .get(&identity)
-                .expect("read exact object as DAG object"),
-            bytes
-        );
-        assert!(!directory.path().join(identity.to_hex()).exists());
-    }
-
-    #[test]
-    fn concurrent_equal_object_publishers_converge_atomically() {
-        let directory = std::sync::Arc::new(tempfile::tempdir().expect("create object directory"));
-        let bytes = b"concurrent object".to_vec();
-        let identity = ContentHash::from_bytes(&bytes);
-        let publishers = (0..8)
-            .map(|_| {
-                let directory = std::sync::Arc::clone(&directory);
-                let bytes = bytes.clone();
-                std::thread::spawn(move || persist_object(directory.path(), identity, &bytes))
-            })
-            .collect::<Vec<_>>();
-
-        for publisher in publishers {
-            publisher
-                .join()
-                .expect("publisher thread should not panic")
-                .expect("equal publisher should converge");
-        }
-        validate_file_hash(&object_path(directory.path(), identity), identity)
-            .expect("published object should authenticate");
-    }
-
-    #[test]
-    fn chunk_store_deduplicates_and_materializes_complete_artifacts() {
-        let root = tempfile::tempdir().expect("create chunk-store fixture");
-        let source = root.path().join("source");
-        let restored = root.path().join("restored");
-        let object_directory = root.path().join("objects");
-        fs::create_dir(&object_directory).expect("create object directory");
-        let mut bytes = vec![0x5a; ARTIFACT_CHUNK_BYTES];
-        bytes.extend_from_slice(b"tail");
-        fs::write(&source, &bytes).expect("write source artifact");
-        let artifact = ProductionCheckpointArtifact {
-            source: ProductionCheckpointArtifactSource::File(source),
-            identity: ContentHash::from_bytes(&bytes),
-            length: u64::try_from(bytes.len()).expect("fixture length fits"),
-            chunks: Vec::new(),
-        };
-        let manifest = artifact_manifest(&artifact).expect("derive chunk manifest");
-
-        persist_chunked_artifact(&object_directory, &manifest, &artifact)
-            .expect("persist first artifact");
-        persist_chunked_artifact(&object_directory, &manifest, &artifact)
-            .expect("deduplicate second artifact");
-        let stored_count = fs::read_dir(&object_directory)
-            .expect("read object directory")
-            .map(|entry| {
-                fs::read_dir(entry.expect("read object prefix entry").path())
-                    .expect("read object prefix directory")
-                    .count()
-            })
-            .sum::<usize>();
-        assert_eq!(stored_count, 2);
-
-        let chunked = ProductionCheckpointArtifact {
-            source: ProductionCheckpointArtifactSource::ChunkStore(object_directory.clone()),
-            identity: manifest.identity,
-            length: manifest.length,
-            chunks: manifest.chunks.clone(),
-        };
-        materialize_checkpoint_artifact(&chunked, &restored, "test")
-            .expect("materialize chunked artifact");
-        assert_eq!(fs::read(&restored).expect("read restored artifact"), bytes);
-
-        let first_chunk = object_path(&object_directory, manifest.chunks[0]);
-        fs::write(&first_chunk, vec![0; ARTIFACT_CHUNK_BYTES])
-            .expect("corrupt first checkpoint chunk");
-        fs::remove_file(&restored).expect("remove prior materialization");
-        assert!(materialize_checkpoint_artifact(&chunked, &restored, "test").is_err());
-        fs::write(&first_chunk, &bytes[..ARTIFACT_CHUNK_BYTES])
-            .expect("restore first checkpoint chunk");
-
-        let last_chunk = object_path(
-            &object_directory,
-            *manifest.chunks.last().expect("fixture has a tail chunk"),
-        );
-        fs::remove_file(last_chunk).expect("remove tail checkpoint chunk");
-        assert!(!restored.exists());
-        assert!(materialize_checkpoint_artifact(&chunked, &restored, "test").is_err());
-    }
-
-    #[test]
-    fn lifecycle_wire_restores_terminal_branch_and_controls() {
-        let scenario = crucible::happy_path_scenario()
-            .expect("build lifecycle wire scenario")
-            .scenario
-            .scenario_def();
-        let schedule = Schedule::empty().to_compact_binary();
-        let wire = LifecycleWire {
-            terminal: Some(TerminalWire::Failed(vec![String::from("failed")])),
-            terminal_cause: Some(TerminalCauseWire::Failed(vec![String::from("failed")])),
-            initial_lifecycle_observations_pending: false,
-            branch: Some(BranchWire {
-                base_schedule: schedule.clone(),
-                frontier: 7,
-                decisions: Vec::new(),
-                seed: Some(Seed::from_u64(9).bytes()),
-            }),
-            recorded_controls: vec![RecordedControlWire {
-                configuration_schedule: schedule,
-                node_times: Vec::new(),
-                control: vec![ControlOperation {
-                    sequence: 1,
-                    kind: crucible::ControlOperationKind::Snapshot,
-                }],
-            }],
-        };
-        let mut bytes = Vec::new();
-        ciborium::ser::into_writer(&wire, &mut bytes).expect("encode lifecycle fixture");
-
-        let decoded = decode_lifecycle(&bytes, &scenario, FaultResourceLimits::default())
-            .expect("decode lifecycle fixture");
-
-        assert_eq!(
-            decoded.terminal,
-            Some(QuantumTerminalVerdict::Failed(vec![String::from("failed")]))
-        );
-        assert!(!decoded.initial_lifecycle_observations_pending);
-        assert_eq!(
-            decoded.terminal_cause,
-            Some(CheckpointTerminalCause::Failed(vec![String::from(
-                "failed"
-            )]))
-        );
-        let branch = decoded.branch.expect("branch should restore");
-        assert_eq!(branch.frontier, VirtualTime { ticks: 7 });
-        assert_eq!(branch.seed, Some(Seed::from_u64(9)));
-        assert_eq!(decoded.recorded_controls.len(), 1);
-        assert_eq!(decoded.recorded_controls[0].control[0].sequence, 1);
-    }
-}
+#[path = "checkpoint_store/tests.rs"]
+mod tests;

@@ -223,8 +223,12 @@ Canonical QEMU node, host-I/O, production fault-runtime, and complete VMState
 envelopes admit their representation against `fat_checkpoint_bytes` and its
 64 GiB hard ceiling before final allocation. Nested owners retain independent
 typed bounds; sequence decoders use fallible reservation even for indefinite
-hostile CBOR, and the complete VM snapshot uses a length-delimited envelope that
-borrows nested inputs rather than first materializing duplicate vectors. The
+hostile CBOR. Durable closure manifests and lifecycle objects also decode text
+through an envelope-bounded scratch buffer and reserve each final owned string
+fallibly before copying, including canonical strings larger than the CBOR
+library's default scratch space. The complete VM snapshot uses a
+length-delimited envelope that borrows nested inputs rather than first
+materializing duplicate vectors. The
 scheduler-facing network queue encoder additionally enforces
 `network_queue_frames` and the 8 GiB `network_queue_bytes` hard ceiling. Durable
 store and fresh-process load apply the identical authored ceiling to every
