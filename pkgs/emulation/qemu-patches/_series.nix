@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "1deab3c71e4a3fc75de050ba3d339d2829d06d867bbd9a7954a04287e43a6249";
+  patchBranchBundleSha256 = "cc44bc4e7baa583d7e51793b46f01690522fe5000561895076701e3d23f85e1f";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "4ee02f149151c2cedc56bfbd3254980e09397c58";
+  patchBranchHeadCommit = "79920e9d7583c44e03f0469fcd8d0b70c5dbefd7";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1055,6 +1055,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4";
       capability = "the bounded thread-registry schema explicitly assigns the RCU callback worker and every QEMU IOThread to unresolved subsystem-specific ownership classes while retaining them in the exact unclassified blocker count; no owner class supplies a barrier or child disposition and no readiness proof changes";
+    }
+    {
+      file = "0113-crucible-hot-fork-rcu-inventory.patch";
+      branchSubject = "crucible: inventory hot-fork RCU state";
+      branchCommit = "79920e9d7583c44e03f0469fcd8d0b70c5dbefd7";
+      branchTree = "4937f9253ea7a64425a99ec2f3179e1cb46e2e0c";
+      catalogName = "crucible-hot-fork-rcu-inventory";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "a bounded versioned QMP inventory reports every registered RCU reader, instantaneous read-side activity, submitted-but-incomplete callbacks, and active drain operations; the report remains observational, supplies no held quiescence barrier, and leaves the RCU readiness proof clear";
     }
   ];
   catalogOnlyCapabilities = [

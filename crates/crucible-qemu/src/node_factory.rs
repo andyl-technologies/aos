@@ -76,6 +76,12 @@ where
         self.vmstate.query_hot_fork_thread_inventory()
     }
 
+    fn query_hot_fork_rcu_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkRcuInventory, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_rcu_inventory()
+    }
+
     fn complete_terminal_lifecycle_exit(
         &mut self,
         action: crucible::ContentHash,

@@ -1559,11 +1559,18 @@ descriptor, and mapping under fixed 65,536-entry-per-class and 16-MiB-per-pass
 aggregate-body limits, retains at most two compared passes, rejects process,
 registry, or inventory drift, and exposes writable/shared mapping counts for
 lab review.
+QEMU now additionally exposes a version-1, 65,536-reader RCU inventory. It
+reports the sorted registered-reader set, instantaneous active readers,
+submitted-but-incomplete callbacks, active drain operations, and a
+register/unregister generation. The host brackets procfs capture with identical
+RCU reports and requires every reader to be present in the matching thread
+registry. This closes the authoritative RCU-state inventory prerequisite but
+does not hold quiescence across `fork(2)`; readiness bit 4 remains clear.
 This is an executable T-CAM-6.1 audit prerequisite, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
-no safe non-coordinator child disposition, and neither view can prove QEMU
-mutex, AIO/BH/timer, RCU, block, plugin, external-thread, or child-reinitialization
-state. They cannot promote a readiness bit. T-CAM-6.1
+no safe non-coordinator child disposition, and none of the views can prove QEMU
+mutex, AIO/BH/timer, RCU barrier, block, plugin, external-thread, or
+child-reinitialization state. They cannot promote a readiness bit. T-CAM-6.1
 remains unchecked until the complete supported-profile registry and all
 subsystem-owned proofs are implemented and accepted in the Phase 6 lab.
 

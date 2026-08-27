@@ -6,8 +6,9 @@ use std::os::unix::net::UnixStream;
 use crucible::Checkpoint;
 
 use super::{
-    QmpClient, QmpCommandComplete, QmpError, QmpHotForkReadiness, QmpHotForkThreadInventory,
-    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QmpClient, QmpCommandComplete, QmpError, QmpHotForkRcuInventory, QmpHotForkReadiness,
+    QmpHotForkThreadInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind,
+    QmpSnapshotTag, QmpTimeoutStream,
 };
 use crate::{
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
@@ -144,6 +145,20 @@ where
     ) -> Result<QmpHotForkThreadInventory, QemuNodeChannelError> {
         self.client
             .query_hot_fork_thread_inventory()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Queries QEMU's exact bounded observational RCU inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
+    /// not satisfy the closed RCU inventory schema and bounds.
+    pub fn query_hot_fork_rcu_inventory(
+        &mut self,
+    ) -> Result<QmpHotForkRcuInventory, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_rcu_inventory()
             .map_err(QemuNodeChannelError::from)
     }
 

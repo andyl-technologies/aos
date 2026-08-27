@@ -789,6 +789,21 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Queries QEMU's exact bounded observational RCU inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
+    /// versioned response validation fails.
+    fn query_hot_fork_rcu_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkRcuInventory, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query_hot_fork_rcu_inventory",
+            "hot-fork RCU inventory is not implemented by this QMP channel",
+        ))
+    }
+
     /// Completes an authenticated terminal lifecycle transition without
     /// expecting QEMU to resume guest execution.
     ///
@@ -1597,9 +1612,22 @@ impl QemuNode {
             .qmp_machine_control
             .query_hot_fork_thread_inventory()
             .map_err(crate::QemuHotForkAuditError::ThreadInventory)?;
+        let rcu_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_rcu_inventory()
+            .map_err(crate::QemuHotForkAuditError::RcuInventory)?;
 
         let inventory =
             crate::hot_fork_audit::capture_linux_qemu_hot_fork_process_inventory(&process)?;
+        let rcu_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_rcu_inventory()
+            .map_err(crate::QemuHotForkAuditError::RcuInventory)?;
+        if rcu_before != rcu_after {
+            return Err(crate::QemuHotForkAuditError::RcuInventoryChanged);
+        }
         let threads_after = self
             .channels
             .qmp_machine_control
@@ -1616,7 +1644,7 @@ impl QemuNode {
         if before != after {
             return Err(crate::QemuHotForkAuditError::ReadinessChanged);
         }
-        crate::QemuHotForkAudit::new(before, threads_before, inventory)
+        crate::QemuHotForkAudit::new(before, threads_before, rcu_before, inventory)
     }
 
     /// Returns numeric identity components after authenticating a preowned executable path.

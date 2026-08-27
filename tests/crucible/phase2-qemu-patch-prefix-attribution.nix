@@ -523,6 +523,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0113-crucible-hot-fork-rcu-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

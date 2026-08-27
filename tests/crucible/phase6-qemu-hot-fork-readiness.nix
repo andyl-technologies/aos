@@ -81,6 +81,11 @@ in
             "$out/stock-thread-inventory.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-thread-inventory.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible thread inventory command"
+          qmp "$stock_socket" \
+            '{"execute":"query-crucible-hot-fork-rcu-inventory"}' \
+            "$out/stock-rcu-inventory.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-rcu-inventory.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible RCU inventory command"
           qmp "$stock_socket" '{"execute":"quit"}' "$out/stock-quit.json"
           wait "$qemu_pid"
           qemu_pid=""
@@ -195,6 +200,61 @@ in
           ' "$out/thread-inventory-2.json" >/dev/null \
             || { cat "$out/thread-inventory-1.json" >&2; cat "$out/thread-inventory-2.json" >&2; fail "QEMU thread inventory changed without a thread transition"; }
 
+          qmp "$patched_socket" \
+            '{"execute":"query-crucible-hot-fork-rcu-inventory"}' \
+            "$out/rcu-inventory-1.json"
+          qmp "$patched_socket" \
+            '{"execute":"query-crucible-hot-fork-rcu-inventory"}' \
+            "$out/rcu-inventory-2.json"
+          jq -e -s --slurpfile threads "$out/thread-inventory-1.json" '
+            [.[] | select(has("return"))][-1].return as $report |
+            ($threads | map(select(has("return"))) | .[-1].return) as $thread_report |
+            ($report | keys | sort) == [
+              "active-readers",
+              "complete",
+              "drain-active",
+              "generation",
+              "overflowed",
+              "pending-callbacks",
+              "readers",
+              "registered-readers",
+              "schema-version"
+            ] and
+            $report."schema-version" == 1 and
+            ($report.generation | type) == "number" and
+            ($report.complete | type) == "boolean" and
+            ($report.overflowed | type) == "boolean" and
+            ($report."registered-readers" | type) == "number" and
+            ($report."active-readers" | type) == "number" and
+            ($report."pending-callbacks" | type) == "number" and
+            ($report."drain-active" | type) == "boolean" and
+            ($report.readers | type) == "array" and
+            ($report.readers | length) > 0 and
+            ($report.readers | length) <= 65536 and
+            ($report.readers | length) == $report."registered-readers" and
+            ([ $report.readers[] | select(.active) ] | length) ==
+              $report."active-readers" and
+            ([ $report.readers[]."thread-id" ] ==
+             ([ $report.readers[]."thread-id" ] | sort)) and
+            ([ $report.readers[]."thread-id" ] | unique | length) ==
+              ($report.readers | length) and
+            all($report.readers[];
+              (. | keys | sort) == ["active", "thread-id"] and
+              (."thread-id" | type) == "number" and ."thread-id" > 0 and
+              (.active | type) == "boolean") and
+            all($report.readers[];
+              ."thread-id" as $reader_tid |
+              any($thread_report.threads[];
+                ."thread-id" == $reader_tid)) and
+            $report.complete == ($report.overflowed | not)
+          ' "$out/rcu-inventory-1.json" >/dev/null \
+            || { cat "$out/rcu-inventory-1.json" >&2; fail "QEMU RCU inventory was not exact or thread-bound"; }
+          jq -e -s --slurpfile first "$out/rcu-inventory-1.json" '
+            [.[] | select(has("return"))][-1].return ==
+              ($first | map(select(has("return"))) | .[-1].return)
+          ' "$out/rcu-inventory-2.json" >/dev/null \
+            || { cat "$out/rcu-inventory-1.json" >&2; cat "$out/rcu-inventory-2.json" >&2; fail "QEMU RCU inventory changed without a reader transition"; }
+
           qmp "$patched_socket" '{"execute":"quit"}' "$out/patched-quit.json"
           wait "$qemu_pid"
           qemu_pid=""
@@ -204,7 +264,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0112-crucible-hot-fork-thread-ownership.patch
+          patch=0113-crucible-hot-fork-rcu-inventory.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -215,6 +275,11 @@ in
           thread_inventory_one_coordinator=true
           thread_inventory_rcu_owner=true
           thread_inventory_aio_owner=true
+          rcu_inventory_schema_version=1
+          rcu_inventory_bound=65536
+          rcu_inventory_stable=true
+          rcu_readers_thread_bound=true
+          rcu_proof_acknowledged=false
           incomplete_report_ready=false
           stock_commands_absent=true
           RESULT

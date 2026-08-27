@@ -13,16 +13,22 @@ pub const QMP_QUERY_HOT_FORK_READINESS_COMMAND: &str = "query-crucible-hot-fork-
 /// QMP command name used for QEMU's bounded active-thread inventory.
 pub const QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND: &str =
     "query-crucible-hot-fork-thread-inventory";
+/// QMP command name used for QEMU's bounded RCU-state inventory.
+pub const QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND: &str = "query-crucible-hot-fork-rcu-inventory";
 
 /// Version of the QEMU-owned hot-fork proof-bit contract.
 pub const QMP_HOT_FORK_READINESS_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned active-thread inventory contract.
 pub const QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION: u32 = 2;
+/// Version of the QEMU-owned RCU-state inventory contract.
+pub const QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION: u32 = 1;
 
 /// Complete proof bitmap required by the version-1 hot-fork contract.
 pub const QMP_HOT_FORK_REQUIRED_PROOFS: u64 = (1_u64 << 9) - 1;
 /// Maximum active QEMU-created threads retained by one inventory response.
 pub const QMP_HOT_FORK_THREAD_INVENTORY_MAX: usize = 65_536;
+/// Maximum registered RCU readers retained by one inventory response.
+pub const QMP_HOT_FORK_RCU_INVENTORY_MAX: usize = 65_536;
 /// Maximum UTF-8 bytes retained for one QEMU thread name.
 pub const QMP_HOT_FORK_THREAD_NAME_MAX_BYTES: usize = 256;
 
@@ -234,6 +240,105 @@ impl QmpHotForkThreadInventory {
     }
 }
 
+/// One thread registered as a QEMU RCU read-side participant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QmpHotForkRcuReader {
+    thread_id: u32,
+    active: bool,
+}
+
+impl QmpHotForkRcuReader {
+    /// Returns the positive operating-system thread identifier.
+    #[must_use]
+    pub const fn thread_id(self) -> u32 {
+        self.thread_id
+    }
+
+    /// Returns whether the reader was active at the inventory instant.
+    #[must_use]
+    pub const fn active(self) -> bool {
+        self.active
+    }
+}
+
+/// Exact bounded observational snapshot of QEMU's RCU state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QmpHotForkRcuInventory {
+    generation: u64,
+    complete: bool,
+    overflowed: bool,
+    active_readers: usize,
+    pending_callbacks: u64,
+    drain_active: bool,
+    readers: Vec<QmpHotForkRcuReader>,
+}
+
+impl QmpHotForkRcuInventory {
+    #[cfg(test)]
+    pub(crate) fn from_reader_ids(thread_ids: &[u32]) -> Self {
+        Self {
+            generation: 1,
+            complete: true,
+            overflowed: false,
+            active_readers: 0,
+            pending_callbacks: 0,
+            drain_active: false,
+            readers: thread_ids
+                .iter()
+                .copied()
+                .map(|thread_id| QmpHotForkRcuReader {
+                    thread_id,
+                    active: false,
+                })
+                .collect(),
+        }
+    }
+
+    /// Returns the process-local reader register/unregister generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns whether QEMU retained structurally valid identifiers for every reader.
+    ///
+    /// Completeness does not prove quiescence and cannot authorize a fork.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.complete
+    }
+
+    /// Returns whether registered readers exceeded the inventory bound.
+    #[must_use]
+    pub const fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
+    /// Returns the exact number of retained active read-side participants.
+    #[must_use]
+    pub const fn active_readers(&self) -> usize {
+        self.active_readers
+    }
+
+    /// Returns callbacks submitted but not yet completed.
+    #[must_use]
+    pub const fn pending_callbacks(&self) -> u64 {
+        self.pending_callbacks
+    }
+
+    /// Returns whether `drain_call_rcu()` was active at the inventory instant.
+    #[must_use]
+    pub const fn drain_active(&self) -> bool {
+        self.drain_active
+    }
+
+    /// Returns every retained reader in ascending thread-identifier order.
+    #[must_use]
+    pub fn readers(&self) -> &[QmpHotForkRcuReader] {
+        &self.readers
+    }
+}
+
 pub(super) fn parse_hot_fork_readiness(value: &Value) -> Result<QmpHotForkReadiness, QmpError> {
     let schema_version = value.get("schema-version").and_then(Value::as_u64);
     let required_proofs = value.get("required-proofs").and_then(Value::as_u64);
@@ -391,5 +496,118 @@ pub(super) fn parse_hot_fork_thread_inventory(
         overflowed,
         unclassified_threads,
         threads,
+    })
+}
+
+pub(super) fn parse_hot_fork_rcu_inventory(
+    value: &Value,
+) -> Result<QmpHotForkRcuInventory, QmpError> {
+    let malformed = || QmpError::MalformedTypedResponse {
+        command: QmpCommandKind::QueryHotForkRcuInventory,
+        response: value.to_string(),
+    };
+    let object = value.as_object().ok_or_else(&malformed)?;
+    if object.len() != 9
+        || ![
+            "schema-version",
+            "generation",
+            "complete",
+            "overflowed",
+            "registered-readers",
+            "active-readers",
+            "pending-callbacks",
+            "drain-active",
+            "readers",
+        ]
+        .iter()
+        .all(|field| object.contains_key(*field))
+    {
+        return Err(malformed());
+    }
+    let schema_version = object
+        .get("schema-version")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let generation = object
+        .get("generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let complete = object
+        .get("complete")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let overflowed = object
+        .get("overflowed")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let registered_readers = object
+        .get("registered-readers")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_active_readers = object
+        .get("active-readers")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let pending_callbacks = object
+        .get("pending-callbacks")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let drain_active = object
+        .get("drain-active")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let values = object
+        .get("readers")
+        .and_then(Value::as_array)
+        .ok_or_else(&malformed)?;
+    if schema_version != u64::from(QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION)
+        || values.len() > QMP_HOT_FORK_RCU_INVENTORY_MAX
+        || registered_readers != values.len()
+    {
+        return Err(malformed());
+    }
+
+    let mut readers = Vec::with_capacity(values.len());
+    let mut previous_thread_id = None;
+    let mut active_readers = 0_usize;
+    for value in values {
+        let entry = value.as_object().ok_or_else(&malformed)?;
+        if entry.len() != 2
+            || !["thread-id", "active"]
+                .iter()
+                .all(|field| entry.contains_key(*field))
+        {
+            return Err(malformed());
+        }
+        let thread_id = entry
+            .get("thread-id")
+            .and_then(Value::as_i64)
+            .and_then(|thread_id| u32::try_from(thread_id).ok())
+            .filter(|thread_id| *thread_id != 0)
+            .ok_or_else(&malformed)?;
+        if previous_thread_id.is_some_and(|previous| previous >= thread_id) {
+            return Err(malformed());
+        }
+        previous_thread_id = Some(thread_id);
+        let active = entry
+            .get("active")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        active_readers += usize::from(active);
+        readers.push(QmpHotForkRcuReader { thread_id, active });
+    }
+    if declared_active_readers != active_readers || complete == overflowed {
+        return Err(malformed());
+    }
+    Ok(QmpHotForkRcuInventory {
+        generation,
+        complete,
+        overflowed,
+        active_readers,
+        pending_callbacks,
+        drain_active,
+        readers,
     })
 }

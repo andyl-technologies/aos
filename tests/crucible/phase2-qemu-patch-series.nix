@@ -783,6 +783,13 @@
       enforces = "HFORK-3,HFORK-4";
       capability = "the bounded thread registry identifies unresolved RCU callback and AIO-context workers through subsystem-owned entry-point registration while retaining both in the exact unresolved blocker count and leaving every readiness bit unchanged";
     }
+    {
+      file = "0113-crucible-hot-fork-rcu-inventory.patch";
+      catalogName = "crucible-hot-fork-rcu-inventory";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "a bounded QMP inventory exposes every registered RCU reader plus instantaneous read-side, callback, and drain state without claiming a held barrier or acknowledging the RCU readiness proof";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

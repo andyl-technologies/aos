@@ -208,10 +208,42 @@ fail-closed value for every other `qemu_thread_create()` caller. Schema version
 1 is rejected rather than silently interpreting its smaller disposition
 registry under version-2 semantics.
 
+Patched QEMU also exposes the bounded observational RCU inventory used to
+define the next subsystem-owned barrier:
+
+```text
+CrucibleHotForkRcuInventory {
+    schema-version: u32 = 1,
+    generation: u64,
+    complete: bool,
+    overflowed: bool,
+    registered-readers: u32,
+    active-readers: u32,
+    pending-callbacks: u64,
+    drain-active: bool,
+    readers: [ { thread-id: positive i64, active: bool } ],
+}
+```
+
+`readers` MUST contain at most 65,536 entries in strictly increasing thread-ID
+order. `registered-readers` and `active-readers` MUST match the retained body,
+and `complete` MUST equal `!overflowed`; malformed IDs are protocol failures.
+The process-local generation advances only when a reader registers or
+unregisters. `pending-callbacks` is incremented before callback queue
+publication and decremented only after callback return, so it conservatively
+covers the callback worker's dequeue, grace-period, and execution interval.
+Every retained reader MUST also appear in the matching QEMU thread inventory.
+
+The RCU response is still only one lock-bounded observation. Reader activity,
+callback submission, and drain state may change immediately after it returns;
+the query neither drives nor holds quiescence and therefore MUST NOT
+acknowledge proof bit 4 or authorize a fork. The future coordinator must
+establish and retain an RCU barrier across the actual process-fork operation.
+
 The Phase 6 host audit complements that query with bounded operational evidence
 for one exact Linux process generation. It accepts only while proof bit 2 is
-set, brackets the procfs capture with two identical thread-registry snapshots
-inside two identical readiness reports, authenticates the QEMU
+set, brackets the procfs capture with two identical thread-registry and RCU
+snapshots inside two identical readiness reports, authenticates the QEMU
 PID/start-time/executable identity before and after, and requires two complete
 process-inventory passes to match byte-for-byte. Each QEMU-registered thread
 MUST be present in that exact process generation. Procfs threads absent from
@@ -231,15 +263,16 @@ Exceeding a bound, changing process generation, readiness, or QEMU registry,
 missing a registered thread from procfs, or observing different process passes
 rejects the audit.
 This observed fixed point is deliberately not a quiescence proof: it does not
-inventory mutex ownership, QEMU-internal AIO/BH/timer or RCU state, block/plugin
+inventory mutex ownership, QEMU-internal AIO/BH/timer barriers, block/plugin
 internals, external-thread dispositions, or child reinitializers; the registry
 currently classifies all non-coordinator QEMU threads as `unclassified`. It
 cannot set any readiness bit, prepare a template, or authorize `fork(2)`.
-The registry identifies the live RCU callback and AIO-context workers by
-subsystem-specific unresolved dispositions, while any other non-coordinator
-remains plain `unclassified`. None is a child disposition. Those proofs must be
-produced while the future QEMU coordinator holds the corresponding subsystem
-barriers.
+The thread registry identifies the live RCU callback and AIO-context workers
+by subsystem-specific unresolved dispositions, and the RCU inventory exposes
+the exact observed reader and callback state, while any other non-coordinator
+remains plain `unclassified`. None is a child disposition or a held barrier.
+Those proofs must be produced while the future QEMU coordinator holds the
+corresponding subsystem barriers.
 
 Template realization then adds the following operations:
 
