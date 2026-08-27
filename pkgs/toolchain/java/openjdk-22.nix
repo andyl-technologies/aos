@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  stdenv,
+  buildPackages,
   gnumake,
   autoconf,
   bash,
@@ -25,6 +27,8 @@
     inherit
       fetchurl
       mkDerivation
+      stdenv
+      buildPackages
       gnumake
       autoconf
       bash

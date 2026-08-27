@@ -2,6 +2,9 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
+  buildPackages,
   gnumake,
   autoconf,
   bash,
@@ -32,6 +35,46 @@
   libxslt,
   bootstrapTools,
 }: let
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  buildTools =
+    if isDarwinCross
+    then buildPackages
+    else {
+      inherit
+        gnumake
+        autoconf
+        bash
+        which
+        zip
+        unzip
+        cpio
+        gawk
+        coreutils
+        grep
+        sed
+        pkg-config
+        binutils
+        file
+        perl
+        jamvm-2_0
+        ecj-bootstrap
+        classpath-0_99
+        gjavah
+        ant-bootstrap
+        fastjar
+        libxslt
+        ;
+    };
+  alsaForBuild =
+    if isDarwinCross
+    then buildPackages.alsa-lib
+    else alsa-lib;
+  configurePlatformFlags =
+    if isDarwinCross
+    then ''      --build=${stdenv.buildPlatform.config} \
+                  --host=${stdenv.hostPlatform.config} \
+    ''
+    else "";
   icedteaVersion = "2.6.13";
 
   # IcedTea 2.6.13 — build harness for OpenJDK 7
@@ -85,38 +128,41 @@ in
 
     src = icedteaSrc;
 
-    buildDeps = [
-      gnumake
-      autoconf
-      bash
-      which
-      zip
-      unzip
-      gawk
-      coreutils
-      grep
-      sed
-      pkg-config
-      binutils
-      cpio
-      file
-      perl
-      xorg-stubs
-      jamvm-2_0
-      ecj-bootstrap
-      classpath-0_99
-      gjavah
-      ant-bootstrap
-      fastjar
-      libxslt
-    ];
-    runtimeDeps = [
-      zlib
-      alsa-lib
-      fontconfig
-      freetype
-      cups
-    ];
+    buildDeps =
+      [
+        buildTools.gnumake
+        buildTools.autoconf
+        buildTools.bash
+        buildTools.which
+        buildTools.zip
+        buildTools.unzip
+        buildTools.gawk
+        buildTools.coreutils
+        buildTools.grep
+        buildTools.sed
+        buildTools.pkg-config
+        buildTools.binutils
+        buildTools.cpio
+        buildTools.file
+        buildTools.perl
+        xorg-stubs
+        buildTools.jamvm-2_0
+        buildTools.ecj-bootstrap
+        buildTools.classpath-0_99
+        buildTools.gjavah
+        buildTools.ant-bootstrap
+        buildTools.fastjar
+        buildTools.libxslt
+      ]
+      ++ lib.optionals isDarwinCross [alsaForBuild];
+    runtimeDeps =
+      [zlib]
+      ++ lib.optionals (!isDarwinCross) [alsa-lib]
+      ++ [
+        fontconfig
+        freetype
+        cups
+      ];
     propagatedDeps = [];
 
     phases = [
@@ -245,9 +291,9 @@ in
             exec $JAMVM "$@"
           fi
           JAVAEOF
-                  sed -i "s|JAMVM_PLACEHOLDER|${jamvm-2_0}/bin/jamvm|" $FAKE_JDK/bin/java
-                  sed -i "s|UNZIP_PLACEHOLDER|${unzip}/bin/unzip|" $FAKE_JDK/bin/java
-                  sed -i "s|GJAVAH_PLACEHOLDER|${gjavah}/bin/gjavah|" $FAKE_JDK/bin/java
+                  sed -i "s|JAMVM_PLACEHOLDER|${buildTools.jamvm-2_0}/bin/jamvm|" $FAKE_JDK/bin/java
+                  sed -i "s|UNZIP_PLACEHOLDER|${buildTools.unzip}/bin/unzip|" $FAKE_JDK/bin/java
+                  sed -i "s|GJAVAH_PLACEHOLDER|${buildTools.gjavah}/bin/gjavah|" $FAKE_JDK/bin/java
                   chmod +x $FAKE_JDK/bin/java
                   # Create a javac wrapper that pre-creates output directories
                   # before calling ECJ. JamVM's File.mkdirs() creates intermediate
@@ -356,14 +402,14 @@ in
             done
           fi
 
-          exec ${ecj-bootstrap}/bin/ecj \$FILTERED_ARGS
+          exec ${buildTools.ecj-bootstrap}/bin/ecj \$FILTERED_ARGS
           JAVACEOF
                   chmod +x $FAKE_JDK/bin/javac
-                  ln -sf ${gjavah}/bin/gjavah $FAKE_JDK/bin/javah
-                  ln -sf ${fastjar}/bin/fastjar $FAKE_JDK/bin/jar
-                  ln -sf ${jamvm-2_0}/include/jni.h $FAKE_JDK/include/jni.h
+                  ln -sf ${buildTools.gjavah}/bin/gjavah $FAKE_JDK/bin/javah
+                  ln -sf ${buildTools.fastjar}/bin/fastjar $FAKE_JDK/bin/jar
+                  ln -sf ${buildTools.jamvm-2_0}/include/jni.h $FAKE_JDK/include/jni.h
                   # Create rt.jar from classpath glibj.zip
-                  ln -sf ${classpath-0_99}/share/classpath/glibj.zip $FAKE_JDK/jre/lib/rt.jar
+                  ln -sf ${buildTools.classpath-0_99}/share/classpath/glibj.zip $FAKE_JDK/jre/lib/rt.jar
 
                   # Add rmic dummy to fake JDK (configure checks $JDK_HOME/bin/rmic)
                   printf '#!/bin/sh\nexit 0\n' > $FAKE_JDK/bin/rmic
@@ -376,7 +422,7 @@ in
                   # rmic/native2ascii (IcedTea bootstrap builds its own from OpenJDK source)
                   mkdir -p dummy-bin
                   printf '#!/bin/sh\nexit 1\n' > dummy-bin/wget
-                  ln -sf ${libxslt}/bin/xsltproc dummy-bin/xsltproc
+                  ln -sf ${buildTools.libxslt}/bin/xsltproc dummy-bin/xsltproc
                   printf '#!/bin/sh\nexit 0\n' > dummy-bin/rmic
                   printf '#!/bin/sh\ncat "$@" 2>/dev/null\n' > dummy-bin/native2ascii
                   printf '#!/bin/sh\ncase "$1" in _NPROCESSORS_ONLN) echo %s;; *) echo 1;; esac\n' \
@@ -395,16 +441,16 @@ in
                   # IcedTea's configure and Makefiles reference /usr/bin/* and /bin/*
                   for f in $(find . -name '*.in' -o -name '*.sh' -o -name 'Makefile*' -o -name 'configure*' 2>/dev/null); do
                     sed -i \
-                      -e "s|/usr/bin/echo|${coreutils}/bin/echo|g" \
-                      -e "s|/bin/echo|${coreutils}/bin/echo|g" \
-                      -e "s|/usr/bin/find|${coreutils}/bin/find|g" \
-                      -e "s|/usr/bin/grep|${grep}/bin/grep|g" \
-                      -e "s|/bin/grep|${grep}/bin/grep|g" \
-                      -e "s|/usr/bin/sed|${sed}/bin/sed|g" \
-                      -e "s|/bin/sed|${sed}/bin/sed|g" \
+                      -e "s|/usr/bin/echo|${buildTools.coreutils}/bin/echo|g" \
+                      -e "s|/bin/echo|${buildTools.coreutils}/bin/echo|g" \
+                      -e "s|/usr/bin/find|${buildTools.coreutils}/bin/find|g" \
+                      -e "s|/usr/bin/grep|${buildTools.grep}/bin/grep|g" \
+                      -e "s|/bin/grep|${buildTools.grep}/bin/grep|g" \
+                      -e "s|/usr/bin/sed|${buildTools.sed}/bin/sed|g" \
+                      -e "s|/bin/sed|${buildTools.sed}/bin/sed|g" \
                       -e "s|/usr/bin/cpio|cpio|g" \
-                      -e "s|/usr/bin/file|${file}/bin/file|g" \
-                      -e "s|/usr/bin/readelf|${binutils}/bin/readelf|g" \
+                      -e "s|/usr/bin/file|${buildTools.file}/bin/file|g" \
+                      -e "s|/usr/bin/readelf|${buildTools.binutils}/bin/readelf|g" \
                       "$f" 2>/dev/null || true
                   done
         '';
@@ -439,18 +485,18 @@ in
           export XINERAMA_LIBS="-L${xorg-stubs}/lib -lXinerama"
           export XTST_CFLAGS="-I${xorg-stubs}/include"
           export XTST_LIBS="-L${xorg-stubs}/lib -lXtst"
-          export ALSA_CFLAGS="-I${alsa-lib}/include"
-          export ALSA_LIBS="-L${alsa-lib}/lib -lasound"
+          export ALSA_CFLAGS="-I${alsaForBuild}/include"
+          export ALSA_LIBS="-L${alsaForBuild}/lib -lasound"
 
           $CONFIG_SHELL configure \
-            --prefix=$out \
+            ${configurePlatformFlags}--prefix=$out \
             --with-jdk-home=$PWD/fake-jdk \
-            --with-ecj-jar=${ecj-bootstrap}/lib/ecj.jar \
+            --with-ecj-jar=${buildTools.ecj-bootstrap}/lib/ecj.jar \
             --with-javac=$PWD/fake-jdk/bin/javac \
-            --with-ant-home=${ant-bootstrap} \
-            --with-jar=${fastjar}/bin/fastjar \
+            --with-ant-home=${buildTools.ant-bootstrap} \
+            --with-jar=${buildTools.fastjar}/bin/fastjar \
             --with-java=$PWD/fake-jdk/bin/java \
-            --with-javah=${gjavah}/bin/gjavah \
+            --with-javah=${buildTools.gjavah}/bin/gjavah \
             --disable-docs \
             --disable-downloading \
             --disable-tests \
@@ -479,7 +525,7 @@ in
             --disable-system-cups \
             --disable-compile-against-syscalls \
             --with-cups=${cups} \
-            --with-alsa=${alsa-lib} \
+            --with-alsa=${alsaForBuild} \
             --x-includes=${xorg-stubs}/include \
             --x-libraries=${xorg-stubs}/lib \
             --with-parallel-jobs=$NIX_BUILD_CORES
@@ -537,56 +583,56 @@ in
                       find "$dir" -name '*.gmk' -o -name 'Makefile' -o -name '*.make' -o -name '*.sh' 2>/dev/null | while read f; do
                         sed -i \
                           -e 's/-Werror//g' \
-                          -e "s|/bin/mkdir|${coreutils}/bin/mkdir|g" \
-                          -e "s|/usr/bin/mkdir|${coreutils}/bin/mkdir|g" \
-                          -e "s|/bin/cat|${coreutils}/bin/cat|g" \
-                          -e "s|/bin/cp |${coreutils}/bin/cp |g" \
-                          -e "s|/bin/mv |${coreutils}/bin/mv |g" \
-                          -e "s|/bin/rm |${coreutils}/bin/rm |g" \
-                          -e "s|/bin/ln |${coreutils}/bin/ln |g" \
-                          -e "s|/bin/chmod|${coreutils}/bin/chmod|g" \
-                          -e "s|/bin/ls |${coreutils}/bin/ls |g" \
-                          -e "s|/bin/pwd|${coreutils}/bin/pwd|g" \
-                          -e "s|/usr/bin/pwd|${coreutils}/bin/pwd|g" \
-                          -e "s|/bin/date|${coreutils}/bin/date|g" \
-                          -e "s|/usr/bin/tr|${coreutils}/bin/tr|g" \
-                          -e "s|/bin/tr |${coreutils}/bin/tr |g" \
-                          -e "s|/usr/bin/wc|${coreutils}/bin/wc|g" \
-                          -e "s|/usr/bin/sort|${coreutils}/bin/sort|g" \
-                          -e "s|/usr/bin/cut|${coreutils}/bin/cut|g" \
-                          -e "s|/usr/bin/head|${coreutils}/bin/head|g" \
-                          -e "s|/usr/bin/tail|${coreutils}/bin/tail|g" \
-                          -e "s|/usr/bin/uniq|${coreutils}/bin/uniq|g" \
-                          -e "s|/usr/bin/touch|${coreutils}/bin/touch|g" \
-                          -e "s|/usr/bin/basename|${coreutils}/bin/basename|g" \
-                          -e "s|/usr/bin/dirname|${coreutils}/bin/dirname|g" \
-                          -e "s|/usr/bin/uname|${coreutils}/bin/uname|g" \
-                          -e "s|/bin/echo|${coreutils}/bin/echo|g" \
-                          -e "s|/usr/bin/echo|${coreutils}/bin/echo|g" \
-                          -e "s|/bin/true|${coreutils}/bin/true|g" \
-                          -e "s|/bin/false|${coreutils}/bin/false|g" \
-                          -e "s|/usr/bin/test|${coreutils}/bin/test|g" \
-                          -e "s|/usr/bin/expr|${coreutils}/bin/expr|g" \
-                          -e "s|/usr/bin/env|${coreutils}/bin/env|g" \
-                          -e "s|/usr/bin/id|${coreutils}/bin/id|g" \
-                          -e "s|/bin/grep|${grep}/bin/grep|g" \
-                          -e "s|/usr/bin/grep|${grep}/bin/grep|g" \
-                          -e "s|/bin/egrep|${grep}/bin/egrep|g" \
-                          -e "s|/usr/bin/egrep|${grep}/bin/egrep|g" \
-                          -e "s|/bin/fgrep|${grep}/bin/fgrep|g" \
-                          -e "s|/usr/bin/fgrep|${grep}/bin/fgrep|g" \
-                          -e "s|/bin/sed|${sed}/bin/sed|g" \
-                          -e "s|/usr/bin/sed|${sed}/bin/sed|g" \
-                          -e "s|/usr/bin/gawk|${gawk}/bin/gawk|g" \
-                          -e "s|/usr/bin/awk|${gawk}/bin/gawk|g" \
-                          -e "s|/bin/awk|${gawk}/bin/gawk|g" \
+                          -e "s|/bin/mkdir|${buildTools.coreutils}/bin/mkdir|g" \
+                          -e "s|/usr/bin/mkdir|${buildTools.coreutils}/bin/mkdir|g" \
+                          -e "s|/bin/cat|${buildTools.coreutils}/bin/cat|g" \
+                          -e "s|/bin/cp |${buildTools.coreutils}/bin/cp |g" \
+                          -e "s|/bin/mv |${buildTools.coreutils}/bin/mv |g" \
+                          -e "s|/bin/rm |${buildTools.coreutils}/bin/rm |g" \
+                          -e "s|/bin/ln |${buildTools.coreutils}/bin/ln |g" \
+                          -e "s|/bin/chmod|${buildTools.coreutils}/bin/chmod|g" \
+                          -e "s|/bin/ls |${buildTools.coreutils}/bin/ls |g" \
+                          -e "s|/bin/pwd|${buildTools.coreutils}/bin/pwd|g" \
+                          -e "s|/usr/bin/pwd|${buildTools.coreutils}/bin/pwd|g" \
+                          -e "s|/bin/date|${buildTools.coreutils}/bin/date|g" \
+                          -e "s|/usr/bin/tr|${buildTools.coreutils}/bin/tr|g" \
+                          -e "s|/bin/tr |${buildTools.coreutils}/bin/tr |g" \
+                          -e "s|/usr/bin/wc|${buildTools.coreutils}/bin/wc|g" \
+                          -e "s|/usr/bin/sort|${buildTools.coreutils}/bin/sort|g" \
+                          -e "s|/usr/bin/cut|${buildTools.coreutils}/bin/cut|g" \
+                          -e "s|/usr/bin/head|${buildTools.coreutils}/bin/head|g" \
+                          -e "s|/usr/bin/tail|${buildTools.coreutils}/bin/tail|g" \
+                          -e "s|/usr/bin/uniq|${buildTools.coreutils}/bin/uniq|g" \
+                          -e "s|/usr/bin/touch|${buildTools.coreutils}/bin/touch|g" \
+                          -e "s|/usr/bin/basename|${buildTools.coreutils}/bin/basename|g" \
+                          -e "s|/usr/bin/dirname|${buildTools.coreutils}/bin/dirname|g" \
+                          -e "s|/usr/bin/uname|${buildTools.coreutils}/bin/uname|g" \
+                          -e "s|/bin/echo|${buildTools.coreutils}/bin/echo|g" \
+                          -e "s|/usr/bin/echo|${buildTools.coreutils}/bin/echo|g" \
+                          -e "s|/bin/true|${buildTools.coreutils}/bin/true|g" \
+                          -e "s|/bin/false|${buildTools.coreutils}/bin/false|g" \
+                          -e "s|/usr/bin/test|${buildTools.coreutils}/bin/test|g" \
+                          -e "s|/usr/bin/expr|${buildTools.coreutils}/bin/expr|g" \
+                          -e "s|/usr/bin/env|${buildTools.coreutils}/bin/env|g" \
+                          -e "s|/usr/bin/id|${buildTools.coreutils}/bin/id|g" \
+                          -e "s|/bin/grep|${buildTools.grep}/bin/grep|g" \
+                          -e "s|/usr/bin/grep|${buildTools.grep}/bin/grep|g" \
+                          -e "s|/bin/egrep|${buildTools.grep}/bin/egrep|g" \
+                          -e "s|/usr/bin/egrep|${buildTools.grep}/bin/egrep|g" \
+                          -e "s|/bin/fgrep|${buildTools.grep}/bin/fgrep|g" \
+                          -e "s|/usr/bin/fgrep|${buildTools.grep}/bin/fgrep|g" \
+                          -e "s|/bin/sed|${buildTools.sed}/bin/sed|g" \
+                          -e "s|/usr/bin/sed|${buildTools.sed}/bin/sed|g" \
+                          -e "s|/usr/bin/gawk|${buildTools.gawk}/bin/gawk|g" \
+                          -e "s|/usr/bin/awk|${buildTools.gawk}/bin/gawk|g" \
+                          -e "s|/bin/awk|${buildTools.gawk}/bin/gawk|g" \
                           -e "s|/usr/bin/find|$(which find)|g" \
                           -e "s|/usr/bin/xargs|$(which xargs)|g" \
-                          -e "s|/usr/bin/cpio|${cpio}/bin/cpio|g" \
-                          -e "s|/usr/bin/file|${file}/bin/file|g" \
-                          -e "s|/usr/bin/readelf|${binutils}/bin/readelf|g" \
-                          -e "s|/usr/bin/zip|${zip}/bin/zip|g" \
-                          -e "s|/usr/bin/unzip|${unzip}/bin/unzip|g" \
+                          -e "s|/usr/bin/cpio|${buildTools.cpio}/bin/cpio|g" \
+                          -e "s|/usr/bin/file|${buildTools.file}/bin/file|g" \
+                          -e "s|/usr/bin/readelf|${buildTools.binutils}/bin/readelf|g" \
+                          -e "s|/usr/bin/zip|${buildTools.zip}/bin/zip|g" \
+                          -e "s|/usr/bin/unzip|${buildTools.unzip}/bin/unzip|g" \
                           "$f" 2>/dev/null || true
                       done
                       # Fix sys/sysctl.h includes (removed in modern glibc)
@@ -596,13 +642,13 @@ in
                       # Fix hardcoded /bin/echo in Defs-utils.gmk
                       find "$dir" -name 'Defs-utils.gmk' 2>/dev/null | while read f; do
                         sed -i \
-                          -e "s|ECHO           = /bin/echo|ECHO           = ${coreutils}/bin/echo|g" \
-                          -e "s|ECHO           = /usr/bin/echo|ECHO           = ${coreutils}/bin/echo|g" \
+                          -e "s|ECHO           = /bin/echo|ECHO           = ${buildTools.coreutils}/bin/echo|g" \
+                          -e "s|ECHO           = /usr/bin/echo|ECHO           = ${buildTools.coreutils}/bin/echo|g" \
                           "$f" 2>/dev/null || true
                       done
                       # Fix hardcoded NAWK = /usr/bin/gawk
                       find "$dir" -name 'Defs-utils.gmk' 2>/dev/null | while read f; do
-                        sed -i "s|NAWK           = \$(USRBIN_PATH)gawk|NAWK           = ${gawk}/bin/gawk|g" "$f" 2>/dev/null || true
+                        sed -i "s|NAWK           = \$(USRBIN_PATH)gawk|NAWK           = ${buildTools.gawk}/bin/gawk|g" "$f" 2>/dev/null || true
                       done
                       # Create empty build.properties (GNU Classpath's Property class
                       # throws FileNotFoundException instead of silently skipping)
@@ -788,25 +834,25 @@ in
                   for cmd in basename cat chmod cp cut date df dirname du echo env expr false \
                              head id ln ls mkdir mv printf pwd rm rmdir sort tail tee \
                              touch tr true uname uniq wc; do
-                    ln -sf ${coreutils}/bin/$cmd $TOOLS/$cmd 2>/dev/null || true
+                    ln -sf ${buildTools.coreutils}/bin/$cmd $TOOLS/$cmd 2>/dev/null || true
                   done
-                  ln -sf ${grep}/bin/grep $TOOLS/grep
-                  ln -sf ${grep}/bin/egrep $TOOLS/egrep
-                  ln -sf ${grep}/bin/fgrep $TOOLS/fgrep
-                  ln -sf ${sed}/bin/sed $TOOLS/sed
-                  ln -sf ${gawk}/bin/gawk $TOOLS/gawk
-                  ln -sf ${gawk}/bin/awk $TOOLS/awk
+                  ln -sf ${buildTools.grep}/bin/grep $TOOLS/grep
+                  ln -sf ${buildTools.grep}/bin/egrep $TOOLS/egrep
+                  ln -sf ${buildTools.grep}/bin/fgrep $TOOLS/fgrep
+                  ln -sf ${buildTools.sed}/bin/sed $TOOLS/sed
+                  ln -sf ${buildTools.gawk}/bin/gawk $TOOLS/gawk
+                  ln -sf ${buildTools.gawk}/bin/awk $TOOLS/awk
                   ln -sf $TOOLS/gawk $TOOLS/nawk
                   ln -sf $(which tar) $TOOLS/tar
-                  ln -sf ${cpio}/bin/cpio $TOOLS/cpio
-                  ln -sf ${file}/bin/file $TOOLS/file
-                  ln -sf ${binutils}/bin/readelf $TOOLS/readelf
-                  ln -sf ${which}/bin/which $TOOLS/which
-                  ln -sf ${zip}/bin/zip $TOOLS/zip
-                  ln -sf ${unzip}/bin/unzip $TOOLS/unzip
+                  ln -sf ${buildTools.cpio}/bin/cpio $TOOLS/cpio
+                  ln -sf ${buildTools.file}/bin/file $TOOLS/file
+                  ln -sf ${buildTools.binutils}/bin/readelf $TOOLS/readelf
+                  ln -sf ${buildTools.which}/bin/which $TOOLS/which
+                  ln -sf ${buildTools.zip}/bin/zip $TOOLS/zip
+                  ln -sf ${buildTools.unzip}/bin/unzip $TOOLS/unzip
                   ln -sf $CONFIG_SHELL $TOOLS/bash
                   ln -sf $CONFIG_SHELL $TOOLS/sh
-                  ln -sf ${perl}/bin/perl $TOOLS/perl
+                  ln -sf ${buildTools.perl}/bin/perl $TOOLS/perl
                   # find, xargs from PATH (bootstrapTools)
                   ln -sf $(which find) $TOOLS/find
                   ln -sf $(which xargs) $TOOLS/xargs
@@ -827,13 +873,13 @@ in
                   ln -sf $(which gcc) $TOOLS/gcc
                   ln -sf $(which g++) $TOOLS/g++
                   ln -sf $(which cc) $TOOLS/cc
-                  ln -sf ${binutils}/bin/ld $TOOLS/ld
-                  ln -sf ${binutils}/bin/ar $TOOLS/ar
-                  ln -sf ${binutils}/bin/as $TOOLS/as
-                  ln -sf ${binutils}/bin/nm $TOOLS/nm
-                  ln -sf ${binutils}/bin/strip $TOOLS/strip
-                  ln -sf ${binutils}/bin/objcopy $TOOLS/objcopy
-                  ln -sf ${binutils}/bin/objdump $TOOLS/objdump
+                  ln -sf ${buildTools.binutils}/bin/ld $TOOLS/ld
+                  ln -sf ${buildTools.binutils}/bin/ar $TOOLS/ar
+                  ln -sf ${buildTools.binutils}/bin/as $TOOLS/as
+                  ln -sf ${buildTools.binutils}/bin/nm $TOOLS/nm
+                  ln -sf ${buildTools.binutils}/bin/strip $TOOLS/strip
+                  ln -sf ${buildTools.binutils}/bin/objcopy $TOOLS/objcopy
+                  ln -sf ${buildTools.binutils}/bin/objdump $TOOLS/objdump
 
                   # Create helper script for copying .properties-template files
                   # (replaces ant's <copy> task which is broken under JamVM/GNU Classpath)
@@ -854,7 +900,7 @@ in
 
                   # Also symlink dummy tools
                   # Use real xsltproc (HotSpot needs it for JVMTI code generation)
-                  ln -sf ${libxslt}/bin/xsltproc $TOOLS/xsltproc
+                  ln -sf ${buildTools.libxslt}/bin/xsltproc $TOOLS/xsltproc
                   for cmd in hostname free logname getconf rmic native2ascii wget; do
                     ln -sf $PWD/dummy-bin/$cmd $TOOLS/$cmd 2>/dev/null || true
                   done
@@ -1051,7 +1097,7 @@ in
           ANTEOF
                   # Add Nix-interpolated paths for JAR creation
                   cat >> $TOOLS/ant << JAREOF
-          JAR="${fastjar}/bin/fastjar"
+          JAR="${buildTools.fastjar}/bin/fastjar"
           JAREOF
                   cat >> $TOOLS/ant << 'ANTEOF2'
 
@@ -1122,11 +1168,11 @@ in
                   chmod +x $TOOLS/ant
 
                   # Add bootstrap JDK tools
-                  ln -sf ${jamvm-2_0}/bin/jamvm $TOOLS/java
+                  ln -sf ${buildTools.jamvm-2_0}/bin/jamvm $TOOLS/java
                   # Use our javac wrapper (from fake-jdk) that pre-creates directories
                   ln -sf $PWD/fake-jdk/bin/javac $TOOLS/javac
-                  ln -sf ${gjavah}/bin/gjavah $TOOLS/javah
-                  ln -sf ${fastjar}/bin/fastjar $TOOLS/jar
+                  ln -sf ${buildTools.gjavah}/bin/gjavah $TOOLS/javah
+                  ln -sf ${buildTools.fastjar}/bin/fastjar $TOOLS/jar
 
                   export ALT_UNIXCOMMAND_PATH=$TOOLS/
                   export ALT_USRBIN_PATH=$TOOLS/
@@ -1193,7 +1239,7 @@ in
           done
           exec GJAVAH_REAL "$@"
           GJAVAHEOF
-                  sed -i "s|GJAVAH_REAL|${gjavah}/bin/gjavah|g" $TOOLS/gjavah-wrapper
+                  sed -i "s|GJAVAH_REAL|${buildTools.gjavah}/bin/gjavah|g" $TOOLS/gjavah-wrapper
                   chmod +x $TOOLS/gjavah-wrapper
 
                   # Build up to and including boot JDK + stage2 bootstrap setup.
@@ -1212,8 +1258,8 @@ in
                     ALT_USRBIN_PATH=$TOOLS/ \
                     ALT_DEVTOOLS_PATH=$TOOLS/ \
                     ALT_COMPILER_PATH=$TOOLS/ \
-                    ALSA_INCLUDE=${alsa-lib}/include/alsa/version.h \
-                    ALSA_LIBRARY=${alsa-lib}/lib/libasound.so \
+                    ALSA_INCLUDE=${alsaForBuild}/include/alsa/version.h \
+                    ALSA_LIBRARY=${alsaForBuild}/lib/libasound.so \
                     ANT=$TOOLS/ant \
                     DISABLE_NIMBUS=true \
                     SKIP_FASTDEBUG_BUILD=true \
@@ -1246,13 +1292,13 @@ in
                     if [ -f "$jarfile" ]; then
                       echo "Pre-importing $component classes from boot build..."
                       mkdir -p openjdk.build/classes
-                      (cd openjdk.build/classes && ${fastjar}/bin/fastjar xf "../../$jarfile") || true
+                      (cd openjdk.build/classes && ${buildTools.fastjar}/bin/fastjar xf "../../$jarfile") || true
                     fi
                   done
                   # Also import langtools classes (javac, javah, javadoc, javap tools)
                   if [ -f "openjdk.build-boot/langtools/dist/lib/classes.jar" ]; then
                     echo "Pre-importing langtools classes from boot build..."
-                    (cd openjdk.build/classes && ${fastjar}/bin/fastjar xf "../../openjdk.build-boot/langtools/dist/lib/classes.jar") || true
+                    (cd openjdk.build/classes && ${buildTools.fastjar}/bin/fastjar xf "../../openjdk.build-boot/langtools/dist/lib/classes.jar") || true
                   fi
 
                   # Continue the full build (make skips already-completed targets)
@@ -1261,8 +1307,8 @@ in
                     ALT_USRBIN_PATH=$TOOLS/ \
                     ALT_DEVTOOLS_PATH=$TOOLS/ \
                     ALT_COMPILER_PATH=$TOOLS/ \
-                    ALSA_INCLUDE=${alsa-lib}/include/alsa/version.h \
-                    ALSA_LIBRARY=${alsa-lib}/lib/libasound.so \
+                    ALSA_INCLUDE=${alsaForBuild}/include/alsa/version.h \
+                    ALSA_LIBRARY=${alsaForBuild}/lib/libasound.so \
                     ANT=$TOOLS/ant \
                     DISABLE_NIMBUS=true \
                     SKIP_FASTDEBUG_BUILD=true \
@@ -1272,52 +1318,68 @@ in
       }
       {
         name = "install";
-        script = ''
-          mkdir -p $out
-          # IcedTea produces the JDK image in openjdk.build/
-          if [ -d openjdk.build/j2sdk-image ]; then
-            cp -a openjdk.build/j2sdk-image/* $out/
-          elif [ -d openjdk.build/images/j2sdk-image ]; then
-            cp -a openjdk.build/images/j2sdk-image/* $out/
-          fi
-
-          # Remove empty ct.sym — ct.sym generation was skipped due to missing
-          # ASM classes. Without ct.sym, javac uses rt.jar directly for symbol
-          # resolution, which is correct for same-version compilation.
-          rm -f $out/lib/ct.sym
-
-          # Patch ELF binaries with correct dynamic linker and rpath
-          # CONFIG_SHELL (bash) is statically linked, so patchelf --print-interpreter
-          # fails on it. Read the dynamic linker from the cc-wrapper metadata instead.
-          INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
-          BT_LIB=$(dirname "$INTERP")
-
-          # Find libstdc++ directory (nested under lib/gcc/...)
-          STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
-          STDCXX_DIR=""
-          if [ -n "$STDCXX_FILE" ]; then
-            STDCXX_DIR=$(dirname "$STDCXX_FILE")
-          fi
-          RPATH="$out/lib:$out/lib/amd64:$out/lib/amd64/jli:$out/jre/lib/amd64:$out/jre/lib/amd64/jli:$out/jre/lib/amd64/server:$BT_LIB"
-          if [ -n "$STDCXX_DIR" ]; then
-            RPATH="$RPATH:$STDCXX_DIR"
-          fi
-
-          for f in $out/bin/* $out/jre/bin/*; do
-            if [ -f "$f" ] && [ ! -L "$f" ]; then
-              patchelf --set-interpreter "$INTERP" \
-                       --set-rpath "$RPATH" \
-                       "$f" 2>/dev/null || true
+        script =
+          if isDarwinCross
+          then ''
+            mkdir -p $out
+            # IcedTea produces the JDK image in openjdk.build/
+            if [ -d openjdk.build/j2sdk-image ]; then
+              cp -a openjdk.build/j2sdk-image/* $out/
+            elif [ -d openjdk.build/images/j2sdk-image ]; then
+              cp -a openjdk.build/images/j2sdk-image/* $out/
             fi
-          done
 
-          find $out -name '*.so' -o -name '*.so.*' | while read f; do
-            if [ -f "$f" ] && [ ! -L "$f" ]; then
-              patchelf --set-rpath "$RPATH" \
-                       "$f" 2>/dev/null || true
+            # ct.sym generation is skipped by this legacy bootstrap on both
+            # platforms. Darwin binaries are already emitted as Mach-O and
+            # must not be passed to the Linux ELF patching path below.
+            rm -f $out/lib/ct.sym
+          ''
+          else ''
+            mkdir -p $out
+            # IcedTea produces the JDK image in openjdk.build/
+            if [ -d openjdk.build/j2sdk-image ]; then
+              cp -a openjdk.build/j2sdk-image/* $out/
+            elif [ -d openjdk.build/images/j2sdk-image ]; then
+              cp -a openjdk.build/images/j2sdk-image/* $out/
             fi
-          done
-        '';
+
+            # Remove empty ct.sym — ct.sym generation was skipped due to missing
+            # ASM classes. Without ct.sym, javac uses rt.jar directly for symbol
+            # resolution, which is correct for same-version compilation.
+            rm -f $out/lib/ct.sym
+
+            # Patch ELF binaries with correct dynamic linker and rpath
+            # CONFIG_SHELL (bash) is statically linked, so patchelf --print-interpreter
+            # fails on it. Read the dynamic linker from the cc-wrapper metadata instead.
+            INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
+            BT_LIB=$(dirname "$INTERP")
+
+            # Find libstdc++ directory (nested under lib/gcc/...)
+            STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
+            STDCXX_DIR=""
+            if [ -n "$STDCXX_FILE" ]; then
+              STDCXX_DIR=$(dirname "$STDCXX_FILE")
+            fi
+            RPATH="$out/lib:$out/lib/amd64:$out/lib/amd64/jli:$out/jre/lib/amd64:$out/jre/lib/amd64/jli:$out/jre/lib/amd64/server:$BT_LIB"
+            if [ -n "$STDCXX_DIR" ]; then
+              RPATH="$RPATH:$STDCXX_DIR"
+            fi
+
+            for f in $out/bin/* $out/jre/bin/*; do
+              if [ -f "$f" ] && [ ! -L "$f" ]; then
+                patchelf --set-interpreter "$INTERP" \
+                         --set-rpath "$RPATH" \
+                         "$f" 2>/dev/null || true
+              fi
+            done
+
+            find $out -name '*.so' -o -name '*.so.*' | while read f; do
+              if [ -f "$f" ] && [ ! -L "$f" ]; then
+                patchelf --set-rpath "$RPATH" \
+                         "$f" 2>/dev/null || true
+              fi
+            done
+          '';
       }
     ];
 
