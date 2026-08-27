@@ -2,7 +2,7 @@
 
 use super::*;
 pub(super) use crucible::model::{
-    BindingActionCause, BindingEventParent, BindingMapping, BindingMappingRegistry,
+    BindingActionCause, BindingEventParent, BindingMapping, BindingMappingRegistry, BoundedCount,
     BindingObservabilityPolicy, BindingSampling, BindingSearchPolicy, CountLimit,
     EFFECT_SEMANTIC_VERSION, EffectKind, EffectLifetime, EffectRequest, EffectSpecification,
     EvaluatedSignal, FaultBinding, FaultCapabilityId, FaultCapabilityManifest, FaultDirection,
@@ -33,6 +33,19 @@ pub(crate) fn test_host_manifests() -> HostFaultAdapterManifests {
     HostFaultAdapterManifests {
         network: manifest(crucible::model::FaultAdapter::Network, "network-test-host"),
         storage: manifest(crucible::model::FaultAdapter::Storage, "storage-test-host"),
+    }
+}
+
+pub(crate) fn storage_path_fixture() -> crucible::model::StoragePolicyPath {
+    crucible::model::StoragePolicyPath {
+        selection: crucible::model::StoragePolicyPathSelection::ActivePassive,
+        maximum_attempts: BoundedCount::new(CountLimit::QueueEntries, 2)
+            .unwrap_or_else(|error| panic!("test attempts should validate: {error}")),
+        retry_delay_nanos: PositiveU64::new("retry_delay_nanos", 5)
+            .unwrap_or_else(|error| panic!("test delay should validate: {error}")),
+        recovery_probe_interval_nanos: PositiveU64::new("recovery_probe_interval_nanos", 10)
+            .unwrap_or_else(|error| panic!("test probe interval should validate: {error}")),
+        retry_results: vec![crucible::model::StoragePolicyResult::IoError],
     }
 }
 
