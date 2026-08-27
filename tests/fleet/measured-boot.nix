@@ -44,6 +44,10 @@
         aos.boot.kernelParams = lib.mkAfter ["console=ttyS0,115200"];
         aos.packages.test-http-server.bundle = true;
         environment.systemPackages = [pkgs.binutils pkgs.diffutils pkgs.jq];
+        # These are deliberate guest-side verification fixtures: objcopy
+        # independently reads the booted UKI, while test-http-server proves
+        # package activation across measured configuration generations.
+        aos.image.testArtifactRoots = [pkgs.binutils pkgs.test-http-server.expose];
       }
     ];
   };

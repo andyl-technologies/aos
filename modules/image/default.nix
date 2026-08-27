@@ -42,6 +42,7 @@
     maxClosureMiB = cfg.budgets.maxRuntimeClosureMiB;
     maxDevelopmentPayloadMiB = cfg.budgets.maxDevelopmentPayloadMiB;
     allowTestArtifacts = cfg.allowTestArtifacts;
+    testArtifactRoots = cfg.testArtifactRoots;
   };
 
   rawImage = buildImage {
@@ -244,6 +245,17 @@ in {
       '';
     };
 
+    testArtifactRoots = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [];
+      internal = true;
+      description = ''
+        Explicit package closures permitted to contain otherwise forbidden
+        runtime artifacts in an image with allowTestArtifacts enabled. The
+        artifacts remain included in all closure and development-size budgets.
+      '';
+    };
+
     budgets = {
       maxRootMiB = positiveMiB 512 "Maximum immutable root payload size.";
       maxVerityMiB = positiveMiB 16 "Maximum dm-verity tree size and capacity of each A/B hash partition.";
@@ -314,6 +326,10 @@ in {
 
   config = lib.mkIf cfg.enable {
     assertions = [
+      {
+        assertion = cfg.allowTestArtifacts || cfg.testArtifactRoots == [];
+        message = "aos.image.testArtifactRoots requires aos.image.allowTestArtifacts = true";
+      }
       {
         assertion = cfg.budgets.maxEspMiB >= 2 * cfg.budgets.maxUkiMiB + 32;
         message = "aos.image.budgets.maxEspMiB must hold two maximum-sized UKIs plus 32 MiB of bootloader and FAT headroom";
