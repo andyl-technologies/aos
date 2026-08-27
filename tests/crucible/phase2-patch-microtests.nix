@@ -972,6 +972,10 @@
       patch = "0056-crucible-node-lifecycle-faults.patch";
       check = import ./phase2-qemu-node-lifecycle.nix {
         inherit pkgs lib qemuPackage;
+        # Keep the real-QEMU lifecycle matrix in the bounded heavyweight
+        # sequence. Parallel aggregate builds must not turn host starvation
+        # into a guest-progress failure.
+        dependencies = [qemuLiveNetworkIo];
       };
     }
     {
