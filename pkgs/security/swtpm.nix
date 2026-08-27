@@ -6,6 +6,7 @@
   autoconf,
   automake,
   libtool,
+  m4,
   gettext,
   perl,
   python3,
@@ -38,6 +39,7 @@ in
       autoconf
       automake
       libtool
+      m4
       gettext
       perl
       python3

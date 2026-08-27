@@ -10,6 +10,7 @@
   util-linux,
   zlib,
   stdenv,
+  buildPackages,
 }: let
   version = "1.10.6";
   majorMinor = "1.10";
@@ -78,13 +79,17 @@ in
       {
         name = "build";
         script = ''
-          ninja -C build -j$NIX_BUILD_CORES
+          # Meson records its Python module invocation in build.ninja, not the
+          # environment-setting launcher used during setup.
+          PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
+            ninja -C build -j$NIX_BUILD_CORES
         '';
       }
       {
         name = "install";
         script = ''
-          ninja -C build install
+          PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
+            ninja -C build install
         '';
       }
     ];

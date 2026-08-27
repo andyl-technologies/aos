@@ -9,6 +9,7 @@
   gnumake,
   flex,
   bison,
+  m4,
   stdenv,
 }: let
   version = "R2025_04_04";
@@ -28,6 +29,7 @@ in
       gnumake
       flex
       bison
+      m4
     ];
     runtimeDeps = [];
     propagatedDeps = [];
