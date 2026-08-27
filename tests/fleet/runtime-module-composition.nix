@@ -129,6 +129,19 @@ in {
           )
 
 
+      def wait_for_service(unit):
+          try:
+              runtime.wait_until_succeeds(
+                  f"systemctl is-active --quiet {unit}", timeout=120
+              )
+          except Exception:
+              print(runtime.succeed(
+                  f"systemctl status --no-pager --full {unit} || true; "
+                  f"journalctl --no-pager -u {unit} -n 100 || true"
+              ))
+              raise
+
+
       def assert_package_configuration():
           runtime.succeed(
               "test \"$(cat /etc/runtime-modules/platform.conf)\" = authority=platform"
@@ -137,18 +150,14 @@ in {
               "test \"$(cat /etc/runtime-modules/operator.conf)\" = authority=runtime"
           )
 
-          runtime.wait_until_succeeds(
-              "systemctl is-active --quiet nginx.service", timeout=120
-          )
+          wait_for_service("nginx.service")
           nginx_body = runtime.succeed(
               f"{CURL} --fail --silent http://127.0.0.1:18080/health"
           )
           assert nginx_body == "nginx-runtime", nginx_body
           runtime.succeed("grep -q 'listen 18080;' /etc/nginx/nginx.conf")
 
-          runtime.wait_until_succeeds(
-              "systemctl is-active --quiet envoy.service", timeout=120
-          )
+          wait_for_service("envoy.service")
           envoy_body = runtime.succeed(
               f"{CURL} --fail --silent http://127.0.0.1:18081/health"
           )
