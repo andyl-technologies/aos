@@ -180,6 +180,15 @@ in
               -e "s|$tcl_source_root/unix|$out/lib|g" \
               -e "s|$tcl_source_root|$out/include|g" \
               "$out/lib/tclConfig.sh"
+
+            # Tcl records the compiler and ranlib used to build it in its
+            # downstream configuration metadata. Defer those tools to the
+            # consuming target stdenv instead of retaining this derivation's
+            # cross wrapper and its complete native compiler closure.
+            sed -i \
+              -e "s|^TCL_CC=.*|TCL_CC='cc'|" \
+              -e "s|^TCL_RANLIB=.*|TCL_RANLIB='ranlib'|" \
+              "$out/lib/tclConfig.sh"
           ''
           else ''
             make install
