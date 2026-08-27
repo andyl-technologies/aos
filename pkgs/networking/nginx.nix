@@ -47,13 +47,31 @@ in
           ${
             if stdenv.hostPlatform.isDarwin
             then ''
-              # Nginx's crossbuild option selects the target OS, but its
-              # feature harness still attempts to execute probe binaries.
-              # Darwin capabilities are compile/link probes here; the one
-              # explicit historical kqueue bug probe remains conservative.
-              sed -i '0,/ngx_feature_run=yes/s//ngx_feature_run=no/' auto/cc/name
-              sed -i 's/ngx_feature_run=yes/ngx_feature_run=no/g' auto/os/darwin auto/unix
+                            # Nginx's crossbuild option selects the target OS, but its
+                            # feature harness still attempts to execute probe binaries.
+                            # Darwin capabilities are compile/link probes here; the one
+                            # explicit historical kqueue bug probe remains conservative.
+                            sed -i '0,/ngx_feature_run=yes/s//ngx_feature_run=no/' auto/cc/name
+                            sed -i 's/ngx_feature_run=yes/ngx_feature_run=no/g' auto/os/darwin auto/unix
               sed -i "s|/bin/sh|$CONFIG_SHELL|g" auto/feature
+              sed -i 's/if $NGX_AUTOTEST >\/dev\/null 2>\&1; then/if true; then/' auto/endianness
+
+                            # All supported Darwin targets use the LP64 ABI. Nginx's
+                            # bespoke sizeof probe unconditionally executes its output,
+                            # unlike the feature harness disabled above, so provide the
+              # target ABI values while retaining the compile/link probe.
+                            sed -i '
+                              /^if \[ -x \$NGX_AUTOTEST \]; then$/,/^fi$/c\
+              case "$ngx_type" in\
+                int|sig_atomic_t) ngx_size=4 ;;\
+                *) ngx_size=8 ;;\
+              esac\
+              echo " $ngx_size bytes"
+              ' auto/types/sizeof
+
+              # Upstream implements file AIO only for FreeBSD and Linux. Its
+              # kqueue probe is too weak for Darwin's sigevent layout and
+              # otherwise enables FreeBSD-only source that cannot compile.
             ''
             else ""
           }
@@ -79,7 +97,11 @@ in
             --user=nginx \
             --group=nginx \
             --with-compat \
-            --with-file-aio \
+            ${
+            if stdenv.hostPlatform.isDarwin
+            then ""
+            else "--with-file-aio"
+          } \
             --with-threads \
             --with-http_ssl_module \
             --with-http_v2_module \
@@ -103,7 +125,11 @@ in
             --with-stream_ssl_module \
             --with-stream_ssl_preread_module \
             --with-pcre-jit \
-            --with-cc-opt="-I${openssl}/include -I${pcre2}/include -I${zlib}/include" \
+            --with-cc-opt="${
+            if stdenv.hostPlatform.isDarwin
+            then "-Wno-deprecated-declarations "
+            else ""
+          }-I${openssl}/include -I${pcre2}/include -I${zlib}/include" \
             --with-ld-opt="${linkerOptions}"
         '';
       }
