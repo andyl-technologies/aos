@@ -32374,6 +32374,7 @@ impl RpcService {
                 .unwrap_or(operation.created_at),
             finished_at: operation.finished_at,
             resource_version: operation.resource_version.to_string(),
+            detail_json: operation.detail_json.clone(),
         })
     }
 }

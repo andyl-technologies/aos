@@ -2067,6 +2067,7 @@ message OperationDetail {
   int64 updated_at = 7;
   optional int64 finished_at = 8;
   string resource_version = 9;
+  string detail_json = 10;
 }
 message GetOperationRequest { string operation_id = 1; }
 message OperationDetailResponse { OperationDetail operation = 1; }
