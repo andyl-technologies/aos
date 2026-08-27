@@ -219,6 +219,48 @@ in
               -- --exact --include-ignored --test-threads=1
           }
 
+          harness_lint_tests="$TMPDIR/harness-lint-tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-harness \
+            --test harness_lint \
+            -- --list > "$harness_lint_tests"
+          retired_surface_test=retired_fault_surfaces_cannot_reenter_executable_or_user_documentation_paths
+          grep -Fqx "$retired_surface_test: test" "$harness_lint_tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-harness \
+            --test harness_lint \
+            "$retired_surface_test" \
+            -- --exact --include-ignored --test-threads=1
+
+          feature_policy_tests="$TMPDIR/feature-policy-tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-harness \
+            --test feature_powerset \
+            -- --list > "$feature_policy_tests"
+          no_production_double_test=shipped_crates_do_not_enable_the_test_double
+          grep -Fqx "$no_production_double_test: test" "$feature_policy_tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-harness \
+            --test feature_powerset \
+            "$no_production_double_test" \
+            -- --exact --include-ignored --test-threads=1
+
           taxonomy_tests="$TMPDIR/rfc0014-taxonomy-ledger-tests"
           cargo test \
             --frozen \
@@ -984,6 +1026,23 @@ in
             | sort > "$TMPDIR/expected-causal-node-effect-kinds"
           cmp "$TMPDIR/expected-causal-node-effect-kinds" "$TMPDIR/causal-node-effect-kinds"
 
+          causal_all_rows="$TMPDIR/causal-all-production-effect-rows"
+          cat \
+            "$TMPDIR/causal-network-production-effect-rows" \
+            "$TMPDIR/causal-storage-production-effect-rows" \
+            "$node_effect_rows" \
+            > "$causal_all_rows"
+          test "$(wc -l < "$causal_all_rows")" -eq \
+            "$(wc -l < "$production_matrix")"
+          test "$(sort -u "$causal_all_rows" | wc -l)" -eq \
+            "$(wc -l < "$causal_all_rows")"
+          cut -d= -f2- "$causal_all_rows" | cut -d'|' -f1 | sort \
+            > "$TMPDIR/causal-all-effect-kinds"
+          cut -d'|' -f1 "$production_matrix" | sort \
+            > "$TMPDIR/registered-all-effect-kinds"
+          cmp "$TMPDIR/registered-all-effect-kinds" \
+            "$TMPDIR/causal-all-effect-kinds"
+
           shared_result=${sharedCause}/result
           grep -Fxq PASS "$shared_result"
           grep -Fxq 'gate=gate:signal-shared-cause' "$shared_result"
@@ -1065,6 +1124,8 @@ in
             "$out/evidence/causal-storage-production-effects.txt"
           cp "$TMPDIR/causal-node-production-effect-rows" \
             "$out/evidence/causal-node-production-effects.txt"
+          cp "$TMPDIR/causal-all-production-effect-rows" \
+            "$out/evidence/causal-all-production-effects.txt"
           cp "$TMPDIR/rfc0014-taxonomy-ledger.tsv" \
             "$out/evidence/rfc0014-taxonomy-ledger.tsv"
 
@@ -1088,6 +1149,8 @@ in
           production_adapters=network,storage,node
           specification_only_domains=sensor,power
           retired_execution_paths=absent
+          retired_execution_policy=recursive-exact-identifier-scan
+          production_test_double_features=absent
           unfinished_production_paths=absent
           per_kind_metadata=admission,capability,replay-evidence,user-reference
           per_kind_production_execution_matrix=network-$matrix_network_count,storage-$matrix_storage_count,node-$matrix_node_count
@@ -1101,6 +1164,8 @@ in
           checkpoint_publication=cleanup-before-rename-and-durable-count-admission
           causal_node_production_effect_count=20
           causal_node_production_effect_artifact=evidence/causal-node-production-effects.txt
+          causal_all_production_effects=exact-registry-identity
+          causal_all_production_effect_artifact=evidence/causal-all-production-effects.txt
           executable_taxonomy_rows=226
           executable_taxonomy_section_counts=wired-76,radio-52,satellite-20,node-41,storage-37
           executable_taxonomy_ledger=exact-section-identity-and-registered-effects
