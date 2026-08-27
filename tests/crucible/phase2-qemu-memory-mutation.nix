@@ -327,6 +327,7 @@ in
               printf 'evidence_bounds=%s\n' 'inline,hash-only,16MiB-hard-bound'
               printf 'disallowed_target_matrix=%s\n' 'x86_64+aarch64:unmapped,rom,mmio,write-protected'
               printf 'target_types_introspected=%s\n' 'rom,romd,mmio'
+              printf 'production_effect_row=memory.mutation|physical-virtual-atomic-matrix|gate:patch-microtests|actual-patched-qemu|translation+before-after+dirty-tracking\n'
             } > "$out/result"
           '';
         }

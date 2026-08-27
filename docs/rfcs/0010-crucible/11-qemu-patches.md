@@ -1580,6 +1580,56 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   ordinary QEMU accelerator retains its prior behavior.
 - **Risk:** D.
 
+### crucible-accelerator-service-schema — admit typed service capacity
+
+- **Patch:** `0111-crucible-accelerator-service-schema.patch`.
+- **Enforces:** [QFP-ACCEL-SERVICE], [FAULT-ORDER].
+- **Mechanism:** the accelerator service command uses a dedicated closed schema
+  whose capacity field is a ratio, matching both the versioned host encoder and
+  QEMU's command-specific validator. Compute and memory-rate service limits,
+  enable flags, and thermal/power policy retain their existing field types.
+- **Micro-test:** the production live hardware gate submits the typed
+  state-machine effect through PREPARE and APPLY, then requires three exact
+  job-service occurrences and guest-visible completion under the installed
+  half-capacity thermal/power policy. The per-patch certificate also requires
+  the dedicated mapping and consumes the exact drop-one negative control.
+- **Inertness:** only accelerator service command parsing changes. Other generic
+  service commands and ordinary QEMU execution retain their prior schema and
+  behavior.
+- **Risk:** F.
+
+### crucible-compile-affected-clock-sources — isolate rule compilation
+
+- **Patch:** `0112-crucible-compile-affected-clock-sources.patch`.
+- **Enforces:** [QFP-CLOCK-SOURCE], [FAULT-ORDER].
+- **Mechanism:** post-commit clock compilation receives the exact changed rule.
+  A transform selects sources through its target predicate; a source-state rule
+  selects the identities in its typed hash set. Unrelated registered sources
+  are not projected or rearmed at that transaction boundary.
+- **Micro-test:** the production live hardware gate commits a degraded local
+  APIC timer source while unrelated clock devices are registered, then requires
+  authenticated source-transition and timer-rearm occurrences without an
+  unrelated projection failure.
+- **Inertness:** non-clock rules and unselected clock sources perform no work;
+  selected sources preserve the existing compilation and timer-rearm path.
+- **Risk:** F.
+
+### crucible-restore-accelerator-rule-indexes — restore persistent policy
+
+- **Patch:** `0113-crucible-restore-accelerator-rule-indexes.patch`.
+- **Enforces:** [QFP-ACCEL-SERVICE], [FAULT-RESTORE].
+- **Mechanism:** accelerator VMState preparation rebuilds its four private rule
+  indexes by retaining references from the already-authenticated staged node
+  ledger. Commit atomically replaces the live indexes alongside accelerator
+  counters and memory; abort releases every staged reference.
+- **Micro-test:** the production live hardware gate installs a persistent
+  half-capacity service rule, captures VMState, destroys QEMU and its plugin,
+  restores into a fresh process, and requires exact service evidence for the
+  GPU, TPU, and FPGA jobs.
+- **Inertness:** no VMState bytes or public protocol fields change. Cold starts
+  and accelerators with no retained rules reconstruct empty indexes.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

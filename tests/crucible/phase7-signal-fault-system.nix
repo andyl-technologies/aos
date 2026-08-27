@@ -418,7 +418,7 @@ in
           run_exact_api_test \
             vm_lifecycle::quantum_loop::lifecycle::restart_ownership::tests::terminal_successor_launch_owns_exact_app_random_continuation
           run_exact_api_test \
-            vm_lifecycle::quantum_loop::checkpoint_capture::tests::preparation_is_all_or_nothing_before_qmp_capture
+            vm_lifecycle::quantum_loop::checkpoint_capture::tests::preparation_is_all_or_nothing_before_live_capture
           run_exact_api_test \
             vm_lifecycle::quantum_loop::checkpoint_capture::tests::cleanup_attempts_every_capture_in_reverse_order
           run_exact_api_test \
@@ -773,8 +773,53 @@ in
           grep -Fxq 'clock_effect_proof=authenticated-old-plus-offset-equals-new' "$hardware_result"
           grep -Fxq 'clock_occurrences=1' "$hardware_result"
           grep -Fxq 'accelerator_occurrences=1' "$hardware_result"
+          grep -Fxq 'clock_source_occurrences=2' "$hardware_result"
+          grep -Fxq 'accelerator_lifecycle_occurrences=1' "$hardware_result"
+          grep -Fxq 'accelerator_memory_occurrences=1' "$hardware_result"
+          grep -Fxq 'accelerator_service_occurrences=3' "$hardware_result"
           grep -Fxq 'accelerator_mutation=tpu-result-42-to-43' "$hardware_result"
           grep -Fxq 'fresh_plugin_restore=true' "$hardware_result"
+
+          node_effect_rows="$TMPDIR/causal-node-production-effect-rows"
+          grep '^production_effect_row=' "$lifecycle_matrix_result" > "$node_effect_rows"
+          grep '^production_effect_row=' "$vcpu_result" >> "$node_effect_rows"
+          for result in \
+            "${patchMicrotests}/per-patch/0049-crucible-memory-boundary-mutate.patch.result" \
+            "${patchMicrotests}/per-patch/0050-crucible-memory-access-faults.patch.result" \
+            "${patchMicrotests}/per-patch/0051-crucible-add-architecture-register-fault-mutations.patch.result" \
+            "${patchMicrotests}/per-patch/0052-crucible-instruction-and-exception-faults.patch.result" \
+            "${patchMicrotests}/per-patch/0053-crucible-interrupt-faults.patch.result" \
+            "${patchMicrotests}/per-patch/0054-crucible-inject-architecture-hardware-errors.patch.result"
+          do
+            grep '^production_effect_row=' "$result" >> "$node_effect_rows"
+          done
+          grep '^production_effect_row=' "$hardware_result" >> "$node_effect_rows"
+          test "$(wc -l < "$node_effect_rows")" -eq 20
+          test "$(sort -u "$node_effect_rows" | wc -l)" -eq 20
+          cut -d= -f2- "$node_effect_rows" | cut -d'|' -f1 | sort > "$TMPDIR/causal-node-effect-kinds"
+          printf '%s\n' \
+            accelerator.lifecycle \
+            accelerator.memory_event \
+            accelerator.result_transform \
+            accelerator.service \
+            clock.source_state \
+            clock.transform \
+            cpu.exception \
+            cpu.instruction_transform \
+            cpu.register_transform \
+            cpu.service \
+            cpu.vcpu_state \
+            interrupt.disposition \
+            interrupt.storm \
+            memory.access_transform \
+            memory.ecc_event \
+            memory.mutation \
+            memory.region_state \
+            memory.service \
+            node.hang \
+            node.lifecycle \
+            | sort > "$TMPDIR/expected-causal-node-effect-kinds"
+          cmp "$TMPDIR/expected-causal-node-effect-kinds" "$TMPDIR/causal-node-effect-kinds"
 
           shared_result=${sharedCause}/result
           grep -Fxq PASS "$shared_result"
@@ -801,6 +846,18 @@ in
             "${patchMicrotests}/per-patch/0110-crucible-release-halted-rr-turn.patch.result"
           grep -Fxq 'guest_pause_early_yield_negative=critical-arm-branch-trap-observed-after-AAAB' \
             "${patchMicrotests}/per-patch/0110-crucible-release-halted-rr-turn.patch.result"
+          grep -Fxq 'patch=0111-crucible-accelerator-service-schema.patch' \
+            "${patchMicrotests}/per-patch/0111-crucible-accelerator-service-schema.patch.result"
+          grep -Fxq 'live_evidence=live-typed-accelerator-service-policy' \
+            "${patchMicrotests}/per-patch/0111-crucible-accelerator-service-schema.patch.result"
+          grep -Fxq 'patch=0112-crucible-compile-affected-clock-sources.patch' \
+            "${patchMicrotests}/per-patch/0112-crucible-compile-affected-clock-sources.patch.result"
+          grep -Fxq 'live_evidence=live-affected-clock-source-compilation' \
+            "${patchMicrotests}/per-patch/0112-crucible-compile-affected-clock-sources.patch.result"
+          grep -Fxq 'patch=0113-crucible-restore-accelerator-rule-indexes.patch' \
+            "${patchMicrotests}/per-patch/0113-crucible-restore-accelerator-rule-indexes.patch.result"
+          grep -Fxq 'live_evidence=live-restored-accelerator-rule-indexes' \
+            "${patchMicrotests}/per-patch/0113-crucible-restore-accelerator-rule-indexes.patch.result"
 
           checkpoint_result=${checkpointMaterialization}/result
           grep -Fxq PASS "$checkpoint_result"
@@ -839,6 +896,8 @@ in
           cp ${cliSearchFuzz}/result "$out/evidence/cli-search-fuzz.result"
           cp "$TMPDIR/production-effect-matrix" \
             "$out/evidence/production-effect-matrix.txt"
+          cp "$TMPDIR/causal-node-production-effect-rows" \
+            "$out/evidence/causal-node-production-effects.txt"
           cp "$TMPDIR/rfc0014-taxonomy-ledger.tsv" \
             "$out/evidence/rfc0014-taxonomy-ledger.tsv"
 
@@ -866,6 +925,8 @@ in
           per_kind_metadata=admission,capability,replay-evidence,user-reference
           per_kind_production_execution_matrix=network-$matrix_network_count,storage-$matrix_storage_count,node-$matrix_node_count
           per_kind_production_execution_matrix_artifact=evidence/production-effect-matrix.txt
+          causal_node_production_effect_count=20
+          causal_node_production_effect_artifact=evidence/causal-node-production-effects.txt
           executable_taxonomy_rows=226
           executable_taxonomy_section_counts=wired-76,radio-52,satellite-20,node-41,storage-37
           executable_taxonomy_ledger=exact-section-identity-and-registered-effects

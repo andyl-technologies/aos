@@ -769,6 +769,27 @@
       enforces = "DET-1,PLUG-24,QEMU-43";
       capability = "a vCPU that executes HLT before exhausting its serialized RR turn leaves the execution loop when no alternative vCPU is runnable; a helper-marked multi-vCPU guest PAUSE fences control-boundary acknowledgement until it commits a cursor-zero early handoff immediately after icount accounting and before callbacks or host-work exits, so a released spin lock cannot be reacquired before a waiting peer runs; and that exact completed-turn handoff admits safe register capture while other owner mismatches fail closed";
     }
+    {
+      file = "0111-crucible-accelerator-service-schema.patch";
+      catalogName = "crucible-accelerator-service-schema";
+      class = "F";
+      enforces = "QFP-ACCEL-SERVICE,FAULT-ORDER";
+      capability = "typed accelerator service commands admit the ratio-valued capacity field used by the versioned node-fault payload before atomically installing compute, memory-rate, thermal, and power service policy";
+    }
+    {
+      file = "0112-crucible-compile-affected-clock-sources.patch";
+      catalogName = "crucible-compile-affected-clock-sources";
+      class = "F";
+      enforces = "QFP-CLOCK-SOURCE,FAULT-ORDER";
+      capability = "a committed clock rule recompiles and rearms only sources selected by that exact rule, so an unrelated source that cannot project raw time at the stopped boundary cannot invalidate the authenticated transition";
+    }
+    {
+      file = "0113-crucible-restore-accelerator-rule-indexes.patch";
+      catalogName = "crucible-restore-accelerator-rule-indexes";
+      class = "F";
+      enforces = "QFP-ACCEL-SERVICE,FAULT-RESTORE";
+      capability = "fresh-process VMState restore rebuilds each accelerator lifecycle, result, memory, and service rule index from the authenticated staged node-rule ledger before commit, preserving persistent accelerator behavior without duplicating rule ownership";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

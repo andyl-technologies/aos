@@ -183,6 +183,8 @@ in
               printf 'backend=actual-patched-and-stock-qemu\n'
               printf 'architectures=x86_64,aarch64\n'
               printf 'live_mutations=corrected-ecc,x86-mca,aarch64-ras\n'
+              printf 'production_effect_row=cpu.exception|x86-mca-aarch64-ras|gate:patch-microtests|actual-patched-qemu|architecture-error-acknowledgement\n'
+              printf 'production_effect_row=memory.ecc_event|corrected-ecc|gate:patch-microtests|actual-patched-qemu|platform-record+corrected-data\n'
             } > "$out/result"
           '';
         }

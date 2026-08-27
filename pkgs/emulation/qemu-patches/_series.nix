@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "c8ebaa99a4ac3e062d8807e1057e618450114b2a8f4b76cdd7e9083744f33031";
+  patchBranchBundleSha256 = "bc74022e3381f6c7faf17346a992e5569e5bc8e267336ae46ad022d37a777bd4";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "4dba51665731496fa872294480cc22c96e570642";
+  patchBranchHeadCommit = "9b5d22a78d42d034e248d7e8f33e8527c467cd14";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1035,6 +1035,36 @@ let
       class = "D";
       enforces = "DET-1,PLUG-24,QEMU-43";
       capability = "a vCPU that executes HLT before exhausting its serialized RR turn leaves the execution loop when no alternative vCPU is runnable; a helper-marked multi-vCPU guest PAUSE fences control-boundary acknowledgement until it commits a cursor-zero early handoff immediately after icount accounting and before callbacks or host-work exits, so a released spin lock cannot be reacquired before a waiting peer runs; and that exact completed-turn handoff admits safe register capture while other owner mismatches fail closed";
+    }
+    {
+      file = "0111-crucible-accelerator-service-schema.patch";
+      branchSubject = "crucible: correct accelerator service schema";
+      branchCommit = "a390da08d38e9cc63ecd6bf60a2e8d79f30d253f";
+      branchTree = "841ab32c637a09efc7d78abeddc7e8a3a83cbcf3";
+      catalogName = "crucible-accelerator-service-schema";
+      class = "F";
+      enforces = "QFP-ACCEL-SERVICE,FAULT-ORDER";
+      capability = "typed accelerator service commands admit the ratio-valued capacity field used by the versioned node-fault payload before atomically installing compute, memory-rate, thermal, and power service policy";
+    }
+    {
+      file = "0112-crucible-compile-affected-clock-sources.patch";
+      branchSubject = "crucible: compile only affected clock sources";
+      branchCommit = "7b9b607ebd3dc190128214757d5e29521b0939eb";
+      branchTree = "4a6f1cdc0313797de3211af66066d8410d384d7f";
+      catalogName = "crucible-compile-affected-clock-sources";
+      class = "F";
+      enforces = "QFP-CLOCK-SOURCE,FAULT-ORDER";
+      capability = "a committed clock rule recompiles and rearms only sources selected by that exact rule, so an unrelated source that cannot project raw time at the stopped boundary cannot invalidate the authenticated transition";
+    }
+    {
+      file = "0113-crucible-restore-accelerator-rule-indexes.patch";
+      branchSubject = "crucible: restore accelerator rule indexes";
+      branchCommit = "9b5d22a78d42d034e248d7e8f33e8527c467cd14";
+      branchTree = "f16be2ffdfdce2a19343bf32c155a387186dc94b";
+      catalogName = "crucible-restore-accelerator-rule-indexes";
+      class = "F";
+      enforces = "QFP-ACCEL-SERVICE,FAULT-RESTORE";
+      capability = "fresh-process VMState restore rebuilds each accelerator lifecycle, result, memory, and service rule index from the authenticated staged node-rule ledger before commit, preserving persistent accelerator behavior without duplicating rule ownership";
     }
   ];
   catalogOnlyCapabilities = [

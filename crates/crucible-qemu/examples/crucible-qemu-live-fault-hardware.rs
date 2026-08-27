@@ -12,8 +12,6 @@
 #[cfg(target_os = "linux")]
 use std::env;
 #[cfg(target_os = "linux")]
-use std::error::Error;
-#[cfg(target_os = "linux")]
 use std::fs;
 #[cfg(target_os = "linux")]
 use std::process::ExitCode;
@@ -22,30 +20,28 @@ use std::sync::Arc;
 
 #[cfg(target_os = "linux")]
 use crucible::model::{
-    AcceleratorJobSelector, AcceleratorResultMutation, BindingEventParent, BindingMapping,
-    BindingObservabilityPolicy, BindingSampling, BindingSearchPolicy, ByteRange,
-    ClockMonotonicityPolicy, ClockMutation, ClockOverdueTimerPolicy, ContentHash,
-    EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest, EffectSpecification, FaultAdapter,
-    FaultBinding, FaultCoordinate, FaultObjectId, FaultObservationKind, FaultOperation,
-    FaultOpportunity, FaultPhase, FaultResourceLimits, FaultSignalPlan, FaultTargetKind, HexBytes,
-    HostFaultAdapterManifests, MemoryAddressSpace, MemoryMutationAtomicity, MemoryMutationKind,
-    NodeEffectSpecification, NodeOccurrencePolicy, OperationSet, OpportunityFilter,
-    OpportunityPayload, ResolvedFaultTarget, ResolvedTargetSet, SignalBoundarySnapshot,
-    SignalCoordinate, SignalDomain, SignalId, SignalNode, SignalNodeKind, SignalPoint,
-    SignalProgram, SignalResourceLimits, SignalShape, SignalSourceSpecification, SignalUnit,
-    SignalValue, SignalValueType, TargetSelector,
+    ContentHash, FaultCoordinate, FaultObservationKind, FaultOperation, FaultOpportunity,
+    FaultPhase, HostFaultAdapterManifests, OpportunityPayload, SignalBoundarySnapshot,
 };
 #[cfg(target_os = "linux")]
-use crucible::{
-    Checkpoint, CheckpointKind, Icount, NodeId, ObservableEventPayload, SimulationBackend,
-    VirtualTime,
-};
+use crucible::{Checkpoint, CheckpointKind, Icount, NodeId, SimulationBackend, VirtualTime};
 #[cfg(target_os = "linux")]
 use crucible_qemu::{
     DEFAULT_VMSTATE_FILE_NAME, ProductionFaultRuntime, QemuLaunchPluginSwitch,
     QemuLiveNodeStepGateConfig, QemuNodeSet, launch_qemu_live_node,
     launch_qemu_live_node_exact_snapshot,
 };
+
+#[cfg(target_os = "linux")]
+#[path = "crucible_qemu_live_fault_hardware/plan.rs"]
+mod plan;
+#[cfg(target_os = "linux")]
+use plan::{accelerator_target, fault_hardware_plan};
+#[cfg(target_os = "linux")]
+#[path = "crucible_qemu_live_fault_hardware/support.rs"]
+mod support;
+#[cfg(target_os = "linux")]
+use support::{collect_console, contains, error_chain, required_arg, usage};
 
 #[cfg(target_os = "linux")]
 // Linux reaches its initramfs workload near 3.35 billion retired instructions
@@ -58,13 +54,7 @@ const STEP_ICOUNT: u64 = 5_120_000_000;
 
 #[cfg(target_os = "linux")]
 fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("crucible-qemu-live-fault-hardware: {error}");
-            ExitCode::FAILURE
-        }
-    }
+    support::entry(run)
 }
 
 #[cfg(target_os = "linux")]
@@ -148,25 +138,87 @@ fn run() -> Result<(), String> {
     let boundary = runtime
         .evaluate_boundary(fault_coordinate, 0, &mut nodes)
         .map_err(|error| format!("apply guest-clock signal boundary: {error}"))?;
-    if boundary.actions.len() != 2 {
+    let accelerator_lifecycle_boundary = runtime
+        .evaluate_boundary(
+            FaultCoordinate {
+                virtual_nanos: 3,
+                retired_instructions: Some(initial_icount),
+            },
+            0,
+            &mut nodes,
+        )
+        .map_err(|error| format!("apply accelerator-lifecycle signal boundary: {error}"))?;
+    let accelerator_memory_boundary = runtime
+        .evaluate_boundary(
+            FaultCoordinate {
+                virtual_nanos: 4,
+                retired_instructions: Some(initial_icount),
+            },
+            0,
+            &mut nodes,
+        )
+        .map_err(|error| format!("apply accelerator-memory signal boundary: {error}"))?;
+    let accelerator_service_boundary = runtime
+        .evaluate_boundary(
+            FaultCoordinate {
+                virtual_nanos: 5,
+                retired_instructions: Some(initial_icount),
+            },
+            0,
+            &mut nodes,
+        )
+        .map_err(|error| format!("apply accelerator-service signal boundary: {error}"))?;
+    let boundary_action_counts = [
+        boundary.actions.len(),
+        accelerator_lifecycle_boundary.actions.len(),
+        accelerator_memory_boundary.actions.len(),
+        accelerator_service_boundary.actions.len(),
+    ];
+    if boundary_action_counts != [2, 1, 1, 1] {
         return Err(format!(
-            "same-coordinate hardware signal boundary produced {} actions instead of two",
-            boundary.actions.len()
+            "pre-workload hardware signal boundary action counts were {boundary_action_counts:?} instead of [2, 1, 1, 1]"
         ));
     }
-    let clock_action_count = boundary
-        .actions
-        .iter()
+    let pre_workload_action_count = boundary_action_counts
+        .into_iter()
+        .try_fold(0_usize, usize::checked_add)
+        .ok_or_else(|| String::from("hardware signal action count overflowed"))?;
+    if pre_workload_action_count != 5 {
+        return Err(format!(
+            "pre-workload hardware signal boundaries produced {pre_workload_action_count} actions instead of five"
+        ));
+    }
+    let actions = || {
+        boundary
+            .actions
+            .iter()
+            .chain(accelerator_lifecycle_boundary.actions.iter())
+            .chain(accelerator_memory_boundary.actions.iter())
+            .chain(accelerator_service_boundary.actions.iter())
+    };
+    let clock_action_count = actions()
         .filter(|action| action.binding.as_str() == "guest-clock-offset-binding")
         .count();
-    let memory_action_count = boundary
-        .actions
-        .iter()
+    let memory_action_count = actions()
         .filter(|action| action.binding.as_str() == "fingerprint-memory-binding")
         .count();
-    if clock_action_count != 1 || memory_action_count != 1 {
+    let accelerator_lifecycle_action_count = actions()
+        .filter(|action| action.binding.as_str() == "accelerator-lifecycle-reset-binding")
+        .count();
+    let accelerator_memory_action_count = actions()
+        .filter(|action| action.binding.as_str() == "accelerator-memory-corrected-binding")
+        .count();
+    let accelerator_service_action_count = actions()
+        .filter(|action| action.binding.as_str() == "accelerator-service-throttle-binding")
+        .count();
+    if clock_action_count != 1
+        || memory_action_count != 1
+        || accelerator_lifecycle_action_count != 1
+        || accelerator_memory_action_count != 1
+        || accelerator_service_action_count != 1
+    {
         return Err(format!(
-            "same-coordinate hardware actions were clock={clock_action_count}, memory={memory_action_count}"
+            "pre-workload hardware actions were clock={clock_action_count}, memory={memory_action_count}, accelerator-lifecycle={accelerator_lifecycle_action_count}, accelerator-memory={accelerator_memory_action_count}, accelerator-service={accelerator_service_action_count}"
         ));
     }
     let mut node = nodes
@@ -219,7 +271,10 @@ fn run() -> Result<(), String> {
         accelerator_target()?,
         FaultOperation::AcceleratorComplete,
         FaultPhase::Complete,
-        fault_coordinate,
+        FaultCoordinate {
+            virtual_nanos: 5,
+            retired_instructions: Some(initial_icount),
+        },
         0,
         None,
         OpportunityPayload::AcceleratorJob {
@@ -328,57 +383,74 @@ fn run() -> Result<(), String> {
     .map_err(|error| format!("restore armed fault runtime: {error}"))?;
 
     let mut console = Vec::new();
+    let mut final_icount = initial_icount;
     collect_console(&mut nodes, &mut console)?;
     for step in 1..=MAX_STEPS {
         if contains(&console, b"CRUCIBLE_FAULT_HARDWARE_GUEST=PASS\n") {
             break;
         }
+        let target_icount = initial_icount
+            .checked_add(
+                step.checked_mul(STEP_ICOUNT)
+                    .ok_or_else(|| String::from("guest step span overflowed"))?,
+            )
+            .ok_or_else(|| String::from("guest step coordinate overflowed"))?;
         let advance = SimulationBackend::step_to(
             &mut nodes,
             VirtualTime {
-                ticks: initial_icount
-                    .checked_add(
-                        step.checked_mul(STEP_ICOUNT)
-                            .ok_or_else(|| String::from("guest step span overflowed"))?,
-                    )
-                    .ok_or_else(|| String::from("guest step coordinate overflowed"))?,
+                ticks: target_icount,
             },
         );
-        if let Err(error) = advance {
-            let _ = collect_console(&mut nodes, &mut console);
-            return Err(format!(
-                "advance live hardware guest: {error}; console follows:\n{}",
-                String::from_utf8_lossy(&console)
-            ));
-        }
+        let observation = match advance {
+            Ok(observation) => observation,
+            Err(error) => {
+                let _ = collect_console(&mut nodes, &mut console);
+                return Err(format!(
+                    "advance live hardware guest: {error}; console follows:\n{}",
+                    String::from_utf8_lossy(&console)
+                ));
+            }
+        };
+        final_icount = observation.reached.ticks;
         collect_console(&mut nodes, &mut console)?;
     }
 
-    let final_icount = initial_icount
-        .checked_add(
-            MAX_STEPS
-                .checked_mul(STEP_ICOUNT)
-                .ok_or_else(|| String::from("final live hardware guest coordinate overflowed"))?,
-        )
-        .ok_or_else(|| String::from("final live hardware guest coordinate overflowed"))?;
     let final_evaluation = runtime
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 2,
+                virtual_nanos: 6,
                 retired_instructions: Some(final_icount),
             },
             0,
             &mut nodes,
         )
         .map_err(|error| format!("authenticate hardware fault occurrences: {error}"))?;
+    let clock_source_action_count = final_evaluation
+        .actions
+        .iter()
+        .filter(|action| action.binding.as_str() == "guest-clock-source-degraded-binding")
+        .count();
+    let action_count = pre_workload_action_count
+        .checked_add(final_evaluation.actions.len())
+        .ok_or_else(|| String::from("hardware signal action count overflowed"))?;
+    if action_count != 6 || final_evaluation.actions.len() != 1 || clock_source_action_count != 1 {
+        return Err(format!(
+            "post-workload clock-source boundary produced {} actions ({clock_source_action_count} clock-source) and {action_count} total instead of one and six",
+            final_evaluation.actions.len()
+        ));
+    }
     let hardware_observations = boundary
         .observations
         .iter()
+        .chain(accelerator_lifecycle_boundary.observations.iter())
+        .chain(accelerator_memory_boundary.observations.iter())
+        .chain(accelerator_service_boundary.observations.iter())
         .chain(final_evaluation.observations.iter());
     let clock_occurrences = hardware_observations
         .clone()
         .filter(|observation| {
             observation.kind == FaultObservationKind::EffectApplied
+                && observation.opportunity.is_some()
                 && observation
                     .binding
                     .as_ref()
@@ -386,21 +458,68 @@ fn run() -> Result<(), String> {
         })
         .count();
     let accelerator_occurrences = hardware_observations
+        .clone()
         .filter(|observation| {
             observation.kind == FaultObservationKind::EffectApplied
+                && observation.opportunity.is_some()
                 && observation
                     .binding
                     .as_ref()
                     .is_some_and(|binding| binding.as_str() == "tpu-result-transform-binding")
         })
         .count();
+    let clock_source_occurrences = hardware_observations
+        .clone()
+        .filter(|observation| {
+            observation.kind == FaultObservationKind::EffectApplied
+                && observation.opportunity.is_some()
+                && observation.binding.as_ref().is_some_and(|binding| {
+                    binding.as_str() == "guest-clock-source-degraded-binding"
+                })
+        })
+        .count();
+    let accelerator_lifecycle_occurrences = hardware_observations
+        .clone()
+        .filter(|observation| {
+            observation.kind == FaultObservationKind::EffectApplied
+                && observation.opportunity.is_some()
+                && observation.binding.as_ref().is_some_and(|binding| {
+                    binding.as_str() == "accelerator-lifecycle-reset-binding"
+                })
+        })
+        .count();
+    let accelerator_memory_occurrences = hardware_observations
+        .clone()
+        .filter(|observation| {
+            observation.kind == FaultObservationKind::EffectApplied
+                && observation.opportunity.is_some()
+                && observation.binding.as_ref().is_some_and(|binding| {
+                    binding.as_str() == "accelerator-memory-corrected-binding"
+                })
+        })
+        .count();
+    let accelerator_service_occurrences = hardware_observations
+        .filter(|observation| {
+            observation.kind == FaultObservationKind::EffectApplied
+                && observation.opportunity.is_some()
+                && observation.binding.as_ref().is_some_and(|binding| {
+                    binding.as_str() == "accelerator-service-throttle-binding"
+                })
+        })
+        .count();
     // `EffectCommitted` records only transaction acceptance. `EffectApplied`
     // reaches this list solely after the GPL bridge validates the QEMU clock
     // impulse's authenticated old-offset + requested-offset = new-offset
     // evidence and the accelerator's exact opportunity and job sequence.
-    if clock_occurrences != 1 || accelerator_occurrences != 1 {
+    if clock_occurrences != 1
+        || accelerator_occurrences != 1
+        || clock_source_occurrences != 2
+        || accelerator_lifecycle_occurrences != 1
+        || accelerator_memory_occurrences != 1
+        || accelerator_service_occurrences != 3
+    {
         return Err(format!(
-            "authenticated occurrence counts were clock={clock_occurrences}, accelerator={accelerator_occurrences}"
+            "authenticated occurrence counts were clock={clock_occurrences}, accelerator-result={accelerator_occurrences}, clock-source={clock_source_occurrences}, accelerator-lifecycle={accelerator_lifecycle_occurrences}, accelerator-memory={accelerator_memory_occurrences}, accelerator-service={accelerator_service_occurrences}"
         ));
     }
 
@@ -440,253 +559,44 @@ fn run() -> Result<(), String> {
     println!("accelerator_jobs=gpu-vector-add,tpu-matrix-multiply,fpga-lookup-table");
     println!("accelerator_mutation=tpu-result-42-to-43");
     println!("host_adapter=qemu-live-accelerator-servicer");
-    println!("boundary_signal_actions={}", boundary.actions.len());
+    println!("boundary_signal_actions={action_count}");
     println!("clock_signal_actions={clock_action_count}");
     println!("memory_signal_actions={memory_action_count}");
+    println!("clock_source_signal_actions={clock_source_action_count}");
+    println!("accelerator_lifecycle_signal_actions={accelerator_lifecycle_action_count}");
+    println!("accelerator_memory_signal_actions={accelerator_memory_action_count}");
+    println!("accelerator_service_signal_actions={accelerator_service_action_count}");
     println!("same_icount_fault_fingerprint_changed=true");
     println!("same_icount_ram_fingerprint_changed=true");
     println!("same_icount_fault_fingerprint_icount={initial_icount}");
     println!("accelerator_signal_actions={}", opportunity.actions.len());
     println!("clock_occurrences={clock_occurrences}");
     println!("accelerator_occurrences={accelerator_occurrences}");
+    println!("clock_source_occurrences={clock_source_occurrences}");
+    println!("accelerator_lifecycle_occurrences={accelerator_lifecycle_occurrences}");
+    println!("accelerator_memory_occurrences={accelerator_memory_occurrences}");
+    println!("accelerator_service_occurrences={accelerator_service_occurrences}");
     println!("fresh_plugin_restore=true");
     println!("orderly_child_exit=true");
+    println!(
+        "production_effect_row=clock.transform|offset-monotonic-overdue|gate:live-fault-hardware|production-qemu-signal-runtime|raw+transformed+timer-state"
+    );
+    println!(
+        "production_effect_row=accelerator.result_transform|tpu-result-buffer-transform|gate:live-fault-hardware|production-qemu-signal-runtime|job-id+before-after-digest+guest-result"
+    );
+    println!(
+        "production_effect_row=clock.source_state|degraded-step-synchronization|gate:live-fault-hardware|production-qemu-signal-runtime|old-new-source-state+timer-rearm"
+    );
+    println!(
+        "production_effect_row=accelerator.lifecycle|reset-preserve-queues-and-memory|gate:live-fault-hardware|production-qemu-signal-runtime|enumeration+reset-generation+memory-digest"
+    );
+    println!(
+        "production_effect_row=accelerator.memory_event|corrected-device-memory-ecc|gate:live-fault-hardware|production-qemu-signal-runtime|range+syndrome+corrected-counter+guest-results"
+    );
+    println!(
+        "production_effect_row=accelerator.service|half-capacity-thermal-power|gate:live-fault-hardware|production-qemu-signal-runtime|three-job-service-ledger+thermal-power"
+    );
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn fault_hardware_plan() -> Result<FaultSignalPlan, String> {
-    let clock_output = signal_id("guest-clock-offset")?;
-    let clock_event_schema = signal_id("guest-clock-offset-event")?;
-    let accelerator_output = signal_id("tpu-result-hazard")?;
-    let clock_program = SignalProgram::new(
-        vec![
-            SignalNode {
-                id: clock_output.clone(),
-                domain: SignalDomain::Event,
-                output: SignalShape::new(
-                    SignalValueType::Event(clock_event_schema.clone()),
-                    SignalUnit::Dimensionless,
-                    0,
-                )
-                .map_err(|error| format!("clock activation shape: {error}"))?,
-                inputs: Vec::new(),
-                kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
-                    events: vec![SignalPoint {
-                        coordinate: SignalCoordinate::Event {
-                            parent: Box::new(SignalCoordinate::VirtualTime { nanos: 1 }),
-                            sequence: 0,
-                        },
-                        sequence: 0,
-                        value: SignalValue::Event {
-                            schema: clock_event_schema,
-                            payload: Vec::new(),
-                        },
-                    }],
-                }),
-            },
-            SignalNode {
-                id: accelerator_output.clone(),
-                domain: SignalDomain::VirtualTime,
-                output: SignalShape::new(
-                    SignalValueType::ProbabilityMillionths,
-                    SignalUnit::ProbabilityMillionths,
-                    0,
-                )
-                .map_err(|error| format!("accelerator hazard shape: {error}"))?,
-                inputs: Vec::new(),
-                kind: SignalNodeKind::Constant {
-                    value: SignalValue::ProbabilityMillionths(1_000_000),
-                },
-            },
-        ],
-        vec![clock_output.clone(), accelerator_output.clone()],
-        SignalResourceLimits::default(),
-    )
-    .map_err(|error| format!("clock signal program: {error}"))?;
-    let clock_target = ResolvedFaultTarget::ClockSource {
-        node: object_id("fault-hardware-node")?,
-        source: object_id("x86-tsc-vcpu-0")?,
-    };
-    let clock_binding = FaultBinding::new(
-        object_id("guest-clock-offset-binding")?,
-        vec![clock_output.clone()],
-        BindingSampling::AtEvent(BindingEventParent::VirtualTime),
-        BindingMapping::ImpulseOnEvent,
-        TargetSelector::Exact(target_set(clock_target)?),
-        [FaultPhase::ClockRead].into_iter().collect(),
-        EffectRequest::new(
-            EFFECT_SEMANTIC_VERSION,
-            EffectLifetime::Impulse,
-            EffectSpecification::Node(NodeEffectSpecification::ClockTransform {
-                source: object_id("x86-tsc-vcpu-0")?,
-                mutation: ClockMutation::Offset {
-                    offset_nanos: 1_000_000_000,
-                },
-                monotonicity: ClockMonotonicityPolicy::ClampMonotonic,
-                overdue_timer_policy: ClockOverdueTimerPolicy::FireAtBoundary,
-            }),
-        )
-        .map_err(|error| format!("clock effect: {error}"))?,
-        None,
-        BindingSearchPolicy::Fixed,
-        BindingObservabilityPolicy::default(),
-        &clock_program,
-    )
-    .map_err(|error| format!("clock binding: {error}"))?;
-
-    // 0x9ffff is the last writable conventional-RAM byte below the PC ROM
-    // aperture. Linux has completed firmware handoff before this boundary, so
-    // flipping one bit is inert to the workload while necessarily changing the
-    // execution fingerprint's writable-RAM digest.
-    let memory_range =
-        ByteRange::new(0x9ffff, 1).map_err(|error| format!("fingerprint memory range: {error}"))?;
-    let memory_binding = FaultBinding::new(
-        object_id("fingerprint-memory-binding")?,
-        vec![clock_output],
-        BindingSampling::AtEvent(BindingEventParent::VirtualTime),
-        BindingMapping::ImpulseOnEvent,
-        TargetSelector::Exact(target_set(ResolvedFaultTarget::MemoryRange {
-            node: object_id("fault-hardware-node")?,
-            address_space: object_id("gpa")?,
-            guest_address: memory_range.start(),
-            vcpu: None,
-            length_bytes: memory_range.length(),
-        })?),
-        [FaultPhase::Boundary].into_iter().collect(),
-        EffectRequest::new(
-            EFFECT_SEMANTIC_VERSION,
-            EffectLifetime::Impulse,
-            EffectSpecification::Node(NodeEffectSpecification::MemoryMutation {
-                address_space: MemoryAddressSpace::GuestPhysical,
-                range: memory_range,
-                mutation: MemoryMutationKind::BitFlip {
-                    mask: HexBytes::parse("01", 1)
-                        .map_err(|error| format!("fingerprint memory mask: {error}"))?,
-                },
-                atomicity: MemoryMutationAtomicity::AllOrNothing,
-            }),
-        )
-        .map_err(|error| format!("fingerprint memory effect: {error}"))?,
-        None,
-        BindingSearchPolicy::Fixed,
-        BindingObservabilityPolicy::default(),
-        &clock_program,
-    )
-    .map_err(|error| format!("fingerprint memory binding: {error}"))?;
-
-    let accelerator_binding = FaultBinding::new(
-        object_id("tpu-result-transform-binding")?,
-        vec![accelerator_output],
-        BindingSampling::AtOpportunity,
-        BindingMapping::Hazard,
-        TargetSelector::Exact(target_set(accelerator_target()?)?),
-        [FaultPhase::Complete].into_iter().collect(),
-        EffectRequest::new(
-            EFFECT_SEMANTIC_VERSION,
-            EffectLifetime::Opportunity,
-            EffectSpecification::Node(NodeEffectSpecification::AcceleratorResultTransform {
-                job_selector: AcceleratorJobSelector {
-                    job_kind: object_id("matrix-multiply")?,
-                    queue: Some(0),
-                    occurrence: NodeOccurrencePolicy::Every,
-                },
-                transform: AcceleratorResultMutation {
-                    offset: 0,
-                    mask: HexBytes::parse("ff", 1)
-                        .map_err(|error| format!("accelerator mask: {error}"))?,
-                    value: HexBytes::parse("2b", 1)
-                        .map_err(|error| format!("accelerator value: {error}"))?,
-                },
-            }),
-        )
-        .map_err(|error| format!("accelerator effect: {error}"))?,
-        Some(OpportunityFilter {
-            adapter: FaultAdapter::Node,
-            operations: OperationSet::new(vec![FaultOperation::AcceleratorComplete])
-                .map_err(|error| format!("accelerator operations: {error}"))?,
-            phases: [FaultPhase::Complete].into_iter().collect(),
-            target_kinds: [FaultTargetKind::Accelerator].into_iter().collect(),
-        }),
-        BindingSearchPolicy::Fixed,
-        BindingObservabilityPolicy::default(),
-        &clock_program,
-    )
-    .map_err(|error| format!("accelerator binding: {error}"))?;
-
-    FaultSignalPlan::new(
-        vec![clock_program],
-        vec![clock_binding, memory_binding, accelerator_binding],
-        FaultResourceLimits::default(),
-    )
-    .map_err(|error| format!("fault hardware plan: {error}"))
-}
-
-#[cfg(target_os = "linux")]
-fn accelerator_target() -> Result<ResolvedFaultTarget, String> {
-    Ok(ResolvedFaultTarget::Accelerator {
-        node: object_id("fault-hardware-node")?,
-        device: object_id("accelerator-0")?,
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn target_set(target: ResolvedFaultTarget) -> Result<ResolvedTargetSet, String> {
-    ResolvedTargetSet::new(vec![target], false).map_err(|error| format!("fault target: {error}"))
-}
-
-#[cfg(target_os = "linux")]
-fn signal_id(value: &str) -> Result<SignalId, String> {
-    SignalId::parse(value).map_err(|error| format!("signal ID `{value}`: {error}"))
-}
-
-#[cfg(target_os = "linux")]
-fn object_id(value: &str) -> Result<FaultObjectId, String> {
-    FaultObjectId::parse(value).map_err(|error| format!("object ID `{value}`: {error}"))
-}
-
-#[cfg(target_os = "linux")]
-fn collect_console(nodes: &mut QemuNodeSet, output: &mut Vec<u8>) -> Result<(), String> {
-    let events = SimulationBackend::drain_observable_events(nodes)
-        .map_err(|error| format!("drain live guest observations: {error}"))?;
-    for event in events {
-        if let ObservableEventPayload::ConsoleOutput { bytes, .. } = event.payload() {
-            output.extend_from_slice(bytes);
-        }
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|window| window == needle)
-}
-
-#[cfg(target_os = "linux")]
-fn required_arg(
-    args: &mut impl Iterator<Item = std::ffi::OsString>,
-    program: &str,
-) -> Result<std::ffi::OsString, String> {
-    args.next().ok_or_else(|| usage(program))
-}
-
-#[cfg(target_os = "linux")]
-fn usage(program: &str) -> String {
-    format!("usage: {program} QEMU PLUGIN KERNEL FIRMWARE INITRD RUN_DIRECTORY")
-}
-
-#[cfg(target_os = "linux")]
-fn error_chain(error: &(dyn Error + 'static)) -> String {
-    let mut message = error.to_string();
-    let mut source = error.source();
-    while let Some(current) = source {
-        message.push_str(": ");
-        message.push_str(&current.to_string());
-        source = current.source();
-    }
-    message
 }
 
 #[cfg(not(target_os = "linux"))]

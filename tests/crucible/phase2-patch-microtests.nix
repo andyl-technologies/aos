@@ -58,6 +58,7 @@
     liveResult ? "result",
     liveEvidence,
     evidenceName,
+    productionEffectRows ? false,
   }:
     pkgs.mkDerivation {
       pname = "crucible-phase2-${lib.removeSuffix ".patch" patchName}-certificate";
@@ -104,6 +105,9 @@
             live_evidence=${evidenceName}
             drop_one_attribution=exact
             RESULT
+            ${lib.optionalString productionEffectRows ''
+              grep '^production_effect_row=' "$live_result" >> "$out/result"
+            ''}
           '';
         }
       ];
@@ -129,6 +133,9 @@
     inherit pkgs lib qemuPackage;
   };
   qemuLiveNodeLifecycleFault = import ./phase2-qemu-live-node-lifecycle-fault.nix {
+    inherit pkgs lib;
+  };
+  qemuLiveFaultHardware = import ./phase2-qemu-live-fault-hardware.nix {
     inherit pkgs lib;
   };
   qemuGenesisObservationBoundary = pkgs.mkDerivation {
@@ -922,6 +929,7 @@
         patchName = "0050-crucible-memory-access-faults.patch";
         liveCheck = qemuMemoryAccess;
         evidenceName = "live-memory-access-matrix";
+        productionEffectRows = true;
         liveEvidence = ''
           grep -Fxq 'gate=gate:patch-microtests' "$live_result"
           grep -Fxq 'backend=actual-patched-and-stock-qemu' "$live_result"
@@ -1416,6 +1424,60 @@
     {
       patch = "0110-crucible-release-halted-rr-turn.patch";
       check = qemuLivePluginQuantumSmp;
+    }
+    {
+      patch = "0111-crucible-accelerator-service-schema.patch";
+      check = certifyExactPatch {
+        patchName = "0111-crucible-accelerator-service-schema.patch";
+        liveCheck = qemuLiveFaultHardware;
+        evidenceName = "live-typed-accelerator-service-policy";
+        liveEvidence = ''
+          grep -Fxq 'accelerator_service_signal_actions=1' "$live_result"
+          grep -Fxq 'accelerator_service_occurrences=3' "$live_result"
+          grep -Fxq 'production_effect_row=accelerator.service|half-capacity-thermal-power|gate:live-fault-hardware|production-qemu-signal-runtime|three-job-service-ledger+thermal-power' "$live_result"
+          grep -Fq 'SF(P1, RATIO)' ${patchDir}/0111-crucible-accelerator-service-schema.patch
+          grep -Fq 'SCHEMA(ACCELERATOR_SERVICE, schema_accel_service)' \
+            ${patchDir}/0111-crucible-accelerator-service-schema.patch
+          ! grep -Fq 'SCHEMA(ACCELERATOR_SERVICE, schema_service)' \
+            ${patchDir}/0111-crucible-accelerator-service-schema.patch
+        '';
+      };
+    }
+    {
+      patch = "0112-crucible-compile-affected-clock-sources.patch";
+      check = certifyExactPatch {
+        patchName = "0112-crucible-compile-affected-clock-sources.patch";
+        liveCheck = qemuLiveFaultHardware;
+        evidenceName = "live-affected-clock-source-compilation";
+        liveEvidence = ''
+          grep -Fxq 'clock_source_signal_actions=1' "$live_result"
+          grep -Fxq 'clock_source_occurrences=2' "$live_result"
+          grep -Fxq 'production_effect_row=clock.source_state|degraded-step-synchronization|gate:live-fault-hardware|production-qemu-signal-runtime|old-new-source-state+timer-rearm' "$live_result"
+          grep -Fq 'crucible_clock_rule_affects_source' \
+            ${patchDir}/0112-crucible-compile-affected-clock-sources.patch
+          grep -Fq 'crucible_clock_rule_selects(rule, source)' \
+            ${patchDir}/0112-crucible-compile-affected-clock-sources.patch
+          grep -Fq 'crucible_clock_hash_set_contains(' \
+            ${patchDir}/0112-crucible-compile-affected-clock-sources.patch
+        '';
+      };
+    }
+    {
+      patch = "0113-crucible-restore-accelerator-rule-indexes.patch";
+      check = certifyExactPatch {
+        patchName = "0113-crucible-restore-accelerator-rule-indexes.patch";
+        liveCheck = qemuLiveFaultHardware;
+        evidenceName = "live-restored-accelerator-rule-indexes";
+        liveEvidence = ''
+          grep -Fxq 'fresh_plugin_restore=true' "$live_result"
+          grep -Fxq 'accelerator_service_occurrences=3' "$live_result"
+          grep -Fxq 'production_effect_row=accelerator.service|half-capacity-thermal-power|gate:live-fault-hardware|production-qemu-signal-runtime|three-job-service-ledger+thermal-power' "$live_result"
+          grep -Fq 'qemu_crucible_fault_rule_foreach_staged' \
+            ${patchDir}/0113-crucible-restore-accelerator-rule-indexes.patch
+          grep -Fq 'crucible_accelerator.service_rules = state->service_rules' \
+            ${patchDir}/0113-crucible-restore-accelerator-rule-indexes.patch
+        '';
+      };
     }
   ];
 
