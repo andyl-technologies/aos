@@ -862,11 +862,13 @@ pub(crate) fn expose_config_schema_hash(config: &crate::types::ExposeConfigMeta)
                 "name": credential.name,
                 "units": credential.units,
                 "encrypted": credential.encrypted,
-                "optional": credential.optional,
             });
             let object = value
                 .as_object_mut()
                 .context("normalized credential schema is not an object")?;
+            if credential.optional {
+                object.insert("optional".into(), serde_json::Value::Bool(true));
+            }
             if let Some(source) = &credential.source {
                 object.insert("source".into(), serde_json::Value::String(source.clone()));
             }
@@ -3049,6 +3051,57 @@ mod tests {
 
         assert!(!stage.exists());
         assert_eq!(std::fs::read(outside.join("preserved")).unwrap(), b"yes");
+    }
+
+    #[test]
+    fn expose_schema_hash_omits_default_optional_credential_field() {
+        let config = crate::types::ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![crate::types::CredentialMeta {
+                name: "tls-key".into(),
+                source: None,
+                ciphertext: None,
+                units: vec!["example.service".into()],
+                encrypted: true,
+                optional: false,
+            }],
+        };
+        let expected = crate::graph_compile::reproject::hash_cjson(&serde_json::json!({
+            "artifacts": [],
+            "credentials": [{
+                "name": "tls-key",
+                "units": ["example.service"],
+                "encrypted": true,
+            }],
+        }));
+
+        assert_eq!(expose_config_schema_hash(&config).unwrap(), expected);
+    }
+
+    #[test]
+    fn expose_schema_hash_binds_optional_credential_field() {
+        let config = crate::types::ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![crate::types::CredentialMeta {
+                name: "tls-key".into(),
+                source: None,
+                ciphertext: None,
+                units: vec!["example.service".into()],
+                encrypted: true,
+                optional: true,
+            }],
+        };
+        let expected = crate::graph_compile::reproject::hash_cjson(&serde_json::json!({
+            "artifacts": [],
+            "credentials": [{
+                "name": "tls-key",
+                "units": ["example.service"],
+                "encrypted": true,
+                "optional": true,
+            }],
+        }));
+
+        assert_eq!(expose_config_schema_hash(&config).unwrap(), expected);
     }
 
     /// Creates a unique temp dir under the process temp root. Avoids a
