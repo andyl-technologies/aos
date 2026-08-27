@@ -344,6 +344,7 @@ in
           cp "$xnuRoot/bsd/netinet/tcp_timer.h" "$out/usr/include/netinet/"
           cp "$xnuRoot/bsd/net/bpf.h" "$out/usr/include/net/"
           cp "$xnuRoot/bsd/net/ethernet.h" "$out/usr/include/net/"
+          cp "$xnuRoot/bsd/net/if_media.h" "$out/usr/include/net/"
           cp "$xnuRoot/bsd/sys/ttydev.h" "$out/usr/include/sys/"
           cp "$xnuRoot/bsd/sys/xattr.h" "$out/usr/include/sys/"
           # XNU generates the installed syscall-number header from its

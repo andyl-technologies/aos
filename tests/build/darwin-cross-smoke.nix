@@ -44,6 +44,7 @@
               '#include <sys/ioctl.h>' \
               '#include <net/bpf.h>' \
               '#include <net/ethernet.h>' \
+              '#include <net/if_media.h>' \
               '#include <netinet/tcp_fsm.h>' \
               '#include <netinet/tcp_timer.h>' \
               '#include <rpc/pmap_prot.h>' \
