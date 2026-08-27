@@ -49,7 +49,7 @@ pub(crate) fn staged_fault_event_runtime(
         panic!("zero-capacity drain should reject");
     };
     assert_eq!(
-        error.fault_event_storage,
+        error.fault_event_storage_coordinates(),
         Some((0, 1, HARD_FAULT_EVENT_CAPACITY as u64))
     );
     assert!(runtime.staged_fault_events.is_empty());

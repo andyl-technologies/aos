@@ -2,8 +2,8 @@
 
 use super::*;
 pub(super) use crucible::model::{
-    BindingActionCause, BindingEventParent, BindingMapping, BindingMappingRegistry, BoundedCount,
-    BindingObservabilityPolicy, BindingSampling, BindingSearchPolicy, CountLimit,
+    BindingActionCause, BindingEventParent, BindingMapping, BindingMappingRegistry,
+    BindingObservabilityPolicy, BindingSampling, BindingSearchPolicy, BoundedCount, CountLimit,
     EFFECT_SEMANTIC_VERSION, EffectKind, EffectLifetime, EffectRequest, EffectSpecification,
     EvaluatedSignal, FaultBinding, FaultCapabilityId, FaultCapabilityManifest, FaultDirection,
     FaultObjectId, FaultPhase, InverseCdfTable, NetworkAvailabilityState,

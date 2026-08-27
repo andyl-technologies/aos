@@ -297,7 +297,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                     .and_then(crucible::LinkDef::bandwidth_bps);
                                 let repeated_phase_effect =
                                     output.fault_continuation.cursor().repeated_phase_effect();
-                                apply_network_frame_actions(
+                                apply_network_frame_actions_with_limits(
                                     &mut output.payload,
                                     &mut resolved_effects,
                                     &frame_actions,
@@ -314,6 +314,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                     &mut staged_pending,
                                     base_rate_bps,
                                     repeated_phase_effect,
+                                    self.resource_limits,
                                 )?
                             } else {
                                 NetworkFrameApplication::default()
@@ -348,6 +349,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                     response,
                                     opportunity.id(),
                                     frontier,
+                                    self.resource_limits,
                                 )?;
                                 next_wakeup_nanos =
                                     earliest_wakeup(next_wakeup_nanos, response_wakeup);
@@ -374,7 +376,11 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                             ),
                                         })?;
                                     staged_scheduler.resolve_backend_network_routes(&rerouted)?;
-                                    stage_pending_network_output(&mut staged_pending, rerouted)?;
+                                    stage_pending_network_output(
+                                        &mut staged_pending,
+                                        rerouted,
+                                        self.resource_limits,
+                                    )?;
                                 }
                                 continue 'route;
                             }
@@ -415,6 +421,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                         stage_pending_network_output(
                                             &mut staged_pending,
                                             fragment,
+                                            self.resource_limits,
                                         )?;
                                     }
                                 }
@@ -448,7 +455,11 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                 output
                                     .fault_continuation
                                     .set_resolved_frame_effects(resolved_effects);
-                                stage_pending_network_output(&mut staged_pending, output)?;
+                                stage_pending_network_output(
+                                    &mut staged_pending,
+                                    output,
+                                    self.resource_limits,
+                                )?;
                                 continue 'route;
                             }
                         }
@@ -713,28 +724,49 @@ fn network_contact_reservation_count(state: &NetworkEffectRuntimeState) -> Optio
         })
 }
 
-fn network_contact_service_state_capacity_allows(current: usize, additional: usize) -> bool {
-    current
-        .checked_add(additional)
-        .is_some_and(|count| count <= HARD_CONTACT_SERVICE_STATES)
+fn network_contact_entry_count(state: &NetworkEffectRuntimeState) -> Option<usize> {
+    state
+        .contact_services
+        .len()
+        .checked_add(network_contact_reservation_count(state)?)
 }
 
 fn admit_network_contact_service_keys(
     state: &NetworkEffectRuntimeState,
     keys: &BTreeSet<NetworkContactServiceKey>,
-    action: &impl NetworkEffectContext,
+    additional_reservations: usize,
+    resource_limits: FaultResourceLimits,
 ) -> Result<(), SchedulerError> {
     let additional = keys
         .iter()
         .filter(|key| !state.contact_services.contains_key(*key))
         .count();
-    if !network_contact_service_state_capacity_allows(state.contact_services.len(), additional) {
-        return Err(network_effect_application_error(
-            action,
-            "contact service state exceeds 262,144 keyed cursors",
-        ));
-    }
-    Ok(())
+    let current = network_contact_entry_count(state).ok_or_else(|| {
+        map_network_resource_limit(
+            FaultResourceLimitError::Representation {
+                field: "network_contact_entries",
+                value: u64::MAX,
+            },
+            resource_limits,
+        )
+    })?;
+    let requested = additional
+        .checked_add(additional_reservations)
+        .ok_or_else(|| {
+            map_network_resource_limit(
+                FaultResourceLimitError::Representation {
+                    field: "network_contact_entries",
+                    value: u64::MAX,
+                },
+                resource_limits,
+            )
+        })?;
+    reserve_network_resource(
+        "network_contact_entries",
+        current,
+        requested,
+        resource_limits,
+    )
 }
 
 pub(super) fn availability_allows(
@@ -758,7 +790,7 @@ pub(super) fn availability_allows(
     clippy::too_many_arguments,
     reason = "frame mutation joins the independently authenticated opportunity, topology, state, and output owners"
 )]
-fn apply_network_frame_actions(
+fn apply_network_frame_actions_with_limits(
     payload: &mut Vec<u8>,
     effects: &mut crucible::ResolvedNetworkFrameEffects,
     actions: &[ResolvedBindingAction],
@@ -769,6 +801,7 @@ fn apply_network_frame_actions(
     pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
     base_rate_bps: Option<u64>,
     repeated_phase_effect: Option<crucible::model::EffectKind>,
+    resource_limits: FaultResourceLimits,
 ) -> Result<NetworkFrameApplication, SchedulerError> {
     let actions = actions
         .iter()
@@ -1005,7 +1038,7 @@ fn apply_network_frame_actions(
                 transmit_power_femtowatts,
             } => {
                 let service_rate = effects.serialization_rate_cap_bps().or(base_rate_bps);
-                let release = apply_network_shared_medium(
+                let release = apply_network_shared_medium_with_limits(
                     payload,
                     effects,
                     state,
@@ -1018,6 +1051,7 @@ fn apply_network_frame_actions(
                     policy,
                     transmit_power_femtowatts.get(),
                     service_rate,
+                    resource_limits,
                 )?;
                 deferred_until = latest_wakeup(deferred_until, release);
             }
@@ -1030,7 +1064,7 @@ fn apply_network_frame_actions(
                 priority,
                 max_visited_hops,
             } if opportunity.phase() == FaultPhase::Queue => {
-                let application = apply_network_custody_queue(
+                let application = apply_network_custody_queue_with_limits(
                     payload,
                     effects,
                     state,
@@ -1046,6 +1080,7 @@ fn apply_network_frame_actions(
                     *priority,
                     max_visited_hops.get(),
                     &mut typed_response,
+                    resource_limits,
                 )?;
                 deferred_until = latest_wakeup(deferred_until, application.defer_until);
                 if application.repeat_phase_on_resume {
@@ -1088,15 +1123,18 @@ fn apply_network_frame_actions(
             | NetworkEffectSpecification::Association { .. }
             | NetworkEffectSpecification::ControlResultTransform { .. }
             | NetworkEffectSpecification::Contact { .. }
-            | NetworkEffectSpecification::RfChannel { .. } => apply_network_frame_action(
-                payload,
-                effects,
-                action,
-                opportunity,
-                scenario_seed,
-                topology,
-                state,
-            )?,
+            | NetworkEffectSpecification::RfChannel { .. } => {
+                apply_network_frame_action_with_limits(
+                    payload,
+                    effects,
+                    action,
+                    opportunity,
+                    scenario_seed,
+                    topology,
+                    state,
+                    resource_limits,
+                )?
+            }
         }
     }
     let expanded_payloads = if let Some((action, specification)) = mtu_policy {
@@ -1149,6 +1187,7 @@ fn apply_network_frame_actions(
             service_rate,
             &service_curves,
             deferred_until,
+            resource_limits,
         )?;
         deferred_until = latest_wakeup(deferred_until, release);
     } else if !service_curves.is_empty() {
@@ -1172,12 +1211,8 @@ fn apply_network_frame_actions(
             scenario_seed,
             topology,
             payload,
-            u64::try_from(HARD_PENDING_NETWORK_BYTES).map_err(|_error| {
-                network_effect_application_error(action, "pending byte bound exceeds u64")
-            })?,
-            u64::try_from(HARD_PENDING_NETWORK_FRAMES).map_err(|_error| {
-                network_effect_application_error(action, "pending frame bound exceeds u64")
-            })?,
+            resource_limits.network_queue_bytes,
+            resource_limits.network_queue_frames,
             crucible::model::NetworkQueueDiscipline::Fifo,
             None,
             crucible::model::NetworkQueueOverflow::TailDrop,
@@ -1186,6 +1221,7 @@ fn apply_network_frame_actions(
             effects.serialization_rate_cap_bps().or(base_rate_bps),
             &service_curves,
             deferred_until,
+            resource_limits,
         )?;
         deferred_until = latest_wakeup(deferred_until, release);
     }
@@ -1208,6 +1244,36 @@ fn apply_network_frame_actions(
         typed_response,
         forwarding_recipients,
     })
+}
+
+#[cfg(test)]
+// crucible-lint: allow rust-allow -- the compatibility wrapper mirrors the complete production frame-action boundary.
+#[allow(clippy::too_many_arguments)]
+fn apply_network_frame_actions(
+    payload: &mut Vec<u8>,
+    effects: &mut crucible::ResolvedNetworkFrameEffects,
+    actions: &[ResolvedBindingAction],
+    opportunity: &FaultOpportunity,
+    scenario_seed: ContentHash,
+    topology: &crucible::model::WorldFaultTopology,
+    state: &mut NetworkEffectRuntimeState,
+    pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
+    base_rate_bps: Option<u64>,
+    repeated_phase_effect: Option<crucible::model::EffectKind>,
+) -> Result<NetworkFrameApplication, SchedulerError> {
+    apply_network_frame_actions_with_limits(
+        payload,
+        effects,
+        actions,
+        opportunity,
+        scenario_seed,
+        topology,
+        state,
+        pending_outputs,
+        base_rate_bps,
+        repeated_phase_effect,
+        FaultResourceLimits::default(),
+    )
 }
 
 #[cfg(test)]

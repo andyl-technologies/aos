@@ -385,6 +385,64 @@ fn test_world() -> World {
     test_world_with_shift(0)
 }
 
+#[test]
+fn world_resource_admission_applies_authored_static_topology_limits() {
+    let assert_limit = |limits: FaultResourceLimits,
+                        world: &World,
+                        expected_field: &'static str,
+                        expected_requested: u64| {
+        let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), limits)
+            .unwrap_or_else(|error| panic!("empty bounded plan should build: {error}"));
+        let error = match plan.validate_for_world(world) {
+            Ok(()) => panic!("world usage above an authored limit must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            FaultSignalAuthoringError::ResourceLimit(FaultResourceLimitError::Exceeded {
+                field,
+                current: 0,
+                requested,
+                configured: 1,
+                hard: _,
+            }) if field == expected_field && requested == expected_requested
+        ));
+    };
+
+    assert_limit(
+        FaultResourceLimits {
+            network_interfaces: 1,
+            ..FaultResourceLimits::default()
+        },
+        &test_world(),
+        "network_interfaces",
+        2,
+    );
+    assert_limit(
+        FaultResourceLimits {
+            nodes: 1,
+            ..FaultResourceLimits::default()
+        },
+        &test_world(),
+        "nodes",
+        2,
+    );
+
+    let mut node = test_world().vm_nodes()[0].clone();
+    node.smp_vcpus = 2;
+    let one_node = World::from_nodes_and_links(vec![node], Vec::new())
+        .unwrap_or_else(|error| panic!("single SMP test world should build: {error}"));
+    assert_limit(
+        FaultResourceLimits {
+            vcpus_per_node: 1,
+            ..FaultResourceLimits::default()
+        },
+        &one_node,
+        "vcpus_per_node",
+        2,
+    );
+}
+
 fn test_world_with_shift(icount_shift: u8) -> World {
     let nodes = ["left", "right"]
         .into_iter()

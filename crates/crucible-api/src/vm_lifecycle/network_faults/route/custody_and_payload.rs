@@ -77,6 +77,7 @@ pub(in super::super) fn reserve_network_contact_service(
     payload_bytes: u64,
     opportunity: ContentHash,
     action: &ResolvedBindingAction,
+    resource_limits: FaultResourceLimits,
 ) -> Result<Option<(u64, [u8; 32])>, SchedulerError> {
     prune_network_contact_services(state, now);
     let (open, traffic_end) = contact_traffic_bounds(interval, action)?;
@@ -132,16 +133,7 @@ pub(in super::super) fn reserve_network_contact_service(
     if finish > traffic_end {
         return Ok(None);
     }
-    admit_network_contact_service_keys(state, &BTreeSet::from([key.clone()]), action)?;
-    if network_contact_reservation_count(state)
-        .and_then(|count| count.checked_add(1))
-        .is_none_or(|count| count > HARD_CONTACT_SERVICE_RESERVATIONS)
-    {
-        return Err(network_effect_application_error(
-            action,
-            "contact reservation ledger exceeds 262,144 live entries",
-        ));
-    }
+    admit_network_contact_service_keys(state, &BTreeSet::from([key.clone()]), 1, resource_limits)?;
     let (next_served_bundles, next_served_bytes) = state
         .contact_services
         .get(&key)
@@ -287,6 +279,7 @@ pub(in super::super) fn reserve_network_contact_route(
     opportunity: ContentHash,
     commit: bool,
     action: &ResolvedBindingAction,
+    resource_limits: FaultResourceLimits,
 ) -> Result<Option<NetworkContactRouteReservation>, SchedulerError> {
     const HARD_CONTACT_ROUTE_LABELS: usize = 262_144;
     let mut visited_nodes = BTreeSet::new();
@@ -388,17 +381,12 @@ pub(in super::super) fn reserve_network_contact_route(
                 }
             })
             .collect::<BTreeSet<_>>();
-        admit_network_contact_service_keys(state, &keys, action)?;
-    }
-    if commit
-        && network_contact_reservation_count(state)
-            .and_then(|count| count.checked_add(selected.interval_indexes.len()))
-            .is_none_or(|count| count > HARD_CONTACT_SERVICE_RESERVATIONS)
-    {
-        return Err(network_effect_application_error(
-            action,
-            "contact reservation ledger exceeds 262,144 live entries",
-        ));
+        admit_network_contact_service_keys(
+            state,
+            &keys,
+            selected.interval_indexes.len(),
+            resource_limits,
+        )?;
     }
     if commit {
         for index in &selected.interval_indexes {
@@ -524,9 +512,48 @@ pub(in super::super) fn contact_graph_has_path(
     false
 }
 
+fn network_custody_entry_count(
+    state: &NetworkEffectRuntimeState,
+    limits: FaultResourceLimits,
+) -> Result<u64, SchedulerError> {
+    state
+        .custody_queues
+        .values()
+        .try_fold(0_u64, |total, queue| {
+            u64::try_from(queue.reservations.len())
+                .ok()
+                .and_then(|reservations| total.checked_add(reservations))
+                .and_then(|total| {
+                    u64::try_from(queue.overflow_timeouts.len())
+                        .ok()
+                        .and_then(|timeouts| total.checked_add(timeouts))
+                })
+        })
+        .ok_or_else(|| {
+            map_network_resource_limit(
+                FaultResourceLimitError::Representation {
+                    field: "network_custody_bundles",
+                    value: u64::MAX,
+                },
+                limits,
+            )
+        })
+}
+
+fn reserve_custody_slot(
+    queue_usage: (u64, u64),
+    custody_entries: u64,
+    payload_bytes: u64,
+    limits: FaultResourceLimits,
+) -> Result<(), SchedulerError> {
+    reserve_network_resource_u64("network_queue_frames", queue_usage.0, 1, limits)?;
+    reserve_network_resource_u64("network_queue_bytes", queue_usage.1, payload_bytes, limits)?;
+    reserve_network_resource_u64("network_custody_bundles", custody_entries, 1, limits)
+}
+
 // crucible-lint: allow rust-allow -- custody mutation joins payload, effects, runtime state, topology, action, and opportunity atomically.
 #[allow(clippy::too_many_arguments)]
-pub(in super::super) fn apply_network_custody_queue(
+pub(in super::super) fn apply_network_custody_queue_with_limits(
     payload: &[u8],
     effects: &mut crucible::ResolvedNetworkFrameEffects,
     state: &mut NetworkEffectRuntimeState,
@@ -542,6 +569,7 @@ pub(in super::super) fn apply_network_custody_queue(
     priority: crucible::model::NetworkBundlePriority,
     max_visited_hops: u32,
     typed_response: &mut Option<FaultObjectId>,
+    resource_limits: FaultResourceLimits,
 ) -> Result<NetworkCustodyApplication, SchedulerError> {
     let now = opportunity.coordinate().virtual_nanos;
     prune_network_contact_services(state, now);
@@ -549,6 +577,9 @@ pub(in super::super) fn apply_network_custody_queue(
     let payload_bytes = u64::try_from(payload.len()).map_err(|_error| {
         network_effect_application_error(action, "custody bundle length exceeds u64")
     })?;
+    reserve_network_resource_u64("network_frame_bytes", 0, payload_bytes, resource_limits)?;
+    let initial_queue_usage = network_queue_resource_usage(state, resource_limits)?;
+    let initial_custody_entries = network_custody_entry_count(state, resource_limits)?;
     if payload_bytes != bundle.length_bytes {
         return Err(network_effect_application_error(
             action,
@@ -791,6 +822,12 @@ pub(in super::super) fn apply_network_custody_queue(
                             network_effect_application_error(action, "custody timeout overflowed")
                         })?
                         .min(expiry_nanos);
+                    reserve_custody_slot(
+                        initial_queue_usage,
+                        initial_custody_entries,
+                        payload_bytes,
+                        resource_limits,
+                    )?;
                     queue.overflow_timeouts.push(NetworkCustodyTimeout {
                         bundle,
                         opportunity: opportunity.id(),
@@ -813,6 +850,14 @@ pub(in super::super) fn apply_network_custody_queue(
             network_effect_application_error(action, "custody admission count overflowed")
         })?;
     }
+    if !was_existing {
+        reserve_custody_slot(
+            network_queue_resource_usage(state, resource_limits)?,
+            network_custody_entry_count(state, resource_limits)?,
+            payload_bytes,
+            resource_limits,
+        )?;
+    }
     let mut reservation = reserve_network_contact_route(
         state,
         topology,
@@ -828,6 +873,7 @@ pub(in super::super) fn apply_network_custody_queue(
         opportunity.id(),
         was_existing,
         action,
+        resource_limits,
     )?;
     if !was_existing
         && reservation
@@ -849,6 +895,7 @@ pub(in super::super) fn apply_network_custody_queue(
             opportunity.id(),
             true,
             action,
+            resource_limits,
         )?;
     }
     let (release_nanos, contact_path, contact_path_committed) =
@@ -926,7 +973,48 @@ pub(in super::super) fn apply_network_custody_queue(
     })
 }
 
-pub(in super::super) fn apply_network_frame_action(
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(in super::super) fn apply_network_custody_queue(
+    payload: &[u8],
+    effects: &mut crucible::ResolvedNetworkFrameEffects,
+    state: &mut NetworkEffectRuntimeState,
+    pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
+    topology: &crucible::model::WorldFaultTopology,
+    action: &ResolvedBindingAction,
+    opportunity: &FaultOpportunity,
+    capacity_bytes: u64,
+    capacity_bundles: u64,
+    expiry_duration: u64,
+    custody_policy: &FaultObjectId,
+    route_contact_plan: &FaultObjectId,
+    priority: crucible::model::NetworkBundlePriority,
+    max_visited_hops: u32,
+    typed_response: &mut Option<FaultObjectId>,
+) -> Result<NetworkCustodyApplication, SchedulerError> {
+    apply_network_custody_queue_with_limits(
+        payload,
+        effects,
+        state,
+        pending_outputs,
+        topology,
+        action,
+        opportunity,
+        capacity_bytes,
+        capacity_bundles,
+        expiry_duration,
+        custody_policy,
+        route_contact_plan,
+        priority,
+        max_visited_hops,
+        typed_response,
+        FaultResourceLimits::default(),
+    )
+}
+
+// crucible-lint: allow rust-allow -- one frame action keeps all canonical mutation owners and its immutable admission context explicit.
+#[allow(clippy::too_many_arguments)]
+pub(in super::super) fn apply_network_frame_action_with_limits(
     payload: &mut Vec<u8>,
     effects: &mut crucible::ResolvedNetworkFrameEffects,
     action: &ResolvedBindingAction,
@@ -934,6 +1022,7 @@ pub(in super::super) fn apply_network_frame_action(
     scenario_seed: ContentHash,
     topology: &crucible::model::WorldFaultTopology,
     state: &mut NetworkEffectRuntimeState,
+    resource_limits: FaultResourceLimits,
 ) -> Result<(), SchedulerError> {
     let EffectSpecification::Network(specification) = action.effect.specification() else {
         return Err(network_effect_application_error(
@@ -1368,6 +1457,7 @@ pub(in super::super) fn apply_network_frame_action(
                 payload_bytes,
                 opportunity.id(),
                 action,
+                resource_limits,
             )?
             else {
                 effects.mark_drop();
@@ -1615,6 +1705,28 @@ impl NetworkEffectContext for NetworkEffectStateKey {
     fn effect_kind(&self) -> crucible::model::EffectKind {
         self.effect
     }
+}
+
+#[cfg(test)]
+pub(in super::super) fn apply_network_frame_action(
+    payload: &mut Vec<u8>,
+    effects: &mut crucible::ResolvedNetworkFrameEffects,
+    action: &ResolvedBindingAction,
+    opportunity: &FaultOpportunity,
+    scenario_seed: ContentHash,
+    topology: &crucible::model::WorldFaultTopology,
+    state: &mut NetworkEffectRuntimeState,
+) -> Result<(), SchedulerError> {
+    apply_network_frame_action_with_limits(
+        payload,
+        effects,
+        action,
+        opportunity,
+        scenario_seed,
+        topology,
+        state,
+        FaultResourceLimits::default(),
+    )
 }
 
 pub(in super::super) fn network_effect_application_error(

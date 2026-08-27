@@ -21,6 +21,25 @@ fn state(durability: BlockCompletionDurability) -> BlockFaultState {
 }
 
 #[test]
+fn pending_operation_usage_tracks_count_and_largest_request_extent() {
+    let mut storage = state(BlockCompletionDurability::Durable);
+    let request = BlockRequest::write(7, 3, vec![0x5a; 11]);
+    storage
+        .install(
+            request.identity(),
+            ResolvedBlockFaultDirective::fault_free(&request, 32),
+        )
+        .unwrap_or_else(|error| panic!("pending request should install: {error}"));
+
+    assert_eq!(
+        storage
+            .pending_operation_usage()
+            .unwrap_or_else(|error| panic!("pending usage should be representable: {error}")),
+        (1, 11)
+    );
+}
+
+#[test]
 fn external_write_dependency_uses_the_destination_completion_policy() {
     for durability in [
         BlockCompletionDurability::ControllerAccepted,

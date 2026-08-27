@@ -65,6 +65,27 @@ pub struct QemuLive9pIoTransactionCheckpoint {
 }
 
 impl QemuLive9pIoServicer {
+    /// Returns pending operation count and the largest retained request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLive9pIoServicerError::PendingFaultOpportunityAccounting`]
+    /// when either aggregate cannot be represented as `u64`.
+    pub fn pending_fault_operation_usage(&self) -> Result<(u64, u64), QemuLive9pIoServicerError> {
+        let operations = u64::try_from(self.pending_fault_opportunities.len())
+            .map_err(|_| QemuLive9pIoServicerError::PendingFaultOpportunityAccounting)?;
+        let bytes = self
+            .pending_fault_opportunities
+            .values()
+            .try_fold(0_u64, |maximum, (opportunity, _authorized)| {
+                u64::try_from(opportunity.frame.len())
+                    .ok()
+                    .map(|length| maximum.max(length))
+            })
+            .ok_or(QemuLive9pIoServicerError::PendingFaultOpportunityAccounting)?;
+        Ok((operations, bytes))
+    }
+
     /// Maps `shmem_fd` read-write and binds a deterministic 9p device to `vm_slot`.
     ///
     /// The `icount_shift` must equal the guest's launch-profile icount shift so
@@ -1212,6 +1233,9 @@ pub enum QemuLive9pIoServicerError {
     /// Device delivery count differs from the authorized opportunity set.
     #[error("9p delivered replies differ from pending fault opportunities")]
     PendingOpportunityMismatch,
+    /// Pending 9p operation count or request bytes exceeded host representation.
+    #[error("9p pending fault-opportunity accounting overflowed")]
+    PendingFaultOpportunityAccounting,
     /// The computed response did not uniquely match its pinned opportunity.
     #[error("computed 9p response differs from its pinned fault opportunity")]
     ComputedResponseMismatch,

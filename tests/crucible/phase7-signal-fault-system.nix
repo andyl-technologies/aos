@@ -131,6 +131,15 @@ in
             -p crucible-api \
             --lib \
             -- --list > "$api_lib_tests"
+          device_lib_tests="$TMPDIR/crucible-device-lib-tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-device \
+            --lib \
+            -- --list > "$device_lib_tests"
 
           run_exact_crucible_test() {
             test_name="$1"
@@ -180,6 +189,19 @@ in
               --target-dir "$target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-api \
+              --lib "$test_name" \
+              -- --exact --include-ignored --test-threads=1
+          }
+
+          run_exact_device_test() {
+            test_name="$1"
+            grep -Fqx "$test_name: test" "$device_lib_tests"
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-device \
               --lib "$test_name" \
               -- --exact --include-ignored --test-threads=1
           }
@@ -316,6 +338,8 @@ in
           run_exact_crucible_test \
             scheduler::tests::production_backend::lifecycle_activity_requirement_rejects_release_before_scheduler_publication
           run_exact_crucible_test \
+            model::fault_signal::plan::tests::world_resource_admission_applies_authored_static_topology_limits
+          run_exact_crucible_test \
             model::fault_signal::binding_runtime::tests::refined_coordinate::locked_replay_retains_and_enforces_a_backend_refined_coordinate
           run_exact_crucible_test \
             model::fault_signal::runtime::tests::resolved_effect_trace_rejects_unversioned_and_future_envelopes
@@ -382,6 +406,8 @@ in
           run_exact_qemu_test \
             production_fault_runtime::lifecycle_tests::boot_ready_exhaustion_preserves_requested_intent_and_effective_terminal_decision
           run_exact_qemu_test \
+            production_fault_runtime::lifecycle_tests::lifecycle_intent_preview_enforces_the_authored_pending_mutation_limit
+          run_exact_qemu_test \
             production_fault_runtime::lifecycle_tests::outer_poison_latch_rejects_an_inert_plan_after_ambiguous_visibility
           run_exact_shmem_test \
             fault_event::tests::event_snapshot_authenticates_without_consuming_transport_ownership
@@ -441,6 +467,10 @@ in
             vm_lifecycle::checkpoint_recovery::tests::fresh_process_removes_only_abandoned_checkpoint_staging
           run_exact_api_test \
             vm_lifecycle::storage_faults::tests::ambiguous_shared_ninep_commit_poisons_runtime_before_return
+          run_exact_api_test \
+            vm_lifecycle::storage_faults::tests::storage_resource_limits_preserve_exact_coordinates_through_scheduler
+          run_exact_device_test \
+            block::fault::tests::pending_operation_usage_tracks_count_and_largest_request_extent
           test "$(grep -Fc 'let prepared_targets = prepare_exact_checkpoint_targets(' \
             crates/crucible-api/src/vm_lifecycle/quantum_loop.rs)" -eq 1
           checkpoint_prepare_line="$(grep -Fn \
@@ -542,6 +572,14 @@ in
             fault_action_sink::node_payload::tests::memory_bit_flip_rejects_authored_length_before_expanding_mask
           run_exact_qemu_test \
             production_fault_runtime::lifecycle_tests::qemu_action_ledger_retains_impulses_and_removed_rules_for_events
+          run_exact_api_test \
+            vm_lifecycle::network_faults::route::tests::resource_limits::pending_network_output_admission_uses_frame_and_pending_limits
+          run_exact_api_test \
+            vm_lifecycle::network_faults::route::tests::resource_limits::queue_admission_uses_aggregate_frame_and_byte_limits
+          run_exact_api_test \
+            vm_lifecycle::network_faults::route::tests::resource_limits::shared_medium_and_custody_admission_share_the_authored_queue_budget
+          run_exact_api_test \
+            vm_lifecycle::network_faults::route::tests::resource_limits::contact_and_restore_admission_use_authored_aggregate_coordinates
           run_exact_qemu_test \
             node::tests::fault_command::fault_command_applies_at_exact_current_boundary_without_guest_progress
           run_exact_shmem_test \

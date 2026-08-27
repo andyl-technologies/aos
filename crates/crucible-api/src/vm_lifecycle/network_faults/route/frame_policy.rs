@@ -276,7 +276,7 @@ pub(in super::super) fn network_packet_key_bytes(
 
 // crucible-lint: allow rust-allow -- shared-medium mutation needs the current payload, reservations, topology, action, and opportunity together.
 #[allow(clippy::too_many_arguments)]
-pub(in super::super) fn apply_network_shared_medium(
+pub(in super::super) fn apply_network_shared_medium_with_limits(
     payload: &mut [u8],
     effects: &mut crucible::ResolvedNetworkFrameEffects,
     state: &mut NetworkEffectRuntimeState,
@@ -289,6 +289,7 @@ pub(in super::super) fn apply_network_shared_medium(
     policy_id: &FaultObjectId,
     transmit_power_femtowatts: u64,
     service_rate_bps: Option<u64>,
+    resource_limits: FaultResourceLimits,
 ) -> Result<Option<u64>, SchedulerError> {
     let owner = NetworkEffectStateKey::from_action(action);
     if action.kind == BindingActionKind::RemovePersistent {
@@ -325,30 +326,37 @@ pub(in super::super) fn apply_network_shared_medium(
             .retain(|reservation| reservation.finish_nanos > now);
         !medium.reservations.is_empty()
     });
-    let active_reservations = state
-        .shared_media
-        .values()
-        .try_fold(0_usize, |total, medium| {
-            total.checked_add(medium.reservations.len())
-        })
-        .ok_or_else(|| {
-            network_effect_application_error(action, "shared-medium reservation count overflowed")
-        })?;
-    if active_reservations == HARD_PENDING_NETWORK_FRAMES {
-        return Err(network_effect_application_error(
-            action,
-            "shared-medium reservations reached the global hard bound",
-        ));
-    }
+    let (active_reservations, active_bytes) = network_queue_resource_usage(state, resource_limits)?;
+    let payload_bytes = u64::try_from(payload.len()).map_err(|_| {
+        map_network_resource_limit(
+            FaultResourceLimitError::Representation {
+                field: "network_frame_bytes",
+                value: u64::MAX,
+            },
+            resource_limits,
+        )
+    })?;
+    reserve_network_resource_u64(
+        "network_queue_frames",
+        active_reservations,
+        1,
+        resource_limits,
+    )?;
+    reserve_network_resource_u64(
+        "network_queue_bytes",
+        active_bytes,
+        payload_bytes,
+        resource_limits,
+    )?;
+    reserve_network_resource_u64("network_frame_bytes", 0, payload_bytes, resource_limits)?;
     let rate_bps = service_rate_bps.filter(|rate| *rate > 0).ok_or_else(|| {
         network_effect_application_error(
             action,
             "shared-medium service has neither a link rate nor a resolved rate cap",
         )
     })?;
-    let payload_bits = u64::try_from(payload.len())
-        .ok()
-        .and_then(|bytes| bytes.checked_mul(8))
+    let payload_bits = payload_bytes
+        .checked_mul(8)
         .ok_or_else(|| network_effect_application_error(action, "medium frame size overflowed"))?;
     let duration_nanos = ceil_ratio_u128(
         u128::from(payload_bits)
@@ -407,6 +415,7 @@ pub(in super::super) fn apply_network_shared_medium(
         opportunity: opportunity.id(),
         producer: producer.clone(),
         arbitration_key,
+        bytes: payload_bytes,
         arrival_nanos: now,
         start_nanos: now,
         finish_nanos: now,
@@ -651,6 +660,39 @@ pub(in super::super) fn apply_network_shared_medium(
     Ok(Some(release))
 }
 
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(in super::super) fn apply_network_shared_medium(
+    payload: &mut [u8],
+    effects: &mut crucible::ResolvedNetworkFrameEffects,
+    state: &mut NetworkEffectRuntimeState,
+    pending_outputs: &mut [crucible::BackendNetworkOutput],
+    topology: &crucible::model::WorldFaultTopology,
+    action: &ResolvedBindingAction,
+    opportunity: &FaultOpportunity,
+    scenario_seed: ContentHash,
+    resources: &crucible::model::ObjectIdSet,
+    policy_id: &FaultObjectId,
+    transmit_power_femtowatts: u64,
+    service_rate_bps: Option<u64>,
+) -> Result<Option<u64>, SchedulerError> {
+    apply_network_shared_medium_with_limits(
+        payload,
+        effects,
+        state,
+        pending_outputs,
+        topology,
+        action,
+        opportunity,
+        scenario_seed,
+        resources,
+        policy_id,
+        transmit_power_femtowatts,
+        service_rate_bps,
+        FaultResourceLimits::default(),
+    )
+}
+
 pub(in super::super) fn intervals_overlap(
     left_start: u64,
     left_end: u64,
@@ -885,6 +927,7 @@ pub(in super::super) fn stage_typed_network_response(
     response_id: &FaultObjectId,
     cause: ContentHash,
     frontier: VirtualTime,
+    resource_limits: FaultResourceLimits,
 ) -> Result<Option<u64>, SchedulerError> {
     let declaration = topology
         .network_policy_artifact(response_id)
@@ -961,6 +1004,7 @@ pub(in super::super) fn stage_typed_network_response(
             route: None,
             fault_continuation,
         },
+        resource_limits,
     )?;
     Ok((release > frontier.ticks).then_some(release))
 }
@@ -1259,17 +1303,23 @@ pub(in super::super) fn apply_network_queue_policy(
     base_rate_bps: Option<u64>,
     service_curves: &[NetworkServiceCurveState],
     prerequisite_release: Option<u64>,
+    resource_limits: FaultResourceLimits,
 ) -> Result<Option<u64>, SchedulerError> {
     let now = opportunity.coordinate().virtual_nanos;
     let payload_bytes = u64::try_from(payload.len()).map_err(|_error| {
         network_effect_application_error(action, "frame byte length exceeds queue width")
     })?;
+    reserve_network_resource_u64("network_frame_bytes", 0, payload_bytes, resource_limits)?;
     let parameters = discipline_parameters
         .map(|_reference| network_queue_discipline(topology, discipline_parameters, action))
         .transpose()?;
     let class = network_queue_class(payload, discipline, parameters, topology, action)?;
     let paused_until =
         network_pause_boundary(&state.backpressure, &action.target, class.as_ref(), now);
+    for queue in state.queues.values_mut() {
+        retire_network_queue(queue, now, action)?;
+    }
+    let (current_frames, current_bytes) = network_queue_resource_usage(state, resource_limits)?;
     let queue = state.queues.entry(action.target.clone()).or_default();
     let configuration = NetworkQueueConfiguration {
         owner: NetworkEffectStateKey::from_action(action),
@@ -1289,7 +1339,6 @@ pub(in super::super) fn apply_network_queue_policy(
         Some(_existing) => {}
         None => queue.configuration = Some(configuration),
     }
-    retire_network_queue(queue, now, action)?;
     queue.service_cursor_nanos = queue.service_cursor_nanos.max(now);
     let occupied_bytes = queue
         .reservations
@@ -1455,6 +1504,13 @@ pub(in super::super) fn apply_network_queue_policy(
     if effects.is_dropped() || base_rate_bps.is_none() && service_curves.is_empty() {
         return Ok(None);
     }
+    reserve_network_resource_u64("network_queue_frames", current_frames, 1, resource_limits)?;
+    reserve_network_resource_u64(
+        "network_queue_bytes",
+        current_bytes,
+        payload_bytes,
+        resource_limits,
+    )?;
     let payload_bits = payload_bytes.checked_mul(8).ok_or_else(|| {
         network_effect_application_error(action, "queue frame bit length overflowed")
     })?;

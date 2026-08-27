@@ -313,6 +313,7 @@ pub(super) fn append_network_effect_state(
             material.extend_from_slice(&reservation.opportunity.bytes);
             append_evidence_bytes(material, reservation.producer.as_str().as_bytes())?;
             append_evidence_bytes(material, &reservation.arbitration_key)?;
+            material.extend_from_slice(&reservation.bytes.to_be_bytes());
             material.extend_from_slice(&reservation.arrival_nanos.to_be_bytes());
             material.extend_from_slice(&reservation.start_nanos.to_be_bytes());
             material.extend_from_slice(&reservation.finish_nanos.to_be_bytes());

@@ -12,6 +12,7 @@ use checkpoint_capture::{
     prepare_exact_checkpoint_targets,
 };
 use debug_policy::trusted_debug_listener;
+pub(in crate::vm_lifecycle) use lifecycle::map_journal_limit;
 pub(super) use lifecycle::{
     DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
     decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
@@ -20,8 +21,8 @@ pub(super) use lifecycle::{
 pub(super) use lifecycle::{HARD_RUN_STATE_JSON_BYTES, validate_recovered_lifecycle_journal};
 use lifecycle::{
     PreparedLifecycleFaultCoordinators, PreparedLifecyclePrecommit, PreparedLifecycleTerminal,
-    PreparedTerminalReplacement, map_journal_limit,
-    release_restored_generation_after_scheduler_publication, select_preowned_terminal_generation,
+    PreparedTerminalReplacement, release_restored_generation_after_scheduler_publication,
+    select_preowned_terminal_generation,
 };
 
 impl QuantumLoop for ProductionVmLifecycleLoop {

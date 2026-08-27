@@ -121,6 +121,50 @@ fn ambiguous_shared_ninep_commit_poisons_runtime_before_return() {
 }
 
 #[test]
+fn storage_resource_limits_preserve_exact_coordinates_through_scheduler() {
+    let limits = FaultResourceLimits {
+        storage_pending_operations: 2,
+        storage_request_bytes: 4,
+        ..FaultResourceLimits::default()
+    };
+
+    let pending = match reserve_storage_resource("storage_pending_operations", 2, 1, limits) {
+        Ok(()) => panic!("the third retained operation must exceed the authored ceiling"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        pending.resource_limit_coordinates(),
+        Some((
+            "storage_pending_operations",
+            2,
+            1,
+            2,
+            FaultResourceLimits::compiled_maximum().storage_pending_operations,
+        ))
+    );
+
+    let request = match reserve_storage_resource("storage_request_bytes", 0, 5, limits) {
+        Ok(()) => panic!("an oversized request must exceed the authored byte ceiling"),
+        Err(error) => error,
+    };
+    let node = crucible_qemu::QemuNodeError::from_async_driver(
+        crucible_qemu::QemuAsyncDriverError::Runtime(request),
+    );
+    let backend = crucible::BackendError::from(node);
+    let scheduler = crucible::SchedulerError::from(backend);
+    assert!(matches!(
+        scheduler,
+        crucible::SchedulerError::ResourceLimit {
+            field: "storage_request_bytes",
+            current: 0,
+            requested: 5,
+            configured: 4,
+            hard,
+        } if hard == FaultResourceLimits::compiled_maximum().storage_request_bytes
+    ));
+}
+
+#[test]
 fn ninep_result_evidence_excludes_locked_replay_authorization() {
     let action = storage_evidence_action();
     let mut locked = action.clone();
@@ -290,6 +334,7 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
         world,
         target: target.clone(),
         icount_shift: 0,
+        resource_limits: FaultResourceLimits::compiled_maximum(),
     };
 
     let request = NinepRequestOpportunity {
