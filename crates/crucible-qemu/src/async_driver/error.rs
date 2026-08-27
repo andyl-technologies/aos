@@ -11,10 +11,16 @@ pub struct QemuAsyncDriverRuntimeError {
     pub operation: &'static str,
     /// Deterministic failure detail.
     pub message: String,
-    /// Exact PREPARE result allocation or admission that failed, when applicable.
-    pub fault_result_storage: Option<(u32, u32)>,
-    /// Exact event-record staging allocation or admission that failed.
-    pub fault_event_storage: Option<(u64, u64, u64)>,
+    detail: QemuAsyncDriverRuntimeErrorDetail,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum QemuAsyncDriverRuntimeErrorDetail {
+    #[default]
+    Message,
+    FaultResultStorage(u32, u32),
+    FaultEventStorage(u64, u64, u64),
+    ResourceLimit(&'static str, u64, u64, u64, u64),
 }
 
 impl QemuAsyncDriverRuntimeError {
@@ -24,8 +30,7 @@ impl QemuAsyncDriverRuntimeError {
         Self {
             operation,
             message: message.into(),
-            fault_result_storage: None,
-            fault_event_storage: None,
+            detail: QemuAsyncDriverRuntimeErrorDetail::Message,
         }
     }
 
@@ -38,11 +43,10 @@ impl QemuAsyncDriverRuntimeError {
             // its diagnostic storage empty so propagating typed LIMIT-2 never
             // attempts another heap allocation.
             message: String::new(),
-            fault_result_storage: Some((
+            detail: QemuAsyncDriverRuntimeErrorDetail::FaultResultStorage(
                 u32::try_from(requested).unwrap_or(u32::MAX),
                 u32::try_from(configured).unwrap_or(u32::MAX),
-            )),
-            fault_event_storage: None,
+            ),
         }
     }
 
@@ -52,12 +56,68 @@ impl QemuAsyncDriverRuntimeError {
         Self {
             operation: "stage fault occurrence event",
             message: String::new(),
-            fault_result_storage: None,
-            fault_event_storage: Some((
+            detail: QemuAsyncDriverRuntimeErrorDetail::FaultEventStorage(
                 u64::try_from(current).unwrap_or(u64::MAX),
                 u64::try_from(requested).unwrap_or(u64::MAX),
                 u64::try_from(configured).unwrap_or(u64::MAX),
-            )),
+            ),
+        }
+    }
+
+    /// Creates an allocation-free scenario resource-limit failure.
+    #[must_use]
+    pub const fn resource_limit(
+        field: &'static str,
+        current: u64,
+        requested: u64,
+        configured: u64,
+        hard: u64,
+    ) -> Self {
+        Self {
+            operation: "reserve host I/O resource",
+            message: String::new(),
+            detail: QemuAsyncDriverRuntimeErrorDetail::ResourceLimit(
+                field, current, requested, configured, hard,
+            ),
+        }
+    }
+
+    /// Returns an exact PREPARE result-storage refusal, when present.
+    #[must_use]
+    pub const fn fault_result_storage_coordinates(&self) -> Option<(u32, u32)> {
+        match self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::FaultResultStorage(requested, configured) => {
+                Some((requested, configured))
+            }
+            _ => None,
+        }
+    }
+
+    /// Returns an exact fault-event staging refusal, when present.
+    #[must_use]
+    pub const fn fault_event_storage_coordinates(&self) -> Option<(u64, u64, u64)> {
+        match self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::FaultEventStorage(
+                current,
+                requested,
+                configured,
+            ) => Some((current, requested, configured)),
+            _ => None,
+        }
+    }
+
+    /// Returns an exact scenario resource refusal, when present.
+    #[must_use]
+    pub const fn resource_limit_coordinates(&self) -> Option<(&'static str, u64, u64, u64, u64)> {
+        match self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::ResourceLimit(
+                field,
+                current,
+                requested,
+                configured,
+                hard,
+            ) => Some((field, current, requested, configured, hard)),
+            _ => None,
         }
     }
 }

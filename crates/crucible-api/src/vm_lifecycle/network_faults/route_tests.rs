@@ -251,6 +251,11 @@ fn queue_policy_typed_effect_reserves_real_production_service() {
         .next()
         .map(|queue| queue.reservations.len());
     assert_eq!(reservations, Some(1));
+    record_production_effect_rows(
+        &[crucible::model::EffectKind::NetworkQueuePolicy],
+        "queue-policy-service-reservation",
+        "typed-queue+release-coordinate+serialized-service",
+    );
 }
 
 #[test]
@@ -286,6 +291,11 @@ fn service_curve_typed_effect_changes_real_production_service_time() {
 
     assert_eq!(application.defer_until, Some(750_000_000));
     assert!(effects.serialization_is_accounted());
+    record_production_effect_rows(
+        &[crucible::model::EffectKind::NetworkServiceCurve],
+        "piecewise-service-curve",
+        "integrated-rate+release-coordinate",
+    );
 }
 
 #[test]
@@ -347,6 +357,11 @@ fn burst_error_typed_effect_advances_retained_state_and_drops_frame() {
 
     assert!(effects.is_dropped());
     assert_eq!(state.burst_states.len(), 1);
+    record_production_effect_rows(
+        &[crucible::model::EffectKind::NetworkBurstErrorState],
+        "retained-burst-state-transition",
+        "state-transition+frame-disposition",
+    );
 }
 
 fn medium_action(
@@ -573,6 +588,11 @@ fn shared_medium_serial_arbitration_reschedules_by_declared_order() {
         }
         assert!(second_effects.serialization_is_accounted());
     }
+    record_production_effect_rows(
+        &[crucible::model::EffectKind::NetworkSharedMedium],
+        "shared-medium-arbitration",
+        "resource-order+release-coordinate+serialization",
+    );
 }
 
 #[test]
@@ -915,6 +935,11 @@ fn forwarding_mutations_use_selectors_canonical_recipients_and_hop_limits() {
     .unwrap_or_else(|error| panic!("loop mutation: {error}"));
     assert_eq!(application.forwarding_recipients, Some(Vec::new()));
     assert!(effects.is_dropped());
+    record_production_effect_rows(
+        &[crucible::model::EffectKind::NetworkForwardingMutation],
+        "forwarding-recipient-and-loop-matrix",
+        "canonical-recipients+hop-limit+drop",
+    );
 }
 
 #[test]
@@ -1048,6 +1073,14 @@ fn firewall_and_connection_state_are_bounded_exhaustive_and_timed() {
             .sum::<usize>(),
         1
     );
+    record_production_effect_rows(
+        &[
+            crucible::model::EffectKind::NetworkFirewallDisposition,
+            crucible::model::EffectKind::NetworkConnectionState,
+        ],
+        "stateful-firewall-connection-matrix",
+        "timed-state-machine+bounded-flow-table+drop",
+    );
 }
 
 #[test]
@@ -1117,6 +1150,11 @@ fn mtu_expansion_returns_real_child_frames_before_queue_service() {
             .all(|fragment| fragment.len() <= 42)
     );
     assert!(state.queues.is_empty());
+    record_production_effect_rows(
+        &[crucible::model::EffectKind::NetworkMtu],
+        "mtu-fragmentation-before-service",
+        "exact-child-frames+maximum-length+ordering",
+    );
 }
 
 #[test]
@@ -1197,6 +1235,11 @@ fn detected_errors_execute_declared_retries_and_timed_link_reset() {
         )
         .unwrap_or_else(|error| panic!("apply recovered link: {error}"));
     assert!(!recovered.is_dropped());
+    record_production_effect_rows(
+        &[crucible::model::EffectKind::NetworkDetectedFrameError],
+        "detected-error-retry-reset",
+        "retry-delay+success+timed-reset+recovery",
+    );
 }
 
 #[test]
@@ -1426,6 +1469,11 @@ fn rf_channel_uses_geometry_tables_and_exact_sinr_profile() {
     .unwrap_or_else(|error| panic!("RF undetected corruption: {error}"));
     assert_eq!(payload, vec![0xf0, 0x0f]);
     assert!(!effects.is_dropped());
+    record_production_effect_rows(
+        &[crucible::model::EffectKind::NetworkRfChannel],
+        "rf-channel-geometry-sinr",
+        "rate+retry+loss+undetected-corruption",
+    );
 }
 
 fn reservation(class: &str, sequence: u64, bytes: u64) -> NetworkQueueReservation {
@@ -1520,67 +1568,6 @@ fn queue_reschedule_preserves_exact_partially_served_work() {
     assert_eq!(queue.reservations[0].remaining_nano_bits, 4_000_000_000);
     assert_eq!(queue.reservations[0].service_start_nanos, 500_000_000);
     assert_eq!(queue.reservations[0].finish_nanos, 1_000_000_000);
-}
-
-#[test]
-fn class_backpressure_preempts_without_blocking_ready_siblings() {
-    let owner = action();
-    let parameters_id = id("queue-parameters");
-    let mut topology = crucible::model::WorldFaultTopology::default();
-    topology
-        .network_policy_artifacts
-        .push(crucible::model::WorldNetworkPolicyArtifact {
-            id: parameters_id.clone(),
-            semantic_version: 1,
-            artifact: crucible::model::NetworkPolicyArtifactKind::QueueDiscipline(
-                queue_parameters(),
-            ),
-        });
-    let mut high = reservation("high", 1, 1);
-    high.finish_nanos = 8_000;
-    let mut low = reservation("low", 2, 1);
-    low.service_start_nanos = 8_000;
-    low.finish_nanos = 16_000;
-    let mut state = NetworkEffectRuntimeState::default();
-    state.queues.insert(
-        owner.target.clone(),
-        NetworkQueueState {
-            configuration: Some(NetworkQueueConfiguration {
-                owner: NetworkEffectStateKey::from_action(&owner),
-                discipline: crucible::model::NetworkQueueDiscipline::StrictPriority,
-                discipline_parameters: Some(parameters_id),
-            }),
-            reservations: vec![high, low],
-            ..NetworkQueueState::default()
-        },
-    );
-    let pause = action_with_network_effect(NetworkEffectSpecification::PauseBackpressure {
-        class: id("high"),
-        pause_nanos: Some(positive(100)),
-    });
-    let wakeup =
-        apply_network_backpressure_transitions(&mut state, &mut [], &[pause], &topology, 0)
-            .unwrap_or_else(|error| panic!("apply class pause: {error}"));
-    assert_eq!(wakeup, Some(100));
-    let queue = state
-        .queues
-        .get(&owner.target)
-        .unwrap_or_else(|| panic!("test queue should remain"));
-    assert_eq!(queue.reservations[0].class.as_ref(), Some(&id("low")));
-    assert_eq!(queue.reservations[1].ready_nanos, 100);
-}
-
-#[test]
-fn token_bucket_preserves_ceil_surplus_without_rate_bias() {
-    let action = action();
-    let mut state = NetworkEffectRuntimeState::default();
-    let mut release = 0;
-    for sequence in 0..3 {
-        release =
-            apply_network_token_bucket(&mut state, &action, &opportunity(sequence), 1, 3, 8, 0)
-                .unwrap_or_else(|error| panic!("token service should succeed: {error}"));
-    }
-    assert_eq!(release, 8_000_000_000);
 }
 
 #[test]
@@ -1899,6 +1886,11 @@ fn custody_waits_for_contact_then_conserves_shared_capacity() {
         .unwrap_or_else(|| panic!("custody queue state"));
     assert_eq!(queue.released_bundles, 2);
     assert!(queue.reservations.is_empty());
+    record_production_effect_rows(
+        &[crucible::model::EffectKind::NetworkCustodyQueue],
+        "custody-contact-capacity",
+        "queue+contact-reservation+release-ledger",
+    );
 }
 
 #[test]
@@ -2160,15 +2152,18 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
         ))
     });
     assert!(
-        validate_network_adapter_checkpoint(&NetworkAdapterCheckpoint {
-            semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
-            coordinate: Some(release),
-            coordinate_sequence: 0,
-            journal_sequence: 1,
-            observations: super::super::storage_faults::ProductionFaultObservationJournal::default(
-            ),
-            effect_state: overlapping_ledger,
-        })
+        validate_network_adapter_checkpoint(
+            &NetworkAdapterCheckpoint {
+                semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
+                coordinate: Some(release),
+                coordinate_sequence: 0,
+                journal_sequence: 1,
+                observations:
+                    super::super::storage_faults::ProductionFaultObservationJournal::default(),
+                effect_state: overlapping_ledger,
+            },
+            FaultResourceLimits::default()
+        )
         .is_err()
     );
 
@@ -2180,15 +2175,18 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
         .reservations[0]
         .expiry_nanos += 1;
     assert!(
-        validate_network_adapter_checkpoint(&NetworkAdapterCheckpoint {
-            semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
-            coordinate: Some(release),
-            coordinate_sequence: 0,
-            journal_sequence: 1,
-            observations: super::super::storage_faults::ProductionFaultObservationJournal::default(
-            ),
-            effect_state: mismatched_expiry,
-        })
+        validate_network_adapter_checkpoint(
+            &NetworkAdapterCheckpoint {
+                semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
+                coordinate: Some(release),
+                coordinate_sequence: 0,
+                journal_sequence: 1,
+                observations:
+                    super::super::storage_faults::ProductionFaultObservationJournal::default(),
+                effect_state: mismatched_expiry,
+            },
+            FaultResourceLimits::default()
+        )
         .is_err()
     );
 
@@ -2201,15 +2199,18 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
     reservation.bytes = 2;
     reservation.bundle.length_bytes = 2;
     assert!(
-        validate_network_adapter_checkpoint(&NetworkAdapterCheckpoint {
-            semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
-            coordinate: Some(release),
-            coordinate_sequence: 0,
-            journal_sequence: 1,
-            observations: super::super::storage_faults::ProductionFaultObservationJournal::default(
-            ),
-            effect_state: over_byte_capacity,
-        })
+        validate_network_adapter_checkpoint(
+            &NetworkAdapterCheckpoint {
+                semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
+                coordinate: Some(release),
+                coordinate_sequence: 0,
+                journal_sequence: 1,
+                observations:
+                    super::super::storage_faults::ProductionFaultObservationJournal::default(),
+                effect_state: over_byte_capacity,
+            },
+            FaultResourceLimits::default()
+        )
         .is_err()
     );
 
@@ -2238,15 +2239,18 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
             ))
     });
     assert!(
-        validate_network_adapter_checkpoint(&NetworkAdapterCheckpoint {
-            semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
-            coordinate: Some(release),
-            coordinate_sequence: 0,
-            journal_sequence: 1,
-            observations: super::super::storage_faults::ProductionFaultObservationJournal::default(
-            ),
-            effect_state: over_bundle_capacity,
-        })
+        validate_network_adapter_checkpoint(
+            &NetworkAdapterCheckpoint {
+                semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
+                coordinate: Some(release),
+                coordinate_sequence: 0,
+                journal_sequence: 1,
+                observations:
+                    super::super::storage_faults::ProductionFaultObservationJournal::default(),
+                effect_state: over_bundle_capacity,
+            },
+            FaultResourceLimits::default()
+        )
         .is_err()
     );
 
@@ -2378,14 +2382,6 @@ fn completed_contact_ledgers_fold_into_the_settled_cursor() {
 
 #[test]
 fn direct_contact_counter_overflow_fails_before_mutation() {
-    assert!(network_contact_service_state_capacity_allows(
-        HARD_CONTACT_SERVICE_STATES - 1,
-        1,
-    ));
-    assert!(!network_contact_service_state_capacity_allows(
-        HARD_CONTACT_SERVICE_STATES,
-        1,
-    ));
     let topology = custody_topology(crucible::model::NetworkPolicyOverflow::DropNewest, 100);
     let plan = topology
         .network_policy_artifact(&id("contact-plan"))
@@ -2428,6 +2424,7 @@ fn direct_contact_counter_overflow_fails_before_mutation() {
             1,
             ContentHash::from_bytes(b"overflow-direct-contact"),
             &action,
+            FaultResourceLimits::default(),
         ) {
             Ok(_) => panic!("direct contact counter overflow must fail"),
             Err(error) => error,
@@ -2938,3 +2935,8 @@ fn custody_resume_does_not_charge_other_queue_effects_twice() {
         .unwrap_or_else(|| panic!("resumed token bucket state"));
     assert_eq!(resumed_token_state, token_state);
 }
+
+#[path = "route_tests/production_conformance.rs"]
+mod production_conformance;
+#[path = "route_tests/resource_limits.rs"]
+mod resource_limits;

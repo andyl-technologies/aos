@@ -10,9 +10,9 @@ use super::*;
 use crucible::model::{
     ContentHash, EffectSpecification, FAULT_RUNTIME_STATE_VERSION, FaultCoordinate, FaultObjectId,
     FaultObservation, FaultObservationKind, FaultOperation, FaultOpportunity, FaultPhase,
-    FaultSignalPlan, NinePResultKind, OpportunityPayload, ResolvedBindingAction,
-    ResolvedFaultTarget, StorageEffectSpecification, StoragePolicyArtifactKind,
-    StoragePolicyNinePVisibilityScope, World, WorldIoNodeKind,
+    FaultResourceLimitError, FaultResourceLimits, FaultSignalPlan, NinePResultKind,
+    OpportunityPayload, ResolvedBindingAction, ResolvedFaultTarget, StorageEffectSpecification,
+    StoragePolicyArtifactKind, StoragePolicyNinePVisibilityScope, World, WorldIoNodeKind,
 };
 use crucible_device::block::{
     BaseImage, BlockDurabilityConfig, BlockFaultMisdirectionDestination, BlockFaultReadTransform,
@@ -52,6 +52,64 @@ type StorageArrayDestinations = Vec<(ContentHash, QemuSharedBlockDevice, Vec<Blo
 type StorageArrayDirtyRanges = Vec<crucible_device::block::BlockArrayDirtyRange>;
 type StorageArrayWriteDestinations = (StorageArrayDestinations, StorageArrayDirtyRanges);
 type DeviceRuntimeError = QemuAsyncDriverRuntimeError;
+
+fn reserve_storage_resource(
+    field: &'static str,
+    current: u64,
+    requested: u64,
+    limits: FaultResourceLimits,
+) -> Result<(), QemuAsyncDriverRuntimeError> {
+    limits
+        .reserve(field, current, requested)
+        .map_err(|error| storage_resource_error(error, limits))
+}
+
+fn storage_resource_error(
+    error: FaultResourceLimitError,
+    limits: FaultResourceLimits,
+) -> QemuAsyncDriverRuntimeError {
+    let (field, current, requested, configured, hard) = match error {
+        FaultResourceLimitError::Exceeded {
+            field,
+            current,
+            requested,
+            configured,
+            hard,
+        }
+        | FaultResourceLimitError::UsageOverflow {
+            field,
+            current,
+            requested,
+            configured,
+            hard,
+        } => (field, current, requested, configured, hard),
+        FaultResourceLimitError::Representation { field, value } => (
+            field,
+            0,
+            value,
+            limits.configured(field).unwrap_or(0),
+            FaultResourceLimits::compiled_maximum()
+                .configured(field)
+                .unwrap_or(0),
+        ),
+        FaultResourceLimitError::Zero { field } => (
+            field,
+            0,
+            1,
+            0,
+            FaultResourceLimits::compiled_maximum()
+                .configured(field)
+                .unwrap_or(0),
+        ),
+        FaultResourceLimitError::ConfiguredAboveHard {
+            field,
+            configured,
+            hard,
+        } => (field, 0, configured, configured, hard),
+        FaultResourceLimitError::UnknownField { field } => (field, 0, 1, 0, 0),
+    };
+    QemuAsyncDriverRuntimeError::resource_limit(field, current, requested, configured, hard)
+}
 
 /// Authenticated World material retained for launch and coordinator binding.
 #[derive(Clone)]
@@ -375,6 +433,7 @@ pub(super) struct ProductionBlockFaultCoordinator {
     array_targets: Vec<ResolvedFaultTarget>,
     baseline_array_id: Option<String>,
     context: StorageFaultResolutionContext,
+    resource_limits: FaultResourceLimits,
     icount_shift: u8,
 }
 
@@ -433,6 +492,7 @@ impl ProductionBlockFaultCoordinator {
             array_targets,
             baseline_array_id,
             context: StorageFaultResolutionContext::new(scenario_seed),
+            resource_limits: signal_plan.resource_limits(),
             icount_shift,
         }
     }
@@ -596,6 +656,21 @@ impl ProductionBlockFaultCoordinator {
                 policy.rebuild.queue_depth.get().min(service.queue_depth)
             });
         for _ in 0..rebuild_queue_depth {
+            let (pending_operations, largest_request) = source
+                .pending_operation_usage()
+                .map_err(|error| storage_error("admit storage array rebuild", error))?;
+            reserve_storage_resource(
+                "storage_pending_operations",
+                pending_operations,
+                1,
+                self.resource_limits,
+            )?;
+            reserve_storage_resource(
+                "storage_request_bytes",
+                0,
+                largest_request.max(policy.rebuild.chunk_bytes.get()),
+                self.resource_limits,
+            )?;
             let Some(rebuild) = source
                 .next_storage_array_rebuild_opportunity(
                     now_nanos,
@@ -1289,6 +1364,37 @@ impl ProductionBlockFaultCoordinator {
                 "malformed block request payload",
             )
         })?;
+        let request_bytes =
+            u64::from(request.count).max(u64::try_from(request.data.len()).map_err(|_| {
+                storage_resource_error(
+                    FaultResourceLimitError::Representation {
+                        field: "storage_request_bytes",
+                        value: u64::MAX,
+                    },
+                    self.resource_limits,
+                )
+            })?);
+        reserve_storage_resource(
+            "storage_request_bytes",
+            0,
+            request_bytes,
+            self.resource_limits,
+        )?;
+        let (pending_operations, largest_request) = servicer
+            .storage_pending_operation_usage()
+            .map_err(|error| storage_error("admit live block request", error))?;
+        reserve_storage_resource(
+            "storage_request_bytes",
+            0,
+            largest_request,
+            self.resource_limits,
+        )?;
+        reserve_storage_resource(
+            "storage_pending_operations",
+            pending_operations,
+            1,
+            self.resource_limits,
+        )?;
         let request_nanos = self.virtual_nanos(observed.request_icount)?;
         let coordinate = FaultCoordinate {
             virtual_nanos: request_nanos,
@@ -1842,6 +1948,21 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
         guest_icount: u64,
     ) -> Result<QemuLiveBlockIoServiceStep, QemuAsyncDriverRuntimeError> {
         let now_nanos = self.virtual_nanos(guest_icount)?;
+        let (pending_operations, largest_request) = servicer
+            .storage_pending_operation_usage()
+            .map_err(|error| storage_error("validate pending block operations", error))?;
+        reserve_storage_resource(
+            "storage_pending_operations",
+            0,
+            pending_operations,
+            self.resource_limits,
+        )?;
+        reserve_storage_resource(
+            "storage_request_bytes",
+            0,
+            largest_request,
+            self.resource_limits,
+        )?;
         let storage_state = servicer
             .storage_fault_state()
             .map_err(|error| storage_error("inspect retained block completions", error))?;
@@ -2021,6 +2142,7 @@ pub(super) struct ProductionNinepFaultCoordinator {
     observations: ProductionStorageObservations,
     world: World,
     target: ResolvedFaultTarget,
+    resource_limits: FaultResourceLimits,
     icount_shift: u8,
 }
 
@@ -2032,6 +2154,7 @@ impl ProductionNinepFaultCoordinator {
         observations: ProductionStorageObservations,
         world: World,
         target: ResolvedFaultTarget,
+        resource_limits: FaultResourceLimits,
         icount_shift: u8,
     ) -> Self {
         Self {
@@ -2040,6 +2163,7 @@ impl ProductionNinepFaultCoordinator {
             observations,
             world,
             target,
+            resource_limits,
             icount_shift,
         }
     }
@@ -2048,6 +2172,23 @@ impl ProductionNinepFaultCoordinator {
         icount
             .checked_shl(u32::from(self.icount_shift))
             .ok_or_else(|| storage_error("convert 9p icount", "virtual time overflow"))
+    }
+
+    fn admit_fault_resource_usage(
+        &self,
+        servicer: &QemuLive9pIoServicer,
+    ) -> Result<crucible_device::ninep::NinepFaultResourceUsage, QemuAsyncDriverRuntimeError> {
+        let usage = servicer
+            .fault_resource_usage()
+            .map_err(|error| storage_error("measure retained 9p ownership", error))?;
+        for (field, current) in [
+            ("ninep_sessions_per_device", usage.sessions),
+            ("ninep_fids_per_session", usage.fids),
+            ("ninep_object_versions", usage.object_versions),
+        ] {
+            reserve_storage_resource(field, 0, current, self.resource_limits)?;
+        }
+        Ok(usage)
     }
 
     fn operation(operation: NinepOperation) -> FaultOperation {
@@ -2317,6 +2458,14 @@ impl ProductionNinepFaultCoordinator {
             let object = self.object(update)?;
             let policy = self.visibility_policy(visibility_policy)?;
             let data_lag_nanos = self.visibility_data_lag(visibility_policy)?;
+            let usage = self.admit_fault_resource_usage(servicer)?;
+            let requested = u64::from(!servicer.contains_visibility_update(&update_id.bytes));
+            reserve_storage_resource(
+                "ninep_object_versions",
+                usage.object_versions,
+                requested,
+                self.resource_limits,
+            )?;
             let sequence = servicer
                 .commit_visibility_update(
                     update_id.bytes,
@@ -2473,6 +2622,22 @@ impl ProductionNinepFaultCoordinator {
         guest_icount: u64,
         shared_commit_started: &mut bool,
     ) -> Result<QemuLive9pIoServiceStep, QemuAsyncDriverRuntimeError> {
+        self.admit_fault_resource_usage(servicer)?;
+        let (pending_operations, largest_request) = servicer
+            .pending_fault_operation_usage()
+            .map_err(|error| storage_error("validate pending 9p operations", error))?;
+        reserve_storage_resource(
+            "storage_pending_operations",
+            0,
+            pending_operations,
+            self.resource_limits,
+        )?;
+        reserve_storage_resource(
+            "storage_request_bytes",
+            0,
+            largest_request,
+            self.resource_limits,
+        )?;
         let now_nanos = self.virtual_nanos(guest_icount)?;
         let events = self.observed_visibility_events(now_nanos)?;
         self.advance_visibility(servicer, guest_icount, now_nanos, &events)?;
@@ -2531,12 +2696,56 @@ impl ProductionNinepFaultCoordinator {
             .pin_next_request()
             .map_err(|error| storage_error("pin 9p request", error))?
         {
+            let request_bytes = u64::try_from(pin.opportunity.frame.len()).map_err(|_| {
+                storage_resource_error(
+                    FaultResourceLimitError::Representation {
+                        field: "storage_request_bytes",
+                        value: u64::MAX,
+                    },
+                    self.resource_limits,
+                )
+            })?;
+            reserve_storage_resource(
+                "storage_request_bytes",
+                0,
+                request_bytes,
+                self.resource_limits,
+            )?;
+            reserve_storage_resource(
+                "storage_pending_operations",
+                pending_operations,
+                1,
+                self.resource_limits,
+            )?;
             let resolve = self.evaluate_phase(&self.opportunity(
                 &pin.opportunity,
                 FaultPhase::Resolve,
                 pin.opportunity.request_icount,
             )?)?;
             let selected = self.resolve_result(&pin.opportunity, &resolve.actions)?;
+            let object_result = matches!(
+                &selected,
+                NinepResultDirective::Stale(_) | NinepResultDirective::Misdirected(_)
+            );
+            let usage = self.admit_fault_resource_usage(servicer)?;
+            reserve_storage_resource(
+                "ninep_sessions_per_device",
+                usage.sessions,
+                servicer.potential_session_growth(&pin.opportunity.frame),
+                self.resource_limits,
+            )?;
+            reserve_storage_resource(
+                "ninep_fids_per_session",
+                usage.fids,
+                servicer.potential_fid_growth(&pin.opportunity.frame, object_result),
+                self.resource_limits,
+            )?;
+            reserve_storage_resource(
+                "ninep_object_versions",
+                usage.object_versions,
+                u64::from(object_result),
+                self.resource_limits,
+            )?;
             servicer
                 .install_fault_directive(
                     pin.opportunity.request_icount,

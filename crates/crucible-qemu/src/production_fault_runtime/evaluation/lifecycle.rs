@@ -167,27 +167,32 @@ impl ProductionFaultRuntime {
             .checked_add(event_decisions.len())
             .and_then(|count| count.checked_add(direct_lifecycle_actions))
             .ok_or(FaultResourceLimitError::Representation {
-                field: "event_records",
+                field: "node_mutations_pending",
                 value: u64::MAX,
             })?;
         self.resource_limits.reserve(
-            "nodes",
+            "node_mutations_pending",
             0,
             u64::try_from(maximum).map_err(|_| FaultResourceLimitError::Representation {
-                field: "nodes",
+                field: "node_mutations_pending",
                 value: u64::MAX,
             })?,
         )?;
         let mut intents = Vec::new();
         intents.try_reserve_exact(maximum).map_err(|_| {
-            runtime_collection_reservation("nodes", 0, maximum, self.resource_limits)
+            runtime_collection_reservation(
+                "node_mutations_pending",
+                0,
+                maximum,
+                self.resource_limits,
+            )
         })?;
         for decision in &self.pending_node_lifecycle {
             self.resource_limits.reserve(
-                "nodes",
+                "node_mutations_pending",
                 u64::try_from(intents.len()).map_err(|_| {
                     FaultResourceLimitError::Representation {
-                        field: "nodes",
+                        field: "node_mutations_pending",
                         value: u64::MAX,
                     }
                 })?,
@@ -195,7 +200,12 @@ impl ProductionFaultRuntime {
             )?;
             intents.push(QemuNodeLifecycleIntent {
                 node: try_clone_ledger_node_id(&decision.node, || {
-                    runtime_collection_reservation("nodes", intents.len(), 1, self.resource_limits)
+                    runtime_collection_reservation(
+                        "node_mutations_pending",
+                        intents.len(),
+                        1,
+                        self.resource_limits,
+                    )
                 })?,
                 action: decision.action,
                 requested_transition: decision.requested_transition,
@@ -238,10 +248,10 @@ impl ProductionFaultRuntime {
                 .into());
             };
             self.resource_limits.reserve(
-                "nodes",
+                "node_mutations_pending",
                 u64::try_from(intents.len()).map_err(|_| {
                     FaultResourceLimitError::Representation {
-                        field: "nodes",
+                        field: "node_mutations_pending",
                         value: u64::MAX,
                     }
                 })?,
@@ -251,7 +261,7 @@ impl ProductionFaultRuntime {
                 node: NodeId {
                     name: try_clone_string(node.as_str(), || {
                         runtime_collection_reservation(
-                            "nodes",
+                            "node_mutations_pending",
                             intents.len(),
                             1,
                             self.resource_limits,

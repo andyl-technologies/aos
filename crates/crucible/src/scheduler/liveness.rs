@@ -503,7 +503,22 @@ impl Error for SchedulerError {}
 
 impl From<BackendError> for SchedulerError {
     fn from(error: BackendError) -> Self {
-        Self::Backend(error)
+        match error {
+            BackendError::ResourceLimit {
+                field,
+                current,
+                requested,
+                configured,
+                hard,
+            } => Self::ResourceLimit {
+                field,
+                current,
+                requested,
+                configured,
+                hard,
+            },
+            error => Self::Backend(error),
+        }
     }
 }
 

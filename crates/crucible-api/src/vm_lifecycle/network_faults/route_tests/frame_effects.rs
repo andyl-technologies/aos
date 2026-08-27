@@ -129,4 +129,20 @@ fn frame_effect_variants_mutate_production_frame_outcomes() {
         &topology,
     );
     assert!(recipient.is_dropped());
+
+    crate::vm_lifecycle::network_faults::record_production_effect_rows(
+        &[
+            crucible::model::EffectKind::NetworkProfileDelta,
+            crucible::model::EffectKind::NetworkPropagationDelay,
+            crucible::model::EffectKind::NetworkAccessDelay,
+            crucible::model::EffectKind::NetworkJitter,
+            crucible::model::EffectKind::NetworkFrameLoss,
+            crucible::model::EffectKind::NetworkDuplicate,
+            crucible::model::EffectKind::NetworkReorder,
+            crucible::model::EffectKind::NetworkPayloadTransform,
+            crucible::model::EffectKind::NetworkRecipientSubset,
+        ],
+        "frame-effect-outcome-matrix",
+        "delay+loss+duplication+ordering+payload+recipient-evidence",
+    );
 }

@@ -191,3 +191,73 @@ fn unsupported_object_result_shapes_are_rejected_before_installation() {
         );
     }
 }
+
+#[test]
+fn fault_resource_usage_tracks_sessions_fids_and_object_versions() {
+    let mut dev = device();
+    assert_eq!(
+        ok(dev.fault_resource_usage()),
+        NinepFaultResourceUsage {
+            sessions: 1,
+            fids: 0,
+            object_versions: 0,
+        }
+    );
+
+    let attach = tattach(2, 1);
+    assert_eq!(dev.potential_fid_growth(&attach, false), 1);
+    round_trip(
+        &mut dev,
+        0,
+        &tversion(1, MAX_MSIZE, codec::PROTOCOL_VERSION),
+    );
+    round_trip(&mut dev, 1, &attach);
+    assert_eq!(dev.potential_fid_growth(&attach, false), 0);
+
+    let update_id = [9; 32];
+    ok(dev.commit_visibility_update(
+        update_id,
+        file_object("/retained", 1, b"version-one"),
+        atomic_visibility(false),
+        NinepVisibilityRelease::AtNanos(0),
+        0,
+    ));
+    assert!(dev.contains_visibility_update(&update_id));
+    assert_eq!(
+        ok(dev.fault_resource_usage()),
+        NinepFaultResourceUsage {
+            sessions: 1,
+            fids: 1,
+            object_versions: 1,
+        }
+    );
+
+    let next_session = tversion(3, MAX_MSIZE, codec::PROTOCOL_VERSION);
+    assert_eq!(dev.potential_session_growth(&next_session), 1);
+    let stale_read = tread(4, 55, 0, 4);
+    install_result(
+        &mut dev,
+        2,
+        &stale_read,
+        NinepResultDirective::Stale(file_object("/stale", 2, b"stale")),
+    );
+    assert_eq!(
+        ok(dev.fault_resource_usage()),
+        NinepFaultResourceUsage {
+            sessions: 1,
+            fids: 1,
+            object_versions: 2,
+        }
+    );
+
+    round_trip(&mut dev, 3, &next_session);
+    assert_eq!(dev.potential_session_growth(&next_session), 0);
+    assert_eq!(
+        ok(dev.fault_resource_usage()),
+        NinepFaultResourceUsage {
+            sessions: 2,
+            fids: 0,
+            object_versions: 2,
+        }
+    );
+}

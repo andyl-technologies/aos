@@ -139,6 +139,62 @@ fn lifecycle_intent_preview_is_action_exact_and_ignores_active_hang_rules() {
 }
 
 #[test]
+fn lifecycle_intent_preview_enforces_the_authored_pending_mutation_limit() {
+    let terminal = lifecycle_action(NodeLifecycleTransition::Crash, NodeBootPolicy::Immediate);
+    let event = lifecycle_event(&terminal);
+    let limits = FaultResourceLimits {
+        node_mutations_pending: 1,
+        ..FaultResourceLimits::default()
+    };
+    let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), limits)
+        .unwrap_or_else(|error| panic!("bounded test plan should be valid: {error}"));
+    let mut runtime = ProductionFaultRuntime::new(
+        plan,
+        None,
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"lifecycle-pending-mutation-limit"),
+        test_host_manifests(),
+        &QemuNodeSet::new(),
+    )
+    .unwrap_or_else(|error| panic!("bounded runtime should initialize: {error}"));
+    for name in ["node-a", "node-b"] {
+        runtime.pending_node_lifecycle.push(
+            node_lifecycle_decision(
+                &NodeId {
+                    name: name.to_owned(),
+                },
+                terminal.id(),
+                &event,
+                runtime.pending_node_lifecycle.len(),
+                limits,
+            )
+            .unwrap_or_else(|error| panic!("terminal evidence should authenticate: {error}"))
+            .unwrap_or_else(|| panic!("terminal evidence should produce lifecycle work")),
+        );
+    }
+
+    assert!(matches!(
+        runtime.preview_node_lifecycle_intents(
+            FaultCoordinate {
+                virtual_nanos: 17,
+                retired_instructions: None,
+            },
+            0,
+            &mut QemuNodeSet::new(),
+        ),
+        Err(ProductionFaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "node_mutations_pending",
+                current: 0,
+                requested: 2,
+                configured: 1,
+                hard,
+            }
+        )) if hard == FaultResourceLimits::compiled_maximum().node_mutations_pending
+    ));
+}
+
+#[test]
 fn typed_lifecycle_evidence_rejects_policy_and_marker_mismatch() {
     let immediate = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
     let event = lifecycle_event(&immediate);
