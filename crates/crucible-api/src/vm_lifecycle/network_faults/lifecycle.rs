@@ -25,14 +25,22 @@ impl ProductionFaultNetworkInterceptor {
                 message: String::from("production fault evaluation cursor lock is poisoned"),
             })?
             .preview_next_sequence(coordinate.virtual_nanos)?;
-        self.runtime
+        let mut runtime = self
+            .runtime
             .lock()
             .map_err(|_| SchedulerError::BoundaryViolation {
                 message: String::from("production fault runtime lock is poisoned"),
-            })?
+            })?;
+        let limits = runtime.resource_limits();
+        runtime
             .preview_node_lifecycle_intents(coordinate, sequence.same_coordinate, nodes)
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("preview production lifecycle intent: {error}"),
+            .map_err(|error| match error {
+                crucible_qemu::ProductionFaultRuntimeError::ResourceLimit(error) => {
+                    super::super::quantum_loop::map_journal_limit(error, limits)
+                }
+                error => SchedulerError::BoundaryViolation {
+                    message: format!("preview production lifecycle intent: {error}"),
+                },
             })
     }
 }

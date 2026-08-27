@@ -329,6 +329,28 @@ impl QemuSharedBlockDevice {
         Ok(self.lock()?.storage_fault_state().actual_durable_frontier())
     }
 
+    /// Returns the aggregate number of pending storage operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lock or device-state error when the count cannot be read.
+    pub fn pending_operation_count(&self) -> Result<u64, QemuLiveBlockIoServicerError> {
+        self.pending_operation_usage()
+            .map(|(operations, _bytes)| operations)
+    }
+
+    /// Returns the aggregate pending count and largest retained request extent.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lock or device-state error when the usage cannot be read.
+    pub fn pending_operation_usage(&self) -> Result<(u64, u64), QemuLiveBlockIoServicerError> {
+        self.lock()?
+            .storage_fault_state()
+            .pending_operation_usage()
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
     /// Returns the number and digest of live volatile-cache entries.
     ///
     /// This observation does not alter replacement order or any durability
@@ -1498,6 +1520,33 @@ impl QemuLiveBlockIoServicer {
     /// thread panicked while holding the authoritative device lock.
     pub fn storage_fault_state(&self) -> Result<BlockFaultState, QemuLiveBlockIoServicerError> {
         Ok(self.device.lock()?.storage_fault_state().clone())
+    }
+
+    /// Returns the aggregate number of pending operations in the authoritative device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the device lock is poisoned or its retained
+    /// operation count cannot be represented.
+    pub fn storage_pending_operation_count(&self) -> Result<u64, QemuLiveBlockIoServicerError> {
+        self.storage_pending_operation_usage()
+            .map(|(operations, _bytes)| operations)
+    }
+
+    /// Returns the aggregate pending count and largest retained request extent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the device lock is poisoned or its retained usage
+    /// cannot be represented.
+    pub fn storage_pending_operation_usage(
+        &self,
+    ) -> Result<(u64, u64), QemuLiveBlockIoServicerError> {
+        self.device
+            .lock()?
+            .storage_fault_state()
+            .pending_operation_usage()
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 
     /// Restores an exact state captured before an uncommitted host transaction.

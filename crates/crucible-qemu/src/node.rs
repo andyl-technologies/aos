@@ -1332,12 +1332,14 @@ impl QemuNode {
             ),
         }
         .map_err(|source| {
-            if let Some((requested, configured)) = source.fault_result_storage {
+            if let Some((requested, configured)) = source.fault_result_storage_coordinates() {
                 QemuNodeError::FaultResultStorage {
                     requested: u64::from(requested),
                     configured: u64::from(configured),
                 }
-            } else if let Some((current, requested, configured)) = source.fault_event_storage {
+            } else if let Some((current, requested, configured)) =
+                source.fault_event_storage_coordinates()
+            {
                 QemuNodeError::FaultEventStorage {
                     current,
                     requested,

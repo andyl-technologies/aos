@@ -20,6 +20,10 @@ use crate::model::{
 
 use super::*;
 
+#[path = "plan_world_resource_limits.rs"]
+mod world_resource_limits;
+use world_resource_limits::{reserve_usize, validate_world_resource_limits};
+
 /// Exact maximum signal graphs in one scenario plan.
 ///
 /// Public v2 authoring owns one flat `plan.signal` graph. Independent physical
@@ -303,6 +307,7 @@ impl FaultSignalPlan {
         &self,
         world: &World,
     ) -> Result<(), FaultSignalAuthoringError> {
+        validate_world_resource_limits(self.resource_limits, world)?;
         let icount_shift = world
             .vm_nodes()
             .iter()
@@ -388,29 +393,6 @@ impl FaultSignalPlan {
             })
             .collect()
     }
-}
-
-fn reserve_usize(
-    limits: FaultResourceLimits,
-    field: &'static str,
-    current: usize,
-    requested: usize,
-) -> Result<(), FaultSignalPlanError> {
-    let current = u64::try_from(current).map_err(|_| {
-        FaultSignalPlanError::ResourceLimit(FaultResourceLimitError::Representation {
-            field,
-            value: u64::MAX,
-        })
-    })?;
-    let requested = u64::try_from(requested).map_err(|_| {
-        FaultSignalPlanError::ResourceLimit(FaultResourceLimitError::Representation {
-            field,
-            value: u64::MAX,
-        })
-    })?;
-    limits
-        .reserve(field, current, requested)
-        .map_err(FaultSignalPlanError::ResourceLimit)
 }
 
 fn validate_storage_effect_policy_references(

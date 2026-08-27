@@ -989,6 +989,7 @@ const fn backend_error_rejection_kind(error: &BackendError) -> CommandRejectionK
             CommandRejectionKind::Unsupported
         }
         BackendError::Rejected { .. } => CommandRejectionKind::InvalidArgument,
+        BackendError::ResourceLimit { .. } => CommandRejectionKind::Internal,
     }
 }
 

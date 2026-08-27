@@ -112,5 +112,6 @@ pub(in super::super) const fn is_recoverable_backend_rejection(error: &BackendEr
         BackendError::NotImplemented { .. }
         | BackendError::Unsupported { .. }
         | BackendError::Rejected { .. } => true,
+        BackendError::ResourceLimit { .. } => false,
     }
 }

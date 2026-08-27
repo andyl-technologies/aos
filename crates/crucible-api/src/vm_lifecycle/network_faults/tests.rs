@@ -856,6 +856,7 @@ fn shared_medium_checkpoint_joins_pending_frames_and_hashes_every_reservation_fi
         opportunity,
         producer: object_id("left"),
         arbitration_key: vec![0, 1],
+        bytes: 1,
         arrival_nanos: 10,
         start_nanos: 20,
         finish_nanos: 30,

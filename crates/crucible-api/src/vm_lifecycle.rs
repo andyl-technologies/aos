@@ -1382,6 +1382,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
             Arc::clone(&runtime),
             Arc::clone(&cursor),
             Arc::clone(&storage_fault_observations),
+            source.plan().fault_signals().resource_limits(),
             source.world().fault_topology().clone(),
             source.world().links().to_vec(),
         );
@@ -1450,6 +1451,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
                     Arc::clone(&storage_fault_observations),
                     source.world().clone(),
                     ninep.target.clone(),
+                    source.plan().fault_signals().resource_limits(),
                     first.icount_shift,
                 )),
             )

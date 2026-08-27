@@ -2152,15 +2152,18 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
         ))
     });
     assert!(
-        validate_network_adapter_checkpoint(&NetworkAdapterCheckpoint {
-            semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
-            coordinate: Some(release),
-            coordinate_sequence: 0,
-            journal_sequence: 1,
-            observations: super::super::storage_faults::ProductionFaultObservationJournal::default(
-            ),
-            effect_state: overlapping_ledger,
-        })
+        validate_network_adapter_checkpoint(
+            &NetworkAdapterCheckpoint {
+                semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
+                coordinate: Some(release),
+                coordinate_sequence: 0,
+                journal_sequence: 1,
+                observations:
+                    super::super::storage_faults::ProductionFaultObservationJournal::default(),
+                effect_state: overlapping_ledger,
+            },
+            FaultResourceLimits::default()
+        )
         .is_err()
     );
 
@@ -2172,15 +2175,18 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
         .reservations[0]
         .expiry_nanos += 1;
     assert!(
-        validate_network_adapter_checkpoint(&NetworkAdapterCheckpoint {
-            semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
-            coordinate: Some(release),
-            coordinate_sequence: 0,
-            journal_sequence: 1,
-            observations: super::super::storage_faults::ProductionFaultObservationJournal::default(
-            ),
-            effect_state: mismatched_expiry,
-        })
+        validate_network_adapter_checkpoint(
+            &NetworkAdapterCheckpoint {
+                semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
+                coordinate: Some(release),
+                coordinate_sequence: 0,
+                journal_sequence: 1,
+                observations:
+                    super::super::storage_faults::ProductionFaultObservationJournal::default(),
+                effect_state: mismatched_expiry,
+            },
+            FaultResourceLimits::default()
+        )
         .is_err()
     );
 
@@ -2193,15 +2199,18 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
     reservation.bytes = 2;
     reservation.bundle.length_bytes = 2;
     assert!(
-        validate_network_adapter_checkpoint(&NetworkAdapterCheckpoint {
-            semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
-            coordinate: Some(release),
-            coordinate_sequence: 0,
-            journal_sequence: 1,
-            observations: super::super::storage_faults::ProductionFaultObservationJournal::default(
-            ),
-            effect_state: over_byte_capacity,
-        })
+        validate_network_adapter_checkpoint(
+            &NetworkAdapterCheckpoint {
+                semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
+                coordinate: Some(release),
+                coordinate_sequence: 0,
+                journal_sequence: 1,
+                observations:
+                    super::super::storage_faults::ProductionFaultObservationJournal::default(),
+                effect_state: over_byte_capacity,
+            },
+            FaultResourceLimits::default()
+        )
         .is_err()
     );
 
@@ -2230,15 +2239,18 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
             ))
     });
     assert!(
-        validate_network_adapter_checkpoint(&NetworkAdapterCheckpoint {
-            semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
-            coordinate: Some(release),
-            coordinate_sequence: 0,
-            journal_sequence: 1,
-            observations: super::super::storage_faults::ProductionFaultObservationJournal::default(
-            ),
-            effect_state: over_bundle_capacity,
-        })
+        validate_network_adapter_checkpoint(
+            &NetworkAdapterCheckpoint {
+                semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
+                coordinate: Some(release),
+                coordinate_sequence: 0,
+                journal_sequence: 1,
+                observations:
+                    super::super::storage_faults::ProductionFaultObservationJournal::default(),
+                effect_state: over_bundle_capacity,
+            },
+            FaultResourceLimits::default()
+        )
         .is_err()
     );
 
@@ -2370,14 +2382,6 @@ fn completed_contact_ledgers_fold_into_the_settled_cursor() {
 
 #[test]
 fn direct_contact_counter_overflow_fails_before_mutation() {
-    assert!(network_contact_service_state_capacity_allows(
-        HARD_CONTACT_SERVICE_STATES - 1,
-        1,
-    ));
-    assert!(!network_contact_service_state_capacity_allows(
-        HARD_CONTACT_SERVICE_STATES,
-        1,
-    ));
     let topology = custody_topology(crucible::model::NetworkPolicyOverflow::DropNewest, 100);
     let plan = topology
         .network_policy_artifact(&id("contact-plan"))
@@ -2420,6 +2424,7 @@ fn direct_contact_counter_overflow_fails_before_mutation() {
             1,
             ContentHash::from_bytes(b"overflow-direct-contact"),
             &action,
+            FaultResourceLimits::default(),
         ) {
             Ok(_) => panic!("direct contact counter overflow must fail"),
             Err(error) => error,
@@ -2933,3 +2938,5 @@ fn custody_resume_does_not_charge_other_queue_effects_twice() {
 
 #[path = "route_tests/production_conformance.rs"]
 mod production_conformance;
+#[path = "route_tests/resource_limits.rs"]
+mod resource_limits;
