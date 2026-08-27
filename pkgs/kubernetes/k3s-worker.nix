@@ -39,9 +39,10 @@
 in
   mkK3sExposePackage {
     pname = "k3s-worker";
+    role = "worker";
     description = "Lightweight Kubernetes (agent / worker)";
     command = "agent";
-    requiredEnv = ["K3S_TOKEN" "K3S_URL"];
+    requiredEnv = ["K3S_URL"];
     firewall = {
       allowedTCP = [10250];
       allowedUDP = [8472];

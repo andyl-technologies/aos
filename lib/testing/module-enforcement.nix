@@ -773,6 +773,57 @@
     .artifacts
     .priority
     == "package";
+  runtimeDirectGetsOperatorPriority =
+    (lib.evalModules {
+      modules = [
+        ({lib, ...}: {
+          options.artifacts = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = {};
+          };
+        })
+      ];
+      packageModules = [(packageRecord {config.artifacts.priority = "package";})];
+      runtimeModules = [{config.artifacts.priority = "runtime";}];
+      inherit lib;
+    })
+    .config
+    .artifacts
+    .priority
+    == "runtime";
+  runtimeImportKeepsNormalPriority =
+    (lib.evalModules {
+      modules = [
+        ({lib, ...}: {
+          options.artifacts = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = {};
+          };
+        })
+      ];
+      packageModules = [(packageRecord {config.artifacts.priority = lib.mkOverride 80 "package";})];
+      runtimeModules = [{imports = [{config.artifacts.priority = "runtime import";}];}];
+      inherit lib;
+    })
+    .config
+    .artifacts
+    .priority
+    == "package";
+  runtimeProvisioningRejected =
+    !(builtins.tryEval ((lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.aos.provisioning.test = lib.mkOption {type = lib.types.str;};
+          })
+        ];
+        runtimeModules = [{config.aos.provisioning.test = "forbidden";}];
+        inherit lib;
+      })
+      .config
+      .aos
+      .provisioning
+      .test))
+    .success;
 
   # --- types.uniqEnum (owned shared scalar) ---------------------------
   uniqEnumAgrees =
@@ -1096,6 +1147,10 @@
       {
         ok = hostImportedOwner && hostImportedNestedValue && hostImportKeepsNormalPriority;
         message = "host import ownership and priority";
+      }
+      {
+        ok = runtimeDirectGetsOperatorPriority && runtimeImportKeepsNormalPriority && runtimeProvisioningRejected;
+        message = "runtime module priority and provisioning confinement";
       }
       {
         ok = uniqEnumAgrees && uniqEnumRejectsConflict && uniqEnumRejectsBadValue;

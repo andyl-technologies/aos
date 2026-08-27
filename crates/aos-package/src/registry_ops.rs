@@ -94,12 +94,12 @@ use crate::types::{
     ConfigOutputMeta, ConfinementClass, ExposeArtifactMeta, ExposeMeta, FEATURE_ATTESTATION_V1,
     FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1,
     FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1,
-    FEATURE_RECOVERY_UKIS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1,
-    ModuleAbiCompat, OwnedRoot, PACKAGE_META_FORMAT, PermissionsMeta, RecoveryBundleComponent,
-    RecoveryBundleComponentId, RecoveryBundleManifest, RecoveryUkiEntry, RegistryConfig,
-    RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig, RootContribution, SbatEntry,
-    SigningKeySource, SigningKeySpec, SysrootUkiEntry, UkiSlot, package_name_bucket,
+    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_OPTIONAL_CREDENTIALS_V1,
+    FEATURE_PERMISSIONS_V1, FEATURE_RECOVERY_UKIS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1,
+    FEATURE_UKI_SLOTS_V1, ModuleAbiCompat, OwnedRoot, PACKAGE_META_FORMAT, PermissionsMeta,
+    RecoveryBundleComponent, RecoveryBundleComponentId, RecoveryBundleManifest, RecoveryUkiEntry,
+    RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig, RootContribution,
+    SbatEntry, SigningKeySource, SigningKeySpec, SysrootUkiEntry, UkiSlot, package_name_bucket,
     rfc0001_metadata_requires_provenance, validate_attestation_meta, validate_branch_name,
     validate_channel_name, validate_config_module_meta, validate_config_output_meta,
     validate_expose_artifact_meta, validate_expose_meta_for_package, validate_git_ref_name,
@@ -164,6 +164,8 @@ struct PublishConfigModuleManifest {
     owns_roots: Vec<OwnedRoot>,
     #[serde(default)]
     contributes: Vec<RootContribution>,
+    #[serde(default)]
+    artifacts: crate::types::ConfigModuleArtifacts,
     #[serde(default)]
     provides_capabilities: Vec<String>,
     #[serde(default)]
@@ -2681,6 +2683,7 @@ fn read_publish_config_module(
         requires,
         owns_roots,
         contributes,
+        artifacts: authored.artifacts,
         provides_capabilities,
     };
     validate_config_output_meta(&module.config_output)?;
@@ -8159,6 +8162,11 @@ fn package_platform_table(
         }
         if !manifest.expose.config.is_empty() {
             required_features.push(toml::Value::String(FEATURE_CONFIG_V1.to_string()));
+        }
+        if manifest.expose.config.has_optional_credentials() {
+            required_features.push(toml::Value::String(
+                FEATURE_OPTIONAL_CREDENTIALS_V1.to_string(),
+            ));
         }
         if manifest.expose.config.has_unit_reconciliation() {
             required_features.push(toml::Value::String(FEATURE_RELOAD_V1.to_string()));
@@ -15962,6 +15970,7 @@ mod tests {
                 contributable: vec!["allowedTCPPorts".to_string()],
             }],
             contributes: vec![],
+            artifacts: Default::default(),
             provides_capabilities: vec!["system.capabilities.dns-resolver".to_string()],
         }
     }

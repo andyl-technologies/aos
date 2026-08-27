@@ -153,8 +153,12 @@ pub struct ConfigManifest {
 }
 
 impl ConfigManifest {
-    /// The only schema tag this materializer understands.
-    pub const SCHEMA: &'static str = "aos.config-manifest/v1";
+    /// Legacy manifest schema without runtime operator modules.
+    pub const SCHEMA_V1: &'static str = "aos.config-manifest/v1";
+    /// Manifest schema binding a generation-pinned runtime module set.
+    pub const SCHEMA_V2: &'static str = "aos.config-manifest/v2";
+    /// Default schema emitted for image and host-only manifests.
+    pub const SCHEMA: &'static str = Self::SCHEMA_V1;
 
     /// Validates invariants that Serde's structural checks cannot express.
     ///
@@ -163,12 +167,25 @@ impl ConfigManifest {
     /// Returns an error for a wrong schema, malformed paths or modes, duplicate
     /// ordered records, inconsistent ABI/input data, or an invalid graph.
     pub fn validate(&self) -> Result<()> {
-        if self.schema != Self::SCHEMA {
+        if !matches!(self.schema.as_str(), Self::SCHEMA_V1 | Self::SCHEMA_V2) {
             bail!(
                 "unsupported config-manifest schema {:?} (expected {:?})",
                 self.schema,
-                Self::SCHEMA
+                format!("{} or {}", Self::SCHEMA_V1, Self::SCHEMA_V2)
             );
+        }
+        match (self.schema.as_str(), &self.inputs.runtime_modules) {
+            (Self::SCHEMA_V1, None) if self.inputs.expected_current_generation.is_none() => {}
+            (Self::SCHEMA_V1, Some(_)) => bail!("config-manifest/v1 cannot carry runtime_modules"),
+            (Self::SCHEMA_V1, None) => bail!("config-manifest/v1 cannot carry transaction state"),
+            (Self::SCHEMA_V2, Some(runtime)) => {
+                runtime.validate()?;
+                if self.inputs.expected_current_generation.is_none() {
+                    bail!("config-manifest/v2 requires expected_current_generation");
+                }
+            }
+            (Self::SCHEMA_V2, None) => bail!("config-manifest/v2 requires runtime_modules"),
+            _ => unreachable!(),
         }
         if self.module_abi != self.inputs.base_lib.module_abi {
             bail!("manifest module_abi does not match inputs.base_lib.module_abi");
@@ -1137,8 +1154,69 @@ pub struct ManifestInputs {
     pub config_modules: ConfigModulesInput,
     /// Exact authorized host module.
     pub host_nix: HostNixInput,
+    /// Immutable runtime operator module set, present only in manifest v2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_modules: Option<RuntimeModulesInput>,
+    /// Active generation observed before this candidate evaluation began.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_current_generation: Option<u32>,
     /// Canonical metadata facts.
     pub instance_facts: InstanceFactsInput,
+}
+
+/// Identity and trust evidence for one immutable runtime operator module set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeModulesInput {
+    /// Descriptor schema covered by the set identity.
+    pub schema: String,
+    /// `local-root` or `signed`.
+    pub trust_mode: String,
+    /// Recursive source-root store path.
+    pub store_path: String,
+    /// Canonical NAR hash of the complete source tree, including helpers.
+    pub nar_hash: String,
+    /// Ordered relative direct module entrypoints.
+    pub entrypoints: Vec<String>,
+    /// Trusted signer fingerprint in signed mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer_key: Option<String>,
+}
+
+impl RuntimeModulesInput {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.schema != "aos.runtime-module-set/v1" {
+            bail!("unsupported runtime module set schema {:?}", self.schema);
+        }
+        if !matches!(self.trust_mode.as_str(), "local-root" | "signed") {
+            bail!(
+                "unsupported runtime module trust mode {:?}",
+                self.trust_mode
+            );
+        }
+        if (self.trust_mode == "signed") != self.signer_key.is_some() {
+            bail!("signed runtime module sets require exactly one signer identity");
+        }
+        validate_canonical_store_path(&self.store_path)?;
+        validate_content_sha256(&self.nar_hash)?;
+        if self.entrypoints.is_empty() {
+            bail!("runtime module set must contain at least one entrypoint");
+        }
+        let mut seen = BTreeSet::new();
+        for entry in &self.entrypoints {
+            let path = Path::new(entry);
+            if path.is_absolute()
+                || path.extension().and_then(|value| value.to_str()) != Some("nix")
+                || path
+                    .components()
+                    .any(|component| !matches!(component, std::path::Component::Normal(_)))
+                || !seen.insert(entry)
+            {
+                bail!("runtime module entrypoint is unsafe or duplicated: {entry:?}");
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Base library input identity.
@@ -2478,6 +2556,87 @@ mod tests {
         let error = serde_json::from_value::<ConfigManifest>(value)
             .expect_err("config is a mandatory manifest field");
         assert!(error.to_string().contains("missing field `config`"));
+    }
+
+    #[test]
+    fn manifest_v2_binds_runtime_module_set_and_transaction_base() {
+        let mut manifest =
+            manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
+        manifest.schema = ConfigManifest::SCHEMA_V2.to_string();
+        manifest.inputs.runtime_modules = Some(RuntimeModulesInput {
+            schema: "aos.runtime-module-set/v1".to_string(),
+            trust_mode: "local-root".to_string(),
+            store_path: "/nix/store/99999999999999999999999999999999-runtime-modules".to_string(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            entrypoints: vec![
+                "10-packages.nix".to_string(),
+                "nested/20-services.nix".to_string(),
+            ],
+            signer_key: None,
+        });
+        manifest.inputs.expected_current_generation = Some(7);
+
+        manifest.validate().unwrap();
+        let round_trip: ConfigManifest =
+            serde_json::from_value(serde_json::to_value(&manifest).unwrap()).unwrap();
+        assert_eq!(round_trip, manifest);
+    }
+
+    #[test]
+    fn manifest_versions_reject_mixed_runtime_state() {
+        let mut manifest =
+            manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
+        manifest.inputs.expected_current_generation = Some(1);
+        assert!(manifest.validate().unwrap_err().to_string().contains("v1"));
+
+        manifest.schema = ConfigManifest::SCHEMA_V2.to_string();
+        manifest.inputs.expected_current_generation = None;
+        assert!(
+            manifest
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("runtime_modules")
+        );
+    }
+
+    #[test]
+    fn runtime_module_descriptor_rejects_unsafe_or_duplicate_entrypoints() {
+        let mut manifest =
+            manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
+        manifest.schema = ConfigManifest::SCHEMA_V2.to_string();
+        manifest.inputs.expected_current_generation = Some(1);
+        manifest.inputs.runtime_modules = Some(RuntimeModulesInput {
+            schema: "aos.runtime-module-set/v1".to_string(),
+            trust_mode: "local-root".to_string(),
+            store_path: "/nix/store/99999999999999999999999999999999-runtime-modules".to_string(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            entrypoints: vec!["../escape.nix".to_string()],
+            signer_key: None,
+        });
+        assert!(
+            manifest
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("unsafe")
+        );
+
+        manifest
+            .inputs
+            .runtime_modules
+            .as_mut()
+            .unwrap()
+            .entrypoints = vec!["same.nix".to_string(), "same.nix".to_string()];
+        assert!(
+            manifest
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("duplicated")
+        );
     }
 
     #[test]

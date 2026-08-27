@@ -187,6 +187,7 @@ fn owner_module(root: &str, contributable: &[&str], abi: ModuleAbiCompat) -> Con
         requires: vec![],
         owns_roots,
         contributes: vec![],
+        artifacts: Default::default(),
         provides_capabilities: vec![],
     }
 }
@@ -265,6 +266,7 @@ fn signed_release_identity_flows_from_resolver_members_into_manifest_input() {
 fn inputs(seed: Vec<WorkingSetMember>, abi: u32, cap: Option<u32>) -> FixpointInputs {
     FixpointInputs {
         host_nix: PathBuf::from("/run/aos-eval/host.nix"),
+        runtime_modules: Vec::new(),
         base_lib: PathBuf::from("/nix/store/hash-aos-base-lib"),
         facts_json: None,
         seed_set: seed,
@@ -1240,6 +1242,7 @@ fn signed_host_nix_policy_fails_closed_with_no_anchors() {
     std::fs::write(&graph, b"stale graph").unwrap();
     let cmd = EvalCommand {
         host_nix,
+        runtime_modules: Vec::new(),
         base_lib: tmp.path().join("base-lib"),
         facts_json: None,
         desired: None,
@@ -1268,6 +1271,7 @@ fn platform_host_nix_policy_needs_no_image_baked_key() {
     std::fs::write(&host_nix, b"{ }").unwrap();
     let cmd = EvalCommand {
         host_nix,
+        runtime_modules: Vec::new(),
         base_lib: tmp.path().join("base-lib"),
         facts_json: None,
         desired: None,
@@ -1291,6 +1295,7 @@ fn host_package_selection_rejects_a_mutable_input_path() {
     std::fs::write(&host_nix, b"{ aos.apm.desiredPackages = []; }\n").unwrap();
     let cmd = EvalCommand {
         host_nix,
+        runtime_modules: Vec::new(),
         base_lib: PathBuf::from("/nix/store/hash-aos-base-lib"),
         facts_json: None,
         desired: None,
@@ -1318,6 +1323,7 @@ fn image_default_host_accepts_only_the_empty_module_without_operator_keys() {
     std::fs::write(&host_nix, b"{}\n").unwrap();
     let mut cmd = EvalCommand {
         host_nix: host_nix.clone(),
+        runtime_modules: Vec::new(),
         base_lib: tmp.path().join("base-lib"),
         facts_json: None,
         desired: None,

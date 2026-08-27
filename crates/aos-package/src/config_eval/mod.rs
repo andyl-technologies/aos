@@ -41,6 +41,7 @@ pub mod diagnostics;
 pub mod dry_run;
 pub mod materialize;
 pub mod runtime;
+pub mod runtime_modules;
 pub mod stock;
 pub mod system_roots;
 
@@ -125,6 +126,12 @@ pub struct PackageAuthorization {
     pub owns: Vec<String>,
     /// Allowed foreign writes, keyed by root and expressed as relative paths.
     pub contributes: BTreeMap<String, Vec<String>>,
+    /// Exact base-owned artifact leaves this package may materialize.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::types::ConfigModuleArtifacts::is_empty"
+    )]
+    pub artifacts: crate::types::ConfigModuleArtifacts,
 }
 
 impl PackageAuthorization {
@@ -148,7 +155,11 @@ impl PackageAuthorization {
             paths.sort();
             paths.dedup();
         }
-        Self { owns, contributes }
+        Self {
+            owns,
+            contributes,
+            artifacts: module.artifacts.clone(),
+        }
     }
 }
 
@@ -179,6 +190,8 @@ impl WorkingSetMember {
 pub struct FixpointInputs {
     /// The delivered leaf `host.nix` path.
     pub host_nix: PathBuf,
+    /// Ordered, generation-pinned runtime operator module entrypoints.
+    pub runtime_modules: Vec<PathBuf>,
     /// The in-image, ABI-pinned module library.
     pub base_lib: PathBuf,
     /// Optional normalized metadata facts consumed as a typed Nix module.
@@ -507,6 +520,8 @@ fn render_trace(trace: &[IterRecord], iterations: u32) -> String {
 pub struct EvalAttempt<'a> {
     /// The trusted leaf `host.nix`, passed as an operator-provenance module.
     pub host_nix: &'a Path,
+    /// Ordered direct runtime operator module entrypoints.
+    pub runtime_modules: &'a [PathBuf],
     /// The in-image module library.
     pub base_lib: &'a Path,
     /// Optional normalized metadata facts file.
@@ -668,6 +683,7 @@ where
 
         let attempt = EvalAttempt {
             host_nix: &inputs.host_nix,
+            runtime_modules: &inputs.runtime_modules,
             base_lib: &inputs.base_lib,
             facts_json: inputs.facts_json.as_deref(),
             working_set: &working_set,
@@ -1111,6 +1127,8 @@ fn resolve_one<R: ConfigModuleResolver>(
 pub struct EvalCommand {
     /// The delivered leaf `host.nix` path.
     pub host_nix: PathBuf,
+    /// Ordered runtime operator module entrypoints from one immutable set.
+    pub runtime_modules: Vec<PathBuf>,
     /// The in-image module library store path.
     pub base_lib: PathBuf,
     /// Optional normalized metadata facts file.
@@ -1306,6 +1324,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         }
         let inputs = FixpointInputs {
             host_nix: cmd.host_nix.clone(),
+            runtime_modules: cmd.runtime_modules.clone(),
             base_lib: cmd.base_lib.clone(),
             facts_json: cmd.facts_json.clone().filter(|path| path.is_file()),
             seed_set,
@@ -1727,51 +1746,134 @@ fn enrich_manifest(
     let (config_registry, config_release_tag, config_tag_signer_key, config_realization) =
         config_module_release_identity(&outcome.working_set)?;
     let host_store_path = add_fixed_input_to_store(&cmd.host_nix)?;
+    let runtime_modules = runtime_module_manifest_input(&cmd.runtime_modules)?;
 
-    object.insert(
-        "inputs".into(),
-        serde_json::json!({
-            "base_lib": {
-                "store_path": cmd.base_lib,
-                "abi_hash": base_abi_hash,
-                "module_abi": cmd.module_abi,
-            },
-            "evaluator": {
-                "store_path": evaluator_store_path,
-                "store_hash": evaluator_store_hash,
-            },
-            "config_modules": {
-                "registry": config_registry,
-                "release_tag": config_release_tag,
-                "tag_signer_key": config_tag_signer_key,
-                "realization": config_realization,
-                "closure_hash": config_closure_hash,
-                "count": config_outputs.len(),
-                "store_paths": config_outputs,
-                "nar_hashes": config_nar_hashes,
-                "package_names": config_packages,
-                "origins": config_origins,
-                "module_abi_compat": config_abi_compat,
-                "authorizations": config_authorizations,
-            },
-            "host_nix": {
-                "content_hash": sha256_identity(&host_bytes),
-                "trust_mode": trust_mode,
-                "platform": platform,
-                "signer_key": signer_key,
-                "store_path": host_store_path,
-            },
-            "instance_facts": {
-                "facts_hash": sha256_identity(&facts_identity),
-                "platform": platform,
-                "store_path": facts_store_path,
-            },
-        }),
-    );
+    if runtime_modules.is_some() {
+        object.insert(
+            "schema".into(),
+            serde_json::Value::String(materialize::ConfigManifest::SCHEMA_V2.to_string()),
+        );
+    }
+
+    let mut inputs = serde_json::json!({
+        "base_lib": {
+            "store_path": cmd.base_lib,
+            "abi_hash": base_abi_hash,
+            "module_abi": cmd.module_abi,
+        },
+        "evaluator": {
+            "store_path": evaluator_store_path,
+            "store_hash": evaluator_store_hash,
+        },
+        "config_modules": {
+            "registry": config_registry,
+            "release_tag": config_release_tag,
+            "tag_signer_key": config_tag_signer_key,
+            "realization": config_realization,
+            "closure_hash": config_closure_hash,
+            "count": config_outputs.len(),
+            "store_paths": config_outputs,
+            "nar_hashes": config_nar_hashes,
+            "package_names": config_packages,
+            "origins": config_origins,
+            "module_abi_compat": config_abi_compat,
+            "authorizations": config_authorizations,
+        },
+        "host_nix": {
+            "content_hash": sha256_identity(&host_bytes),
+            "trust_mode": trust_mode,
+            "platform": platform,
+            "signer_key": signer_key,
+            "store_path": host_store_path,
+        },
+        "instance_facts": {
+            "facts_hash": sha256_identity(&facts_identity),
+            "platform": platform,
+            "store_path": facts_store_path,
+        },
+    });
+    if let Some(runtime_modules) = runtime_modules {
+        inputs
+            .as_object_mut()
+            .context("manifest inputs did not serialize as an object")?
+            .insert("runtime_modules".into(), runtime_modules);
+        let expected =
+            current_config_generation_number(Path::new("/var/lib/profiles/system/state.json"))?;
+        inputs
+            .as_object_mut()
+            .context("manifest inputs did not serialize as an object")?
+            .insert(
+                "expected_current_generation".into(),
+                serde_json::json!(expected),
+            );
+    }
+    object.insert("inputs".into(), inputs);
     let manifest: materialize::ConfigManifest =
         serde_json::from_value(raw).context("validating config manifest structure")?;
     manifest.validate()?;
     Ok(manifest)
+}
+
+fn current_config_generation_number(state_path: &Path) -> Result<u32> {
+    match std::fs::read(state_path) {
+        Ok(bytes) => {
+            let state: crate::types::ConfigGenerationState = serde_json::from_slice(&bytes)
+                .with_context(|| {
+                    format!("parsing config generation state {}", state_path.display())
+                })?;
+            Ok(state.current)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error).with_context(|| format!("reading {}", state_path.display())),
+    }
+}
+
+fn runtime_module_manifest_input(paths: &[PathBuf]) -> Result<Option<serde_json::Value>> {
+    if paths.is_empty() {
+        return Ok(None);
+    }
+
+    let mut root: Option<&str> = None;
+    let mut entrypoints = Vec::with_capacity(paths.len());
+    for path in paths {
+        let text = path
+            .to_str()
+            .with_context(|| format!("runtime module path is not UTF-8: {}", path.display()))?;
+        let candidate_root = manifest_store_root(text).with_context(|| {
+            format!("runtime module is not beneath a canonical store root: {text}")
+        })?;
+        if let Some(expected) = root {
+            anyhow::ensure!(
+                expected == candidate_root,
+                "runtime module entrypoints must share one immutable source root"
+            );
+        } else {
+            root = Some(candidate_root);
+        }
+        let relative = path
+            .strip_prefix(candidate_root)
+            .with_context(|| format!("deriving runtime module entrypoint for {text}"))?;
+        let relative = relative
+            .strip_prefix("/")
+            .unwrap_or(relative)
+            .to_str()
+            .context("runtime module entrypoint is not UTF-8")?
+            .to_string();
+        entrypoints.push(relative);
+    }
+    anyhow::ensure!(
+        entrypoints.windows(2).all(|pair| pair[0] < pair[1]),
+        "runtime module entrypoints must be sorted and deduplicated"
+    );
+    let root = root.context("runtime module set unexpectedly had no source root")?;
+    let nar_hash = retained_store_path_nar_hash(Path::new(root))?;
+    Ok(Some(serde_json::json!({
+        "schema": "aos.runtime-module-set/v1",
+        "trust_mode": "local-root",
+        "store_path": root,
+        "nar_hash": nar_hash,
+        "entrypoints": entrypoints,
+    })))
 }
 
 /// Adds exact runtime pins and their ownership to an evaluated manifest value.
@@ -2302,6 +2404,7 @@ pub fn reeval_cross_abi(
     eval_root: PathBuf,
     out: PathBuf,
     verbose: u8,
+    expected_current_generation: Option<u32>,
 ) -> Result<()> {
     remove_if_present(&out)?;
     let graph_out = out.with_file_name("graph.json");
@@ -2317,9 +2420,11 @@ pub fn reeval_cross_abi(
     validate_cross_abi_inputs(retained, running_base_lib, &source)?;
 
     let working_set = retained_cross_abi_working_set(&source, retained)?;
+    let runtime_modules = retained_runtime_modules(&source)?;
     let evaluator = stock::StockNixEvaluator::new(eval_root, verbose);
     let attempt = EvalAttempt {
         host_nix: Path::new(&retained.host_nix_ref),
+        runtime_modules: &runtime_modules,
         base_lib: running_base_lib,
         facts_json: Some(Path::new(&retained.facts_ref)),
         working_set: &working_set,
@@ -2360,6 +2465,18 @@ pub fn reeval_cross_abi(
     inputs.base_lib.abi_hash = read_base_lib_abi_hash(running_base_lib, retained.to_module_abi)?;
     inputs.evaluator.store_path = evaluator_store_path.to_string_lossy().into_owned();
     inputs.evaluator.store_hash = evaluator_store_hash(&evaluator_path)?;
+    if inputs.runtime_modules.is_some() {
+        inputs.expected_current_generation = Some(
+            expected_current_generation
+                .context("runtime-module re-evaluation requires the active generation snapshot")?,
+        );
+    }
+    if inputs.runtime_modules.is_some() {
+        object.insert(
+            "schema".into(),
+            serde_json::Value::String(materialize::ConfigManifest::SCHEMA_V2.to_string()),
+        );
+    }
     object.insert("inputs".into(), serde_json::to_value(inputs)?);
 
     let manifest: materialize::ConfigManifest =
@@ -2374,6 +2491,33 @@ pub fn reeval_cross_abi(
     std::fs::write(&graph_out, serde_json::to_vec(&manifest.graph)?)
         .with_context(|| format!("writing cross-ABI graph {}", graph_out.display()))?;
     Ok(())
+}
+
+fn retained_runtime_modules(manifest: &materialize::ConfigManifest) -> Result<Vec<PathBuf>> {
+    let Some(runtime) = &manifest.inputs.runtime_modules else {
+        return Ok(Vec::new());
+    };
+    let root = Path::new(&runtime.store_path);
+    let actual = retained_store_path_nar_hash(root)
+        .with_context(|| format!("hashing retained runtime module set {}", root.display()))?;
+    anyhow::ensure!(
+        crate::verify::sha256_hashes_equal(&actual, &runtime.nar_hash)?,
+        "retained runtime module set {} does not match manifest NAR hash",
+        root.display()
+    );
+    runtime
+        .entrypoints
+        .iter()
+        .map(|entry| {
+            let path = root.join(entry);
+            anyhow::ensure!(
+                path.is_file(),
+                "retained runtime module entrypoint is absent: {}",
+                path.display()
+            );
+            Ok(path)
+        })
+        .collect()
 }
 
 fn retained_cross_abi_working_set(
@@ -2606,16 +2750,26 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
         .context("locking the base library for host package selection")?;
     let host = stock::locked_store_input(&cmd.host_nix, None)
         .context("locking host.nix for host package selection")?;
+    let runtime_modules = cmd
+        .runtime_modules
+        .iter()
+        .map(|path| {
+            stock::locked_store_input(path, None).map(|locked| format!("(import {locked})"))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .join(" ");
     let expression = format!(
         "# Generated by aos config eval; do not edit.\n\
          let\n\
         \x20 baseLib = import {base};\n\
         \x20 system = baseLib.evalHostSelection {{\n\
         \x20   operatorModules = [ (import {host}) ];\n\
+        \x20   runtimeModules = [ {runtime_modules} ];\n\
         \x20 }};\n\
          in {{ packages = system.config.aos.apm.desiredPackages; }}\n",
         base = base,
         host = host,
+        runtime_modules = runtime_modules,
     );
     std::fs::write(&staged_entry, &expression)
         .with_context(|| format!("writing {}", staged_entry.display()))?;

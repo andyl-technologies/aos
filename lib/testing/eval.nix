@@ -478,10 +478,12 @@
     then throw "the stock system must restore its last fully evaluated host input"
     else if !(builtins.hasAttr "aos-host-config-cache" system.config.systemd.services)
     then throw "the stock system must cache fully evaluated host input"
-    else if system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
+    else if
+      system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
       ? ConditionPathExists
     then throw "metadata acquisition must run on provisioned boots"
-    else if system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
+    else if
+      system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
       ? ConditionPathExists
     then throw "the restricted storage projection must remain available as a post-commit advisory check"
     else if
@@ -1270,9 +1272,16 @@ in
           exit 1
         fi
 
+        case "$("$coreutils"/cat ${system.config.environment.etc."os-release".source})" in
+          *$'\nAOS_CONFIG_INPUT_ABI=2\n'*) ;;
+          *) echo "os-release lacks config input ABI 2" >&2; exit 1 ;;
+        esac
+        test "$("$coreutils"/cat ${system.config.system.build.toplevel}/meta/config-input-abi)" = 2
+
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "config artifacts: $artifact_count frozen closure root(s) verified"
         echo "base-lib ABI:    follows image module overrides (${baseLibFollowsImageAbi})"
+        echo "config input ABI: advertised in os-release and toplevel metadata (2)"
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "verity LUKS gate: exact (${verityDisablesGenericLuks})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"

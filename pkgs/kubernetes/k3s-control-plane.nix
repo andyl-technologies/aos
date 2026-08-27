@@ -39,9 +39,10 @@
 in
   mkK3sExposePackage {
     pname = "k3s-control-plane";
+    role = "control-plane";
     description = "Lightweight Kubernetes (control plane, no agent)";
     command = "server --disable-agent";
-    requiredEnv = ["K3S_TOKEN"];
+    requiredEnv = [];
     stateDirectories = ["rancher/k3s"];
     hostPaths = [
       {

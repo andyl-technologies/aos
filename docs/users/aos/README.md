@@ -69,6 +69,12 @@ multicall binary, so `aos package` is equivalent to `apm` and
 
 - [Package an application for AOS](package-authoring.md) follows a service from
   its derivation through image inclusion, registry publication, and upgrade.
+- [Configure nginx](nginx.md) covers typed virtual hosts, composable upstreams,
+  reload behavior, and TLS credential references.
+- [Configure Envoy](envoy.md) covers typed listeners, clusters, routes, xDS,
+  validation, firewall policy, and credential references.
+- [Configure k3s](k3s.md) covers worker, control-plane, and combined roles plus
+  CNI/CSI composition and token references.
 - [Deploy AOS in production](deployment.md) covers golden-image qualification,
   platform import, bare metal, and fleet promotion.
 - [Maintain the source tree](../../maintainers/) covers Nix builds, image

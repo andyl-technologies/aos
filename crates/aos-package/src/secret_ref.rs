@@ -134,6 +134,7 @@ impl From<&SecretRef> for CredentialMeta {
             ciphertext: sr.ciphertext.clone(),
             units: sr.units.clone(),
             encrypted: sr.encrypted,
+            optional: false,
         }
     }
 }

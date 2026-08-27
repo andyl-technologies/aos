@@ -480,6 +480,13 @@
             encrypted = true;
           }
           {
+            name = "optional-tls-key";
+            source = "/usr/lib/credstore.encrypted/optional-tls-key";
+            units = ["expose-config.service"];
+            encrypted = true;
+            optional = true;
+          }
+          {
             name = "plain-note";
           }
         ];
@@ -2071,10 +2078,14 @@ in
           grep -q 'LoadCredentialEncrypted=join-token:/usr/lib/credstore.encrypted/join-token' "$config_unit"
           grep -q 'LoadCredentialEncrypted=generated-token:/run/credstore.encrypted/aos/expose-config/generated-token' "$config_unit"
           grep -q 'SetCredentialEncrypted=inline-secret:abcDEF0123+/=' "$config_unit"
+          if grep -q 'optional-tls-key' "$config_unit"; then
+            echo "optional credentials must not create unconditional static unit bindings" >&2
+            exit 1
+          fi
           grep -q 'X-ReloadIfChanged=true' "$config_unit"
           grep -q 'X-Reload-Triggers=/etc/aos/packages/expose-config/config.env' "$config_unit"
           test -s "$configExposePath/credstore.encrypted/aos/expose-config/generated-token"
-          grep -q '"config":{"artifacts":\[{"format":"env","name":"env","optional":\["URL"\],"path":"/etc/aos/packages/expose-config/config.env","reload":"reload","required":\["TOKEN"\],"units":\["expose-config.service"\]}\],"credentials":\[{"encrypted":true,"name":"join-token","source":"/usr/lib/credstore.encrypted/join-token","units":\["expose-config.service"\]},{"encrypted":true,"name":"generated-token","source":"/run/credstore.encrypted/aos/expose-config/generated-token","units":\["expose-config.service"\]},{"ciphertext":"abcDEF0123+/=","encrypted":true,"name":"inline-secret","units":\["expose-config.service"\]},{"encrypted":false,"name":"plain-note","units":\[\]}\]}' "$config_manifest"
+          grep -q '"config":{"artifacts":\[{"format":"env","name":"env","optional":\["URL"\],"path":"/etc/aos/packages/expose-config/config.env","reload":"reload","required":\["TOKEN"\],"units":\["expose-config.service"\]}\],"credentials":\[{"encrypted":true,"name":"join-token","source":"/usr/lib/credstore.encrypted/join-token","units":\["expose-config.service"\]},{"encrypted":true,"name":"generated-token","source":"/run/credstore.encrypted/aos/expose-config/generated-token","units":\["expose-config.service"\]},{"ciphertext":"abcDEF0123+/=","encrypted":true,"name":"inline-secret","units":\["expose-config.service"\]},{"encrypted":true,"name":"optional-tls-key","optional":true,"source":"/usr/lib/credstore.encrypted/optional-tls-key","units":\["expose-config.service"\]},{"encrypted":false,"name":"plain-note","units":\[\]}\]}' "$config_manifest"
           if grep -q 'encryptedFile' "$config_manifest"; then
             echo "vendored credential build input leaked into manifest" >&2
             exit 1
@@ -2396,13 +2407,14 @@ in
             exit 1
           fi
           grep -q 'WantedBy=aos-pkg-k3s-worker.target' "$k3s_worker_unit"
-          grep -q 'ExecStart=${pkgs.k3s}/bin/k3s agent' "$k3s_worker_unit"
+          grep -q 'ExecStart=.*/bin/k3s-k3s-worker-start' "$k3s_worker_unit"
           grep -q 'KillMode=process' "$k3s_worker_unit"
           grep -q 'Requisite=k3s-preflight.service' "$k3s_worker_unit"
           grep -q 'After=.*k3s-preflight.service' "$k3s_worker_unit"
           grep -q 'Wants=network-online.target' "$k3s_worker_unit"
           grep -q 'Environment="PATH=.*${pkgs.k3s}/bin' "$k3s_worker_unit"
-          grep -q 'EnvironmentFile=/etc/rancher/k3s/k3s.env' "$k3s_worker_unit"
+          grep -q 'EnvironmentFile=/etc/aos/packages/k3s-worker/k3s.env' "$k3s_worker_unit"
+          grep -q 'LoadCredentialEncrypted=token' "$k3s_worker_unit"
           grep -q 'LimitNOFILE=1048576' "$k3s_worker_unit"
           grep -q 'LimitNPROC=infinity' "$k3s_worker_unit"
           grep -q 'LimitCORE=infinity' "$k3s_worker_unit"
@@ -2410,8 +2422,9 @@ in
           grep -q 'TimeoutStartSec=infinity' "$k3s_worker_unit"
           grep -q 'Restart=always' "$k3s_worker_unit"
           grep -q 'RestartSec=5s' "$k3s_worker_unit"
-          grep -q 'ConditionPathExists=/etc/rancher/k3s/k3s.env' "$k3sWorkerExposePath/units/k3s-preflight.service"
-          grep -q 'EnvironmentFile=/etc/rancher/k3s/k3s.env' "$k3sWorkerExposePath/units/k3s-preflight.service"
+          grep -q 'ConditionPathExists=/etc/aos/packages/k3s-worker/k3s.env' "$k3sWorkerExposePath/units/k3s-preflight.service"
+          grep -q 'EnvironmentFile=/etc/aos/packages/k3s-worker/k3s.env' "$k3sWorkerExposePath/units/k3s-preflight.service"
+          grep -q 'ExecCondition=.*/bin/k3s-k3s-worker-enabled' "$k3sWorkerExposePath/units/k3s-preflight.service"
           # Script-derived Exec directives point at the
           # gen-local `aos-job-scripts/<unit>:<slot>.<index>` materialization
           # (derivation `aos-job-script-<scriptName>`) instead of the legacy
@@ -2463,11 +2476,12 @@ in
           grep -q 'Description=Lightweight Kubernetes (control plane, no agent)' \
             "$k3s_control_plane_unit"
           grep -q 'WantedBy=aos-pkg-k3s-control-plane.target' "$k3s_control_plane_unit"
-          grep -q 'ExecStart=${pkgs.k3s}/bin/k3s server --disable-agent' \
+          grep -q 'ExecStart=.*/bin/k3s-k3s-control-plane-start' \
             "$k3s_control_plane_unit"
           require_host_unit "k3s control-plane" "$k3s_control_plane_unit"
           grep -q 'Environment="PATH=.*${pkgs.k3s}/bin' "$k3s_control_plane_unit"
-          grep -q 'EnvironmentFile=/etc/rancher/k3s/k3s.env' "$k3s_control_plane_unit"
+          grep -q 'EnvironmentFile=/etc/aos/packages/k3s-control-plane/k3s.env' "$k3s_control_plane_unit"
+          grep -q 'LoadCredentialEncrypted=token' "$k3s_control_plane_unit"
           grep -q 'LimitNOFILE=1048576' "$k3s_control_plane_unit"
           grep -q 'LimitNPROC=infinity' "$k3s_control_plane_unit"
           grep -q 'LimitCORE=infinity' "$k3s_control_plane_unit"
@@ -2489,10 +2503,11 @@ in
           grep -q 'Description=Lightweight Kubernetes (combined: server + agent)' \
             "$k3s_combined_unit"
           grep -q 'WantedBy=aos-pkg-k3s-combined.target' "$k3s_combined_unit"
-          grep -Fxq 'ExecStart=${pkgs.k3s}/bin/k3s server' "$k3s_combined_unit"
+          grep -q 'ExecStart=.*/bin/k3s-k3s-combined-start' "$k3s_combined_unit"
           require_host_unit "k3s combined" "$k3s_combined_unit"
           grep -q 'Environment="PATH=.*${pkgs.k3s}/bin' "$k3s_combined_unit"
-          grep -q 'EnvironmentFile=/etc/rancher/k3s/k3s.env' "$k3s_combined_unit"
+          grep -q 'EnvironmentFile=/etc/aos/packages/k3s-combined/k3s.env' "$k3s_combined_unit"
+          grep -q 'LoadCredentialEncrypted=token' "$k3s_combined_unit"
           grep -q 'LimitNOFILE=1048576' "$k3s_combined_unit"
           grep -q 'LimitNPROC=infinity' "$k3s_combined_unit"
           grep -q 'LimitCORE=infinity' "$k3s_combined_unit"

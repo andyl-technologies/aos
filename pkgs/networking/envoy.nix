@@ -275,6 +275,104 @@ in
     pname = "envoy";
     inherit version src;
 
+    configModule = {
+      src = ./_envoy-config;
+      moduleAbiCompat = {
+        min = 1;
+        max = 2;
+      };
+      declares = [
+        "envoy.admin"
+        "envoy.clusters"
+        "envoy.dynamicResources"
+        "envoy.enable"
+        "envoy.listeners"
+        "envoy.node"
+        "envoy.renderedBootstrap"
+        "envoy.runtimeLayers"
+        "envoy.telemetry"
+      ];
+      ownsRoots = [
+        {
+          root = "envoy";
+          interfaceAbi = 1;
+          contributable = [
+            "clusters.*"
+            "listeners.*"
+            "runtimeLayers.*"
+          ];
+        }
+      ];
+    };
+
+    expose = {
+      units."envoy.service" = {
+        description = "Envoy proxy";
+        after = ["network-online.target"];
+        wants = ["network-online.target"];
+        serviceConfig = {
+          Type = "simple";
+          EnvironmentFile = "/etc/aos/packages/envoy/service.env";
+          ExecCondition = "${bash}/bin/bash -c 'test \"$ENVOY_ENABLED\" = 1'";
+          ExecStartPre = "${placeholder "out"}/bin/envoy --mode validate --config-path /etc/aos/packages/envoy/bootstrap.json";
+          ExecStart = "${placeholder "out"}/bin/envoy --config-path /etc/aos/packages/envoy/bootstrap.json --log-format-prefix-with-location 0";
+          Restart = "on-failure";
+          RestartSec = "2s";
+          StateDirectory = "aos-pkg-envoy";
+          LimitNOFILE = "1048576";
+        };
+      };
+
+      config = {
+        artifacts = [
+          {
+            name = "service";
+            path = "/etc/aos/packages/envoy/service.env";
+            format = "env";
+            required = ["ENVOY_ENABLED"];
+            optional = [];
+            units = ["envoy.service"];
+            reload = "restart";
+          }
+          {
+            name = "bootstrap";
+            path = "/etc/aos/packages/envoy/bootstrap.json";
+            format = "json";
+            required = ["node" "static_resources"];
+            optional = [
+              "admin"
+              "dynamic_resources"
+              "layered_runtime"
+              "stats_config"
+              "stats_sinks"
+            ];
+            units = ["envoy.service"];
+            reload = "restart";
+          }
+        ];
+        credentials =
+          builtins.map (name: {
+            inherit name;
+            units = ["envoy.service"];
+            encrypted = true;
+            optional = true;
+          }) [
+            "tls-certificate"
+            "tls-private-key"
+            "validation-ca"
+          ];
+      };
+
+      permissions = {
+        network = "host";
+        capabilities = ["CAP_NET_BIND_SERVICE"];
+        host-paths = [];
+        devices = [];
+        syscalls = "restricted";
+        security-label = "aos-pkg-envoy";
+      };
+    };
+
     bazel = bazel-7;
     jdk = openjdk;
     inherit tools;
@@ -634,7 +732,139 @@ in
       testing,
       self,
       pkgs,
-    }: {
+    }: let
+      evalConfig = envoyConfig:
+        lib.evalModules {
+          modules = [
+            ({lib, ...}: {
+              options = {
+                assertions = lib.mkOption {
+                  type = lib.types.listOf lib.types.attrs;
+                  default = [];
+                };
+                envoy.config = lib.mkOption {
+                  type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
+                  default = {};
+                };
+                envoy.credentials = lib.mkOption {
+                  type = lib.types.attrsOf lib.types.attrs;
+                  default = {};
+                };
+              };
+            })
+            (import ./_envoy-config/module.nix)
+            {envoy = envoyConfig;}
+          ];
+          inherit lib;
+        };
+      assertionsHoldFor = result:
+        builtins.all (assertion: assertion.assertion) result.config.assertions;
+      evaluatedConfig = evalConfig {
+        enable = true;
+        node = {
+          id = "envoy-check";
+          cluster = "aos-checks";
+        };
+        listeners.http = {
+          address = "127.0.0.1";
+          port = 10000;
+          filterChains.http.virtualHosts.local = {
+            domains = ["*"];
+            routes.root = {
+              cluster = "backend";
+              retryCount = 2;
+            };
+          };
+        };
+        clusters.backend = {
+          endpoints = [
+            {
+              address = "127.0.0.1";
+              port = 10001;
+            }
+          ];
+          healthChecks = [
+            {
+              type = "http";
+              path = "/healthz";
+            }
+          ];
+        };
+        runtimeLayers.aos.values."envoy.reloadable_features.check" = true;
+        telemetry.statsd = {
+          address = "127.0.0.1";
+          port = 8125;
+        };
+      };
+      invalidRoute = evalConfig {
+        listeners.http = {
+          port = 10000;
+          filterChains.http.virtualHosts.local.routes.root = {};
+        };
+      };
+      invalidTls = evalConfig {
+        clusters.backend = {
+          endpoints = [
+            {
+              address = "127.0.0.1";
+              port = 10001;
+            }
+          ];
+          tls.certificateCredential = "tls-certificate";
+        };
+      };
+      invalidAdmin = evalConfig {admin.address = "0.0.0.0";};
+      validSds = evalConfig {
+        dynamicResources = {
+          enableAds = true;
+          adsCluster = "xds-control-plane";
+        };
+        clusters.xds-control-plane.endpoints = [
+          {
+            address = "127.0.0.1";
+            port = 18000;
+          }
+        ];
+        listeners.https = {
+          port = 10443;
+          filterChains.https = {
+            tls = {
+              sdsSecret = "downstream-certificate";
+              validationSdsSecret = "client-ca";
+              requireClientCertificate = true;
+            };
+            virtualHosts.local.routes.root.directResponse.status = 204;
+          };
+        };
+      };
+      validCredentialTls = evalConfig {
+        credentials = {
+          tls-certificate.ref = "system-credential";
+          tls-private-key.ref = "system-credential";
+        };
+        listeners.https = {
+          port = 10443;
+          filterChains.https = {
+            tls = {
+              certificateCredential = "tls-certificate";
+              privateKeyCredential = "tls-private-key";
+            };
+            virtualHosts.local.routes.root.directResponse.status = 204;
+          };
+        };
+      };
+      contractHolds =
+        assertionsHoldFor evaluatedConfig
+        && assertionsHoldFor validSds
+        && assertionsHoldFor validCredentialTls
+        && !assertionsHoldFor invalidRoute
+        && !assertionsHoldFor invalidTls
+        && !assertionsHoldFor invalidAdmin;
+      renderedBootstrap =
+        if assertionsHoldFor evaluatedConfig
+        then builtins.toFile "envoy-config-module-check.json" (builtins.toJSON evaluatedConfig.config.envoy.renderedBootstrap)
+        else throw "the Envoy config-module fixture has a failing assertion";
+    in {
       version = testing.mkVMTest {
         name = "networking-envoy-version";
         rootfsDeps = [self];
@@ -702,5 +932,25 @@ in
           esac
         '';
       };
+
+      config-module = testing.mkVMTest {
+        name = "networking-envoy-config-module";
+        rootfsDeps = [self];
+        testScript = ''
+          envoy --mode validate --config-path ${renderedBootstrap}
+          ${pkgs.grep}/bin/grep -q 'envoy-check' ${renderedBootstrap}
+          ${pkgs.grep}/bin/grep -q 'envoy.reloadable_features.check' ${renderedBootstrap}
+          echo "==> envoy config-module: PASS"
+        '';
+      };
+
+      config-module-contract =
+        if contractHolds
+        then
+          pkgs.runCommand "networking-envoy-config-module-contract" {} ''
+            mkdir -p "$out"
+            printf '%s\n' PASS > "$out/result"
+          ''
+        else throw "the Envoy config-module contract checks failed";
     };
   }

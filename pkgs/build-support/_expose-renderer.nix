@@ -564,7 +564,7 @@
     "expose.config.credentials entries must be attrsets"
     (
       let
-        allowedKeys = ["name" "source" "ciphertext" "units" "encrypted" "encryptedFile"];
+        allowedKeys = ["name" "source" "ciphertext" "units" "encrypted" "encryptedFile" "optional"];
         extraKeys = builtins.filter (key: !(builtins.elem key allowedKeys)) (builtins.attrNames credential);
         name =
           throwIfNot
@@ -609,10 +609,12 @@
           builtins.map
           (validateServiceUnitName "expose.config.credentials.units")
           (validateList "expose.config.credentials.units" (credential.units or []));
+        optional = validateBool "expose.config.credentials.optional" (credential.optional or false);
         manifestCredential =
           {
             inherit name units encrypted;
           }
+          // lib.optionalAttrs optional {inherit optional;}
           // lib.optionalAttrs (source != null) {inherit source;}
           // lib.optionalAttrs (ciphertext != null) {inherit ciphertext;};
       in
@@ -1423,7 +1425,9 @@ in rec {
 
     credentialsForUnit = unitName:
       builtins.filter (
-        credential: credential.units == [] || builtins.elem unitName credential.units
+        credential:
+          !(credential.optional or false)
+          && (credential.units == [] || builtins.elem unitName credential.units)
       )
       config.credentials;
 
