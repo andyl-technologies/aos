@@ -83,10 +83,12 @@ in
             if stdenv.hostPlatform.isDarwin
             then ''
               # Upstream nests the deployment-target probe under its legacy
-              # Carbon probe. The public SDK deliberately provides Cocoa, not
-              # Carbon, while AvailabilityMacros still makes giomodule.c
-              # reference the 10.9+ notification backend. Our minimum target
-              # is 11.0, so keep the matching Cocoa implementation in libgio.
+              # Carbon probe. The public SDK provides Carbon's header-only
+              # keyboard constants, but deliberately has no linkable legacy
+              # Carbon framework, while AvailabilityMacros still makes
+              # giomodule.c reference the 10.9+ notification backend. Our
+              # minimum target is 11.0, so keep the matching Cocoa
+              # implementation in libgio.
               sed -i \
                 's/    if glib_have_os_x_9_or_later/    if true/' \
                 gio/meson.build
