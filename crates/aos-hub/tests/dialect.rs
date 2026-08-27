@@ -901,7 +901,7 @@ async fn postgres_contract() {
         #[cfg(not(feature = "required-live-dialects"))]
         return;
     };
-    reset_pg_schema(&url);
+    reset_pg_schema(&url).await;
     let db = Database::connect(&url)
         .await
         .expect("connect + migrate postgres");
@@ -920,7 +920,7 @@ async fn mysql_contract() {
         #[cfg(not(feature = "required-live-dialects"))]
         return;
     };
-    reset_mysql_schema(&url);
+    reset_mysql_schema(&url).await;
     let db = Database::connect(&url)
         .await
         .expect("connect + migrate mysql");
@@ -931,31 +931,46 @@ async fn mysql_contract() {
 /// Drops every table in the target postgres database, so the subsequent
 /// connect re-runs all migrations from scratch and the run is idempotent.
 #[cfg(feature = "postgres")]
-fn reset_pg_schema(url: &str) {
-    use postgres::{Client, NoTls};
-    let mut client = Client::connect(url, NoTls).expect("connecting to postgres for schema reset");
+async fn reset_pg_schema(url: &str) {
+    use sqlx::{Connection, Executor, PgConnection};
+
+    let mut connection = PgConnection::connect(url)
+        .await
+        .expect("connecting to postgres for schema reset");
     // The public schema cascade is the cleanest full reset for a test database.
-    client
-        .batch_execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    connection
+        .execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+        .await
         .expect("dropping public schema");
 }
 
 /// Drops every table in the target mysql database, so the subsequent connect
 /// re-runs all migrations from scratch and the run is idempotent.
 #[cfg(feature = "mysql")]
-fn reset_mysql_schema(url: &str) {
-    use mysql::prelude::Queryable;
-    use mysql::{Conn, Opts, OptsBuilder};
-    let opts = Opts::from_url(url).expect("parsing mysql url for schema reset");
-    let db_name = opts.get_db_name().map(str::to_string);
-    let mut conn = Conn::new(OptsBuilder::from_opts(opts)).expect("connecting to mysql for reset");
+async fn reset_mysql_schema(url: &str) {
+    use std::str::FromStr;
+
+    use sqlx::mysql::{MySqlConnectOptions, MySqlConnection};
+    use sqlx::{Connection, Executor};
+
+    let options = MySqlConnectOptions::from_str(url).expect("parsing mysql url for schema reset");
+    let db_name = options.get_database().map(str::to_string);
+    let mut connection = MySqlConnection::connect_with(&options)
+        .await
+        .expect("connecting to mysql for reset");
     if let Some(db) = db_name {
         // Drop and recreate the whole database — the simplest idempotent reset.
-        conn.query_drop(format!("DROP DATABASE IF EXISTS `{db}`"))
+        connection
+            .execute(format!("DROP DATABASE IF EXISTS `{db}`").as_str())
+            .await
             .expect("dropping mysql database");
-        conn.query_drop(format!("CREATE DATABASE `{db}`"))
+        connection
+            .execute(format!("CREATE DATABASE `{db}`").as_str())
+            .await
             .expect("creating mysql database");
-        conn.query_drop(format!("USE `{db}`"))
+        connection
+            .execute(format!("USE `{db}`").as_str())
+            .await
             .expect("selecting mysql database");
     }
 }
