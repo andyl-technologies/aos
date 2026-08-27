@@ -1571,9 +1571,9 @@ stable process-local identities, exact home-thread ownership, active poll and
 GLib dispatch counts, queued and active bottom halves, queued coroutines, and
 notification state. The host brackets procfs capture with identical reports,
 checks every assigned home thread against the QEMU thread registry, and rejects
-changed context state. This is observational and still omits AIO handlers,
-timers, a retained drain/park barrier, and child reinitializers; readiness bit 3
-therefore remains clear.
+changed context state. This is observational and still omits AIO handlers, a
+retained drain/park barrier, and child reinitializers; readiness bit 3 therefore
+remains clear.
 QEMU now also exposes a version-1, 65,536-entry POSIX `QemuMutex` and
 `QemuRecMutex` inventory. It reports sorted lifecycle identities, owner thread,
 recursion depth, acquisition and condition waiters, active unlock transitions,
@@ -1582,6 +1582,15 @@ procfs capture with identical mutex reports and requires every positive owner
 to appear in the exact thread registry. This is observational: it does not hold
 a fork barrier, account for every raw/library lock, choose a child disposition,
 or run a child reinitializer, so readiness bit 8 remains clear.
+QEMU now also exposes a version-1, 65,536-entry live-timer inventory. It reports
+every pending timer and executing callback under stable process-local timer and
+timer-list identities, exact clock, expiry, scale, attributes, pending state,
+callback state, and checked aggregates. The host brackets procfs capture with
+identical timer reports and rejects changed state. Inert initialized timers are
+intentionally absent, while callback entries retain copied metadata so a
+callback may safely free its enclosing timer. This is observational and does
+not retain the AIO/BH/timer barrier across `fork(2)` or choose child clock
+reinitializers, so readiness bit 3 remains clear.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
 no safe non-coordinator child disposition, and none of the views can prove a

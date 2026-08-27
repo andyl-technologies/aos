@@ -825,6 +825,13 @@
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded QMP inventory exposes every live QemuMutex and QemuRecMutex plus exact instantaneous ownership, recursion, acquisition, condition-wait, and unlock-transition state without claiming a held barrier, child reinitializer, or readiness proof";
     }
+    {
+      file = "0119-crucible-hot-fork-timer-inventory.patch";
+      catalogName = "crucible-hot-fork-timer-inventory";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "a bounded QMP inventory exposes every pending timer and active callback with exact process-local identities, clock, expiry, scale, attributes, and state without claiming a retained timer barrier or readiness proof";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

@@ -547,6 +547,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0119-crucible-hot-fork-timer-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

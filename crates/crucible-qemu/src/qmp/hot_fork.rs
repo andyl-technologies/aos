@@ -20,6 +20,9 @@ pub const QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND: &str = "query-crucible-hot-f
 /// QMP command name used for QEMU's bounded mutex ownership inventory.
 pub const QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND: &str =
     "query-crucible-hot-fork-mutex-inventory";
+/// QMP command name used for QEMU's bounded live-timer inventory.
+pub const QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND: &str =
+    "query-crucible-hot-fork-timer-inventory";
 
 /// Version of the QEMU-owned hot-fork proof-bit contract.
 pub const QMP_HOT_FORK_READINESS_SCHEMA_VERSION: u32 = 1;
@@ -31,6 +34,8 @@ pub const QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION: u32 = 1;
 pub const QMP_HOT_FORK_AIO_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned mutex ownership inventory contract.
 pub const QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION: u32 = 1;
+/// Version of the QEMU-owned live-timer inventory contract.
+pub const QMP_HOT_FORK_TIMER_INVENTORY_SCHEMA_VERSION: u32 = 1;
 
 /// Complete proof bitmap required by the version-1 hot-fork contract.
 pub const QMP_HOT_FORK_REQUIRED_PROOFS: u64 = (1_u64 << 9) - 1;
@@ -42,6 +47,8 @@ pub const QMP_HOT_FORK_RCU_INVENTORY_MAX: usize = 65_536;
 pub const QMP_HOT_FORK_AIO_INVENTORY_MAX: usize = 65_536;
 /// Maximum registered mutexes retained by one inventory response.
 pub const QMP_HOT_FORK_MUTEX_INVENTORY_MAX: usize = 65_536;
+/// Maximum unique pending or callback-active timers retained by one response.
+pub const QMP_HOT_FORK_TIMER_INVENTORY_MAX: usize = 65_536;
 /// Maximum UTF-8 bytes retained for one QEMU thread name.
 pub const QMP_HOT_FORK_THREAD_NAME_MAX_BYTES: usize = 256;
 
@@ -599,6 +606,139 @@ impl QmpHotForkMutexInventory {
     #[must_use]
     pub fn mutexes(&self) -> &[QmpHotForkMutex] {
         &self.mutexes
+    }
+}
+
+/// QEMU clock driving one live timer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QmpHotForkTimerClock {
+    /// Monotonic host real time.
+    Realtime,
+    /// Guest virtual time.
+    Virtual,
+    /// Host wall time.
+    Host,
+    /// Real time used for virtual-clock icount warp.
+    VirtualRealtime,
+}
+
+/// One pending QEMU timer, executing callback, or both when rearmed in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QmpHotForkTimer {
+    timer_id: u64,
+    timer_list_id: u64,
+    clock: QmpHotForkTimerClock,
+    expire_time_ns: Option<u64>,
+    scale: u32,
+    attributes: u32,
+    pending: bool,
+    callback_active: bool,
+}
+
+impl QmpHotForkTimer {
+    /// Returns the positive process-local timer identifier.
+    #[must_use]
+    pub const fn timer_id(self) -> u64 {
+        self.timer_id
+    }
+
+    /// Returns the positive process-local timer-list identifier.
+    #[must_use]
+    pub const fn timer_list_id(self) -> u64 {
+        self.timer_list_id
+    }
+
+    /// Returns the clock driving this timer.
+    #[must_use]
+    pub const fn clock(self) -> QmpHotForkTimerClock {
+        self.clock
+    }
+
+    /// Returns the absolute nanosecond expiry while the timer is pending.
+    #[must_use]
+    pub const fn expire_time_ns(self) -> Option<u64> {
+        self.expire_time_ns
+    }
+
+    /// Returns the timer's positive nanosecond unit scale.
+    #[must_use]
+    pub const fn scale(self) -> u32 {
+        self.scale
+    }
+
+    /// Returns the exact unsigned QEMU timer-attribute bitmap.
+    #[must_use]
+    pub const fn attributes(self) -> u32 {
+        self.attributes
+    }
+
+    /// Returns whether the timer is scheduled.
+    #[must_use]
+    pub const fn pending(self) -> bool {
+        self.pending
+    }
+
+    /// Returns whether the timer callback is executing.
+    #[must_use]
+    pub const fn callback_active(self) -> bool {
+        self.callback_active
+    }
+}
+
+/// Exact bounded observational snapshot of QEMU's live timer state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QmpHotForkTimerInventory {
+    generation: u64,
+    complete: bool,
+    overflowed: bool,
+    timers: Vec<QmpHotForkTimer>,
+}
+
+impl QmpHotForkTimerInventory {
+    #[cfg(test)]
+    pub(crate) fn empty() -> Self {
+        Self {
+            generation: 1,
+            complete: true,
+            overflowed: false,
+            timers: Vec::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn incomplete() -> Self {
+        Self {
+            generation: 1,
+            complete: false,
+            overflowed: true,
+            timers: Vec::new(),
+        }
+    }
+
+    /// Returns the process-local scheduled/callback state generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns whether QEMU retained structurally valid state for every live timer.
+    ///
+    /// Completeness remains observational and cannot authorize a fork.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.complete
+    }
+
+    /// Returns whether live timer state exceeded the inventory bound.
+    #[must_use]
+    pub const fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
+    /// Returns every retained timer in ascending process-local identifier order.
+    #[must_use]
+    pub fn timers(&self) -> &[QmpHotForkTimer] {
+        &self.timers
     }
 }
 
@@ -1234,5 +1374,172 @@ pub(super) fn parse_hot_fork_mutex_inventory(
         complete,
         overflowed,
         mutexes,
+    })
+}
+
+pub(super) fn parse_hot_fork_timer_inventory(
+    value: &Value,
+) -> Result<QmpHotForkTimerInventory, QmpError> {
+    let malformed = || QmpError::MalformedTypedResponse {
+        command: QmpCommandKind::QueryHotForkTimerInventory,
+        response: value.to_string(),
+    };
+    let object = value.as_object().ok_or_else(&malformed)?;
+    let fields = [
+        "schema-version",
+        "generation",
+        "complete",
+        "overflowed",
+        "timer-count",
+        "pending-timers",
+        "active-callbacks",
+        "timers",
+    ];
+    if object.len() != fields.len() || !fields.iter().all(|field| object.contains_key(*field)) {
+        return Err(malformed());
+    }
+
+    let schema_version = object
+        .get("schema-version")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let generation = object
+        .get("generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let complete = object
+        .get("complete")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let overflowed = object
+        .get("overflowed")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let declared_timer_count = object
+        .get("timer-count")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_pending = object
+        .get("pending-timers")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_callbacks = object
+        .get("active-callbacks")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let values = object
+        .get("timers")
+        .and_then(Value::as_array)
+        .ok_or_else(&malformed)?;
+    if schema_version != u64::from(QMP_HOT_FORK_TIMER_INVENTORY_SCHEMA_VERSION)
+        || values.len() > QMP_HOT_FORK_TIMER_INVENTORY_MAX
+        || declared_timer_count != values.len()
+    {
+        return Err(malformed());
+    }
+
+    let mut timers = Vec::with_capacity(values.len());
+    let mut previous_timer_id = None;
+    let mut pending_timers = 0_usize;
+    let mut active_callbacks = 0_usize;
+    for value in values {
+        let entry = value.as_object().ok_or_else(&malformed)?;
+        let entry_fields = [
+            "timer-id",
+            "timer-list-id",
+            "clock",
+            "expire-time-ns",
+            "scale",
+            "attributes",
+            "pending",
+            "callback-active",
+        ];
+        if entry.len() != entry_fields.len()
+            || !entry_fields.iter().all(|field| entry.contains_key(*field))
+        {
+            return Err(malformed());
+        }
+
+        let timer_id = entry
+            .get("timer-id")
+            .and_then(Value::as_u64)
+            .filter(|timer_id| *timer_id != 0)
+            .ok_or_else(&malformed)?;
+        if previous_timer_id.is_some_and(|previous| previous >= timer_id) {
+            return Err(malformed());
+        }
+        previous_timer_id = Some(timer_id);
+        let timer_list_id = entry
+            .get("timer-list-id")
+            .and_then(Value::as_u64)
+            .filter(|timer_list_id| *timer_list_id != 0)
+            .ok_or_else(&malformed)?;
+        let clock = match entry.get("clock").and_then(Value::as_str) {
+            Some("realtime") => QmpHotForkTimerClock::Realtime,
+            Some("virtual") => QmpHotForkTimerClock::Virtual,
+            Some("host") => QmpHotForkTimerClock::Host,
+            Some("virtual-realtime") => QmpHotForkTimerClock::VirtualRealtime,
+            _ => return Err(malformed()),
+        };
+        let raw_expire_time_ns = entry
+            .get("expire-time-ns")
+            .and_then(Value::as_i64)
+            .ok_or_else(&malformed)?;
+        let scale = entry
+            .get("scale")
+            .and_then(Value::as_u64)
+            .and_then(|scale| u32::try_from(scale).ok())
+            .filter(|scale| *scale != 0)
+            .ok_or_else(&malformed)?;
+        let attributes = entry
+            .get("attributes")
+            .and_then(Value::as_u64)
+            .and_then(|attributes| u32::try_from(attributes).ok())
+            .ok_or_else(&malformed)?;
+        let pending = entry
+            .get("pending")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let callback_active = entry
+            .get("callback-active")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let expire_time_ns = match (pending, raw_expire_time_ns) {
+            (true, expire_time_ns @ 0..) => Some(expire_time_ns as u64),
+            (false, -1) => None,
+            _ => return Err(malformed()),
+        };
+        if !pending && !callback_active {
+            return Err(malformed());
+        }
+
+        pending_timers += usize::from(pending);
+        active_callbacks += usize::from(callback_active);
+        timers.push(QmpHotForkTimer {
+            timer_id,
+            timer_list_id,
+            clock,
+            expire_time_ns,
+            scale,
+            attributes,
+            pending,
+            callback_active,
+        });
+    }
+    if declared_pending != pending_timers
+        || declared_callbacks != active_callbacks
+        || complete == overflowed
+    {
+        return Err(malformed());
+    }
+
+    Ok(QmpHotForkTimerInventory {
+        generation,
+        complete,
+        overflowed,
+        timers,
     })
 }

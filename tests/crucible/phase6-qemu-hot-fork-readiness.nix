@@ -96,6 +96,11 @@ in
             "$out/stock-mutex-inventory.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-mutex-inventory.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible mutex inventory command"
+          qmp "$stock_socket" \
+            '{"execute":"query-crucible-hot-fork-timer-inventory"}' \
+            "$out/stock-timer-inventory.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-timer-inventory.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible timer inventory command"
           qmp "$stock_socket" '{"execute":"quit"}' "$out/stock-quit.json"
           wait "$qemu_pid"
           qemu_pid=""
@@ -421,6 +426,70 @@ in
           ' "$out/mutex-inventory-2.json" >/dev/null \
             || { cat "$out/mutex-inventory-1.json" >&2; cat "$out/mutex-inventory-2.json" >&2; fail "QEMU mutex inventory changed without a lifecycle or ownership transition"; }
 
+          qmp "$patched_socket" \
+            '{"execute":"query-crucible-hot-fork-timer-inventory"}' \
+            "$out/timer-inventory-1.json"
+          qmp "$patched_socket" \
+            '{"execute":"query-crucible-hot-fork-timer-inventory"}' \
+            "$out/timer-inventory-2.json"
+          jq -e -s '
+            [.[] | select(has("return"))][-1].return as $report |
+            ($report | keys | sort) == [
+              "active-callbacks",
+              "complete",
+              "generation",
+              "overflowed",
+              "pending-timers",
+              "schema-version",
+              "timer-count",
+              "timers"
+            ] and
+            $report."schema-version" == 1 and
+            ($report.generation | type) == "number" and
+            ($report.complete | type) == "boolean" and
+            ($report.overflowed | type) == "boolean" and
+            ($report.timers | type) == "array" and
+            ($report.timers | length) <= 65536 and
+            ($report.timers | length) == $report."timer-count" and
+            ([ $report.timers[]."timer-id" ] ==
+             ([ $report.timers[]."timer-id" ] | sort)) and
+            ([ $report.timers[]."timer-id" ] | unique | length) ==
+              ($report.timers | length) and
+            all($report.timers[];
+              (. | keys | sort) == [
+                "attributes",
+                "callback-active",
+                "clock",
+                "expire-time-ns",
+                "pending",
+                "scale",
+                "timer-id",
+                "timer-list-id"
+              ] and
+              (."timer-id" | type) == "number" and ."timer-id" > 0 and
+              (."timer-list-id" | type) == "number" and ."timer-list-id" > 0 and
+              (.clock == "realtime" or .clock == "virtual" or
+               .clock == "host" or .clock == "virtual-realtime") and
+              (."expire-time-ns" | type) == "number" and ."expire-time-ns" >= -1 and
+              (.scale | type) == "number" and .scale > 0 and
+              (.attributes | type) == "number" and .attributes >= 0 and
+              (.pending | type) == "boolean" and
+              (."callback-active" | type) == "boolean" and
+              (.pending or ."callback-active") and
+              (.pending == (."expire-time-ns" >= 0))) and
+            ([ $report.timers[] | select(.pending) ] | length) ==
+              $report."pending-timers" and
+            ([ $report.timers[] | select(."callback-active") ] | length) ==
+              $report."active-callbacks" and
+            $report.complete == ($report.overflowed | not)
+          ' "$out/timer-inventory-1.json" >/dev/null \
+            || { cat "$out/timer-inventory-1.json" >&2; fail "QEMU timer inventory was not exact"; }
+          jq -e -s --slurpfile first "$out/timer-inventory-1.json" '
+            [.[] | select(has("return"))][-1].return ==
+              ($first | map(select(has("return"))) | .[-1].return)
+          ' "$out/timer-inventory-2.json" >/dev/null \
+            || { cat "$out/timer-inventory-1.json" >&2; cat "$out/timer-inventory-2.json" >&2; fail "QEMU timer inventory changed without a pending or callback transition"; }
+
           qmp "$patched_socket" '{"execute":"quit"}' "$out/patched-quit.json"
           wait "$qemu_pid"
           qemu_pid=""
@@ -430,7 +499,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0118-crucible-hot-fork-mutex-inventory.patch
+          patch=0119-crucible-hot-fork-timer-inventory.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -456,6 +525,11 @@ in
           mutex_inventory_stable=true
           mutex_owners_thread_bound=true
           mutex_proof_acknowledged=false
+          timer_inventory_schema_version=1
+          timer_inventory_bound=65536
+          timer_inventory_stable=true
+          timer_inventory_exact=true
+          timer_proof_acknowledged=false
           incomplete_report_ready=false
           stock_commands_absent=true
           RESULT

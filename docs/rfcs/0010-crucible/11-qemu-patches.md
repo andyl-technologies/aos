@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **115 patches**. This count is checked against
+The carried series contains **116 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -1750,6 +1750,31 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   child reinitializer, coordinate `fork(2)`, or change readiness bit 8. A lock
   may transition immediately after the response; only the future QEMU-owned
   coordinator may turn this inventory into a retained fork proof.
+- **Risk:** F.
+
+### crucible-hot-fork-timer-inventory — expose bounded live-timer state
+
+- **Patch:** `0119-crucible-hot-fork-timer-inventory.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4].
+- **Mechanism:** every pending `QEMUTimer` and active timer callback receives a
+  stable process-local timer and timer-list identity. A fixed version-1 QMP
+  query returns at most 65,536 sorted unique records with exact clock, expiry,
+  scale, attributes, pending state, callback state, and checked aggregates.
+  Pending entries expose a registry-owned expiry copy rather than racing the
+  timer-list lock. Active callbacks use stack-owned copied registry metadata,
+  so a callback may legally free its enclosing timer before returning. Inert
+  initialized timers are deliberately absent.
+- **Micro-test:** strict Rust decoding rejects unknown or additional fields,
+  changed schema, inconsistent pending/expiry state, inert records, invalid or
+  unsorted identities, invalid clocks or scales, inconsistent completeness,
+  and mismatched aggregates. The live patched-QEMU gate requires stable exact
+  reports under the supported paused profile. Stock QEMU must not expose the
+  command.
+- **Inertness:** the query and counters are observational. They do not arm,
+  cancel, run, or drain a timer, retain an AIO/BH/timer barrier across another
+  operation, coordinate `fork(2)`, choose a child clock disposition, or change
+  readiness bit 3. Only the future QEMU-owned coordinator may turn this
+  inventory into a retained fork proof.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

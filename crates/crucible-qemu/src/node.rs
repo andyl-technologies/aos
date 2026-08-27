@@ -834,6 +834,21 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Queries QEMU's exact bounded observational live-timer inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
+    /// versioned response validation fails.
+    fn query_hot_fork_timer_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTimerInventory, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query_hot_fork_timer_inventory",
+            "hot-fork timer inventory is not implemented by this QMP channel",
+        ))
+    }
+
     /// Completes an authenticated terminal lifecycle transition without
     /// expecting QEMU to resume guest execution.
     ///
@@ -1657,9 +1672,22 @@ impl QemuNode {
             .qmp_machine_control
             .query_hot_fork_mutex_inventory()
             .map_err(crate::QemuHotForkAuditError::MutexInventory)?;
+        let timers_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_timer_inventory()
+            .map_err(crate::QemuHotForkAuditError::TimerInventory)?;
 
         let inventory =
             crate::hot_fork_audit::capture_linux_qemu_hot_fork_process_inventory(&process)?;
+        let timers_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_timer_inventory()
+            .map_err(crate::QemuHotForkAuditError::TimerInventory)?;
+        if timers_before != timers_after {
+            return Err(crate::QemuHotForkAuditError::TimerInventoryChanged);
+        }
         let mutexes_after = self
             .channels
             .qmp_machine_control
@@ -1706,6 +1734,7 @@ impl QemuNode {
             rcu_before,
             aio_before,
             mutexes_before,
+            timers_before,
             inventory,
         )
     }

@@ -31,16 +31,18 @@ pub use hot_fork::{
     QMP_HOT_FORK_RCU_INVENTORY_MAX, QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_READINESS_SCHEMA_VERSION, QMP_HOT_FORK_REQUIRED_PROOFS,
     QMP_HOT_FORK_THREAD_INVENTORY_MAX, QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_THREAD_NAME_MAX_BYTES, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
+    QMP_HOT_FORK_THREAD_NAME_MAX_BYTES, QMP_HOT_FORK_TIMER_INVENTORY_MAX,
+    QMP_HOT_FORK_TIMER_INVENTORY_SCHEMA_VERSION, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
-    QmpHotForkAioContext, QmpHotForkAioInventory, QmpHotForkMutex, QmpHotForkMutexInventory,
-    QmpHotForkProof, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
-    QmpHotForkThread, QmpHotForkThreadDisposition, QmpHotForkThreadInventory,
+    QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QmpHotForkAioContext, QmpHotForkAioInventory,
+    QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkProof, QmpHotForkRcuInventory,
+    QmpHotForkRcuReader, QmpHotForkReadiness, QmpHotForkThread, QmpHotForkThreadDisposition,
+    QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock, QmpHotForkTimerInventory,
 };
 use hot_fork::{
     parse_hot_fork_aio_inventory, parse_hot_fork_mutex_inventory, parse_hot_fork_rcu_inventory,
-    parse_hot_fork_readiness, parse_hot_fork_thread_inventory,
+    parse_hot_fork_readiness, parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
 };
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
@@ -526,6 +528,22 @@ where
     pub fn query_hot_fork_mutex_inventory(&mut self) -> Result<QmpHotForkMutexInventory, QmpError> {
         let response = self.send_command_return(QmpCommand::QueryHotForkMutexInventory)?;
         parse_hot_fork_mutex_inventory(&response.value)
+    }
+
+    /// Returns QEMU's exact bounded observational live-timer inventory.
+    ///
+    /// Initialized but inert timers are absent. This query does not drain or
+    /// park pending timers or callbacks and cannot acknowledge hot-fork proof
+    /// bit 3.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request or response fails, or when the
+    /// response violates the closed schema, timer bound, sorted identifiers,
+    /// pending/expiry relationship, declared aggregates, or completeness rule.
+    pub fn query_hot_fork_timer_inventory(&mut self) -> Result<QmpHotForkTimerInventory, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryHotForkTimerInventory)?;
+        parse_hot_fork_timer_inventory(&response.value)
     }
 
     fn read_greeting(&mut self) -> Result<QmpGreeting, QmpError> {
@@ -1019,6 +1037,8 @@ pub enum QmpCommandKind {
     QueryHotForkAioInventory,
     /// QEMU-owned hot-fork mutex ownership inventory query.
     QueryHotForkMutexInventory,
+    /// QEMU-owned hot-fork live-timer inventory query.
+    QueryHotForkTimerInventory,
     /// Graceful QEMU quit.
     Quit,
 }
@@ -1042,6 +1062,7 @@ impl QmpCommandKind {
             Self::QueryHotForkRcuInventory => QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
             Self::QueryHotForkAioInventory => QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
             Self::QueryHotForkMutexInventory => QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
+            Self::QueryHotForkTimerInventory => QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
             Self::Quit => QMP_QUIT_COMMAND_NAME,
         }
     }
@@ -1097,6 +1118,7 @@ enum QmpCommand<'a> {
     QueryHotForkRcuInventory,
     QueryHotForkAioInventory,
     QueryHotForkMutexInventory,
+    QueryHotForkTimerInventory,
     Quit,
 }
 
@@ -1119,6 +1141,7 @@ impl QmpCommand<'_> {
             Self::QueryHotForkRcuInventory => QmpCommandKind::QueryHotForkRcuInventory,
             Self::QueryHotForkAioInventory => QmpCommandKind::QueryHotForkAioInventory,
             Self::QueryHotForkMutexInventory => QmpCommandKind::QueryHotForkMutexInventory,
+            Self::QueryHotForkTimerInventory => QmpCommandKind::QueryHotForkTimerInventory,
             Self::Quit => QmpCommandKind::Quit,
         }
     }
@@ -1187,6 +1210,9 @@ impl QmpCommand<'_> {
             }),
             Self::QueryHotForkMutexInventory => json!({
                 "execute": QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
+            }),
+            Self::QueryHotForkTimerInventory => json!({
+                "execute": QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
             }),
             Self::Quit => json!({
                 "execute": QMP_QUIT_COMMAND_NAME,
