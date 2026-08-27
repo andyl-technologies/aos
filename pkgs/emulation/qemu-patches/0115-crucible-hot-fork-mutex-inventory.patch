@@ -1,0 +1,581 @@
+diff --git a/include/qemu/thread-posix.h b/include/qemu/thread-posix.h
+index 5f2f3d138..09891b3bd 100644
+--- a/include/qemu/thread-posix.h
++++ b/include/qemu/thread-posix.h
+@@ -11,6 +11,18 @@ struct QemuMutex {
+     int line;
+ #endif
+     bool initialized;
++
++    /* Crucible hot-fork observational ownership state. */
++    uint64_t crucible_hot_fork_id;
++    int64_t crucible_hot_fork_owner_thread_id;
++    uint32_t crucible_hot_fork_recursion_depth;
++    uint32_t crucible_hot_fork_acquisition_waiters;
++    uint32_t crucible_hot_fork_condition_waiters;
++    bool crucible_hot_fork_recursive;
++    bool crucible_hot_fork_unlock_active;
++    bool crucible_hot_fork_ownership_valid;
++    struct QemuMutex *crucible_hot_fork_next;
++    struct QemuMutex **crucible_hot_fork_prev;
+ };
+ 
+ /*
+diff --git a/include/qemu/thread.h b/include/qemu/thread.h
+index 20af47398..c8c7906d9 100644
+--- a/include/qemu/thread.h
++++ b/include/qemu/thread.h
+@@ -201,6 +201,7 @@ void qemu_thread_naming(bool enable);
+ #ifdef CONFIG_POSIX
+ #define QEMU_HOT_FORK_THREAD_INVENTORY_MAX 65536
+ #define QEMU_HOT_FORK_THREAD_NAME_MAX 256
++#define QEMU_HOT_FORK_MUTEX_INVENTORY_MAX 65536
+ 
+ typedef enum QemuThreadHotForkDisposition {
+     QEMU_THREAD_HOT_FORK_COORDINATOR,
+@@ -240,6 +241,33 @@ void qemu_thread_hot_fork_inventory_destroy(
+  */
+ void qemu_thread_hot_fork_set_current_disposition(
+     QemuThreadHotForkDisposition disposition);
++
++typedef struct QemuMutexHotForkInventoryEntry {
++    uint64_t mutex_id;
++    int64_t owner_thread_id;
++    uint32_t recursion_depth;
++    uint32_t acquisition_waiters;
++    uint32_t condition_waiters;
++    bool recursive;
++    bool unlock_active;
++    bool ownership_valid;
++} QemuMutexHotForkInventoryEntry;
++
++typedef struct QemuMutexHotForkInventory {
++    uint64_t generation;
++    size_t entry_count;
++    bool overflowed;
++    QemuMutexHotForkInventoryEntry *entries;
++} QemuMutexHotForkInventory;
++
++/*
++ * Snapshot every live QemuMutex/QemuRecMutex and its instantaneous owner and
++ * waiter state.  The report is observational and does not hold a lock barrier
++ * across another operation or authorize a fork.
++ */
++void qemu_mutex_hot_fork_inventory(QemuMutexHotForkInventory *inventory);
++void qemu_mutex_hot_fork_inventory_destroy(
++    QemuMutexHotForkInventory *inventory);
+ #endif
+ 
+ struct Notifier;
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 3ccea5d5b..74f5b0fae 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -308,6 +308,74 @@ qmp_query_crucible_hot_fork_aio_inventory(Error **errp)
+     return report;
+ }
+ 
++CrucibleHotForkMutexInventory *
++qmp_query_crucible_hot_fork_mutex_inventory(Error **errp)
++{
++#ifdef CONFIG_POSIX
++    CrucibleHotForkMutexInventory *report =
++        g_new0(CrucibleHotForkMutexInventory, 1);
++    QemuMutexHotForkInventory inventory;
++    CrucibleHotForkMutexList **tail = &report->mutexes;
++    uint64_t previous_mutex_id = 0;
++    bool valid_entries = true;
++    size_t index;
++
++    report->schema_version = 1;
++    qemu_mutex_hot_fork_inventory(&inventory);
++    report->generation = inventory.generation;
++    for (index = 0; index < inventory.entry_count; index++) {
++        QemuMutexHotForkInventoryEntry *source = &inventory.entries[index];
++        CrucibleHotForkMutex *mutex =
++            g_new0(CrucibleHotForkMutex, 1);
++        CrucibleHotForkMutexList *node =
++            g_new0(CrucibleHotForkMutexList, 1);
++
++        mutex->mutex_id = source->mutex_id;
++        mutex->owner_thread_id = source->owner_thread_id;
++        mutex->recursion_depth = source->recursion_depth;
++        mutex->acquisition_waiters = source->acquisition_waiters;
++        mutex->condition_waiters = source->condition_waiters;
++        mutex->recursive = source->recursive;
++        mutex->unlock_active = source->unlock_active;
++        mutex->ownership_valid = source->ownership_valid;
++        if (source->mutex_id == 0 ||
++            (index != 0 && source->mutex_id <= previous_mutex_id) ||
++            source->owner_thread_id < 0 ||
++            ((source->owner_thread_id == 0) !=
++             (source->recursion_depth == 0))) {
++            valid_entries = false;
++        }
++        previous_mutex_id = source->mutex_id;
++        if (source->recursive) {
++            report->recursive_mutexes++;
++        }
++        if (source->owner_thread_id > 0) {
++            report->owned_mutexes++;
++        }
++        report->acquisition_waiters += source->acquisition_waiters;
++        report->condition_waiters += source->condition_waiters;
++        if (source->unlock_active) {
++            report->unlock_transitions++;
++        }
++        if (!source->ownership_valid) {
++            report->invalid_mutexes++;
++        }
++        node->value = mutex;
++        *tail = node;
++        tail = &node->next;
++    }
++    report->mutex_count = inventory.entry_count;
++    report->overflowed = inventory.overflowed;
++    report->complete = !inventory.overflowed && valid_entries &&
++        report->invalid_mutexes == 0;
++    qemu_mutex_hot_fork_inventory_destroy(&inventory);
++    return report;
++#else
++    error_setg(errp, "Crucible hot-fork mutex inventory requires POSIX");
++    return NULL;
++#endif
++}
++
+ void qmp_cont(Error **errp)
+ {
+     BlockBackend *blk;
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 1d917f459..9dd7338ed 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -440,6 +440,100 @@
+ { 'command': 'query-crucible-hot-fork-aio-inventory',
+   'returns': 'CrucibleHotForkAioInventory' }
+ 
++##
++# @CrucibleHotForkMutex:
++#
++# One process-local QemuMutex or QemuRecMutex and its instantaneous ownership.
++#
++# @mutex-id: positive process-local mutex identifier
++#
++# @owner-thread-id: operating-system owner thread, or zero when unowned
++#
++# @recursion-depth: current ownership depth, zero exactly when unowned
++#
++# @acquisition-waiters: threads inside a lock or try-lock operation
++#
++# @condition-waiters: threads sleeping or reacquiring through a condition
++#
++# @recursive: whether this is a QemuRecMutex
++#
++# @unlock-active: whether an owner is inside the unlock transition
++#
++# @ownership-valid: whether every observed ownership transition followed the
++#     QemuMutex contract
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkMutex',
++  'data': { 'mutex-id': 'uint64',
++            'owner-thread-id': 'int64',
++            'recursion-depth': 'uint32',
++            'acquisition-waiters': 'uint32',
++            'condition-waiters': 'uint32',
++            'recursive': 'bool',
++            'unlock-active': 'bool',
++            'ownership-valid': 'bool' } }
++
++##
++# @CrucibleHotForkMutexInventory:
++#
++# Bounded observational snapshot of every live QemuMutex and QemuRecMutex.
++# This report does not acquire or retain a process-fork lock barrier.
++#
++# @schema-version: inventory contract version, currently 1
++#
++# @generation: monotonic process-local mutex create/destroy counter
++#
++# @complete: true exactly when the registry did not overflow, identifiers and
++#     owner/depth pairs are valid, and no ownership violation was observed
++#
++# @overflowed: whether one or more mutexes exceeded the retained bound
++#
++# @mutex-count: number of retained mutexes
++#
++# @recursive-mutexes: retained recursive mutexes
++#
++# @owned-mutexes: retained mutexes with a positive owner
++#
++# @acquisition-waiters: sum of mutex acquisition waiter counts
++#
++# @condition-waiters: sum of mutex condition waiter counts
++#
++# @unlock-transitions: retained mutexes inside unlock
++#
++# @invalid-mutexes: retained mutexes with an ownership violation
++#
++# @mutexes: every retained mutex, sorted by @mutex-id and bounded to 65536
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkMutexInventory',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'complete': 'bool',
++            'overflowed': 'bool',
++            'mutex-count': 'uint32',
++            'recursive-mutexes': 'uint32',
++            'owned-mutexes': 'uint32',
++            'acquisition-waiters': 'uint64',
++            'condition-waiters': 'uint64',
++            'unlock-transitions': 'uint32',
++            'invalid-mutexes': 'uint32',
++            'mutexes': [ 'CrucibleHotForkMutex' ] } }
++
++##
++# @query-crucible-hot-fork-mutex-inventory:
++#
++# Query one bounded mutex ownership snapshot.  This command does not retain a
++# lock barrier, advance readiness proof bit 8, or authorize a fork.
++#
++# Returns: @CrucibleHotForkMutexInventory
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'query-crucible-hot-fork-mutex-inventory',
++  'returns': 'CrucibleHotForkMutexInventory' }
++
+ ##
+ # @SHUTDOWN:
+ #
+diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
+index fcd85b60e..1e5adee44 100644
+--- a/util/qemu-thread-posix.c
++++ b/util/qemu-thread-posix.c
+@@ -24,6 +24,14 @@
+ 
+ static bool name_threads;
+ 
++static pthread_mutex_t crucible_hot_fork_mutex_registry_guard =
++    PTHREAD_MUTEX_INITIALIZER;
++static QemuMutex *crucible_hot_fork_mutexes;
++static QemuMutex **crucible_hot_fork_mutexes_tail =
++    &crucible_hot_fork_mutexes;
++static uint64_t crucible_hot_fork_mutex_next_id = 1;
++static uint64_t crucible_hot_fork_mutex_generation;
++
+ void qemu_thread_naming(bool enable)
+ {
+     name_threads = enable;
+@@ -44,6 +52,216 @@ static void error_exit(int err, const char *msg)
+     abort();
+ }
+ 
++static void crucible_hot_fork_mutex_registry_lock(void)
++{
++    int err = pthread_mutex_lock(&crucible_hot_fork_mutex_registry_guard);
++
++    if (err) {
++        error_exit(err, __func__);
++    }
++}
++
++static void crucible_hot_fork_mutex_registry_unlock(void)
++{
++    int err = pthread_mutex_unlock(&crucible_hot_fork_mutex_registry_guard);
++
++    if (err) {
++        error_exit(err, __func__);
++    }
++}
++
++static void crucible_hot_fork_mutex_register(QemuMutex *mutex, bool recursive)
++{
++    crucible_hot_fork_mutex_registry_lock();
++    mutex->crucible_hot_fork_id = crucible_hot_fork_mutex_next_id++;
++    assert(mutex->crucible_hot_fork_id != 0);
++    mutex->crucible_hot_fork_owner_thread_id = 0;
++    mutex->crucible_hot_fork_recursion_depth = 0;
++    mutex->crucible_hot_fork_acquisition_waiters = 0;
++    mutex->crucible_hot_fork_condition_waiters = 0;
++    mutex->crucible_hot_fork_recursive = recursive;
++    mutex->crucible_hot_fork_unlock_active = false;
++    mutex->crucible_hot_fork_ownership_valid = true;
++    mutex->crucible_hot_fork_next = NULL;
++    mutex->crucible_hot_fork_prev = crucible_hot_fork_mutexes_tail;
++    *crucible_hot_fork_mutexes_tail = mutex;
++    crucible_hot_fork_mutexes_tail = &mutex->crucible_hot_fork_next;
++    crucible_hot_fork_mutex_generation++;
++    crucible_hot_fork_mutex_registry_unlock();
++}
++
++static void crucible_hot_fork_mutex_unregister(QemuMutex *mutex)
++{
++    crucible_hot_fork_mutex_registry_lock();
++    *mutex->crucible_hot_fork_prev = mutex->crucible_hot_fork_next;
++    if (mutex->crucible_hot_fork_next) {
++        mutex->crucible_hot_fork_next->crucible_hot_fork_prev =
++            mutex->crucible_hot_fork_prev;
++    } else {
++        crucible_hot_fork_mutexes_tail = mutex->crucible_hot_fork_prev;
++    }
++    mutex->crucible_hot_fork_next = NULL;
++    mutex->crucible_hot_fork_prev = NULL;
++    crucible_hot_fork_mutex_generation++;
++    crucible_hot_fork_mutex_registry_unlock();
++}
++
++static void crucible_hot_fork_mutex_wait_begin(QemuMutex *mutex)
++{
++    crucible_hot_fork_mutex_registry_lock();
++    qatomic_inc(&mutex->crucible_hot_fork_acquisition_waiters);
++    crucible_hot_fork_mutex_registry_unlock();
++}
++
++static void crucible_hot_fork_mutex_acquired(QemuMutex *mutex)
++{
++    int64_t thread_id;
++    int64_t owner;
++    uint32_t depth;
++
++    crucible_hot_fork_mutex_registry_lock();
++    thread_id = qemu_get_thread_id();
++    owner = qatomic_read(&mutex->crucible_hot_fork_owner_thread_id);
++    depth = qatomic_read(&mutex->crucible_hot_fork_recursion_depth);
++
++    if (mutex->crucible_hot_fork_recursive && owner == thread_id && depth > 0) {
++        if (depth == UINT32_MAX) {
++            qatomic_set(&mutex->crucible_hot_fork_ownership_valid, false);
++        } else {
++            qatomic_set(&mutex->crucible_hot_fork_recursion_depth, depth + 1);
++        }
++    } else {
++        if (owner != 0 || depth != 0) {
++            qatomic_set(&mutex->crucible_hot_fork_ownership_valid, false);
++        }
++        qatomic_set(&mutex->crucible_hot_fork_owner_thread_id, thread_id);
++        qatomic_set(&mutex->crucible_hot_fork_recursion_depth, 1);
++    }
++    qatomic_dec(&mutex->crucible_hot_fork_acquisition_waiters);
++    crucible_hot_fork_mutex_registry_unlock();
++}
++
++static void crucible_hot_fork_mutex_unlock_begin(QemuMutex *mutex)
++{
++    int64_t thread_id;
++    int64_t owner;
++    uint32_t depth;
++
++    crucible_hot_fork_mutex_registry_lock();
++    thread_id = qemu_get_thread_id();
++    owner = qatomic_read(&mutex->crucible_hot_fork_owner_thread_id);
++    depth = qatomic_read(&mutex->crucible_hot_fork_recursion_depth);
++
++    qatomic_set(&mutex->crucible_hot_fork_unlock_active, true);
++    if (owner != thread_id || depth == 0) {
++        qatomic_set(&mutex->crucible_hot_fork_ownership_valid, false);
++    }
++    if (mutex->crucible_hot_fork_recursive && depth > 1) {
++        qatomic_set(&mutex->crucible_hot_fork_recursion_depth, depth - 1);
++    } else {
++        qatomic_set(&mutex->crucible_hot_fork_recursion_depth, 0);
++        qatomic_set(&mutex->crucible_hot_fork_owner_thread_id, 0);
++    }
++    crucible_hot_fork_mutex_registry_unlock();
++}
++
++static void crucible_hot_fork_mutex_unlock_end(QemuMutex *mutex)
++{
++    crucible_hot_fork_mutex_registry_lock();
++    qatomic_set(&mutex->crucible_hot_fork_unlock_active, false);
++    crucible_hot_fork_mutex_registry_unlock();
++}
++
++static void crucible_hot_fork_mutex_condition_wait_begin(QemuMutex *mutex)
++{
++    int64_t owner;
++    uint32_t depth;
++
++    crucible_hot_fork_mutex_registry_lock();
++    owner = qatomic_read(&mutex->crucible_hot_fork_owner_thread_id);
++    depth = qatomic_read(&mutex->crucible_hot_fork_recursion_depth);
++
++    qatomic_inc(&mutex->crucible_hot_fork_condition_waiters);
++    if (owner != qemu_get_thread_id() || depth != 1 ||
++        mutex->crucible_hot_fork_recursive) {
++        qatomic_set(&mutex->crucible_hot_fork_ownership_valid, false);
++    }
++    qatomic_set(&mutex->crucible_hot_fork_recursion_depth, 0);
++    qatomic_set(&mutex->crucible_hot_fork_owner_thread_id, 0);
++    crucible_hot_fork_mutex_registry_unlock();
++}
++
++static void crucible_hot_fork_mutex_condition_wait_end(QemuMutex *mutex)
++{
++    int64_t owner;
++    uint32_t depth;
++
++    crucible_hot_fork_mutex_registry_lock();
++    owner = qatomic_read(&mutex->crucible_hot_fork_owner_thread_id);
++    depth = qatomic_read(&mutex->crucible_hot_fork_recursion_depth);
++
++    if (owner != 0 || depth != 0) {
++        qatomic_set(&mutex->crucible_hot_fork_ownership_valid, false);
++    }
++    qatomic_set(&mutex->crucible_hot_fork_owner_thread_id,
++                qemu_get_thread_id());
++    qatomic_set(&mutex->crucible_hot_fork_recursion_depth, 1);
++    qatomic_dec(&mutex->crucible_hot_fork_condition_waiters);
++    crucible_hot_fork_mutex_registry_unlock();
++}
++
++void qemu_mutex_hot_fork_inventory(QemuMutexHotForkInventory *inventory)
++{
++    QemuMutex *mutex;
++    size_t count = 0;
++
++    *inventory = (QemuMutexHotForkInventory) { 0 };
++    crucible_hot_fork_mutex_registry_lock();
++    inventory->generation = crucible_hot_fork_mutex_generation;
++    for (mutex = crucible_hot_fork_mutexes; mutex;
++         mutex = mutex->crucible_hot_fork_next) {
++        if (count == QEMU_HOT_FORK_MUTEX_INVENTORY_MAX) {
++            inventory->overflowed = true;
++            break;
++        }
++        count++;
++    }
++    inventory->entries = g_new0(QemuMutexHotForkInventoryEntry, count);
++    inventory->entry_count = count;
++    count = 0;
++    for (mutex = crucible_hot_fork_mutexes; mutex;
++         mutex = mutex->crucible_hot_fork_next) {
++        QemuMutexHotForkInventoryEntry *entry;
++
++        if (count == inventory->entry_count) {
++            break;
++        }
++        entry = &inventory->entries[count++];
++        entry->mutex_id = mutex->crucible_hot_fork_id;
++        entry->owner_thread_id = qatomic_read(
++            &mutex->crucible_hot_fork_owner_thread_id);
++        entry->recursion_depth = qatomic_read(
++            &mutex->crucible_hot_fork_recursion_depth);
++        entry->acquisition_waiters = qatomic_read(
++            &mutex->crucible_hot_fork_acquisition_waiters);
++        entry->condition_waiters = qatomic_read(
++            &mutex->crucible_hot_fork_condition_waiters);
++        entry->recursive = mutex->crucible_hot_fork_recursive;
++        entry->unlock_active = qatomic_read(
++            &mutex->crucible_hot_fork_unlock_active);
++        entry->ownership_valid = qatomic_read(
++            &mutex->crucible_hot_fork_ownership_valid);
++    }
++    crucible_hot_fork_mutex_registry_unlock();
++}
++
++void qemu_mutex_hot_fork_inventory_destroy(
++    QemuMutexHotForkInventory *inventory)
++{
++    g_free(inventory->entries);
++    *inventory = (QemuMutexHotForkInventory) { 0 };
++}
++
+ static inline clockid_t qemu_timedwait_clockid(void)
+ {
+ #ifdef CONFIG_PTHREAD_CONDATTR_SETCLOCK
+@@ -72,6 +290,7 @@ void qemu_mutex_init(QemuMutex *mutex)
+     if (err)
+         error_exit(err, __func__);
+     qemu_mutex_post_init(mutex);
++    crucible_hot_fork_mutex_register(mutex, false);
+ }
+ 
+ void qemu_mutex_destroy(QemuMutex *mutex)
+@@ -79,6 +298,7 @@ void qemu_mutex_destroy(QemuMutex *mutex)
+     int err;
+ 
+     assert(mutex->initialized);
++    crucible_hot_fork_mutex_unregister(mutex);
+     mutex->initialized = false;
+     err = pthread_mutex_destroy(&mutex->lock);
+     if (err)
+@@ -90,11 +310,13 @@ void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file, const int line)
+     int err;
+ 
+     assert(mutex->initialized);
++    crucible_hot_fork_mutex_wait_begin(mutex);
+     qemu_mutex_pre_lock(mutex, file, line);
+     err = pthread_mutex_lock(&mutex->lock);
+     if (err)
+         error_exit(err, __func__);
+     qemu_mutex_post_lock(mutex, file, line);
++    crucible_hot_fork_mutex_acquired(mutex);
+ }
+ 
+ int qemu_mutex_trylock_impl(QemuMutex *mutex, const char *file, const int line)
+@@ -102,11 +324,16 @@ int qemu_mutex_trylock_impl(QemuMutex *mutex, const char *file, const int line)
+     int err;
+ 
+     assert(mutex->initialized);
++    crucible_hot_fork_mutex_wait_begin(mutex);
+     err = pthread_mutex_trylock(&mutex->lock);
+     if (err == 0) {
+         qemu_mutex_post_lock(mutex, file, line);
++        crucible_hot_fork_mutex_acquired(mutex);
+         return 0;
+     }
++    crucible_hot_fork_mutex_registry_lock();
++    qatomic_dec(&mutex->crucible_hot_fork_acquisition_waiters);
++    crucible_hot_fork_mutex_registry_unlock();
+     if (err != EBUSY) {
+         error_exit(err, __func__);
+     }
+@@ -118,10 +345,12 @@ void qemu_mutex_unlock_impl(QemuMutex *mutex, const char *file, const int line)
+     int err;
+ 
+     assert(mutex->initialized);
++    crucible_hot_fork_mutex_unlock_begin(mutex);
+     qemu_mutex_pre_unlock(mutex, file, line);
+     err = pthread_mutex_unlock(&mutex->lock);
+     if (err)
+         error_exit(err, __func__);
++    crucible_hot_fork_mutex_unlock_end(mutex);
+ }
+ 
+ void qemu_rec_mutex_init(QemuRecMutex *mutex)
+@@ -137,6 +366,7 @@ void qemu_rec_mutex_init(QemuRecMutex *mutex)
+         error_exit(err, __func__);
+     }
+     mutex->m.initialized = true;
++    crucible_hot_fork_mutex_register(&mutex->m, true);
+ }
+ 
+ void qemu_rec_mutex_destroy(QemuRecMutex *mutex)
+@@ -221,9 +451,11 @@ void qemu_cond_wait_impl(QemuCond *cond, QemuMutex *mutex, const char *file, con
+     int err;
+ 
+     assert(cond->initialized);
++    crucible_hot_fork_mutex_condition_wait_begin(mutex);
+     qemu_mutex_pre_unlock(mutex, file, line);
+     err = pthread_cond_wait(&cond->cond, &mutex->lock);
+     qemu_mutex_post_lock(mutex, file, line);
++    crucible_hot_fork_mutex_condition_wait_end(mutex);
+     if (err)
+         error_exit(err, __func__);
+ }
+@@ -235,9 +467,11 @@ qemu_cond_timedwait_ts(QemuCond *cond, QemuMutex *mutex, struct timespec *ts,
+     int err;
+ 
+     assert(cond->initialized);
++    crucible_hot_fork_mutex_condition_wait_begin(mutex);
+     trace_qemu_mutex_unlock(mutex, file, line);
+     err = pthread_cond_timedwait(&cond->cond, &mutex->lock, ts);
+     trace_qemu_mutex_locked(mutex, file, line);
++    crucible_hot_fork_mutex_condition_wait_end(mutex);
+     if (err && err != ETIMEDOUT) {
+         error_exit(err, __func__);
+     }

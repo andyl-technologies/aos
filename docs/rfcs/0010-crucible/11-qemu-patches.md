@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **77 patches**. This count is checked against
+The carried series contains **112 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -285,6 +285,7 @@ CAMPAIGN HOT FORK (RFC-0016)                           class  enforces
   crucible-hot-fork-thread-ownership subsystem owners   F    HFORK-3, HFORK-4
   crucible-hot-fork-rcu-inventory bounded RCU evidence  F    HFORK-3, HFORK-4
   crucible-hot-fork-aio-inventory bounded AIO evidence  F    HFORK-3, HFORK-4
+  crucible-hot-fork-mutex-inventory bounded lock state  F    HFORK-3, HFORK-4
 
 DIAGNOSTIC-ONLY (dev, NOT shipped)                     class  enforces
   crucible-tcg-exec-diag ........ per-exec icount trace      dev  divergence debug
@@ -1680,6 +1681,32 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   across another operation, coordinate `fork(2)`, or change readiness bit 3.
   Activity may change immediately after the response; only a future
   subsystem-owned barrier may promote the proof.
+- **Risk:** F.
+
+### crucible-hot-fork-mutex-inventory — expose bounded QEMU lock ownership
+
+- **Patch:** `0115-crucible-hot-fork-mutex-inventory.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4].
+- **Mechanism:** every live POSIX `QemuMutex` and `QemuRecMutex` receives a
+  positive process-local identity and enters a 65,536-entry lifecycle registry.
+  Lock, try-lock, recursive-lock, condition-wait, and unlock transitions retain
+  exact owner thread, recursion depth, acquisition waiters, condition waiters,
+  and active unlock state. A fixed version-1 QMP query returns the sorted
+  records, checked aggregates, sticky ownership validity, and a create/destroy
+  generation. All instrumentation-state transitions and snapshots serialize on
+  the registry guard, which is a raw instrumentation-private pthread mutex so
+  inventorying QEMU mutexes does not recursively instrument itself.
+- **Micro-test:** strict Rust decoding rejects unknown or additional fields,
+  changed schema, inconsistent owner/depth pairs, nonrecursive depth above one,
+  invalid or unsorted identities, inconsistent completeness, and mismatched
+  aggregates. The live patched-QEMU gate requires stable repeated reports under
+  the supported paused profile and binds every positive owner to the exact QEMU
+  thread registry. Stock QEMU must not expose the command.
+- **Inertness:** the query and counters are observational. They do not acquire
+  all locks, retain a process-fork barrier, choose a child disposition, run a
+  child reinitializer, coordinate `fork(2)`, or change readiness bit 8. A lock
+  may transition immediately after the response; only the future QEMU-owned
+  coordinator may turn this inventory into a retained fork proof.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

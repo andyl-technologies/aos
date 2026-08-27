@@ -1,18 +1,3 @@
-From e130dd1f8c3891df306ac7a26d2b8943c5349e1d Mon Sep 17 00:00:00 2001
-From: Dylan Plecki <dylan@andyl.com>
-Date: Mon, 1 Jan 2001 00:00:01 +0000
-Subject: [PATCH] crucible: inventory hot-fork AIO activity
-
-Signed-off-by: Dylan Plecki <dylan@andyl.com>
----
- include/block/aio.h |  38 +++++++++++++++
- monitor/qmp-cmds.c  |  57 +++++++++++++++++++++++
- qapi/run-state.json |  97 ++++++++++++++++++++++++++++++++++++++
- util/aio-posix.c    |   4 ++
- util/aio-win32.c    |   3 ++
- util/async.c        | 110 ++++++++++++++++++++++++++++++++++++++++++++
- 6 files changed, 309 insertions(+)
-
 diff --git a/include/block/aio.h b/include/block/aio.h
 index 99ff48420..903e3b96b 100644
 --- a/include/block/aio.h
@@ -476,6 +461,3 @@ index 863416dee..0ae679613 100644
  }
  
  void aio_context_set_thread_pool_params(AioContext *ctx, int64_t min,
--- 
-2.48.1
-

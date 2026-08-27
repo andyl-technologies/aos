@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "66e2e4573cf4a61fff2ba1ce19510812b5eb046fae758fa8399e08070c2b6335";
+  patchBranchBundleSha256 = "78a1cc3a4f3a45412058a1dacbf53802b199d993558eb07705d9c7ea9dbb2c49";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "e130dd1f8c3891df306ac7a26d2b8943c5349e1d";
+  patchBranchHeadCommit = "b062e01cf74267d510566e9d80499bd6e19149af";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1075,6 +1075,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded versioned QMP inventory reports every registered AioContext, exact home-thread ownership, active poll and dispatch calls, queued and active bottom halves, queued coroutines, and notification state; the report remains observational, does not enumerate timers or handlers, supplies no held drain barrier, and leaves the AIO readiness proof clear";
+    }
+    {
+      file = "0115-crucible-hot-fork-mutex-inventory.patch";
+      branchSubject = "crucible: inventory hot-fork mutex ownership";
+      branchCommit = "b062e01cf74267d510566e9d80499bd6e19149af";
+      branchTree = "f12c76a4166650b0211b40d149824fe37a978e26";
+      catalogName = "crucible-hot-fork-mutex-inventory";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "a bounded versioned QMP inventory reports every live POSIX QemuMutex and QemuRecMutex, exact owner and recursion state, acquisition and condition waiters, unlock transitions, and sticky ownership validity; the report remains observational, supplies no held mutex barrier or child reinitializer, and leaves the child-resource readiness proof clear";
     }
   ];
   catalogOnlyCapabilities = [

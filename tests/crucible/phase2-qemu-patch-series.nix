@@ -797,6 +797,13 @@
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded QMP inventory exposes every registered AioContext plus instantaneous poll, dispatch, bottom-half, coroutine, and notification activity without claiming a held barrier or acknowledging the AIO readiness proof";
     }
+    {
+      file = "0115-crucible-hot-fork-mutex-inventory.patch";
+      catalogName = "crucible-hot-fork-mutex-inventory";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "a bounded QMP inventory exposes every live QemuMutex and QemuRecMutex plus exact instantaneous ownership, recursion, acquisition, condition-wait, and unlock-transition state without claiming a held barrier, child reinitializer, or readiness proof";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

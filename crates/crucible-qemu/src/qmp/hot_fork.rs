@@ -17,6 +17,9 @@ pub const QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND: &str =
 pub const QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND: &str = "query-crucible-hot-fork-rcu-inventory";
 /// QMP command name used for QEMU's bounded AioContext activity inventory.
 pub const QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND: &str = "query-crucible-hot-fork-aio-inventory";
+/// QMP command name used for QEMU's bounded mutex ownership inventory.
+pub const QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND: &str =
+    "query-crucible-hot-fork-mutex-inventory";
 
 /// Version of the QEMU-owned hot-fork proof-bit contract.
 pub const QMP_HOT_FORK_READINESS_SCHEMA_VERSION: u32 = 1;
@@ -26,6 +29,8 @@ pub const QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION: u32 = 2;
 pub const QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned AioContext activity inventory contract.
 pub const QMP_HOT_FORK_AIO_INVENTORY_SCHEMA_VERSION: u32 = 1;
+/// Version of the QEMU-owned mutex ownership inventory contract.
+pub const QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION: u32 = 1;
 
 /// Complete proof bitmap required by the version-1 hot-fork contract.
 pub const QMP_HOT_FORK_REQUIRED_PROOFS: u64 = (1_u64 << 9) - 1;
@@ -35,6 +40,8 @@ pub const QMP_HOT_FORK_THREAD_INVENTORY_MAX: usize = 65_536;
 pub const QMP_HOT_FORK_RCU_INVENTORY_MAX: usize = 65_536;
 /// Maximum registered AioContexts retained by one inventory response.
 pub const QMP_HOT_FORK_AIO_INVENTORY_MAX: usize = 65_536;
+/// Maximum registered mutexes retained by one inventory response.
+pub const QMP_HOT_FORK_MUTEX_INVENTORY_MAX: usize = 65_536;
 /// Maximum UTF-8 bytes retained for one QEMU thread name.
 pub const QMP_HOT_FORK_THREAD_NAME_MAX_BYTES: usize = 256;
 
@@ -462,6 +469,136 @@ impl QmpHotForkAioInventory {
     #[must_use]
     pub fn contexts(&self) -> &[QmpHotForkAioContext] {
         &self.contexts
+    }
+}
+
+/// One live QEMU mutex and its instantaneous ownership state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QmpHotForkMutex {
+    mutex_id: u64,
+    owner_thread_id: Option<u32>,
+    recursion_depth: u32,
+    acquisition_waiters: u32,
+    condition_waiters: u32,
+    recursive: bool,
+    unlock_active: bool,
+    ownership_valid: bool,
+}
+
+impl QmpHotForkMutex {
+    /// Returns the positive process-local mutex identifier.
+    #[must_use]
+    pub const fn mutex_id(self) -> u64 {
+        self.mutex_id
+    }
+
+    /// Returns the operating-system owner thread, if held.
+    #[must_use]
+    pub const fn owner_thread_id(self) -> Option<u32> {
+        self.owner_thread_id
+    }
+
+    /// Returns the current recursive ownership depth.
+    #[must_use]
+    pub const fn recursion_depth(self) -> u32 {
+        self.recursion_depth
+    }
+
+    /// Returns threads currently inside lock acquisition.
+    #[must_use]
+    pub const fn acquisition_waiters(self) -> u32 {
+        self.acquisition_waiters
+    }
+
+    /// Returns threads sleeping or reacquiring through a condition wait.
+    #[must_use]
+    pub const fn condition_waiters(self) -> u32 {
+        self.condition_waiters
+    }
+
+    /// Returns whether this record describes a recursive mutex.
+    #[must_use]
+    pub const fn recursive(self) -> bool {
+        self.recursive
+    }
+
+    /// Returns whether an owner is inside the unlock transition.
+    #[must_use]
+    pub const fn unlock_active(self) -> bool {
+        self.unlock_active
+    }
+
+    /// Returns whether every observed ownership transition was valid.
+    #[must_use]
+    pub const fn ownership_valid(self) -> bool {
+        self.ownership_valid
+    }
+}
+
+/// Exact bounded observational snapshot of QEMU mutex ownership.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QmpHotForkMutexInventory {
+    generation: u64,
+    complete: bool,
+    overflowed: bool,
+    mutexes: Vec<QmpHotForkMutex>,
+}
+
+impl QmpHotForkMutexInventory {
+    #[cfg(test)]
+    pub(crate) fn one_owned(mutex_id: u64, owner_thread_id: u32) -> Self {
+        Self {
+            generation: 1,
+            complete: true,
+            overflowed: false,
+            mutexes: vec![QmpHotForkMutex {
+                mutex_id,
+                owner_thread_id: Some(owner_thread_id),
+                recursion_depth: 1,
+                acquisition_waiters: 0,
+                condition_waiters: 0,
+                recursive: false,
+                unlock_active: false,
+                ownership_valid: true,
+            }],
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn incomplete() -> Self {
+        Self {
+            generation: 1,
+            complete: false,
+            overflowed: true,
+            mutexes: Vec::new(),
+        }
+    }
+
+    /// Returns the process-local mutex lifecycle generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns whether the bounded registry and ownership records are valid.
+    ///
+    /// Completeness is observational and does not prove that omitted threads
+    /// hold no locks across a later fork operation.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.complete
+    }
+
+    /// Returns whether live mutexes exceeded the inventory bound.
+    #[must_use]
+    pub const fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
+    /// Returns every retained mutex in ascending process-local identifier order.
+    #[must_use]
+    pub fn mutexes(&self) -> &[QmpHotForkMutex] {
+        &self.mutexes
     }
 }
 
@@ -893,5 +1030,209 @@ pub(super) fn parse_hot_fork_aio_inventory(
         complete,
         overflowed,
         contexts,
+    })
+}
+
+pub(super) fn parse_hot_fork_mutex_inventory(
+    value: &Value,
+) -> Result<QmpHotForkMutexInventory, QmpError> {
+    let malformed = || QmpError::MalformedTypedResponse {
+        command: QmpCommandKind::QueryHotForkMutexInventory,
+        response: value.to_string(),
+    };
+    let object = value.as_object().ok_or_else(&malformed)?;
+    let fields = [
+        "schema-version",
+        "generation",
+        "complete",
+        "overflowed",
+        "mutex-count",
+        "recursive-mutexes",
+        "owned-mutexes",
+        "acquisition-waiters",
+        "condition-waiters",
+        "unlock-transitions",
+        "invalid-mutexes",
+        "mutexes",
+    ];
+    if object.len() != fields.len() || !fields.iter().all(|field| object.contains_key(*field)) {
+        return Err(malformed());
+    }
+
+    let schema_version = object
+        .get("schema-version")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let generation = object
+        .get("generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let complete = object
+        .get("complete")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let overflowed = object
+        .get("overflowed")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let declared_mutexes = object
+        .get("mutex-count")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_recursive = object
+        .get("recursive-mutexes")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_owned = object
+        .get("owned-mutexes")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_acquisition_waiters = object
+        .get("acquisition-waiters")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let declared_condition_waiters = object
+        .get("condition-waiters")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let declared_unlocks = object
+        .get("unlock-transitions")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_invalid = object
+        .get("invalid-mutexes")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let values = object
+        .get("mutexes")
+        .and_then(Value::as_array)
+        .ok_or_else(&malformed)?;
+    if schema_version != u64::from(QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION)
+        || values.len() > QMP_HOT_FORK_MUTEX_INVENTORY_MAX
+        || declared_mutexes != values.len()
+    {
+        return Err(malformed());
+    }
+
+    let mut mutexes = Vec::with_capacity(values.len());
+    let mut previous_mutex_id = None;
+    let mut recursive_mutexes = 0_usize;
+    let mut owned_mutexes = 0_usize;
+    let mut acquisition_waiters = 0_u64;
+    let mut condition_waiters = 0_u64;
+    let mut unlock_transitions = 0_usize;
+    let mut invalid_mutexes = 0_usize;
+    for value in values {
+        let entry = value.as_object().ok_or_else(&malformed)?;
+        let entry_fields = [
+            "mutex-id",
+            "owner-thread-id",
+            "recursion-depth",
+            "acquisition-waiters",
+            "condition-waiters",
+            "recursive",
+            "unlock-active",
+            "ownership-valid",
+        ];
+        if entry.len() != entry_fields.len()
+            || !entry_fields.iter().all(|field| entry.contains_key(*field))
+        {
+            return Err(malformed());
+        }
+
+        let mutex_id = entry
+            .get("mutex-id")
+            .and_then(Value::as_u64)
+            .filter(|mutex_id| *mutex_id != 0)
+            .ok_or_else(&malformed)?;
+        if previous_mutex_id.is_some_and(|previous| previous >= mutex_id) {
+            return Err(malformed());
+        }
+        previous_mutex_id = Some(mutex_id);
+        let owner_thread_id = match entry.get("owner-thread-id").and_then(Value::as_i64) {
+            Some(0) => None,
+            Some(thread_id) => Some(
+                u32::try_from(thread_id)
+                    .ok()
+                    .filter(|thread_id| *thread_id != 0)
+                    .ok_or_else(&malformed)?,
+            ),
+            None => return Err(malformed()),
+        };
+        let recursion_depth = entry
+            .get("recursion-depth")
+            .and_then(Value::as_u64)
+            .and_then(|depth| u32::try_from(depth).ok())
+            .ok_or_else(&malformed)?;
+        let entry_acquisition_waiters = entry
+            .get("acquisition-waiters")
+            .and_then(Value::as_u64)
+            .and_then(|count| u32::try_from(count).ok())
+            .ok_or_else(&malformed)?;
+        let entry_condition_waiters = entry
+            .get("condition-waiters")
+            .and_then(Value::as_u64)
+            .and_then(|count| u32::try_from(count).ok())
+            .ok_or_else(&malformed)?;
+        let recursive = entry
+            .get("recursive")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let unlock_active = entry
+            .get("unlock-active")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let ownership_valid = entry
+            .get("ownership-valid")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        if owner_thread_id.is_some() != (recursion_depth != 0)
+            || (!recursive && recursion_depth > 1)
+        {
+            return Err(malformed());
+        }
+
+        recursive_mutexes += usize::from(recursive);
+        owned_mutexes += usize::from(owner_thread_id.is_some());
+        acquisition_waiters = acquisition_waiters
+            .checked_add(u64::from(entry_acquisition_waiters))
+            .ok_or_else(&malformed)?;
+        condition_waiters = condition_waiters
+            .checked_add(u64::from(entry_condition_waiters))
+            .ok_or_else(&malformed)?;
+        unlock_transitions += usize::from(unlock_active);
+        invalid_mutexes += usize::from(!ownership_valid);
+        mutexes.push(QmpHotForkMutex {
+            mutex_id,
+            owner_thread_id,
+            recursion_depth,
+            acquisition_waiters: entry_acquisition_waiters,
+            condition_waiters: entry_condition_waiters,
+            recursive,
+            unlock_active,
+            ownership_valid,
+        });
+    }
+    if declared_recursive != recursive_mutexes
+        || declared_owned != owned_mutexes
+        || declared_acquisition_waiters != acquisition_waiters
+        || declared_condition_waiters != condition_waiters
+        || declared_unlocks != unlock_transitions
+        || declared_invalid != invalid_mutexes
+        || complete != (!overflowed && invalid_mutexes == 0)
+    {
+        return Err(malformed());
+    }
+
+    Ok(QmpHotForkMutexInventory {
+        generation,
+        complete,
+        overflowed,
+        mutexes,
     })
 }
