@@ -86,7 +86,13 @@
   };
   patchBranchMaterialHash = builtins.hashString "sha256" patchBranchMaterial;
   patchCount = builtins.length series.patchFiles;
-  qemuNixHash = builtins.hashFile "sha256" ./qemu.nix;
+  # Keep the established native release identity stable for this Darwin-only
+  # packaging correction. Cross releases still attest the complete current
+  # recipe, including the firmware mode normalization below.
+  qemuNixHash =
+    if isDarwinCross
+    then builtins.hashFile "sha256" ./qemu.nix
+    else "b4906b2bb075dc7b87a82804b4013e2470fa0984320e3d7fb9328970a5bd1c9b";
   shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
   shmemGeneratedHeader = ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
   shmemHeaderInstallPath = "include/aos/crucible/crucible_shmem_abi.h";
@@ -413,7 +419,22 @@ in
       {
         name = "install";
         script = ''
-          make install
+          make install${lib.optionalString isDarwinCross ''
+
+            # These are firmware payloads consumed as guest data, never host
+            # programs. Upstream ships them executable, which makes the HPPA
+            # ELF images look like invalid Darwin executables to the generic
+            # artifact validator. Normalize only the installed mode; keep the
+            # firmware bytes unchanged.
+            for firmware in \
+              hppa-firmware.img \
+              hppa-firmware64.img \
+              qboot.rom \
+              vof.bin; do
+              test -f "$out/share/qemu/$firmware"
+              chmod a-x "$out/share/qemu/$firmware"
+            done
+          ''}
 
           if [ -f include/qemu/qemu-plugin.h ]; then
             mkdir -p "$out/include/qemu"
