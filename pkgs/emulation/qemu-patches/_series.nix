@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "78a1cc3a4f3a45412058a1dacbf53802b199d993558eb07705d9c7ea9dbb2c49";
+  patchBranchBundleSha256 = "777292d76925d14f5f96105b8c5dd73e9b131103bfe25524473f135152767adf";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "b062e01cf74267d510566e9d80499bd6e19149af";
+  patchBranchHeadCommit = "640192ed7c8003ae0b1867de1ed1b40c43db1064";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1037,50 +1037,80 @@ let
       capability = "a vCPU that executes HLT before exhausting its serialized RR turn leaves the execution loop when no alternative vCPU is runnable; a helper-marked multi-vCPU guest PAUSE fences control-boundary acknowledgement until it commits a cursor-zero early handoff immediately after icount accounting and before callbacks or host-work exits, so a released spin lock cannot be reacquired before a waiting peer runs; and that exact completed-turn handoff admits safe register capture while other owner mismatches fail closed";
     }
     {
-      file = "0111-crucible-hot-fork-readiness.patch";
+      file = "0111-crucible-accelerator-service-schema.patch";
+      branchSubject = "crucible: correct accelerator service schema";
+      branchCommit = "c1dbfb8cdf88e05d59fdc52a52a84f01f021a294";
+      branchTree = "bd83546cd7c1ccbce13d71a62b7ba0ff9ed1f7f9";
+      catalogName = "crucible-accelerator-service-schema";
+      class = "F";
+      enforces = "QFP-ACCEL-SERVICE,FAULT-ORDER";
+      capability = "typed accelerator service commands admit the ratio-valued capacity field used by the versioned node-fault payload before atomically installing compute, memory-rate, thermal, and power service policy";
+    }
+    {
+      file = "0112-crucible-compile-affected-clock-sources.patch";
+      branchSubject = "crucible: compile only affected clock sources";
+      branchCommit = "904a0454b3d42cbb84bc158bc8d2e4594cec4560";
+      branchTree = "7167097468bc36dec5a4e8175e762f2a2fbfe84b";
+      catalogName = "crucible-compile-affected-clock-sources";
+      class = "F";
+      enforces = "QFP-CLOCK-SOURCE,FAULT-ORDER";
+      capability = "a committed clock rule recompiles and rearms only sources selected by that exact rule, so an unrelated source that cannot project raw time at the stopped boundary cannot invalidate the authenticated transition";
+    }
+    {
+      file = "0113-crucible-restore-accelerator-rule-indexes.patch";
+      branchSubject = "crucible: restore accelerator rule indexes";
+      branchCommit = "b900da9c4e3eb5d0e422121f52fb844468569cf6";
+      branchTree = "738f7ed30240aefc43ce5036f49deed1d00baf5f";
+      catalogName = "crucible-restore-accelerator-rule-indexes";
+      class = "F";
+      enforces = "QFP-ACCEL-SERVICE,FAULT-RESTORE";
+      capability = "fresh-process VMState restore rebuilds each accelerator lifecycle, result, memory, and service rule index from the authenticated staged node-rule ledger before commit, preserving persistent accelerator behavior without duplicating rule ownership";
+    }
+    {
+      file = "0114-crucible-hot-fork-readiness.patch";
       branchSubject = "crucible: report hot-fork readiness proofs";
-      branchCommit = "7ff04305e4fde33c1889e392a16f1090bdac6225";
-      branchTree = "b34e3cec1b80e0cf66065de560fdb59052c13d52";
+      branchCommit = "492f2a11ec3f2f576b4416f440db6bfa2c1cb254";
+      branchTree = "013780a29e18b21d743a265f959f851250f2ec9c";
       catalogName = "crucible-hot-fork-readiness";
       class = "F";
       enforces = "HFORK-3,HFORK-4";
       capability = "bounded versioned QMP queries report QEMU-owned precise-icount, single-threaded sim RR, and exact paused/device-flush proofs plus a sorted generation-tagged registry of every active qemu_thread_create thread and the sole QMP coordinator; every non-coordinator remains unclassified and every unimplemented subsystem, mapping, external thread, and child-reinitialization proof stays clear so the audit cannot advertise hot fork";
     }
     {
-      file = "0112-crucible-hot-fork-thread-ownership.patch";
+      file = "0115-crucible-hot-fork-thread-ownership.patch";
       branchSubject = "crucible: classify unresolved hot-fork threads";
-      branchCommit = "4ee02f149151c2cedc56bfbd3254980e09397c58";
-      branchTree = "d2ba34f80ea4c35593ed4e4c4e3122cf7dcde8ca";
+      branchCommit = "785e7771dd37d5456d07c141627f8620bff1ac04";
+      branchTree = "be3f356920f4c43e210a407ef7dba54ecb6a41a4";
       catalogName = "crucible-hot-fork-thread-ownership";
       class = "F";
       enforces = "HFORK-3,HFORK-4";
       capability = "the bounded thread-registry schema explicitly assigns the RCU callback worker and every QEMU IOThread to unresolved subsystem-specific ownership classes while retaining them in the exact unclassified blocker count; no owner class supplies a barrier or child disposition and no readiness proof changes";
     }
     {
-      file = "0113-crucible-hot-fork-rcu-inventory.patch";
+      file = "0116-crucible-hot-fork-rcu-inventory.patch";
       branchSubject = "crucible: inventory hot-fork RCU state";
-      branchCommit = "79920e9d7583c44e03f0469fcd8d0b70c5dbefd7";
-      branchTree = "4937f9253ea7a64425a99ec2f3179e1cb46e2e0c";
+      branchCommit = "4a932e7074b02b3b07e53e79e5230b6c3eabbad1";
+      branchTree = "0b0e443773051a8a79ed1749f71005c10632c581";
       catalogName = "crucible-hot-fork-rcu-inventory";
       class = "F";
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded versioned QMP inventory reports every registered RCU reader, instantaneous read-side activity, submitted-but-incomplete callbacks, and active drain operations; the report remains observational, supplies no held quiescence barrier, and leaves the RCU readiness proof clear";
     }
     {
-      file = "0114-crucible-hot-fork-aio-inventory.patch";
+      file = "0117-crucible-hot-fork-aio-inventory.patch";
       branchSubject = "crucible: inventory hot-fork AIO activity";
-      branchCommit = "e130dd1f8c3891df306ac7a26d2b8943c5349e1d";
-      branchTree = "fd5d33c997b1000b09646cb0c1627d0a0f317de1";
+      branchCommit = "100ed66ed15bf1f1ff5a8da7dfaa690e1730b699";
+      branchTree = "0f6eca9721b407ff2c07e41f4f6797122ed5dd52";
       catalogName = "crucible-hot-fork-aio-inventory";
       class = "F";
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded versioned QMP inventory reports every registered AioContext, exact home-thread ownership, active poll and dispatch calls, queued and active bottom halves, queued coroutines, and notification state; the report remains observational, does not enumerate timers or handlers, supplies no held drain barrier, and leaves the AIO readiness proof clear";
     }
     {
-      file = "0115-crucible-hot-fork-mutex-inventory.patch";
+      file = "0118-crucible-hot-fork-mutex-inventory.patch";
       branchSubject = "crucible: inventory hot-fork mutex ownership";
-      branchCommit = "b062e01cf74267d510566e9d80499bd6e19149af";
-      branchTree = "f12c76a4166650b0211b40d149824fe37a978e26";
+      branchCommit = "640192ed7c8003ae0b1867de1ed1b40c43db1064";
+      branchTree = "7cf0cf5fde3e21cde7ebfef1ab41edb8a8160176";
       catalogName = "crucible-hot-fork-mutex-inventory";
       class = "F";
       enforces = "HFORK-3,HFORK-4";

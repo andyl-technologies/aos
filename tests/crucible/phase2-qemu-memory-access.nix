@@ -450,6 +450,9 @@ in
               printf 'advanced_matrix=corrected-poison,fetch-corrected-poison,access-error,architectural-exception,failed-region,retention,rowhammer,service,page-table-walk-read-corrupt-access-error-corrected-failed-region-service-retry-inspection-inert-x86-nested-stage1-stage2\n'
               printf 'dma_backend=actual-device-scoped-virtio-blk-read-write\n'
               printf 'dma_translation=frozen-direct-and-virtio-iommu-iova-to-gpa\n'
+              printf 'production_effect_row=memory.access_transform|cpu-dma-page-table-walk-matrix|gate:patch-microtests|actual-patched-qemu|before-after+outcome+page-table-walk\n'
+              printf 'production_effect_row=memory.region_state|failed-retention-rowhammer-matrix|gate:patch-microtests|actual-patched-qemu|region-state+victim-outcome\n'
+              printf 'production_effect_row=memory.service|cpu-dma-page-table-service-matrix|gate:patch-microtests|actual-patched-qemu|access-service-ledger+retry\n'
             } >"$out/result"
           '';
         }

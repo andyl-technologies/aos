@@ -1,0 +1,84 @@
+diff --git a/plugins/crucible-fault-accelerator.c b/plugins/crucible-fault-accelerator.c
+index dc1fe1c75..b70cbaaa5 100644
+--- a/plugins/crucible-fault-accelerator.c
++++ b/plugins/crucible-fault-accelerator.c
+@@ -69,7 +69,11 @@ typedef struct CrucibleAcceleratorVmstate {
+     uint8_t corrected[CRUCIBLE_ACCELERATOR_MEMORY_BYTES];
+     uint8_t uncorrectable[CRUCIBLE_ACCELERATOR_MEMORY_BYTES];
+     uint8_t terminal;
++    GPtrArray *lifecycle_rules;
++    GPtrArray *result_rules;
+     GPtrArray *result_impulses;
++    GPtrArray *memory_rules;
++    GPtrArray *service_rules;
+ } CrucibleAcceleratorVmstate;
+ 
+ typedef struct CrucibleAcceleratorResultImpulse {
+@@ -1624,7 +1628,11 @@ static void accelerator_vmstate_free(gpointer opaque)
+     CrucibleAcceleratorVmstate *state = opaque;
+ 
+     if (state) {
++        g_clear_pointer(&state->lifecycle_rules, g_ptr_array_unref);
++        g_clear_pointer(&state->result_rules, g_ptr_array_unref);
+         g_clear_pointer(&state->result_impulses, g_ptr_array_unref);
++        g_clear_pointer(&state->memory_rules, g_ptr_array_unref);
++        g_clear_pointer(&state->service_rules, g_ptr_array_unref);
+         g_free(state);
+     }
+ }
+@@ -1684,6 +1692,24 @@ static int accelerator_vmstate_prepare(const uint8_t *payload,
+             sizeof(state->corrected))) {
+         goto fail;
+     }
++    state->lifecycle_rules = accelerator_rule_array();
++    state->result_rules = accelerator_rule_array();
++    state->memory_rules = accelerator_rule_array();
++    state->service_rules = accelerator_rule_array();
++    if (!qemu_crucible_fault_rule_foreach_staged(
++            CRUCIBLE_FAULT_COMMAND_ACCELERATOR_LIFECYCLE,
++            accelerator_collect_rule, state->lifecycle_rules) ||
++        !qemu_crucible_fault_rule_foreach_staged(
++            CRUCIBLE_FAULT_COMMAND_ACCELERATOR_RESULT_TRANSFORM,
++            accelerator_collect_rule, state->result_rules) ||
++        !qemu_crucible_fault_rule_foreach_staged(
++            CRUCIBLE_FAULT_COMMAND_ACCELERATOR_MEMORY_EVENT,
++            accelerator_collect_rule, state->memory_rules) ||
++        !qemu_crucible_fault_rule_foreach_staged(
++            CRUCIBLE_FAULT_COMMAND_ACCELERATOR_SERVICE,
++            accelerator_collect_rule, state->service_rules)) {
++        goto fail;
++    }
+     state->result_impulses = g_ptr_array_new_with_free_func(
+         accelerator_result_impulse_free);
+     for (uint32_t i = 0; i < impulse_count; i++) {
+@@ -1763,13 +1789,30 @@ static void accelerator_vmstate_commit(void *opaque)
+     memcpy(crucible_accelerator.uncorrectable, state->uncorrectable,
+            sizeof(crucible_accelerator.uncorrectable));
+     crucible_accelerator.terminal = state->terminal;
++    g_clear_pointer(&crucible_accelerator.lifecycle_rules,
++                    g_ptr_array_unref);
++    crucible_accelerator.lifecycle_rules = state->lifecycle_rules;
++    state->lifecycle_rules = NULL;
++    g_clear_pointer(&crucible_accelerator.result_rules,
++                    g_ptr_array_unref);
++    crucible_accelerator.result_rules = state->result_rules;
++    state->result_rules = NULL;
+     g_clear_pointer(&crucible_accelerator.result_impulses,
+                     g_ptr_array_unref);
+     crucible_accelerator.result_impulses = state->result_impulses;
+     state->result_impulses = NULL;
++    g_clear_pointer(&crucible_accelerator.memory_rules,
++                    g_ptr_array_unref);
++    crucible_accelerator.memory_rules = state->memory_rules;
++    state->memory_rules = NULL;
++    g_clear_pointer(&crucible_accelerator.service_rules,
++                    g_ptr_array_unref);
++    crucible_accelerator.service_rules = state->service_rules;
++    state->service_rules = NULL;
+     accelerator_vmstate_free(state);
+ }
+ 
++/* The section commits only after every accelerator rule index is rebuilt. */
+ static const QemuCrucibleFaultVmstateSection accelerator_vmstate_section = {
+     .name = "accelerator",
+     .version = 4,

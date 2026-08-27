@@ -114,6 +114,20 @@ in
               return 1
             }
 
+            wait_for_terminal_evidence() {
+              log="$1"
+              attempts=0
+              while [ "$attempts" -lt 1200 ]; do
+                if grep -Eq 'CRUCIBLE_TERMINAL_LIFECYCLE_LIVE_PASS action_sha256=[0-9a-f]{64} evidence_sha256=[0-9a-f]{64} process_generation=1' "$log"; then
+                  return 0
+                fi
+                kill -0 "$qemu_pid" 2>/dev/null || return 1
+                sleep 0.1
+                attempts=$((attempts + 1))
+              done
+              return 1
+            }
+
             qmp() {
               socket="$1"
               request="$2"
@@ -170,7 +184,9 @@ in
               > "$log" 2>&1 &
             qemu_pid="$!"
             wait_for_socket "$socket" || fail "patched QMP socket did not appear"
-            wait_for_marker CRUCIBLE_TERMINAL_LIFECYCLE_LIVE_PASS "$log" \
+            # The plugin writes the marker in several bounded fragments. Wait
+            # for the complete authenticated record, not merely its prefix.
+            wait_for_terminal_evidence "$log" \
               || { cat "$log" >&2; fail "terminal lifecycle event was not published"; }
             kill -0 "$qemu_pid" 2>/dev/null \
               || { cat "$log" >&2; fail "QEMU exited before terminal authorization"; }

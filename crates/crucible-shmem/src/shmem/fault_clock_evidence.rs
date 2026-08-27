@@ -110,7 +110,7 @@ impl FaultClockEvidenceV1 {
                 synchronization_remaining_nanos,
             } => {
                 if *read_opportunity == 0
-                    || !(1..=6).contains(transform_kind)
+                    || *transform_kind > 6
                     || drift_ratio[0] == 0
                     || drift_ratio[1] == 0
                     || !(1..=3).contains(monotonicity)

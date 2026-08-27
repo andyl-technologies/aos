@@ -3,13 +3,14 @@
   lib,
   qemuPackage ? pkgs.qemu-crucible,
   patchName ? "0077-crucible-serialize-rr-cursor.patch",
+  exactSnapshotRestore ?
+    import ./phase2-qemu-exact-snapshot-restore.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase2.qemuRrCursorVmstate.liveRestore";
+      taskIds = ["T-QEMU-0077"];
+    },
 }: let
   patchSource = builtins.readFile (../../pkgs/emulation/qemu-patches + "/${patchName}");
-  exactSnapshotRestore = import ./phase2-qemu-exact-snapshot-restore.nix {
-    inherit pkgs lib;
-    attrPath = "checks.crucible.phase2.qemuRrCursorVmstate.liveRestore";
-    taskIds = ["T-QEMU-0077"];
-  };
   inherit (import ./_lib.nix {inherit lib;}) failuresFor;
   failures = failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
     {

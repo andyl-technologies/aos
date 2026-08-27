@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **112 patches**. This count is checked against
+The carried series contains **115 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -245,7 +245,7 @@ TCG SIM CORRECTNESS / PERF                             class  enforces
   crucible-sim-gate-rr-kick ..... sim-gate stock RR kick timer D    DET-30
   crucible-blk-device-completion-advance  resume blocked I/O at delivery icount  D    DET-16, PATCH-27, PLUG-21, IO-31
   crucible-9p-sync-kick ......... sync sim-mode 9p vq dispatch D    DET-16, PATCH-29, PLUG-22, IO-32
-  crucible-whitebox-guest-write . callback/exact-resume guest reply F PLUG-34, PLUG-51, GHC-32, GHC-37
+  crucible-whitebox-guest-write . callback guest-memory reply   F    PLUG-34, PLUG-51, GHC-32, GHC-37
   crucible-translation-prefetch-helper dedicated demand TCG helper F PERF-32
 
 SIGNAL-DRIVEN FAULT EXECUTION                          class  enforces
@@ -279,13 +279,6 @@ SIGNAL-DRIVEN FAULT EXECUTION                          class  enforces
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse
-
-CAMPAIGN HOT FORK (RFC-0016)                           class  enforces
-  crucible-hot-fork-readiness QEMU-owned proof bitmap   F    HFORK-3, HFORK-4
-  crucible-hot-fork-thread-ownership subsystem owners   F    HFORK-3, HFORK-4
-  crucible-hot-fork-rcu-inventory bounded RCU evidence  F    HFORK-3, HFORK-4
-  crucible-hot-fork-aio-inventory bounded AIO evidence  F    HFORK-3, HFORK-4
-  crucible-hot-fork-mutex-inventory bounded lock state  F    HFORK-3, HFORK-4
 
 DIAGNOSTIC-ONLY (dev, NOT shipped)                     class  enforces
   crucible-tcg-exec-diag ........ per-exec icount trace      dev  divergence debug
@@ -1587,9 +1580,59 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   ordinary QEMU accelerator retains its prior behavior.
 - **Risk:** D.
 
+### crucible-accelerator-service-schema — admit typed service capacity
+
+- **Patch:** `0111-crucible-accelerator-service-schema.patch`.
+- **Enforces:** [QFP-ACCEL-SERVICE], [FAULT-ORDER].
+- **Mechanism:** the accelerator service command uses a dedicated closed schema
+  whose capacity field is a ratio, matching both the versioned host encoder and
+  QEMU's command-specific validator. Compute and memory-rate service limits,
+  enable flags, and thermal/power policy retain their existing field types.
+- **Micro-test:** the production live hardware gate submits the typed
+  state-machine effect through PREPARE and APPLY, then requires three exact
+  job-service occurrences and guest-visible completion under the installed
+  half-capacity thermal/power policy. The per-patch certificate also requires
+  the dedicated mapping and consumes the exact drop-one negative control.
+- **Inertness:** only accelerator service command parsing changes. Other generic
+  service commands and ordinary QEMU execution retain their prior schema and
+  behavior.
+- **Risk:** F.
+
+### crucible-compile-affected-clock-sources — isolate rule compilation
+
+- **Patch:** `0112-crucible-compile-affected-clock-sources.patch`.
+- **Enforces:** [QFP-CLOCK-SOURCE], [FAULT-ORDER].
+- **Mechanism:** post-commit clock compilation receives the exact changed rule.
+  A transform selects sources through its target predicate; a source-state rule
+  selects the identities in its typed hash set. Unrelated registered sources
+  are not projected or rearmed at that transaction boundary.
+- **Micro-test:** the production live hardware gate commits a degraded local
+  APIC timer source while unrelated clock devices are registered, then requires
+  authenticated source-transition and timer-rearm occurrences without an
+  unrelated projection failure.
+- **Inertness:** non-clock rules and unselected clock sources perform no work;
+  selected sources preserve the existing compilation and timer-rearm path.
+- **Risk:** F.
+
+### crucible-restore-accelerator-rule-indexes — restore persistent policy
+
+- **Patch:** `0113-crucible-restore-accelerator-rule-indexes.patch`.
+- **Enforces:** [QFP-ACCEL-SERVICE], [FAULT-RESTORE].
+- **Mechanism:** accelerator VMState preparation rebuilds its four private rule
+  indexes by retaining references from the already-authenticated staged node
+  ledger. Commit atomically replaces the live indexes alongside accelerator
+  counters and memory; abort releases every staged reference.
+- **Micro-test:** the production live hardware gate installs a persistent
+  half-capacity service rule, captures VMState, destroys QEMU and its plugin,
+  restores into a fresh process, and requires exact service evidence for the
+  GPU, TPU, and FPGA jobs.
+- **Inertness:** no VMState bytes or public protocol fields change. Cold starts
+  and accelerators with no retained rules reconstruct empty indexes.
+- **Risk:** F.
+
 ### crucible-hot-fork-readiness — report QEMU-owned quiescence proofs
 
-- **Patch:** `0111-crucible-hot-fork-readiness.patch`.
+- **Patch:** `0114-crucible-hot-fork-readiness.patch`.
 - **Enforces:** RFC-0016 [HFORK-3], [HFORK-4].
 - **Mechanism:** a fixed version-1 QMP query reports the complete nine-bit
   hot-fork proof contract and the exact subset QEMU can attest at the current
@@ -1614,7 +1657,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 
 ### crucible-hot-fork-thread-ownership — classify unresolved subsystem workers
 
-- **Patch:** `0112-crucible-hot-fork-thread-ownership.patch`.
+- **Patch:** `0115-crucible-hot-fork-thread-ownership.patch`.
 - **Enforces:** RFC-0016 [HFORK-3], [HFORK-4].
 - **Mechanism:** the RCU callback worker and every QEMU `IOThread` assign their
   own version-2 thread-registry disposition at the start of their subsystem
@@ -1639,7 +1682,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 
 ### crucible-hot-fork-rcu-inventory — expose bounded observational RCU state
 
-- **Patch:** `0113-crucible-hot-fork-rcu-inventory.patch`.
+- **Patch:** `0116-crucible-hot-fork-rcu-inventory.patch`.
 - **Enforces:** RFC-0016 [HFORK-3], [HFORK-4].
 - **Mechanism:** a fixed version-1 QMP query snapshots at most 65,536 registered
   RCU readers under the registry lock, sorts their positive thread IDs, and
@@ -1662,7 +1705,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 
 ### crucible-hot-fork-aio-inventory — expose bounded AioContext activity
 
-- **Patch:** `0114-crucible-hot-fork-aio-inventory.patch`.
+- **Patch:** `0117-crucible-hot-fork-aio-inventory.patch`.
 - **Enforces:** RFC-0016 [HFORK-3], [HFORK-4].
 - **Mechanism:** every `AioContext` receives a positive process-local identity
   and enters a 65,536-entry lifecycle registry. A fixed version-1 QMP query
@@ -1685,7 +1728,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 
 ### crucible-hot-fork-mutex-inventory — expose bounded QEMU lock ownership
 
-- **Patch:** `0115-crucible-hot-fork-mutex-inventory.patch`.
+- **Patch:** `0118-crucible-hot-fork-mutex-inventory.patch`.
 - **Enforces:** RFC-0016 [HFORK-3], [HFORK-4].
 - **Mechanism:** every live POSIX `QemuMutex` and `QemuRecMutex` receives a
   positive process-local identity and enters a 65,536-entry lifecycle registry.
@@ -1955,23 +1998,19 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 ### crucible-whitebox-guest-write — return synchronous doorbell replies
 
 - **Enforces:** [PLUG-34], [PLUG-51], [GHC-32], [GHC-37].
-- **Mechanism:** exports additive plugin APIs that write an exact byte range
-  through either the current instruction-callback vCPU or an explicitly named
-  vCPU during its serialized resume callback. The current-vCPU form returns a
-  synchronous doorbell reply before the trapped instruction retires. The
-  explicit-vCPU form avoids ambient `current_cpu` state while delivering a
-  host-selected reply at the exact paused-to-running boundary. Neither form
-  introduces a host-time-dependent wakeup.
+- **Mechanism:** exports an additive plugin API that writes an exact byte range
+  through the current vCPU's debug-memory translation. The white-box callback
+  invokes it synchronously before the trapped guest instruction retires, so an
+  application-random request can receive its typed reply without introducing an
+  asynchronous input or a host-time-dependent wakeup.
 - **Micro-test:** reconstruct the exact QEMU prefix through patch 0040 and prove
-  both APIs are absent, apply patch 0041, then exercise current-vCPU and
-  explicit-vCPU zero-length rejection, successful exact writes, unknown-vCPU
-  rejection, and failed out-of-range writes.
+  the API is absent, apply patch 0041, then exercise the exported function's
+  zero-length rejection, successful exact write, and failed out-of-range write.
   The live white-box gate additionally boots a real x86 guest, traps its
   application-random request, writes the authoritative deterministic reply into
   guest memory, and requires the guest to validate and acknowledge that reply.
-- **Inertness:** [PATCH-3](c) — these are additive exports reached only when the
-  Crucible plugin explicitly calls them from a registered white-box instruction
-  or vCPU-resume callback.
+- **Inertness:** [PATCH-3](c) — this is an additive export reached only when the
+  Crucible plugin explicitly calls it from a registered white-box callback.
 - **Risk:** F.
 
 ### crucible-blk-write-sentinel — explicit pending sentinel for writes/flush

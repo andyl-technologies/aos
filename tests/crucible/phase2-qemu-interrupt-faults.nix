@@ -182,6 +182,8 @@ in
               printf 'backend=actual-patched-and-stock-qemu\n'
               printf 'architectures=x86_64,aarch64\n'
               printf 'live_mutations=drop,delay,duplicate,replace,storm\n'
+              printf 'production_effect_row=interrupt.disposition|drop-delay-duplicate-replace|gate:patch-microtests|actual-patched-qemu|source+target+vector+delivery-count\n'
+              printf 'production_effect_row=interrupt.storm|bounded-storm|gate:patch-microtests|actual-patched-qemu|event-sequence+acknowledgements\n'
             } > "$out/result"
           '';
         }

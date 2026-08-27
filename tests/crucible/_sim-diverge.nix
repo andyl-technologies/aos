@@ -32,6 +32,7 @@
   # lacking it reads host time and diverges run-to-run.
   rtcClock ? "vm",
   attrPath ? "drop-one-sim-diverge",
+  dependencies ? [],
 }: let
   workload = import ./_sim-workload.nix {inherit pkgs lib;};
   usesCanonicalTrace = builtins.elem index [3 17 19 37 38 40];
@@ -48,7 +49,7 @@ in
     pname = "crucible-sim-diverge-${toString index}";
     version = "0";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.gawk pkgs.grep qemuPackage];
+    buildDeps = [pkgs.coreutils pkgs.gawk pkgs.grep qemuPackage] ++ dependencies;
     BUILD_DRV = "${buildDrv}";
     FULL_BASELINE = "${fullBaseline}";
     FULL_QEMU = "${qemuPackage}/bin/qemu-system-x86_64";
@@ -181,6 +182,13 @@ in
             printf 'run=%s fp=%s\n' "$run" "$fp" >> "$out/variant-fingerprints"
             if [ "$run" -eq 1 ]; then
               first="$fp"
+              # An empty fingerprint means this variant did not complete the
+              # bounded guest workload. Repeating the same failed boot cannot
+              # establish runtime nondeterminism, so classify it as an
+              # undiscriminated composition after the first finite attempt.
+              if [ -z "$first" ]; then
+                break
+              fi
             elif [ "$fp" != "$first" ]; then
               diverged=true
               runs_to_diverge="$run"
