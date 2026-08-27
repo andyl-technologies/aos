@@ -426,6 +426,8 @@
               '    NSLog(@"%@", characterString);' \
               '  } @catch (NSException *exception) {' \
               '    NSLog(@"%@", exception.callStackSymbols);' \
+              '  } @finally {' \
+              '    NSLog(@"Objective-C exception cleanup complete");' \
               '  }' \
               '  NSSearchPathDirectory mediaDirectories[] = { NSMoviesDirectory, NSMusicDirectory, NSPicturesDirectory, NSSharedPublicDirectory };' \
               '  NSArray<NSString *> *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, true);' \
