@@ -361,6 +361,7 @@ let
     "crucible-qemu-plugin"
     "crucible-qemu-trace-plugin"
     "cryptsetup"
+    "darling"
     "device-mapper"
     "dwarves"
     "edgecore"
@@ -383,7 +384,9 @@ let
     "kubelet"
     "libaio"
     "libbpf"
+    "libbsd"
     "libcap"
+    "libmd"
     "libmnl"
     "libnetfilter_conntrack"
     "libnetfilter_cthelper"
@@ -558,6 +561,8 @@ let
     "darwin/_darwin-binutils.nix" = "cross-build-helper";
     "darwin/_darwin-cc.nix" = "cross-build-helper";
     "darwin/_darwin-gcc.nix" = "cross-build-helper";
+    "emulation/_darwin-signer.nix" = "linux-only-build-helper";
+    "emulation/_darling-sources.nix" = "linux-only-source";
     "emulation/qemu-patches/_series.nix" = "linux-only-source";
     "kernel/_source.nix" = "linux-only-source";
     "kubernetes/_k3s-common.nix" = "linux-only-build-helper";

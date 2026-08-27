@@ -18,6 +18,7 @@
 }: let
   vm = import ./vm.nix {inherit pkgs lib;};
   fleet = import ./fleet.nix {inherit pkgs lib;};
+  darling = import ./darling.nix {inherit pkgs lib;};
   firecracker = import ./firecracker.nix {inherit pkgs lib;};
   integration = import ./integration.nix {
     inherit pkgs lib;
@@ -27,6 +28,7 @@
 in {
   inherit (vm) mkVMTest mkTestDisk;
   inherit (fleet) mkFleetTest uriEncode dataUrl;
+  inherit (darling) mkDarlingFleetSpec;
   inherit (firecracker) mkFirecrackerRootfs;
   inherit
     (integration)
