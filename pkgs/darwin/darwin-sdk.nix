@@ -1014,6 +1014,10 @@ in
                 - _CFNumberCreate
                 - _CFNumberGetTypeID
                 - _CFNumberGetValue
+                - _CFPropertyListCreateWithStream
+                - _CFReadStreamClose
+                - _CFReadStreamCreateWithFile
+                - _CFReadStreamOpen
                 - _CFRelease
                 - _CFRetain
                 - _CFRunLoopAddSource

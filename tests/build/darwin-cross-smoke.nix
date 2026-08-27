@@ -110,6 +110,30 @@
               -lobjc \
               -o "$c/bin/aos-darwin-framework-smoke"
 
+            # LLVM's dsymutil reads property lists through CoreFoundation
+            # streams. Exercise the exact public declarations and ABI exports
+            # directly so every supported target proves that link surface.
+            printf '%s\n' \
+              '#include <CoreFoundation/CoreFoundation.h>' \
+              'int main(void) {' \
+              '  CFURLRef fileURL = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, CFSTR("aos.plist"), kCFURLPOSIXPathStyle, false);' \
+              '  CFReadStreamRef stream = CFReadStreamCreateWithFile(kCFAllocatorDefault, fileURL);' \
+              '  Boolean opened = CFReadStreamOpen(stream);' \
+              '  CFPropertyListFormat format = kCFPropertyListXMLFormat_v1_0;' \
+              '  CFErrorRef error = NULL;' \
+              '  CFPropertyListRef propertyList = CFPropertyListCreateWithStream(kCFAllocatorDefault, stream, 0, kCFPropertyListImmutable, &format, &error);' \
+              '  CFReadStreamClose(stream);' \
+              '  if (propertyList != NULL) CFRelease(propertyList);' \
+              '  if (error != NULL) CFRelease(error);' \
+              '  if (stream != NULL) CFRelease(stream);' \
+              '  if (fileURL != NULL) CFRelease(fileURL);' \
+              '  return opened && propertyList == NULL;' \
+              '}' \
+              > corefoundation-stream-smoke.c
+            "$CC" corefoundation-stream-smoke.c \
+              -framework CoreFoundation \
+              -o "$c/bin/aos-darwin-corefoundation-stream-smoke"
+
             printf '%s\n' \
               '#include <Hypervisor/Hypervisor.h>' \
               '#if defined(__aarch64__) || defined(__arm64__)' \
@@ -683,6 +707,7 @@
             for executable in \
               "$c/bin/aos-darwin-c-smoke" \
               "$c/bin/aos-darwin-command-line-sdk-smoke" \
+              "$c/bin/aos-darwin-corefoundation-stream-smoke" \
               "$c/bin/aos-darwin-coreservices-smoke" \
               "$c/bin/aos-darwin-cocoa-smoke" \
               "$c/bin/aos-darwin-framework-smoke" \
