@@ -2,6 +2,9 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
+  buildPackages,
   gnumake,
   autoconf,
   bash,
@@ -26,6 +29,40 @@
   openjdk-7,
   bootstrapTools,
 }: let
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  buildTools =
+    if isDarwinCross
+    then buildPackages
+    else {
+      inherit
+        gnumake
+        autoconf
+        bash
+        which
+        zip
+        unzip
+        gawk
+        coreutils
+        grep
+        sed
+        pkg-config
+        binutils
+        file
+        perl
+        cpio
+        openjdk-7
+        ;
+    };
+  alsaForBuild =
+    if isDarwinCross
+    then buildPackages.alsa-lib
+    else alsa-lib;
+  configurePlatformFlags =
+    if isDarwinCross
+    then ''      --build=${stdenv.buildPlatform.config} \
+                  --host=${stdenv.hostPlatform.config} \
+    ''
+    else "";
   icedteaVersion = "3.19.0";
 
   # IcedTea 3.19.0 — build harness for OpenJDK 8
@@ -79,32 +116,35 @@ in
 
     src = icedteaSrc;
 
-    buildDeps = [
-      gnumake
-      autoconf
-      bash
-      which
-      zip
-      unzip
-      gawk
-      coreutils
-      grep
-      sed
-      pkg-config
-      binutils
-      file
-      perl
-      cpio
-      xorg-stubs
-      openjdk-7
-    ];
-    runtimeDeps = [
-      zlib
-      alsa-lib
-      fontconfig
-      freetype
-      cups
-    ];
+    buildDeps =
+      [
+        buildTools.gnumake
+        buildTools.autoconf
+        buildTools.bash
+        buildTools.which
+        buildTools.zip
+        buildTools.unzip
+        buildTools.gawk
+        buildTools.coreutils
+        buildTools.grep
+        buildTools.sed
+        buildTools.pkg-config
+        buildTools.binutils
+        buildTools.file
+        buildTools.perl
+        buildTools.cpio
+        xorg-stubs
+        buildTools.openjdk-7
+      ]
+      ++ lib.optionals isDarwinCross [alsaForBuild];
+    runtimeDeps =
+      [zlib]
+      ++ lib.optionals (!isDarwinCross) [alsa-lib]
+      ++ [
+        fontconfig
+        freetype
+        cups
+      ];
     propagatedDeps = [];
 
     phases = [
@@ -136,16 +176,16 @@ in
           # Patch hardcoded tool paths in IcedTea and OpenJDK build system
           for f in $(find . -name '*.in' -o -name '*.sh' -o -name 'Makefile*' -o -name 'configure*' 2>/dev/null); do
             sed -i \
-              -e "s|/usr/bin/echo|${coreutils}/bin/echo|g" \
-              -e "s|/bin/echo|${coreutils}/bin/echo|g" \
-              -e "s|/usr/bin/find|${coreutils}/bin/find|g" \
-              -e "s|/usr/bin/grep|${grep}/bin/grep|g" \
-              -e "s|/bin/grep|${grep}/bin/grep|g" \
-              -e "s|/usr/bin/sed|${sed}/bin/sed|g" \
-              -e "s|/bin/sed|${sed}/bin/sed|g" \
+              -e "s|/usr/bin/echo|${buildTools.coreutils}/bin/echo|g" \
+              -e "s|/bin/echo|${buildTools.coreutils}/bin/echo|g" \
+              -e "s|/usr/bin/find|${buildTools.coreutils}/bin/find|g" \
+              -e "s|/usr/bin/grep|${buildTools.grep}/bin/grep|g" \
+              -e "s|/bin/grep|${buildTools.grep}/bin/grep|g" \
+              -e "s|/usr/bin/sed|${buildTools.sed}/bin/sed|g" \
+              -e "s|/bin/sed|${buildTools.sed}/bin/sed|g" \
               -e "s|/usr/bin/cpio|cpio|g" \
-              -e "s|/usr/bin/file|${file}/bin/file|g" \
-              -e "s|/usr/bin/readelf|${binutils}/bin/readelf|g" \
+              -e "s|/usr/bin/file|${buildTools.file}/bin/file|g" \
+              -e "s|/usr/bin/readelf|${buildTools.binutils}/bin/readelf|g" \
               "$f" 2>/dev/null || true
           done
 
@@ -155,9 +195,9 @@ in
           # Also inject C_INCLUDE_PATH/LIBRARY_PATH into the sanitized env.
           sed -i 's|--with-extra-asflags="$(CCASFLAGS)"|--with-extra-asflags="$(CCASFLAGS)" --x-includes=${xorg-stubs}/include --x-libraries=${xorg-stubs}/lib|' Makefile.in
           # Inject library paths into --with-extra-ldflags for native code linking
-          sed -i 's|--with-extra-ldflags="$(LDFLAGS)"|--with-extra-ldflags="$(LDFLAGS) -L${xorg-stubs}/lib -L${freetype}/lib -L${fontconfig}/lib -L${cups}/lib -L${alsa-lib}/lib -L${zlib}/lib"|' Makefile.in
+          sed -i 's|--with-extra-ldflags="$(LDFLAGS)"|--with-extra-ldflags="$(LDFLAGS) -L${xorg-stubs}/lib -L${freetype}/lib -L${fontconfig}/lib -L${cups}/lib -L${alsaForBuild}/lib -L${zlib}/lib"|' Makefile.in
           sed -i '/ICEDTEA_COMMON_ENV = /,/LD_LIBRARY_PATH=""/{
-            s|LD_LIBRARY_PATH=""|C_INCLUDE_PATH="${xorg-stubs}/include:${cups}/include:${fontconfig}/include:${freetype}/include:${freetype}/include/freetype2:${alsa-lib}/include:${zlib}/include" LIBRARY_PATH="${xorg-stubs}/lib:${cups}/lib:${fontconfig}/lib:${freetype}/lib:${alsa-lib}/lib:${zlib}/lib" FREETYPE_INCLUDE_PATH="${freetype}/include/freetype2" FREETYPE_LIB_PATH="${freetype}/lib" LD_LIBRARY_PATH=""|
+            s|LD_LIBRARY_PATH=""|C_INCLUDE_PATH="${xorg-stubs}/include:${cups}/include:${fontconfig}/include:${freetype}/include:${freetype}/include/freetype2:${alsaForBuild}/include:${zlib}/include" LIBRARY_PATH="${xorg-stubs}/lib:${cups}/lib:${fontconfig}/lib:${freetype}/lib:${alsaForBuild}/lib:${zlib}/lib" FREETYPE_INCLUDE_PATH="${freetype}/include/freetype2" FREETYPE_LIB_PATH="${freetype}/lib" LD_LIBRARY_PATH=""|
           }' Makefile.in
 
           # No additional patches needed here
@@ -196,7 +236,7 @@ in
       {
         name = "configure";
         script = ''
-          export PATH="$(pwd)/tools-bin:${pkg-config}/bin:$PATH"
+          export PATH="$(pwd)/tools-bin:${buildTools.pkg-config}/bin:$PATH"
           # Set CFLAGS/CXXFLAGS for modern GCC compatibility
           export CFLAGS="-fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -Wno-error=int-conversion"
           export CXXFLAGS="-fcommon -Wno-error"
@@ -221,12 +261,12 @@ in
           export XINERAMA_LIBS="-L${xorg-stubs}/lib -lXinerama"
           export XTST_CFLAGS="-I${xorg-stubs}/include"
           export XTST_LIBS="-L${xorg-stubs}/lib -lXtst"
-          export ALSA_CFLAGS="-I${alsa-lib}/include"
-          export ALSA_LIBS="-L${alsa-lib}/lib -lasound"
+          export ALSA_CFLAGS="-I${alsaForBuild}/include"
+          export ALSA_LIBS="-L${alsaForBuild}/lib -lasound"
 
           $CONFIG_SHELL configure \
-            --prefix=$out \
-            --with-jdk-home=${openjdk-7} \
+            ${configurePlatformFlags}--prefix=$out \
+            --with-jdk-home=${buildTools.openjdk-7} \
             --disable-docs \
             --disable-downloading \
             --disable-tests \
@@ -256,7 +296,7 @@ in
             --disable-system-cups \
             --disable-compile-against-syscalls \
             --with-cups=${cups} \
-            --with-alsa=${alsa-lib} \
+            --with-alsa=${alsaForBuild} \
             --x-includes=${xorg-stubs}/include \
             --x-libraries=${xorg-stubs}/lib \
             --with-parallel-jobs=$NIX_BUILD_CORES
@@ -265,7 +305,7 @@ in
       {
         name = "build";
         script = ''
-          export PATH="$(pwd)/tools-bin:${pkg-config}/bin:$PATH"
+          export PATH="$(pwd)/tools-bin:${buildTools.pkg-config}/bin:$PATH"
 
           # Fix timestamps: prevent autotools regeneration triggered by sed patches.
           # Order: .am/.ac files must be OLDER than generated .in/configure files.
@@ -324,14 +364,14 @@ in
             # Compile JAF classes first (JAXB depends on javax.activation)
             JAF_SOURCES=$(find "$JAXWS_SRC/jaf_classes" -name '*.java' 2>/dev/null)
             if [ -n "$JAF_SOURCES" ]; then
-              ${openjdk-7}/bin/javac -d $SUPPL_DIR -source 7 -target 7 \
+              ${buildTools.openjdk-7}/bin/javac -d $SUPPL_DIR -source 7 -target 7 \
                 -XDignore.symbol.file $JAF_SOURCES 2>&1 || true
             fi
 
             # Compile JAXB classes (javax.xml.bind.*)
             JAXB_SOURCES=$(find "$JAXWS_SRC/jaxws_classes/javax/xml/bind" -name '*.java' 2>/dev/null)
             if [ -n "$JAXB_SOURCES" ]; then
-              ${openjdk-7}/bin/javac -d $SUPPL_DIR -source 7 -target 7 \
+              ${buildTools.openjdk-7}/bin/javac -d $SUPPL_DIR -source 7 -target 7 \
                 -XDignore.symbol.file -cp $SUPPL_DIR $JAXB_SOURCES 2>&1 || true
             fi
 
@@ -339,7 +379,7 @@ in
             # compile-time. The javac -bootclasspath points to this rt.jar.
             BOOT_RTJAR="bootstrap/boot/jre/lib/rt.jar"
             if [ -f "$BOOT_RTJAR" ]; then
-              ${openjdk-7}/bin/jar uf "$BOOT_RTJAR" -C $SUPPL_DIR .
+              ${buildTools.openjdk-7}/bin/jar uf "$BOOT_RTJAR" -C $SUPPL_DIR .
               echo "Injected JAXB/JAF classes into $BOOT_RTJAR"
             fi
 
@@ -416,44 +456,54 @@ in
       }
       {
         name = "install";
-        script = ''
-          mkdir -p $out
-          if [ -d openjdk.build/j2sdk-image ]; then
-            cp -a openjdk.build/j2sdk-image/* $out/
-          elif [ -d openjdk.build/images/j2sdk-image ]; then
-            cp -a openjdk.build/images/j2sdk-image/* $out/
-          fi
-
-          # Patch ELF binaries with correct dynamic linker and rpath
-          INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
-          BT_LIB=$(dirname "$INTERP")
-
-          # Find libstdc++ directory (nested under lib/gcc/...)
-          STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
-          STDCXX_DIR=""
-          if [ -n "$STDCXX_FILE" ]; then
-            STDCXX_DIR=$(dirname "$STDCXX_FILE")
-          fi
-          RPATH="$out/lib:$out/lib/amd64:$out/lib/amd64/jli:$out/jre/lib/amd64:$out/jre/lib/amd64/jli:$out/jre/lib/amd64/server:$BT_LIB"
-          if [ -n "$STDCXX_DIR" ]; then
-            RPATH="$RPATH:$STDCXX_DIR"
-          fi
-
-          for f in $out/bin/* $out/jre/bin/*; do
-            if [ -f "$f" ] && [ ! -L "$f" ]; then
-              patchelf --set-interpreter "$INTERP" \
-                       --set-rpath "$RPATH" \
-                       "$f" 2>/dev/null || true
+        script =
+          if isDarwinCross
+          then ''
+            mkdir -p $out
+            if [ -d openjdk.build/j2sdk-image ]; then
+              cp -a openjdk.build/j2sdk-image/* $out/
+            elif [ -d openjdk.build/images/j2sdk-image ]; then
+              cp -a openjdk.build/images/j2sdk-image/* $out/
             fi
-          done
-
-          find $out -name '*.so' -o -name '*.so.*' | while read f; do
-            if [ -f "$f" ] && [ ! -L "$f" ]; then
-              patchelf --set-rpath "$RPATH" \
-                       "$f" 2>/dev/null || true
+          ''
+          else ''
+            mkdir -p $out
+            if [ -d openjdk.build/j2sdk-image ]; then
+              cp -a openjdk.build/j2sdk-image/* $out/
+            elif [ -d openjdk.build/images/j2sdk-image ]; then
+              cp -a openjdk.build/images/j2sdk-image/* $out/
             fi
-          done
-        '';
+
+            # Patch ELF binaries with correct dynamic linker and rpath
+            INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
+            BT_LIB=$(dirname "$INTERP")
+
+            # Find libstdc++ directory (nested under lib/gcc/...)
+            STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
+            STDCXX_DIR=""
+            if [ -n "$STDCXX_FILE" ]; then
+              STDCXX_DIR=$(dirname "$STDCXX_FILE")
+            fi
+            RPATH="$out/lib:$out/lib/amd64:$out/lib/amd64/jli:$out/jre/lib/amd64:$out/jre/lib/amd64/jli:$out/jre/lib/amd64/server:$BT_LIB"
+            if [ -n "$STDCXX_DIR" ]; then
+              RPATH="$RPATH:$STDCXX_DIR"
+            fi
+
+            for f in $out/bin/* $out/jre/bin/*; do
+              if [ -f "$f" ] && [ ! -L "$f" ]; then
+                patchelf --set-interpreter "$INTERP" \
+                         --set-rpath "$RPATH" \
+                         "$f" 2>/dev/null || true
+              fi
+            done
+
+            find $out -name '*.so' -o -name '*.so.*' | while read f; do
+              if [ -f "$f" ] && [ ! -L "$f" ]; then
+                patchelf --set-rpath "$RPATH" \
+                         "$f" 2>/dev/null || true
+              fi
+            done
+          '';
       }
     ];
 
