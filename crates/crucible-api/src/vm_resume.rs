@@ -17,13 +17,31 @@ use crucible_qemu::{
 use crucible_session::validation::{ResumeRealizationError, realize_resume_from_savepoint};
 use thiserror::Error;
 
+#[cfg(not(target_os = "linux"))]
+#[path = "vm_resume/unsupported_live.rs"]
+mod unsupported_live;
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) use unsupported_live::{
+    ProductionLiveNode, ProductionLiveNodeStepGateConfig, ProductionNodeSet,
+    launch_production_live_node,
+};
+#[cfg(not(target_os = "linux"))]
+pub use unsupported_live::{
+    ProductionPluginInstallConfig, ProductionPluginInstallError, ProductionPluginInstallReport,
+    run_production_plugin_install_gate,
+};
+
 /// Guest architecture accepted by the production plugin-installation probe.
 pub use crucible_qemu::LivePluginGuestArchitecture as ProductionGuestArchitecture;
 /// Configuration for the production plugin-installation probe.
+#[cfg(target_os = "linux")]
 pub use crucible_qemu::LivePluginInstallGateConfig as ProductionPluginInstallConfig;
 /// Failure returned by the production plugin-installation probe.
+#[cfg(target_os = "linux")]
 pub use crucible_qemu::LivePluginInstallGateError as ProductionPluginInstallError;
 /// Observed evidence returned by the production plugin-installation probe.
+#[cfg(target_os = "linux")]
 pub use crucible_qemu::LivePluginInstallReport as ProductionPluginInstallReport;
 /// Seeded live app-random launch configuration.
 pub(crate) use crucible_qemu::QemuLaunchAppRandomConfig as ProductionAppRandomConfig;
@@ -32,12 +50,20 @@ pub use crucible_qemu::QemuLaunchPluginSwitch as ProductionPluginSwitch;
 /// Root-image format pinned into production launch identity.
 pub use crucible_qemu::QemuRootImageFormat as ProductionRootImageFormat;
 /// Runs the bounded production plugin-installation probe.
+#[cfg(target_os = "linux")]
 pub use crucible_qemu::run_live_plugin_install_gate as run_production_plugin_install_gate;
 pub(crate) use crucible_qemu::{
     DEFAULT_ROOT_OVERLAY_FILE_NAME as PRODUCTION_ROOT_OVERLAY_FILE_NAME,
     QemuGdbstubChannelConfig as ProductionGdbstubChannelConfig,
+};
+#[cfg(target_os = "linux")]
+pub(crate) use crucible_qemu::{
     QemuLiveNodeStepGateConfig as ProductionLiveNodeStepGateConfig, QemuNode as ProductionLiveNode,
     QemuNodeSet as ProductionNodeSet, launch_qemu_live_node as launch_production_live_node,
+};
+#[cfg(not(target_os = "linux"))]
+pub(crate) use crucible_qemu::{
+    QemuNode as ProductionNodeBackend, QemuNodeSet as ProductionNodeBackends,
 };
 
 /// Errors returned while deriving a process-local VM resume realization proof.

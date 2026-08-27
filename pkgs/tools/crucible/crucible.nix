@@ -28,6 +28,18 @@
 }: let
   version = "0.1.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  buildRustDev =
+    if isDarwinCross
+    then buildPackages.rust.dev
+    else rust.dev;
+  buildPkgConfig =
+    if isDarwinCross
+    then buildPackages.pkg-config
+    else pkg-config;
+  buildProtobuf =
+    if isDarwinCross
+    then buildPackages.protobuf
+    else protobuf;
   nativeQemuSystemBinary =
     {
       "x86_64-linux" = "qemu-system-x86_64";
@@ -110,11 +122,11 @@
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
-    PROTOC = "${protobuf}/bin/protoc";
+    PROTOC = "${buildProtobuf}/bin/protoc";
   };
   controllerArtifactContract = {
     family = "crucible-apache-host-release-and-test";
-    nativeInputs = map toString [rust.dev pkg-config openssl protobuf];
+    nativeInputs = map toString [buildRustDev buildPkgConfig openssl buildProtobuf];
     licenseScope = "Apache-2.0";
   };
   controllerArtifacts = mkCargoArtifacts {
@@ -134,7 +146,7 @@
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags} --features crucible-cli/test-double"
     ];
     buildDeps =
-      [rust.dev pkg-config openssl protobuf]
+      [buildRustDev buildPkgConfig openssl buildProtobuf]
       ++ lib.optionals isDarwinCross [buildPackages.crucible-controller];
     runtimeDeps = [openssl];
   };
@@ -177,7 +189,7 @@
     cargoFlags = workspaceCargoFlags;
     cargoTestFlags = "${workspaceCargoFlags} --features crucible-cli/test-double";
     doCheck = true;
-    buildDeps = [rust.dev pkg-config openssl protobuf];
+    buildDeps = [buildRustDev buildPkgConfig openssl buildProtobuf];
     runtimeDeps = [openssl];
     # The controller is the Apache side of a process boundary. Fail the build
     # if any QEMU-side implementation, guest kernel, or fixture enters either
@@ -198,9 +210,16 @@
         if isDarwinCross
         then ''
           # The native controller dependency runs the executable policy and
-          # documentation gates.  Compile every Darwin test target below, but
-          # defer executing Mach-O tests until Darwin qualification.
+          # Clippy gates. Compile every Darwin test target with the cross
+          # compiler, but defer executing Mach-O tests until qualification.
           echo "Crucible runtime, license, and doctest execution was validated by ${buildPackages.crucible-controller}"
+          cargo check \
+            --all-targets \
+            --features crucible-cli/test-double \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            ${workspaceCargoFlags}
         ''
         else ''
           cargo test \
@@ -209,17 +228,17 @@
             -j$NIX_BUILD_CORES \
             -p crucible-harness \
             --test gate_license_boundary
+          cargo clippy \
+            --all-targets \
+            --features crucible-cli/test-double \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            ${workspaceCargoFlags} \
+            -- \
+            -D warnings
         ''
       }
-      cargo clippy \
-        --all-targets \
-        --features crucible-cli/test-double \
-        --frozen \
-        --offline \
-        -j$NIX_BUILD_CORES \
-        ${workspaceCargoFlags} \
-        -- \
-        -D warnings
       export RUSTDOCFLAGS="-D warnings -D missing_docs"
       cargo doc \
         --no-deps \
@@ -274,7 +293,11 @@
 
     postInstall = ''
       test -x "$out/bin/crucible"
-      cp target/release/examples/crucible-debugger-live-fixture \
+      cp ${
+        if isDarwinCross
+        then ''"target/$CARGO_BUILD_TARGET/release/examples/crucible-debugger-live-fixture"''
+        else "target/release/examples/crucible-debugger-live-fixture"
+      } \
         "$out/bin/crucible-debugger-live-fixture"
       ${
         if isDarwinCross

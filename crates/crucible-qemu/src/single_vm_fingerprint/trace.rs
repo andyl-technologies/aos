@@ -577,7 +577,7 @@ impl QemuTraceDefinitionPreflight {
 ///
 /// The launch and raw process argv are validated as provenance, but are not
 /// fingerprint components. The caller must separately validate the typed
-/// [`crate::LiveObservationControl`] and invocation identity that bind the
+/// `LiveObservationControl` and invocation identity that bind the
 /// requested run ordinal before importing. Consequently, two fresh launches
 /// with identical observed machine state produce the same fingerprint even
 /// though their attempt paths and argv identities differ.

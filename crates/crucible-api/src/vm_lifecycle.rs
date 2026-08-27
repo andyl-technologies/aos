@@ -181,6 +181,12 @@ pub fn build_production_vm_lifecycle_loop(
     source: &ScenarioDefForm,
     config: &ProductionVmLifecycleConfig,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
+    if !cfg!(target_os = "linux") {
+        return Err(loop_factory_error(
+            "production local-QEMU lifecycle requires a Linux host",
+        ));
+    }
+
     let nodes = source.world().vm_nodes();
     let first = nodes
         .first()
