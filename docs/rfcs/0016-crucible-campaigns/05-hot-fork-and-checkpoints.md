@@ -536,8 +536,8 @@ the timer and AIO/BH barriers across the fork transaction.
 The Phase 6 host audit complements that query with bounded operational evidence
 for one exact Linux process generation. It accepts only while proof bit 2 is
 set, brackets the procfs capture with two identical thread-registry, RCU,
-AioContext, bottom-half, mutex, and timer snapshots inside two identical
-readiness reports,
+AioContext, AIO-handler, block-backend, bottom-half, mutex, and timer snapshots
+inside two identical readiness reports,
 authenticates the QEMU PID/start-time/executable identity before and after, and
 rejects any incomplete QMP inventory before requiring two complete
 process-inventory passes to match byte-for-byte. Every
@@ -560,9 +560,11 @@ Exceeding a bound, changing process generation, readiness, or QEMU registry,
 missing a registered thread from procfs, or observing different process passes
 rejects the audit.
 This observed fixed point is deliberately not a quiescence proof: it does not
-retain a mutex or QEMU-internal AIO/BH/timer barrier, inventory block/plugin
-internals, resolve external-thread dispositions, or run child reinitializers. It
-cannot set any readiness bit, prepare a template, or authorize `fork(2)`.
+retain a mutex or QEMU-internal AIO/BH/timer barrier, traverse the BQL-owned
+block graph, inventory plugin internals, resolve external-thread dispositions,
+or run child reinitializers. The block inventory cannot prove an immutable
+writable-root boundary. It cannot set any readiness bit, prepare a template, or
+authorize `fork(2)`.
 The thread registry identifies the live RCU callback and AIO-context workers
 by subsystem-specific unresolved dispositions. The RCU inventory exposes the
 exact observed reader and callback state, the AioContext inventory exposes
