@@ -2132,6 +2132,8 @@ pub struct SurfacePlacementBlockers {
     pub object_presence: bool,
     /// Registry-publication progress exists for the placement.
     pub publication: bool,
+    /// Active registry-publication progress exists for the placement.
+    pub active_publication: bool,
     /// Object-deletion jobs refer to the placement.
     pub deletion_job: bool,
     /// A topology operation refers to the placement.
@@ -2153,6 +2155,7 @@ impl SurfacePlacementBlockers {
             || self.policy_member
             || self.object_presence
             || self.publication
+            || self.active_publication
             || self.deletion_job
             || self.topology_operation
     }
@@ -10011,6 +10014,9 @@ impl Database {
                      SELECT 1 FROM placement_policy_shard_members WHERE placement_id = ?1),
                    EXISTS (SELECT 1 FROM object_placements WHERE placement_id = ?1),
                    EXISTS (SELECT 1 FROM registry_publication_placements WHERE placement_id = ?1),
+                   EXISTS (SELECT 1 FROM registry_publication_placements
+                     WHERE placement_id = ?1
+                       AND state IN ('preparing', 'writing_pointers')),
                    EXISTS (SELECT 1 FROM object_deletion_jobs WHERE placement_id = ?1),
                    EXISTS (SELECT 1 FROM topology_operations o
                      WHERE o.state IN ('pending', 'running') AND (
@@ -10029,8 +10035,9 @@ impl Database {
             policy_member: row.get(2)?,
             object_presence: row.get(3)?,
             publication: row.get(4)?,
-            deletion_job: row.get(5)?,
-            topology_operation: row.get(6)?,
+            active_publication: row.get(5)?,
+            deletion_job: row.get(6)?,
+            topology_operation: row.get(7)?,
         })
     }
 
@@ -10310,6 +10317,133 @@ impl Database {
             )
             .await?
             == 1)
+    }
+
+    /// Deletes a registry placement and its terminal placement-scoped history.
+    ///
+    /// Registry placements have no physical-eviction workflow. Once routing,
+    /// authority, and active work no longer select a drained placement, its
+    /// observational inventory and terminal publication rows are historical
+    /// metadata rather than deletion blockers. This transaction detaches only
+    /// that placement's rows before applying the same guarded metadata delete.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or when active work still refers
+    /// to the placement.
+    pub async fn delete_registry_surface_placement(
+        &self,
+        id: i64,
+        expected_version: i64,
+    ) -> Result<bool> {
+        let placement_target_id = self.surface_placement_operation_target_id(id).await?;
+        let guard = "id = ?1 AND resource_version = ?2 AND registry_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM surface_write_authorities a
+            WHERE a.desired_placement_id = ?1 OR a.observed_placement_id = ?1)
+          AND NOT EXISTS (SELECT 1 FROM registry_publication_placements progress
+            WHERE progress.placement_id = ?1
+              AND progress.state IN ('preparing', 'writing_pointers'))
+          AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
+            WHERE job.placement_id = ?1)
+          AND NOT EXISTS (SELECT 1
+            FROM registry_publication_multipart_uploads upload
+            JOIN registry_publication_multipart_backends backend
+              ON backend.upload_id = upload.upload_id
+            WHERE backend.placement_id = ?1 AND upload.active_object_slot = 1)
+          AND NOT EXISTS (SELECT 1 FROM topology_operations o
+            WHERE o.state IN ('pending', 'running') AND (
+              (o.primary_target_kind = 'placement'
+                AND o.primary_target_stable_id = ?3)
+              OR EXISTS (SELECT 1 FROM operation_secondary_targets t
+                WHERE t.operation_id = o.operation_id
+                  AND t.target_kind = 'placement' AND t.stable_id = ?3)))";
+        let values = vals![id, expected_version, placement_target_id].to_vec();
+
+        if self
+            .backend
+            .query_opt(
+                &format!("SELECT 1 FROM surface_placements WHERE {guard}"),
+                &values,
+            )
+            .await?
+            .is_none()
+        {
+            return Ok(false);
+        }
+
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    format!(
+                        "DELETE FROM registry_publication_multipart_parts
+                         WHERE placement_id = ?1 AND EXISTS (
+                           SELECT 1 FROM surface_placements WHERE {guard})"
+                    ),
+                    values.clone(),
+                )
+                .unchecked(),
+                Statement::new(
+                    format!(
+                        "DELETE FROM registry_publication_multipart_backends
+                         WHERE placement_id = ?1 AND EXISTS (
+                           SELECT 1 FROM surface_placements WHERE {guard})"
+                    ),
+                    values.clone(),
+                )
+                .unchecked(),
+                Statement::new(
+                    format!(
+                        "DELETE FROM direct_route_evidence
+                         WHERE placement_id = ?1 AND EXISTS (
+                           SELECT 1 FROM surface_placements WHERE {guard})"
+                    ),
+                    values.clone(),
+                )
+                .unchecked(),
+                Statement::new(
+                    format!(
+                        "DELETE FROM placement_delivery_manifest_heads
+                         WHERE placement_id = ?1 AND EXISTS (
+                           SELECT 1 FROM surface_placements WHERE {guard})"
+                    ),
+                    values.clone(),
+                )
+                .unchecked(),
+                Statement::new(
+                    format!(
+                        "DELETE FROM placement_delivery_manifests
+                         WHERE placement_id = ?1 AND EXISTS (
+                           SELECT 1 FROM surface_placements WHERE {guard})"
+                    ),
+                    values.clone(),
+                )
+                .unchecked(),
+                Statement::new(
+                    format!(
+                        "DELETE FROM registry_publication_placements
+                         WHERE placement_id = ?1 AND EXISTS (
+                           SELECT 1 FROM surface_placements WHERE {guard})"
+                    ),
+                    values.clone(),
+                )
+                .unchecked(),
+                Statement::new(
+                    format!(
+                        "DELETE FROM object_placements
+                         WHERE placement_id = ?1 AND EXISTS (
+                           SELECT 1 FROM surface_placements WHERE {guard})"
+                    ),
+                    values.clone(),
+                )
+                .unchecked(),
+                Statement::new(
+                    format!("DELETE FROM surface_placements WHERE {guard}"),
+                    values,
+                )
+                .expecting(1),
+            ])
+            .await?;
+        Ok(true)
     }
 
     async fn surface_placement_operation_target_id(&self, id: i64) -> Result<String> {
@@ -29966,6 +30100,131 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn registry_placement_delete_detaches_only_terminal_placement_history() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db.create_org("placement-delete", "Placement delete").await.unwrap();
+        let binding_id =
+            create_test_binding(&db, org_id, "placement-delete", "/tmp/placement-delete").await;
+        let registry_id = db
+            .create_managed_registry(org_id, "", "registry", "public", &[], false)
+            .await
+            .unwrap();
+        let mut placement = topology_placement(
+            SurfaceTarget::Registry(registry_id),
+            "retiring",
+            "retiring",
+            0,
+        );
+        placement.binding_id = binding_id;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+        let publication_id = "placementdeletepublication000000000001";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "placement-delete-generation".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(64)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        let object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: "objects/terminal".into(),
+                content_hash: Some("d".repeat(64)),
+                size: Some(9),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        db.set_registry_publication_object(&SetRegistryPublicationObject {
+            publication_id: publication_id.into(),
+            surface_object_id: object.id,
+            object_kind: "immutable".into(),
+            expected_hash: "d".repeat(64),
+            expected_size: 9,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: publication_id.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: 1,
+        })
+        .await
+        .unwrap();
+        db.record_registry_publication_object_presence(
+            publication_id,
+            object.id,
+            placement.id,
+            &"d".repeat(64),
+            9,
+            Some("terminal-etag"),
+            2,
+        )
+        .await
+        .unwrap();
+
+        assert!(!db
+            .delete_registry_surface_placement(placement.id, placement.resource_version)
+            .await
+            .unwrap());
+        assert!(db.surface_placement(placement.id).await.unwrap().is_some());
+        assert_eq!(
+            db.registry_publication_placement_records(publication_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        db.fail_registry_publication(publication_id, 3)
+            .await
+            .unwrap();
+        db.backend
+            .batch(&[
+                Statement::new(
+                    "INSERT INTO placement_delivery_manifests
+                     (manifest_id, placement_id, registry_id, kind,
+                      registry_publication_id, content_digest, published_at)
+                     VALUES ('terminal-manifest', ?1, ?2,
+                       'registry_publication', ?3, ?4, 4)",
+                    vals![placement.id, registry_id, publication_id, "e".repeat(64)].to_vec(),
+                ),
+                Statement::new(
+                    "INSERT INTO placement_delivery_manifest_heads
+                     (placement_id, registry_id, manifest_id, updated_at)
+                     VALUES (?1, ?2, 'terminal-manifest', 4)",
+                    vals![placement.id, registry_id].to_vec(),
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let blockers = db.surface_placement_blockers(placement.id).await.unwrap();
+        assert!(blockers.object_presence);
+        assert!(blockers.publication);
+        assert!(!blockers.active_publication);
+        assert!(db
+            .delete_registry_surface_placement(placement.id, placement.resource_version)
+            .await
+            .unwrap());
+        assert!(db.surface_placement(placement.id).await.unwrap().is_none());
+        assert!(db.registry_publication(publication_id).await.unwrap().is_some());
+        assert!(db.surface_object(object.id).await.unwrap().is_some());
+        assert!(db
+            .registry_publication_placement_records(publication_id)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
