@@ -1861,8 +1861,13 @@ on_insn(unsigned int vcpu_index, void *userdata)
   record_rr_switch_event();
 
   if (post_boundary_samples && required_pc_seen) {
-    const struct register_digest_summary register_digests =
-        compute_register_digests();
+    /*
+     * Ordinary instruction callbacks do not own QEMU's exact serialized
+     * register-read boundary. Fold the instruction and memory/device event
+     * stream here; the sim observer callback below adds the all-vCPU register,
+     * RAM, RR-cursor, and device-state sample at the exact host boundary.
+     */
+    const struct register_digest_summary register_digests = {0};
     const bool rr_cursor_valid = rr_current_vcpu != UINT64_MAX;
     fold_trajectory_state(
         retired,

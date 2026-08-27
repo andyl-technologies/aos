@@ -430,7 +430,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0115-crucible-hot-fork-mutex-inventory.patch
+          patch=0118-crucible-hot-fork-mutex-inventory.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3

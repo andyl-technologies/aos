@@ -515,23 +515,35 @@
       kind = "recorded";
       symbols = [];
     };
-    "0111-crucible-hot-fork-readiness.patch" = {
+    "0111-crucible-accelerator-service-schema.patch" = {
       kind = "recorded";
       symbols = [];
     };
-    "0112-crucible-hot-fork-thread-ownership.patch" = {
+    "0112-crucible-compile-affected-clock-sources.patch" = {
       kind = "recorded";
       symbols = [];
     };
-    "0113-crucible-hot-fork-rcu-inventory.patch" = {
+    "0113-crucible-restore-accelerator-rule-indexes.patch" = {
       kind = "recorded";
       symbols = [];
     };
-    "0114-crucible-hot-fork-aio-inventory.patch" = {
+    "0114-crucible-hot-fork-readiness.patch" = {
       kind = "recorded";
       symbols = [];
     };
-    "0115-crucible-hot-fork-mutex-inventory.patch" = {
+    "0115-crucible-hot-fork-thread-ownership.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0116-crucible-hot-fork-rcu-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0117-crucible-hot-fork-aio-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0118-crucible-hot-fork-mutex-inventory.patch" = {
       kind = "recorded";
       symbols = [];
     };

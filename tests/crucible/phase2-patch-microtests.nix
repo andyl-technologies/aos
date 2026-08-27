@@ -28,15 +28,13 @@
     inherit pkgs lib;
     attrPath = "${attrPath}.exactBoundaryVcpuIntrospection.liveNetwork";
     taskIds = ["T-QEMU-0089"];
+    # Run the heavyweight live certificates in one bounded sequence. Parallel
+    # patch variants can otherwise starve a correct guest progress loop.
+    dependencies = [qemuExactSnapshotRestore];
   };
   qemuLivePluginQuantumSmp = import ./phase2-qemu-live-plugin-quantum-smp.nix {
     inherit pkgs lib;
     attrPath = "${attrPath}.haltedPartialRrTurn";
-    taskIds = [];
-  };
-  qemuHotForkReadiness = import ./phase6-qemu-hot-fork-readiness.nix {
-    inherit pkgs lib qemuPackage;
-    attrPath = "${attrPath}.hotForkReadiness";
     taskIds = [];
   };
   qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {
@@ -63,6 +61,7 @@
     liveResult ? "result",
     liveEvidence,
     evidenceName,
+    productionEffectRows ? false,
   }:
     pkgs.mkDerivation {
       pname = "crucible-phase2-${lib.removeSuffix ".patch" patchName}-certificate";
@@ -109,6 +108,9 @@
             live_evidence=${evidenceName}
             drop_one_attribution=exact
             RESULT
+            ${lib.optionalString productionEffectRows ''
+              grep '^production_effect_row=' "$live_result" >> "$out/result"
+            ''}
           '';
         }
       ];
@@ -122,6 +124,7 @@
   };
   qemuExactSnapshotRestore = import ./phase2-qemu-exact-snapshot-restore.nix {
     inherit pkgs lib;
+    dependencies = [qemuPatchDropOne qemuLiveFaultHardware];
   };
   s1Fingerprint = import ./phase0-s1.nix {inherit pkgs lib;};
   qemuInstructionFaults = import ./phase2-qemu-instruction-faults.nix {
@@ -134,6 +137,9 @@
     inherit pkgs lib qemuPackage;
   };
   qemuLiveNodeLifecycleFault = import ./phase2-qemu-live-node-lifecycle-fault.nix {
+    inherit pkgs lib;
+  };
+  qemuLiveFaultHardware = import ./phase2-qemu-live-fault-hardware.nix {
     inherit pkgs lib;
   };
   qemuGenesisObservationBoundary = pkgs.mkDerivation {
@@ -927,6 +933,7 @@
         patchName = "0050-crucible-memory-access-faults.patch";
         liveCheck = qemuMemoryAccess;
         evidenceName = "live-memory-access-matrix";
+        productionEffectRows = true;
         liveEvidence = ''
           grep -Fxq 'gate=gate:patch-microtests' "$live_result"
           grep -Fxq 'backend=actual-patched-and-stock-qemu' "$live_result"
@@ -1090,18 +1097,21 @@
       patch = "0077-crucible-serialize-rr-cursor.patch";
       check = import ./phase2-qemu-rr-cursor-vmstate.nix {
         inherit pkgs lib qemuPackage;
+        exactSnapshotRestore = qemuExactSnapshotRestore;
       };
     }
     {
       patch = "0078-crucible-fingerprint-guest-state-domains.patch";
       check = import ./phase2-qemu-fingerprint-state-domains.nix {
         inherit pkgs lib qemuPackage;
+        exactSnapshotRestore = qemuExactSnapshotRestore;
       };
     }
     {
       patch = "0079-crucible-stopped-state-control-progress.patch";
       check = import ./phase2-qemu-stopped-state-control-progress.nix {
         inherit pkgs lib qemuPackage;
+        exactSnapshotRestore = qemuExactSnapshotRestore;
       };
     }
     {
@@ -1423,9 +1433,63 @@
       check = qemuLivePluginQuantumSmp;
     }
     {
-      patch = "0111-crucible-hot-fork-readiness.patch";
+      patch = "0111-crucible-accelerator-service-schema.patch";
       check = certifyExactPatch {
-        patchName = "0111-crucible-hot-fork-readiness.patch";
+        patchName = "0111-crucible-accelerator-service-schema.patch";
+        liveCheck = qemuLiveFaultHardware;
+        evidenceName = "live-typed-accelerator-service-policy";
+        liveEvidence = ''
+          grep -Fxq 'accelerator_service_signal_actions=1' "$live_result"
+          grep -Fxq 'accelerator_service_occurrences=3' "$live_result"
+          grep -Fxq 'production_effect_row=accelerator.service|half-capacity-thermal-power|gate:live-fault-hardware|production-qemu-signal-runtime|three-job-service-ledger+thermal-power' "$live_result"
+          grep -Fq 'SF(P1, RATIO)' ${patchDir}/0111-crucible-accelerator-service-schema.patch
+          grep -Fq 'SCHEMA(ACCELERATOR_SERVICE, schema_accel_service)' \
+            ${patchDir}/0111-crucible-accelerator-service-schema.patch
+          ! grep -Fq 'SCHEMA(ACCELERATOR_SERVICE, schema_service)' \
+            ${patchDir}/0111-crucible-accelerator-service-schema.patch
+        '';
+      };
+    }
+    {
+      patch = "0112-crucible-compile-affected-clock-sources.patch";
+      check = certifyExactPatch {
+        patchName = "0112-crucible-compile-affected-clock-sources.patch";
+        liveCheck = qemuLiveFaultHardware;
+        evidenceName = "live-affected-clock-source-compilation";
+        liveEvidence = ''
+          grep -Fxq 'clock_source_signal_actions=1' "$live_result"
+          grep -Fxq 'clock_source_occurrences=2' "$live_result"
+          grep -Fxq 'production_effect_row=clock.source_state|degraded-step-synchronization|gate:live-fault-hardware|production-qemu-signal-runtime|old-new-source-state+timer-rearm' "$live_result"
+          grep -Fq 'crucible_clock_rule_affects_source' \
+            ${patchDir}/0112-crucible-compile-affected-clock-sources.patch
+          grep -Fq 'crucible_clock_rule_selects(rule, source)' \
+            ${patchDir}/0112-crucible-compile-affected-clock-sources.patch
+          grep -Fq 'crucible_clock_hash_set_contains(' \
+            ${patchDir}/0112-crucible-compile-affected-clock-sources.patch
+        '';
+      };
+    }
+    {
+      patch = "0113-crucible-restore-accelerator-rule-indexes.patch";
+      check = certifyExactPatch {
+        patchName = "0113-crucible-restore-accelerator-rule-indexes.patch";
+        liveCheck = qemuLiveFaultHardware;
+        evidenceName = "live-restored-accelerator-rule-indexes";
+        liveEvidence = ''
+          grep -Fxq 'fresh_plugin_restore=true' "$live_result"
+          grep -Fxq 'accelerator_service_occurrences=3' "$live_result"
+          grep -Fxq 'production_effect_row=accelerator.service|half-capacity-thermal-power|gate:live-fault-hardware|production-qemu-signal-runtime|three-job-service-ledger+thermal-power' "$live_result"
+          grep -Fq 'qemu_crucible_fault_rule_foreach_staged' \
+            ${patchDir}/0113-crucible-restore-accelerator-rule-indexes.patch
+          grep -Fq 'crucible_accelerator.service_rules = state->service_rules' \
+            ${patchDir}/0113-crucible-restore-accelerator-rule-indexes.patch
+        '';
+      };
+    }
+    {
+      patch = "0114-crucible-hot-fork-readiness.patch";
+      check = certifyExactPatch {
+        patchName = "0114-crucible-hot-fork-readiness.patch";
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-owned-hot-fork-readiness";
         liveEvidence = ''
@@ -1439,9 +1503,9 @@
       };
     }
     {
-      patch = "0112-crucible-hot-fork-thread-ownership.patch";
+      patch = "0115-crucible-hot-fork-thread-ownership.patch";
       check = certifyExactPatch {
-        patchName = "0112-crucible-hot-fork-thread-ownership.patch";
+        patchName = "0115-crucible-hot-fork-thread-ownership.patch";
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-thread-ownership";
         liveEvidence = ''
@@ -1455,9 +1519,9 @@
       };
     }
     {
-      patch = "0113-crucible-hot-fork-rcu-inventory.patch";
+      patch = "0116-crucible-hot-fork-rcu-inventory.patch";
       check = certifyExactPatch {
-        patchName = "0113-crucible-hot-fork-rcu-inventory.patch";
+        patchName = "0116-crucible-hot-fork-rcu-inventory.patch";
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-rcu-inventory";
         liveEvidence = ''
@@ -1471,9 +1535,9 @@
       };
     }
     {
-      patch = "0114-crucible-hot-fork-aio-inventory.patch";
+      patch = "0117-crucible-hot-fork-aio-inventory.patch";
       check = certifyExactPatch {
-        patchName = "0114-crucible-hot-fork-aio-inventory.patch";
+        patchName = "0117-crucible-hot-fork-aio-inventory.patch";
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-aio-inventory";
         liveEvidence = ''
@@ -1487,9 +1551,9 @@
       };
     }
     {
-      patch = "0115-crucible-hot-fork-mutex-inventory.patch";
+      patch = "0118-crucible-hot-fork-mutex-inventory.patch";
       check = certifyExactPatch {
-        patchName = "0115-crucible-hot-fork-mutex-inventory.patch";
+        patchName = "0118-crucible-hot-fork-mutex-inventory.patch";
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-mutex-inventory";
         liveEvidence = ''

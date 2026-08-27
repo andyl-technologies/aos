@@ -99,7 +99,51 @@ in
             --lib \
             runtime::live_callbacks::tests::drained_control_boundary_pumps_fault_commands_before_fingerprint_and_ack \
             -- \
-            --exact
+            --exact --include-ignored
+
+          shmem_test_list="$TMPDIR/live-fault-hardware-shmem.tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-fault-hardware-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-shmem \
+            --lib \
+            -- \
+            --list > "$shmem_test_list"
+          clock_evidence_test=fault_clock_evidence::tests::every_clock_evidence_kind_round_trips_canonically
+          grep -Fxq "$clock_evidence_test: test" "$shmem_test_list"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-fault-hardware-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-shmem \
+            --lib "$clock_evidence_test" \
+            -- \
+            --exact --include-ignored
+
+          qemu_test_list="$TMPDIR/live-fault-hardware-qemu.tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-fault-hardware-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib \
+            -- \
+            --list > "$qemu_test_list"
+          node_schema_test=fault_action_sink::node_payload::tests::every_typed_node_effect_translates_to_its_closed_wire_schema
+          grep -Fxq "$node_schema_test: test" "$qemu_test_list"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-fault-hardware-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib "$node_schema_test" \
+            -- \
+            --exact --include-ignored
 
           cargo build \
             --frozen \
@@ -130,22 +174,36 @@ in
           grep -Fxq 'accelerator_jobs=gpu-vector-add,tpu-matrix-multiply,fpga-lookup-table' "$report"
           grep -Fxq 'accelerator_mutation=tpu-result-42-to-43' "$report"
           grep -Fxq 'host_adapter=qemu-live-accelerator-servicer' "$report"
-          grep -Fxq 'boundary_signal_actions=2' "$report"
+          grep -Fxq 'boundary_signal_actions=6' "$report"
           grep -Fxq 'clock_signal_actions=1' "$report"
           grep -Fxq 'memory_signal_actions=1' "$report"
+          grep -Fxq 'clock_source_signal_actions=1' "$report"
+          grep -Fxq 'accelerator_lifecycle_signal_actions=1' "$report"
+          grep -Fxq 'accelerator_memory_signal_actions=1' "$report"
+          grep -Fxq 'accelerator_service_signal_actions=1' "$report"
           grep -Fxq 'same_icount_fault_fingerprint_changed=true' "$report"
           grep -Fxq 'same_icount_ram_fingerprint_changed=true' "$report"
           grep -Eq '^same_icount_fault_fingerprint_icount=[1-9][0-9]*$' "$report"
           grep -Fxq 'accelerator_signal_actions=1' "$report"
           grep -Fxq 'clock_occurrences=1' "$report"
           grep -Fxq 'accelerator_occurrences=1' "$report"
+          grep -Fxq 'clock_source_occurrences=2' "$report"
+          grep -Fxq 'accelerator_lifecycle_occurrences=1' "$report"
+          grep -Fxq 'accelerator_memory_occurrences=1' "$report"
+          grep -Fxq 'accelerator_service_occurrences=3' "$report"
           grep -Fxq 'fresh_plugin_restore=true' "$report"
           grep -Fxq 'orderly_child_exit=true' "$report"
+          grep -Fxq 'production_effect_row=clock.transform|offset-monotonic-overdue|gate:live-fault-hardware|production-qemu-signal-runtime|raw+transformed+timer-state' "$report"
+          grep -Fxq 'production_effect_row=accelerator.result_transform|tpu-result-buffer-transform|gate:live-fault-hardware|production-qemu-signal-runtime|job-id+before-after-digest+guest-result' "$report"
+          grep -Fxq 'production_effect_row=clock.source_state|degraded-step-synchronization|gate:live-fault-hardware|production-qemu-signal-runtime|old-new-source-state+timer-rearm' "$report"
+          grep -Fxq 'production_effect_row=accelerator.lifecycle|reset-preserve-queues-and-memory|gate:live-fault-hardware|production-qemu-signal-runtime|enumeration+reset-generation+memory-digest' "$report"
+          grep -Fxq 'production_effect_row=accelerator.memory_event|corrected-device-memory-ecc|gate:live-fault-hardware|production-qemu-signal-runtime|range+syndrome+corrected-counter+guest-results' "$report"
+          grep -Fxq 'production_effect_row=accelerator.service|half-capacity-thermal-power|gate:live-fault-hardware|production-qemu-signal-runtime|three-job-service-ledger+thermal-power' "$report"
 
           mkdir -p "$out"
           cp "$report" "$out/result"
           printf 'attr_path=%s\n' "$ATTR_PATH" >> "$out/result"
-          printf 'proven=signal-driven-clock-mutation,signal-driven-memory-mutation,same-icount-post-fault-fingerprint,same-icount-ram-digest-mutation,signal-driven-accelerator-result-mutation,authenticated-fault-occurrences,fresh-plugin-vmstate-reconstruction,real-linux-clock-observation,real-virtio-pci-discovery,guest-dma,split-virtqueue,gpu-job,tpu-job,fpga-job,fault-free-event-reservation\n' >> "$out/result"
+          printf 'proven=signal-driven-clock-mutation,signal-driven-clock-source-state,signal-driven-memory-mutation,same-icount-post-fault-fingerprint,same-icount-ram-digest-mutation,signal-driven-accelerator-lifecycle,signal-driven-accelerator-memory-event,signal-driven-accelerator-service,signal-driven-accelerator-result-mutation,authenticated-fault-occurrences,fresh-plugin-vmstate-reconstruction,real-linux-clock-observation,real-virtio-pci-discovery,guest-dma,split-virtqueue,gpu-job,tpu-job,fpga-job,fault-free-event-reservation\n' >> "$out/result"
         '';
       }
     ];

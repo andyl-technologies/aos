@@ -7,11 +7,15 @@ pub(crate) fn qemu_event_matches_commit(
     commit: &CommittedQemuActionEvidence,
 ) -> bool {
     // An accelerator result opportunity commits by installing an armed
-    // one-shot. Its later event hashes the device result mutation, not that
-    // installation. The remaining fields still bind the event to the exact
-    // authenticated APPLY result and issued action.
+    // one-shot. A rule-backed state-machine action commits by replacing the
+    // keyed rule that performs its transition. Their events hash the later
+    // effect-specific mutation rather than the generic rule-ledger update;
+    // command sequence and kind still bind each event to the authenticated
+    // APPLY transaction and issued action.
     let occurrence_hashes_match = event.header.command_kind
         == crucible_shmem::FaultCommandKind::AcceleratorResultTransform
+        || (action.kind == BindingActionKind::Apply
+            && crate::fault_action_sink::rule_backed_state_machine(event.header.command_kind))
         || (event.header.before_hash == commit.before_hash
             && event.header.after_hash == commit.after_hash);
 

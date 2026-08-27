@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn preparation_is_all_or_nothing_before_qmp_capture() {
+fn preparation_is_all_or_nothing_before_live_capture() {
     let source = crucible::crash_restart_scenario()
         .unwrap_or_else(|error| panic!("built-in scenario should validate: {error}"))
         .scenario;

@@ -192,7 +192,10 @@
       truncate -s 8M "$sd_image"
       : > "$artifact_prefix.serial"
       : > "$artifact_prefix.qemu-stderr"
-      timeout 30 "$qemu" -L "$firmware" \
+      # This boot competes with the finite drop-one build matrix in the
+      # aggregate gate. Its outcome is guest-state based, so retain the same
+      # assertion while allowing the standard live-QEMU wall-time margin.
+      timeout 180 "$qemu" -L "$firmware" \
         -nodefaults -no-user-config -display none -monitor none -machine q35 \
         -accel sim,thread=single -icount shift=0,sleep=off,align=off \
         -cpu qemu64,-rdrand,-rdseed -m 1024 -smp 1 \

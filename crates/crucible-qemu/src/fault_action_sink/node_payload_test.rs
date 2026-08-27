@@ -175,7 +175,23 @@ fn every_typed_node_effect_translates_to_its_closed_wire_schema() {
         let specification = EffectSpecification::Node(effect);
         let kind = specification.kind();
         let descriptor = kind.descriptor();
-        let lifetime = descriptor.lifetimes[0];
+        let rule_backed_kind = matches!(
+            kind,
+            crucible::model::EffectKind::CpuService
+                | crucible::model::EffectKind::CpuVcpuState
+                | crucible::model::EffectKind::InterruptStorm
+                | crucible::model::EffectKind::MemoryRegionState
+                | crucible::model::EffectKind::MemoryService
+                | crucible::model::EffectKind::ClockSourceState
+                | crucible::model::EffectKind::AcceleratorLifecycle
+                | crucible::model::EffectKind::AcceleratorService
+        );
+        let lifetime =
+            if rule_backed_kind && descriptor.lifetimes.contains(&EffectLifetime::StateMachine) {
+                EffectLifetime::StateMachine
+            } else {
+                descriptor.lifetimes[0]
+            };
         let mut action = ResolvedBindingAction {
             kind: if lifetime == EffectLifetime::Persistent {
                 BindingActionKind::UpsertPersistent
@@ -229,6 +245,18 @@ fn every_typed_node_effect_translates_to_its_closed_wire_schema() {
         }
         let encoded = encode_node_action(&action, [3; 32])
             .unwrap_or_else(|error| panic!("{kind:?} must translate: {error}"));
+        let rule_backed_state_machine =
+            rule_backed_kind && lifetime == EffectLifetime::StateMachine;
+        let expected_operation = match action.kind {
+            BindingActionKind::UpsertPersistent => NodeFaultOperationV1::Upsert,
+            BindingActionKind::RemovePersistent => NodeFaultOperationV1::Remove,
+            BindingActionKind::Apply if rule_backed_state_machine => NodeFaultOperationV1::Upsert,
+            BindingActionKind::Apply => NodeFaultOperationV1::Apply,
+        };
+        assert_eq!(
+            encoded.payload.operation, expected_operation,
+            "{kind:?} must use the operation implemented by its QEMU handler",
+        );
         if kind == crucible::model::EffectKind::CpuInstructionTransform {
             assert_eq!(encoded.payload.operation, NodeFaultOperationV1::Apply);
         }

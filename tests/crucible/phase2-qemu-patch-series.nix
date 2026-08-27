@@ -770,35 +770,56 @@
       capability = "a vCPU that executes HLT before exhausting its serialized RR turn leaves the execution loop when no alternative vCPU is runnable; a helper-marked multi-vCPU guest PAUSE fences control-boundary acknowledgement until it commits a cursor-zero early handoff immediately after icount accounting and before callbacks or host-work exits, so a released spin lock cannot be reacquired before a waiting peer runs; and that exact completed-turn handoff admits safe register capture while other owner mismatches fail closed";
     }
     {
-      file = "0111-crucible-hot-fork-readiness.patch";
+      file = "0111-crucible-accelerator-service-schema.patch";
+      catalogName = "crucible-accelerator-service-schema";
+      class = "F";
+      enforces = "QFP-ACCEL-SERVICE,FAULT-ORDER";
+      capability = "typed accelerator service commands admit the ratio-valued capacity field used by the versioned node-fault payload before atomically installing compute, memory-rate, thermal, and power service policy";
+    }
+    {
+      file = "0112-crucible-compile-affected-clock-sources.patch";
+      catalogName = "crucible-compile-affected-clock-sources";
+      class = "F";
+      enforces = "QFP-CLOCK-SOURCE,FAULT-ORDER";
+      capability = "a committed clock rule recompiles and rearms only sources selected by that exact rule, so an unrelated source that cannot project raw time at the stopped boundary cannot invalidate the authenticated transition";
+    }
+    {
+      file = "0113-crucible-restore-accelerator-rule-indexes.patch";
+      catalogName = "crucible-restore-accelerator-rule-indexes";
+      class = "F";
+      enforces = "QFP-ACCEL-SERVICE,FAULT-RESTORE";
+      capability = "fresh-process VMState restore rebuilds each accelerator lifecycle, result, memory, and service rule index from the authenticated staged node-rule ledger before commit, preserving persistent accelerator behavior without duplicating rule ownership";
+    }
+    {
+      file = "0114-crucible-hot-fork-readiness.patch";
       catalogName = "crucible-hot-fork-readiness";
       class = "F";
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded versioned QMP query reports QEMU-owned precise-icount, single-threaded sim RR, and exact paused/device-flush proofs while keeping every unimplemented subsystem, mapping, and child-reinitialization proof clear so ordinary paused state can never advertise hot fork";
     }
     {
-      file = "0112-crucible-hot-fork-thread-ownership.patch";
+      file = "0115-crucible-hot-fork-thread-ownership.patch";
       catalogName = "crucible-hot-fork-thread-ownership";
       class = "F";
       enforces = "HFORK-3,HFORK-4";
       capability = "the bounded thread registry identifies unresolved RCU callback and AIO-context workers through subsystem-owned entry-point registration while retaining both in the exact unresolved blocker count and leaving every readiness bit unchanged";
     }
     {
-      file = "0113-crucible-hot-fork-rcu-inventory.patch";
+      file = "0116-crucible-hot-fork-rcu-inventory.patch";
       catalogName = "crucible-hot-fork-rcu-inventory";
       class = "F";
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded QMP inventory exposes every registered RCU reader plus instantaneous read-side, callback, and drain state without claiming a held barrier or acknowledging the RCU readiness proof";
     }
     {
-      file = "0114-crucible-hot-fork-aio-inventory.patch";
+      file = "0117-crucible-hot-fork-aio-inventory.patch";
       catalogName = "crucible-hot-fork-aio-inventory";
       class = "F";
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded QMP inventory exposes every registered AioContext plus instantaneous poll, dispatch, bottom-half, coroutine, and notification activity without claiming a held barrier or acknowledging the AIO readiness proof";
     }
     {
-      file = "0115-crucible-hot-fork-mutex-inventory.patch";
+      file = "0118-crucible-hot-fork-mutex-inventory.patch";
       catalogName = "crucible-hot-fork-mutex-inventory";
       class = "F";
       enforces = "HFORK-3,HFORK-4";

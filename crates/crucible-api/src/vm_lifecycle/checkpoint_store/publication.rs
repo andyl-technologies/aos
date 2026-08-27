@@ -278,7 +278,7 @@ mod tests {
         };
 
         let error = match admit_new_checkpoint_publication(root.path(), limits) {
-            Ok(()) => return Err("a second publication passed count admission".into()),
+            Ok(()) => return Err("a second publication succeeded before rename".into()),
             Err(error) => error,
         };
 

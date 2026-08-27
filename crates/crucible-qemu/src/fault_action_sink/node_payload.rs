@@ -35,6 +35,9 @@ pub(super) fn encode_node_action(
     let operation = match action.kind {
         BindingActionKind::UpsertPersistent => NodeFaultOperationV1::Upsert,
         BindingActionKind::RemovePersistent => NodeFaultOperationV1::Remove,
+        BindingActionKind::Apply if rule_backed_state_machine(command_kind) => {
+            NodeFaultOperationV1::Upsert
+        }
         BindingActionKind::Apply => NodeFaultOperationV1::Apply,
     };
     let fields = payload_fields(
@@ -64,6 +67,26 @@ pub(super) fn encode_node_action(
         command_kind,
         payload,
     })
+}
+
+/// Identifies state-machine commands represented by one replaceable QEMU rule.
+///
+/// The signal runtime records each state transition as an `Apply` action. QEMU
+/// implements these commands as durable keyed rules whose replacement performs
+/// the transition, so their wire operation is `Upsert`; the committed host
+/// observation remains the original one-shot state-machine action.
+pub(crate) const fn rule_backed_state_machine(command_kind: FaultCommandKind) -> bool {
+    matches!(
+        command_kind,
+        FaultCommandKind::CpuService
+            | FaultCommandKind::CpuVcpuState
+            | FaultCommandKind::InterruptStorm
+            | FaultCommandKind::MemoryRegionState
+            | FaultCommandKind::MemoryService
+            | FaultCommandKind::ClockSourceState
+            | FaultCommandKind::AcceleratorLifecycle
+            | FaultCommandKind::AcceleratorService
+    )
 }
 
 #[path = "node_payload/effect_fields.rs"]

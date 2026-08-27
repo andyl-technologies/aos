@@ -41,8 +41,12 @@ use crate::{
     QemuVmLaunchConfig, complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
 };
 
+mod fingerprint;
+mod teardown;
 mod trace;
 
+use fingerprint::publish_and_wait_for_execution_fingerprint;
+use teardown::{LoadedTeardownTrigger, teardown_trigger_for_coverage};
 use trace::{read_trace_sample, trace_plugin_argument};
 
 pub(super) const GATE_DOMAIN: &str = "crucible.loaded-qemu-basic-block-coverage.v1";
@@ -458,12 +462,6 @@ struct LoadedQemuRun {
     orderly_child_exit: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LoadedTeardownTrigger {
-    SharedShutdown,
-    ControlQuit,
-}
-
 fn run_loaded_qemu_once(
     config: &LoadedQemuCoverageGateConfig,
     coverage: QemuLaunchPluginSwitch,
@@ -487,7 +485,8 @@ fn run_loaded_qemu_once(
 
     let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
         .with_fault_target_node(GATE_NODE)
-        .with_coverage(coverage);
+        .with_coverage(coverage)
+        .with_fingerprint(QemuLaunchPluginSwitch::On);
     let plugin_argument = plugin.qemu_plugin_argument();
     let command = profile
         .qemu_launch_command_for_live_gate(
@@ -532,7 +531,6 @@ fn run_loaded_qemu_once(
     let mut hot_path =
         QemuMappedQuantumShmemHotPath::new(hot_path_config, region, GateSendAuthorizer)
             .map_err(|source| LoadedQemuCoverageGateError::MappedHotPath { mode, source })?;
-
     let pending = QemuShmemHotPathChannel::start_quantum(
         &mut hot_path,
         ExecutionHorizon {
@@ -555,8 +553,14 @@ fn run_loaded_qemu_once(
             actual: completed_icount,
         });
     }
-    let fingerprint = QemuShmemHotPathChannel::execution_fingerprint(&mut hot_path)
-        .map_err(|source| channel_error(mode, "read execution fingerprint", source))?;
+    let fingerprint = publish_and_wait_for_execution_fingerprint(
+        &setup,
+        &mut hot_path,
+        &mut child,
+        config,
+        mode,
+        completed_icount,
+    )?;
     let observations = QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)
         .map_err(|source| channel_error(mode, "drain live coverage observations", source))?;
     let event_log_entries = record_loaded_run_event_log(mode, config.horizon_icount, observations)?;
@@ -637,13 +641,6 @@ fn wait_for_plugin_teardown(
             });
         }
         thread::sleep(POLL_INTERVAL);
-    }
-}
-
-const fn teardown_trigger_for_coverage(coverage: QemuLaunchPluginSwitch) -> LoadedTeardownTrigger {
-    match coverage {
-        QemuLaunchPluginSwitch::Off => LoadedTeardownTrigger::SharedShutdown,
-        QemuLaunchPluginSwitch::On => LoadedTeardownTrigger::ControlQuit,
     }
 }
 
