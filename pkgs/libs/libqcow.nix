@@ -6,6 +6,7 @@
   pkg-config,
   zlib,
   openssl,
+  stdenv,
 }: let
   version = "20240308";
 in
@@ -40,16 +41,32 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --enable-shared \
-            --disable-static \
-            --with-zlib=${zlib} \
-            --with-openssl=${openssl} \
-            --disable-python
-        '';
+        script =
+          if stdenv.isCross && stdenv.hostPlatform.isDarwin
+          then ''
+            # This capability is true for the same AOS OpenSSL in the
+            # native build, but Autoconf otherwise tries to execute the
+            # Darwin probe binary while cross compiling.
+            export ac_cv_openssl_xts_duplicate_keys=yes
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --enable-shared \
+              --disable-static \
+              --with-zlib=${zlib} \
+              --with-openssl=${openssl} \
+              --disable-python
+          ''
+          else ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --enable-shared \
+              --disable-static \
+              --with-zlib=${zlib} \
+              --with-openssl=${openssl} \
+              --disable-python
+          '';
       }
       {
         name = "build";
