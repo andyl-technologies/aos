@@ -37,8 +37,12 @@
   aos.image.allowTestArtifacts = true;
   # The test agent, debug profile, and guest-side diagnostic tools are an
   # intentional test-image payload. Keep the production server's 512 MiB
-  # ratchet unchanged while sizing this dedicated fixture for that closure.
-  aos.image.budgets.maxRootMiB = 640;
+  # root and download ratchets unchanged while sizing this dedicated fixture
+  # for that closure.
+  aos.image.budgets = {
+    maxRootMiB = 640;
+    maxDownloadMiB = 768;
+  };
 
   # Guest agent for image machines (baked machines also get it from
   # their /var seed; the extra bundled copy is inert there). See
