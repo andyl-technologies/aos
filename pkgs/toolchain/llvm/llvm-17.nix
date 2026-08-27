@@ -29,4 +29,5 @@ in
   mkLLVM {
     version = "17.0.6";
     srcHash = "sha256-WKiBjGDmYnBk8xLb9GwC2ZSZVlWDQJOLcc9zGti8CBM=";
+    needsClOptStringFix = true;
   }
