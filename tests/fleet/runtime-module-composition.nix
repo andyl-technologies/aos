@@ -265,6 +265,15 @@ in {
 
           {APM} install nginx --registry runtime-reg --yes
 
+          cat > "$HOME/.config/apm/registries.d/runtime-reg.toml" <<EOF
+          [registry]
+          name = "runtime-reg"
+          url = "file://$HOME/.local/share/apm/registries/runtime-reg"
+
+          [registry.signing_keys]
+          release = "$KEY"
+          EOF
+
           REG_DIR=$HOME/.local/share/apm/registries/runtime-reg
           mkdir -p /var/lib/runtime-module-registry-cache
           {APR} release 1.0.0 \
