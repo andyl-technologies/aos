@@ -16,7 +16,7 @@ mod publication;
 pub(super) use publication::PersistExactCheckpointError;
 use publication::{
     admit_new_checkpoint_publication, enforce_published_checkpoint_count,
-    finalize_published_checkpoint, scheduler_resource_limit,
+    publish_checkpoint_closure, scheduler_resource_limit,
 };
 mod read_budget;
 use read_budget::CheckpointReadBudget;
@@ -295,25 +295,12 @@ pub(super) fn persist_exact_checkpoint_set(
     persist_file_bytes(&staging.path().join(MANIFEST_FILE), &manifest_bytes)?;
     sync_directory(staging.path())?;
     install_published_artifact_paths(&object_directory, &manifest, checkpoint)?;
-    fs::rename(staging.path(), &destination).map_err(|error| {
-        store_error(format!(
-            "publish exact checkpoint closure {}: {error}",
-            destination.display()
-        ))
-    })?;
-    let count_result = enforce_published_checkpoint_count(&closure_parent, resource_limits);
-    finalize_published_checkpoint(
+    publish_checkpoint_closure(
+        staging,
+        &destination,
+        &closure_parent,
         manifest.identity,
-        count_result,
-        || {
-            fs::remove_dir_all(&destination).map_err(|cleanup| {
-                store_error(format!(
-                    "roll back over-limit checkpoint publication {}: {cleanup}",
-                    destination.display()
-                ))
-            })
-        },
-        || sync_directory(&closure_parent),
+        resource_limits,
     )
 }
 

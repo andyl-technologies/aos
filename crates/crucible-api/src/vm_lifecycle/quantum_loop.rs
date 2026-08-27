@@ -1476,15 +1476,22 @@ impl ProductionVmLifecycleLoop {
             }
             Ok(())
         })();
-        match result {
-            Ok(()) => {
-                if let Err(cleanup) = self.rollback_exact_captures(&mut captured) {
-                    return Err(ExactCheckpointTransactionError::Indeterminate {
-                        identity: None,
-                        captures: captured,
-                        source: cleanup,
-                    });
-                }
+        let run_state_root = self.config.run_state_root.clone();
+        let scenario_id = self.scenario.id();
+        let resource_limits = self.source.plan().fault_signals().resource_limits();
+        let initial_lifecycle_observations_pending = self.initial_lifecycle_observations_pending;
+        let backend = self.inner.backend_mut();
+        checkpoint_capture::resolve_exact_checkpoint_capture(
+            captured,
+            result,
+            |capture| {
+                backend
+                    .delete_exact_snapshot(&capture.node, &capture.snapshot)
+                    .map_err(SchedulerError::from)
+            },
+            |capture| capture.cleanup_pending = false,
+            |capture| capture.cleanup_pending,
+            |captured| {
                 let mut targets = BTreeMap::new();
                 for capture in captured {
                     let (node, target) =
@@ -1501,8 +1508,7 @@ impl ProductionVmLifecycleLoop {
                     assertion_state,
                     terminal_verdict,
                     terminal_cause,
-                    initial_lifecycle_observations_pending: self
-                        .initial_lifecycle_observations_pending,
+                    initial_lifecycle_observations_pending,
                     branch,
                     recorded_controls,
                     fault_checkpoint: Some(fault_checkpoint),
@@ -1510,39 +1516,16 @@ impl ProductionVmLifecycleLoop {
                     node_generations,
                     node_service_states,
                 };
-                match persist_exact_checkpoint_set(
-                    &self.config.run_state_root,
-                    self.scenario.id(),
-                    self.source.plan().fault_signals().resource_limits(),
+                persist_exact_checkpoint_set(
+                    &run_state_root,
+                    scenario_id,
+                    resource_limits,
                     &mut checkpoint_set,
                     staging,
-                ) {
-                    Ok(()) => Ok(checkpoint_set.identity),
-                    Err(PersistExactCheckpointError::Unpublished(source)) => {
-                        Err(ExactCheckpointTransactionError::Unpublished(source))
-                    }
-                    Err(PersistExactCheckpointError::Indeterminate { identity, source }) => {
-                        Err(ExactCheckpointTransactionError::Indeterminate {
-                            identity: Some(identity),
-                            captures: Vec::new(),
-                            source,
-                        })
-                    }
-                }
-            }
-            Err(error) => match self.rollback_exact_captures(&mut captured) {
-                Ok(()) => Err(ExactCheckpointTransactionError::Unpublished(error)),
-                Err(cleanup) => Err(ExactCheckpointTransactionError::Indeterminate {
-                    identity: None,
-                    captures: captured,
-                    source: SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "exact checkpoint capture failed ({error}); snapshot cleanup was indeterminate ({cleanup})"
-                        ),
-                    },
-                }),
+                )?;
+                Ok(checkpoint_set.identity)
             },
-        }
+        )
     }
 
     /// Evaluates the signal program exactly once in the ordered sequence of

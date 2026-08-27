@@ -235,6 +235,16 @@ store and fresh-process load apply the identical authored ceiling to every
 large continuation and to the aggregate content-addressed closure. Allocation
 or representation failure is a LIMIT-2 outcome carrying the exact current,
 requested, configured, and hard values rather than a process abort. The raised
+resource policy also covers the closure publication transaction. Every target
+and artifact path is owned before the first QMP save, all live QEMU snapshots
+are deleted in reverse order before the closure rename, and a staging or delete
+failure cannot enter durable publication. The production rename seam admits
+the exact published count, durably removes a rejected destination, and retains
+an indeterminate identity whenever parent-directory durability cannot establish
+one outcome. Fresh-process recovery authenticates published identities and
+durably removes abandoned transaction staging before another capture.
+
+The raised
 resource policy is carried only by the versioned node-v7, host-I/O-v4,
 block-snapshot-v3, block-fault-state-v2, 9p-snapshot-v2, I/O-core-v2,
 production-runtime-v6, and VM-snapshot-v3 formats; production runtime identity

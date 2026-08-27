@@ -206,3 +206,104 @@ fn publication_registry_retains_only_durable_or_indeterminate_owners() {
             if captures.is_empty()
     ));
 }
+
+#[test]
+fn production_transaction_deletes_before_publication_and_retains_failed_cleanup() {
+    #[derive(Debug)]
+    struct Capture {
+        name: &'static str,
+        pending: bool,
+    }
+    let captures = || {
+        vec![
+            Capture {
+                name: "a",
+                pending: true,
+            },
+            Capture {
+                name: "b",
+                pending: true,
+            },
+        ]
+    };
+    let identity = ContentHash::from_bytes(b"published checkpoint");
+    let calls = std::cell::RefCell::new(Vec::new());
+    let committed = resolve_exact_checkpoint_capture(
+        captures(),
+        Ok(()),
+        |capture| {
+            calls.borrow_mut().push(format!("delete-{}", capture.name));
+            Ok(())
+        },
+        |capture| capture.pending = false,
+        |capture| capture.pending,
+        |captures| {
+            assert!(captures.iter().all(|capture| !capture.pending));
+            calls.borrow_mut().push(String::from("publish"));
+            Ok(identity)
+        },
+    )
+    .unwrap_or_else(|_| panic!("clean capture should publish"));
+    assert_eq!(committed, identity);
+    assert_eq!(*calls.borrow(), ["delete-b", "delete-a", "publish"]);
+
+    let calls = std::cell::RefCell::new(Vec::new());
+    let error = resolve_exact_checkpoint_capture(
+        captures(),
+        Err(boundary_error("stage b failed")),
+        |capture| {
+            calls.borrow_mut().push(format!("delete-{}", capture.name));
+            if capture.name == "b" {
+                Err(boundary_error("delete b failed"))
+            } else {
+                Ok(())
+            }
+        },
+        |capture| capture.pending = false,
+        |capture| capture.pending,
+        |_| panic!("failed staging or cleanup must never publish"),
+    )
+    .err()
+    .unwrap_or_else(|| panic!("failed cleanup must be indeterminate"));
+    assert_eq!(*calls.borrow(), ["delete-b", "delete-a"]);
+    match error {
+        ExactCheckpointTransactionError::Indeterminate {
+            identity: None,
+            captures,
+            source,
+        } => {
+            assert_eq!(captures.len(), 1);
+            assert_eq!(captures[0].name, "b");
+            assert!(source.to_string().contains("stage b failed"));
+            assert!(source.to_string().contains("delete b failed"));
+        }
+        _ => panic!("failed live cleanup must retain its exact capture owner"),
+    }
+
+    let error = resolve_exact_checkpoint_capture(
+        vec![Capture {
+            name: "a",
+            pending: true,
+        }],
+        Ok(()),
+        |_| Ok(()),
+        |capture| capture.pending = false,
+        |capture| capture.pending,
+        |_| {
+            Err(PersistExactCheckpointError::Indeterminate {
+                identity,
+                source: boundary_error("parent sync failed"),
+            })
+        },
+    )
+    .err()
+    .unwrap_or_else(|| panic!("indeterminate durable publication must remain an error"));
+    assert!(matches!(
+        error,
+        ExactCheckpointTransactionError::Indeterminate {
+            identity: Some(observed),
+            captures,
+            ..
+        } if observed == identity && captures.is_empty()
+    ));
+}
