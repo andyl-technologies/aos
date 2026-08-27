@@ -3,13 +3,19 @@
   lib,
   mkCargoPackage,
   fetchCargoDeps,
-  grep,
+  stdenv,
+  buildPackages,
   crucible-controller,
 }: let
   version = "0.1.0";
   cargoDepsHash = import ./crucible/_cargo-deps-hash.nix;
   src = import ./crucible/_source.nix {inherit lib;};
   cargoArtifacts = crucible-controller.passthru.cargoArtifacts;
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  probeProgram =
+    if isDarwinCross
+    then "${buildPackages.crucible-fleet-store}/bin/crucible-fleet-store"
+    else ''"$out/bin/crucible-fleet-store"'';
 in
   mkCargoPackage {
     pname = "crucible-fleet-store";
@@ -29,14 +35,16 @@ in
     cargoFlags = "-p crucible-cas --bin crucible-fleet-store";
     cargoTestFlags = "-p crucible-cas";
     doCheck = true;
-    buildDeps = [grep];
+    buildDeps =
+      [buildPackages.grep]
+      ++ lib.optionals isDarwinCross [buildPackages.crucible-fleet-store];
     runtimeDeps = [];
 
     postInstall = ''
       test -x "$out/bin/crucible-fleet-store"
 
       probe_root="$TMPDIR/crucible-fleet-store-probe"
-      "$out/bin/crucible-fleet-store" probe "$probe_root" > "$TMPDIR/crucible-fleet-store.probe"
+      ${probeProgram} probe "$probe_root" > "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^backend=SharedDagStore$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^location_independent_identity=true$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^location_independent_roots=2$' "$TMPDIR/crucible-fleet-store.probe"

@@ -2,11 +2,10 @@
 {
   mkDerivation,
   fetchurl,
-  gnumake,
+  buildPackages,
   libcap,
   nettle,
   gnutls,
-  pkg-config,
   stdenv,
 }: let
   version = "4.8";
@@ -24,8 +23,8 @@ in
     };
 
     buildDeps = [
-      gnumake
-      pkg-config
+      buildPackages.gnumake
+      buildPackages.pkg-config
     ];
     runtimeDeps =
       (
