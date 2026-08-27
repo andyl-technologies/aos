@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::{
-    QemuNodeChannelError, QemuNodeError, QemuProcessIdentity, QmpHotForkReadiness,
-    QmpHotForkThreadInventory,
+    QemuNodeChannelError, QemuNodeError, QemuProcessIdentity, QmpHotForkRcuInventory,
+    QmpHotForkReadiness, QmpHotForkThreadInventory,
 };
 
 /// Maximum threads, descriptors, or mappings retained by one audit.
@@ -156,6 +156,7 @@ impl QemuHotForkProcessInventory {
 pub struct QemuHotForkAudit {
     readiness: QmpHotForkReadiness,
     qemu_threads: QmpHotForkThreadInventory,
+    qemu_rcu: QmpHotForkRcuInventory,
     process: QemuHotForkProcessInventory,
     externally_created_thread_ids: Vec<u32>,
 }
@@ -164,6 +165,7 @@ impl QemuHotForkAudit {
     pub(crate) fn new(
         readiness: QmpHotForkReadiness,
         qemu_threads: QmpHotForkThreadInventory,
+        qemu_rcu: QmpHotForkRcuInventory,
         process: QemuHotForkProcessInventory,
     ) -> Result<Self, QemuHotForkAuditError> {
         let mut qemu_index = 0_usize;
@@ -185,9 +187,29 @@ impl QemuHotForkAudit {
                 thread_id: thread.thread_id(),
             });
         }
+        let mut qemu_thread_index = 0_usize;
+        for reader in qemu_rcu.readers() {
+            while qemu_threads
+                .threads()
+                .get(qemu_thread_index)
+                .is_some_and(|thread| thread.thread_id() < reader.thread_id())
+            {
+                qemu_thread_index += 1;
+            }
+            if qemu_threads
+                .threads()
+                .get(qemu_thread_index)
+                .is_none_or(|thread| thread.thread_id() != reader.thread_id())
+            {
+                return Err(QemuHotForkAuditError::RcuReaderMissing {
+                    thread_id: reader.thread_id(),
+                });
+            }
+        }
         Ok(Self {
             readiness,
             qemu_threads,
+            qemu_rcu,
             process,
             externally_created_thread_ids,
         })
@@ -203,6 +225,12 @@ impl QemuHotForkAudit {
     #[must_use]
     pub const fn qemu_threads(&self) -> &QmpHotForkThreadInventory {
         &self.qemu_threads
+    }
+
+    /// Returns QEMU's matching bounded observational RCU inventory.
+    #[must_use]
+    pub const fn qemu_rcu(&self) -> &QmpHotForkRcuInventory {
+        &self.qemu_rcu
     }
 
     /// Returns the matching stable process inventory.
@@ -233,6 +261,9 @@ pub enum QemuHotForkAuditError {
     /// The QEMU-owned active-thread inventory query failed.
     #[error("QEMU hot-fork active-thread inventory query failed")]
     ThreadInventory(#[source] QemuNodeChannelError),
+    /// The QEMU-owned RCU inventory query failed.
+    #[error("QEMU hot-fork RCU inventory query failed")]
+    RcuInventory(#[source] QemuNodeChannelError),
     /// QEMU was not at the exact paused/device-flush boundary.
     #[error("QEMU is not at the exact paused boundary required for hot-fork audit")]
     NotExactPausedBoundary,
@@ -242,10 +273,19 @@ pub enum QemuHotForkAuditError {
     /// QEMU's internal active-thread registry changed around procfs capture.
     #[error("QEMU hot-fork active-thread inventory changed during process inventory")]
     ThreadInventoryChanged,
+    /// QEMU's observational RCU inventory changed around procfs capture.
+    #[error("QEMU hot-fork RCU inventory changed during process inventory")]
+    RcuInventoryChanged,
     /// A QEMU-registered thread was absent from the exact procfs inventory.
     #[error("QEMU-registered thread {thread_id} is absent from the process inventory")]
     RegisteredThreadMissing {
         /// Missing registered operating-system thread identifier.
+        thread_id: u32,
+    },
+    /// An RCU reader was absent from QEMU's exact active-thread registry.
+    #[error("QEMU RCU reader {thread_id} is absent from the active-thread registry")]
+    RcuReaderMissing {
+        /// Missing RCU reader operating-system thread identifier.
         thread_id: u32,
     },
     /// Linux process inventory failed.
@@ -771,6 +811,7 @@ mod tests {
         let audit = QemuHotForkAudit::new(
             readiness,
             QmpHotForkThreadInventory::one_coordinator(10),
+            QmpHotForkRcuInventory::from_reader_ids(&[10]),
             process.clone(),
         )
         .expect("registered coordinator should match procfs");
@@ -779,7 +820,18 @@ mod tests {
         assert!(matches!(
             QemuHotForkAudit::new(
                 readiness,
+                QmpHotForkThreadInventory::one_coordinator(10),
+                QmpHotForkRcuInventory::from_reader_ids(&[20]),
+                process.clone(),
+            ),
+            Err(QemuHotForkAuditError::RcuReaderMissing { thread_id: 20 })
+        ));
+
+        assert!(matches!(
+            QemuHotForkAudit::new(
+                readiness,
                 QmpHotForkThreadInventory::one_coordinator(30),
+                QmpHotForkRcuInventory::from_reader_ids(&[30]),
                 process,
             ),
             Err(QemuHotForkAuditError::RegisteredThreadMissing { thread_id: 30 })

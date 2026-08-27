@@ -1,0 +1,309 @@
+diff --git a/include/qemu/rcu.h b/include/qemu/rcu.h
+index fea058aa9..a39d62e6a 100644
+--- a/include/qemu/rcu.h
++++ b/include/qemu/rcu.h
+@@ -63,6 +63,7 @@ struct rcu_reader_data {
+     unsigned depth;
+ 
+     /* Data used for registry, protected by rcu_registry_lock */
++    int64_t thread_id;
+     QLIST_ENTRY(rcu_reader_data) node;
+ 
+     /*
+@@ -73,6 +74,22 @@ struct rcu_reader_data {
+     NotifierList force_rcu;
+ };
+ 
++#define QEMU_RCU_HOT_FORK_INVENTORY_MAX 65536
++
++typedef struct QemuRcuHotForkInventoryEntry {
++    int64_t thread_id;
++    bool active;
++} QemuRcuHotForkInventoryEntry;
++
++typedef struct QemuRcuHotForkInventory {
++    uint64_t generation;
++    size_t entry_count;
++    bool overflowed;
++    uint64_t pending_callbacks;
++    bool drain_active;
++    QemuRcuHotForkInventoryEntry *entries;
++} QemuRcuHotForkInventory;
++
+ QEMU_DECLARE_CO_TLS(struct rcu_reader_data, rcu_reader)
+ 
+ static inline void rcu_read_lock(void)
+@@ -126,6 +143,13 @@ void synchronize_rcu(void);
+ void rcu_register_thread(void);
+ void rcu_unregister_thread(void);
+ 
++/*
++ * Capture the bounded registered-reader state used by the hot-fork audit.
++ * This is observational evidence, not an RCU barrier or fork authorization.
++ */
++void qemu_rcu_hot_fork_inventory(QemuRcuHotForkInventory *inventory);
++void qemu_rcu_hot_fork_inventory_destroy(QemuRcuHotForkInventory *inventory);
++
+ /*
+  * Support for fork().  fork() support is enabled at startup.
+  */
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 302311e05..bbf5b85eb 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -19,6 +19,7 @@
+ #include "monitor-internal.h"
+ #include "monitor/qdev.h"
+ #include "monitor/qmp-helpers.h"
++#include "qemu/rcu.h"
+ #include "qemu/thread.h"
+ #include "system/system.h"
+ #include "system/cpu-timers.h"
+@@ -197,6 +198,59 @@ qmp_query_crucible_hot_fork_thread_inventory(Error **errp)
+     return report;
+ }
+ 
++CrucibleHotForkRcuInventory *
++qmp_query_crucible_hot_fork_rcu_inventory(Error **errp)
++{
++    CrucibleHotForkRcuInventory *report =
++        g_new0(CrucibleHotForkRcuInventory, 1);
++
++    (void)errp;
++    report->schema_version = 1;
++#ifdef CONFIG_POSIX
++    QemuRcuHotForkInventory inventory;
++    CrucibleHotForkRcuReaderList **tail = &report->readers;
++    uint32_t active_readers = 0;
++    int64_t previous_thread_id = 0;
++    bool valid_identifiers = true;
++    size_t index;
++
++    qemu_rcu_hot_fork_inventory(&inventory);
++    report->generation = inventory.generation;
++    for (index = 0; index < inventory.entry_count; index++) {
++        QemuRcuHotForkInventoryEntry *source = &inventory.entries[index];
++        CrucibleHotForkRcuReader *reader =
++            g_new0(CrucibleHotForkRcuReader, 1);
++        CrucibleHotForkRcuReaderList *node =
++            g_new0(CrucibleHotForkRcuReaderList, 1);
++
++        reader->thread_id = source->thread_id;
++        reader->active = source->active;
++        if (source->thread_id <= 0 ||
++            (index != 0 && source->thread_id <= previous_thread_id)) {
++            valid_identifiers = false;
++        }
++        previous_thread_id = source->thread_id;
++        if (source->active) {
++            active_readers++;
++        }
++        node->value = reader;
++        *tail = node;
++        tail = &node->next;
++    }
++    report->registered_readers = inventory.entry_count;
++    report->active_readers = active_readers;
++    report->pending_callbacks = inventory.pending_callbacks;
++    report->drain_active = inventory.drain_active;
++    report->overflowed = inventory.overflowed;
++    report->complete = !inventory.overflowed && valid_identifiers;
++    qemu_rcu_hot_fork_inventory_destroy(&inventory);
++#else
++    report->complete = false;
++    report->overflowed = true;
++#endif
++    return report;
++}
++
+ void qmp_cont(Error **errp)
+ {
+     BlockBackend *blk;
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 788145ae6..47b9536a9 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -268,6 +268,81 @@
+ { 'command': 'query-crucible-hot-fork-thread-inventory',
+   'returns': 'CrucibleHotForkThreadInventory' }
+ 
++##
++# @CrucibleHotForkRcuReader:
++#
++# One thread registered as an RCU read-side participant.
++#
++# @thread-id: positive operating-system thread identifier
++#
++# @active: whether the reader was inside a read-side critical section at the
++#     instant the registry lock was held
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkRcuReader',
++  'data': { 'thread-id': 'int64',
++            'active': 'bool' } }
++
++##
++# @CrucibleHotForkRcuInventory:
++#
++# Bounded observational snapshot of QEMU's registered RCU readers and callback
++# state.  This report is audit evidence, not an RCU barrier or fork
++# authorization.  Reader activity and callback state may change immediately
++# after the query returns.
++#
++# @schema-version: inventory contract version, currently 1
++#
++# @generation: monotonic process-local reader register/unregister counter
++#
++# @complete: true exactly when the reader registry did not overflow and every
++#     retained reader has a unique positive thread identifier
++#
++# @overflowed: whether one or more registered readers exceeded the retained
++#     registry bound
++#
++# @registered-readers: number of retained registered readers
++#
++# @active-readers: number of retained readers active in a read-side critical
++#     section
++#
++# @pending-callbacks: callbacks submitted but not yet completed, conservatively
++#     incremented before queue publication and decremented only after callback
++#     return
++#
++# @drain-active: whether drain_call_rcu() is currently active
++#
++# @readers: every retained reader, sorted by @thread-id and bounded to 65536
++#     entries
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkRcuInventory',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'complete': 'bool',
++            'overflowed': 'bool',
++            'registered-readers': 'uint32',
++            'active-readers': 'uint32',
++            'pending-callbacks': 'uint64',
++            'drain-active': 'bool',
++            'readers': [ 'CrucibleHotForkRcuReader' ] } }
++
++##
++# @query-crucible-hot-fork-rcu-inventory:
++#
++# Query the bounded RCU state visible at one registry-lock observation.  This
++# command does not drain callbacks, hold readers quiescent, advance readiness
++# proof bit 4, or otherwise authorize a fork.
++#
++# Returns: @CrucibleHotForkRcuInventory
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'query-crucible-hot-fork-rcu-inventory',
++  'returns': 'CrucibleHotForkRcuInventory' }
++
+ ##
+ # @SHUTDOWN:
+ #
+diff --git a/util/rcu.c b/util/rcu.c
+index 938a7da4e..b096364e3 100644
+--- a/util/rcu.c
++++ b/util/rcu.c
+@@ -47,8 +47,10 @@ unsigned long rcu_gp_ctr = RCU_GP_LOCKED;
+ 
+ QemuEvent rcu_gp_event;
+ static int in_drain_call_rcu;
++static uint64_t rcu_hot_fork_pending_callbacks;
+ static QemuMutex rcu_registry_lock;
+ static QemuMutex rcu_sync_lock;
++static uint64_t rcu_hot_fork_generation;
+ 
+ /*
+  * Check whether a quiescent state was crossed between the beginning of
+@@ -303,6 +305,7 @@ static void *call_rcu_thread(void *opaque)
+ 
+             n--;
+             node->func(node);
++            qatomic_dec(&rcu_hot_fork_pending_callbacks);
+         }
+         bql_unlock();
+     }
+@@ -312,6 +315,7 @@ static void *call_rcu_thread(void *opaque)
+ void call_rcu1(struct rcu_head *node, void (*func)(struct rcu_head *node))
+ {
+     node->func = func;
++    qatomic_inc(&rcu_hot_fork_pending_callbacks);
+     enqueue(node);
+     qatomic_inc(&rcu_call_count);
+     qemu_event_set(&rcu_call_ready_event);
+@@ -378,7 +382,9 @@ void rcu_register_thread(void)
+ {
+     assert(get_ptr_rcu_reader()->ctr == 0);
+     qemu_mutex_lock(&rcu_registry_lock);
++    get_ptr_rcu_reader()->thread_id = qemu_get_thread_id();
+     QLIST_INSERT_HEAD(&registry, get_ptr_rcu_reader(), node);
++    rcu_hot_fork_generation++;
+     qemu_mutex_unlock(&rcu_registry_lock);
+ }
+ 
+@@ -386,9 +392,60 @@ void rcu_unregister_thread(void)
+ {
+     qemu_mutex_lock(&rcu_registry_lock);
+     QLIST_REMOVE(get_ptr_rcu_reader(), node);
++    rcu_hot_fork_generation++;
+     qemu_mutex_unlock(&rcu_registry_lock);
+ }
+ 
++static int qemu_rcu_hot_fork_entry_compare(const void *left,
++                                           const void *right)
++{
++    const QemuRcuHotForkInventoryEntry *a = left;
++    const QemuRcuHotForkInventoryEntry *b = right;
++
++    return (a->thread_id > b->thread_id) - (a->thread_id < b->thread_id);
++}
++
++void qemu_rcu_hot_fork_inventory(QemuRcuHotForkInventory *inventory)
++{
++    struct rcu_reader_data *reader;
++    size_t retained = 0;
++    size_t index = 0;
++
++    memset(inventory, 0, sizeof(*inventory));
++    qemu_mutex_lock(&rcu_registry_lock);
++    QLIST_FOREACH(reader, &registry, node) {
++        if (retained == QEMU_RCU_HOT_FORK_INVENTORY_MAX) {
++            inventory->overflowed = true;
++            break;
++        }
++        retained++;
++    }
++    inventory->entries = g_new0(QemuRcuHotForkInventoryEntry, retained);
++    QLIST_FOREACH(reader, &registry, node) {
++        if (index == retained) {
++            break;
++        }
++        inventory->entries[index].thread_id = reader->thread_id;
++        inventory->entries[index].active = qatomic_read(&reader->ctr) != 0;
++        index++;
++    }
++    inventory->generation = rcu_hot_fork_generation;
++    inventory->entry_count = retained;
++    inventory->pending_callbacks =
++        qatomic_read(&rcu_hot_fork_pending_callbacks);
++    inventory->drain_active = qatomic_read(&in_drain_call_rcu) != 0;
++    qemu_mutex_unlock(&rcu_registry_lock);
++
++    qsort(inventory->entries, inventory->entry_count,
++          sizeof(*inventory->entries), qemu_rcu_hot_fork_entry_compare);
++}
++
++void qemu_rcu_hot_fork_inventory_destroy(QemuRcuHotForkInventory *inventory)
++{
++    g_free(inventory->entries);
++    memset(inventory, 0, sizeof(*inventory));
++}
++
+ void rcu_add_force_rcu_notifier(Notifier *n)
+ {
+     qemu_mutex_lock(&rcu_registry_lock);

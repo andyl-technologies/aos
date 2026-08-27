@@ -283,6 +283,7 @@ GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
 CAMPAIGN HOT FORK (RFC-0016)                           class  enforces
   crucible-hot-fork-readiness QEMU-owned proof bitmap   F    HFORK-3, HFORK-4
   crucible-hot-fork-thread-ownership subsystem owners   F    HFORK-3, HFORK-4
+  crucible-hot-fork-rcu-inventory bounded RCU evidence  F    HFORK-3, HFORK-4
 
 DIAGNOSTIC-ONLY (dev, NOT shipped)                     class  enforces
   crucible-tcg-exec-diag ........ per-exec icount trace      dev  divergence debug
@@ -1632,6 +1633,29 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   It does not stop, park, resume, fork, or reinitialize a thread, change an AIO
   or RCU operation, or set a hot-fork proof bit. Non-Crucible QMP and guest
   execution are unchanged.
+- **Risk:** F.
+
+### crucible-hot-fork-rcu-inventory — expose bounded observational RCU state
+
+- **Patch:** `0113-crucible-hot-fork-rcu-inventory.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4].
+- **Mechanism:** a fixed version-1 QMP query snapshots at most 65,536 registered
+  RCU readers under the registry lock, sorts their positive thread IDs, and
+  reports instantaneous read-side activity, submitted-but-incomplete callback
+  count, active `drain_call_rcu()` state, and a register/unregister generation.
+  Callback accounting increments before queue publication and decrements only
+  after callback return, so the callback worker's dequeue and grace-period
+  interval cannot appear empty.
+- **Micro-test:** strict Rust decoding rejects unknown or additional fields,
+  changed schema, inconsistent counts/completeness, nonpositive, duplicate, or
+  unsorted reader IDs. The live patched-QEMU gate requires stable repeated
+  reports under the supported paused profile and binds every RCU reader to the
+  exact thread registry. Stock QEMU must not expose the command.
+- **Inertness:** the query is observational. It does not drain callbacks, wait
+  for readers, hold the registry lock across another operation, coordinate
+  `fork(2)`, or change readiness bit 4. Reader activity may change immediately
+  after the response; only a future coordinator-held barrier may promote the
+  proof.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

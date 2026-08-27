@@ -1454,6 +1454,22 @@
         '';
       };
     }
+    {
+      patch = "0113-crucible-hot-fork-rcu-inventory.patch";
+      check = certifyExactPatch {
+        patchName = "0113-crucible-hot-fork-rcu-inventory.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-rcu-inventory";
+        liveEvidence = ''
+          grep -Fxq 'rcu_inventory_schema_version=1' "$live_result"
+          grep -Fxq 'rcu_inventory_bound=65536' "$live_result"
+          grep -Fxq 'rcu_inventory_stable=true' "$live_result"
+          grep -Fxq 'rcu_readers_thread_bound=true' "$live_result"
+          grep -Fxq 'rcu_proof_acknowledged=false' "$live_result"
+          grep -Fxq 'incomplete_report_ready=false' "$live_result"
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

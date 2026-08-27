@@ -13,12 +13,12 @@ use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT,
     QMP_HOT_FORK_REQUIRED_PROOFS, QMP_QUERY_CPUS_FAST_COMMAND,
-    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
-    QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME,
-    QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
-    QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient, QmpCommandKind, QmpError,
-    QmpGreeting, QmpHotForkProof, QmpHotForkThreadDisposition, QmpIoTimeoutPolicy,
-    QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_READINESS_COMMAND,
+    QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
+    QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND,
+    QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient,
+    QmpCommandKind, QmpError, QmpGreeting, QmpHotForkProof, QmpHotForkThreadDisposition,
+    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -339,6 +339,64 @@ fn hot_fork_thread_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn
             client.query_hot_fork_thread_inventory(),
             Err(QmpError::MalformedTypedResponse {
                 command: QmpCommandKind::QueryHotForkThreadInventory,
+                ..
+            })
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn hot_fork_rcu_inventory_is_exact_bounded_and_sorted() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":7,"complete":true,"overflowed":false,"registered-readers":3,"active-readers":1,"pending-callbacks":2,"drain-active":true,"readers":[{"thread-id":10,"active":false},{"thread-id":11,"active":true},{"thread-id":12,"active":false}]}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let inventory = client.query_hot_fork_rcu_inventory()?;
+    assert_eq!(inventory.generation(), 7);
+    assert!(inventory.complete());
+    assert!(!inventory.overflowed());
+    assert_eq!(inventory.active_readers(), 1);
+    assert_eq!(inventory.pending_callbacks(), 2);
+    assert!(inventory.drain_active());
+    assert_eq!(inventory.readers().len(), 3);
+    assert_eq!(inventory.readers()[0].thread_id(), 10);
+    assert!(!inventory.readers()[0].active());
+    assert!(inventory.readers()[1].active());
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    assert_eq!(
+        execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND)
+    );
+    Ok(())
+}
+
+#[test]
+fn hot_fork_rcu_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn Error>> {
+    for response in [
+        r#"{"return":{"schema-version":2,"generation":1,"complete":true,"overflowed":false,"registered-readers":0,"active-readers":0,"pending-callbacks":0,"drain-active":false,"readers":[]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"registered-readers":2,"active-readers":0,"pending-callbacks":0,"drain-active":false,"readers":[{"thread-id":10,"active":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"registered-readers":2,"active-readers":0,"pending-callbacks":0,"drain-active":false,"readers":[{"thread-id":11,"active":false},{"thread-id":10,"active":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"registered-readers":1,"active-readers":0,"pending-callbacks":0,"drain-active":false,"readers":[{"thread-id":0,"active":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"registered-readers":1,"active-readers":1,"pending-callbacks":0,"drain-active":false,"readers":[{"thread-id":10,"active":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":false,"overflowed":false,"registered-readers":1,"active-readers":0,"pending-callbacks":0,"drain-active":false,"readers":[{"thread-id":10,"active":false}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":false,"overflowed":true,"registered-readers":1,"active-readers":0,"pending-callbacks":0,"drain-active":false,"readers":[{"thread-id":10,"active":false}],"extra":0}}"#,
+    ] {
+        let mut client = QmpClient::connect(scripted_qmp([
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            response,
+        ]))?;
+        assert!(matches!(
+            client.query_hot_fork_rcu_inventory(),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::QueryHotForkRcuInventory,
                 ..
             })
         ));
