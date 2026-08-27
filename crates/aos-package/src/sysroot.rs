@@ -749,6 +749,7 @@ fn reeval_and_activate_config_generation(
         eval_root.clone(),
         manifest.clone(),
         0,
+        Some(load_generation_state_readonly(profile_path)?.current),
     )?;
     let graph = eval_root.join("graph.json");
     let marker_root = eval_root.join("markers");
@@ -818,6 +819,7 @@ pub fn reeval_active_config_for_boot(
         eval_root,
         out,
         verbose,
+        Some(state.current),
     )
 }
 

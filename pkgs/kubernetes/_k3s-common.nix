@@ -70,9 +70,14 @@ in {
   };
 
   preflightService = role: required: let
+    enabledCheck = pkgs.writeShellScriptBin "k3s-${role}-enabled" ''
+      set -eu
+
+      [ "''${K3S_ENABLED:-false}" = true ]
+    '';
     checks =
       lib.concatMapStringsSep "\n" (varName: ''
-        : "''${${varName}:?[k3s-preflight] ${role}: ${varName} must be set in /etc/rancher/k3s/k3s.env}"
+        : "''${${varName}:?[k3s-preflight] ${role}: ${varName} must be set in /etc/aos/packages/${role}/k3s.env}"
       '')
       required;
   in {
@@ -93,13 +98,14 @@ in {
       # start. Net effect: a stock image with no operator-supplied
       # k3s.env stays in `inactive (dead)` cleanly — no script
       # invocation, no scary journal stack trace, no restart loop.
-      ConditionPathExists = "/etc/rancher/k3s/k3s.env";
+      ConditionPathExists = "/etc/aos/packages/${role}/k3s.env";
     };
 
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
-      EnvironmentFile = "/etc/rancher/k3s/k3s.env";
+      EnvironmentFile = "/etc/aos/packages/${role}/k3s.env";
+      ExecCondition = "${enabledCheck}/bin/k3s-${role}-enabled";
       StandardOutput = "journal+console";
       StandardError = "journal+console";
     };
@@ -112,4 +118,19 @@ in {
       echo "[k3s-preflight] ${role}: required env present, k3s may start"
     '';
   };
+
+  launcher = role: command:
+    pkgs.writeShellScriptBin "k3s-${role}-start" ''
+      set -eu
+
+      : "''${CREDENTIALS_DIRECTORY:?[k3s] ${role}: token credential was not loaded}"
+      token_file="$CREDENTIALS_DIRECTORY/token"
+      if [ ! -r "$token_file" ]; then
+        echo "[k3s] ${role}: token credential is not readable" >&2
+        exit 1
+      fi
+
+      export K3S_TOKEN_FILE="$token_file"
+      exec ${pkgs.k3s}/bin/k3s ${command} "$@"
+    '';
 }

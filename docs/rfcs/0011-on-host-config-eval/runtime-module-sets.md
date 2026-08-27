@@ -44,8 +44,8 @@ hold under the global switch lock:
 1. the active configuration generation is the generation used as the
    candidate's base;
 2. the running image generation and module ABI are unchanged;
-3. every bootable A/B image declares support for the runtime-module-set
-   generation and manifest feature;
+3. every bootable A/B image capable of configuration reactivation declares
+   support for the runtime-module-set generation and manifest feature;
 4. the candidate manifest and every retained input validate;
 5. materialization and activation complete through the existing atomic commit
    point.
@@ -67,9 +67,10 @@ Adding runtime intent to a permissively deserialized generation record is not
 forward compatible: an older fallback image could ignore the new field and
 cross-ABI re-evaluate only `host.nix`, silently deleting the supplemental
 intent. Runtime module activation therefore fails closed until every bootable
-normal and recovery image advertises the feature. Once a generation requires
-the feature, boot and rollback refuse any evaluator that does not understand
-it before re-evaluation or activation.
+A/B configuration evaluator advertises the feature. The standalone recovery
+environment does not re-evaluate or activate stage-2 configuration. Once a
+generation requires the feature, normal boot and rollback refuse any evaluator
+that does not understand it before re-evaluation or activation.
 
 The manifest schema is versioned for the additional input rather than adding
 an unrecognized field to `aos.config-manifest/v1`. Readers normalize v1 to an
@@ -120,20 +121,23 @@ core artifact trees directly, authorization is exact-name scoped (one `/etc`
 target, unit, user, or group), never ownership of the whole
 `environment`, `systemd`, or `aos` root.
 
-Kubernetes configuration uses a shared versioned type/resource library so the
-server, agent, CNI, CSI, ingress, and policy packages exchange typed values
-without copying schemas. nginx owns the versioned `nginx` root and exposes
-contributable virtual-host and upstream subtrees. Envoy owns the versioned
-`envoy` root and exposes listener, cluster, endpoint, route, secret-reference,
-and runtime-layer subtrees. Credentials are references to the credential
-channel and never literal manifest values.
+The three k3s role packages publish the same versioned `k3s` interface and are
+mutually exclusive providers of that root. Its CNI and CSI integration
+subtrees are contributable without allowing an integration package to enable
+k3s. nginx owns the versioned `nginx` root and exposes contributable
+virtual-host and upstream subtrees. Envoy owns the versioned `envoy` root and
+exposes listener, cluster, endpoint, route, secret-reference, and runtime-layer
+subtrees. Credentials are references to the credential channel and never
+literal manifest values.
 
 ## Acceptance coverage
 
-Pure checks cover deterministic discovery, ignored helpers, symlink and size
-rejection, direct-module precedence, package-prefix enforcement, shared-root
-ABI matching, meta-package composition, manifest v1 normalization/v2 strict
-validation, stale-candidate rejection, and retained-source rooting. VM checks
-exercise runtime installation and configuration of nginx, Envoy, each
-Kubernetes role and a composed Kubernetes stack; reboot and rollback must use
-the pinned generation while deliberately dirtying the worktree.
+Pure checks cover deterministic discovery, ignored helpers, symlink, hard-link
+and size rejection, direct-module precedence, package-prefix enforcement,
+shared-root ABI matching, meta-package composition, manifest v1/v2 strict
+validation, stale-candidate rejection, and retained-source rooting. Focused
+package checks evaluate all three k3s roles and validate representative nginx
+and Envoy configurations with their real binaries. The runtime lifecycle VM
+installs and configures nginx, Envoy, and a k3s worker from two supplemental
+fragments, then proves a failed candidate and a dirty worktree cannot replace
+the pinned active generation across reboot.

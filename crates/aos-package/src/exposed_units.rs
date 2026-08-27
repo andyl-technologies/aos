@@ -3589,6 +3589,7 @@ mod tests {
             ciphertext: None,
             units: vec![format!("{package}.service")],
             encrypted: true,
+            optional: false,
         });
     }
 

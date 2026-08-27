@@ -121,6 +121,12 @@ impl StockNixEvaluator {
         base: &str,
         host: &str,
     ) -> Result<String> {
+        let runtime_modules = attempt
+            .runtime_modules
+            .iter()
+            .map(|path| locked_store_input(path, None).map(|input| format!("(import {input})")))
+            .collect::<Result<Vec<_>>>()?
+            .join(" ");
         let facts_module = attempt
             .facts_json
             .map(|facts_json| -> Result<String> {
@@ -143,6 +149,7 @@ impl StockNixEvaluator {
              {facts_binding}\
             \x20 system = baseLib.evalHostConfig {{\n\
             \x20   operatorModules = [ hostModule ];\n\
+            \x20   runtimeModules = [ {runtime_modules} ];\n\
             \x20   packageModules = {modules};\n\
             \x20   factsModules = {facts_modules};\n\
             \x20 }};\n\
@@ -182,6 +189,7 @@ impl StockNixEvaluator {
             modules = package_modules,
             facts_binding = facts_binding,
             facts_modules = facts_modules,
+            runtime_modules = runtime_modules,
         ))
     }
 
@@ -382,6 +390,17 @@ fn render_package_module_list(members: &[WorkingSetMember], locked: bool) -> Res
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
+            let artifact_list = |values: &[String]| {
+                values
+                    .iter()
+                    .map(|value| nix_string(value))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            let artifact_etc = artifact_list(&member.authorization.artifacts.etc);
+            let artifact_units = artifact_list(&member.authorization.artifacts.units);
+            let artifact_users = artifact_list(&member.authorization.artifacts.users);
+            let artifact_groups = artifact_list(&member.authorization.artifacts.groups);
             let self_output = member
                 .outputs
                 .self_output
@@ -397,7 +416,7 @@ fn render_package_module_list(members: &[WorkingSetMember], locked: bool) -> Res
                 .collect::<Vec<_>>()
                 .join(" ");
             items.push(format!(
-                    "    (let configRoot = {config_root}; in {{ name = {}; authorization = {{ owns = [ {owns} ]; contributes = {{ {contributes} }}; }}; inherit configRoot; module = configRoot + \"/module.nix\"; outputs = {{ self = {self_output}; dependencies = {{ {dependency_outputs} }}; }}; }})",
+                    "    (let configRoot = {config_root}; in {{ name = {}; authorization = {{ owns = [ {owns} ]; contributes = {{ {contributes} }}; artifacts = {{ etc = [ {artifact_etc} ]; units = [ {artifact_units} ]; users = [ {artifact_users} ]; groups = [ {artifact_groups} ]; }}; }}; inherit configRoot; module = configRoot + \"/module.nix\"; outputs = {{ self = {self_output}; dependencies = {{ {dependency_outputs} }}; }}; }})",
                     nix_string(&member.package),
                 ));
         }
@@ -1061,6 +1080,7 @@ mod tests {
         ];
         let attempt = EvalAttempt {
             host_nix: Path::new("/nix/store/hash-host.nix"),
+            runtime_modules: &[],
             base_lib: Path::new("/nix/store/hash-aos-base-lib"),
             facts_json: None,
             working_set: &working,
@@ -1118,6 +1138,7 @@ mod tests {
         let evaluator = StockNixEvaluator::new("/run/aos-eval", 0);
         let attempt = EvalAttempt {
             host_nix: Path::new("/nix/store/hash-host.nix"),
+            runtime_modules: &[],
             base_lib: Path::new("/nix/store/hash-aos-base-lib"),
             facts_json: None,
             working_set: &[],
@@ -1145,6 +1166,7 @@ mod tests {
         let evaluator = StockNixEvaluator::new(&root, 0);
         let attempt = EvalAttempt {
             host_nix: Path::new("/nix/store/hash-host.nix"),
+            runtime_modules: &[],
             base_lib: Path::new("/nix/store/hash-aos-base-lib"),
             facts_json: Some(&facts_json),
             working_set: &[],

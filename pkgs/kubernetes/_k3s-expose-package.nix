@@ -38,6 +38,7 @@
 in
   {
     pname,
+    role,
     description,
     command,
     requiredEnv,
@@ -71,6 +72,27 @@ in
       ),
   }: let
     stateDirectoryText = builtins.concatStringsSep " " stateDirectories;
+    launcher = common.launcher pname command;
+    configFields = [
+      "K3S_ENABLED"
+      "K3S_URL"
+      "K3S_NODE_NAME"
+      "K3S_NODE_IP"
+      "K3S_NODE_EXTERNAL_IP"
+      "K3S_NODE_LABEL"
+      "K3S_NODE_TAINT"
+      "K3S_FLANNEL_BACKEND"
+      "K3S_FLANNEL_IFACE"
+      "K3S_CLUSTER_CIDR"
+      "K3S_SERVICE_CIDR"
+      "K3S_CLUSTER_DNS"
+      "K3S_DISABLE_NETWORK_POLICY"
+      "K3S_DISABLE_KUBE_PROXY"
+      "K3S_CLUSTER_INIT"
+      "K3S_DISABLE"
+      "K3S_TLS_SAN"
+      "K3S_KUBECONFIG_MODE"
+    ];
   in
     mkDerivation {
       inherit pname;
@@ -84,6 +106,7 @@ in
           script = ''
             mkdir -p "$out/share/${pname}"
             printf '%s\n' ${lib.escapeShellArg pname} > "$out/share/${pname}/payload.txt"
+            printf '%s\n' ${lib.escapeShellArg (builtins.toJSON {inherit pname role;})} > "$out/share/k3s-role.json"
           '';
         }
       ];
@@ -101,8 +124,8 @@ in
             path = common.runtimePath;
             serviceConfig = {
               Type = "notify";
-              EnvironmentFile = "/etc/rancher/k3s/k3s.env";
-              ExecStart = "${k3s}/bin/k3s ${command}";
+              EnvironmentFile = "/etc/aos/packages/${pname}/k3s.env";
+              ExecStart = "${launcher}/bin/k3s-${pname}-start";
               KillMode = "process";
               Delegate = "yes";
               StateDirectory = stateDirectoryText;
@@ -115,6 +138,27 @@ in
               RestartSec = "5s";
             };
           };
+        };
+
+        config = {
+          artifacts = [
+            {
+              name = "env";
+              path = "/etc/aos/packages/${pname}/k3s.env";
+              format = "env";
+              required = [];
+              optional = configFields;
+              units = ["k3s-preflight.service" "k3s.service"];
+              reload = "restart";
+            }
+          ];
+          credentials = [
+            {
+              name = "token";
+              units = ["k3s.service"];
+              encrypted = true;
+            }
+          ];
         };
 
         kernel = {
@@ -146,6 +190,48 @@ in
           syscalls = "privileged";
           security-label = "aos-pkg-${pname}";
         };
+      };
+
+      configModule = {
+        src = ./_k3s-config;
+        moduleAbiCompat = {
+          min = 1;
+          max = 2;
+        };
+        declares = [
+          "k3s.enable"
+          "k3s.integrations.cni"
+          "k3s.integrations.csi"
+          "k3s.kubeconfigMode"
+          "k3s.networking.clusterCidr"
+          "k3s.networking.clusterDns"
+          "k3s.networking.disableKubeProxy"
+          "k3s.networking.disableNetworkPolicy"
+          "k3s.networking.flannelBackend"
+          "k3s.networking.flannelInterface"
+          "k3s.networking.serviceCidr"
+          "k3s.node.externalIp"
+          "k3s.node.ip"
+          "k3s.node.labels"
+          "k3s.node.name"
+          "k3s.node.taints"
+          "k3s.role"
+          "k3s.server.clusterInit"
+          "k3s.server.disableComponents"
+          "k3s.server.tlsSans"
+          "k3s.serverUrl"
+          "k3s.token"
+        ];
+        ownsRoots = [
+          {
+            root = "k3s";
+            interfaceAbi = 1;
+            contributable = [
+              "integrations.cni.*"
+              "integrations.csi.*"
+            ];
+          }
+        ];
       };
 
       meta = {

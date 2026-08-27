@@ -1092,6 +1092,11 @@ in {
       inherit pkgs mkSystem;
       serverModule = ./systems/server.nix;
     };
+    nginx-config = import ./lib/testing/nginx-config.nix {
+      inherit pkgs lib mkSystem;
+      serverModule = ./systems/server.nix;
+    };
+    k3s-config = import ./lib/testing/k3s-config.nix {inherit pkgs lib;};
     config-source-gc = import ./lib/testing/config-source-gc.nix {inherit pkgs lib;};
     config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
     config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};
@@ -1112,6 +1117,9 @@ in {
           module-args
           module-enforcement
           package-expose
+          nginx-config
+          k3s-config
+          integration.envoy-config-module-contract
           config-source-gc
           config-provenance
           system-structure
@@ -1203,6 +1211,7 @@ in {
         "package-attestation-quote"
         "provisioning-boot"
         "runtime-config-role"
+        "runtime-module-composition"
         "system-image-rollback"
       ];
       runtimeConfigFleet = builtins.map (name: base.${name}) runtimeConfigNames;
