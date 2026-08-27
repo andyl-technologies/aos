@@ -139,13 +139,15 @@ pub use abi::{
     resolve_qemu_set_process_generation_symbol, validate_install_boundary,
 };
 pub use args::{
+    HARD_STORAGE_COMPLETED_HISTORY_EPOCHS, HARD_STORAGE_COMPLETED_HISTORY_GAPS,
     PLUGIN_ARG_APP_RANDOM_CAP, PLUGIN_ARG_APP_RANDOM_NODE, PLUGIN_ARG_APP_RANDOM_SEED,
     PLUGIN_ARG_COVERAGE, PLUGIN_ARG_FAULT_NODE_HASH, PLUGIN_ARG_FINGERPRINT,
     PLUGIN_ARG_PROCESS_GENERATION, PLUGIN_ARG_SHMEMFD, PLUGIN_ARG_SIMFD, PLUGIN_ARG_SLOT,
+    PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_EPOCHS, PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_GAPS,
     PLUGIN_ARG_WAKEFD, PLUGIN_ARG_WHITEBOX, PLUGIN_ARG_WHITEBOX_SETUP, PluginAppRandomConfig,
-    PluginArgs, PluginArgsParseError, PluginInheritedFds, PluginStateDumpConfig, PluginSwitch,
-    WHITEBOX_SETUP_AARCH64_HINT_INERT_V1, WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1,
-    WhiteboxSetupAttestation,
+    PluginArgs, PluginArgsParseError, PluginInheritedFds, PluginStateDumpConfig,
+    PluginStorageHistoryLimits, PluginSwitch, WHITEBOX_SETUP_AARCH64_HINT_INERT_V1,
+    WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1, WhiteboxSetupAttestation,
 };
 pub use block_io::{
     BlockGuestCompletion, BlockGuestCompletionError, BlockInboundRing, BlockIoError,

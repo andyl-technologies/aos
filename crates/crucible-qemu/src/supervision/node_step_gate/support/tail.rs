@@ -2,6 +2,15 @@
 
 use super::*;
 
+pub(in crate::supervision::node_step_gate) const fn basic_block_coverage_config(
+    coverage: QemuLaunchPluginSwitch,
+) -> BasicBlockCoverageConfig {
+    match coverage {
+        QemuLaunchPluginSwitch::Off => BasicBlockCoverageConfig::off(),
+        QemuLaunchPluginSwitch::On => BasicBlockCoverageConfig::on(),
+    }
+}
+
 pub(in crate::supervision::node_step_gate) fn launch_artifact(
     kind: &str,
     path: &Path,

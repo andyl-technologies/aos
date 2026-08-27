@@ -82,13 +82,13 @@ impl LiveInstallFixture {
     }
 
     pub(super) fn args(&self) -> PluginArgs {
-        PluginArgs::parse(&format!("simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0", self.plugin.as_raw_fd()))
+        PluginArgs::parse(&format!("simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576", self.plugin.as_raw_fd()))
             .unwrap_or_else(|error| panic!("test plugin args should parse: {error}"))
     }
 
     pub(super) fn coverage_args(&self) -> PluginArgs {
         PluginArgs::parse(&format!(
-            "simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,coverage=on",
+            "simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,coverage=on",
             self.plugin.as_raw_fd()
         ))
         .unwrap_or_else(|error| panic!("test coverage plugin args should parse: {error}"))
@@ -96,7 +96,7 @@ impl LiveInstallFixture {
 
     pub(super) fn whitebox_args(&self) -> PluginArgs {
         PluginArgs::parse(&format!(
-            "simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1",
+            "simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1",
             self.plugin.as_raw_fd()
         ))
         .unwrap_or_else(|error| panic!("test white-box plugin args should parse: {error}"))

@@ -1124,7 +1124,7 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
     let args = command.args();
     let fault_hash = lowercase_hex(&default_plugin_config().fault_node_hash());
     let plugin_argument = format!(
-        "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off"
+        "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=4,wakefd=5,whitebox=off,coverage=off"
     );
 
     assert_eq!(command.executable(), default_qemu_binary());
@@ -1191,7 +1191,7 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
         .with_coverage(QemuLaunchPluginSwitch::On);
     let fault_hash = lowercase_hex(&plugin_config.fault_node_hash());
     let expected_plugin_args = format!(
-        "simfd=3,slot=2,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,shmemfd=4,wakefd=5,whitebox=on,coverage=on,whitebox_setup=x86-port-00e7-unclaimed-v1"
+        "simfd=3,slot=2,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=4,wakefd=5,whitebox=on,coverage=on,whitebox_setup=x86-port-00e7-unclaimed-v1"
     );
     assert_eq!(plugin_config.plugin_args_raw(), expected_plugin_args);
     let command = default_profile()

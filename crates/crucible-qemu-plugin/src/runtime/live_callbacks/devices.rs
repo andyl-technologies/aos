@@ -31,6 +31,8 @@ use super::{
     StableDirectedRingHandle, abort_live_callback, callback_userdata_or_abort,
 };
 
+mod attachment;
+
 const QEMU_PLUGIN_BLOCK_POLL_PENDING: i64 = -2;
 const QEMU_PLUGIN_BLOCK_RETRY_PRESERVE_ID: i64 = -3;
 const QEMU_PLUGIN_BLOCK_RETRY_NEW_ID: i64 = -4;
@@ -85,44 +87,6 @@ struct PendingAcceleratorEnvelope {
 }
 
 impl LiveDeviceCallbackState {
-    pub(super) fn new(
-        vm_slot: u32,
-        block_rings: LiveDirectedRingPair,
-        ninep_rings: LiveDirectedRingPair,
-        accelerator_generation: u64,
-        accelerator_rings: DetachedPluginAcceleratorRings,
-    ) -> Result<Self, LiveDeviceCallbackError> {
-        let block = PluginBlockIo::from_directed_rings(
-            vm_slot,
-            block_rings.outbound.descriptor,
-            block_rings.inbound.descriptor,
-        )
-        .map_err(|source| LiveDeviceCallbackError::Block { source })?;
-        let ninep = PluginNinePIo::from_directed_rings(
-            vm_slot,
-            ninep_rings.outbound.descriptor,
-            ninep_rings.inbound.descriptor,
-        )
-        .map_err(|source| LiveDeviceCallbackError::NineP { source })?;
-        Ok(Self {
-            freeze: PluginDeviceIoFreeze::new(),
-            block,
-            block_rings,
-            block_tokens: BTreeMap::new(),
-            block_retry_preserve: BTreeSet::new(),
-            pending_block_event: None,
-            ninep,
-            ninep_rings,
-            ninep_tokens: BTreeMap::new(),
-            accelerator_generation,
-            accelerator_rings,
-            accelerator_pending: BTreeMap::new(),
-            accelerator_completed: BTreeMap::new(),
-            accelerator_cancelled: BTreeMap::new(),
-            accelerator_restore_staging: None,
-        })
-    }
-
     // crucible-lint: allow rust-allow -- the accelerator request preserves every fixed public envelope field.
     #[allow(
         clippy::too_many_arguments,

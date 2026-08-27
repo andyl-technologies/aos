@@ -97,6 +97,7 @@ use super::QemuLiveHostIoRuntimeError;
 mod error;
 pub use error::QemuLiveNodeStepGateError;
 mod exact_snapshot;
+mod plugin_resources;
 pub use exact_snapshot::{
     QemuLiveRetainedNetworkSnapshotReport, run_qemu_live_exact_snapshot_gate,
     run_qemu_live_retained_network_snapshot_gate,
@@ -221,6 +222,8 @@ pub struct QemuLiveNodeStepGateConfig {
     scenario_seed: u64,
     process_generation: u64,
     network_tx_next_sequence: u32,
+    storage_completed_history_epochs: u64,
+    storage_completed_history_gaps: u64,
     whitebox: QemuLaunchPluginSwitch,
     app_random: Option<QemuLaunchAppRandomConfig>,
     coverage: QemuLaunchPluginSwitch,
@@ -305,6 +308,10 @@ impl QemuLiveNodeStepGateConfig {
             scenario_seed: 0,
             process_generation: 1,
             network_tx_next_sequence: 0,
+            storage_completed_history_epochs: FaultResourceLimits::compiled_maximum()
+                .storage_completed_history_epochs,
+            storage_completed_history_gaps: FaultResourceLimits::compiled_maximum()
+                .storage_completed_history_gaps,
             whitebox: QemuLaunchPluginSwitch::Off,
             app_random: None,
             coverage: QemuLaunchPluginSwitch::Off,
@@ -358,6 +365,10 @@ impl QemuLiveNodeStepGateConfig {
             scenario_seed: 0,
             process_generation: 1,
             network_tx_next_sequence: 0,
+            storage_completed_history_epochs: FaultResourceLimits::compiled_maximum()
+                .storage_completed_history_epochs,
+            storage_completed_history_gaps: FaultResourceLimits::compiled_maximum()
+                .storage_completed_history_gaps,
             whitebox: QemuLaunchPluginSwitch::Off,
             app_random: None,
             coverage: QemuLaunchPluginSwitch::Off,
@@ -451,20 +462,6 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub const fn with_scenario_seed(mut self, scenario_seed: u64) -> Self {
         self.scenario_seed = scenario_seed;
-        self
-    }
-
-    /// Returns this configuration with its immutable process generation.
-    #[must_use]
-    pub const fn with_process_generation(mut self, process_generation: u64) -> Self {
-        self.process_generation = process_generation;
-        self
-    }
-
-    /// Returns this configuration with the restored plugin network TX cursor.
-    #[must_use]
-    pub const fn with_network_tx_next_sequence(mut self, next_sequence: u32) -> Self {
-        self.network_tx_next_sequence = next_sequence;
         self
     }
 

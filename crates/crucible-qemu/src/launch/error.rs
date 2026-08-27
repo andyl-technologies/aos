@@ -10,6 +10,16 @@ pub enum QemuLaunchCommandError {
     /// A process generation cannot use the reserved zero value.
     #[error("QEMU plugin process generation must be nonzero")]
     ZeroProcessGeneration,
+    /// A plugin resource limit was zero or exceeded its compiled ceiling.
+    #[error("QEMU plugin resource limit `{field}` value {configured} is outside 1..={hard}")]
+    InvalidPluginResourceLimit {
+        /// Stable public resource-limit field.
+        field: &'static str,
+        /// Rejected configured value.
+        configured: u64,
+        /// Immutable compiled ceiling.
+        hard: u64,
+    },
     /// App-random was configured without enabling the white-box callback.
     #[error("app-random QEMU launch requires white-box mode")]
     AppRandomWhileWhiteboxDisabled,

@@ -58,6 +58,33 @@ fn coverage_switch_reaches_plugin_and_host_drain_configuration() {
 }
 
 #[test]
+fn authored_storage_history_limits_reach_the_plugin_launch_boundary() {
+    let limits = FaultResourceLimits {
+        storage_completed_history_epochs: 7,
+        storage_completed_history_gaps: 9,
+        ..FaultResourceLimits::default()
+    };
+    let config = QemuLiveNodeStepGateConfig::new(
+        "/aos/bin/qemu-system-x86_64",
+        "/aos/lib/crucible-plugin.so",
+        "/aos/kernel",
+        "/aos/firmware",
+        "/run/crucible",
+    )
+    .with_fault_resource_limits(limits);
+
+    let plugin = live_node_plugin_base(&config);
+
+    assert_eq!(plugin.storage_completed_history_epochs(), 7);
+    assert_eq!(plugin.storage_completed_history_gaps(), 9);
+    assert!(
+        plugin
+            .plugin_args_raw()
+            .contains("storage_completed_history_epochs=7,storage_completed_history_gaps=9")
+    );
+}
+
+#[test]
 fn x86_64_launch_profile_pins_q35_qemu64_and_ttys0() {
     let profile = launch_profile_candidate(LivePluginGuestArchitecture::X86_64)
         .try_into_deterministic()
