@@ -839,6 +839,13 @@
       enforces = "HFORK-3,HFORK-4";
       capability = "a bounded QMP inventory exposes every allocated QEMUBH, including inert, pending, active, canceled, and deferred-deletion instances, with exact AioContext binding and state without claiming a retained AIO/BH/timer barrier or readiness proof";
     }
+    {
+      file = "0121-crucible-hot-fork-aio-handler-inventory.patch";
+      catalogName = "crucible-hot-fork-aio-handler-inventory";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4";
+      capability = "a bounded QMP inventory exposes every allocated POSIX AioHandler, including deferred deletion, exact AioContext and descriptor binding, callback classes, and active callback count without claiming a retained AIO-handler barrier or readiness proof";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

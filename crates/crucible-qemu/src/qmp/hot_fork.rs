@@ -17,6 +17,9 @@ pub const QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND: &str =
 pub const QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND: &str = "query-crucible-hot-fork-rcu-inventory";
 /// QMP command name used for QEMU's bounded AioContext activity inventory.
 pub const QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND: &str = "query-crucible-hot-fork-aio-inventory";
+/// QMP command name used for QEMU's bounded allocated-AIO-handler inventory.
+pub const QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND: &str =
+    "query-crucible-hot-fork-aio-handler-inventory";
 /// QMP command name used for QEMU's bounded allocated-bottom-half inventory.
 pub const QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND: &str =
     "query-crucible-hot-fork-bottom-half-inventory";
@@ -35,6 +38,8 @@ pub const QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION: u32 = 2;
 pub const QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned AioContext activity inventory contract.
 pub const QMP_HOT_FORK_AIO_INVENTORY_SCHEMA_VERSION: u32 = 1;
+/// Version of the QEMU-owned allocated-AIO-handler inventory contract.
+pub const QMP_HOT_FORK_AIO_HANDLER_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned allocated-bottom-half inventory contract.
 pub const QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned mutex ownership inventory contract.
@@ -50,6 +55,8 @@ pub const QMP_HOT_FORK_THREAD_INVENTORY_MAX: usize = 65_536;
 pub const QMP_HOT_FORK_RCU_INVENTORY_MAX: usize = 65_536;
 /// Maximum registered AioContexts retained by one inventory response.
 pub const QMP_HOT_FORK_AIO_INVENTORY_MAX: usize = 65_536;
+/// Maximum allocated AIO handlers retained by one inventory response.
+pub const QMP_HOT_FORK_AIO_HANDLER_INVENTORY_MAX: usize = 65_536;
 /// Maximum allocated bottom halves retained by one inventory response.
 pub const QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX: usize = 65_536;
 /// Maximum registered mutexes retained by one inventory response.
@@ -519,6 +526,159 @@ impl QmpHotForkAioInventory {
     #[must_use]
     pub fn contexts(&self) -> &[QmpHotForkAioContext] {
         &self.contexts
+    }
+}
+
+/// One allocated POSIX QEMU AIO handler and its installed callback classes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QmpHotForkAioHandler {
+    handler_id: u64,
+    context_id: u64,
+    descriptor: u32,
+    deleted: bool,
+    read_callback: bool,
+    write_callback: bool,
+    poll_callback: bool,
+    poll_ready_callback: bool,
+    poll_begin_callback: bool,
+    poll_end_callback: bool,
+    active_callbacks: u32,
+}
+
+impl QmpHotForkAioHandler {
+    /// Returns the positive stable process-local handler identifier.
+    #[must_use]
+    pub const fn handler_id(self) -> u64 {
+        self.handler_id
+    }
+
+    /// Returns the positive process-local identity of the owning AioContext.
+    #[must_use]
+    pub const fn context_id(self) -> u64 {
+        self.context_id
+    }
+
+    /// Returns the process-local file descriptor monitored by this handler.
+    #[must_use]
+    pub const fn descriptor(self) -> u32 {
+        self.descriptor
+    }
+
+    /// Returns whether removal was requested while final free remains deferred.
+    #[must_use]
+    pub const fn deleted(self) -> bool {
+        self.deleted
+    }
+
+    /// Returns whether a read callback is installed.
+    #[must_use]
+    pub const fn read_callback(self) -> bool {
+        self.read_callback
+    }
+
+    /// Returns whether a write callback is installed.
+    #[must_use]
+    pub const fn write_callback(self) -> bool {
+        self.write_callback
+    }
+
+    /// Returns whether a userspace polling callback is installed.
+    #[must_use]
+    pub const fn poll_callback(self) -> bool {
+        self.poll_callback
+    }
+
+    /// Returns whether a polling-ready callback is installed.
+    #[must_use]
+    pub const fn poll_ready_callback(self) -> bool {
+        self.poll_ready_callback
+    }
+
+    /// Returns whether a polling-entry callback is installed.
+    #[must_use]
+    pub const fn poll_begin_callback(self) -> bool {
+        self.poll_begin_callback
+    }
+
+    /// Returns whether a polling-exit callback is installed.
+    #[must_use]
+    pub const fn poll_end_callback(self) -> bool {
+        self.poll_end_callback
+    }
+
+    /// Returns the number of this handler's callbacks currently executing.
+    #[must_use]
+    pub const fn active_callbacks(self) -> u32 {
+        self.active_callbacks
+    }
+}
+
+/// Exact bounded observational snapshot of every allocated POSIX AIO handler.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QmpHotForkAioHandlerInventory {
+    generation: u64,
+    complete: bool,
+    overflowed: bool,
+    handlers: Vec<QmpHotForkAioHandler>,
+}
+
+impl QmpHotForkAioHandlerInventory {
+    #[cfg(test)]
+    pub(crate) fn one_read(handler_id: u64, context_id: u64, descriptor: u32) -> Self {
+        Self {
+            generation: 1,
+            complete: true,
+            overflowed: false,
+            handlers: vec![QmpHotForkAioHandler {
+                handler_id,
+                context_id,
+                descriptor,
+                deleted: false,
+                read_callback: true,
+                write_callback: false,
+                poll_callback: false,
+                poll_ready_callback: false,
+                poll_begin_callback: false,
+                poll_end_callback: false,
+                active_callbacks: 0,
+            }],
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn incomplete() -> Self {
+        Self {
+            generation: 1,
+            complete: false,
+            overflowed: true,
+            handlers: Vec::new(),
+        }
+    }
+
+    /// Returns the process-local lifecycle, callback-set, and activity generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns whether every allocated handler fit and was structurally valid.
+    ///
+    /// Completeness remains observational and cannot authorize a fork.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.complete
+    }
+
+    /// Returns whether allocated handlers exceeded the inventory bound.
+    #[must_use]
+    pub const fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
+    /// Returns every allocated handler in ascending identifier order.
+    #[must_use]
+    pub fn handlers(&self) -> &[QmpHotForkAioHandler] {
+        &self.handlers
     }
 }
 
@@ -1367,6 +1527,211 @@ pub(super) fn parse_hot_fork_aio_inventory(
         complete,
         overflowed,
         contexts,
+    })
+}
+
+pub(super) fn parse_hot_fork_aio_handler_inventory(
+    value: &Value,
+) -> Result<QmpHotForkAioHandlerInventory, QmpError> {
+    let malformed = || QmpError::MalformedTypedResponse {
+        command: QmpCommandKind::QueryHotForkAioHandlerInventory,
+        response: value.to_string(),
+    };
+    let object = value.as_object().ok_or_else(&malformed)?;
+    let fields = [
+        "schema-version",
+        "generation",
+        "complete",
+        "overflowed",
+        "handler-count",
+        "read-handlers",
+        "write-handlers",
+        "poll-handlers",
+        "deleted-handlers",
+        "active-callbacks",
+        "handlers",
+    ];
+    if object.len() != fields.len() || !fields.iter().all(|field| object.contains_key(*field)) {
+        return Err(malformed());
+    }
+
+    let schema_version = object
+        .get("schema-version")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let generation = object
+        .get("generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let complete = object
+        .get("complete")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let overflowed = object
+        .get("overflowed")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let declared_count = object
+        .get("handler-count")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_read = object
+        .get("read-handlers")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_write = object
+        .get("write-handlers")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_poll = object
+        .get("poll-handlers")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_deleted = object
+        .get("deleted-handlers")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(&malformed)?;
+    let declared_active_callbacks = object
+        .get("active-callbacks")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let values = object
+        .get("handlers")
+        .and_then(Value::as_array)
+        .ok_or_else(&malformed)?;
+    if schema_version != u64::from(QMP_HOT_FORK_AIO_HANDLER_INVENTORY_SCHEMA_VERSION)
+        || values.len() > QMP_HOT_FORK_AIO_HANDLER_INVENTORY_MAX
+        || declared_count != values.len()
+    {
+        return Err(malformed());
+    }
+
+    let entry_fields = [
+        "handler-id",
+        "context-id",
+        "fd",
+        "deleted",
+        "read-callback",
+        "write-callback",
+        "poll-callback",
+        "poll-ready-callback",
+        "poll-begin-callback",
+        "poll-end-callback",
+        "active-callbacks",
+    ];
+    let mut handlers = Vec::with_capacity(values.len());
+    let mut previous_handler_id = None;
+    let mut read_handlers = 0_usize;
+    let mut write_handlers = 0_usize;
+    let mut poll_handlers = 0_usize;
+    let mut deleted_handlers = 0_usize;
+    let mut active_callbacks = 0_u64;
+    for value in values {
+        let entry = value.as_object().ok_or_else(&malformed)?;
+        if entry.len() != entry_fields.len()
+            || !entry_fields.iter().all(|field| entry.contains_key(*field))
+        {
+            return Err(malformed());
+        }
+
+        let handler_id = entry
+            .get("handler-id")
+            .and_then(Value::as_u64)
+            .filter(|identifier| *identifier != 0)
+            .ok_or_else(&malformed)?;
+        if previous_handler_id.is_some_and(|previous| previous >= handler_id) {
+            return Err(malformed());
+        }
+        previous_handler_id = Some(handler_id);
+        let context_id = entry
+            .get("context-id")
+            .and_then(Value::as_u64)
+            .filter(|identifier| *identifier != 0)
+            .ok_or_else(&malformed)?;
+        let descriptor = entry
+            .get("fd")
+            .and_then(Value::as_i64)
+            .and_then(|descriptor| u32::try_from(descriptor).ok())
+            .filter(|descriptor| *descriptor <= i32::MAX as u32)
+            .ok_or_else(&malformed)?;
+        let deleted = entry
+            .get("deleted")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let read_callback = entry
+            .get("read-callback")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let write_callback = entry
+            .get("write-callback")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let poll_callback = entry
+            .get("poll-callback")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let poll_ready_callback = entry
+            .get("poll-ready-callback")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let poll_begin_callback = entry
+            .get("poll-begin-callback")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let poll_end_callback = entry
+            .get("poll-end-callback")
+            .and_then(Value::as_bool)
+            .ok_or_else(&malformed)?;
+        let entry_active_callbacks = entry
+            .get("active-callbacks")
+            .and_then(Value::as_u64)
+            .and_then(|count| u32::try_from(count).ok())
+            .ok_or_else(&malformed)?;
+        if !read_callback && !write_callback && !poll_callback {
+            return Err(malformed());
+        }
+
+        read_handlers += usize::from(read_callback);
+        write_handlers += usize::from(write_callback);
+        poll_handlers += usize::from(poll_callback);
+        deleted_handlers += usize::from(deleted);
+        active_callbacks = active_callbacks
+            .checked_add(u64::from(entry_active_callbacks))
+            .ok_or_else(&malformed)?;
+        handlers.push(QmpHotForkAioHandler {
+            handler_id,
+            context_id,
+            descriptor,
+            deleted,
+            read_callback,
+            write_callback,
+            poll_callback,
+            poll_ready_callback,
+            poll_begin_callback,
+            poll_end_callback,
+            active_callbacks: entry_active_callbacks,
+        });
+    }
+    if declared_read != read_handlers
+        || declared_write != write_handlers
+        || declared_poll != poll_handlers
+        || declared_deleted != deleted_handlers
+        || declared_active_callbacks != active_callbacks
+        || complete == overflowed
+    {
+        return Err(malformed());
+    }
+
+    Ok(QmpHotForkAioHandlerInventory {
+        generation,
+        complete,
+        overflowed,
+        handlers,
     })
 }
 

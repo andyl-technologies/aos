@@ -1571,9 +1571,9 @@ stable process-local identities, exact home-thread ownership, active poll and
 GLib dispatch counts, queued and active bottom halves, queued coroutines, and
 notification state. The host brackets procfs capture with identical reports,
 checks every assigned home thread against the QEMU thread registry, and rejects
-changed context state. This is observational and still omits AIO handlers, a
-retained drain/park barrier, and child reinitializers; readiness bit 3 therefore
-remains clear.
+changed context state. This is observational and still omits a retained
+drain/park barrier and child reinitializers; readiness bit 3 therefore remains
+clear.
 QEMU now also exposes a version-1, 65,536-entry allocated-`QEMUBH` inventory.
 It reports inert, pending, active, canceled, one-shot, and deferred-deletion
 instances under stable process-local bottom-half identities, with exact owning
@@ -1585,11 +1585,21 @@ generation. The typed client negotiates QMP OOB and issues this query out of
 band so it does not
 observe its own one-shot dispatch bottom half. The host brackets procfs capture
 with identical stable reports and requires every
-bottom half to name a context in the matching AioContext inventory. The audit
-rejects incomplete thread, RCU, AioContext, bottom-half, mutex, or timer
-reports. This is
-observational and still does not enumerate AIO handlers or retain a drain/park
-barrier across `fork(2)`; readiness bit 3 remains clear.
+bottom half to name a context in the matching AioContext inventory.
+QEMU now also exposes a version-1, 65,536-entry POSIX `AioHandler` inventory.
+It reports every allocated handler, including deferred-deletion entries, under
+stable process-local handler and AioContext identities with exact descriptor,
+installed callback classes, active callback count, checked aggregates, and a
+monotonic lifecycle/callback-set generation. Active callback counts are an
+instantaneous serialized observation because the query itself executes inside
+its QMP descriptor's read callback. The typed client issues this query out
+of band. The host brackets procfs capture with identical reports, requires
+every handler to name a context in the matching AioContext inventory, and
+requires every non-deleted descriptor to exist in the exact child-process
+descriptor inventory. The audit rejects incomplete thread, RCU, AioContext,
+AIO-handler, bottom-half, mutex, or timer reports. This is observational and
+still does not retain a drain/park barrier across `fork(2)`; readiness bit 3
+remains clear.
 QEMU now also exposes a version-1, 65,536-entry POSIX `QemuMutex` and
 `QemuRecMutex` inventory. It reports sorted lifecycle identities, owner thread,
 recursion depth, acquisition and condition waiters, active unlock transitions,

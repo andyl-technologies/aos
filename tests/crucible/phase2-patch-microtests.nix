@@ -1603,6 +1603,23 @@
         '';
       };
     }
+    {
+      patch = "0121-crucible-hot-fork-aio-handler-inventory.patch";
+      check = certifyExactPatch {
+        patchName = "0121-crucible-hot-fork-aio-handler-inventory.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-aio-handler-inventory";
+        liveEvidence = ''
+          grep -Fxq 'aio_handler_inventory_schema_version=1' "$live_result"
+          grep -Fxq 'aio_handler_inventory_bound=65536' "$live_result"
+          grep -Fxq 'aio_handler_inventory_stable=true' "$live_result"
+          grep -Fxq 'aio_handlers_context_bound=true' "$live_result"
+          grep -Fxq 'aio_handlers_descriptor_bound=true' "$live_result"
+          grep -Fxq 'aio_proof_acknowledged=false' "$live_result"
+          grep -Fxq 'incomplete_report_ready=false' "$live_result"
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

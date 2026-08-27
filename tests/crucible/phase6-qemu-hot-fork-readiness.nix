@@ -106,6 +106,11 @@ in
           jq -e -s 'any(.[]; has("error"))' "$out/stock-aio-inventory.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible AIO inventory command"
           qmp "$stock_socket" \
+            '{"exec-oob":"query-crucible-hot-fork-aio-handler-inventory"}' \
+            "$out/stock-aio-handler-inventory.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-aio-handler-inventory.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible AIO-handler inventory command"
+          qmp "$stock_socket" \
             '{"exec-oob":"query-crucible-hot-fork-bottom-half-inventory"}' \
             "$out/stock-bottom-half-inventory.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-bottom-half-inventory.json" >/dev/null \
@@ -365,6 +370,94 @@ in
             || { cat "$out/aio-inventory-1.json" >&2; cat "$out/aio-inventory-2.json" >&2; fail "QEMU AIO inventory changed without a context transition"; }
 
           qmp_pair "$patched_socket" \
+            '{"exec-oob":"query-crucible-hot-fork-aio-handler-inventory"}' \
+            "$out/aio-handler-inventory.json"
+          jq -e -s --slurpfile aio "$out/aio-inventory-1.json" '
+            [.[] | select(has("return"))][-1].return as $report |
+            ($aio | map(select(has("return"))) | .[-1].return) as $aio_report |
+            ($report | keys | sort) == [
+              "active-callbacks",
+              "complete",
+              "deleted-handlers",
+              "generation",
+              "handler-count",
+              "handlers",
+              "overflowed",
+              "poll-handlers",
+              "read-handlers",
+              "schema-version",
+              "write-handlers"
+            ] and
+            $report."schema-version" == 1 and
+            ($report.generation | type) == "number" and
+            ($report.complete | type) == "boolean" and
+            ($report.overflowed | type) == "boolean" and
+            ($report.handlers | type) == "array" and
+            ($report.handlers | length) > 0 and
+            ($report.handlers | length) <= 65536 and
+            ($report.handlers | length) == $report."handler-count" and
+            ([ $report.handlers[]."handler-id" ] ==
+             ([ $report.handlers[]."handler-id" ] | sort)) and
+            ([ $report.handlers[]."handler-id" ] | unique | length) ==
+              ($report.handlers | length) and
+            all($report.handlers[];
+              (. | keys | sort) == [
+                "active-callbacks",
+                "context-id",
+                "deleted",
+                "fd",
+                "handler-id",
+                "poll-begin-callback",
+                "poll-callback",
+                "poll-end-callback",
+                "poll-ready-callback",
+                "read-callback",
+                "write-callback"
+              ] and
+              (."handler-id" | type) == "number" and ."handler-id" > 0 and
+              (."context-id" | type) == "number" and ."context-id" > 0 and
+              (.fd | type) == "number" and .fd >= 0 and .fd <= 2147483647 and
+              (.deleted | type) == "boolean" and
+              (."read-callback" | type) == "boolean" and
+              (."write-callback" | type) == "boolean" and
+              (."poll-callback" | type) == "boolean" and
+              (."poll-ready-callback" | type) == "boolean" and
+              (."poll-begin-callback" | type) == "boolean" and
+              (."poll-end-callback" | type) == "boolean" and
+              (."active-callbacks" | type) == "number" and
+              ."active-callbacks" >= 0 and
+              (."read-callback" or ."write-callback" or ."poll-callback") and
+              (."context-id" as $context_id |
+               any($aio_report.contexts[]; ."context-id" == $context_id))) and
+            ([ $report.handlers[] | select(."read-callback") ] | length) ==
+              $report."read-handlers" and
+            ([ $report.handlers[] | select(."write-callback") ] | length) ==
+              $report."write-handlers" and
+            ([ $report.handlers[] | select(."poll-callback") ] | length) ==
+              $report."poll-handlers" and
+            ([ $report.handlers[] | select(.deleted) ] | length) ==
+              $report."deleted-handlers" and
+            (([ $report.handlers[]."active-callbacks" ] | add) // 0) ==
+              $report."active-callbacks" and
+            $report.complete == ($report.overflowed | not)
+          ' "$out/aio-handler-inventory.json" >/dev/null \
+            || { cat "$out/aio-handler-inventory.json" >&2; fail "QEMU AIO-handler inventory was not exact or AioContext-bound"; }
+          jq -r -s '
+            [.[] | select(has("return"))][-1].return.handlers[] |
+            select(.deleted | not) | .fd
+          ' "$out/aio-handler-inventory.json" > "$out/aio-handler-live-fds"
+          while IFS= read -r handler_fd; do
+            [ -e "/proc/$qemu_pid/fd/$handler_fd" ] \
+              || fail "QEMU AIO handler named a descriptor absent from its exact process"
+          done < "$out/aio-handler-live-fds"
+          jq -e -s '
+            [.[] | select(has("return")) | .return |
+             select(has("handlers"))] as $reports |
+            ($reports | length) == 2 and $reports[0] == $reports[1]
+          ' "$out/aio-handler-inventory.json" >/dev/null \
+            || { cat "$out/aio-handler-inventory.json" >&2; fail "QEMU AIO-handler inventory changed without a lifecycle or callback transition"; }
+
+          qmp_pair "$patched_socket" \
             '{"exec-oob":"query-crucible-hot-fork-bottom-half-inventory"}' \
             "$out/bottom-half-inventory.json"
           jq -e -s --slurpfile aio "$out/aio-inventory-1.json" '
@@ -598,7 +691,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0120-crucible-hot-fork-bottom-half-inventory.patch
+          patch=0121-crucible-hot-fork-aio-handler-inventory.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -619,6 +712,11 @@ in
           aio_inventory_stable=true
           aio_contexts_thread_bound=true
           aio_proof_acknowledged=false
+          aio_handler_inventory_schema_version=1
+          aio_handler_inventory_bound=65536
+          aio_handler_inventory_stable=true
+          aio_handlers_context_bound=true
+          aio_handlers_descriptor_bound=true
           bottom_half_inventory_schema_version=1
           bottom_half_inventory_bound=65536
           bottom_half_inventory_stable=true

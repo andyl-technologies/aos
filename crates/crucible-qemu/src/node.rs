@@ -819,6 +819,21 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Queries QEMU's exact bounded allocated-AIO-handler inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
+    /// versioned response validation fails.
+    fn query_hot_fork_aio_handler_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkAioHandlerInventory, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query_hot_fork_aio_handler_inventory",
+            "hot-fork AIO-handler inventory is not implemented by this QMP channel",
+        ))
+    }
+
     /// Queries QEMU's exact bounded allocated-bottom-half inventory.
     ///
     /// # Errors
@@ -1682,6 +1697,11 @@ impl QemuNode {
             .qmp_machine_control
             .query_hot_fork_aio_inventory()
             .map_err(crate::QemuHotForkAuditError::AioInventory)?;
+        let aio_handlers_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_aio_handler_inventory()
+            .map_err(crate::QemuHotForkAuditError::AioHandlerInventory)?;
         let bottom_halves_before = self
             .channels
             .qmp_machine_control
@@ -1724,6 +1744,14 @@ impl QemuNode {
         if bottom_halves_before != bottom_halves_after {
             return Err(crate::QemuHotForkAuditError::BottomHalfInventoryChanged);
         }
+        let aio_handlers_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_aio_handler_inventory()
+            .map_err(crate::QemuHotForkAuditError::AioHandlerInventory)?;
+        if aio_handlers_before != aio_handlers_after {
+            return Err(crate::QemuHotForkAuditError::AioHandlerInventoryChanged);
+        }
         let aio_after = self
             .channels
             .qmp_machine_control
@@ -1762,6 +1790,7 @@ impl QemuNode {
                 threads_before,
                 rcu_before,
                 aio_before,
+                aio_handlers_before,
                 bottom_halves_before,
                 mutexes_before,
                 timers_before,

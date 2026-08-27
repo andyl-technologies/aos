@@ -326,12 +326,58 @@ QMP OOB negotiation, so the query does not create and then observe its own
 one-shot QMP-dispatch bottom half. A peer that cannot negotiate OOB MUST fail
 closed rather than issue this inventory through ordinary in-band dispatch.
 
-The AioContext and bottom-half responses are still observational. They do not
-enumerate AIO handlers, drain or park a context, prevent a producer from
-enqueueing work after either query, or hold quiescence across `fork(2)`. They
-therefore MUST NOT acknowledge proof bit 3. The future coordinator must extend
-the inventory to the remaining handler resources and establish a retained
-AIO/BH/timer barrier across the fork transaction.
+Patched POSIX QEMU also exposes every allocated POSIX AIO handler through an
+out-of-band query:
+
+```text
+CrucibleHotForkAioHandlerInventory {
+    schema-version: u32 = 1,
+    generation: u64,
+    complete: bool,
+    overflowed: bool,
+    handler-count: u32,
+    read-handlers: u32,
+    write-handlers: u32,
+    poll-handlers: u32,
+    deleted-handlers: u32,
+    active-callbacks: u64,
+    handlers: [
+        {
+            handler-id: positive u64,
+            context-id: positive u64,
+            fd: nonnegative i64,
+            deleted: bool,
+            read-callback: bool,
+            write-callback: bool,
+            poll-callback: bool,
+            poll-ready-callback: bool,
+            poll-begin-callback: bool,
+            poll-end-callback: bool,
+            active-callbacks: u32,
+        },
+    ],
+}
+```
+
+`handlers` contains at most 65,536 records in strictly increasing
+`handler-id` order. Every `context-id` MUST appear in the matching AioContext
+inventory, every non-deleted `fd` MUST appear in the exact process descriptor
+inventory, and each entry MUST install at least one read, write, or poll
+callback. The callback-class, deletion, and active-callback totals are exact
+checked sums, and `complete` equals `!overflowed`. Allocation, final free,
+deferred deletion, and poll-callback replacement advance the process-local
+generation. Active callback counts are instantaneous and serialize with the
+snapshot on the handler registry lock; they do not advance the generation
+because the out-of-band query itself executes inside its QMP descriptor's read
+callback. The command is executed out of band so its own QMP dispatch cannot
+create an in-band bottom-half observation.
+
+The AioContext, bottom-half, and AIO-handler responses are still
+observational. They do not drain or park a context, prevent a producer from
+enqueueing work after a query, hold a callback barrier, or hold quiescence
+across `fork(2)`. They therefore MUST NOT acknowledge proof bit 3. The future
+coordinator must establish and retain the AIO/BH/timer drain-and-park barrier
+across the fork transaction.
 
 Patched POSIX QEMU also exposes the bounded observational mutex inventory used
 to define the process-private lock side of the child-reinitialization proof:
