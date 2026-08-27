@@ -11,6 +11,7 @@
   # guest scheduling or trace state, and successful runs return immediately.
   networkTimeoutSecs ? "1500",
   secondRunSchedulerPreemption ? "1",
+  dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -21,15 +22,17 @@ in
     version = "0";
     src = crucibleSrc;
 
-    buildDeps = [
-      pkgs.coreutils
-      pkgs.crucible-fixtures
-      pkgs.crucible-qemu-plugin
-      pkgs.grep
-      pkgs.qemu-crucible
-      pkgs.rust
-      pkgs.sed
-    ];
+    buildDeps =
+      [
+        pkgs.coreutils
+        pkgs.crucible-fixtures
+        pkgs.crucible-qemu-plugin
+        pkgs.grep
+        pkgs.qemu-crucible
+        pkgs.rust
+        pkgs.sed
+      ]
+      ++ dependencies;
 
     # The standard AOS kernel carries CONFIG_PACKET=y and CONFIG_VIRTIO_NET=y;
     # the gate uses that shipped fixture instead of a gate-only kernel variant.
