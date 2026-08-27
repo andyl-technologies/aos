@@ -322,8 +322,8 @@ in
           Type = "simple";
           EnvironmentFile = "/etc/aos/packages/envoy/service.env";
           ExecCondition = "${bash}/bin/bash -c 'test \"$ENVOY_ENABLED\" = 1'";
-          ExecStartPre = "${placeholder "out"}/bin/envoy --mode validate --config-path /etc/aos/packages/envoy/bootstrap.json";
-          ExecStart = "${placeholder "out"}/bin/envoy --config-path /etc/aos/packages/envoy/bootstrap.json --log-format-prefix-with-location 0";
+          ExecStartPre = "/bin/envoy --mode validate --config-path /etc/aos/packages/envoy/bootstrap.json";
+          ExecStart = "/bin/envoy --config-path /etc/aos/packages/envoy/bootstrap.json --log-format-prefix-with-location 0";
           Restart = "on-failure";
           RestartSec = "2s";
           StateDirectory = "aos-pkg-envoy";
@@ -973,6 +973,8 @@ in
               echo "optional Envoy credentials must not create unconditional static unit bindings" >&2
               exit 1
             fi
+            ${pkgs.grep}/bin/grep -F -- '-- /bin/envoy --mode validate' ${self.expose}/units/envoy.service
+            ${pkgs.grep}/bin/grep -F -- '-- /bin/envoy --config-path' ${self.expose}/units/envoy.service
             mkdir -p "$out"
             printf '%s\n' PASS > "$out/result"
           ''

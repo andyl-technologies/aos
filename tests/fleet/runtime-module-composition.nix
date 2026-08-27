@@ -244,6 +244,8 @@ in {
             --license BSD-2-Clause \
             --maintainer test \
             --expose-manifest '${pkgs.nginx.expose}/manifest.json' \
+            --config-module '${pkgs.nginx.config}' \
+            --config-base-lib '${runtimeSystem.config.aos.config.evalAtBoot.baseLib}' \
             --registry runtime-reg \
             --key-id release \
             --no-commit
