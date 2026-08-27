@@ -33,6 +33,7 @@ const CLAIM_HEARTBEAT_SECONDS: u64 = 60;
 const COPY_PART_BYTES: usize = 8 * 1024 * 1024;
 const COPY_PART_UPLOAD_ATTEMPTS: u32 = 3;
 const COPY_PART_RETRY_DELAY_MILLIS: u64 = 250;
+const PLACEMENT_SCAN_ISSUE_SAMPLE_LIMIT: usize = 20;
 
 /// Executes reviewed physical-placement copy and scan operations.
 pub struct PlacementScanController {
@@ -350,6 +351,7 @@ impl PlacementScanController {
         let mut pages = 0_usize;
         let mut unknown = 0_i64;
         let mut corrupt = 0_i64;
+        let mut corrupt_samples = Vec::new();
         let mut reused = 0_i64;
         let observed_at = clock::now_unix_secs();
 
@@ -401,6 +403,9 @@ impl PlacementScanController {
                 let valid = object_matches_evidence(&object, &evidence.sha256, evidence.size);
                 if !valid {
                     corrupt += 1;
+                    if corrupt_samples.len() < PLACEMENT_SCAN_ISSUE_SAMPLE_LIMIT {
+                        corrupt_samples.push(path.clone());
+                    }
                 }
                 page_presences.push((
                     object.resource_version,
@@ -441,6 +446,11 @@ impl PlacementScanController {
         }
 
         let missing = i64::try_from(catalog.len()).context("missing object count overflowed")?;
+        let missing_samples = catalog
+            .keys()
+            .take(PLACEMENT_SCAN_ISSUE_SAMPLE_LIMIT)
+            .cloned()
+            .collect::<Vec<_>>();
         for objects in catalog
             .values()
             .collect::<Vec<_>>()
@@ -500,7 +510,9 @@ impl PlacementScanController {
             "listedObjects": listed.len(),
             "unknownObjects": unknown,
             "missingObjects": missing,
+            "missingObjectSamples": missing_samples,
             "corruptObjects": corrupt,
+            "corruptObjectSamples": corrupt_samples,
             "strongVersionObjects": reused,
         }))
     }
