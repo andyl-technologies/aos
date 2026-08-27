@@ -547,6 +547,9 @@ in
           run_exact_shmem_test \
             fault_command::tests::result_transport_reuses_preallocated_payload_storage_without_consuming_on_short_buffer
 
+          network_effect_rows="$TMPDIR/causal-network-production-effect-rows"
+          : > "$network_effect_rows"
+          export CRUCIBLE_NETWORK_PRODUCTION_EFFECT_ROWS="$network_effect_rows"
           cargo test \
             --frozen \
             --offline \
@@ -555,6 +558,50 @@ in
             -p crucible-api \
             --lib vm_lifecycle::network_faults \
             -- --test-threads=1
+          unset CRUCIBLE_NETWORK_PRODUCTION_EFFECT_ROWS
+          sort -o "$network_effect_rows" "$network_effect_rows"
+          test "$(wc -l < "$network_effect_rows")" -eq 31
+          cut -d= -f2- "$network_effect_rows" | cut -d'|' -f1 \
+            | sort > "$TMPDIR/causal-network-effect-kinds"
+          printf '%s\n' \
+            network.access_delay \
+            network.association \
+            network.availability \
+            network.burst_error_state \
+            network.connection_state \
+            network.contact \
+            network.control_plane_service \
+            network.control_result_transform \
+            network.custody_queue \
+            network.detected_frame_error \
+            network.duplicate \
+            network.firewall_disposition \
+            network.flap \
+            network.forwarder_lifecycle \
+            network.forwarding_mutation \
+            network.frame_loss \
+            network.jitter \
+            network.mtu \
+            network.negotiated_mode \
+            network.pause_backpressure \
+            network.payload_transform \
+            network.profile_delta \
+            network.propagation_delay \
+            network.queue_policy \
+            network.recipient_subset \
+            network.reorder \
+            network.rf_channel \
+            network.route_transition \
+            network.service_curve \
+            network.shared_medium \
+            network.token_bucket \
+            | sort > "$TMPDIR/expected-causal-network-effect-kinds"
+          cmp "$TMPDIR/expected-causal-network-effect-kinds" \
+            "$TMPDIR/causal-network-effect-kinds"
+
+          storage_effect_rows="$TMPDIR/causal-storage-production-effect-rows"
+          : > "$storage_effect_rows"
+          export CRUCIBLE_STORAGE_PRODUCTION_EFFECT_ROWS="$storage_effect_rows"
           cargo test \
             --frozen \
             --offline \
@@ -603,6 +650,35 @@ in
             -p crucible-qemu \
             --lib storage_fault_resolver \
             -- --test-threads=1
+          unset CRUCIBLE_STORAGE_PRODUCTION_EFFECT_ROWS
+          sort -o "$storage_effect_rows" "$storage_effect_rows"
+          test "$(wc -l < "$storage_effect_rows")" -eq 20
+          cut -d= -f2- "$storage_effect_rows" | cut -d'|' -f1 \
+            | sort > "$TMPDIR/causal-storage-effect-kinds"
+          printf '%s\n' \
+            ninep.result \
+            ninep.visibility \
+            storage.array_state \
+            storage.availability \
+            storage.completion_reorder \
+            storage.controller_lifecycle \
+            storage.duplicate_completion \
+            storage.flash_state \
+            storage.flush_disposition \
+            storage.latency \
+            storage.media_range \
+            storage.operation_failure \
+            storage.persistence_order \
+            storage.read_transform \
+            storage.reported_capacity \
+            storage.service \
+            storage.stall_timeout \
+            storage.volatile_cache \
+            storage.volatile_cache_loss \
+            storage.write_disposition \
+            | sort > "$TMPDIR/expected-causal-storage-effect-kinds"
+          cmp "$TMPDIR/expected-causal-storage-effect-kinds" \
+            "$TMPDIR/causal-storage-effect-kinds"
 
           production_matrix="$TMPDIR/production-effect-matrix"
           export CRUCIBLE_PRODUCTION_EFFECT_MATRIX_OUTPUT="$production_matrix"
@@ -896,6 +972,10 @@ in
           cp ${cliSearchFuzz}/result "$out/evidence/cli-search-fuzz.result"
           cp "$TMPDIR/production-effect-matrix" \
             "$out/evidence/production-effect-matrix.txt"
+          cp "$TMPDIR/causal-network-production-effect-rows" \
+            "$out/evidence/causal-network-production-effects.txt"
+          cp "$TMPDIR/causal-storage-production-effect-rows" \
+            "$out/evidence/causal-storage-production-effects.txt"
           cp "$TMPDIR/causal-node-production-effect-rows" \
             "$out/evidence/causal-node-production-effects.txt"
           cp "$TMPDIR/rfc0014-taxonomy-ledger.tsv" \
@@ -925,6 +1005,10 @@ in
           per_kind_metadata=admission,capability,replay-evidence,user-reference
           per_kind_production_execution_matrix=network-$matrix_network_count,storage-$matrix_storage_count,node-$matrix_node_count
           per_kind_production_execution_matrix_artifact=evidence/production-effect-matrix.txt
+          causal_network_production_effect_count=31
+          causal_network_production_effect_artifact=evidence/causal-network-production-effects.txt
+          causal_storage_production_effect_count=20
+          causal_storage_production_effect_artifact=evidence/causal-storage-production-effects.txt
           causal_node_production_effect_count=20
           causal_node_production_effect_artifact=evidence/causal-node-production-effects.txt
           executable_taxonomy_rows=226

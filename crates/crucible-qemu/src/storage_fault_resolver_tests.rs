@@ -17,6 +17,24 @@ use crucible_device::block::{BlockErrorCode, ResolvedBlockDuplicateCompletion};
 
 use super::*;
 
+#[path = "storage_fault_resolver_tests/production_conformance.rs"]
+mod production_conformance;
+
+fn production_conformance_path_policy() -> crucible::model::StoragePolicyPath {
+    crucible::model::StoragePolicyPath {
+        selection: crucible::model::StoragePolicyPathSelection::ActivePassive,
+        maximum_attempts: BoundedCount::new(CountLimit::QueueEntries, 2)
+            .unwrap_or_else(|error| panic!("test attempts should validate: {error}")),
+        retry_delay_nanos: PositiveU64::new("retry_delay_nanos", 5)
+            .unwrap_or_else(|error| panic!("test delay should validate: {error}")),
+        recovery_probe_interval_nanos: PositiveU64::new("recovery_probe_interval_nanos", 10)
+            .unwrap_or_else(|error| panic!("test probe interval should validate: {error}")),
+        retry_results: vec![StoragePolicyResult::IoError],
+    }
+}
+
+use production_conformance::record_production_effect_rows;
+
 fn id(value: &str) -> FaultObjectId {
     FaultObjectId::parse(value)
         .unwrap_or_else(|error| panic!("test object ID should be valid: {error}"))
@@ -328,6 +346,11 @@ fn stall_timeout_resolves_exact_timeout_and_optional_recovery_subscription() {
             .and_then(|response| response.error_code().ok()),
         Some(BlockErrorCode::Timeout)
     );
+    record_production_effect_rows(
+        &[crucible::model::EffectKind::StorageStallTimeout],
+        "stall-timeout-retains-until-exact-coordinate",
+        "retained-completion+timeout-result+recovery-subscription",
+    );
 }
 
 #[test]
@@ -374,6 +397,11 @@ fn flush_stall_without_recovery_still_retains_until_exact_timeout() {
         resolved.flush_disposition,
         BlockFaultFlushDisposition::Stall
     );
+    record_production_effect_rows(
+        &[crucible::model::EffectKind::StorageFlushDisposition],
+        "flush-stall-retains-until-exact-timeout",
+        "flush-disposition+retention-timeout",
+    );
 }
 
 fn bind_to_opportunity(
@@ -386,52 +414,6 @@ fn bind_to_opportunity(
         payload: opportunity.payload().clone(),
     };
     action
-}
-
-#[test]
-fn service_classes_are_canonical_after_identity_and_operation_conversion() {
-    let classes = vec![
-        StoragePolicyServiceClass {
-            class: id("class-a"),
-            operations: OperationSet::new(vec![
-                FaultOperation::StorageGetLength,
-                FaultOperation::StorageDiscard,
-            ])
-            .unwrap_or_else(|error| panic!("service operations should be valid: {error}")),
-            priority: 1,
-            weight: PositiveU64::new("weight", 1)
-                .unwrap_or_else(|error| panic!("service weight should be valid: {error}")),
-        },
-        StoragePolicyServiceClass {
-            class: id("class-b"),
-            operations: OperationSet::new(vec![FaultOperation::StorageRead])
-                .unwrap_or_else(|error| panic!("service operations should be valid: {error}")),
-            priority: 0,
-            weight: PositiveU64::new("weight", 2)
-                .unwrap_or_else(|error| panic!("service weight should be valid: {error}")),
-        },
-    ];
-
-    let resolved = resolve_service_classes(classes)
-        .unwrap_or_else(|error| panic!("service classes should resolve: {error}"));
-
-    assert!(
-        resolved
-            .windows(2)
-            .all(|pair| pair[0].class < pair[1].class)
-    );
-    assert!(resolved.iter().all(|class| {
-        class
-            .operations
-            .windows(2)
-            .all(|pair| pair[0].to_wire() < pair[1].to_wire())
-    }));
-    for class in &resolved {
-        assert!(
-            class.operations.contains(&BlockOp::Discard)
-                != class.operations.contains(&BlockOp::Read)
-        );
-    }
 }
 
 #[test]
@@ -557,6 +539,11 @@ fn composition_is_canonical_and_uses_most_severe_availability() {
 
     assert_eq!(first, second);
     assert_eq!(first.availability, BlockFaultAvailability::Offline);
+    record_production_effect_rows(
+        &[crucible::model::EffectKind::StorageAvailability],
+        "availability-composition-is-canonical",
+        "offline-most-severe+permutation-invariant",
+    );
 }
 
 #[test]
@@ -608,6 +595,11 @@ fn latency_uses_typed_dynamic_value_and_checked_sum() {
     )
     .unwrap_or_else(|error| panic!("latency should resolve: {error}"));
     assert_eq!(directive.additional_latency_nanos, 18);
+    record_production_effect_rows(
+        &[crucible::model::EffectKind::StorageLatency],
+        "latency-composes-typed-dynamic-and-fixed-components",
+        "checked-sum=18",
+    );
 }
 
 #[test]
@@ -711,6 +703,16 @@ fn production_resolver_mutates_capacity_service_and_delivery_directives() {
             ResolvedBlockDuplicateCompletion::Ignore { gap_nanos: 18 }
         ]
     ));
+    record_production_effect_rows(
+        &[
+            crucible::model::EffectKind::StorageReportedCapacity,
+            crucible::model::EffectKind::StorageService,
+            crucible::model::EffectKind::StorageCompletionReorder,
+            crucible::model::EffectKind::StorageDuplicateCompletion,
+        ],
+        "capacity-service-and-delivery-directives",
+        "capacity+service-ledger+reorder-window+duplicate-identities",
+    );
 }
 
 #[test]
@@ -771,6 +773,14 @@ fn production_resolver_mutates_read_and_media_directives() {
     assert_eq!(media.media_rules[0].operations, [BlockOp::Read]);
     assert_eq!(media.media_rules[0].count_threshold, Some(3));
     assert_eq!(media.media_rules[0].time_threshold_nanos, Some(50));
+    record_production_effect_rows(
+        &[
+            crucible::model::EffectKind::StorageReadTransform,
+            crucible::model::EffectKind::StorageMediaRange,
+        ],
+        "read-and-media-directives",
+        "xor-transform+resolved-media-range-thresholds",
+    );
 }
 
 #[test]
@@ -834,6 +844,14 @@ fn production_resolver_mutates_write_and_persistence_directives() {
     assert_eq!(persistence.persistence_transforms[0].delay_nanos, 125);
     assert!(persistence.persistence_transforms[0].preserve_barriers);
     assert_eq!(persistence.persistence_admitted_nanos, 10);
+    record_production_effect_rows(
+        &[
+            crucible::model::EffectKind::StorageWriteDisposition,
+            crucible::model::EffectKind::StoragePersistenceOrder,
+        ],
+        "write-and-persistence-directives",
+        "lost-write+descending-range-order+barrier-preservation",
+    );
 }
 
 #[test]
@@ -1027,41 +1045,6 @@ fn keyed_choices_are_reproducible_and_scenario_owned() {
 
     assert_eq!(first, repeated);
     assert_ne!(first, different_seed);
-}
-
-#[test]
-fn every_non_success_block_policy_result_maps_exactly() {
-    use crucible::model::StoragePolicyResult;
-
-    let cases = [
-        (StoragePolicyResult::Offline, BlockFaultResult::Offline),
-        (StoragePolicyResult::ReadOnly, BlockFaultResult::ReadOnly),
-        (
-            StoragePolicyResult::InvalidRange,
-            BlockFaultResult::InvalidRange,
-        ),
-        (StoragePolicyResult::Busy, BlockFaultResult::Busy),
-        (StoragePolicyResult::Timeout, BlockFaultResult::Timeout),
-        (
-            StoragePolicyResult::MediumError,
-            BlockFaultResult::MediumError,
-        ),
-        (
-            StoragePolicyResult::IntegrityError,
-            BlockFaultResult::IntegrityError,
-        ),
-        (StoragePolicyResult::IoError, BlockFaultResult::IoError),
-        (StoragePolicyResult::NoSpace, BlockFaultResult::NoSpace),
-        (StoragePolicyResult::NotFound, BlockFaultResult::NotFound),
-        (StoragePolicyResult::Stale, BlockFaultResult::Stale),
-    ];
-    assert_eq!(
-        block_failure_from_result(StoragePolicyResult::Success),
-        None
-    );
-    for (policy, expected) in cases {
-        assert_eq!(block_failure_from_result(policy), Some(expected));
-    }
 }
 
 #[test]
@@ -1295,6 +1278,11 @@ fn volatile_cache_loss_requires_a_boundary_event_payload() {
         ),
         Err(StorageFaultResolutionError::ReplayEntrySetMismatch { .. })
     ));
+    record_production_effect_rows(
+        &[crucible::model::EffectKind::StorageVolatileCacheLoss],
+        "volatile-cache-loss-authenticates-entry-set",
+        "entry-set-digest+selected-sequences+durable-frontier",
+    );
 }
 
 #[test]

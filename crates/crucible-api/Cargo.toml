@@ -37,3 +37,4 @@ uuid = { workspace = true }
 crucible = { path = "../crucible", features = ["test-double", "test-support"] }
 crucible-qemu = { path = "../crucible-qemu" }
 crucible-session = { path = "../crucible-session", features = ["test-support"] }
+crucible-shmem = { path = "../crucible-shmem" }

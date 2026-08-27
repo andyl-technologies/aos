@@ -2,6 +2,38 @@
 
 use super::*;
 
+fn record_production_effect_rows(
+    effects: &[crucible::model::EffectKind],
+    case_id: &str,
+    evidence: &str,
+) {
+    use std::io::Write as _;
+
+    let Some(path) = std::env::var_os("CRUCIBLE_STORAGE_PRODUCTION_EFFECT_ROWS") else {
+        return;
+    };
+    let registry = super::super::fault_implementation::storage_effect_implementation_registry()
+        .unwrap_or_else(|error| panic!("production storage registry must validate: {error}"));
+    let mut output = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .unwrap_or_else(|error| panic!("open production storage evidence output: {error}"));
+    for effect in effects {
+        registry
+            .require_implemented(*effect)
+            .unwrap_or_else(|error| panic!("storage effect row must be implemented: {error}"));
+        writeln!(
+            output,
+            "production_effect_row={}|{}|gate:live-9p-io|production-ninep-fault-coordinator|{}",
+            effect.as_str(),
+            case_id,
+            evidence,
+        )
+        .unwrap_or_else(|error| panic!("write production storage evidence row: {error}"));
+    }
+}
+
 fn storage_evidence_action() -> ResolvedBindingAction {
     ResolvedBindingAction {
         kind: crucible::model::BindingActionKind::Apply,
@@ -190,4 +222,205 @@ fn observation_journal_retains_future_batches_across_frontiers() {
     assert_eq!(journal.drain_ready(9), vec![future]);
     assert!(journal.snapshot().is_empty());
     assert!(journal.validate(8));
+}
+
+#[test]
+fn production_ninep_coordinator_mutates_result_and_visibility_state() {
+    use std::io::Write as _;
+    use std::os::fd::AsFd as _;
+
+    let object_id = FaultObjectId::parse(String::from("ninep-object"))
+        .unwrap_or_else(|error| panic!("test object ID should parse: {error}"));
+    let policy_id = FaultObjectId::parse(String::from("ninep-visibility-policy"))
+        .unwrap_or_else(|error| panic!("test policy ID should parse: {error}"));
+    let storage_policy_artifacts = vec![
+        crucible::model::WorldStoragePolicyArtifact {
+            id: object_id.clone(),
+            semantic_version: 1,
+            artifact: crucible::model::StoragePolicyArtifactKind::NinePObject(
+                crucible::model::StoragePolicyNinePObject {
+                    path: String::from("/stale"),
+                    version: 7,
+                    mode: 0o100_644,
+                    data: b"retained-version".to_vec(),
+                    deleted: false,
+                },
+            ),
+        },
+        crucible::model::WorldStoragePolicyArtifact {
+            id: policy_id.clone(),
+            semantic_version: 1,
+            artifact: crucible::model::StoragePolicyArtifactKind::NinePVisibility(
+                crucible::model::StoragePolicyNinePVisibility {
+                    scope: crucible::model::StoragePolicyNinePVisibilityScope::Global,
+                    atomic_metadata_and_data: true,
+                    data_visibility_lag_nanos: None,
+                    retain_deleted_objects: false,
+                },
+            ),
+        },
+    ];
+    let mut topology = crucible::model::WorldFaultTopology {
+        storage_policy_artifacts,
+        ..crucible::model::WorldFaultTopology::default()
+    };
+    topology
+        .storage_policy_artifacts
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    let world = World::from_content_hash(ContentHash::from_bytes(b"ninep-coordinator-world"))
+        .with_fault_topology(topology)
+        .unwrap_or_else(|error| panic!("test 9p policy world should validate: {error}"));
+    let target = ResolvedFaultTarget::NinePDevice {
+        device: ContentHash::from_bytes(b"ninep-device"),
+    };
+    let nodes = ProductionNodeSet::new();
+    let runtime = ProductionFaultRuntime::new(
+        FaultSignalPlan::empty(),
+        None,
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"ninep-coordinator-runtime"),
+        super::super::fault_implementation::test_host_manifests(),
+        &nodes,
+    )
+    .unwrap_or_else(|error| panic!("test production fault runtime should build: {error}"));
+    let coordinator = ProductionNinepFaultCoordinator {
+        runtime: Arc::new(Mutex::new(runtime)),
+        cursor: Arc::new(Mutex::new(ProductionFaultEvaluationCursor::default())),
+        observations: Arc::new(Mutex::new(ProductionFaultObservationJournal::default())),
+        world,
+        target: target.clone(),
+        icount_shift: 0,
+    };
+
+    let request = NinepRequestOpportunity {
+        identity: crucible_device::NinepRequestIdentity {
+            request_icount: 10,
+            transport_sequence: 3,
+            tag: 7,
+            digest: *blake3::hash(b"ninep-causal-request").as_bytes(),
+        },
+        request_icount: 10,
+        operation: NinepOperation::Read,
+        frame: Vec::new(),
+    };
+    let result_action = ResolvedBindingAction {
+        kind: crucible::model::BindingActionKind::Apply,
+        binding: FaultObjectId::parse(String::from("ninep-result"))
+            .unwrap_or_else(|error| panic!("test binding should parse: {error}")),
+        target: target.clone(),
+        phase: FaultPhase::Resolve,
+        effect: Arc::new(
+            crucible::model::EffectRequest::new(
+                crucible::model::EFFECT_SEMANTIC_VERSION,
+                crucible::model::EffectLifetime::Opportunity,
+                EffectSpecification::Storage(StorageEffectSpecification::NinePResult {
+                    operations: crucible::model::OperationSet::new(vec![
+                        FaultOperation::StorageRead,
+                    ])
+                    .unwrap_or_else(|error| panic!("test operation set should validate: {error}")),
+                    kind: crucible::model::NinePResultKind::Stale,
+                    errno: None,
+                    version: Some(object_id.clone()),
+                    object: None,
+                }),
+            )
+            .unwrap_or_else(|error| panic!("test 9p result effect should validate: {error}")),
+        ),
+        mapping_output: Arc::new(crucible::model::ResolvedMappingOutput::Activation {
+            active: true,
+        }),
+        mapped_digest: ContentHash::from_bytes(b"ninep-result-mapping"),
+        transition_sequence: 1,
+        opportunity: None,
+        coordinate: FaultCoordinate {
+            virtual_nanos: 10,
+            retired_instructions: Some(10),
+        },
+        cause: crucible::model::BindingActionCause::Signal,
+        expected_precondition: None,
+    };
+    let selected = coordinator
+        .resolve_result(&request, std::slice::from_ref(&result_action))
+        .unwrap_or_else(|error| panic!("production 9p result should resolve: {error}"));
+    let NinepResultDirective::Stale(stale) = selected else {
+        panic!("stale 9p result must select the declared retained object");
+    };
+    assert_eq!(stale.path, "/stale");
+    assert_eq!(stale.version, 7);
+    assert_eq!(stale.data, b"retained-version");
+
+    let visibility_action = ResolvedBindingAction {
+        kind: crucible::model::BindingActionKind::UpsertPersistent,
+        binding: FaultObjectId::parse(String::from("ninep-visibility"))
+            .unwrap_or_else(|error| panic!("test binding should parse: {error}")),
+        target,
+        phase: FaultPhase::Persist,
+        effect: Arc::new(
+            crucible::model::EffectRequest::new(
+                crucible::model::EFFECT_SEMANTIC_VERSION,
+                crucible::model::EffectLifetime::StateMachine,
+                EffectSpecification::Storage(StorageEffectSpecification::NinePVisibility {
+                    update: object_id,
+                    delay_nanos: Some(
+                        crucible::model::PositiveU64::new("delay_nanos", 5).unwrap_or_else(
+                            |error| panic!("test visibility delay should validate: {error}"),
+                        ),
+                    ),
+                    visibility_event: None,
+                    visibility_policy: policy_id,
+                }),
+            )
+            .unwrap_or_else(|error| panic!("test 9p visibility effect should validate: {error}")),
+        ),
+        mapping_output: Arc::new(crucible::model::ResolvedMappingOutput::Activation {
+            active: true,
+        }),
+        mapped_digest: ContentHash::from_bytes(b"ninep-visibility-mapping"),
+        transition_sequence: 1,
+        opportunity: None,
+        coordinate: FaultCoordinate {
+            virtual_nanos: 10,
+            retired_instructions: Some(10),
+        },
+        cause: crucible::model::BindingActionCause::Signal,
+        expected_precondition: None,
+    };
+    let allocation =
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4, 0))
+            .unwrap_or_else(|error| panic!("test shared region should allocate: {error}"));
+    let layout = allocation.layout();
+    let bytes = allocation
+        .setup_region_bytes()
+        .unwrap_or_else(|error| panic!("test shared region should encode: {error}"));
+    let mut file = tempfile::tempfile()
+        .unwrap_or_else(|error| panic!("test shared region file should create: {error}"));
+    file.set_len(layout.region_size)
+        .unwrap_or_else(|error| panic!("test shared region should size: {error}"));
+    file.write_all(&bytes)
+        .unwrap_or_else(|error| panic!("test shared region should initialize: {error}"));
+    let mut servicer = mapped_ninep_test_servicer(file.as_fd(), layout.region_size)
+        .unwrap_or_else(|error| panic!("test production 9p servicer should map: {error}"));
+    let observations = coordinator
+        .apply_visibility(&mut servicer, std::slice::from_ref(&visibility_action))
+        .unwrap_or_else(|error| panic!("production 9p visibility should apply: {error}"));
+    assert_eq!(observations.len(), 1);
+    assert_eq!(servicer.visibility_state().committed_frontier(), 1);
+    assert_eq!(servicer.visibility_state().visible_frontier(0), (0, 0));
+    servicer
+        .advance_visibility(14, &std::collections::BTreeMap::new())
+        .unwrap_or_else(|error| panic!("pre-release visibility should advance: {error}"));
+    assert_eq!(servicer.visibility_state().visible_frontier(0), (0, 0));
+    servicer
+        .advance_visibility(15, &std::collections::BTreeMap::new())
+        .unwrap_or_else(|error| panic!("release visibility should advance: {error}"));
+    assert_eq!(servicer.visibility_state().visible_frontier(0), (1, 1));
+
+    record_production_effect_rows(
+        &[
+            crucible::model::EffectKind::NinePResult,
+            crucible::model::EffectKind::NinePVisibility,
+        ],
+        "ninep-result-and-visibility-production-coordinator",
+        "stale-object+committed-frontier+delayed-visible-frontier",
+    );
 }
