@@ -14,6 +14,7 @@
 }: let
   version = "1.10.6";
   majorMinor = "1.10";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
     pname = "json-glib";
@@ -26,15 +27,25 @@ in
       hash = "sha256-d/S8v5M5Uo8Wa4BzRYaT8KILd7cFnbwtthdGoZKLApM=";
     };
 
-    buildDeps = [
-      gnumake
-      pkg-config
-      meson
-      ninja
-      python3
-      glib.dev
-      glib.tools
-    ];
+    buildDeps =
+      if isDarwinCross
+      then [
+        buildPackages.gnumake
+        buildPackages.pkg-config
+        buildPackages.meson
+        buildPackages.ninja
+        buildPackages.python3
+        buildPackages.glib.tools
+      ]
+      else [
+        gnumake
+        pkg-config
+        meson
+        ninja
+        python3
+        glib.dev
+        glib.tools
+      ];
     # glib's gio-2.0.pc has `Requires.private: zlib, mount` (libmount, from
     # util-linux); pkg-config 0.29 resolves private deps too, so those must
     # be reachable or `dependency('gio-2.0')` fails. glib lists util-linux
@@ -64,17 +75,36 @@ in
       }
       {
         name = "configure";
-        script = ''
-          meson setup build \
-            $mesonFlags \
-            --prefix=$out \
-            --buildtype=release \
-            -Dintrospection=disabled \
-            -Dgtk_doc=disabled \
-            -Dman=false \
-            -Dtests=false \
-            -Dnls=disabled
-        '';
+        script =
+          if isDarwinCross
+          then ''
+            # Keep generator programs native while exposing the target
+            # GLib headers, linker names, and pkg-config metadata.
+            export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+            export CFLAGS="''${CFLAGS:-} -I${glib.dev}/include/glib-2.0 -I${glib.dev}/lib/glib-2.0/include"
+            export LDFLAGS="''${LDFLAGS:-} -L${glib.dev}/lib"
+
+            meson setup build \
+              $mesonFlags \
+              --prefix=$out \
+              --buildtype=release \
+              -Dintrospection=disabled \
+              -Dgtk_doc=disabled \
+              -Dman=false \
+              -Dtests=false \
+              -Dnls=disabled
+          ''
+          else ''
+            meson setup build \
+              $mesonFlags \
+              --prefix=$out \
+              --buildtype=release \
+              -Dintrospection=disabled \
+              -Dgtk_doc=disabled \
+              -Dman=false \
+              -Dtests=false \
+              -Dnls=disabled
+          '';
       }
       {
         name = "build";
