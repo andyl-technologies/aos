@@ -194,7 +194,17 @@
           eval "p=\"\''${$o:-}\""
           [ -d "$p" ] || continue
           find "$p" -type f \( -name '*.dylib' -o -name '*.dylib.*' -o -name '*.so' -o -perm -u+x \) | while read f; do
-            header=$(objdump --macho --private-header "$f" 2>/dev/null) || continue
+            if ! header=$(objdump --macho --private-header "$f" 2>/dev/null); then
+              # Scripts and data files may be executable, but an ELF image in
+              # a Darwin output is always a host/target splice failure. Do not
+              # silently stamp a Linux executable or shared library as Darwin.
+              magic=$(od -An -tx1 -N4 "$f" 2>/dev/null | tr -d ' \n')
+              if [ "$magic" = 7f454c46 ]; then
+                echo "ELF artifact in Darwin output: $f" >&2
+                exit 1
+              fi
+              continue
+            fi
             if ! echo "$header" | grep -q "$expected_cpu"; then
               echo "Mach-O architecture mismatch in $f: expected $expected_cpu" >&2
               echo "$header" >&2
