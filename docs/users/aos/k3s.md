@@ -31,7 +31,9 @@ must not appear in a Nix module or the Nix store.
 The evaluator renders non-secret settings to the package-owned
 `/etc/aos/packages/k3s-worker/k3s.env` artifact. Activation resolves the token
 reference into the `token` systemd credential. The launcher passes only the
-credential file path to k3s through `K3S_TOKEN_FILE`.
+credential file path to k3s through `K3S_TOKEN_FILE`. On ordinary hosts, the
+resolved token is held in a mode-0600 file under `/run/credstore`; its bytes
+remain volatile and never appear in the Nix store or evaluated manifest.
 
 Initialize a new combined cluster with:
 
@@ -41,7 +43,7 @@ Initialize a new combined cluster with:
 
   k3s = {
     enable = true;
-    token.ref = "tpm2-credstore:k3s-token";
+    token.ref = "system-credential:k3s-token";
     server.clusterInit = true;
     server.tlsSans = ["api.example.test"];
   };

@@ -44,6 +44,14 @@
 }: let
   version = "1.37.0";
 
+  envoyCredentialNames = [
+    "tls-certificate"
+    "tls-private-key"
+    "validation-ca"
+  ];
+
+  envoyCredentialSource = name: "/run/credstore/envoy/${name}";
+
   tools = [
     bash
     coreutils
@@ -353,14 +361,12 @@ in
         credentials =
           builtins.map (name: {
             inherit name;
+            source = envoyCredentialSource name;
             units = ["envoy.service"];
-            encrypted = true;
+            encrypted = false;
             optional = true;
-          }) [
-            "tls-certificate"
-            "tls-private-key"
-            "validation-ca"
-          ];
+          })
+          envoyCredentialNames;
       };
 
       permissions = {
@@ -759,6 +765,20 @@ in
         };
       assertionsHoldFor = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
+      signedExpose = builtins.fromJSON self.expose.manifest;
+      signedCredentials = signedExpose.expose.config.credentials;
+      credentialDeclarationsHold =
+        builtins.length signedCredentials
+        == builtins.length envoyCredentialNames
+        && builtins.all (
+          credential:
+            builtins.elem credential.name envoyCredentialNames
+            && credential.source == envoyCredentialSource credential.name
+            && !credential.encrypted
+            && credential.optional
+            && credential.units == ["envoy.service"]
+        )
+        signedCredentials;
       evaluatedConfig = evalConfig {
         enable = true;
         node = {
@@ -857,6 +877,7 @@ in
         assertionsHoldFor evaluatedConfig
         && assertionsHoldFor validSds
         && assertionsHoldFor validCredentialTls
+        && credentialDeclarationsHold
         && !assertionsHoldFor invalidRoute
         && !assertionsHoldFor invalidTls
         && !assertionsHoldFor invalidAdmin;
@@ -948,6 +969,10 @@ in
         if contractHolds
         then
           pkgs.runCommand "networking-envoy-config-module-contract" {} ''
+            if ${pkgs.grep}/bin/grep -E 'LoadCredential(Encrypted)?=.*(tls-certificate|tls-private-key|validation-ca)' ${self.expose}/units/envoy.service; then
+              echo "optional Envoy credentials must not create unconditional static unit bindings" >&2
+              exit 1
+            fi
             mkdir -p "$out"
             printf '%s\n' PASS > "$out/result"
           ''

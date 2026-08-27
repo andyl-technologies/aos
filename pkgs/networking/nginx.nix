@@ -196,8 +196,9 @@ in
         credentials =
           builtins.map (name: {
             inherit name;
+            source = "/run/credstore/nginx/${name}";
             units = ["nginx.service"];
-            encrypted = true;
+            encrypted = false;
             optional = true;
           }) [
             "tls-certificate"

@@ -87,20 +87,25 @@
       _file = d.file or "<anonymous submodule definition>";
       config =
         applyInheritedPriority (
-          if (d.provenance or "@base") == "@host" && (d._priority or 100) == 75
+          if
+            builtins.elem (d.provenance or "@base") ["@host" "@runtime"]
+            && (d._priority or 100) == 75
           then 100
           else d._priority or 100
         )
         d.value;
     };
     baseDefModules = builtins.map defModule (builtins.filter
-      (d: (d.provenance or "@base") == "@base")
-      defs);
-    operatorDefModules = builtins.map defModule (builtins.filter
       (d:
         builtins.elem
         (d.provenance or "@base")
-        ["@host" "@host-import"])
+        ["@base" "@host-import" "@runtime-import"])
+      defs);
+    operatorDefModules = builtins.map defModule (builtins.filter
+      (d: (d.provenance or "@base") == "@host")
+      defs);
+    runtimeDefModules = builtins.map defModule (builtins.filter
+      (d: (d.provenance or "@base") == "@runtime")
       defs);
     packageDefRecords =
       builtins.map (d: {
@@ -132,6 +137,7 @@
       lib = finalLib;
       inherit specialArgs;
       operatorModules = operatorDefModules;
+      runtimeModules = runtimeDefModules;
       packageModules = packageDefRecords;
       enforcePackageAuthorization = false;
     };

@@ -508,6 +508,31 @@
       ];
     };
   };
+  plaintextTpm2CredentialEval = lib.evalModules {
+    modules = [
+      (import "${configPackage.config}/module.nix")
+      ({lib, ...}: {
+        options.assertions = lib.mkOption {
+          type = lib.types.listOf lib.types.attrs;
+          default = [];
+        };
+      })
+      {
+        config."expose-config".credentials."plain-note".ref = "tpm2-credstore:plain-note";
+      }
+    ];
+  };
+  plaintextTpm2CredentialRejected =
+    if
+      builtins.any (
+        assertion:
+          !assertion.assertion
+          && assertion.message
+          == "credential reference 'expose-config.plain-note' cannot use tpm2-credstore with a plaintext signed destination"
+      )
+      plaintextTpm2CredentialEval.assertions
+    then "ok"
+    else throw "generated expose config module must reject tpm2-credstore for plaintext destinations";
   splitConfigPackage = pkgs.mkDerivation {
     pname = "expose-config-split";
     version = "0";
@@ -1552,6 +1577,7 @@ in
       typedArtifactsRejected
       typedPermissionsRejected
       typedCredentialsRejected
+      plaintextTpm2CredentialRejected
       ;
     phaseExitConfig = phaseExitPackage.config;
     exitTrapConfig = exitTrapPackage.config;
@@ -1659,6 +1685,7 @@ in
           : "$typedArtifactsRejected"
           : "$typedPermissionsRejected"
           : "$typedCredentialsRejected"
+          : "$plaintextTpm2CredentialRejected"
           test "$configModuleOutput" != "$configModulePayload"
           test "$configModuleAlias" = "$configModuleOutput"
           test -f "$configModuleOutput/module.nix"
@@ -2414,7 +2441,7 @@ in
           grep -q 'Wants=network-online.target' "$k3s_worker_unit"
           grep -q 'Environment="PATH=.*${pkgs.k3s}/bin' "$k3s_worker_unit"
           grep -q 'EnvironmentFile=/etc/aos/packages/k3s-worker/k3s.env' "$k3s_worker_unit"
-          grep -q 'LoadCredentialEncrypted=token' "$k3s_worker_unit"
+          grep -q 'LoadCredential=token' "$k3s_worker_unit"
           grep -q 'LimitNOFILE=1048576' "$k3s_worker_unit"
           grep -q 'LimitNPROC=infinity' "$k3s_worker_unit"
           grep -q 'LimitCORE=infinity' "$k3s_worker_unit"
@@ -2481,7 +2508,7 @@ in
           require_host_unit "k3s control-plane" "$k3s_control_plane_unit"
           grep -q 'Environment="PATH=.*${pkgs.k3s}/bin' "$k3s_control_plane_unit"
           grep -q 'EnvironmentFile=/etc/aos/packages/k3s-control-plane/k3s.env' "$k3s_control_plane_unit"
-          grep -q 'LoadCredentialEncrypted=token' "$k3s_control_plane_unit"
+          grep -q 'LoadCredential=token' "$k3s_control_plane_unit"
           grep -q 'LimitNOFILE=1048576' "$k3s_control_plane_unit"
           grep -q 'LimitNPROC=infinity' "$k3s_control_plane_unit"
           grep -q 'LimitCORE=infinity' "$k3s_control_plane_unit"
@@ -2507,7 +2534,7 @@ in
           require_host_unit "k3s combined" "$k3s_combined_unit"
           grep -q 'Environment="PATH=.*${pkgs.k3s}/bin' "$k3s_combined_unit"
           grep -q 'EnvironmentFile=/etc/aos/packages/k3s-combined/k3s.env' "$k3s_combined_unit"
-          grep -q 'LoadCredentialEncrypted=token' "$k3s_combined_unit"
+          grep -q 'LoadCredential=token' "$k3s_combined_unit"
           grep -q 'LimitNOFILE=1048576' "$k3s_combined_unit"
           grep -q 'LimitNPROC=infinity' "$k3s_combined_unit"
           grep -q 'LimitCORE=infinity' "$k3s_combined_unit"

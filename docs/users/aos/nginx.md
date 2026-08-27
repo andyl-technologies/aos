@@ -65,13 +65,21 @@ operator must still install nginx and set `nginx.enable = true`.
 TLS virtual hosts reserve certificate and private-key material through opaque
 `nginx.tlsCredentials.certificate.ref` and
 `nginx.tlsCredentials.privateKey.ref` values. Plaintext key or certificate
-contents are not valid module values and never enter the Nix store.
+contents are not valid module values and never enter Nix evaluation, the Nix
+store, or the signed configuration manifest.
 
 The signed expose manifest declares both handles as optional. HTTP-only
 configurations therefore add no systemd credential dependency. Enabling TLS
 projects `tls-certificate` and `tls-private-key` from the two opaque references
 before starting or reloading `nginx.service`; an absent or invalid reference
 fails before the candidate generation is committed.
+
+Resolved bytes exist only in the mode-`0600` volatile paths under
+`/run/credstore/nginx/` and in systemd's per-service credential directory.
+They disappear with the runtime filesystem at reboot. These destinations are
+intentionally plaintext: using the encrypted credstore would implicitly
+require a measured-boot PCR policy and would make ordinary runtime package
+installation fail on hosts without one.
 
 ```nix
 {

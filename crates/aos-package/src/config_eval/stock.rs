@@ -349,6 +349,23 @@ fn kill_reason(status: &std::process::ExitStatus, stderr: &str) -> Option<KillRe
 
 /// Renders authenticated working-set modules as resolver-owned provenance records.
 fn render_package_module_list(members: &[WorkingSetMember], locked: bool) -> Result<String> {
+    render_package_module_list_with(members, locked, |path| locked_store_input(path, None))
+}
+
+/// Renders package modules with an injectable locked-input renderer.
+///
+/// Production evaluation uses [`locked_store_input`] above. Keeping the
+/// renderer injectable lets unit tests prove that every resolver-authenticated
+/// runtime output crosses the admission boundary without requiring a real Nix
+/// store path in the test process.
+fn render_package_module_list_with<F>(
+    members: &[WorkingSetMember],
+    locked: bool,
+    mut lock_input: F,
+) -> Result<String>
+where
+    F: FnMut(&Path) -> Result<String>,
+{
     let mut items = Vec::new();
     for member in members {
         if let Some(path) = member.config_output.as_deref() {
@@ -405,15 +422,28 @@ fn render_package_module_list(members: &[WorkingSetMember], locked: bool) -> Res
                 .outputs
                 .self_output
                 .as_deref()
-                .map_or_else(|| "null".to_string(), nix_string);
+                .map(|output| {
+                    if locked {
+                        lock_input(Path::new(output))
+                    } else {
+                        Ok(nix_string(output))
+                    }
+                })
+                .transpose()?
+                .unwrap_or_else(|| "null".to_string());
             let dependency_outputs = member
                 .outputs
                 .dependencies
                 .iter()
                 .map(|(package, output)| {
-                    format!("{} = {};", nix_string(package), nix_string(output))
+                    let output = if locked {
+                        lock_input(Path::new(output))?
+                    } else {
+                        nix_string(output)
+                    };
+                    Ok(format!("{} = {output};", nix_string(package)))
                 })
-                .collect::<Vec<_>>()
+                .collect::<Result<Vec<_>>>()?
                 .join(" ");
             items.push(format!(
                     "    (let configRoot = {config_root}; in {{ name = {}; authorization = {{ owns = [ {owns} ]; contributes = {{ {contributes} }}; artifacts = {{ etc = [ {artifact_etc} ]; units = [ {artifact_units} ]; users = [ {artifact_users} ]; groups = [ {artifact_groups} ]; }}; }}; inherit configRoot; module = configRoot + \"/module.nix\"; outputs = {{ self = {self_output}; dependencies = {{ {dependency_outputs} }}; }}; }})",
@@ -1131,6 +1161,34 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("module = configRoot + \"/module.nix\""));
+    }
+
+    #[test]
+    fn locked_entry_admits_self_and_dependency_outputs() {
+        let mut web = member("web", Some("/nix/store/hash-web-config"));
+        web.config_output_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
+        web.outputs.self_output = Some("/nix/store/hash-web-runtime".to_string());
+        web.outputs.dependencies.insert(
+            "openssl".to_string(),
+            "/nix/store/hash-openssl-runtime".to_string(),
+        );
+
+        let mut admitted = Vec::new();
+        let text = render_package_module_list_with(&[web], true, |path| {
+            admitted.push(path.to_path_buf());
+            Ok(format!("(admit {})", nix_path(path)))
+        })
+        .unwrap();
+
+        assert_eq!(
+            admitted,
+            [
+                PathBuf::from("/nix/store/hash-web-runtime"),
+                PathBuf::from("/nix/store/hash-openssl-runtime"),
+            ]
+        );
+        assert!(text.contains("self = (admit /nix/store/hash-web-runtime)"));
+        assert!(text.contains("\"openssl\" = (admit /nix/store/hash-openssl-runtime);"));
     }
 
     #[test]

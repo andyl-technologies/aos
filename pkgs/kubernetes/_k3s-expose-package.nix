@@ -155,8 +155,9 @@ in
           credentials = [
             {
               name = "token";
+              source = "/run/credstore/${pname}/token";
               units = ["k3s.service"];
-              encrypted = true;
+              encrypted = false;
             }
           ];
         };
