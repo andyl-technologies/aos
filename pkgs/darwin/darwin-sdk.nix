@@ -866,6 +866,7 @@ in
             "$out/System/Library/Frameworks/CoreMIDI.framework/Versions/A" \
             "$out/System/Library/Frameworks/CoreServices.framework/Headers" \
             "$out/System/Library/Frameworks/CoreServices.framework/Versions/A" \
+            "$out/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A" \
             "$out/System/Library/Frameworks/CoreText.framework/Headers" \
             "$out/System/Library/Frameworks/CoreText.framework/Versions/A" \
             "$out/System/Library/Frameworks/CoreVideo.framework/Headers" \
@@ -934,30 +935,7 @@ in
           # though the POSIX entry points are also exported by libSystem.
           # Publish that command-line SDK alias so `-liconv` records the same
           # dylib contract as Apple's SDK.
-          cat > "$out/usr/lib/libiconv.tbd" <<'EOF'
-          --- !tapi-tbd
-          tbd-version: 4
-          targets: [ x86_64-macos, arm64-macos ]
-          install-name: '/usr/lib/libiconv.2.dylib'
-          current-version: 7.0.0
-          compatibility-version: 7.0.0
-          exports:
-            - targets: [ x86_64-macos, arm64-macos ]
-              symbols:
-                - ___iconv
-                - ___iconv_free_list
-                - ___iconv_get_list
-                - __libiconv_version
-                - _iconv
-                - _iconv_canonicalize
-                - _iconv_close
-                - _iconv_open
-                - _iconv_open_into
-                - _iconvctl
-                - _iconvlist
-                - _libiconv_set_relocation_prefix
-          ...
-          EOF
+          cp ${./darwin-sdk-libiconv.tbd} "$out/usr/lib/libiconv.tbd"
           ln -s libiconv.tbd "$out/usr/lib/libiconv.2.tbd"
           # Apple's command-line sandbox API is a standalone system library,
           # not a libSystem re-export.  Nix and other Darwin-native tools use
@@ -985,26 +963,7 @@ in
 
           #endif
           EOF
-          cat > "$out/usr/lib/libsandbox.tbd" <<'EOF'
-          --- !tapi-tbd
-          tbd-version: 4
-          targets: [ x86_64-macos, arm64-macos ]
-          install-name: '/usr/lib/libsandbox.1.dylib'
-          current-version: 300.0.0
-          compatibility-version: 1.0.0
-          exports:
-            - targets: [ x86_64-macos, arm64-macos ]
-              symbols:
-                - _kSBXProfileNoInternet
-                - _kSBXProfileNoNetwork
-                - _kSBXProfileNoWrite
-                - _kSBXProfileNoWriteExceptTemporary
-                - _kSBXProfilePureComputation
-                - _sandbox_free_error
-                - _sandbox_init
-                - _sandbox_init_with_parameters
-          ...
-          EOF
+          cp ${./darwin-sdk-libsandbox.tbd} "$out/usr/lib/libsandbox.tbd"
           ln -s libsandbox.tbd "$out/usr/lib/libsandbox.1.tbd"
           # Current Apple resolver headers bind the established public entry
           # points to their BIND 9 symbol names. Zig's older libSystem surface
@@ -1900,41 +1859,23 @@ in
           EOF
           cp ${./darwin-sdk-core-services-jdk.h} \
             "$out/System/Library/Frameworks/CoreServices.framework/Headers/JDKSurface.h"
-          cat > "$out/System/Library/Frameworks/CoreServices.framework/CoreServices.tbd" <<'EOF'
-          --- !tapi-tbd
-          tbd-version: 4
-          targets: [ x86_64-macos, arm64-macos ]
-          install-name: '/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices'
-          current-version: 1228.0.0
-          compatibility-version: 1.0.0
-          reexported-libraries:
-            - targets: [ x86_64-macos, arm64-macos ]
-              libraries:
-                - '/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork'
-                - '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'
-          exports:
-            - targets: [ x86_64-macos, arm64-macos ]
-              symbols:
-                - _CSCopyMachineName
-                - _FSEventStreamCreate
-                - _FSEventStreamGetDeviceBeingWatched
-                - _FSEventStreamInvalidate
-                - _FSEventStreamRelease
-                - _FSEventStreamScheduleWithRunLoop
-                - _FSEventStreamSetDispatchQueue
-                - _FSEventStreamStart
-                - _FSEventStreamStop
-                - _FSEventsGetCurrentEventId
-                - _FSEventsPurgeEventsForDeviceUpToEventId
-                - _LSOpenCFURLRef
-                - _LocaleStringToLangAndRegionCodes
-                - _kUTTypeJPEG
-          ...
-          EOF
+          cp ${./darwin-sdk-core-services.tbd} \
+            "$out/System/Library/Frameworks/CoreServices.framework/CoreServices.tbd"
           ln -s ../../CoreServices.tbd \
             "$out/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices.tbd"
           ln -s CoreServices.tbd \
             "$out/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices"
+
+          # Apple's CoreServices umbrella reexports its versioned, nested
+          # LaunchServices framework. Keep the symbols in their canonical
+          # owner so consumers such as OpenJDK's libnio can link only the
+          # documented CoreServices umbrella without flattening the ABI.
+          cp ${./darwin-sdk-launch-services.tbd} \
+            "$out/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/LaunchServices.tbd"
+          ln -s ../../LaunchServices.tbd \
+            "$out/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/LaunchServices.tbd"
+          ln -s LaunchServices.tbd \
+            "$out/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/LaunchServices"
 
           # Dawn uses IOSurface-backed multiplanar Metal textures. Publish the
           # documented opaque reference, property keys, and geometry queries
