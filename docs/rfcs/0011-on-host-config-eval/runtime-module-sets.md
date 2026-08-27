@@ -100,6 +100,10 @@ composed modules through the existing resolve/evaluate fixpoint, so a module
 can enable nginx, Envoy, or a Kubernetes role immediately after `apm` obtains
 its package and authenticated configuration output.
 
+The initial trust mode is deliberately `local-root`. A future signed-set mode
+must carry and verify a signature receipt over the complete canonical set
+descriptor; a signer fingerprint by itself is rejected as non-evidence.
+
 ## Package configuration interfaces
 
 A package may publish its own `configModule`, and an ordinary package may act

@@ -517,6 +517,12 @@ pub enum PackageCommand {
         /// Ordered generation-pinned runtime module entrypoint; repeatable.
         #[arg(long = "runtime-module")]
         runtime_module: Vec<PathBuf>,
+        /// Immutable runtime source root; required to represent an empty set.
+        #[arg(long = "runtime-module-root")]
+        runtime_module_root: Option<PathBuf>,
+        /// Active config generation sampled before this evaluation began.
+        #[arg(long = "expected-current-generation")]
+        expected_current_generation: Option<u32>,
         /// The in-image module library store path
         #[arg(long = "base-lib")]
         base_lib: PathBuf,
@@ -2572,10 +2578,12 @@ fn copy_runtime_tree(source: &Path, destination: &Path) -> Result<()> {
         } else if ty.is_file() {
             std::fs::copy(entry.path(), &target)?;
             std::fs::set_permissions(&target, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+            std::fs::File::open(&target)?.sync_all()?;
         } else {
             bail!("retained runtime module set contains an unsupported object");
         }
     }
+    std::fs::File::open(destination)?.sync_all()?;
     Ok(())
 }
 
@@ -2587,20 +2595,24 @@ async fn run_runtime_config_command(
         RuntimeConfigCommand::Status { worktree } => {
             let manifest_path =
                 Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE).join("current/manifest.json");
-            let manifest: config_eval::materialize::ConfigManifest = serde_json::from_slice(
-                &std::fs::read(&manifest_path)
-                    .with_context(|| format!("reading {}", manifest_path.display()))?,
-            )?;
-            if let Some(runtime) = manifest.inputs.runtime_modules {
-                printer.plain(&format!(
-                    "active runtime modules: {} ({} entrypoints, {}, {})",
-                    runtime.store_path,
-                    runtime.entrypoints.len(),
-                    runtime.nar_hash,
-                    runtime.trust_mode
-                ));
+            if manifest_path.is_file() {
+                let manifest: config_eval::materialize::ConfigManifest = serde_json::from_slice(
+                    &std::fs::read(&manifest_path)
+                        .with_context(|| format!("reading {}", manifest_path.display()))?,
+                )?;
+                if let Some(runtime) = manifest.inputs.runtime_modules {
+                    printer.plain(&format!(
+                        "active runtime modules: {} ({} entrypoints, {}, {})",
+                        runtime.store_path,
+                        runtime.entrypoints.len(),
+                        runtime.nar_hash,
+                        runtime.trust_mode
+                    ));
+                } else {
+                    printer.plain("active runtime modules: empty");
+                }
             } else {
-                printer.plain("active runtime modules: empty");
+                printer.plain("active runtime modules: unavailable (no active generation)");
             }
             let entries = if worktree.is_dir() {
                 config_eval::runtime_modules::list_entrypoints(worktree)?
@@ -2615,8 +2627,10 @@ async fn run_runtime_config_command(
             Ok(())
         }
         RuntimeConfigCommand::List { worktree } => {
-            for entry in config_eval::runtime_modules::list_entrypoints(worktree)? {
-                printer.plain(&entry.display().to_string());
+            if worktree.is_dir() {
+                for entry in config_eval::runtime_modules::list_entrypoints(worktree)? {
+                    printer.plain(&entry.display().to_string());
+                }
             }
             Ok(())
         }
@@ -2685,6 +2699,9 @@ async fn run_runtime_config_command(
         }
         RuntimeConfigCommand::Discard { worktree } => {
             let _lock = acquire_runtime_config_lock(worktree)?;
+            let _switch_lock = config_eval::activation::acquire_switch_lock_pub(
+                &config_eval::activation::default_switch_lock_path(),
+            )?;
             let manifest_path =
                 Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE).join("current/manifest.json");
             let manifest: config_eval::materialize::ConfigManifest =
@@ -2695,7 +2712,10 @@ async fn run_runtime_config_command(
             let staged = parent.join(format!(".modules.restore.{}", std::process::id()));
             match manifest.inputs.runtime_modules {
                 Some(runtime) => copy_runtime_tree(Path::new(&runtime.store_path), &staged)?,
-                None => std::fs::create_dir(&staged)?,
+                None => {
+                    std::fs::create_dir(&staged)?;
+                    std::fs::File::open(&staged)?.sync_all()?;
+                }
             }
             std::fs::set_permissions(&staged, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
             if worktree.exists() {
@@ -2763,17 +2783,32 @@ async fn apply_runtime_worktree(
 ) -> Result<()> {
     let _lock = acquire_runtime_config_lock(worktree)?;
     ensure_runtime_config_input_compatibility(allow_unprivileged_worktree)?;
-    let discovered = config_eval::runtime_modules::list_entrypoints(worktree)?;
-    let runtime_modules = if discovered.is_empty() {
-        Vec::new()
-    } else {
-        config_eval::runtime_modules::snapshot(worktree, eval_root, !allow_unprivileged_worktree)?
-            .entrypoints
-    };
     let profile = Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE);
-    let base_manifest = profile.join("current/manifest.json");
+    let expected_current_generation =
+        config_eval::current_config_generation_number(&profile.join("state.json"))?;
+    anyhow::ensure!(
+        expected_current_generation > 0,
+        "runtime configuration requires an active configuration generation"
+    );
+    let base_manifest = profile.join(format!("gen-{expected_current_generation}/manifest.json"));
     let current: config_eval::materialize::ConfigManifest =
         serde_json::from_slice(&std::fs::read(&base_manifest)?)?;
+    current.validate()?;
+    if !worktree.exists() {
+        std::fs::create_dir(worktree)?;
+        std::fs::set_permissions(
+            worktree,
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )?;
+        std::fs::File::open(
+            worktree
+                .parent()
+                .context("runtime worktree has no parent")?,
+        )?
+        .sync_all()?;
+    }
+    let snapshot =
+        config_eval::runtime_modules::snapshot(worktree, eval_root, !allow_unprivileged_worktree)?;
     let host_nix = PathBuf::from(&current.inputs.host_nix.store_path);
     let image_default_host = current.inputs.host_nix.trust_mode == "image";
     let facts_json = PathBuf::from(&current.inputs.instance_facts.store_path);
@@ -2784,7 +2819,9 @@ async fn apply_runtime_worktree(
     config_eval::dry_run::run_switch(&config_eval::dry_run::SwitchParams {
         eval: config_eval::EvalCommand {
             host_nix,
-            runtime_modules,
+            runtime_modules: snapshot.entrypoints,
+            runtime_module_root: Some(snapshot.store_path),
+            expected_current_generation: Some(expected_current_generation),
             base_lib,
             facts_json: Some(facts_json),
             desired: None,
@@ -2793,6 +2830,10 @@ async fn apply_runtime_worktree(
             eval_root: eval_root.to_path_buf(),
             verbose: u8::from(printer.mode() == OutputMode::Verbose),
             trusted_config_keys_dirs: Vec::new(),
+            retained_host_inputs: Some(config_eval::RetainedHostInputs {
+                host_nix: current.inputs.host_nix.clone(),
+                instance_facts: current.inputs.instance_facts.clone(),
+            }),
             require_signed_host_nix: false,
             image_default_host,
         },
@@ -2915,6 +2956,8 @@ pub async fn run(
     if let PackageCommand::Eval {
         host_nix,
         runtime_module,
+        runtime_module_root,
+        expected_current_generation,
         base_lib,
         facts_json,
         desired,
@@ -2930,6 +2973,8 @@ pub async fn run(
         let result = config_eval::run_eval_command(&config_eval::EvalCommand {
             host_nix: host_nix.clone(),
             runtime_modules: runtime_module.clone(),
+            runtime_module_root: runtime_module_root.clone(),
+            expected_current_generation: *expected_current_generation,
             base_lib: base_lib.clone(),
             facts_json: Some(facts_json.clone()),
             desired: desired.clone(),
@@ -2938,6 +2983,7 @@ pub async fn run(
             eval_root: eval_root.clone(),
             verbose,
             trusted_config_keys_dirs: trusted_config_keys_dir.clone(),
+            retained_host_inputs: None,
             require_signed_host_nix: *require_signed_host_nix,
             image_default_host: *image_default_host,
         });
@@ -3066,16 +3112,36 @@ pub async fn run(
     {
         let verbose = u8::from(printer.mode() == OutputMode::Verbose);
         let json_out = printer.mode() == OutputMode::Json;
-        let (base_manifest, selected_label) = resolve_switch_manifest(
-            diff_against.as_deref(),
-            Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE),
+        let profile = Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE);
+        let expected_current_generation =
+            config_eval::current_config_generation_number(&profile.join("state.json"))?;
+        let active_manifest_path =
+            profile.join(format!("gen-{expected_current_generation}/manifest.json"));
+        let active_manifest: config_eval::materialize::ConfigManifest = serde_json::from_slice(
+            &std::fs::read(&active_manifest_path)
+                .with_context(|| format!("reading {}", active_manifest_path.display()))?,
         )?;
+        active_manifest.validate()?;
+        let (base_manifest, selected_label) =
+            resolve_switch_manifest(diff_against.as_deref(), profile)?;
         let (host_nix, image_default_host) = match from {
             Some(path) => (path.clone(), false),
             None => resolve_default_switch_host(
                 Path::new(DEFAULT_SWITCH_HOST_NIX),
-                &Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE).join("current/manifest.json"),
+                &active_manifest_path,
             )?,
+        };
+        let (runtime_modules, runtime_module_root) = if runtime_module.is_empty() {
+            (
+                config_eval::retained_runtime_modules(&active_manifest)?,
+                active_manifest
+                    .inputs
+                    .runtime_modules
+                    .as_ref()
+                    .map(|runtime| PathBuf::from(&runtime.store_path)),
+            )
+        } else {
+            (runtime_module.clone(), None)
         };
         let base_lib = match base_lib {
             Some(path) => path.clone(),
@@ -3098,7 +3164,14 @@ pub async fn run(
         let params = config_eval::dry_run::SwitchParams {
             eval: config_eval::EvalCommand {
                 host_nix,
-                runtime_modules: runtime_module.clone(),
+                runtime_modules,
+                runtime_module_root: runtime_module_root.clone(),
+                expected_current_generation: runtime_module_root
+                    .as_ref()
+                    .map(|_| expected_current_generation)
+                    .or_else(|| {
+                        (!runtime_module.is_empty()).then_some(expected_current_generation)
+                    }),
                 base_lib,
                 facts_json: Some(facts_json.clone()),
                 desired: desired.clone(),
@@ -3107,6 +3180,7 @@ pub async fn run(
                 eval_root: eval_root.clone(),
                 verbose,
                 trusted_config_keys_dirs: trusted_config_keys_dir.clone(),
+                retained_host_inputs: None,
                 require_signed_host_nix: *require_signed_host_nix,
                 image_default_host,
             },

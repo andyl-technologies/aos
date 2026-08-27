@@ -63,6 +63,9 @@ fn list_directory(
     for entry in entries {
         let name = entry.file_name();
         let name_text = name.to_str().context("runtime module name is not UTF-8")?;
+        if !valid_component_name(name_text) {
+            bail!("invalid runtime module path component {name_text:?}");
+        }
         let file_type = entry.file_type()?;
         let child_relative = relative.join(&name);
         if file_type.is_symlink() {
@@ -111,8 +114,8 @@ struct Limits {
 /// # Errors
 ///
 /// Returns an error for unsafe ownership or modes, links, special objects,
-/// hard links, non-UTF-8 names, non-Nix regular files, resource-limit excess,
-/// an empty module set, or a failed content-addressed store import.
+/// hard links, unsafe or non-UTF-8 names, non-Nix regular files,
+/// resource-limit excess, or a failed content-addressed store import.
 pub fn snapshot(
     source: &Path,
     staging_parent: &Path,
@@ -139,32 +142,32 @@ pub fn snapshot(
             staging_parent.display()
         )
     })?;
-    let staging = tempfile::Builder::new()
-        .prefix("runtime-modules-")
+    let staging_parent_dir = tempfile::Builder::new()
+        .prefix("runtime-module-snapshot-")
         .tempdir_in(staging_parent)
         .context("creating private runtime module snapshot")?;
-    std::fs::set_permissions(staging.path(), std::fs::Permissions::from_mode(0o700))?;
+    let staging = staging_parent_dir.path().join("runtime-modules");
+    std::fs::create_dir(&staging)?;
+    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700))?;
 
     let mut limits = Limits::default();
     let mut entrypoints = Vec::new();
     copy_directory(
         &root,
-        staging.path(),
+        &staging,
         Path::new(""),
         0,
+        require_root_owner,
         &mut limits,
         &mut entrypoints,
     )?;
     entrypoints.sort();
-    if entrypoints.is_empty() {
-        bail!("runtime module worktree contains no discoverable .nix entrypoints");
-    }
-    sync_directory_tree(staging.path())?;
+    sync_directory_tree(&staging)?;
 
     let output = std::process::Command::new("nix-store")
         .envs(aos_core::nix::aos_nix_env())
         .args(["--add-fixed", "--recursive", "sha256"])
-        .arg(staging.path())
+        .arg(&staging)
         .output()
         .context("adding runtime module snapshot to the store")?;
     if !output.status.success() {
@@ -201,6 +204,7 @@ fn copy_directory(
     destination: &Path,
     relative: &Path,
     depth: usize,
+    require_root_owner: bool,
     limits: &mut Limits,
     entrypoints: &mut Vec<PathBuf>,
 ) -> Result<()> {
@@ -223,7 +227,7 @@ fn copy_directory(
             continue;
         }
         let name = std::str::from_utf8(bytes).context("runtime module name is not UTF-8")?;
-        if name.contains('/') || name.is_empty() {
+        if !valid_component_name(name) {
             bail!("invalid runtime module path component {name:?}");
         }
         let child = fs::openat(
@@ -236,6 +240,12 @@ fn copy_directory(
         let stat =
             fs::fstat(&child).with_context(|| format!("statting runtime module {name:?}"))?;
         let child_relative = relative.join(name);
+        if require_root_owner && (stat.st_uid != 0 || stat.st_mode & 0o022 != 0) {
+            bail!(
+                "runtime module object {} must be root-owned and not writable by group or other",
+                child_relative.display()
+            );
+        }
         let child_destination = destination.join(name);
         match FileType::from_raw_mode(stat.st_mode) {
             FileType::Directory => {
@@ -254,6 +264,7 @@ fn copy_directory(
                     &child_destination,
                     &child_relative,
                     depth + 1,
+                    require_root_owner,
                     limits,
                     entrypoints,
                 )?;
@@ -300,6 +311,13 @@ fn copy_directory(
         }
     }
     Ok(())
+}
+
+fn valid_component_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
 fn copy_regular_file(source: OwnedFd, destination: &Path, expected_size: u64) -> Result<()> {
@@ -394,6 +412,7 @@ mod tests {
             destination.path(),
             Path::new(""),
             0,
+            false,
             &mut Limits::default(),
             &mut Vec::new(),
         )
@@ -422,10 +441,38 @@ mod tests {
             destination.path(),
             Path::new(""),
             0,
+            false,
             &mut Limits::default(),
             &mut Vec::new(),
         )
         .unwrap_err();
         assert!(error.to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn descriptor_copy_rejects_writable_objects_for_root_authority() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let module = source.path().join("module.nix");
+        std::fs::write(&module, b"{}").unwrap();
+        std::fs::set_permissions(&module, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let root = fs::openat(
+            fs::CWD,
+            source.path(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        let error = copy_directory(
+            &root,
+            destination.path(),
+            Path::new(""),
+            0,
+            true,
+            &mut Limits::default(),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("root-owned"));
     }
 }

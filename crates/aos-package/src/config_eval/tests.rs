@@ -1243,6 +1243,8 @@ fn signed_host_nix_policy_fails_closed_with_no_anchors() {
     let cmd = EvalCommand {
         host_nix,
         runtime_modules: Vec::new(),
+        runtime_module_root: None,
+        expected_current_generation: None,
         base_lib: tmp.path().join("base-lib"),
         facts_json: None,
         desired: None,
@@ -1251,6 +1253,7 @@ fn signed_host_nix_policy_fails_closed_with_no_anchors() {
         eval_root: tmp.path().to_path_buf(),
         verbose: 0,
         trusted_config_keys_dirs: Vec::new(),
+        retained_host_inputs: None,
         require_signed_host_nix: true,
         image_default_host: false,
     };
@@ -1272,6 +1275,8 @@ fn platform_host_nix_policy_needs_no_image_baked_key() {
     let cmd = EvalCommand {
         host_nix,
         runtime_modules: Vec::new(),
+        runtime_module_root: None,
+        expected_current_generation: None,
         base_lib: tmp.path().join("base-lib"),
         facts_json: None,
         desired: None,
@@ -1280,6 +1285,7 @@ fn platform_host_nix_policy_needs_no_image_baked_key() {
         eval_root: tmp.path().to_path_buf(),
         verbose: 0,
         trusted_config_keys_dirs: Vec::new(),
+        retained_host_inputs: None,
         require_signed_host_nix: false,
         image_default_host: false,
     };
@@ -1296,6 +1302,8 @@ fn host_package_selection_rejects_a_mutable_input_path() {
     let cmd = EvalCommand {
         host_nix,
         runtime_modules: Vec::new(),
+        runtime_module_root: None,
+        expected_current_generation: None,
         base_lib: PathBuf::from("/nix/store/hash-aos-base-lib"),
         facts_json: None,
         desired: None,
@@ -1304,6 +1312,7 @@ fn host_package_selection_rejects_a_mutable_input_path() {
         eval_root: tmp.path().join("eval"),
         verbose: 0,
         trusted_config_keys_dirs: Vec::new(),
+        retained_host_inputs: None,
         require_signed_host_nix: false,
         image_default_host: false,
     };
@@ -1324,6 +1333,8 @@ fn image_default_host_accepts_only_the_empty_module_without_operator_keys() {
     let mut cmd = EvalCommand {
         host_nix: host_nix.clone(),
         runtime_modules: Vec::new(),
+        runtime_module_root: None,
+        expected_current_generation: None,
         base_lib: tmp.path().join("base-lib"),
         facts_json: None,
         desired: None,
@@ -1332,6 +1343,7 @@ fn image_default_host_accepts_only_the_empty_module_without_operator_keys() {
         eval_root: tmp.path().to_path_buf(),
         verbose: 0,
         trusted_config_keys_dirs: Vec::new(),
+        retained_host_inputs: None,
         require_signed_host_nix: true,
         image_default_host: true,
     };

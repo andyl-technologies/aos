@@ -48,11 +48,12 @@ in {
       "aos-test-agent"
       "envoy"
       "k3s-worker"
-      "nginx"
     ];
     extraClosures = [
       pkgs.diffutils
+      pkgs.git
       pkgs.grep
+      pkgs.nix
     ];
     metadata."host.nix" = ''
       {
@@ -75,6 +76,7 @@ in {
       import textwrap
 
       APM = "${pkgs.aos}/bin/apm"
+      APR = "${pkgs.aos}/bin/apr"
       CURL = "${pkgs.curl}/bin/curl"
       JQ = "${pkgs.jq}/bin/jq"
       SHA256SUM = "${pkgs.coreutils}/bin/sha256sum"
@@ -170,9 +172,97 @@ in {
           f"{SHA256SUM} /run/aos-metadata/host.nix"
       ).split()[0]
       initial = current_generation()
+      initial_manifest = json.loads(runtime.succeed(
+          f"cat /var/lib/profiles/system/gen-{initial}/manifest.json"
+      ))
+      platform_host_input = initial_manifest["inputs"]["host_nix"]
+      platform_facts_input = initial_manifest["inputs"]["instance_facts"]
 
       status = runtime.succeed(f"{APM} config status")
       assert "active runtime modules: empty" in status, status
+
+      # Nginx is bundled in the immutable image but deliberately absent from
+      # the seeded package profile. Publish its package/expose pair into a
+      # local authenticated registry and select it through public APM before
+      # supplying any operator configuration module.
+      runtime.fail(
+          f"HOME=/tmp/runtime-publisher USER=root {APM} list --installed "
+          "2>&1 | grep -q '^nginx'"
+      )
+      runtime.succeed(textwrap.dedent(f"""
+          set -eu
+          export HOME=/tmp/runtime-publisher
+          export USER=root
+          export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
+          export GIT_AUTHOR_NAME=Test
+          export GIT_AUTHOR_EMAIL=test@test
+          export GIT_COMMITTER_NAME=Test
+          export GIT_COMMITTER_EMAIL=test@test
+          export NIX_REMOTE=""
+          export NIX_CONF_DIR=/tmp/runtime-nix-conf
+          mkdir -p "$NIX_CONF_DIR"
+          printf 'experimental-features = nix-command\\nsandbox = false\\n' \
+            > "$NIX_CONF_DIR/nix.conf"
+
+          {APR} keys generate release --registry runtime-reg \
+            > /tmp/runtime-keygen.out 2>&1
+          PUBKEY=$(awk '/Public key:/ {{print $NF; exit}}' /tmp/runtime-keygen.out)
+          KEY=$HOME/.config/apm/keys/runtime-reg-release.key
+          {APR} create runtime-reg \
+            --trust-key "$PUBKEY" \
+            --trust-key-id release \
+            --key "$KEY"
+          mkdir -p "$HOME/.config/apm/registries.d"
+          cat > "$HOME/.config/apm/registries.d/runtime-reg.toml" <<EOF
+          [registry]
+          name = "runtime-reg"
+          url = "file://$HOME/.local/share/apm/registries/runtime-reg"
+
+          [registry.signing_keys]
+          release = "$KEY"
+          EOF
+
+          {APR} publish '${pkgs.nginx}' \
+            --name nginx \
+            --version '${pkgs.nginx.version}' \
+            --description 'runtime module acceptance fixture' \
+            --license BSD-2-Clause \
+            --maintainer test \
+            --expose-manifest '${pkgs.nginx.expose}/manifest.json' \
+            --registry runtime-reg \
+            --key-id release \
+            --no-commit
+
+          mkdir -p "$HOME/.local/share/apm/remote"
+          cp -a "$HOME/.local/share/apm/registries/runtime-reg" \
+            "$HOME/.local/share/apm/remote/runtime-reg"
+          cat > "$HOME/.config/apm/registries.d/runtime-reg.toml" <<'EOF'
+          [registry]
+          name = "runtime-reg"
+          url = "file:///tmp/runtime-publisher/.local/share/apm/registries/runtime-reg"
+          priority = 500
+          enabled = true
+
+          [registry.signing]
+          required = false
+          EOF
+
+          {APM} install nginx --registry runtime-reg --yes
+
+          mkdir -p /var/lib/apm/registries /var/lib/apm/remote \
+            /var/lib/apm/config/registries.d
+          cp -a "$HOME/.local/share/apm/registries/runtime-reg" \
+            /var/lib/apm/registries/runtime-reg
+          cp -a "$HOME/.local/share/apm/registries/runtime-reg" \
+            /var/lib/apm/remote/runtime-reg
+          cp "$HOME/.config/apm/registries.d/runtime-reg.toml" \
+            /var/lib/apm/config/registries.d/runtime-reg.toml
+      """), timeout=600)
+      installed = runtime.succeed(
+          f"HOME=/tmp/runtime-publisher USER=root {APM} list --installed 2>&1"
+      )
+      assert "nginx" in installed, installed
+
       runtime.succeed("install -d -m 0700 /run/runtime-module-fixtures")
       packages_module = """{
         aos.apm.desiredPackages = [ "nginx" "envoy" "k3s-worker" ];
@@ -227,6 +317,13 @@ in {
       write_file(
           "/run/runtime-module-fixtures/20-services.nix", services_module
       )
+      runtime.fail(
+          f"{APM} config add /run/runtime-module-fixtures/10-packages.nix "
+          "--name 'bad;name.nix'"
+      )
+      runtime.fail(
+          "test -e '/var/lib/aos/config/modules.d/bad;name.nix'"
+      )
       runtime.succeed(f"""
           {APM} config add /run/runtime-module-fixtures/10-packages.nix
           {APM} config add /run/runtime-module-fixtures/20-services.nix
@@ -270,9 +367,33 @@ in {
       assert manifest["inputs"]["host_nix"]["store_path"].startswith(
           "/nix/store/"
       )
+      assert manifest["inputs"]["host_nix"] == platform_host_input
+      assert manifest["inputs"]["instance_facts"] == platform_facts_input
       assert runtime.succeed(
           f"{SHA256SUM} /run/aos-metadata/host.nix"
       ).split()[0] == platform_hash
+
+      # Ordinary switch porcelain defaults to the active retained runtime set,
+      # rather than silently dropping supplemental modules. Inspect the new
+      # no-op generation to prove all three input identities survive.
+      previous_configured = configured
+      runtime.succeed(
+          f"{APM} switch --eval-root /run/runtime-module-composition-no-op",
+          timeout=600,
+      )
+      configured = current_generation()
+      assert configured != previous_configured, (previous_configured, configured)
+      switch_manifest = json.loads(runtime.succeed(
+          f"cat /var/lib/profiles/system/gen-{configured}/manifest.json"
+      ))
+      assert switch_manifest["inputs"]["runtime_modules"] == runtime_input
+      assert switch_manifest["inputs"]["host_nix"] == platform_host_input
+      assert switch_manifest["inputs"]["instance_facts"] == platform_facts_input
+      assert (
+          switch_manifest["inputs"]["expected_current_generation"]
+          == previous_configured
+      )
+      assert_package_configuration()
 
       # A bad supplemental fragment must fail before activation and preserve
       # both the durable pointer and live package state.
@@ -336,5 +457,54 @@ in {
       runtime.succeed(f"{APM} config discard")
       listed = runtime.succeed(f"{APM} config list").splitlines()
       assert listed == ["10-packages.nix", "20-services.nix"], listed
+
+      # Removing the final entrypoint is itself an ordinary compare-and-switch
+      # candidate. It must durably record the absence of runtime input rather
+      # than falling back to the previous retained set on the next boot.
+      runtime.succeed(f"{APM} config remove 10-packages.nix")
+      runtime.succeed(f"{APM} config remove 20-services.nix")
+      assert runtime.succeed(f"{APM} config list") == ""
+      apply_worktree("/run/runtime-module-composition-clear")
+      cleared = current_generation()
+      assert cleared != configured, (configured, cleared)
+      cleared_manifest = json.loads(runtime.succeed(
+          f"cat /var/lib/profiles/system/gen-{cleared}/manifest.json"
+      ))
+      cleared_runtime_input = cleared_manifest["inputs"]["runtime_modules"]
+      assert cleared_runtime_input["schema"] == "aos.runtime-module-set/v1"
+      assert cleared_runtime_input["trust_mode"] == "local-root"
+      assert cleared_runtime_input["store_path"].startswith("/nix/store/")
+      assert cleared_runtime_input["entrypoints"] == []
+      assert cleared_manifest["inputs"]["expected_current_generation"] == configured
+      status = runtime.succeed(f"{APM} config status")
+      assert cleared_runtime_input["store_path"] in status, status
+      assert "(0 entrypoints," in status, status
+      assert "worktree: /var/lib/aos/config/modules.d (0 entrypoints)" in status, status
+      runtime.fail("test -e /etc/runtime-modules/operator.conf")
+      runtime.wait_until_succeeds(
+          "! systemctl is-active --quiet nginx.service", timeout=120
+      )
+      runtime.wait_until_succeeds(
+          "! systemctl is-active --quiet envoy.service", timeout=120
+      )
+
+      runtime.reboot_without_metadata()
+      wait_for_activation()
+      assert current_generation() == cleared
+      status = runtime.succeed(f"{APM} config status")
+      assert cleared_runtime_input["store_path"] in status, status
+      assert "(0 entrypoints," in status, status
+      assert runtime.succeed(f"{APM} config list") == ""
+      reboot_manifest = json.loads(runtime.succeed("cat /run/aos/manifest.json"))
+      assert (
+          reboot_manifest["inputs"]["runtime_modules"]
+          == cleared_runtime_input
+      )
+      runtime.fail("test -e /etc/runtime-modules/operator.conf")
+      runtime.fail("systemctl is-active --quiet nginx.service")
+      runtime.fail("systemctl is-active --quiet envoy.service")
+      assert runtime.succeed(
+          f"{SHA256SUM} /var/lib/aos-provisioning/current/host.nix"
+      ).split()[0] == platform_hash
     '';
 }

@@ -626,17 +626,21 @@ in {
                 if [ -r "$active_manifest" ] \
                   && ${pkgs.jq}/bin/jq -e '.schema == "aos.config-manifest/v2" and (.inputs.runtime_modules != null)' "$active_manifest" >/dev/null; then
                   runtime_root=$(${pkgs.jq}/bin/jq -er '.inputs.runtime_modules.store_path' "$active_manifest")
-                  while IFS= read -r entry; do
-                    case "$entry" in
-                      /*|*..*|*' '*)
-                        echo "aos-eval: unsafe retained runtime module entrypoint: $entry" >&2
-                        exit 1
-                        ;;
-                    esac
-                    runtime_args="$runtime_args --runtime-module $runtime_root/$entry"
-                  done <<EOF
+                  expected_generation=$(${pkgs.jq}/bin/jq -er '.current' "$config_state")
+                  runtime_args="--runtime-module-root $runtime_root --expected-current-generation $expected_generation"
+                  if ${pkgs.jq}/bin/jq -e '.inputs.runtime_modules.entrypoints | length > 0' "$active_manifest" >/dev/null; then
+                    while IFS= read -r entry; do
+                      case "$entry" in
+                        /*|*[!A-Za-z0-9_./-]*)
+                          echo "aos-eval: unsafe retained runtime module entrypoint: $entry" >&2
+                          exit 1
+                          ;;
+                      esac
+                      runtime_args="$runtime_args --runtime-module $runtime_root/$entry"
+                    done <<EOF
         $(${pkgs.jq}/bin/jq -r '.inputs.runtime_modules.entrypoints[]' "$active_manifest")
         EOF
+                  fi
                 fi
 
                 # Failure-safe: on any error apm __eval writes no manifest and exits
