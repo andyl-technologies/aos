@@ -24,7 +24,7 @@ in
       [bash gnumake]
       ++ (
         if stdenv.isCross
-        then [buildPackages.treecc]
+        then [buildPackages.automake buildPackages.treecc]
         else []
       );
     runtimeDeps = [];
@@ -42,14 +42,24 @@ in
       }
       {
         name = "configure";
-        script = ''
-          "$CONFIG_SHELL" ./configure $configureFlags --prefix=$out
-          ${
+        script =
+          (
             if stdenv.isCross
-            then ''sed -i "s|\$(top_builddir)/treecc|${buildPackages.treecc}/bin/treecc|g" examples/Makefile''
+            then ''
+              # The bundled config.sub predates AArch64. Refresh it from the
+              # current AOS-built canonical helper before cross configuration.
+              cp ${buildPackages.automake}/share/automake-*/config.sub config.sub
+            ''
             else ""
-          }
-        '';
+          )
+          + ''
+            "$CONFIG_SHELL" ./configure $configureFlags --prefix=$out
+            ${
+              if stdenv.isCross
+              then ''sed -i "s|\$(top_builddir)/treecc|${buildPackages.treecc}/bin/treecc|g" examples/Makefile''
+              else ""
+            }
+          '';
       }
       {
         name = "build";
