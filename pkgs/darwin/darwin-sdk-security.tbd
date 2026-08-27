@@ -1,0 +1,71 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos, arm64-macos ]
+install-name: '/System/Library/Frameworks/Security.framework/Versions/A/Security'
+current-version: 61123.0.0
+compatibility-version: 1.0.0
+exports:
+  - targets: [ x86_64-macos, arm64-macos ]
+    symbols:
+      - _SSLClose
+      - _SSLCopyPeerTrust
+      - _SSLCreateContext
+      - _SSLHandshake
+      - _SSLRead
+      - _SSLSetConnection
+      - _SSLSetIOFuncs
+      - _SSLSetPeerDomainName
+      - _SSLSetProtocolVersionMax
+      - _SSLSetProtocolVersionMin
+      - _SSLSetSessionOption
+      - _SSLWrite
+      - _SessionGetInfo
+      - _SecCertificateCopyData
+      - _SecCertificateGetData
+      - _SecCertificateGetTypeID
+      - _SecCopyErrorMessageString
+      - _SecItemCopyMatching
+      - _SecIdentityCopyCertificate
+      - _SecIdentityCopyPrivateKey
+      - _SecIdentitySearchCopyNext
+      - _SecIdentitySearchCreate
+      - _SecKeychainItemExport
+      - _SecKeychainItemImport
+      - _SecKeychainAddGenericPassword
+      - _SecKeychainCopyDefault
+      - _SecKeychainFindGenericPassword
+      - _SecKeychainItemDelete
+      - _SecKeychainItemFreeContent
+      - _SecKeychainItemCopyContent
+      - _SecKeychainItemModifyContent
+      - _SecKeychainItemModifyAttributesAndData
+      - _SecKeychainSearchCopyNext
+      - _SecKeychainSearchCreateFromAttributes
+      - _SecTaskCopySigningIdentifier
+      - _SecTaskCopyValueForEntitlement
+      - _SecTaskCopyValuesForEntitlements
+      - _SecTaskCreateFromSelf
+      - _SecTaskCreateWithAuditToken
+      - _SecTaskGetTypeID
+      - _SecPolicyCopyProperties
+      - _SecPolicyCreateSSL
+      - _SecPolicySearchCopyNext
+      - _SecPolicySearchCreate
+      - _SecTrustCopyAnchorCertificates
+      - _SecTrustCreateWithCertificates
+      - _SecTrustEvaluate
+      - _SecTrustEvaluateWithError
+      - _SecTrustGetCertificateAtIndex
+      - _SecTrustGetResult
+      - _SecTrustSetAnchorCertificates
+      - _SecTrustSettingsCopyTrustSettings
+      - _kSecClass
+      - _kSecClassCertificate
+      - _kSecMatchLimit
+      - _kSecMatchLimitAll
+      - _kSecPolicyAppleSSL
+      - _kSecPolicyOid
+      - _kSecReturnRef
+      - _CSSMOID_APPLE_X509_BASIC
+      - _cssmPerror
+...

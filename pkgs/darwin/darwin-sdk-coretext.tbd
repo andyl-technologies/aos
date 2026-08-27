@@ -1,0 +1,33 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos, arm64-macos ]
+install-name: '/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText'
+current-version: 275.16.0
+compatibility-version: 1.0.0
+reexported-libraries:
+  - targets: [ x86_64-macos, arm64-macos ]
+    libraries:
+      - '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'
+      - '/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics'
+exports:
+  - targets: [ x86_64-macos, arm64-macos ]
+    symbols:
+      - _CTFontCopyGraphicsFont
+      - _CTFontCopyAvailableTables
+      - _CTFontCopyDefaultCascadeListForLanguages
+      - _CTFontCopyFontDescriptor
+      - _CTFontCopyFullName
+      - _CTFontCopyTable
+      - _CTFontCreateUIFontForLanguage
+      - _CTFontCreatePathForGlyph
+      - _CTFontDescriptorCopyAttribute
+      - _CTFontGetAdvancesForGlyphs
+      - _CTFontGetGlyphsForCharacters
+      - _CTLineDraw
+      - _CTTypesetterCreateLine
+      - _CTTypesetterCreateWithAttributedString
+      - _CTTypesetterCreateWithAttributedStringAndOptions
+      - _kCTFontFamilyNameAttribute
+      - _kCTFontNameAttribute
+      - _kCTForegroundColorFromContextAttributeName
+...

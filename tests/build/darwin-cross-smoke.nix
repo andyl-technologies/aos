@@ -158,6 +158,7 @@
             printf '%s\n' \
               '#include <netinet/ip_icmp.h>' \
               '#include <netinet/icmp6.h>' \
+              '#include <net/if_arp.h>' \
               'int main(void) {' \
               '  struct icmp echo4 = { 0 };' \
               '  echo4.icmp_type = ICMP_ECHO;' \
@@ -170,7 +171,8 @@
               '  echo6.icmp6_code = 0;' \
               '  echo6.icmp6_id = 4;' \
               '  echo6.icmp6_seq = 5;' \
-              '  return sizeof(echo4) < ICMP_ADVLENMIN || sizeof(echo6) != 8 || echo4.icmp_type == ICMP_ECHOREPLY || echo6.icmp6_type == ICMP6_ECHO_REPLY;' \
+              '  struct arphdr arp = { 0 };' \
+              '  return sizeof(echo4) < ICMP_ADVLENMIN || sizeof(echo6) != 8 || echo4.icmp_type == ICMP_ECHOREPLY || echo6.icmp6_type == ICMP6_ECHO_REPLY || arp.ar_hrd != 0;' \
               '}' \
               > icmp-smoke.c
             "$CC" icmp-smoke.c -o "$c/bin/aos-darwin-icmp-smoke"
@@ -344,10 +346,22 @@
               '  int ansi = kVK_ANSI_A + kVK_ANSI_0 + kVK_ANSI_Grave + kVK_ANSI_Keypad9;' \
               '  int controls = kVK_Return + kVK_RightCommand + kVK_F1 + kVK_F15 + kVK_UpArrow;' \
               '  int jis = kVK_JIS_Yen + kVK_JIS_Underscore + kVK_JIS_KeypadComma + kVK_JIS_Eisu + kVK_JIS_Kana;' \
-              '  return ansi + controls + jis == 0;' \
+              '  AEDesc desc = { typeNull, NULL };' \
+              '  char bytes[8] = { 0 };' \
+              '  Size descSize = AEGetDescDataSize(&desc);' \
+              '  OSErr descStatus = AEGetDescData(&desc, bytes, sizeof(bytes));' \
+              '  FSRef ref = { { 0 } };' \
+              '  LongDateTime longTime = 0;' \
+              '  CFAbsoluteTime absoluteTime = 0;' \
+              '  OSStatus folderStatus = FSFindFolder(0, kTemporaryFolderType, false, &ref);' \
+              '  OSStatus pathStatus = FSRefMakePath(&ref, (UInt8 *)bytes, sizeof(bytes));' \
+              '  OSStatus toLong = UCConvertCFAbsoluteTimeToLongDateTime(absoluteTime, &longTime);' \
+              '  OSStatus toAbsolute = UCConvertLongDateTimeToCFAbsoluteTime(longTime, &absoluteTime);' \
+              '  OSType constants = typeAEList + typeAERecord + typeBoolean + typeSInt64 + typeUnicodeText + typeUTF8Text + typeTIFF + typeJPEG + typeGIF + typePict + typeIconFamily + typeLongDateTime + typeKernelProcessID + keyASUserRecordFields + keyASSubroutineName + keyDirectObject + kASAppleScriptSuite + kASSubroutineEvent + kChewableItemsFolderType;' \
+              '  return ansi + controls + jis == 0 || descSize < 0 || descStatus == -1 || folderStatus == pathStatus || toLong == toAbsolute || constants == 0 || kAutoGenerateReturnID != -1 || kAnyTransactionID != 0;' \
               '}' \
               > carbon-smoke.c
-            "$CC" carbon-smoke.c -o "$c/bin/aos-darwin-carbon-smoke"
+            "$CC" carbon-smoke.c -framework Carbon -o "$c/bin/aos-darwin-carbon-smoke"
 
             # QEMU's Cocoa UI combines AppKit objects with CoreGraphics
             # scanout/event APIs, CoreVideo display timing, QuartzCore layers,
@@ -522,6 +536,14 @@
               -framework ApplicationServices \
               -lobjc \
               -o "$c/bin/aos-darwin-jdk-sdk-smoke"
+
+            cp ${./darwin-jrs-sdk-smoke.m} jrs-sdk-smoke.m
+            "$CC" jrs-sdk-smoke.m \
+              -framework JavaRuntimeSupport \
+              -framework AppKit \
+              -framework ApplicationServices \
+              -lobjc \
+              -o "$c/bin/aos-darwin-jrs-sdk-smoke"
 
             printf '%s\n' \
               '#import <Foundation/NSObject.h>' \
@@ -864,6 +886,49 @@
               -o "$c/bin/aos-darwin-security-smoke"
 
             printf '%s\n' \
+              '#include <Security/Security.h>' \
+              'int main(void) {' \
+              '  SecIdentityRef identity = NULL;' \
+              '  SecCertificateRef certificate = NULL;' \
+              '  SecKeyRef privateKey = NULL;' \
+              '  SecIdentitySearchRef identitySearch = NULL;' \
+              '  SecPolicySearchRef policySearch = NULL;' \
+              '  SecPolicyRef policy = NULL;' \
+              '  SecTrustRef trust = NULL;' \
+              '  SecKeychainSearchRef keychainSearch = NULL;' \
+              '  SecKeychainItemRef item = NULL;' \
+              '  SecKeychainAttribute attribute = { kSecLabelItemAttr, 0, NULL };' \
+              '  SecKeychainAttributeList attributes = { 1, &attribute };' \
+              '  CSSM_DATA certificateData = { 0, NULL };' \
+              '  CSSM_TP_APPLE_EVIDENCE_INFO *evidence = NULL;' \
+              '  CFArrayRef anchors = NULL;' \
+              '  CFArrayRef chain = NULL;' \
+              '  SecTrustResultType result = kSecTrustResultInvalid;' \
+              '  OSStatus status = SecIdentityCopyCertificate(identity, &certificate);' \
+              '  status += SecIdentityCopyPrivateKey(identity, &privateKey);' \
+              '  status += SecIdentitySearchCreate(NULL, CSSM_KEYUSE_ANY, &identitySearch);' \
+              '  status += SecIdentitySearchCopyNext(identitySearch, &identity);' \
+              '  status += SecPolicySearchCreate(CSSM_CERT_X_509v3, &CSSMOID_APPLE_X509_BASIC, NULL, &policySearch);' \
+              '  status += SecPolicySearchCopyNext(policySearch, &policy);' \
+              '  status += SecCertificateGetData(certificate, &certificateData);' \
+              '  CFTypeID typeID = SecCertificateGetTypeID();' \
+              '  status += SecKeychainItemCopyContent(item, NULL, &attributes, NULL, NULL);' \
+              '  status += SecKeychainItemModifyContent(item, &attributes, 0, NULL);' \
+              '  status += SecKeychainSearchCreateFromAttributes(NULL, kSecCertificateItemClass, &attributes, &keychainSearch);' \
+              '  status += SecKeychainSearchCopyNext(keychainSearch, &item);' \
+              '  status += SecTrustCopyAnchorCertificates(&anchors);' \
+              '  status += SecTrustSetAnchorCertificates(trust, anchors);' \
+              '  status += SecTrustGetResult(trust, &result, &chain, &evidence);' \
+              '  cssmPerror("aos", status);' \
+              '  return status == 0 || typeID == 0 || attribute.tag == kSecModDateItemAttr;' \
+              '}' \
+              > security-jdk-smoke.c
+            "$CC" security-jdk-smoke.c \
+              -framework CoreFoundation \
+              -framework Security \
+              -o "$c/bin/aos-darwin-security-jdk-smoke"
+
+            printf '%s\n' \
               'extern "C" int puts(const char *);' \
               '#include <string>' \
               'constexpr int answer = 42;' \
@@ -918,12 +983,14 @@
               "$c/bin/aos-darwin-hypervisor-smoke" \
               "$c/bin/aos-darwin-iconv-smoke" \
               "$c/bin/aos-darwin-jdk-sdk-smoke" \
+              "$c/bin/aos-darwin-jrs-sdk-smoke" \
               "$c/bin/aos-darwin-iokit-smoke" \
               "$c/bin/aos-darwin-metal-smoke" \
               "$c/bin/aos-darwin-nis-smoke" \
               "$c/bin/aos-darwin-objective-c-smoke" \
               "$c/bin/aos-darwin-resolver-smoke" \
               "$c/bin/aos-darwin-security-smoke" \
+              "$c/bin/aos-darwin-security-jdk-smoke" \
               "$c/lib/libaos-darwin-cmake-smoke.dylib" \
               "$cxx/libaos-darwin-cmake-cxx-smoke.dylib" \
               "$cxx/aos-darwin-flat-namespace.bundle" \

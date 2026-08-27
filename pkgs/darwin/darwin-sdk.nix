@@ -151,6 +151,34 @@
 
   # Keep the framework payload out of the builder's argv: the SDK installer
   # is intentionally large and Linux limits each exec argument to 128 KiB.
+  javaRuntimeSupportFragment = builtins.toFile "aos-java-runtime-support-sdk-fragment.sh" ''
+    for header in \
+      JavaRuntimeSupport.h \
+      JRSAccessibility.h \
+      JRSAppKitAWT.h \
+      JRSDrag.h \
+      JRSFont.h \
+      JRSInputMethodController.h \
+      JRSMenu.h \
+      JRSUIControl.h \
+      JRSUIHitTesting.h \
+      JRSUIProperties.h \
+      JRSUIScrollBars.h; do
+      cp ${./darwin-sdk-java-runtime-support.h} \
+        "$out/System/Library/Frameworks/JavaRuntimeSupport.framework/Headers/$header"
+    done
+    cp ${./darwin-sdk-java-runtime-support.tbd} \
+      "$out/System/Library/Frameworks/JavaRuntimeSupport.framework/JavaRuntimeSupport.tbd"
+    ln -s ../../JavaRuntimeSupport.tbd \
+      "$out/System/Library/Frameworks/JavaRuntimeSupport.framework/Versions/A/JavaRuntimeSupport.tbd"
+    ln -s JavaRuntimeSupport.tbd \
+      "$out/System/Library/Frameworks/JavaRuntimeSupport.framework/Versions/A/JavaRuntimeSupport"
+    ln -s ../../../../../../../JavaRuntimeSupport.framework/JavaRuntimeSupport.tbd \
+      "$out/System/Library/Frameworks/JavaVM.framework/Versions/A/Frameworks/JavaRuntimeSupport.framework/Versions/A/JavaRuntimeSupport.tbd"
+    ln -s JavaRuntimeSupport.tbd \
+      "$out/System/Library/Frameworks/JavaVM.framework/Versions/A/Frameworks/JavaRuntimeSupport.framework/Versions/A/JavaRuntimeSupport"
+  '';
+
   qemuCocoaSdkFragment = builtins.toFile "aos-qemu-cocoa-sdk-fragment.sh" ''
     # QEMU's Cocoa display presents guest scanouts with the public
     # CoreGraphics image, context, display, and event-tap APIs. Publish
@@ -161,16 +189,59 @@
     #define _AOS_COREGRAPHICS_CGGEOMETRY_H_
     #include <CoreFoundation/CoreFoundation.h>
 
+    #define CG_EXTERN extern
+
     typedef double CGFloat;
     typedef struct CGPoint { CGFloat x; CGFloat y; } CGPoint;
     typedef struct CGSize { CGFloat width; CGFloat height; } CGSize;
     typedef struct CGRect { CGPoint origin; CGSize size; } CGRect;
+    typedef struct CGAffineTransform {
+      CGFloat a, b, c, d;
+      CGFloat tx, ty;
+    } CGAffineTransform;
+    extern const CGAffineTransform CGAffineTransformIdentity;
     extern const CGRect CGRectZero;
 
     static inline CGPoint CGPointMake(CGFloat x, CGFloat y) {
       CGPoint point = { x, y };
       return point;
     }
+
+    static inline CGSize CGSizeMake(CGFloat width, CGFloat height) {
+      CGSize size = { width, height };
+      return size;
+    }
+
+    static inline CGRect CGRectMake(CGFloat x, CGFloat y, CGFloat width, CGFloat height) {
+      CGRect rect = { { x, y }, { width, height } };
+      return rect;
+    }
+
+    static inline CGAffineTransform CGAffineTransformMake(
+      CGFloat a, CGFloat b, CGFloat c, CGFloat d, CGFloat tx, CGFloat ty
+    ) {
+      CGAffineTransform transform = { a, b, c, d, tx, ty };
+      return transform;
+    }
+
+    static inline CGPoint CGPointApplyAffineTransform(
+      CGPoint point, CGAffineTransform transform
+    ) {
+      return CGPointMake(
+        point.x * transform.a + point.y * transform.c + transform.tx,
+        point.x * transform.b + point.y * transform.d + transform.ty
+      );
+    }
+
+    static inline CGSize CGSizeApplyAffineTransform(
+      CGSize size, CGAffineTransform transform
+    ) {
+      return CGSizeMake(
+        size.width * transform.a + size.height * transform.c,
+        size.width * transform.b + size.height * transform.d
+      );
+    }
+    CGAffineTransform CGAffineTransformInvert(CGAffineTransform transform);
 
     #endif
     EOF
@@ -179,9 +250,62 @@
     #define _AOS_COREGRAPHICS_CGCOLORSPACE_H_
     #include <CoreFoundation/CoreFoundation.h>
     typedef struct CGColorSpace *CGColorSpaceRef;
-    extern CFStringRef kCGColorSpaceSRGB;
+    extern const CFStringRef kCGColorSpaceGenericGray;
+    extern const CFStringRef kCGColorSpaceGenericRGB;
+    extern const CFStringRef kCGColorSpaceSRGB;
+    CGColorSpaceRef CGColorSpaceCreateDeviceRGB(void);
     CGColorSpaceRef CGColorSpaceCreateWithName(CFStringRef name);
     void CGColorSpaceRelease(CGColorSpaceRef space);
+    #endif
+    EOF
+    cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGColor.h" <<'EOF'
+    #ifndef _AOS_COREGRAPHICS_CGCOLOR_H_
+    #define _AOS_COREGRAPHICS_CGCOLOR_H_
+    #include <CoreGraphics/CGColorSpace.h>
+    typedef struct CGColor *CGColorRef;
+    CGColorRef CGColorCreate(CGColorSpaceRef space, const CGFloat components[]);
+    void CGColorRelease(CGColorRef color);
+    #endif
+    EOF
+    cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGFont.h" <<'EOF'
+    #ifndef _AOS_COREGRAPHICS_CGFONT_H_
+    #define _AOS_COREGRAPHICS_CGFONT_H_
+    #include <stdint.h>
+    typedef struct CGFont *CGFontRef;
+    typedef uint16_t CGGlyph;
+    void CGFontRelease(CGFontRef font);
+    #endif
+    EOF
+    cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGPath.h" <<'EOF'
+    #ifndef _AOS_COREGRAPHICS_CGPATH_H_
+    #define _AOS_COREGRAPHICS_CGPATH_H_
+    #include <CoreGraphics/CGGeometry.h>
+    #include <stdint.h>
+    typedef const struct CGPath *CGPathRef;
+    typedef uint32_t CGPathElementType;
+    enum {
+      kCGPathElementMoveToPoint = 0,
+      kCGPathElementAddLineToPoint = 1,
+      kCGPathElementAddQuadCurveToPoint = 2,
+      kCGPathElementAddCurveToPoint = 3,
+      kCGPathElementCloseSubpath = 4
+    };
+    typedef struct CGPathElement {
+      CGPathElementType type;
+      CGPoint *points;
+    } CGPathElement;
+    typedef void (*CGPathApplierFunction)(void *info, const CGPathElement *element);
+    void CGPathApply(CGPathRef path, void *info, CGPathApplierFunction function);
+    void CGPathRelease(CGPathRef path);
+    #endif
+    EOF
+    cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGWindow.h" <<'EOF'
+    #ifndef _AOS_COREGRAPHICS_CGWINDOW_H_
+    #define _AOS_COREGRAPHICS_CGWINDOW_H_
+    #include <CoreFoundation/CoreFoundation.h>
+    extern const CFStringRef kCGWindowBounds;
+    extern const CFStringRef kCGWindowLayer;
+    extern const CFStringRef kCGWindowNumber;
     #endif
     EOF
     cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGDataProvider.h" <<'EOF'
@@ -210,14 +334,21 @@
 
     typedef struct CGImage *CGImageRef;
     typedef uint32_t CGBitmapInfo;
-    typedef uint32_t CGImageAlphaInfo;
+    typedef enum CGImageAlphaInfo {
+      kCGImageAlphaNone = 0,
+      kCGImageAlphaPremultipliedFirst = 2,
+      kCGImageAlphaFirst = 4,
+      kCGImageAlphaNoneSkipFirst = 6
+    } CGImageAlphaInfo;
     typedef int32_t CGColorRenderingIntent;
     enum {
-      kCGImageAlphaFirst = 4,
-      kCGImageAlphaNoneSkipFirst = 6,
+      kCGBitmapAlphaInfoMask = 0x1f,
+      kCGBitmapByteOrder16Little = 1 << 12,
       kCGBitmapByteOrder32Little = 2 << 12,
       kCGRenderingIntentDefault = 0
     };
+    #define kCGBitmapByteOrder16Host kCGBitmapByteOrder16Little
+    #define kCGBitmapByteOrder32Host kCGBitmapByteOrder32Little
 
     CGImageRef CGImageCreate(
       size_t width,
@@ -239,22 +370,61 @@
     cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGContext.h" <<'EOF'
     #ifndef _AOS_COREGRAPHICS_CGCONTEXT_H_
     #define _AOS_COREGRAPHICS_CGCONTEXT_H_
+    #include <CoreGraphics/CGColor.h>
+    #include <CoreGraphics/CGFont.h>
+    #include <CoreGraphics/CGPath.h>
+    #include <CoreGraphics/CGWindow.h>
     #include <CoreGraphics/CGImage.h>
     #include <stdint.h>
     typedef struct CGContext *CGContextRef;
-    typedef int32_t CGInterpolationQuality;
-    enum {
+    typedef enum CGInterpolationQuality {
       kCGInterpolationDefault = 0,
       kCGInterpolationNone = 1,
       kCGInterpolationLow = 2,
       kCGInterpolationHigh = 3,
       kCGInterpolationMedium = 4
-    };
+    } CGInterpolationQuality;
+    typedef enum CGBlendMode { kCGBlendModeCopy = 17 } CGBlendMode;
+    typedef enum CGLineCap {
+      kCGLineCapButt = 0,
+      kCGLineCapRound = 1,
+      kCGLineCapSquare = 2
+    } CGLineCap;
+    typedef enum CGLineJoin {
+      kCGLineJoinMiter = 0,
+      kCGLineJoinRound = 1,
+      kCGLineJoinBevel = 2
+    } CGLineJoin;
+    void CGContextAddCurveToPoint(CGContextRef context, CGFloat cp1x, CGFloat cp1y, CGFloat cp2x, CGFloat cp2y, CGFloat x, CGFloat y);
+    void CGContextAddLineToPoint(CGContextRef context, CGFloat x, CGFloat y);
+    void CGContextAddRect(CGContextRef context, CGRect rect);
     void CGContextDrawImage(CGContextRef context, CGRect rect, CGImageRef image);
     void CGContextFillRect(CGContextRef context, CGRect rect);
+    CGAffineTransform CGContextGetTextMatrix(CGContextRef context);
+    void CGContextMoveToPoint(CGContextRef context, CGFloat x, CGFloat y);
+    void CGContextRelease(CGContextRef context);
+    void CGContextRestoreGState(CGContextRef context);
+    void CGContextSaveGState(CGContextRef context);
+    void CGContextScaleCTM(CGContextRef context, CGFloat sx, CGFloat sy);
+    void CGContextSetFillColorWithColor(CGContextRef context, CGColorRef color);
+    void CGContextSetFont(CGContextRef context, CGFontRef font);
     void CGContextSetInterpolationQuality(CGContextRef context, CGInterpolationQuality quality);
     void CGContextSetRGBFillColor(CGContextRef context, CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha);
     void CGContextSetShouldAntialias(CGContextRef context, bool shouldAntialias);
+    void CGContextSetStrokeColorWithColor(CGContextRef context, CGColorRef color);
+    void CGContextSetTextMatrix(CGContextRef context, CGAffineTransform transform);
+    void CGContextShowGlyphsAtPoint(CGContextRef context, CGFloat x, CGFloat y, const CGGlyph glyphs[], size_t count);
+    void CGContextStrokeLineSegments(CGContextRef context, const CGPoint points[], size_t count);
+    void CGContextStrokeRect(CGContextRef context, CGRect rect);
+    #endif
+    EOF
+    cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGBitmapContext.h" <<'EOF'
+    #ifndef _AOS_COREGRAPHICS_CGBITMAPCONTEXT_H_
+    #define _AOS_COREGRAPHICS_CGBITMAPCONTEXT_H_
+    #include <CoreGraphics/CGContext.h>
+    CGContextRef CGBitmapContextCreate(void *data, size_t width, size_t height,
+      size_t bitsPerComponent, size_t bytesPerRow, CGColorSpaceRef space,
+      CGBitmapInfo bitmapInfo);
     #endif
     EOF
     cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGDirectDisplay.h" <<'EOF'
@@ -262,23 +432,53 @@
     #define _AOS_COREGRAPHICS_CGDIRECTDISPLAY_H_
     #include <CoreGraphics/CGGeometry.h>
     #include <stdint.h>
+    typedef int32_t CGError;
     typedef uint32_t CGDirectDisplayID;
+    typedef uint32_t CGDisplayCount;
+    typedef struct _CGDisplayConfigRef *CGDisplayConfigRef;
+    typedef uint32_t CGConfigureOption;
+    typedef struct CGDisplayMode *CGDisplayModeRef;
+    enum {
+      kCGErrorSuccess = 0,
+      kCGNullDirectDisplay = 0,
+      kCGConfigureForAppOnly = 0
+    };
+    CGError CGBeginDisplayConfiguration(CGDisplayConfigRef *config);
+    CGError CGCompleteDisplayConfiguration(CGDisplayConfigRef config, CGConfigureOption option);
+    CGError CGConfigureDisplayWithDisplayMode(CGDisplayConfigRef config,
+      CGDirectDisplayID display, CGDisplayModeRef mode, CFDictionaryRef options);
+    CGRect CGDisplayBounds(CGDirectDisplayID display);
+    CFArrayRef CGDisplayCopyAllDisplayModes(CGDirectDisplayID display, CFDictionaryRef options);
+    CGDisplayModeRef CGDisplayCopyDisplayMode(CGDirectDisplayID display);
+    CGDirectDisplayID CGDisplayMirrorsDisplay(CGDirectDisplayID display);
+    CFStringRef CGDisplayModeCopyPixelEncoding(CGDisplayModeRef mode);
+    size_t CGDisplayModeGetHeight(CGDisplayModeRef mode);
+    double CGDisplayModeGetRefreshRate(CGDisplayModeRef mode);
+    size_t CGDisplayModeGetWidth(CGDisplayModeRef mode);
+    void CGDisplayModeRelease(CGDisplayModeRef mode);
+    CGDisplayModeRef CGDisplayModeRetain(CGDisplayModeRef mode);
     CGSize CGDisplayScreenSize(CGDirectDisplayID display);
+    CGError CGGetOnlineDisplayList(uint32_t maxDisplays,
+      CGDirectDisplayID *onlineDisplays, uint32_t *displayCount);
     #endif
     EOF
     cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGEvent.h" <<'EOF'
     #ifndef _AOS_COREGRAPHICS_CGEVENT_H_
     #define _AOS_COREGRAPHICS_CGEVENT_H_
     #include <CoreFoundation/CoreFoundation.h>
+    #include <CoreGraphics/CGGeometry.h>
     #include <stdint.h>
     typedef struct __CFMachPort *CFMachPortRef;
     typedef struct __CGEvent *CGEventRef;
+    typedef struct __CGEventSource *CGEventSourceRef;
     typedef void *CGEventTapProxy;
     typedef uint32_t CGEventType;
     typedef uint64_t CGEventMask;
     typedef uint32_t CGEventTapLocation;
     typedef uint32_t CGEventTapPlacement;
     typedef uint32_t CGEventTapOptions;
+    typedef uint16_t CGKeyCode;
+    typedef uint32_t CGMouseButton;
     typedef CGEventRef (*CGEventTapCallBack)(
       CGEventTapProxy proxy,
       CGEventType type,
@@ -286,12 +486,14 @@
       void *userInfo
     );
     enum {
+      kCGEventMouseMoved = 5,
       kCGEventKeyDown = 10,
       kCGEventKeyUp = 11,
       kCGEventFlagsChanged = 12,
       kCGHIDEventTap = 0,
       kCGHeadInsertEventTap = 0,
-      kCGEventTapOptionDefault = 0
+      kCGEventTapOptionDefault = 0,
+      kCGMouseButtonLeft = 0
     };
     #define CGEventMaskBit(eventType) ((CGEventMask)1 << (eventType))
     CFMachPortRef CGEventTapCreate(
@@ -302,14 +504,44 @@
       CGEventTapCallBack callback,
       void *userInfo
     );
+    CGEventRef CGEventCreate(CGEventSourceRef source);
+    CGEventRef CGEventCreateKeyboardEvent(
+      CGEventSourceRef source, CGKeyCode virtualKey, bool keyDown);
+    CGPoint CGEventGetLocation(CGEventRef event);
     #endif
     EOF
     cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGRemoteOperation.h" <<'EOF'
     #ifndef _AOS_COREGRAPHICS_CGREMOTEOPERATION_H_
     #define _AOS_COREGRAPHICS_CGREMOTEOPERATION_H_
+    #include <CoreFoundation/CoreFoundation.h>
+    #include <mach/boolean.h>
     #include <stdint.h>
     typedef int32_t CGError;
+    typedef uint32_t CGEventFilterMask;
+    typedef uint32_t CGEventSuppressionState;
+    enum {
+      kCGEventFilterMaskPermitLocalMouseEvents = 1,
+      kCGEventFilterMaskPermitLocalKeyboardEvents = 2,
+      kCGEventFilterMaskPermitSystemDefinedEvents = 4,
+      kCGEventSuppressionStateSuppressionInterval = 0,
+      kCGEventSuppressionStateRemoteMouseDrag = 1
+    };
+    #define kCGEventFilterMaskPermitAllEvents \
+      (kCGEventFilterMaskPermitLocalMouseEvents | \
+       kCGEventFilterMaskPermitLocalKeyboardEvents | \
+       kCGEventFilterMaskPermitSystemDefinedEvents)
+    #define kCGEventSupressionStateSupressionInterval \
+      kCGEventSuppressionStateSuppressionInterval
+    #define kCGEventSupressionStateRemoteMouseDrag \
+      kCGEventSuppressionStateRemoteMouseDrag
+    #define CGEventSupressionState CGEventSuppressionState
+    #define CGSetLocalEventsFilterDuringSupressionState(filter, state) \
+      CGSetLocalEventsFilterDuringSuppressionState((filter), (state))
     CGError CGAssociateMouseAndMouseCursorPosition(bool connected);
+    CGError CGEnableEventStateCombining(boolean_t combineState);
+    CGError CGSetLocalEventsFilterDuringSuppressionState(
+      CGEventFilterMask filter, CGEventSuppressionState state);
+    CGError CGSetLocalEventsSuppressionInterval(CFTimeInterval seconds);
     #endif
     EOF
     cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CoreGraphics.h" <<'EOF'
@@ -317,14 +549,20 @@
     #define _AOS_COREGRAPHICS_H_
     #include <CoreGraphics/CGGeometry.h>
     #include <CoreGraphics/CGColorSpace.h>
+    #include <CoreGraphics/CGColor.h>
+    #include <CoreGraphics/CGFont.h>
     #include <CoreGraphics/CGDataProvider.h>
     #include <CoreGraphics/CGImage.h>
     #include <CoreGraphics/CGContext.h>
+    #include <CoreGraphics/CGBitmapContext.h>
     #include <CoreGraphics/CGDirectDisplay.h>
     #include <CoreGraphics/CGEvent.h>
     #include <CoreGraphics/CGRemoteOperation.h>
+    #include <CoreGraphics/JDKSurface.h>
     #endif
     EOF
+    cp ${./darwin-sdk-coregraphics-jdk.h} \
+      "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/JDKSurface.h"
     cat > "$out/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics.tbd" <<'EOF'
     --- !tapi-tbd
     tbd-version: 4
@@ -339,22 +577,140 @@
       - targets: [ x86_64-macos, arm64-macos ]
         symbols:
           - _CGAssociateMouseAndMouseCursorPosition
+          - _CGBeginDisplayConfiguration
+          - _CGAffineTransformInvert
+          - _CGBitmapContextCreate
+          - _CGColorCreate
+          - _CGColorRelease
+          - _CGColorSpaceCreateDeviceRGB
           - _CGColorSpaceCreateWithName
           - _CGColorSpaceRelease
+          - _CGCompleteDisplayConfiguration
+          - _CGConfigureDisplayWithDisplayMode
+          - _CGContextAddCurveToPoint
+          - _CGContextAddLineToPoint
+          - _CGContextAddRect
           - _CGContextDrawImage
           - _CGContextFillRect
+          - _CGContextGetTextMatrix
+          - _CGContextMoveToPoint
+          - _CGContextRelease
+          - _CGContextRestoreGState
+          - _CGContextSaveGState
+          - _CGContextScaleCTM
+          - _CGContextSetFillColorWithColor
+          - _CGContextSetFont
           - _CGContextSetInterpolationQuality
           - _CGContextSetRGBFillColor
           - _CGContextSetShouldAntialias
+          - _CGContextSetStrokeColorWithColor
+          - _CGContextSetTextMatrix
+          - _CGContextShowGlyphsAtPoint
+          - _CGContextStrokeLineSegments
+          - _CGContextStrokeRect
           - _CGDataProviderCreateWithData
           - _CGDataProviderRelease
+          - _CGDisplayBounds
+          - _CGDisplayCopyAllDisplayModes
+          - _CGDisplayCopyDisplayMode
+          - _CGDisplayMirrorsDisplay
+          - _CGDisplayModeCopyPixelEncoding
+          - _CGDisplayModeGetHeight
+          - _CGDisplayModeGetRefreshRate
+          - _CGDisplayModeGetWidth
+          - _CGDisplayModeRelease
+          - _CGDisplayModeRetain
           - _CGDisplayScreenSize
+          - _CGEnableEventStateCombining
+          - _CGEventCreate
+          - _CGEventCreateKeyboardEvent
+          - _CGEventGetLocation
           - _CGEventTapCreate
+          - _CGFontRelease
+          - _CGGetOnlineDisplayList
           - _CGImageCreate
           - _CGImageCreateWithImageInRect
           - _CGImageRelease
+          - _CGPathApply
+          - _CGPathRelease
+          - _CGSetLocalEventsFilterDuringSuppressionState
+          - _CGSetLocalEventsSuppressionInterval
+          - _CGRectApplyAffineTransform
+          - _CGAffineTransformConcat
+          - _CGAffineTransformMakeScale
+          - _CGColorSpaceCreatePattern
+          - _CGContextAddEllipseInRect
+          - _CGContextAddQuadCurveToPoint
+          - _CGContextBeginPath
+          - _CGContextClip
+          - _CGContextClipToRect
+          - _CGContextClosePath
+          - _CGContextConcatCTM
+          - _CGContextDrawLinearGradient
+          - _CGContextDrawRadialGradient
+          - _CGContextDrawShading
+          - _CGContextEOClip
+          - _CGContextEOFillPath
+          - _CGContextFillEllipseInRect
+          - _CGContextFillPath
+          - _CGContextFlush
+          - _CGContextGetCTM
+          - _CGContextGetClipBoundingBox
+          - _CGContextIsPathEmpty
+          - _CGContextSetAlpha
+          - _CGContextSetBlendMode
+          - _CGContextSetFillColorSpace
+          - _CGContextSetFillPattern
+          - _CGContextSetFontSize
+          - _CGContextSetLineCap
+          - _CGContextSetLineDash
+          - _CGContextSetLineJoin
+          - _CGContextSetLineWidth
+          - _CGContextSetMiterLimit
+          - _CGContextSetPatternPhase
+          - _CGContextSetRGBStrokeColor
+          - _CGContextSetStrokeColorSpace
+          - _CGContextShowGlyphsWithAdvances
+          - _CGContextStrokeEllipseInRect
+          - _CGContextStrokePath
+          - _CGContextTranslateCTM
+          - _CGDisplayCapture
+          - _CGDisplayRegisterReconfigurationCallback
+          - _CGDisplayRelease
+          - _CGDisplayRemoveReconfigurationCallback
+          - _CGEventCreateMouseEvent
+          - _CGEventCreateScrollWheelEvent
+          - _CGEventPost
+          - _CGEventPostToPSN
+          - _CGEventSetIntegerValueField
+          - _CGEventSourceButtonState
+          - _CGFontGetAscent
+          - _CGFontGetDescent
+          - _CGFontGetLeading
+          - _CGFontGetUnitsPerEm
+          - _CGFunctionCreate
+          - _CGFunctionRelease
+          - _CGGradientCreateWithColorComponents
+          - _CGGradientRelease
+          - _CGMainDisplayID
+          - _CGPatternCreate
+          - _CGPatternRelease
+          - _CGRectContainsPoint
+          - _CGRectMakeWithDictionaryRepresentation
+          - _CGShadingCreateAxial
+          - _CGShadingRelease
+          - _CGShieldingWindowLevel
+          - _CGWindowLevelForKey
+          - _CGWindowListCopyWindowInfo
+          - _CGWindowListCreateImage
           - _CGRectZero
+          - _CGAffineTransformIdentity
+          - _kCGColorSpaceGenericGray
+          - _kCGColorSpaceGenericRGB
           - _kCGColorSpaceSRGB
+          - _kCGWindowBounds
+          - _kCGWindowLayer
+          - _kCGWindowNumber
     ...
     EOF
     ln -s ../../CoreGraphics.tbd \
@@ -437,11 +793,14 @@ in
             "$out/usr/include/rpcsvc" \
             "$out/usr/include/servers" \
             "$out/usr/lib" \
+            "$out/System/Library/Frameworks/Accelerate.framework/Headers" \
+            "$out/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vImage.framework/Versions/A" \
             "$out/System/Library/Frameworks/ApplicationServices.framework/Headers" \
             "$out/System/Library/Frameworks/ApplicationServices.framework/Versions/A" \
             "$out/System/Library/Frameworks/AppKit.framework/Headers" \
             "$out/System/Library/Frameworks/AppKit.framework/Versions/C" \
             "$out/System/Library/Frameworks/Carbon.framework/Headers" \
+            "$out/System/Library/Frameworks/Carbon.framework/Versions/A" \
             "$out/System/Library/Frameworks/Cocoa.framework/Headers" \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Headers" \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Versions/A" \
@@ -449,6 +808,8 @@ in
             "$out/System/Library/Frameworks/CoreGraphics.framework/Versions/A" \
             "$out/System/Library/Frameworks/CoreServices.framework/Headers" \
             "$out/System/Library/Frameworks/CoreServices.framework/Versions/A" \
+            "$out/System/Library/Frameworks/CoreText.framework/Headers" \
+            "$out/System/Library/Frameworks/CoreText.framework/Versions/A" \
             "$out/System/Library/Frameworks/CoreVideo.framework/Headers" \
             "$out/System/Library/Frameworks/CoreVideo.framework/Versions/A" \
             "$out/System/Library/Frameworks/Foundation.framework/Headers" \
@@ -460,8 +821,13 @@ in
             "$out/System/Library/Frameworks/IOKit.framework/Headers/usb" \
             "$out/System/Library/Frameworks/IOSurface.framework/Headers" \
             "$out/System/Library/Frameworks/IOSurface.framework/Versions/A" \
+            "$out/System/Library/Frameworks/JavaRuntimeSupport.framework/Headers" \
+            "$out/System/Library/Frameworks/JavaRuntimeSupport.framework/Versions/A" \
+            "$out/System/Library/Frameworks/JavaVM.framework/Versions/A/Frameworks/JavaRuntimeSupport.framework/Versions/A" \
             "$out/System/Library/Frameworks/Metal.framework/Headers" \
             "$out/System/Library/Frameworks/Metal.framework/Versions/A" \
+            "$out/System/Library/Frameworks/OpenGL.framework/Headers" \
+            "$out/System/Library/Frameworks/OpenGL.framework/Versions/A" \
             "$out/System/Library/Frameworks/QuartzCore.framework/Headers" \
             "$out/System/Library/Frameworks/QuartzCore.framework/Versions/A" \
             "$out/System/Library/Frameworks/Security.framework/Headers" \
@@ -475,6 +841,32 @@ in
           cp lib/libc/darwin/libSystem.tbd "$out/usr/lib/libSystem.tbd"
           sed -i '$i\  - targets: [ x86_64-macos, arm64-macos ]\n    symbols: [ _iconv, _iconv_close, _iconv_open ]' \
             "$out/usr/lib/libSystem.tbd"
+
+          # IcedTea's native font and indexed-image paths use the public
+          # Accelerate umbrella for exactly two vImage operations.  Keep the
+          # canonical nested-framework install name and reexport relationship;
+          # these files declare ABI only and provide no implementation.
+          cp ${./darwin-sdk-accelerate-jdk.h} \
+            "$out/System/Library/Frameworks/Accelerate.framework/Headers/Accelerate.h"
+          cp ${./darwin-sdk-accelerate.tbd} \
+            "$out/System/Library/Frameworks/Accelerate.framework/Accelerate.tbd"
+          cp ${./darwin-sdk-vimage.tbd} \
+            "$out/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vImage.framework/Versions/A/vImage.tbd"
+          ln -s ../../Accelerate.tbd \
+            "$out/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate.tbd"
+          ln -s Accelerate.tbd \
+            "$out/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate"
+          ln -s vImage.tbd \
+            "$out/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vImage.framework/Versions/A/vImage"
+
+          cp ${./darwin-sdk-coretext-jdk.h} \
+            "$out/System/Library/Frameworks/CoreText.framework/Headers/CoreText.h"
+          cp ${./darwin-sdk-coretext.tbd} \
+            "$out/System/Library/Frameworks/CoreText.framework/CoreText.tbd"
+          ln -s ../../CoreText.tbd \
+            "$out/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText.tbd"
+          ln -s CoreText.tbd \
+            "$out/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText"
           # Darwin's Rust target specification and ordinary Autoconf clients
           # link iconv through its historical compatibility install name even
           # though the POSIX entry points are also exported by libSystem.
@@ -565,6 +957,7 @@ in
           # from the pinned XNU source rather than recreating packet ABI.
           cp "$xnuRoot/bsd/netinet/ip_icmp.h" "$out/usr/include/netinet/"
           cp "$xnuRoot/bsd/netinet/icmp6.h" "$out/usr/include/netinet/"
+          cp "$xnuRoot/bsd/net/if_arp.h" "$out/usr/include/net/"
           cp "$xnuRoot/bsd/net/bpf.h" "$out/usr/include/net/"
           cp "$xnuRoot/bsd/net/ethernet.h" "$out/usr/include/net/"
           cp "$xnuRoot/bsd/net/if_media.h" "$out/usr/include/net/"
@@ -932,8 +1325,20 @@ in
           __BEGIN_DECLS
           typedef int32_t OSStatus;
           typedef struct __SecCertificate *SecCertificateRef;
+          typedef struct __SecIdentity *SecIdentityRef;
+          typedef struct __SecKey *SecKeyRef;
           typedef struct __SecPolicy *SecPolicyRef;
           typedef struct __SecTrust *SecTrustRef;
+          typedef OSType SecKeychainAttrType;
+          typedef struct SecKeychainAttribute {
+            SecKeychainAttrType tag;
+            UInt32 length;
+            void *data;
+          } SecKeychainAttribute;
+          typedef struct SecKeychainAttributeList {
+            UInt32 count;
+            SecKeychainAttribute *attr;
+          } SecKeychainAttributeList;
           CFStringRef SecCopyErrorMessageString(OSStatus status, void *reserved);
           enum {
             errSecSuccess = 0,
@@ -955,8 +1360,11 @@ in
           #ifndef _SECURITY_SECCERTIFICATE_H_
           #define _SECURITY_SECCERTIFICATE_H_
           #include <Security/SecBase.h>
+          #include <Security/cssmtype.h>
           __BEGIN_DECLS
           CFDataRef SecCertificateCopyData(SecCertificateRef certificate);
+          OSStatus SecCertificateGetData(SecCertificateRef certificate, CSSM_DATA *data);
+          CFTypeID SecCertificateGetTypeID(void);
           __END_DECLS
           #endif
           EOF
@@ -993,6 +1401,7 @@ in
           #ifndef _SECURITY_SECTRUST_H_
           #define _SECURITY_SECTRUST_H_
           #include <Security/SecBase.h>
+          #include <Security/cssmapple.h>
           __BEGIN_DECLS
           typedef enum {
             kSecTrustResultInvalid = 0,
@@ -1010,6 +1419,14 @@ in
             SecTrustRef *trust
           );
           OSStatus SecTrustEvaluate(SecTrustRef trust, SecTrustResultType *result);
+          OSStatus SecTrustCopyAnchorCertificates(CFArrayRef *anchors);
+          OSStatus SecTrustSetAnchorCertificates(SecTrustRef trust, CFArrayRef anchors);
+          OSStatus SecTrustGetResult(
+            SecTrustRef trust,
+            SecTrustResultType *result,
+            CFArrayRef *certChain,
+            CSSM_TP_APPLE_EVIDENCE_INFO **evidenceInfo
+          );
           bool SecTrustEvaluateWithError(SecTrustRef trust, CFErrorRef *error);
           SecCertificateRef SecTrustGetCertificateAtIndex(SecTrustRef trust, CFIndex index);
           __END_DECLS
@@ -1055,11 +1472,21 @@ in
 
           cp ${./darwin-sdk-sec-keychain.h} \
             "$out/System/Library/Frameworks/Security.framework/Headers/SecKeychain.h"
+          cp ${./darwin-sdk-sec-identity.h} \
+            "$out/System/Library/Frameworks/Security.framework/Headers/SecIdentity.h"
+          cp ${./darwin-sdk-sec-identity-search.h} \
+            "$out/System/Library/Frameworks/Security.framework/Headers/SecIdentitySearch.h"
+          cp ${./darwin-sdk-sec-policy-search.h} \
+            "$out/System/Library/Frameworks/Security.framework/Headers/SecPolicySearch.h"
 
           # Apple's pinned public import/export ABI used by the macOS
           # KeychainStore implementation in OpenJDK 8.
           cp ${./darwin-sdk-cssmtype.h} \
             "$out/System/Library/Frameworks/Security.framework/Headers/cssmtype.h"
+          cp ${./darwin-sdk-cssmapple.h} \
+            "$out/System/Library/Frameworks/Security.framework/Headers/cssmapple.h"
+          cp ${./darwin-sdk-oidsalg.h} \
+            "$out/System/Library/Frameworks/Security.framework/Headers/oidsalg.h"
           cp ${./darwin-sdk-sec-access.h} \
             "$out/System/Library/Frameworks/Security.framework/Headers/SecAccess.h"
           cp ${./darwin-sdk-sec-import-export.h} \
@@ -1072,13 +1499,18 @@ in
           #include <Security/SecBase.h>
           #include <Security/SecCertificate.h>
           #include <Security/SecImportExport.h>
+          #include <Security/SecIdentity.h>
+          #include <Security/SecIdentitySearch.h>
           #include <Security/SecItem.h>
           #include <Security/SecKeychain.h>
           #include <Security/SecPolicy.h>
+          #include <Security/SecPolicySearch.h>
           #include <Security/SecTask.h>
           #include <Security/SecTrust.h>
           #include <Security/SecTrustSettings.h>
           #include <Security/SecureTransport.h>
+          #include <Security/cssmapple.h>
+          #include <Security/oidsalg.h>
           #endif
           EOF
 
@@ -1133,6 +1565,7 @@ in
             - targets: [ x86_64-macos, arm64-macos ]
               symbols:
                 - _CFArrayGetCount
+                - _CFArrayGetTypeID
                 - _CFArrayGetValueAtIndex
                 - _CFArrayAppendValue
                 - _CFArrayCreate
@@ -1148,6 +1581,7 @@ in
                 - _CFBundleGetValueForInfoDictionaryKey
                 - _CFCopyTypeIDDescription
                 - _CFDataGetBytePtr
+                - _CFDataCreate
                 - _CFDataGetBytes
                 - _CFDataGetLength
                 - _CFDataGetTypeID
@@ -1156,11 +1590,13 @@ in
                 - _CFDictionaryCreate
                 - _CFDictionaryCreateMutable
                 - _CFDictionaryGetValue
+                - _CFDictionaryGetTypeID
                 - _CFDictionaryGetValueIfPresent
                 - _CFDictionarySetValue
                 - _CFEqual
                 - _CFGetTypeID
                 - _CFLocaleCreateCanonicalLanguageIdentifierFromString
+                - _CFLocaleCopyISOLanguageCodes
                 - _CFMachPortCreateRunLoopSource
                 - _CFMakeCollectable
                 - _CFNumberCreate
@@ -1174,15 +1610,19 @@ in
                 - _CFRelease
                 - _CFRetain
                 - _CFRunLoopAddSource
+                - _CFRunLoopAddObserver
                 - _CFRunLoopGetCurrent
+                - _CFRunLoopGetMain
                 - _CFRunLoopIsWaiting
                 - _CFRunLoopRemoveSource
+                - _CFRunLoopObserverCreate
                 - _CFRunLoopRun
                 - _CFRunLoopSourceCreate
                 - _CFRunLoopSourceSignal
                 - _CFRunLoopStop
                 - _CFRunLoopWakeUp
                 - _CFStringCreateWithCString
+                - _CFShow
                 - _CFStringCreateWithBytes
                 - _CFStringCreateCopy
                 - _CFStringCreateMutableCopy
@@ -1221,9 +1661,13 @@ in
                 - ___CFConstantStringClassReference
                 - ___CFStringMakeConstantString
                 - _kCFAllocatorDefault
+                - _kCFAllocatorNull
                 - _kCFAllocatorMalloc
                 - _kCFAllocatorSystemDefault
                 - _kCFBooleanTrue
+                - _kCFBooleanFalse
+                - _kCFBundleExecutableKey
+                - _kCFBundleNameKey
                 - _kCFRunLoopCommonModes
                 - _kCFRunLoopDefaultMode
                 - _kCFTypeArrayCallBacks
@@ -1254,6 +1698,7 @@ in
           #include <dispatch/dispatch.h>
           #include <stdint.h>
           #include <sys/types.h>
+          #include <CoreServices/JDKSurface.h>
 
           CF_EXTERN_C_BEGIN
 
@@ -1382,6 +1827,8 @@ in
 
           #endif
           EOF
+          cp ${./darwin-sdk-core-services-jdk.h} \
+            "$out/System/Library/Frameworks/CoreServices.framework/Headers/JDKSurface.h"
           cat > "$out/System/Library/Frameworks/CoreServices.framework/CoreServices.tbd" <<'EOF'
           --- !tapi-tbd
           tbd-version: 4
@@ -1395,6 +1842,7 @@ in
           exports:
             - targets: [ x86_64-macos, arm64-macos ]
               symbols:
+                - _CSCopyMachineName
                 - _FSEventStreamCreate
                 - _FSEventStreamGetDeviceBeingWatched
                 - _FSEventStreamInvalidate
@@ -1407,6 +1855,7 @@ in
                 - _FSEventsPurgeEventsForDeviceUpToEventId
                 - _LSOpenCFURLRef
                 - _LocaleStringToLangAndRegionCodes
+                - _kUTTypeJPEG
           ...
           EOF
           ln -s ../../CoreServices.tbd \
@@ -2034,7 +2483,10 @@ in
             kCALayerMaxYMargin = 1U << 5
           };
 
-          @interface CALayer : NSObject
+          @protocol CAMediaTiming
+          @end
+
+          @interface CALayer : NSObject <NSCoding, CAMediaTiming>
           + (instancetype)layer;
           @property(getter=isOpaque) BOOL opaque;
           @property CGPoint anchorPoint;
@@ -2042,8 +2494,12 @@ in
           @property CGPoint position;
           @property(getter=isHidden) BOOL hidden;
           @property CGRect bounds;
+          @property CGRect frame;
+          @property(copy) NSArray *sublayers;
           @property(retain) id contents;
           - (void)addSublayer:(CALayer *)layer;
+          - (void)removeFromSuperlayer;
+          - (void)setNeedsDisplay;
           @end
 
           @interface CATransaction : NSObject
@@ -2081,8 +2537,13 @@ in
           #define _AOS_QUARTZCORE_H_
           #import <QuartzCore/CALayer.h>
           #import <QuartzCore/CAMetalLayer.h>
+          #import <QuartzCore/CAOpenGLLayer.h>
           #endif
           EOF
+          cp ${./darwin-sdk-quartzcore-catransaction.h} \
+            "$out/System/Library/Frameworks/QuartzCore.framework/Headers/CATransaction.h"
+          cp ${./darwin-sdk-quartzcore-caopengl.h} \
+            "$out/System/Library/Frameworks/QuartzCore.framework/Headers/CAOpenGLLayer.h"
           cat > "$out/System/Library/Frameworks/QuartzCore.framework/QuartzCore.tbd" <<'EOF'
           --- !tapi-tbd
           tbd-version: 4
@@ -2100,8 +2561,12 @@ in
             - targets: [ x86_64-macos, arm64-macos ]
               symbols:
                 - '_OBJC_CLASS_$_CALayer'
+                - '_OBJC_CLASS_$_CAOpenGLLayer'
                 - '_OBJC_CLASS_$_CAMetalLayer'
                 - '_OBJC_CLASS_$_CATransaction'
+                - '_OBJC_METACLASS_$_CATransaction'
+                - '_OBJC_METACLASS_$_CALayer'
+                - '_OBJC_METACLASS_$_CAOpenGLLayer'
           ...
           EOF
           ln -s ../../QuartzCore.tbd \
@@ -2137,6 +2602,8 @@ in
 
           @protocol NSCopying
           @end
+          @protocol NSCoding
+          @end
 
           @class NSString;
           @interface NSError : NSObject
@@ -2163,7 +2630,12 @@ in
           @class NSData;
           typedef unsigned short unichar;
           typedef NSUInteger NSStringEncoding;
-          enum { NSASCIIStringEncoding = 1, NSUTF8StringEncoding = 4 };
+          enum {
+            NSASCIIStringEncoding = 1,
+            NSUTF8StringEncoding = 4,
+            NSUnicodeStringEncoding = 10,
+            NSUTF16StringEncoding = NSUnicodeStringEncoding
+          };
 
           @interface NSString : NSObject
           + (instancetype)stringWithCString:(const char *)bytes encoding:(NSStringEncoding)encoding;
@@ -2391,7 +2863,7 @@ in
 
           #import <Foundation/Foundation.h>
           #import <CoreVideo/CoreVideo.h>
-          #import <QuartzCore/CALayer.h>
+          #import <QuartzCore/QuartzCore.h>
 
           #define IBAction void
 
@@ -2462,6 +2934,10 @@ in
           enum {
             NSPrintingCancelled = 0,
             NSPrintingSuccess = 1,
+            NSPrintingReplyLater = 2,
+            NSPrintingFailure = 3,
+            NSTerminateCancel = 0,
+            NSTerminateNow = 1,
             NSTerminateLater = 2,
             NSModalResponseOK = 1,
             NSAlertSecondButtonReturn = 1001,
@@ -2501,6 +2977,7 @@ in
                               hasVisibleWindows:(BOOL)flag;
           - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender;
           - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender;
+          - (NSMenu *)applicationDockMenu:(NSApplication *)sender;
           @end
 
           @protocol NSWindowDelegate <NSObject>
@@ -2509,6 +2986,7 @@ in
           - (void)windowDidEnterFullScreen:(NSNotification *)notification;
           - (void)windowDidExitFullScreen:(NSNotification *)notification;
           - (BOOL)windowShouldClose:(id)sender;
+          - (BOOL)windowShouldZoom:(NSWindow *)window toFrame:(NSRect)newFrame;
           @end
 
           @protocol NSPasteboardTypeOwner <NSObject>
@@ -2568,7 +3046,8 @@ in
                                       backing:(NSBackingStoreType)backingStoreType
                                         defer:(BOOL)flag;
           @property(copy) NSString *title;
-          @property(retain) NSView *contentView;
+          - (id)contentView;
+          - (void)setContentView:(NSView *)view;
           @property(assign) id<NSWindowDelegate> delegate;
           @property NSWindowStyleMask styleMask;
           @property NSWindowCollectionBehavior collectionBehavior;
@@ -2620,7 +3099,26 @@ in
           - (NSModalResponse)runModal;
           @end
 
-          @interface NSOpenPanel : NSObject
+          @protocol NSOpenSavePanelDelegate <NSObject>
+          @optional
+          - (BOOL)panel:(id)sender shouldEnableURL:(NSURL *)url;
+          @end
+
+          @interface NSPanel : NSWindow
+          @end
+
+          @interface NSSavePanel : NSPanel
+          + (NSSavePanel *)savePanel;
+          - (void)setAllowsOtherFileTypes:(BOOL)flag;
+          - (void)setTitle:(NSString *)title;
+          - (void)setTreatsFilePackagesAsDirectories:(BOOL)flag;
+          - (void)setCanCreateDirectories:(BOOL)flag;
+          - (void)setDelegate:(id<NSOpenSavePanelDelegate>)delegate;
+          - (NSInteger)runModalForDirectory:(NSString *)path file:(NSString *)name;
+          - (NSURL *)URL;
+          @end
+
+          @interface NSOpenPanel : NSSavePanel
           + (NSOpenPanel *)openPanel;
           @property BOOL canChooseFiles;
           @property BOOL canChooseDirectories;
@@ -2743,12 +3241,28 @@ in
           - (void)removeDeliveredNotification:(NSUserNotification *)notification;
           @end
 
+          #import <AppKit/NSOpenGL.h>
           #import <AppKit/NSJDKSurface.h>
 
           #endif
           EOF
           cp ${./darwin-sdk-appkit-jdk.h} \
             "$out/System/Library/Frameworks/AppKit.framework/Headers/NSJDKSurface.h"
+          cp ${./darwin-sdk-appkit-nsfont.h} \
+            "$out/System/Library/Frameworks/AppKit.framework/Headers/NSFont.h"
+          cp ${./darwin-sdk-appkit-nsaccessibility.h} \
+            "$out/System/Library/Frameworks/AppKit.framework/Headers/NSAccessibility.h"
+          cp ${./darwin-sdk-appkit-nsopengl.h} \
+            "$out/System/Library/Frameworks/AppKit.framework/Headers/NSOpenGL.h"
+
+          cp ${./darwin-sdk-opengl.h} \
+            "$out/System/Library/Frameworks/OpenGL.framework/Headers/OpenGL.h"
+          cp ${./darwin-sdk-opengl.tbd} \
+            "$out/System/Library/Frameworks/OpenGL.framework/OpenGL.tbd"
+          ln -s ../../OpenGL.tbd \
+            "$out/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL.tbd"
+          ln -s OpenGL.tbd \
+            "$out/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL"
 
           cat > "$out/System/Library/Frameworks/Cocoa.framework/Headers/Cocoa.h" <<'EOF'
           #ifndef _AOS_COCOA_H_
@@ -2758,47 +3272,8 @@ in
           #endif
           EOF
 
-          cat > "$out/System/Library/Frameworks/Foundation.framework/Foundation.tbd" <<'EOF'
-          --- !tapi-tbd
-          tbd-version: 4
-          targets: [ x86_64-macos, arm64-macos ]
-          install-name: '/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation'
-          current-version: 3100.0.0
-          compatibility-version: 300.0.0
-          reexported-libraries:
-            - targets: [ x86_64-macos, arm64-macos ]
-              libraries:
-                - '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'
-                - '/usr/lib/libobjc.A.dylib'
-          exports:
-            - targets: [ x86_64-macos, arm64-macos ]
-              symbols:
-                - _NSLog
-                - _NSSearchPathForDirectoriesInDomains
-                - '_OBJC_CLASS_$_NSArray'
-                - '_OBJC_CLASS_$_NSData'
-                - '_OBJC_CLASS_$_NSBundle'
-                - '_OBJC_CLASS_$_NSDictionary'
-                - '_OBJC_CLASS_$_NSEnumerator'
-                - '_OBJC_CLASS_$_NSAutoreleasePool'
-                - '_OBJC_CLASS_$_NSBlockOperation'
-                - '_OBJC_CLASS_$_NSException'
-                - '_OBJC_CLASS_$_NSMutableArray'
-                - '_OBJC_CLASS_$_NSMutableAttributedString'
-                - '_OBJC_CLASS_$_NSMutableDictionary'
-                - '_OBJC_CLASS_$_NSNumber'
-                - '_OBJC_CLASS_$_NSNotification'
-                - '_OBJC_CLASS_$_NSObject'
-                - '_OBJC_CLASS_$_NSProcessInfo'
-                - '_OBJC_CLASS_$_NSString'
-                - '_OBJC_CLASS_$_NSThread'
-                - '_OBJC_CLASS_$_NSURL'
-                - '_OBJC_CLASS_$_NSUserDefaults'
-                - '_OBJC_METACLASS_$_NSException'
-                - '_OBJC_METACLASS_$_NSBlockOperation'
-                - '_OBJC_METACLASS_$_NSObject'
-          ...
-          EOF
+          cp ${./darwin-sdk-foundation.tbd} \
+            "$out/System/Library/Frameworks/Foundation.framework/Foundation.tbd"
           sed -i \
             '/_NSLog/r ${./darwin-sdk-foundation-jdk.tbd-exports}' \
             "$out/System/Library/Frameworks/Foundation.framework/Foundation.tbd"
@@ -2807,61 +3282,8 @@ in
           ln -s Foundation.tbd \
             "$out/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation"
 
-          cat > "$out/System/Library/Frameworks/AppKit.framework/AppKit.tbd" <<'EOF'
-          --- !tapi-tbd
-          tbd-version: 4
-          targets: [ x86_64-macos, arm64-macos ]
-          install-name: '/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit'
-          current-version: 2600.0.0
-          compatibility-version: 45.0.0
-          reexported-libraries:
-            - targets: [ x86_64-macos, arm64-macos ]
-              libraries: [ '/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation' ]
-            - targets: [ x86_64-macos, arm64-macos ]
-              libraries: [ '/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices' ]
-          exports:
-            - targets: [ x86_64-macos, arm64-macos ]
-              symbols:
-                - _NSAboutPanelOptionApplicationIcon
-                - _NSAboutPanelOptionApplicationVersion
-                - _NSApp
-                - _NSBeep
-                - _NSFontAttributeName
-                - _NSForegroundColorAttributeName
-                - _NSPasteboardTypeString
-                - _NSScreenNumber
-                - _NSUnderlineStyleAttributeName
-                - '_OBJC_CLASS_$_NSAlert'
-                - '_OBJC_CLASS_$_NSApplication'
-                - '_OBJC_CLASS_$_NSColor'
-                - '_OBJC_CLASS_$_NSCursor'
-                - '_OBJC_CLASS_$_NSEvent'
-                - '_OBJC_CLASS_$_NSFont'
-                - '_OBJC_CLASS_$_NSFontManager'
-                - '_OBJC_CLASS_$_NSGraphicsContext'
-                - '_OBJC_CLASS_$_NSImage'
-                - '_OBJC_CLASS_$_NSMenu'
-                - '_OBJC_CLASS_$_NSMenuItem'
-                - '_OBJC_CLASS_$_NSOpenPanel'
-                - '_OBJC_CLASS_$_NSPasteboard'
-                - '_OBJC_CLASS_$_NSResponder'
-                - '_OBJC_CLASS_$_NSScreen'
-                - '_OBJC_CLASS_$_NSTextField'
-                - '_OBJC_CLASS_$_NSTrackingArea'
-                - '_OBJC_CLASS_$_NSUserNotification'
-                - '_OBJC_CLASS_$_NSUserNotificationCenter'
-                - '_OBJC_CLASS_$_NSView'
-                - '_OBJC_CLASS_$_NSWindow'
-                - '_OBJC_CLASS_$_NSWorkspace'
-                - '_OBJC_METACLASS_$_NSApplication'
-                - '_OBJC_METACLASS_$_NSResponder'
-                - '_OBJC_METACLASS_$_NSView'
-                - '_OBJC_PROTOCOL_$_NSApplicationDelegate'
-                - '_OBJC_PROTOCOL_$_NSPasteboardTypeOwner'
-                - '_OBJC_PROTOCOL_$_NSUserNotificationCenterDelegate'
-                - '_OBJC_PROTOCOL_$_NSWindowDelegate'
-          ...
-          EOF
+          cp ${./darwin-sdk-appkit.tbd} \
+            "$out/System/Library/Frameworks/AppKit.framework/AppKit.tbd"
           sed -i \
             '/_NSBeep/r ${./darwin-sdk-appkit-jdk.tbd-exports}' \
             "$out/System/Library/Frameworks/AppKit.framework/AppKit.tbd"
@@ -2898,197 +3320,37 @@ in
           ...
           EOF
 
-          # GLib and other command-line clients use the public LaunchServices
-          # API through the ApplicationServices umbrella. Keep the canonical
-          # source and ABI surface, including the compatibility declarations
-          # retained by Apple's SDK, without importing a binary framework.
-          cat > "$out/System/Library/Frameworks/ApplicationServices.framework/Headers/ApplicationServices.h" <<'EOF'
-          #ifndef __APPLICATIONSERVICES__
-          #define __APPLICATIONSERVICES__
-
-          #include <CoreFoundation/CoreFoundation.h>
-          #include <CoreGraphics/CoreGraphics.h>
-
-          CF_EXTERN_C_BEGIN
-          typedef UInt32 LSLaunchFlags;
-          enum { kLSLaunchDefaults = 0x00000001 };
-
-          typedef UInt32 LSRolesMask;
-          enum { kLSRolesAll = 0xffffffffU };
-
-          enum {
-            kLSUnknownCreator = 0,
-            kLSApplicationNotFoundErr = -10814
-          };
-
-          typedef struct AEDesc AEDesc;
-          typedef struct FSRef { UInt8 hidden[80]; } FSRef;
-
-          typedef struct LSLaunchURLSpec {
-            CFURLRef appURL;
-            CFArrayRef itemURLs;
-            const AEDesc *passThruParams;
-            LSLaunchFlags launchFlags;
-            void *asyncRefCon;
-          } LSLaunchURLSpec;
-
-          CFArrayRef LSCopyApplicationURLsForBundleIdentifier(
-            CFStringRef bundleIdentifier,
-            CFErrorRef *error
-          );
-          OSStatus LSFindApplicationForInfo(
-            OSType creator,
-            CFStringRef bundleIdentifier,
-            CFStringRef name,
-            FSRef *applicationRef,
-            CFURLRef *applicationURL
-          );
-          OSStatus LSOpenFromURLSpec(const LSLaunchURLSpec *urlSpec, CFURLRef *launchedURL);
-          CF_EXPORT OSStatus LSOpenCFURLRef(CFURLRef inURL, CFURLRef *outLaunchedURL);
-          CFArrayRef LSCopyAllHandlersForURLScheme(CFStringRef scheme);
-          CFArrayRef LSCopyAllRoleHandlersForContentType(
-            CFStringRef contentType,
-            LSRolesMask roles
-          );
-          CFURLRef LSCopyDefaultApplicationURLForContentType(
-            CFStringRef contentType,
-            LSRolesMask roles,
-            CFErrorRef *error
-          );
-          CFStringRef LSCopyDefaultRoleHandlerForContentType(
-            CFStringRef contentType,
-            LSRolesMask roles
-          );
-          CFStringRef LSCopyDefaultHandlerForURLScheme(CFStringRef scheme);
-          CF_EXTERN_C_END
-
-          #endif
-          EOF
-          cat > "$out/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices.tbd" <<'EOF'
-          --- !tapi-tbd
-          tbd-version: 4
-          targets: [ x86_64-macos, arm64-macos ]
-          install-name: '/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices'
-          current-version: 64.0.0
-          compatibility-version: 1.0.0
-          reexported-libraries:
-            - targets: [ x86_64-macos, arm64-macos ]
-              libraries:
-                - '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'
-                - '/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics'
-          exports:
-            - targets: [ x86_64-macos, arm64-macos ]
-              symbols:
-                - _LSCopyAllHandlersForURLScheme
-                - _LSCopyAllRoleHandlersForContentType
-                - _LSCopyApplicationURLsForBundleIdentifier
-                - _LSCopyDefaultApplicationURLForContentType
-                - _LSCopyDefaultHandlerForURLScheme
-                - _LSCopyDefaultRoleHandlerForContentType
-                - _LSFindApplicationForInfo
-                - _LSOpenCFURLRef
-                - _LSOpenFromURLSpec
-                - _TransformProcessType
-                - _UTTypeConformsTo
-                - _UTTypeCopyDescription
-                - _UTTypeCopyPreferredTagWithClass
-                - _UTTypeCreatePreferredIdentifierForTag
-                - _UTTypeEqual
-                - _kUTTagClassFilenameExtension
-                - _kUTTagClassMIMEType
-                - _kUTTypeApplication
-                - _kUTTypeFolder
-                - _kUTTypeVolume
-                - _kUTTypeXML
-          ...
-          EOF
+          # Publish the source-backed public ApplicationServices ABI without
+          # embedding another large static framework fragment in the builder argv.
+          cp ${./darwin-sdk-application-services.h} \
+            "$out/System/Library/Frameworks/ApplicationServices.framework/Headers/ApplicationServices.h"
+          cp ${./darwin-sdk-application-services.tbd} \
+            "$out/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices.tbd"
           ln -s ../../ApplicationServices.tbd \
             "$out/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices.tbd"
           ln -s ApplicationServices.tbd \
             "$out/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices"
-
-          # Carbon's surviving public keyboard surface consists of stable
-          # virtual-key constants from HIToolbox. QEMU's Cocoa frontend uses
-          # these constants to translate NSEvent key codes; no Carbon binary
-          # symbols are involved, so publish the canonical umbrella header
-          # without inventing a framework implementation.
-          cat > "$out/System/Library/Frameworks/Carbon.framework/Headers/Carbon.h" <<'EOF'
-          #ifndef __CARBON__
-          #define __CARBON__
-
-          #include <CoreServices/CoreServices.h>
-          #include <ApplicationServices/ApplicationServices.h>
-
-          #include <Carbon/AEDataModel.h>
-
-          typedef UInt32 ProcessApplicationTransformState;
-          enum {
-            kCurrentProcess = 2,
-            kProcessTransformToForegroundApplication = 1
-          };
-          OSStatus TransformProcessType(
-            const ProcessSerialNumber *psn,
-            ProcessApplicationTransformState transformState
-          );
-
-          enum {
-            kVK_ANSI_A = 0x00, kVK_ANSI_S = 0x01, kVK_ANSI_D = 0x02,
-            kVK_ANSI_F = 0x03, kVK_ANSI_H = 0x04, kVK_ANSI_G = 0x05,
-            kVK_ANSI_Z = 0x06, kVK_ANSI_X = 0x07, kVK_ANSI_C = 0x08,
-            kVK_ANSI_V = 0x09, kVK_ANSI_B = 0x0b, kVK_ANSI_Q = 0x0c,
-            kVK_ANSI_W = 0x0d, kVK_ANSI_E = 0x0e, kVK_ANSI_R = 0x0f,
-            kVK_ANSI_Y = 0x10, kVK_ANSI_T = 0x11, kVK_ANSI_1 = 0x12,
-            kVK_ANSI_2 = 0x13, kVK_ANSI_3 = 0x14, kVK_ANSI_4 = 0x15,
-            kVK_ANSI_6 = 0x16, kVK_ANSI_5 = 0x17, kVK_ANSI_Equal = 0x18,
-            kVK_ANSI_9 = 0x19, kVK_ANSI_7 = 0x1a, kVK_ANSI_Minus = 0x1b,
-            kVK_ANSI_8 = 0x1c, kVK_ANSI_0 = 0x1d,
-            kVK_ANSI_RightBracket = 0x1e, kVK_ANSI_O = 0x1f,
-            kVK_ANSI_U = 0x20, kVK_ANSI_LeftBracket = 0x21,
-            kVK_ANSI_I = 0x22, kVK_ANSI_P = 0x23, kVK_ANSI_L = 0x25,
-            kVK_ANSI_J = 0x26, kVK_ANSI_Quote = 0x27, kVK_ANSI_K = 0x28,
-            kVK_ANSI_Semicolon = 0x29, kVK_ANSI_Backslash = 0x2a,
-            kVK_ANSI_Comma = 0x2b, kVK_ANSI_Slash = 0x2c,
-            kVK_ANSI_N = 0x2d, kVK_ANSI_M = 0x2e,
-            kVK_ANSI_Period = 0x2f, kVK_ANSI_Grave = 0x32,
-            kVK_ANSI_KeypadDecimal = 0x41, kVK_ANSI_KeypadMultiply = 0x43,
-            kVK_ANSI_KeypadPlus = 0x45, kVK_ANSI_KeypadClear = 0x47,
-            kVK_ANSI_KeypadDivide = 0x4b, kVK_ANSI_KeypadEnter = 0x4c,
-            kVK_ANSI_KeypadMinus = 0x4e, kVK_ANSI_KeypadEquals = 0x51,
-            kVK_ANSI_Keypad0 = 0x52, kVK_ANSI_Keypad1 = 0x53,
-            kVK_ANSI_Keypad2 = 0x54, kVK_ANSI_Keypad3 = 0x55,
-            kVK_ANSI_Keypad4 = 0x56, kVK_ANSI_Keypad5 = 0x57,
-            kVK_ANSI_Keypad6 = 0x58, kVK_ANSI_Keypad7 = 0x59,
-            kVK_ANSI_Keypad8 = 0x5b, kVK_ANSI_Keypad9 = 0x5c
-          };
-
-          enum {
-            kVK_Return = 0x24, kVK_Tab = 0x30, kVK_Space = 0x31,
-            kVK_Delete = 0x33, kVK_RightCommand = 0x36,
-            kVK_Command = 0x37, kVK_Shift = 0x38, kVK_CapsLock = 0x39,
-            kVK_Option = 0x3a, kVK_Control = 0x3b, kVK_RightShift = 0x3c,
-            kVK_RightOption = 0x3d, kVK_RightControl = 0x3e,
-            kVK_F5 = 0x60, kVK_F6 = 0x61, kVK_F7 = 0x62,
-            kVK_F3 = 0x63, kVK_F8 = 0x64, kVK_F9 = 0x65,
-            kVK_F11 = 0x67, kVK_F13 = 0x69, kVK_F14 = 0x6b,
-            kVK_F10 = 0x6d, kVK_F12 = 0x6f, kVK_F15 = 0x71,
-            kVK_Help = 0x72, kVK_Home = 0x73, kVK_PageUp = 0x74,
-            kVK_ForwardDelete = 0x75, kVK_F4 = 0x76, kVK_End = 0x77,
-            kVK_F2 = 0x78, kVK_PageDown = 0x79, kVK_F1 = 0x7a,
-            kVK_LeftArrow = 0x7b, kVK_RightArrow = 0x7c,
-            kVK_DownArrow = 0x7d, kVK_UpArrow = 0x7e,
-            kVK_Escape = 0x35
-          };
-
-          enum {
-            kVK_JIS_Yen = 0x5d, kVK_JIS_Underscore = 0x5e,
-            kVK_JIS_KeypadComma = 0x5f, kVK_JIS_Eisu = 0x66,
-            kVK_JIS_Kana = 0x68
-          };
-
-          #endif
-          EOF
+          # Carbon is a public compatibility umbrella. Keep its exact source
+          # contract in a source-backed asset so the SDK builder remains well
+          # below Linux's per-argument execve limit.
+          cp ${./darwin-sdk-carbon.h} \
+            "$out/System/Library/Frameworks/Carbon.framework/Headers/Carbon.h"
           cp ${./darwin-sdk-carbon-ae.h} \
             "$out/System/Library/Frameworks/Carbon.framework/Headers/AEDataModel.h"
+          cp ${./darwin-sdk-carbon-jdk.h} \
+            "$out/System/Library/Frameworks/Carbon.framework/Headers/JDKSurface.h"
+          cp ${./darwin-sdk-carbon.tbd} \
+            "$out/System/Library/Frameworks/Carbon.framework/Carbon.tbd"
+          ln -s ../../Carbon.tbd \
+            "$out/System/Library/Frameworks/Carbon.framework/Versions/A/Carbon.tbd"
+          ln -s Carbon.tbd \
+            "$out/System/Library/Frameworks/Carbon.framework/Versions/A/Carbon"
+
+          # OpenJDK 8 still consumes Apple's public JavaRuntimeSupport ABI.
+          # Publish only the exact linked SDK contract verified against the
+          # historical Apple SDK and current OpenJDK consumers; no framework
+          # implementation or proprietary header payload is included.
+          "$CONFIG_SHELL" ${javaRuntimeSupportFragment}
 
           # Hypervisor.framework is a public system ABI with distinct ARM and
           # x86 interfaces.  Publish the factual declarations and constants
@@ -3631,62 +3893,8 @@ in
           ...
           EOF
 
-          cat > "$out/System/Library/Frameworks/Security.framework/Security.tbd" <<'EOF'
-          --- !tapi-tbd
-          tbd-version: 4
-          targets: [ x86_64-macos, arm64-macos ]
-          install-name: '/System/Library/Frameworks/Security.framework/Versions/A/Security'
-          current-version: 61123.0.0
-          compatibility-version: 1.0.0
-          exports:
-            - targets: [ x86_64-macos, arm64-macos ]
-              symbols:
-                - _SSLClose
-                - _SSLCopyPeerTrust
-                - _SSLCreateContext
-                - _SSLHandshake
-                - _SSLRead
-                - _SSLSetConnection
-                - _SSLSetIOFuncs
-                - _SSLSetPeerDomainName
-                - _SSLSetProtocolVersionMax
-                - _SSLSetProtocolVersionMin
-                - _SSLSetSessionOption
-                - _SSLWrite
-                - _SessionGetInfo
-                - _SecCertificateCopyData
-                - _SecCopyErrorMessageString
-                - _SecItemCopyMatching
-                - _SecKeychainItemExport
-                - _SecKeychainItemImport
-                - _SecKeychainAddGenericPassword
-                - _SecKeychainCopyDefault
-                - _SecKeychainFindGenericPassword
-                - _SecKeychainItemDelete
-                - _SecKeychainItemFreeContent
-                - _SecKeychainItemModifyAttributesAndData
-                - _SecTaskCopySigningIdentifier
-                - _SecTaskCopyValueForEntitlement
-                - _SecTaskCopyValuesForEntitlements
-                - _SecTaskCreateFromSelf
-                - _SecTaskCreateWithAuditToken
-                - _SecTaskGetTypeID
-                - _SecPolicyCopyProperties
-                - _SecPolicyCreateSSL
-                - _SecTrustCreateWithCertificates
-                - _SecTrustEvaluate
-                - _SecTrustEvaluateWithError
-                - _SecTrustGetCertificateAtIndex
-                - _SecTrustSettingsCopyTrustSettings
-                - _kSecClass
-                - _kSecClassCertificate
-                - _kSecMatchLimit
-                - _kSecMatchLimitAll
-                - _kSecPolicyAppleSSL
-                - _kSecPolicyOid
-                - _kSecReturnRef
-          ...
-          EOF
+          cp ${./darwin-sdk-security.tbd} \
+            "$out/System/Library/Frameworks/Security.framework/Security.tbd"
 
           cat > "$out/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration.tbd" <<'EOF'
           --- !tapi-tbd
@@ -3698,7 +3906,11 @@ in
           exports:
             - targets: [ x86_64-macos, arm64-macos ]
               symbols:
+                - _SCDynamicStoreCopyValue
                 - _SCDynamicStoreCopyProxies
+                - _SCDynamicStoreCreate
+                - _SCDynamicStoreCreateRunLoopSource
+                - _SCDynamicStoreSetNotificationKeys
                 - _kSCPropNetProxiesExcludeSimpleHostnames
                 - _kSCPropNetProxiesExceptionsList
                 - _kSCPropNetProxiesFTPEnable
@@ -3746,6 +3958,7 @@ in
                 - _class_getProperty
                 - _class_getSuperclass
                 - _class_isMetaClass
+                - _class_createInstance
                 - _class_respondsToSelector
                 - _ivar_getName
                 - _ivar_getOffset
@@ -3772,10 +3985,12 @@ in
                 - _objc_enumerationMutation
                 - _objc_end_catch
                 - _objc_ehtype_vtable
+                - _objc_exception_throw
                 # objc4's pinned public exception ABI declares this as
                 # `OBJC_EXPORT OBJC_NORETURN void objc_exception_rethrow(void)`.
                 - _objc_exception_rethrow
                 - _objc_getClass
+                - _objc_getProperty
                 - _objc_getMetaClass
                 - _objc_getProtocol
                 - _objc_initWeak
@@ -3794,9 +4009,14 @@ in
                 - _objc_storeStrong
                 - _objc_storeWeak
                 - _objc_setProperty_nonatomic
+                - _objc_setProperty_atomic
+                - _objc_sync_enter
+                - _objc_sync_exit
                 - _objc_terminate
                 - _object_getClass
+                - _object_getInstanceVariable
                 - _object_setClass
+                - _object_setInstanceVariable
                 - _protocol_addMethodDescription
                 - _protocol_addProtocol
                 - _protocol_copyProtocolList
