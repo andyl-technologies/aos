@@ -31,8 +31,8 @@
     lib.removeSuffix "\";"
     (lib.removePrefix prefix (firstLineWith label prefix content));
   crucibleVersion = sourceStringConst "Crucible package version" "  version = \"" cruciblePackageNix;
-  crucibleCargoDepsHash = sourceStringConst "Crucible cargo deps hash" "  cargoDepsHash = \"" cruciblePackageNix;
-  pluginCargoDepsHash = sourceStringConst "plugin cargo deps hash" "      hash = \"" pluginPackageNix;
+  crucibleCargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
+  pluginCargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
   guestHostProtocolVersion =
     sourceConst
@@ -139,8 +139,8 @@
     ++ lib.optionals (manifest.crucible.cargoDeps.hash != crucibleCargoDepsHash) [
       "release manifest cargo deps hash ${manifest.crucible.cargoDeps.hash} does not match package hash ${crucibleCargoDepsHash}"
     ]
-    ++ lib.optionals (manifest.crucible.cargoDeps.kind != "fetchCargoDeps") [
-      "release manifest cargo deps kind is not fetchCargoDeps"
+    ++ lib.optionals (manifest.crucible.cargoDeps.kind != "fetchCargoVendor") [
+      "release manifest cargo deps kind is not fetchCargoVendor"
     ]
     ++ lib.optionals (!manifest.crucible.cargoDeps.vendored) [
       "release manifest does not mark cargo deps as vendored"
@@ -404,7 +404,7 @@
       }
       {
         label = "plugin cargo deps hash";
-        needle = "hash = \"${crucibleCargoDepsHash}\";";
+        needle = "hash = import ../tools/crucible/_cargo-deps-hash.nix;";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/_source.nix" sourceNix [

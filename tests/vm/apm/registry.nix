@@ -26,81 +26,11 @@
     pkgs.zlib
   ];
   publishDeps = fixtures.commonDeps ++ nixRuntimeDeps;
-  publishSysrootImage = pkgs.mkDerivation {
-    pname = "apm-registry-publish-sysroot-image";
-    version = "1.0.0";
-    src = null;
-    buildDeps = [pkgs.coreutils pkgs.jq pkgs.zstd];
-    UKI_STORE_PATH = "${pkgs.systemd}/lib/systemd/boot/efi";
-    UKI_FILENAME = "systemd-bootx64.efi";
-    phases = [
-      {
-        name = "build";
-        script = ''
-          mkdir -p "$out"
-          filename=aos-server.img.zst
-          printf 'AOS registry publish image fixture\n' > image.raw
-          truncate -s 1MiB image.raw
-          logical_disk_sha256=$(sha256sum image.raw | cut -d ' ' -f1)
-          zstd -19 -T1 --no-progress image.raw -o "$out/$filename"
-          image_sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
-          image_size=$(stat -c %s "$out/$filename")
-          uki_sha256=$(sha256sum "$UKI_STORE_PATH/$UKI_FILENAME" | cut -d ' ' -f1)
-          uki_size=$(stat -c %s "$UKI_STORE_PATH/$UKI_FILENAME")
-          ${pkgs.jq}/bin/jq -S -n \
-            --arg filename "$filename" \
-            --arg sha256 "$image_sha256" \
-            --arg logicalDiskSha256 "$logical_disk_sha256" \
-            --arg rootfsSha256 "$logical_disk_sha256" \
-            --arg ukiFilename "$UKI_FILENAME" \
-            --arg ukiSha256 "$uki_sha256" \
-            --argjson byteSize "$image_size" \
-            --argjson ukiSize "$uki_size" \
-            '{schemaVersion: 2, name: "server", version: "1.0.0",
-              architecture: "x86_64", platform: "x86_64-linux", format: "raw",
-              filename: $filename,
-              mediaType: "application/vnd.aos.disk-image.raw+zstd", compression: "zstd",
-              byteSize: $byteSize, virtualSizeBytes: 1048576, sha256: $sha256,
-              logicalDiskSha256: $logicalDiskSha256, rootfsSha256: $rootfsSha256,
-              compatibleTargets: ["bare-metal"],
-              artifactBudgetsMiB: {root: 1, verity: 1, initrd: 1, uki: 1, esp: 34, runtimeClosure: 1, download: 2},
-              partitionTable: "gpt", kernelParams: "",
-              partitions: [{number: 1, label: "root-a", type: "root", filesystem: "fake", sizeMiB: 1, offsetBytes: 0, sizeBytes: 1048576}],
-              esp: {uki: "EFI/Linux/aos-server.efi", sdBoot: "EFI/systemd/systemd-bootx64.efi"},
-              uki: {filename: $ukiFilename, espPath: "EFI/Linux/aos-server.efi",
-                byteSize: $ukiSize, sha256: $ukiSha256, signed: false, measured: false}}' \
-            > "$out/image-info.json"
-        '';
-      }
-    ];
-  };
-  publishSysrootArtifact = {
-    pname,
-    filename,
-  }:
-    pkgs.mkDerivation {
-      inherit pname;
-      version = "1.0.0";
-      src = null;
-      buildDeps = [pkgs.coreutils publishSysrootImage];
-      phases = [
-        {
-          name = "install";
-          script = ''
-            rmdir "$out"
-            cp '${publishSysrootImage}/${filename}' "$out"
-          '';
-        }
-      ];
-    };
-  publishSysrootDisk = publishSysrootArtifact {
-    pname = "apm-registry-publish-sysroot-disk";
-    filename = "aos-server.img.zst";
-  };
-  publishSysrootInfo = publishSysrootArtifact {
-    pname = "apm-registry-publish-sysroot-info";
-    filename = "image-info.json";
-  };
+  imageFixtures = import ./image-fixtures.nix {inherit pkgs;};
+  publishSysrootImage = imageFixtures.imageRaw;
+  publishSysrootDisk = imageFixtures.imageRawDisk;
+  publishSysrootInfo = imageFixtures.imageRawInfo;
+  publishSysrootUki = imageFixtures.imageUki;
   maintainerWorkflowDeps =
     publishDeps
     ++ [
@@ -582,7 +512,10 @@ in {
       fi
 
       if $APR publish /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dummy-1.0.0 \
-        --name dummy --version 1.0.0 --registry no-clone-reg --no-commit \
+        --name dummy --version 1.0.0 \
+        --description "No-clone publish diagnostic fixture" \
+        --license MIT --maintainer test@test \
+        --registry no-clone-reg --no-commit \
         > /tmp/publish-no-clone.out 2>&1; then
         fail "apr publish should fail without a local clone"
       else
@@ -618,7 +551,10 @@ in {
       fi
 
       if $APR publish /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dummy-1.0.0 \
-        --name dummy --version 1.0.0 --registry no-clone-reg --no-commit \
+        --name dummy --version 1.0.0 \
+        --description "No-clone publish diagnostic fixture" \
+        --license MIT --maintainer test@test \
+        --registry no-clone-reg --no-commit \
         > /tmp/publish-after-update.out 2>&1; then
         fail "apr publish should still fail after consumer metadata update"
       else
@@ -773,14 +709,14 @@ in {
         cat /tmp/publish-testpkg-v1.json
         fail "apr --json publish creates package metadata"
       }
-      ${pkgs.jq}/bin/jq -e --arg store "${aosPkg}" \
+      if ${pkgs.jq}/bin/jq -e --arg store "${aosPkg}" \
         '.action == "publish"
           and .registry == "test-reg"
           and .package == "testpkg"
           and .version == "1.0.0"
           and .platform == "x86_64-linux"
           and .store_path == $store
-          and (.nar_hash | startswith("sha256-"))
+          and (.nar_hash | startswith("sha256:"))
           and (.nar_size > 0)
           and (.closure_size > 0)
           and .sysroot == false
@@ -791,11 +727,12 @@ in {
           and .commit_message == "publish testpkg 1.0.0 (x86_64-linux)"
           and .current == "stable"
           and (.head | length == 64)' \
-        /tmp/publish-testpkg-v1.json >/dev/null || {
+        /tmp/publish-testpkg-v1.json >/dev/null; then
+        pass "apr --json publish reports committed package metadata"
+      else
         cat /tmp/publish-testpkg-v1.json
         fail "apr --json publish reports committed package metadata"
-      }
-      pass "apr --json publish reports committed package metadata"
+      fi
 
       # Verify packages/t/testpkg.toml exists
       assert_file_exists "$REG_DIR/packages/t/testpkg.toml" \
@@ -992,7 +929,14 @@ in {
   # -------------------------------------------------------------------------
   registry-publish-sysroot = testing.mkVMTest {
     name = "apm-registry-publish-sysroot";
-    rootfsDeps = publishDeps ++ [publishSysrootImage publishSysrootDisk publishSysrootInfo];
+    rootfsDeps =
+      publishDeps
+      ++ [
+        publishSysrootImage
+        publishSysrootDisk
+        publishSysrootInfo
+        publishSysrootUki
+      ];
     memory = 512;
     testScript = ''
       ${fixtures.setupPreamble}
@@ -1006,7 +950,7 @@ in {
 
       $APR publish ${aosPkg} \
         --name server \
-        --version 1.0.0 \
+        --version 2026.03 \
         --description "Published sysroot by the APR VM workflow" \
         --license MIT \
         --maintainer test \
@@ -1015,7 +959,7 @@ in {
         --image-disk ${publishSysrootDisk} \
         --image-info ${publishSysrootInfo} \
         --image-format raw \
-        --image-uki ${pkgs.systemd}/lib/systemd/boot/efi/systemd-bootx64.efi \
+        --image-uki ${publishSysrootUki}/systemd-bootx64.efi \
         --registry test-reg
 
       # Verify sysroot flag
@@ -1747,11 +1691,11 @@ in {
       export AOS_NIX_STATE_DIR=/nix/var/nix
       SYSTEM_REG_CONFIG="$AOS_ROOT/var/lib/apm/config/registries.d/override-reg.toml"
       USER_REG_CONFIG="$HOME/.config/apm/registries.d/override-reg.toml"
-      # A --sysroot package installed with `--system` lands as a numbered system
-      # generation under /var/lib/profiles/system (gen-N/toplevel -> store path,
-      # current -> gen-N), not a user-scope tool profile.
+      # This fixture deliberately has no authenticated image-generation state:
+      # it emulates registry administration from a non-AOS host. A sysroot
+      # download may populate the Nix store, but it must not recreate the
+      # retired single-axis system-generation authority.
       SYSTEM_PROFILE="/var/lib/profiles/system"
-      PROFILE_ROOT="$SYSTEM_PROFILE/current/toplevel/bin/closure-root"
       mkdir -p "$HOME"
 
       if [ -e "$USER_REG_CONFIG" ]; then
@@ -1866,30 +1810,40 @@ in {
         pass "override dependency missing before install"
       fi
 
-      $APM install override-root --system --registry override-reg --yes \
-        > /tmp/override-install.out 2>&1 || {
+      if $APM install override-root --system --registry override-reg --yes \
+        > /tmp/override-install.out 2>&1; then
         cat /tmp/override-install.out
-        fail "apm install downloads redirected system registry package"
-      }
+        fail "apm install must reject sysroot activation without image-generation authority"
+      else
+        pass "apm install rejects sysroot activation without image-generation authority"
+      fi
       cat /tmp/override-install.out
       assert_file_contains /tmp/override-install.out "Downloading" \
         "apm install downloads from redirected system registry cache"
-      assert_file_contains /tmp/override-install.out "System generation 1 active" \
-        "apm install activates a system generation from redirected system registry"
-      if [ "$(readlink "$SYSTEM_PROFILE/current")" = "gen-1" ]; then
-        pass "redirected system install points current at gen-1"
+      assert_file_contains /tmp/override-install.out \
+        "image generation state is absent" \
+        "apm install explains missing image-generation authority"
+      if nix-store --check-validity "$ROOT_STORE" >/tmp/override-root-imported.out 2>&1; then
+        pass "redirected system install imports the downloaded sysroot"
       else
-        fail "redirected system install should point current at gen-1"
+        cat /tmp/override-root-imported.out
+        fail "redirected system install should import the downloaded sysroot"
       fi
-      if [ "$(readlink "$SYSTEM_PROFILE/gen-1/toplevel")" = "$ROOT_STORE" ]; then
-        pass "redirected system gen-1 toplevel points at installed sysroot"
+      if nix-store --check-validity "$LEAF_STORE" >/tmp/override-leaf-imported.out 2>&1; then
+        pass "redirected system install imports the downloaded dependency"
       else
-        fail "redirected system gen-1 toplevel should point at installed sysroot"
+        cat /tmp/override-leaf-imported.out
+        fail "redirected system install should import the downloaded dependency"
       fi
-      "$PROFILE_ROOT" > /tmp/override-run.out
+      if [ -e "$SYSTEM_PROFILE/current" ] || [ -e "$SYSTEM_PROFILE/state.json" ]; then
+        fail "rejected non-AOS sysroot activation must not create system generations"
+      else
+        pass "rejected non-AOS sysroot activation creates no system generation"
+      fi
+      "$ROOT_STORE/bin/closure-root" > /tmp/override-run.out
       assert_file_contains /tmp/override-run.out \
         "^closure-root 1.0.0 via closure-leaf 1.0.0$" \
-        "installed redirected system registry executable runs"
+        "downloaded redirected system registry closure runs"
 
       $APM --json registry --system disable override-reg \
         > /tmp/override-disable.json 2>&1 || {
@@ -1970,10 +1924,10 @@ in {
         "apm registry remove deletes redirected system registry config"
       assert_file_not_exists "$USER_REG_CONFIG" \
         "apm registry remove leaves user registry config absent"
-      "$PROFILE_ROOT" > /tmp/override-run-after-remove.out
+      "$ROOT_STORE/bin/closure-root" > /tmp/override-run-after-remove.out
       assert_file_contains /tmp/override-run-after-remove.out \
         "^closure-root 1.0.0 via closure-leaf 1.0.0$" \
-        "installed redirected system registry package still runs after registry removal"
+        "downloaded redirected system registry closure still runs after registry removal"
 
       kill "$CACHE_PID" 2>/dev/null || true
       wait "$CACHE_PID" 2>/dev/null || true
@@ -2634,7 +2588,7 @@ in {
           and .version == "1.0.0"
           and .dry_run == false
           and .cache_url == "http://127.0.0.1:18082"
-          and .cache_pointer_updated == true
+          and .cache_pointer_updated == false
           and (.full_pack | startswith("pack-") and endswith(".pack"))
           and .deltas == []
           and (.cache.paths >= 3)
@@ -3118,7 +3072,7 @@ in {
         "source_drv = \"$ROOT_SOURCE_STORE\"" \
         "release metadata records v1 source provenance"
       assert_file_contains "$REG_DIR/packages/s/static-closure.toml" \
-        'source_nar_hash = "sha256-' "release metadata records v1 source NAR hash"
+        'source_nar_hash = "sha256:' "release metadata records v1 source NAR hash"
 
       assert_file_exists "/tmp/static-release-origin/$ROOT_HASH.narinfo" \
         "release cache has root narinfo"
@@ -3193,7 +3147,7 @@ in {
         fail "apm registry add syncs uploaded static origin"
       }
       cat /tmp/static-release-add.out
-      assert_file_contains /tmp/static-release-add.out "Signing.*trusted key pinned" \
+      assert_file_contains /tmp/static-release-add.out "Signing.*trusted key.*pinned" \
         "consumer pins static release registry signing key"
       assert_file_contains "$HOME/.local/share/apm/registries/static-release-reg/registry.toml" \
         "http://127.0.0.1:18120" \
@@ -5298,7 +5252,7 @@ in {
         fail "apm registry add syncs trusted signed registry"
       }
       cat /tmp/signed-add.out
-      assert_file_contains /tmp/signed-add.out "Signing.*trusted key pinned" \
+      assert_file_contains /tmp/signed-add.out "Signing.*trusted key.*pinned" \
         "registry add reports pinned signing key"
       CONFIG_FILE="$APM_CONFIG/registries.d/signed-reg.toml"
       assert_file_contains "$CONFIG_FILE" "required = true" \
@@ -5632,6 +5586,7 @@ in {
 
       $APR keys generate canary --registry trust-reg > /tmp/keys-generate-canary.out 2>&1
       KEY_CANARY=$(grep -o 'trust-reg:Ed25519:[A-Za-z0-9+/=]*' /tmp/keys-generate-canary.out | head -1)
+      KEY_CANARY_PATH="$HOME/.config/apm/keys/trust-reg-canary.key"
 
       if $APR keys generate root --registry trust-reg \
         > /tmp/keys-generate-overwrite.out 2>&1; then
@@ -5647,6 +5602,7 @@ in {
         --key "$KEY_ROOT_PATH"
       REG_DIR="$REG_STORAGE/trust-reg"
       TRUST_FILE="$HOME/.config/apm/trusted-keys.d/trust-reg.pub"
+      $APR add "file://$REG_DIR" --name trust-reg --no-clone --no-verify
 
       assert_file_exists "$REG_DIR/keys.toml" \
         "apr create writes committed keys.toml"
@@ -5654,6 +5610,28 @@ in {
         "initial committed key id is recorded"
       assert_file_contains "$REG_DIR/keys.toml" "$KEY_ROOT" \
         "initial committed key value is recorded"
+
+      $APR keys register backup-external --key "$KEY_BACKUP_PATH" \
+        --registry trust-reg > /tmp/keys-register-path.out 2>&1 || {
+        cat /tmp/keys-register-path.out
+        fail "apr keys register records an existing external key path"
+      }
+      assert_file_contains /tmp/keys-register-path.out "$KEY_BACKUP" \
+        "apr keys register reports the derived trust key"
+      assert_file_contains "$HOME/.config/apm/registries.d/trust-reg.toml" \
+        '"backup-external"' \
+        "apr keys register persists path-backed key resolution"
+      $APR keys register canary-external \
+        --key-command "cat $KEY_CANARY_PATH" --registry trust-reg \
+        > /tmp/keys-register-command.out 2>&1 || {
+        cat /tmp/keys-register-command.out
+        fail "apr keys register records an external key command"
+      }
+      assert_file_contains /tmp/keys-register-command.out "$KEY_CANARY" \
+        "apr keys register derives a trust key from command output"
+      assert_file_contains "$HOME/.config/apm/registries.d/trust-reg.toml" \
+        'canary-external' \
+        "apr keys register persists command-backed key resolution"
 
       $APR keys list --registry trust-reg > /tmp/keys-list-initial.out 2>&1 || {
         cat /tmp/keys-list-initial.out
@@ -5828,11 +5806,109 @@ in {
   };
 
   # -------------------------------------------------------------------------
+  # registry-change-workflow — Review and promote Hub-authored Git changes
+  # -------------------------------------------------------------------------
+  registry-change-workflow = testing.mkVMTest {
+    name = "apm-registry-change-workflow";
+    rootfsDeps = fixtures.commonDeps ++ [pkgs.jq];
+    memory = 512;
+    testScript = ''
+            ${fixtures.setupPreamble}
+
+            echo "==> Test: APR lists, reviews, and promotes a Hub change request"
+
+            $APR keys generate maintainer --registry change-reg \
+              > /tmp/change-key.out 2>&1
+            TRUST_KEY=$(grep -o 'change-reg:Ed25519:[A-Za-z0-9+/=]*' \
+              /tmp/change-key.out | head -1)
+            KEY_PATH="$HOME/.config/apm/keys/change-reg-maintainer.key"
+            $APR create change-reg --trust-key "$TRUST_KEY" \
+              --trust-key-id maintainer --key "$KEY_PATH"
+            REG_DIR="$REG_STORAGE/change-reg"
+            DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+
+            git init --bare --object-format=sha256 /tmp/change-origin.git
+            git --git-dir=/tmp/change-origin.git symbolic-ref HEAD \
+              "refs/heads/$DEFAULT_BRANCH"
+            git -C "$REG_DIR" remote add origin /tmp/change-origin.git
+            $APR add file:///tmp/change-origin.git --name change-reg --no-clone \
+              --trust-key "$TRUST_KEY"
+            $APR keys register maintainer --key "$KEY_PATH" --registry change-reg
+            git -C "$REG_DIR" push --set-upstream origin "$DEFAULT_BRANCH"
+
+            BASE_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
+            printf '%s\n' '# reviewed Hub configuration fixture' \
+              >> "$REG_DIR/registry.toml"
+            git -C "$REG_DIR" add registry.toml
+            git -C "$REG_DIR" commit -m \
+              'hub: propose registry configuration
+
+      AOS-Change-Id: change-001'
+            DRAFT_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
+            git -C "$REG_DIR" push origin \
+              "$DRAFT_COMMIT:refs/hub/changes/change-001"
+            git -C "$REG_DIR" reset --hard "$BASE_COMMIT"
+
+            $APR --json change list --registry change-reg \
+              > /tmp/change-list.json 2> /tmp/change-list.err || {
+              cat /tmp/change-list.err
+              fail "apr change list reads Hub change refs from the configured remote"
+            }
+            ${pkgs.jq}/bin/jq -e --arg commit "$DRAFT_COMMIT" \
+              '.change_requests | length == 1
+                and .[0].id == "change-001"
+                and .[0].commit == $commit
+                and .[0].change_id == "change-001"' \
+              /tmp/change-list.json >/dev/null
+            $APR change show change-001 --registry change-reg \
+              > /tmp/change-show.out 2>&1
+            assert_file_contains /tmp/change-show.out \
+              'reviewed Hub configuration fixture' \
+              "apr change show displays the proposed configuration"
+            $APR --json change show change-001 --stat --registry change-reg \
+              > /tmp/change-show-stat.json
+            ${pkgs.jq}/bin/jq -e \
+              '.id == "change-001" and .stat == true and (.output | contains("registry.toml"))' \
+              /tmp/change-show-stat.json >/dev/null
+
+            $APR --json change merge change-001 --key-id maintainer \
+              --registry change-reg > /tmp/change-merge.json
+            ${pkgs.jq}/bin/jq -e \
+              --arg draft "$DRAFT_COMMIT" --arg branch "$DEFAULT_BRANCH" \
+              '.id == "change-001"
+                and .branch == $branch
+                and .promoted_from == $draft
+                and (.commit | length == 64)' \
+              /tmp/change-merge.json >/dev/null
+            assert_file_contains "$REG_DIR/registry.toml" \
+              'reviewed Hub configuration fixture' \
+              "apr change merge promotes the reviewed tree"
+            LOCAL_HEAD=$(git -C "$REG_DIR" rev-parse HEAD)
+            REMOTE_HEAD=$(git --git-dir=/tmp/change-origin.git \
+              rev-parse "refs/heads/$DEFAULT_BRANCH")
+            test "$LOCAL_HEAD" = "$REMOTE_HEAD" || \
+              fail "apr change merge must push the promoted commit"
+            git -C "$REG_DIR" cat-file commit HEAD > /tmp/change-commit.out
+            assert_file_contains /tmp/change-commit.out 'gpgsig-sha256 ' \
+              "promoted change carries a maintainer signature"
+
+            if $APR change show missing --registry change-reg \
+              > /tmp/change-show-missing.out 2>&1; then
+              fail "apr change show should reject an unknown change id"
+            else
+              pass "apr change show rejects an unknown change id"
+            fi
+
+            check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
   # closure-generate — Closure files created and well-formed
   # -------------------------------------------------------------------------
   closure-generate = testing.mkVMTest {
     name = "apm-closure-generate";
-    rootfsDeps = closureWorkflowDeps;
+    rootfsDeps = closureWorkflowDeps ++ [pkgs.jq];
     memory = 1024;
     testScript = ''
       ${fixtures.setupPreamble}
@@ -5942,6 +6018,60 @@ in {
         assert_file_contains "$ROOT_FILE" "$ref_hash" \
           "closure-root store record includes direct reference $ref_hash"
       done
+
+      echo "==> Exercise APR store graph maintenance commands"
+      $APR --json store verify --registry test-reg \
+        > /tmp/store-verify.json
+      ${pkgs.jq}/bin/jq -e '.action == "store_verify" and .errors == 0' \
+        /tmp/store-verify.json >/dev/null
+      $APR --json store verify --deep --registry test-reg \
+        > /tmp/store-verify-deep.json
+      ${pkgs.jq}/bin/jq -e \
+        '.action == "store_verify" and .errors == 0 and .deep_checked > 0' \
+        /tmp/store-verify-deep.json >/dev/null
+
+      $APR --json store bless "$ROOT_STORE" --registry test-reg --no-commit \
+        > /tmp/store-bless.json
+      ${pkgs.jq}/bin/jq -e '.action == "store_bless" and .committed == false' \
+        /tmp/store-bless.json >/dev/null
+      $APR --json store revoke "$ROOT_STORE" --registry test-reg --no-commit \
+        > /tmp/store-revoke.json
+      ${pkgs.jq}/bin/jq -e '.action == "store_revoke" and .committed == false' \
+        /tmp/store-revoke.json >/dev/null
+      if $APR store verify --registry test-reg \
+        > /tmp/store-verify-revoked.out 2>&1; then
+        cat /tmp/store-verify-revoked.out
+        fail "apr store verify should reject a revoked published root"
+      else
+        pass "apr store verify rejects a revoked published root"
+      fi
+      $APR store bless "$ROOT_STORE" --registry test-reg --no-commit \
+        > /tmp/store-rebless.out
+      $APR store verify --deep --registry test-reg \
+        > /tmp/store-verify-reblessed.out
+
+      rm -rf "$REG_DIR/store"
+      $APR --json store backfill --registry test-reg --no-commit \
+        > /tmp/store-backfill.json
+      ${pkgs.jq}/bin/jq -e \
+        '.action == "store_backfill" and .roots == 2 and .created > 0 and .committed == false' \
+        /tmp/store-backfill.json >/dev/null
+      $APR store verify --deep --registry test-reg \
+        > /tmp/store-verify-backfilled.out
+
+      echo "==> Exercise APR staged static-cache garbage collection"
+      $APR cache generate --registry test-reg --no-commit \
+        > /tmp/cache-generate-default.out
+      $APR --json cache gc --registry test-reg --max-age 0 --dry-run \
+        > /tmp/cache-gc-dry-run.json
+      ${pkgs.jq}/bin/jq -e \
+        '.action == "cache_gc" and .dry_run == true and .candidates > 0' \
+        /tmp/cache-gc-dry-run.json >/dev/null
+      $APR --json cache gc --registry test-reg --max-age 0 \
+        > /tmp/cache-gc.json
+      ${pkgs.jq}/bin/jq -e \
+        '.action == "cache_gc" and .dry_run == false and .deleted_files > 0' \
+        /tmp/cache-gc.json >/dev/null
 
       $APR verify --registry test-reg > /tmp/closure-verify-ok.out 2>&1 || {
         cat /tmp/closure-verify-ok.out

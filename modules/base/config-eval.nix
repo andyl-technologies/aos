@@ -528,7 +528,12 @@ in {
         RemainAfterExit = true;
         # Per-eval hardened resource budget. A runaway is OOM- or
         # timeout-killed by the cgroup.
-        TimeoutStartSec = "120s";
+        # A cold stock-Nix fixpoint performs at least two strict evaluations.
+        # On production-sized base libraries, a constrained two-vCPU guest can
+        # legitimately spend more than two minutes in those passes even while
+        # remaining well below the memory and task budgets below. Keep a hard
+        # wall-clock bound, but leave enough room for the complete fixpoint.
+        TimeoutStartSec = "5min";
         MemoryMax = "2G";
         MemoryHigh = "1536M";
         TasksMax = 4096;

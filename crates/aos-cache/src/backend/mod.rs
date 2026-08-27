@@ -22,6 +22,28 @@ pub mod sftp;
 use std::sync::Arc;
 
 use anyhow::Result;
+
+/// One admitted cache-object upload returned by a batch control request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectUploadAdmission {
+    /// Direct-origin or authenticated Hub-proxy upload URL.
+    pub upload_url: String,
+    /// Durable write-ticket identity associated with the upload.
+    pub upload_ticket_id: String,
+    /// Whether completion must byte-verify the direct-origin object.
+    pub requires_observation: bool,
+}
+
+/// One narinfo registration and its optional direct-NAR upload evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadedNarinfo {
+    /// Store-path hash naming the `.narinfo` object.
+    pub store_hash: String,
+    /// Complete narinfo text.
+    pub narinfo: String,
+    /// Direct-origin NAR write ticket to observe before publishing metadata.
+    pub nar_upload_ticket_id: String,
+}
 use async_trait::async_trait;
 
 use aos_net::{TransferEngine, TransferEngineConfig, TransferRequest};
@@ -179,7 +201,7 @@ pub trait CacheBackend: Send + Sync {
     async fn create_object_uploads(
         &self,
         _uploads: &[(String, u64)],
-    ) -> Result<std::collections::HashMap<String, String>> {
+    ) -> Result<std::collections::HashMap<String, ObjectUploadAdmission>> {
         Ok(std::collections::HashMap::new())
     }
 
@@ -193,9 +215,10 @@ pub trait CacheBackend: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if any narinfo write/registration fails.
-    async fn register_narinfos(&self, narinfos: &[(String, String)]) -> Result<()> {
-        for (store_hash, content) in narinfos {
-            self.put_narinfo(store_hash, content).await?;
+    async fn register_narinfos(&self, narinfos: &[UploadedNarinfo]) -> Result<()> {
+        for narinfo in narinfos {
+            self.put_narinfo(&narinfo.store_hash, &narinfo.narinfo)
+                .await?;
         }
         Ok(())
     }

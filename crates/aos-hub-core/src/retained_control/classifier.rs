@@ -250,12 +250,16 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                 if !matches!(
                     path.as_str(),
                     "PublishService/BeginRegistryPublication"
+                        | "PublishService/BeginRegistryPublicationManifest"
+                        | "PublishService/AppendRegistryPublicationManifest"
+                        | "PublishService/SealRegistryPublicationManifest"
                         | "PublishService/CommitRegistryPublication"
                         | "PublishService/AbortRegistryPublication"
                         | "PublishService/BeginRegistryPublicationMultipartUpload"
                         | "PublishService/CompleteRegistryPublicationMultipartUpload"
                         | "PublishService/AbortRegistryPublicationMultipartUpload"
                         | "BinaryCacheService/CreateCacheObjectUploads"
+                        | "BinaryCacheService/RegisterCacheNarinfos"
                         | "BinaryCacheService/BeginCacheMultipartUpload"
                         | "BinaryCacheService/CompleteCacheMultipartUpload"
                         | "BinaryCacheService/AbortCacheMultipartUpload"
@@ -1441,10 +1445,10 @@ mod tests {
             class: MethodClass::DataPlaneWrite,
             external_effects: false,
         };
-        assert!(validate_method_manifest(&[write(
-            "BinaryCacheService",
-            "CreateCacheObjectUploads",
-        )])
+        assert!(validate_method_manifest(&[
+            write("BinaryCacheService", "CreateCacheObjectUploads"),
+            write("BinaryCacheService", "RegisterCacheNarinfos"),
+        ])
         .is_empty());
         assert_eq!(
             validate_method_manifest(&[write("IdentityService", &["Mint", "Token"].concat(),)])

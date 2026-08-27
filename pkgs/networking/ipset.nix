@@ -79,12 +79,11 @@ in
       version = testing.mkToolCheck {
         pname = "tool-ipset";
         tool = self;
-        # `ipset version` works without root and without kernel
-        # modules loaded — it just prints the userspace + protocol
-        # version. We rely on the kernel-side check (kconfig in
+        # `ipset help` works without root and without kernel modules
+        # loaded. We rely on the kernel-side check (kconfig in
         # pkgs/kernel/config/networking.config) to cover the `ipset
         # list / create` paths that need an ip_set kmod present.
-        command = "ipset version";
+        command = "ipset help";
       };
     };
   }

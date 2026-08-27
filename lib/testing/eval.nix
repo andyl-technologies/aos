@@ -478,12 +478,10 @@
     then throw "the stock system must restore its last fully evaluated host input"
     else if !(builtins.hasAttr "aos-host-config-cache" system.config.systemd.services)
     then throw "the stock system must cache fully evaluated host input"
-    else if
-      system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
+    else if system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
       ? ConditionPathExists
     then throw "metadata acquisition must run on provisioned boots"
-    else if
-      system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
+    else if system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
       ? ConditionPathExists
     then throw "the restricted storage projection must remain available as a post-commit advisory check"
     else if

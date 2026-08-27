@@ -103,12 +103,12 @@ in
           rpath = true
           omit-git-hash = true
           download-rustc = false
-          # `lld = false`: x.py refuses `rust.lld = true` when configured with an
-          # external `llvm-config` (it has no bundled llvm-project to build lld
-          # from). The wasm32-unknown-unknown target nonetheless needs `rust-lld`
+          # "lld = false": x.py refuses "rust.lld = true" when configured with an
+          # external "llvm-config" (it has no bundled llvm-project to build lld
+          # from). The wasm32-unknown-unknown target nonetheless needs "rust-lld"
           # (wasm has no system linker), so the install phase symlinks it from
-          # the AOS LLVM's own `lld` driver instead. `use-lld = false` keeps the
-          # host (x86_64) target on GCC's `ld` — rust-lld as the default host
+          # the AOS LLVM's own "lld" driver instead. "use-lld = false" keeps the
+          # host (x86_64) target on GCC's "ld" — rust-lld as the default host
           # linker chokes on the zlib-compressed debug sections in GCC 14's
           # libgcc.a.
           lld = false
@@ -151,23 +151,23 @@ in
                   export OPENSSL_INCLUDE_DIR=${openssl}/include
                   export OPENSSL_NO_VENDOR=1
                   export OPENSSL_STATIC=0
-                  # Installs the default extended set selected by `tools` —
+                  # Installs the default extended set selected by "tools" —
                   # including the rust-src component ("src" in tools), consumed
                   # by rust-analyzer via RUST_SRC_PATH. NOT a separate
-                  # `x.py install src`: that treats "src" as a path filter,
+                  # "x.py install src": that treats "src" as a path filter,
                   # matches a docs step, and panics on the absent doc dir
                   # (docs = false).
                   python3 x.py install
 
-                  # Supply `rust-lld` for wasm32-unknown-unknown. rustc links the
-                  # bare wasm target with the self-contained `rust-lld` found at
-                  # lib/rustlib/<host>/bin/rust-lld, invoked as `rust-lld -flavor
-                  # wasm` — but x.py cannot build rust-lld against an external
+                  # Supply "rust-lld" for wasm32-unknown-unknown. rustc links the
+                  # bare wasm target with the self-contained "rust-lld" found at
+                  # lib/rustlib/<host>/bin/rust-lld, invoked as "rust-lld -flavor
+                  # wasm" — but x.py cannot build rust-lld against an external
                   # llvm-config (see [rust] lld above). The AOS LLVM ships the
-                  # universal `lld` driver, which dispatches on `-flavor wasm`
+                  # universal "lld" driver, which dispatches on "-flavor wasm"
                   # exactly like wasm-ld, so point rust-lld at it. Without this,
-                  # `cargo build --target wasm32-unknown-unknown` fails with
-                  # "linker `rust-lld` not found".
+                  # "cargo build --target wasm32-unknown-unknown" fails with
+                  # "linker 'rust-lld' not found".
                   RUSTLIB_BIN="$out/lib/rustlib/x86_64-unknown-linux-gnu/bin"
                   mkdir -p "$RUSTLIB_BIN"
                   ln -sf ${llvm}/bin/lld "$RUSTLIB_BIN/rust-lld"

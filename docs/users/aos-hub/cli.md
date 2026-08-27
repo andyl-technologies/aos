@@ -264,6 +264,12 @@ fail closed without advancing either resource.
 
 Routes are created disabled. Enabling a route queues its current configuration
 probe, and the route remains ineligible for traffic until that probe succeeds.
+For the usual public object-store deployment, `aos-hub worker deploy
+--default-public-delivery-url <https-origin>` supplies a derived Git route for
+every public registry whose complete reconciled placement uses the
+instance-default binding. This policy follows placement changes automatically;
+no per-registry route is required. Creating an explicit Git advertisement
+overrides the derived route and restores the fully modeled behavior below.
 Use `aos hub route explain` with
 `--access-class web`, `git`, or `nix_cache` to inspect the selected access
 policy, publication, and placement before enabling a route. Route advertisement
