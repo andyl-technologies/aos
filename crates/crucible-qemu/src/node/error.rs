@@ -309,3 +309,6 @@ impl From<QemuNodeError> for BackendError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
