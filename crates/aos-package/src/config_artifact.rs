@@ -5,6 +5,8 @@
 //! values against the signed RFC-0001 `expose.config` metadata persisted in the
 //! package profile, writes the materialized files under `/etc/aos/packages`,
 //! and applies the declared reload/restart policy for changed artifacts.
+//! Packages that publish a typed configuration module may omit legacy desired
+//! config entirely; their artifacts are then owned by the host evaluator.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -67,6 +69,9 @@ pub(crate) fn preflight_desired_config(
         if !apm.explicit || !final_packages.contains(&apm.name) {
             continue;
         }
+        if apm.config_module.is_some() && !desired.contains_key(&apm.name) {
+            continue;
+        }
         if let Some(expose) = apm.expose.as_ref()
             && !expose.config.artifacts.is_empty()
         {
@@ -75,6 +80,9 @@ pub(crate) fn preflight_desired_config(
     }
     for root in resolved_roots {
         if !final_packages.contains(&root.name) {
+            continue;
+        }
+        if root.config_module.is_some() && !desired.contains_key(&root.name) {
             continue;
         }
         if let Some(expose) = root.expose.as_ref()
@@ -145,8 +153,12 @@ pub(crate) async fn reconcile_desired_config(
         if expose.config.is_empty() {
             continue;
         }
-        handled_packages.insert(apm.name.clone());
         let desired_package = desired.get(&apm.name);
+        if apm.config_module.is_some() && desired_package.is_none() {
+            changed |= retire_persistent_package_config(&root, &expose.config.artifacts)?;
+            continue;
+        }
+        handled_packages.insert(apm.name.clone());
         changed |= materialize_package_config(
             &root,
             &apm.name,
@@ -206,6 +218,27 @@ fn materialize_package_config(
         }
     }
 
+    Ok(changed)
+}
+
+/// Retires legacy persistent artifacts when typed modules assume authority.
+///
+/// The live `/etc` overlay is intentionally left untouched. Removing a file
+/// through that mount would create a generation-local whiteout; the next host
+/// configuration activation instead swaps in the typed projection atomically.
+fn retire_persistent_package_config(root: &Path, artifacts: &[ConfigArtifactMeta]) -> Result<bool> {
+    let mut changed = false;
+    for artifact in artifacts {
+        let persistent = persistent_path(root, &artifact.path)?;
+        match std::fs::remove_file(&persistent) {
+            Ok(()) => changed = true,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("retiring legacy config {}", persistent.display()));
+            }
+        }
+    }
     Ok(changed)
 }
 
@@ -410,7 +443,10 @@ fn aos_root_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ApmMeta, ApmSettings, ExposeConfigMeta, ExposeMeta};
+    use crate::types::{
+        ApmMeta, ApmSettings, ConfigModuleArtifacts, ConfigModuleMeta, ConfigOutputMeta,
+        ExposeConfigMeta, ExposeMeta, ModuleAbiCompat,
+    };
     use tempfile::TempDir;
 
     fn system_config() -> ApmConfig {
@@ -497,6 +533,27 @@ mod tests {
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),
+        }
+    }
+
+    fn typed_config_module() -> ConfigModuleMeta {
+        ConfigModuleMeta {
+            config_output: ConfigOutputMeta {
+                store_path: "/nix/store/configmodulehash111111111111111-web-config".into(),
+                nar_hash: "sha256:test".into(),
+                nar_size: 1,
+                references: Vec::new(),
+            },
+            evaluation_base_lib: None,
+            dependency_outputs: BTreeMap::new(),
+            module_abi_compat: ModuleAbiCompat { min: 1, max: 2 },
+            declares: vec!["web.enable".into()],
+            declaration_schema: Vec::new(),
+            requires: Vec::new(),
+            owns_roots: Vec::new(),
+            contributes: Vec::new(),
+            artifacts: ConfigModuleArtifacts::default(),
+            provides_capabilities: Vec::new(),
         }
     }
 
@@ -593,6 +650,31 @@ mod tests {
     }
 
     #[test]
+    fn preflight_desired_config_allows_typed_module_without_legacy_values() {
+        let desired = BTreeMap::new();
+        let final_packages = BTreeSet::from(["web".to_string()]);
+        let mut root = package_meta_with_config();
+        root.config_module = Some(typed_config_module());
+
+        preflight_desired_config(&system_config(), &desired, &final_packages, &[], &[root])
+            .unwrap();
+    }
+
+    #[test]
+    fn preflight_desired_config_validates_explicit_legacy_values_for_typed_module() {
+        let desired = BTreeMap::from([("web".into(), BTreeMap::new())]);
+        let final_packages = BTreeSet::from(["web".to_string()]);
+        let mut root = package_meta_with_config();
+        root.config_module = Some(typed_config_module());
+
+        let err =
+            preflight_desired_config(&system_config(), &desired, &final_packages, &[], &[root])
+                .unwrap_err();
+
+        assert!(err.to_string().contains("missing required field"));
+    }
+
+    #[test]
     fn materialize_package_config_rejects_unknown_artifact_before_writing() {
         let tmp = TempDir::new().unwrap();
         let installed = installed_with_config();
@@ -623,5 +705,33 @@ mod tests {
                 .join("var/etc/aos/packages/web/config.env")
                 .exists()
         );
+    }
+
+    #[test]
+    fn retire_persistent_package_config_is_a_noop_on_a_clean_root() {
+        let tmp = TempDir::new().unwrap();
+        let installed = installed_with_config();
+        let apm = installed.apm.as_ref().unwrap();
+        let artifacts = &apm.expose.as_ref().unwrap().config.artifacts;
+
+        assert!(!retire_persistent_package_config(tmp.path(), artifacts).unwrap());
+    }
+
+    #[test]
+    fn retire_persistent_package_config_removes_only_persistent_authority() {
+        let tmp = TempDir::new().unwrap();
+        let installed = installed_with_config();
+        let apm = installed.apm.as_ref().unwrap();
+        let artifacts = &apm.expose.as_ref().unwrap().config.artifacts;
+        let persistent = tmp.path().join("var/etc/aos/packages/web/config.env");
+        let live = tmp.path().join("etc/aos/packages/web/config.env");
+        std::fs::create_dir_all(persistent.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(live.parent().unwrap()).unwrap();
+        std::fs::write(&persistent, b"TOKEN=legacy\n").unwrap();
+        std::fs::write(&live, b"TOKEN=legacy\n").unwrap();
+
+        assert!(retire_persistent_package_config(tmp.path(), artifacts).unwrap());
+        assert!(!persistent.exists());
+        assert_eq!(std::fs::read(&live).unwrap(), b"TOKEN=legacy\n");
     }
 }
