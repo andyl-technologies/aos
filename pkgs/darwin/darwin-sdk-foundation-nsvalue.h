@@ -2,11 +2,7 @@
 #define _AOS_FOUNDATION_NSVALUE_H_
 #import <Foundation/Foundation.h>
 
-typedef CGPoint NSPoint;
-typedef CGSize NSSize;
-typedef CGRect NSRect;
-
-@interface NSValue : NSObject <NSCopying>
+@interface NSValue (AOSJDKSplitSurface)
 + (NSValue *)valueWithBytes:(const void *)value objCType:(const char *)type;
 - (const char *)objCType;
 - (NSSize)sizeValue;

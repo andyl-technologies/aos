@@ -2605,6 +2605,14 @@ in
           @protocol NSCoding
           @end
 
+          typedef double NSTimeInterval;
+          #define NSTimeIntervalSince1970 978307200.0
+
+          @interface NSDate : NSObject <NSCopying>
+          + (instancetype)dateWithTimeIntervalSince1970:(NSTimeInterval)seconds;
+          - (NSTimeInterval)timeIntervalSince1970;
+          @end
+
           @class NSString;
           @interface NSError : NSObject
           @property(readonly) NSInteger code;
@@ -2658,6 +2666,13 @@ in
           - (instancetype)initWithBytes:(const void *)bytes length:(NSUInteger)length;
           @property(readonly) NSUInteger length;
           @property(readonly) const void *bytes;
+          @end
+
+          typedef CGPoint NSPoint;
+          typedef CGSize NSSize;
+          typedef CGRect NSRect;
+
+          @interface NSValue : NSObject <NSCopying>
           @end
 
           @interface NSNumber : NSObject

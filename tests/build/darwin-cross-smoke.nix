@@ -537,6 +537,22 @@
               -lobjc \
               -o "$c/bin/aos-darwin-jdk-sdk-smoke"
 
+            # Apple's split Foundation headers are valid entry points, not
+            # aliases that only work after the umbrella has established the
+            # base type order. Compile and link each one first in an otherwise
+            # independent translation unit to keep that include contract.
+            for split_header in NSDate NSString NSValue; do
+              cat > "foundation-$split_header-smoke.m" <<EOF
+            #import <Foundation/$split_header.h>
+            #import <Foundation/Foundation.h>
+            int main(void) { return 0; }
+            EOF
+              "$CC" "foundation-$split_header-smoke.m" \
+                -framework Foundation \
+                -lobjc \
+                -o "$c/bin/aos-darwin-foundation-$split_header-smoke"
+            done
+
             cp ${./darwin-jrs-sdk-smoke.m} jrs-sdk-smoke.m
             "$CC" jrs-sdk-smoke.m \
               -framework JavaRuntimeSupport \
@@ -983,6 +999,9 @@
               "$c/bin/aos-darwin-hypervisor-smoke" \
               "$c/bin/aos-darwin-iconv-smoke" \
               "$c/bin/aos-darwin-jdk-sdk-smoke" \
+              "$c/bin/aos-darwin-foundation-NSDate-smoke" \
+              "$c/bin/aos-darwin-foundation-NSString-smoke" \
+              "$c/bin/aos-darwin-foundation-NSValue-smoke" \
               "$c/bin/aos-darwin-jrs-sdk-smoke" \
               "$c/bin/aos-darwin-iokit-smoke" \
               "$c/bin/aos-darwin-metal-smoke" \
