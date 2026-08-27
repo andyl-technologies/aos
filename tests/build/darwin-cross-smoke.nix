@@ -146,6 +146,26 @@
               -o "$c/bin/aos-darwin-corefoundation-stream-smoke"
 
             printf '%s\n' \
+              '#include <netinet/ip_icmp.h>' \
+              '#include <netinet/icmp6.h>' \
+              'int main(void) {' \
+              '  struct icmp echo4 = { 0 };' \
+              '  echo4.icmp_type = ICMP_ECHO;' \
+              '  echo4.icmp_code = 0;' \
+              '  echo4.icmp_id = 1;' \
+              '  echo4.icmp_seq = 2;' \
+              '  echo4.icmp_data[0] = 3;' \
+              '  struct icmp6_hdr echo6 = { 0 };' \
+              '  echo6.icmp6_type = ICMP6_ECHO_REQUEST;' \
+              '  echo6.icmp6_code = 0;' \
+              '  echo6.icmp6_id = 4;' \
+              '  echo6.icmp6_seq = 5;' \
+              '  return sizeof(echo4) < ICMP_ADVLENMIN || sizeof(echo6) != 8 || echo4.icmp_type == ICMP_ECHOREPLY || echo6.icmp6_type == ICMP6_ECHO_REPLY;' \
+              '}' \
+              > icmp-smoke.c
+            "$CC" icmp-smoke.c -o "$c/bin/aos-darwin-icmp-smoke"
+
+            printf '%s\n' \
               '#include <Hypervisor/Hypervisor.h>' \
               '#if defined(__aarch64__) || defined(__arm64__)' \
               'int main(void) {' \
@@ -485,6 +505,14 @@
               -lobjc \
               -o "$c/bin/aos-darwin-foundation-appkit-smoke"
 
+            cp ${./darwin-jdk-sdk-smoke.m} jdk-sdk-smoke.m
+            "$CC" jdk-sdk-smoke.m \
+              -framework Foundation \
+              -framework AppKit \
+              -framework ApplicationServices \
+              -lobjc \
+              -o "$c/bin/aos-darwin-jdk-sdk-smoke"
+
             printf '%s\n' \
               '#import <Foundation/NSObject.h>' \
               '#import <Foundation/NSProcessInfo.h>' \
@@ -739,6 +767,7 @@
 
             printf '%s\n' \
               '#include <Security/AuthSession.h>' \
+              '#include <Security/SecImportExport.h>' \
               '#include <Security/Security.h>' \
               'static OSStatus aos_ssl_read(SSLConnectionRef connection, void *data, size_t *length) { (void)connection; (void)data; (void)length; return errSSLClosedGraceful; }' \
               'static OSStatus aos_ssl_write(SSLConnectionRef connection, const void *data, size_t *length) { (void)connection; (void)data; (void)length; return errSSLClosedGraceful; }' \
@@ -746,6 +775,18 @@
               '  SecuritySessionId session = 0;' \
               '  SessionAttributeBits attributes = 0;' \
               '  OSStatus sessionStatus = SessionGetInfo(callerSecuritySession, &session, &attributes);' \
+              '  SecKeyImportExportParameters importParameters = {' \
+              '    .version = SEC_KEY_IMPORT_EXPORT_PARAMS_VERSION,' \
+              '    .flags = 0,' \
+              '    .keyUsage = CSSM_KEYUSE_ANY,' \
+              '    .keyAttributes = CSSM_KEYATTR_RETURN_DEFAULT' \
+              '  };' \
+              '  SecExternalFormat externalFormat = kSecFormatWrappedPKCS8;' \
+              '  SecExternalItemType externalType = kSecItemTypePrivateKey;' \
+              '  CFDataRef exportedData = NULL;' \
+              '  CFArrayRef importedItems = NULL;' \
+              '  OSStatus exportStatus = SecKeychainItemExport(NULL, kSecFormatPKCS12, kSecItemPemArmour, &importParameters, &exportedData);' \
+              '  OSStatus importStatus = SecKeychainItemImport(NULL, NULL, &externalFormat, &externalType, 0, &importParameters, NULL, &importedItems);' \
               '  SSLContextRef context = SSLCreateContext(kCFAllocatorDefault, kSSLClientSide, kSSLStreamType);' \
               '  SSLSetIOFuncs(context, aos_ssl_read, aos_ssl_write);' \
               '  SSLSetConnection(context, NULL);' \
@@ -804,7 +845,7 @@
               '  if (certificateData != NULL) CFRelease(certificateData);' \
               '  if (trust != NULL) CFRelease(trust);' \
               '  if (context != NULL) CFRelease(context);' \
-              '  return trustResult == kSecTrustResultOtherError && processed == (size_t)-1 && sessionStatus == errSecItemNotFound && session == callerSecuritySession && attributes == sessionHasGraphicAccess && createdTrust == copiedTrustSettings && copiedItems == errSecItemNotFound && policyConstants[0] == NULL && trustSettingKeys[0] == NULL && policyScoped && sslPolicy && trusted && kSecTrustSettingsResultTrustRoot != 1 && kSecTrustSettingsResultTrustAsRoot != 2 && kSecTrustSettingsResultDeny != 3 && kSecTrustSettingsDomainAdmin != 1 && copiedKeychain == addedPassword && foundPassword == modifiedPassword && freedPassword == deletedPassword;' \
+              '  return trustResult == kSecTrustResultOtherError && processed == (size_t)-1 && sessionStatus == errSecItemNotFound && exportStatus == errSecItemNotFound && importStatus == errSecItemNotFound && externalFormat == kSecFormatX509Cert && externalType == kSecItemTypeCertificate && exportedData == NULL && importedItems == NULL && session == callerSecuritySession && attributes == sessionHasGraphicAccess && createdTrust == copiedTrustSettings && copiedItems == errSecItemNotFound && policyConstants[0] == NULL && trustSettingKeys[0] == NULL && policyScoped && sslPolicy && trusted && kSecTrustSettingsResultTrustRoot != 1 && kSecTrustSettingsResultTrustAsRoot != 2 && kSecTrustSettingsResultDeny != 3 && kSecTrustSettingsDomainAdmin != 1 && copiedKeychain == addedPassword && foundPassword == modifiedPassword && freedPassword == deletedPassword;' \
               '}' \
               > security-smoke.c
             "$CC" security-smoke.c \
@@ -866,6 +907,7 @@
               "$c/bin/aos-darwin-foundation-appkit-smoke" \
               "$c/bin/aos-darwin-hypervisor-smoke" \
               "$c/bin/aos-darwin-iconv-smoke" \
+              "$c/bin/aos-darwin-jdk-sdk-smoke" \
               "$c/bin/aos-darwin-iokit-smoke" \
               "$c/bin/aos-darwin-metal-smoke" \
               "$c/bin/aos-darwin-nis-smoke" \

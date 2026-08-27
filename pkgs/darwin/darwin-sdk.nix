@@ -560,6 +560,11 @@ in
             "$out/usr/lib/libSystem.tbd"
           cp "$xnuRoot/bsd/netinet/tcp_fsm.h" "$out/usr/include/netinet/"
           cp "$xnuRoot/bsd/netinet/tcp_timer.h" "$out/usr/include/netinet/"
+          # OpenJDK's Darwin reachability implementation consumes the public
+          # XNU ICMP wire layouts directly. Keep these headers byte-for-byte
+          # from the pinned XNU source rather than recreating packet ABI.
+          cp "$xnuRoot/bsd/netinet/ip_icmp.h" "$out/usr/include/netinet/"
+          cp "$xnuRoot/bsd/netinet/icmp6.h" "$out/usr/include/netinet/"
           cp "$xnuRoot/bsd/net/bpf.h" "$out/usr/include/net/"
           cp "$xnuRoot/bsd/net/ethernet.h" "$out/usr/include/net/"
           cp "$xnuRoot/bsd/net/if_media.h" "$out/usr/include/net/"
@@ -943,26 +948,8 @@ in
 
           # Apple's public AuthSession surface used by OpenJDK to distinguish
           # headless security sessions from WindowServer-capable sessions.
-          cat > "$out/System/Library/Frameworks/Security.framework/Headers/AuthSession.h" <<'EOF'
-          #if !defined(__AuthSession__)
-          #define __AuthSession__ 1
-          #include <Security/SecBase.h>
-          __BEGIN_DECLS
-          typedef UInt32 SecuritySessionId;
-          CF_ENUM(SecuritySessionId) {
-            callerSecuritySession = ((SecuritySessionId)-1)
-          };
-          typedef CF_OPTIONS(UInt32, SessionAttributeBits) {
-            sessionHasGraphicAccess = 0x0010
-          };
-          OSStatus SessionGetInfo(
-            SecuritySessionId session,
-            SecuritySessionId * __nullable sessionId,
-            SessionAttributeBits * __nullable attributes
-          );
-          __END_DECLS
-          #endif
-          EOF
+          cp ${./darwin-sdk-auth-session.h} \
+            "$out/System/Library/Frameworks/Security.framework/Headers/AuthSession.h"
 
           cat > "$out/System/Library/Frameworks/Security.framework/Headers/SecCertificate.h" <<'EOF'
           #ifndef _SECURITY_SECCERTIFICATE_H_
@@ -1063,103 +1050,20 @@ in
           #endif
           EOF
 
-          cat > "$out/System/Library/Frameworks/Security.framework/Headers/SecureTransport.h" <<'EOF'
-          #ifndef _SECURITY_SECURETRANSPORT_H_
-          #define _SECURITY_SECURETRANSPORT_H_
-          #include <Security/SecTrust.h>
-          #include <stddef.h>
-          __BEGIN_DECLS
-          struct SSLContext;
-          typedef struct SSLContext *SSLContextRef;
-          typedef const void *SSLConnectionRef;
-          typedef OSStatus (*SSLReadFunc)(SSLConnectionRef connection, void *data, size_t *dataLength);
-          typedef OSStatus (*SSLWriteFunc)(SSLConnectionRef connection, const void *data, size_t *dataLength);
-          typedef enum {
-            kSSLSessionOptionBreakOnServerAuth = 0
-          } SSLSessionOption;
-          typedef enum {
-            kSSLServerSide = 0,
-            kSSLClientSide = 1
-          } SSLProtocolSide;
-          typedef enum {
-            kSSLStreamType = 0,
-            kSSLDatagramType = 1
-          } SSLConnectionType;
-          typedef enum {
-            kSSLProtocolUnknown = 0,
-            kSSLProtocol2 = 1,
-            kSSLProtocol3 = 2,
-            kSSLProtocol3Only = 3,
-            kTLSProtocol1 = 4,
-            kTLSProtocol1Only = 5,
-            kSSLProtocolAll = 6,
-            kTLSProtocol11 = 7,
-            kTLSProtocol12 = 8,
-            kDTLSProtocol1 = 9,
-            kTLSProtocol13 = 10,
-            kDTLSProtocol12 = 11,
-            kTLSProtocolMaxSupported = 999
-          } SSLProtocol;
-          SSLContextRef SSLCreateContext(
-            CFAllocatorRef allocator,
-            SSLProtocolSide protocolSide,
-            SSLConnectionType connectionType
-          );
-          OSStatus SSLSetIOFuncs(SSLContextRef context, SSLReadFunc readFunc, SSLWriteFunc writeFunc);
-          OSStatus SSLSetConnection(SSLContextRef context, SSLConnectionRef connection);
-          OSStatus SSLSetSessionOption(SSLContextRef context, SSLSessionOption option, Boolean value);
-          OSStatus SSLSetProtocolVersionMin(SSLContextRef context, SSLProtocol minVersion);
-          OSStatus SSLSetProtocolVersionMax(SSLContextRef context, SSLProtocol maxVersion);
-          OSStatus SSLSetPeerDomainName(SSLContextRef context, const char *peerName, size_t peerNameLength);
-          OSStatus SSLHandshake(SSLContextRef context);
-          OSStatus SSLCopyPeerTrust(SSLContextRef context, SecTrustRef *trust);
-          OSStatus SSLWrite(SSLContextRef context, const void *data, size_t dataLength, size_t *processed);
-          OSStatus SSLRead(SSLContextRef context, void *data, size_t dataLength, size_t *processed);
-          OSStatus SSLClose(SSLContextRef context);
-          __END_DECLS
-          #endif
-          EOF
+          cp ${./darwin-sdk-secure-transport.h} \
+            "$out/System/Library/Frameworks/Security.framework/Headers/SecureTransport.h"
 
-          cat > "$out/System/Library/Frameworks/Security.framework/Headers/SecKeychain.h" <<'EOF'
-          #ifndef _SECURITY_SECKEYCHAIN_H_
-          #define _SECURITY_SECKEYCHAIN_H_
-          #include <Security/SecBase.h>
-          __BEGIN_DECLS
-          typedef struct __SecKeychain *SecKeychainRef;
-          typedef struct __SecKeychainItem *SecKeychainItemRef;
-          typedef struct SecKeychainAttributeList SecKeychainAttributeList;
-          OSStatus SecKeychainCopyDefault(SecKeychainRef *keychain);
-          OSStatus SecKeychainAddGenericPassword(
-            SecKeychainRef keychain,
-            UInt32 serviceNameLength,
-            const char *serviceName,
-            UInt32 accountNameLength,
-            const char *accountName,
-            UInt32 passwordLength,
-            const void *passwordData,
-            SecKeychainItemRef *itemRef
-          );
-          OSStatus SecKeychainFindGenericPassword(
-            CFTypeRef keychainOrArray,
-            UInt32 serviceNameLength,
-            const char *serviceName,
-            UInt32 accountNameLength,
-            const char *accountName,
-            UInt32 *passwordLength,
-            void **passwordData,
-            SecKeychainItemRef *itemRef
-          );
-          OSStatus SecKeychainItemModifyAttributesAndData(
-            SecKeychainItemRef itemRef,
-            const SecKeychainAttributeList *attributeList,
-            UInt32 length,
-            const void *data
-          );
-          OSStatus SecKeychainItemDelete(SecKeychainItemRef itemRef);
-          OSStatus SecKeychainItemFreeContent(SecKeychainAttributeList *attributeList, void *data);
-          __END_DECLS
-          #endif
-          EOF
+          cp ${./darwin-sdk-sec-keychain.h} \
+            "$out/System/Library/Frameworks/Security.framework/Headers/SecKeychain.h"
+
+          # Apple's pinned public import/export ABI used by the macOS
+          # KeychainStore implementation in OpenJDK 8.
+          cp ${./darwin-sdk-cssmtype.h} \
+            "$out/System/Library/Frameworks/Security.framework/Headers/cssmtype.h"
+          cp ${./darwin-sdk-sec-access.h} \
+            "$out/System/Library/Frameworks/Security.framework/Headers/SecAccess.h"
+          cp ${./darwin-sdk-sec-import-export.h} \
+            "$out/System/Library/Frameworks/Security.framework/Headers/SecImportExport.h"
 
           cat > "$out/System/Library/Frameworks/Security.framework/Headers/Security.h" <<'EOF'
           #ifndef _SECURITY_H_
@@ -1167,6 +1071,7 @@ in
           #include <Security/AuthSession.h>
           #include <Security/SecBase.h>
           #include <Security/SecCertificate.h>
+          #include <Security/SecImportExport.h>
           #include <Security/SecItem.h>
           #include <Security/SecKeychain.h>
           #include <Security/SecPolicy.h>
@@ -2440,8 +2345,21 @@ in
             BOOL expandTilde
           );
 
+          #import <Foundation/NSDate.h>
+          #import <Foundation/NSString.h>
+          #import <Foundation/NSValue.h>
+          #import <Foundation/NSJDKSurface.h>
+
           #endif
           EOF
+          cp ${./darwin-sdk-foundation-nsdate.h} \
+            "$out/System/Library/Frameworks/Foundation.framework/Headers/NSDate.h"
+          cp ${./darwin-sdk-foundation-nsstring.h} \
+            "$out/System/Library/Frameworks/Foundation.framework/Headers/NSString.h"
+          cp ${./darwin-sdk-foundation-nsvalue.h} \
+            "$out/System/Library/Frameworks/Foundation.framework/Headers/NSValue.h"
+          cp ${./darwin-sdk-foundation-jdk.h} \
+            "$out/System/Library/Frameworks/Foundation.framework/Headers/NSJDKSurface.h"
           cat > "$out/System/Library/Frameworks/Foundation.framework/Headers/NSObject.h" <<'EOF'
           #ifndef _AOS_FOUNDATION_NSOBJECT_H_
           #define _AOS_FOUNDATION_NSOBJECT_H_
@@ -2533,8 +2451,12 @@ in
             NSApplicationPresentationHideMenuBar = 1U << 3
           };
           typedef NSUInteger NSApplicationTerminateReply;
+          typedef NSUInteger NSApplicationPrintReply;
           typedef NSInteger NSModalResponse;
           enum {
+            NSPrintingCancelled = 0,
+            NSPrintingSuccess = 1,
+            NSTerminateLater = 2,
             NSModalResponseOK = 1,
             NSAlertSecondButtonReturn = 1001,
             NSControlStateValueOff = 0,
@@ -2564,6 +2486,13 @@ in
           @protocol NSApplicationDelegate <NSObject>
           @optional
           - (void)applicationDidFinishLaunching:(NSNotification *)notification;
+          - (void)application:(NSApplication *)sender openFiles:(NSArray<NSString *> *)filenames;
+          - (NSApplicationPrintReply)application:(NSApplication *)application
+                                      printFiles:(NSArray<NSString *> *)fileNames
+                                    withSettings:(NSDictionary *)printSettings
+                                 showPrintPanels:(BOOL)showPrintPanels;
+          - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender
+                              hasVisibleWindows:(BOOL)flag;
           - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender;
           - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender;
           @end
@@ -2808,8 +2737,12 @@ in
           - (void)removeDeliveredNotification:(NSUserNotification *)notification;
           @end
 
+          #import <AppKit/NSJDKSurface.h>
+
           #endif
           EOF
+          cp ${./darwin-sdk-appkit-jdk.h} \
+            "$out/System/Library/Frameworks/AppKit.framework/Headers/NSJDKSurface.h"
 
           cat > "$out/System/Library/Frameworks/Cocoa.framework/Headers/Cocoa.h" <<'EOF'
           #ifndef _AOS_COCOA_H_
@@ -2860,6 +2793,9 @@ in
                 - '_OBJC_METACLASS_$_NSObject'
           ...
           EOF
+          sed -i \
+            '/_NSLog/r ${./darwin-sdk-foundation-jdk.tbd-exports}' \
+            "$out/System/Library/Frameworks/Foundation.framework/Foundation.tbd"
           ln -s ../../Foundation.tbd \
             "$out/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation.tbd"
           ln -s Foundation.tbd \
@@ -2920,6 +2856,9 @@ in
                 - '_OBJC_PROTOCOL_$_NSWindowDelegate'
           ...
           EOF
+          sed -i \
+            '/_NSBeep/r ${./darwin-sdk-appkit-jdk.tbd-exports}' \
+            "$out/System/Library/Frameworks/AppKit.framework/AppKit.tbd"
           ln -s ../../AppKit.tbd \
             "$out/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit.tbd"
           ln -s AppKit.tbd \
@@ -3074,6 +3013,8 @@ in
           #include <CoreServices/CoreServices.h>
           #include <ApplicationServices/ApplicationServices.h>
 
+          #include <Carbon/AEDataModel.h>
+
           typedef UInt32 ProcessApplicationTransformState;
           enum {
             kCurrentProcess = 2,
@@ -3140,6 +3081,8 @@ in
 
           #endif
           EOF
+          cp ${./darwin-sdk-carbon-ae.h} \
+            "$out/System/Library/Frameworks/Carbon.framework/Headers/AEDataModel.h"
 
           # Hypervisor.framework is a public system ABI with distinct ARM and
           # x86 interfaces.  Publish the factual declarations and constants
@@ -3708,6 +3651,8 @@ in
                 - _SecCertificateCopyData
                 - _SecCopyErrorMessageString
                 - _SecItemCopyMatching
+                - _SecKeychainItemExport
+                - _SecKeychainItemImport
                 - _SecKeychainAddGenericPassword
                 - _SecKeychainCopyDefault
                 - _SecKeychainFindGenericPassword

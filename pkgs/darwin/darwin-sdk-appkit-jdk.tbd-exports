@@ -1,0 +1,8 @@
+      - _NSApplicationDidBecomeActiveNotification
+      - _NSApplicationDidHideNotification
+      - _NSApplicationDidResignActiveNotification
+      - _NSApplicationDidUnhideNotification
+      - _NSApplicationWillFinishLaunchingNotification
+      - _NSModalPanelRunLoopMode
+      - _NSEventTrackingRunLoopMode
+      - _NSWorkspaceWillPowerOffNotification
