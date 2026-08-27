@@ -13,13 +13,13 @@ use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT,
     QMP_HOT_FORK_REQUIRED_PROOFS, QMP_QUERY_CPUS_FAST_COMMAND,
-    QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
-    QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME,
-    QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
-    QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient, QmpCommandKind, QmpError,
-    QmpGreeting, QmpHotForkProof, QmpHotForkThreadDisposition, QmpIoTimeoutPolicy,
-    QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_READINESS_COMMAND,
+    QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
+    QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND,
+    QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient,
+    QmpCommandKind, QmpError, QmpGreeting, QmpHotForkProof, QmpHotForkThreadDisposition,
+    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -456,6 +456,67 @@ fn hot_fork_aio_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn Er
             client.query_hot_fork_aio_inventory(),
             Err(QmpError::MalformedTypedResponse {
                 command: QmpCommandKind::QueryHotForkAioInventory,
+                ..
+            })
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn hot_fork_mutex_inventory_is_exact_bounded_and_thread_bound() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":9,"complete":true,"overflowed":false,"mutex-count":2,"recursive-mutexes":1,"owned-mutexes":2,"acquisition-waiters":3,"condition-waiters":1,"unlock-transitions":1,"invalid-mutexes":0,"mutexes":[{"mutex-id":1,"owner-thread-id":10,"recursion-depth":1,"acquisition-waiters":2,"condition-waiters":0,"recursive":false,"unlock-active":false,"ownership-valid":true},{"mutex-id":2,"owner-thread-id":11,"recursion-depth":2,"acquisition-waiters":1,"condition-waiters":1,"recursive":true,"unlock-active":true,"ownership-valid":true}]}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let inventory = client.query_hot_fork_mutex_inventory()?;
+    assert_eq!(inventory.generation(), 9);
+    assert!(inventory.complete());
+    assert!(!inventory.overflowed());
+    assert_eq!(inventory.mutexes().len(), 2);
+    assert_eq!(inventory.mutexes()[0].mutex_id(), 1);
+    assert_eq!(inventory.mutexes()[0].owner_thread_id(), Some(10));
+    assert_eq!(inventory.mutexes()[0].recursion_depth(), 1);
+    assert_eq!(inventory.mutexes()[0].acquisition_waiters(), 2);
+    assert!(!inventory.mutexes()[0].recursive());
+    assert_eq!(inventory.mutexes()[1].condition_waiters(), 1);
+    assert!(inventory.mutexes()[1].recursive());
+    assert!(inventory.mutexes()[1].unlock_active());
+    assert!(inventory.mutexes()[1].ownership_valid());
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    assert_eq!(
+        execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND)
+    );
+    Ok(())
+}
+
+#[test]
+fn hot_fork_mutex_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn Error>> {
+    for response in [
+        r#"{"return":{"schema-version":2,"generation":1,"complete":true,"overflowed":false,"mutex-count":0,"recursive-mutexes":0,"owned-mutexes":0,"acquisition-waiters":0,"condition-waiters":0,"unlock-transitions":0,"invalid-mutexes":0,"mutexes":[]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"mutex-count":2,"recursive-mutexes":0,"owned-mutexes":1,"acquisition-waiters":0,"condition-waiters":0,"unlock-transitions":0,"invalid-mutexes":0,"mutexes":[{"mutex-id":1,"owner-thread-id":10,"recursion-depth":1,"acquisition-waiters":0,"condition-waiters":0,"recursive":false,"unlock-active":false,"ownership-valid":true}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"mutex-count":2,"recursive-mutexes":0,"owned-mutexes":0,"acquisition-waiters":0,"condition-waiters":0,"unlock-transitions":0,"invalid-mutexes":0,"mutexes":[{"mutex-id":2,"owner-thread-id":0,"recursion-depth":0,"acquisition-waiters":0,"condition-waiters":0,"recursive":false,"unlock-active":false,"ownership-valid":true},{"mutex-id":1,"owner-thread-id":0,"recursion-depth":0,"acquisition-waiters":0,"condition-waiters":0,"recursive":false,"unlock-active":false,"ownership-valid":true}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"mutex-count":1,"recursive-mutexes":0,"owned-mutexes":1,"acquisition-waiters":0,"condition-waiters":0,"unlock-transitions":0,"invalid-mutexes":0,"mutexes":[{"mutex-id":1,"owner-thread-id":10,"recursion-depth":0,"acquisition-waiters":0,"condition-waiters":0,"recursive":false,"unlock-active":false,"ownership-valid":true}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"mutex-count":1,"recursive-mutexes":0,"owned-mutexes":1,"acquisition-waiters":0,"condition-waiters":0,"unlock-transitions":0,"invalid-mutexes":0,"mutexes":[{"mutex-id":1,"owner-thread-id":10,"recursion-depth":2,"acquisition-waiters":0,"condition-waiters":0,"recursive":false,"unlock-active":false,"ownership-valid":true}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"mutex-count":1,"recursive-mutexes":0,"owned-mutexes":0,"acquisition-waiters":1,"condition-waiters":0,"unlock-transitions":0,"invalid-mutexes":0,"mutexes":[{"mutex-id":1,"owner-thread-id":0,"recursion-depth":0,"acquisition-waiters":0,"condition-waiters":0,"recursive":false,"unlock-active":false,"ownership-valid":true}]}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":false,"overflowed":false,"mutex-count":1,"recursive-mutexes":0,"owned-mutexes":0,"acquisition-waiters":0,"condition-waiters":0,"unlock-transitions":0,"invalid-mutexes":0,"mutexes":[{"mutex-id":1,"owner-thread-id":0,"recursion-depth":0,"acquisition-waiters":0,"condition-waiters":0,"recursive":false,"unlock-active":false,"ownership-valid":true}]}}"#,
+    ] {
+        let mut client = QmpClient::connect(scripted_qmp([
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            response,
+        ]))?;
+        assert!(matches!(
+            client.query_hot_fork_mutex_inventory(),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::QueryHotForkMutexInventory,
                 ..
             })
         ));

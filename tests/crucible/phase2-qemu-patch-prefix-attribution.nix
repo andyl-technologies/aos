@@ -531,6 +531,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0115-crucible-hot-fork-mutex-inventory.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

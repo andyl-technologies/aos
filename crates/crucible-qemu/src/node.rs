@@ -819,6 +819,21 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Queries QEMU's exact bounded observational mutex ownership inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
+    /// versioned response validation fails.
+    fn query_hot_fork_mutex_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkMutexInventory, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query_hot_fork_mutex_inventory",
+            "hot-fork mutex inventory is not implemented by this QMP channel",
+        ))
+    }
+
     /// Completes an authenticated terminal lifecycle transition without
     /// expecting QEMU to resume guest execution.
     ///
@@ -1637,9 +1652,22 @@ impl QemuNode {
             .qmp_machine_control
             .query_hot_fork_aio_inventory()
             .map_err(crate::QemuHotForkAuditError::AioInventory)?;
+        let mutexes_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_mutex_inventory()
+            .map_err(crate::QemuHotForkAuditError::MutexInventory)?;
 
         let inventory =
             crate::hot_fork_audit::capture_linux_qemu_hot_fork_process_inventory(&process)?;
+        let mutexes_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_mutex_inventory()
+            .map_err(crate::QemuHotForkAuditError::MutexInventory)?;
+        if mutexes_before != mutexes_after {
+            return Err(crate::QemuHotForkAuditError::MutexInventoryChanged);
+        }
         let aio_after = self
             .channels
             .qmp_machine_control
@@ -1672,7 +1700,14 @@ impl QemuNode {
         if before != after {
             return Err(crate::QemuHotForkAuditError::ReadinessChanged);
         }
-        crate::QemuHotForkAudit::new(before, threads_before, rcu_before, aio_before, inventory)
+        crate::QemuHotForkAudit::new(
+            before,
+            threads_before,
+            rcu_before,
+            aio_before,
+            mutexes_before,
+            inventory,
+        )
     }
 
     /// Returns numeric identity components after authenticating a preowned executable path.

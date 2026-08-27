@@ -1574,10 +1574,18 @@ checks every assigned home thread against the QEMU thread registry, and rejects
 changed context state. This is observational and still omits AIO handlers,
 timers, a retained drain/park barrier, and child reinitializers; readiness bit 3
 therefore remains clear.
+QEMU now also exposes a version-1, 65,536-entry POSIX `QemuMutex` and
+`QemuRecMutex` inventory. It reports sorted lifecycle identities, owner thread,
+recursion depth, acquisition and condition waiters, active unlock transitions,
+sticky ownership validity, and exact checked aggregates. The host brackets its
+procfs capture with identical mutex reports and requires every positive owner
+to appear in the exact thread registry. This is observational: it does not hold
+a fork barrier, account for every raw/library lock, choose a child disposition,
+or run a child reinitializer, so readiness bit 8 remains clear.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
-no safe non-coordinator child disposition, and none of the views can prove QEMU
-mutex, AIO/BH/timer, RCU barrier, block, plugin, external-thread, or
+no safe non-coordinator child disposition, and none of the views can prove a
+retained mutex, AIO/BH/timer, or RCU barrier, block, plugin, external-thread, or
 child-reinitialization state. They cannot promote a readiness bit. T-CAM-6.1
 remains unchecked until the complete supported-profile registry and all
 subsystem-owned proofs are implemented and accepted in the Phase 6 lab.

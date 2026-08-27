@@ -16,7 +16,8 @@ use thiserror::Error;
 
 use crate::{
     QemuNodeChannelError, QemuNodeError, QemuProcessIdentity, QmpHotForkAioInventory,
-    QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkThreadInventory,
+    QmpHotForkMutexInventory, QmpHotForkRcuInventory, QmpHotForkReadiness,
+    QmpHotForkThreadInventory,
 };
 
 /// Maximum threads, descriptors, or mappings retained by one audit.
@@ -158,6 +159,7 @@ pub struct QemuHotForkAudit {
     qemu_threads: QmpHotForkThreadInventory,
     qemu_rcu: QmpHotForkRcuInventory,
     qemu_aio: QmpHotForkAioInventory,
+    qemu_mutexes: QmpHotForkMutexInventory,
     process: QemuHotForkProcessInventory,
     externally_created_thread_ids: Vec<u32>,
 }
@@ -168,8 +170,13 @@ impl QemuHotForkAudit {
         qemu_threads: QmpHotForkThreadInventory,
         qemu_rcu: QmpHotForkRcuInventory,
         qemu_aio: QmpHotForkAioInventory,
+        qemu_mutexes: QmpHotForkMutexInventory,
         process: QemuHotForkProcessInventory,
     ) -> Result<Self, QemuHotForkAuditError> {
+        if !qemu_mutexes.complete() {
+            return Err(QemuHotForkAuditError::MutexInventoryIncomplete);
+        }
+
         let mut qemu_index = 0_usize;
         let mut externally_created_thread_ids = Vec::new();
         for process_thread in process.threads() {
@@ -223,11 +230,27 @@ impl QemuHotForkAudit {
                 });
             }
         }
+        for mutex in qemu_mutexes.mutexes() {
+            let Some(owner_thread_id) = mutex.owner_thread_id() else {
+                continue;
+            };
+            if qemu_threads
+                .threads()
+                .binary_search_by_key(&owner_thread_id, |thread| thread.thread_id())
+                .is_err()
+            {
+                return Err(QemuHotForkAuditError::MutexOwnerThreadMissing {
+                    mutex_id: mutex.mutex_id(),
+                    thread_id: owner_thread_id,
+                });
+            }
+        }
         Ok(Self {
             readiness,
             qemu_threads,
             qemu_rcu,
             qemu_aio,
+            qemu_mutexes,
             process,
             externally_created_thread_ids,
         })
@@ -255,6 +278,12 @@ impl QemuHotForkAudit {
     #[must_use]
     pub const fn qemu_aio(&self) -> &QmpHotForkAioInventory {
         &self.qemu_aio
+    }
+
+    /// Returns QEMU's matching bounded observational mutex ownership inventory.
+    #[must_use]
+    pub const fn qemu_mutexes(&self) -> &QmpHotForkMutexInventory {
+        &self.qemu_mutexes
     }
 
     /// Returns the matching stable process inventory.
@@ -291,6 +320,9 @@ pub enum QemuHotForkAuditError {
     /// The QEMU-owned AioContext inventory query failed.
     #[error("QEMU hot-fork AioContext inventory query failed")]
     AioInventory(#[source] QemuNodeChannelError),
+    /// The QEMU-owned mutex inventory query failed.
+    #[error("QEMU hot-fork mutex inventory query failed")]
+    MutexInventory(#[source] QemuNodeChannelError),
     /// QEMU was not at the exact paused/device-flush boundary.
     #[error("QEMU is not at the exact paused boundary required for hot-fork audit")]
     NotExactPausedBoundary,
@@ -306,6 +338,12 @@ pub enum QemuHotForkAuditError {
     /// QEMU's observational AioContext inventory changed around procfs capture.
     #[error("QEMU hot-fork AioContext inventory changed during process inventory")]
     AioInventoryChanged,
+    /// QEMU's observational mutex inventory changed around procfs capture.
+    #[error("QEMU hot-fork mutex inventory changed during process inventory")]
+    MutexInventoryChanged,
+    /// QEMU could not report every live mutex with valid ownership state.
+    #[error("QEMU hot-fork mutex inventory is incomplete")]
+    MutexInventoryIncomplete,
     /// A QEMU-registered thread was absent from the exact procfs inventory.
     #[error("QEMU-registered thread {thread_id} is absent from the process inventory")]
     RegisteredThreadMissing {
@@ -326,6 +364,16 @@ pub enum QemuHotForkAuditError {
         /// Process-local AioContext identifier.
         context_id: u64,
         /// Missing operating-system home-thread identifier.
+        thread_id: u32,
+    },
+    /// A mutex owner was absent from QEMU's active-thread registry.
+    #[error(
+        "QEMU mutex {mutex_id} owner thread {thread_id} is absent from the active-thread registry"
+    )]
+    MutexOwnerThreadMissing {
+        /// Process-local mutex identifier.
+        mutex_id: u64,
+        /// Missing operating-system owner-thread identifier.
         thread_id: u32,
     },
     /// Linux process inventory failed.
@@ -853,6 +901,7 @@ mod tests {
             QmpHotForkThreadInventory::one_coordinator(10),
             QmpHotForkRcuInventory::from_reader_ids(&[10]),
             QmpHotForkAioInventory::one_idle(1, 10),
+            QmpHotForkMutexInventory::one_owned(1, 10),
             process.clone(),
         )
         .expect("registered coordinator should match procfs");
@@ -862,8 +911,21 @@ mod tests {
             QemuHotForkAudit::new(
                 readiness,
                 QmpHotForkThreadInventory::one_coordinator(10),
+                QmpHotForkRcuInventory::from_reader_ids(&[10]),
+                QmpHotForkAioInventory::one_idle(1, 10),
+                QmpHotForkMutexInventory::incomplete(),
+                process.clone(),
+            ),
+            Err(QemuHotForkAuditError::MutexInventoryIncomplete)
+        ));
+
+        assert!(matches!(
+            QemuHotForkAudit::new(
+                readiness,
+                QmpHotForkThreadInventory::one_coordinator(10),
                 QmpHotForkRcuInventory::from_reader_ids(&[20]),
                 QmpHotForkAioInventory::one_idle(1, 10),
+                QmpHotForkMutexInventory::one_owned(1, 10),
                 process.clone(),
             ),
             Err(QemuHotForkAuditError::RcuReaderMissing { thread_id: 20 })
@@ -875,6 +937,7 @@ mod tests {
                 QmpHotForkThreadInventory::one_coordinator(10),
                 QmpHotForkRcuInventory::from_reader_ids(&[10]),
                 QmpHotForkAioInventory::one_idle(7, 20),
+                QmpHotForkMutexInventory::one_owned(1, 10),
                 process.clone(),
             ),
             Err(QemuHotForkAuditError::AioHomeThreadMissing {
@@ -886,9 +949,25 @@ mod tests {
         assert!(matches!(
             QemuHotForkAudit::new(
                 readiness,
+                QmpHotForkThreadInventory::one_coordinator(10),
+                QmpHotForkRcuInventory::from_reader_ids(&[10]),
+                QmpHotForkAioInventory::one_idle(1, 10),
+                QmpHotForkMutexInventory::one_owned(9, 20),
+                process.clone(),
+            ),
+            Err(QemuHotForkAuditError::MutexOwnerThreadMissing {
+                mutex_id: 9,
+                thread_id: 20,
+            })
+        ));
+
+        assert!(matches!(
+            QemuHotForkAudit::new(
+                readiness,
                 QmpHotForkThreadInventory::one_coordinator(30),
                 QmpHotForkRcuInventory::from_reader_ids(&[30]),
                 QmpHotForkAioInventory::one_idle(1, 30),
+                QmpHotForkMutexInventory::one_owned(1, 30),
                 process,
             ),
             Err(QemuHotForkAuditError::RegisteredThreadMissing { thread_id: 30 })

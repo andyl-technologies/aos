@@ -1486,6 +1486,22 @@
         '';
       };
     }
+    {
+      patch = "0115-crucible-hot-fork-mutex-inventory.patch";
+      check = certifyExactPatch {
+        patchName = "0115-crucible-hot-fork-mutex-inventory.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-mutex-inventory";
+        liveEvidence = ''
+          grep -Fxq 'mutex_inventory_schema_version=1' "$live_result"
+          grep -Fxq 'mutex_inventory_bound=65536' "$live_result"
+          grep -Fxq 'mutex_inventory_stable=true' "$live_result"
+          grep -Fxq 'mutex_owners_thread_bound=true' "$live_result"
+          grep -Fxq 'mutex_proof_acknowledged=false' "$live_result"
+          grep -Fxq 'incomplete_report_ready=false' "$live_result"
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

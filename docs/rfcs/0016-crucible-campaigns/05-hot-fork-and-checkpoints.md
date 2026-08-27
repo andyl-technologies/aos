@@ -285,12 +285,62 @@ acknowledge proof bit 3. The future coordinator must extend the inventory to
 the remaining handler/timer resources and establish a retained AIO/BH/timer
 barrier across the fork transaction.
 
+Patched POSIX QEMU also exposes the bounded observational mutex inventory used
+to define the process-private lock side of the child-reinitialization proof:
+
+```text
+CrucibleHotForkMutexInventory {
+    schema-version: u32 = 1,
+    generation: u64,
+    complete: bool,
+    overflowed: bool,
+    mutex-count: u32,
+    recursive-mutexes: u32,
+    owned-mutexes: u32,
+    acquisition-waiters: u64,
+    condition-waiters: u64,
+    unlock-transitions: u32,
+    invalid-mutexes: u32,
+    mutexes: [
+        {
+            mutex-id: positive u64,
+            owner-thread-id: nonnegative i64,
+            recursion-depth: u32,
+            acquisition-waiters: u32,
+            condition-waiters: u32,
+            recursive: bool,
+            unlock-active: bool,
+            ownership-valid: bool,
+        },
+    ],
+}
+```
+
+`mutexes` contains at most 65,536 records in strictly increasing `mutex-id`
+order. Owner zero and recursion depth zero are equivalent; every positive owner
+MUST appear in the matching QEMU thread inventory; and a nonrecursive mutex
+MUST have depth at most one. All top-level counts are exact checked sums.
+`complete` equals `!overflowed && invalid-mutexes == 0`. The process-local
+generation advances on mutex creation and destruction, while ownership and
+waiter fields are instantaneous state. Instrumentation transitions and the
+snapshot serialize on a private raw pthread mutex, so a response cannot contain
+a half-updated owner/depth pair and the inventory lock cannot recursively enter
+the `QemuMutex` registry it observes.
+
+This response is still observational. It does not acquire all QEMU locks,
+retain a barrier across `fork(2)`, prove that an omitted raw or library mutex is
+safe, select a child disposition, or run a child reinitializer. It therefore
+MUST NOT acknowledge proof bit 8. The future coordinator must retain the
+appropriate subsystem barriers and explicitly account for every omitted
+process-private resource before authorizing a fork.
+
 The Phase 6 host audit complements that query with bounded operational evidence
 for one exact Linux process generation. It accepts only while proof bit 2 is
-set, brackets the procfs capture with two identical thread-registry, RCU, and
-AioContext snapshots inside two identical readiness reports, authenticates the QEMU
-PID/start-time/executable identity before and after, and requires two complete
-process-inventory passes to match byte-for-byte. Each QEMU-registered thread
+set, brackets the procfs capture with two identical thread-registry, RCU,
+AioContext, and mutex snapshots inside two identical readiness reports,
+authenticates the QEMU PID/start-time/executable identity before and after, and
+requires two complete process-inventory passes to match byte-for-byte. Each
+QEMU-registered thread
 MUST be present in that exact process generation. Procfs threads absent from
 the internal registry are reported separately as externally created blockers.
 Each pass also records descriptor numbers and link targets and
@@ -308,16 +358,17 @@ Exceeding a bound, changing process generation, readiness, or QEMU registry,
 missing a registered thread from procfs, or observing different process passes
 rejects the audit.
 This observed fixed point is deliberately not a quiescence proof: it does not
-inventory mutex ownership, QEMU-internal AIO/BH/timer barriers, block/plugin
-internals, external-thread dispositions, or child reinitializers; the registry
-currently classifies all non-coordinator QEMU threads as `unclassified`. It
+retain a mutex or QEMU-internal AIO/BH/timer barrier, inventory block/plugin
+internals, resolve external-thread dispositions, or run child reinitializers. It
 cannot set any readiness bit, prepare a template, or authorize `fork(2)`.
 The thread registry identifies the live RCU callback and AIO-context workers
 by subsystem-specific unresolved dispositions. The RCU inventory exposes the
-exact observed reader and callback state, and the AioContext inventory exposes
+exact observed reader and callback state, the AioContext inventory exposes
 home-thread binding plus instantaneous poll, dispatch, bottom-half, coroutine,
-and notification activity, while any other non-coordinator remains plain
-`unclassified`. None is a child disposition or a held barrier.
+and notification activity, and the mutex inventory exposes instantaneous owner,
+recursion, waiter, and unlock-transition state, while any other
+non-coordinator remains plain `unclassified`. None is a child disposition or a
+held barrier.
 Those proofs must be produced while the future QEMU coordinator holds the
 corresponding subsystem barriers.
 

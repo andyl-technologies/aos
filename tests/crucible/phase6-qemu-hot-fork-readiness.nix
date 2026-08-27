@@ -91,6 +91,11 @@ in
             "$out/stock-aio-inventory.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-aio-inventory.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible AIO inventory command"
+          qmp "$stock_socket" \
+            '{"execute":"query-crucible-hot-fork-mutex-inventory"}' \
+            "$out/stock-mutex-inventory.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-mutex-inventory.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible mutex inventory command"
           qmp "$stock_socket" '{"execute":"quit"}' "$out/stock-quit.json"
           wait "$qemu_pid"
           qemu_pid=""
@@ -335,6 +340,87 @@ in
           ' "$out/aio-inventory-2.json" >/dev/null \
             || { cat "$out/aio-inventory-1.json" >&2; cat "$out/aio-inventory-2.json" >&2; fail "QEMU AIO inventory changed without a context transition"; }
 
+          qmp "$patched_socket" \
+            '{"execute":"query-crucible-hot-fork-mutex-inventory"}' \
+            "$out/mutex-inventory-1.json"
+          qmp "$patched_socket" \
+            '{"execute":"query-crucible-hot-fork-mutex-inventory"}' \
+            "$out/mutex-inventory-2.json"
+          jq -e -s --slurpfile threads "$out/thread-inventory-1.json" '
+            [.[] | select(has("return"))][-1].return as $report |
+            ($threads | map(select(has("return"))) | .[-1].return) as $thread_report |
+            ($report | keys | sort) == [
+              "acquisition-waiters",
+              "complete",
+              "condition-waiters",
+              "generation",
+              "invalid-mutexes",
+              "mutex-count",
+              "mutexes",
+              "overflowed",
+              "owned-mutexes",
+              "recursive-mutexes",
+              "schema-version",
+              "unlock-transitions"
+            ] and
+            $report."schema-version" == 1 and
+            ($report.generation | type) == "number" and
+            ($report.complete | type) == "boolean" and
+            ($report.overflowed | type) == "boolean" and
+            ($report.mutexes | type) == "array" and
+            ($report.mutexes | length) > 0 and
+            ($report.mutexes | length) <= 65536 and
+            ($report.mutexes | length) == $report."mutex-count" and
+            ([ $report.mutexes[]."mutex-id" ] ==
+             ([ $report.mutexes[]."mutex-id" ] | sort)) and
+            ([ $report.mutexes[]."mutex-id" ] | unique | length) ==
+              ($report.mutexes | length) and
+            all($report.mutexes[];
+              (. | keys | sort) == [
+                "acquisition-waiters",
+                "condition-waiters",
+                "mutex-id",
+                "owner-thread-id",
+                "ownership-valid",
+                "recursion-depth",
+                "recursive",
+                "unlock-active"
+              ] and
+              (."mutex-id" | type) == "number" and ."mutex-id" > 0 and
+              (."owner-thread-id" | type) == "number" and ."owner-thread-id" >= 0 and
+              (."recursion-depth" | type) == "number" and ."recursion-depth" >= 0 and
+              (."acquisition-waiters" | type) == "number" and ."acquisition-waiters" >= 0 and
+              (."condition-waiters" | type) == "number" and ."condition-waiters" >= 0 and
+              (.recursive | type) == "boolean" and
+              (."unlock-active" | type) == "boolean" and
+              (."ownership-valid" | type) == "boolean" and
+              ((."owner-thread-id" > 0) == (."recursion-depth" > 0)) and
+              (.recursive or ."recursion-depth" <= 1)) and
+            ([ $report.mutexes[] | select(.recursive) ] | length) ==
+              $report."recursive-mutexes" and
+            ([ $report.mutexes[] | select(."owner-thread-id" > 0) ] | length) ==
+              $report."owned-mutexes" and
+            (([ $report.mutexes[]."acquisition-waiters" ] | add) // 0) ==
+              $report."acquisition-waiters" and
+            (([ $report.mutexes[]."condition-waiters" ] | add) // 0) ==
+              $report."condition-waiters" and
+            ([ $report.mutexes[] | select(."unlock-active") ] | length) ==
+              $report."unlock-transitions" and
+            ([ $report.mutexes[] | select(."ownership-valid" | not) ] | length) ==
+              $report."invalid-mutexes" and
+            all($report.mutexes[] | select(."owner-thread-id" > 0);
+              ."owner-thread-id" as $owner_tid |
+              any($thread_report.threads[]; ."thread-id" == $owner_tid)) and
+            $report.complete ==
+              (($report.overflowed | not) and $report."invalid-mutexes" == 0)
+          ' "$out/mutex-inventory-1.json" >/dev/null \
+            || { cat "$out/mutex-inventory-1.json" >&2; fail "QEMU mutex inventory was not exact or thread-bound"; }
+          jq -e -s --slurpfile first "$out/mutex-inventory-1.json" '
+            [.[] | select(has("return"))][-1].return ==
+              ($first | map(select(has("return"))) | .[-1].return)
+          ' "$out/mutex-inventory-2.json" >/dev/null \
+            || { cat "$out/mutex-inventory-1.json" >&2; cat "$out/mutex-inventory-2.json" >&2; fail "QEMU mutex inventory changed without a lifecycle or ownership transition"; }
+
           qmp "$patched_socket" '{"execute":"quit"}' "$out/patched-quit.json"
           wait "$qemu_pid"
           qemu_pid=""
@@ -344,7 +430,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0114-crucible-hot-fork-aio-inventory.patch
+          patch=0115-crucible-hot-fork-mutex-inventory.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -365,6 +451,11 @@ in
           aio_inventory_stable=true
           aio_contexts_thread_bound=true
           aio_proof_acknowledged=false
+          mutex_inventory_schema_version=1
+          mutex_inventory_bound=65536
+          mutex_inventory_stable=true
+          mutex_owners_thread_bound=true
+          mutex_proof_acknowledged=false
           incomplete_report_ready=false
           stock_commands_absent=true
           RESULT
