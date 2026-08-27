@@ -335,4 +335,9 @@ fn typed_control_replacement_changes_the_real_serviced_route_result() {
         state.route_path_override(&id("route-a"), 10),
         Some(&id("route-c"))
     );
+    crate::vm_lifecycle::network_faults::record_production_effect_rows(
+        &[crucible::model::EffectKind::NetworkControlResultTransform],
+        "typed-control-result-replacement",
+        "request-result-identity+replacement-route",
+    );
 }

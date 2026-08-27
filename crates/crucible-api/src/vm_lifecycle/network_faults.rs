@@ -29,6 +29,39 @@ use crucible::model::{
 };
 use crucible::{BackendNetworkOutputInterceptor, SchedulerEventLogAppend};
 
+#[cfg(test)]
+fn record_production_effect_rows(
+    effects: &[crucible::model::EffectKind],
+    case_id: &str,
+    evidence: &str,
+) {
+    use std::io::Write as _;
+
+    let Some(path) = std::env::var_os("CRUCIBLE_NETWORK_PRODUCTION_EFFECT_ROWS") else {
+        return;
+    };
+    let registry = super::fault_implementation::network_effect_implementation_registry()
+        .unwrap_or_else(|error| panic!("production network registry must validate: {error}"));
+    let mut output = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .unwrap_or_else(|error| panic!("open production network evidence output: {error}"));
+    for effect in effects {
+        registry
+            .require_implemented(*effect)
+            .unwrap_or_else(|error| panic!("network effect row must be implemented: {error}"));
+        writeln!(
+            output,
+            "production_effect_row={}|{}|gate:live-network-io|production-host-network-runtime|{}",
+            effect.as_str(),
+            case_id,
+            evidence,
+        )
+        .unwrap_or_else(|error| panic!("write production network evidence row: {error}"));
+    }
+}
+
 const HARD_PENDING_NETWORK_FRAMES: usize = 65_536;
 const HARD_PENDING_NETWORK_BYTES: usize = 1_073_741_824;
 const HARD_CONTACT_SERVICE_RESERVATIONS: usize = 262_144;

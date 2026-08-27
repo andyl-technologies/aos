@@ -2676,6 +2676,15 @@ mod ambiguous_commit;
 mod evidence;
 use ambiguous_commit::*;
 use evidence::*;
+
+#[cfg(test)]
+fn mapped_ninep_test_servicer(
+    shared_memory: std::os::fd::BorrowedFd<'_>,
+    region_len: u64,
+) -> Result<QemuLive9pIoServicer, crucible_qemu::QemuLive9pIoServicerError> {
+    QemuLive9pIoServicer::from_shmem_fd(shared_memory, region_len, 0, 0)
+}
+
 #[cfg(test)]
 #[path = "storage_faults/tests.rs"]
 mod tests;
