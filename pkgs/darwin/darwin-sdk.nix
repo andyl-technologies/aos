@@ -941,6 +941,29 @@ in
           #endif
           EOF
 
+          # Apple's public AuthSession surface used by OpenJDK to distinguish
+          # headless security sessions from WindowServer-capable sessions.
+          cat > "$out/System/Library/Frameworks/Security.framework/Headers/AuthSession.h" <<'EOF'
+          #if !defined(__AuthSession__)
+          #define __AuthSession__ 1
+          #include <Security/SecBase.h>
+          __BEGIN_DECLS
+          typedef UInt32 SecuritySessionId;
+          CF_ENUM(SecuritySessionId) {
+            callerSecuritySession = ((SecuritySessionId)-1)
+          };
+          typedef CF_OPTIONS(UInt32, SessionAttributeBits) {
+            sessionHasGraphicAccess = 0x0010
+          };
+          OSStatus SessionGetInfo(
+            SecuritySessionId session,
+            SecuritySessionId * __nullable sessionId,
+            SessionAttributeBits * __nullable attributes
+          );
+          __END_DECLS
+          #endif
+          EOF
+
           cat > "$out/System/Library/Frameworks/Security.framework/Headers/SecCertificate.h" <<'EOF'
           #ifndef _SECURITY_SECCERTIFICATE_H_
           #define _SECURITY_SECCERTIFICATE_H_
@@ -1141,6 +1164,7 @@ in
           cat > "$out/System/Library/Frameworks/Security.framework/Headers/Security.h" <<'EOF'
           #ifndef _SECURITY_H_
           #define _SECURITY_H_
+          #include <Security/AuthSession.h>
           #include <Security/SecBase.h>
           #include <Security/SecCertificate.h>
           #include <Security/SecItem.h>
@@ -2316,6 +2340,14 @@ in
           - (void)drain;
           @end
 
+          @interface NSOperation : NSObject
+          - (void)start;
+          @end
+
+          @interface NSBlockOperation : NSOperation
+          + (instancetype)blockOperationWithBlock:(void (^)(void))block;
+          @end
+
           @interface NSUserDefaults : NSObject
           + (NSUserDefaults *)standardUserDefaults;
           - (id)objectForKey:(NSString *)defaultName;
@@ -2419,6 +2451,12 @@ in
           cat > "$out/System/Library/Frameworks/Foundation.framework/Headers/NSProcessInfo.h" <<'EOF'
           #ifndef _AOS_FOUNDATION_NSPROCESSINFO_H_
           #define _AOS_FOUNDATION_NSPROCESSINFO_H_
+          #import <Foundation/Foundation.h>
+          #endif
+          EOF
+          cat > "$out/System/Library/Frameworks/Foundation.framework/Headers/NSOperation.h" <<'EOF'
+          #ifndef _AOS_FOUNDATION_NSOPERATION_H_
+          #define _AOS_FOUNDATION_NSOPERATION_H_
           #import <Foundation/Foundation.h>
           #endif
           EOF
@@ -2804,6 +2842,7 @@ in
                 - '_OBJC_CLASS_$_NSDictionary'
                 - '_OBJC_CLASS_$_NSEnumerator'
                 - '_OBJC_CLASS_$_NSAutoreleasePool'
+                - '_OBJC_CLASS_$_NSBlockOperation'
                 - '_OBJC_CLASS_$_NSException'
                 - '_OBJC_CLASS_$_NSMutableArray'
                 - '_OBJC_CLASS_$_NSMutableAttributedString'
@@ -2817,6 +2856,7 @@ in
                 - '_OBJC_CLASS_$_NSURL'
                 - '_OBJC_CLASS_$_NSUserDefaults'
                 - '_OBJC_METACLASS_$_NSException'
+                - '_OBJC_METACLASS_$_NSBlockOperation'
                 - '_OBJC_METACLASS_$_NSObject'
           ...
           EOF
@@ -3664,6 +3704,7 @@ in
                 - _SSLSetProtocolVersionMin
                 - _SSLSetSessionOption
                 - _SSLWrite
+                - _SessionGetInfo
                 - _SecCertificateCopyData
                 - _SecCopyErrorMessageString
                 - _SecItemCopyMatching

@@ -422,6 +422,10 @@
               '@end' \
               '@implementation AOSFoundationSmokeException' \
               '@end' \
+              '@interface AOSFoundationSmokeBlockOperation : NSBlockOperation' \
+              '@end' \
+              '@implementation AOSFoundationSmokeBlockOperation' \
+              '@end' \
               'int main(void) {' \
               '  const unichar characters[] = { 0x41, 0x4f, 0x53 };' \
               '  NSString *characterString = [NSString stringWithCharacters:characters length:3];' \
@@ -436,6 +440,8 @@
               '  NSArray<NSString *> *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, true);' \
               '  NSString *path = paths.firstObject;' \
               '  NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];' \
+              '  NSBlockOperation *operation = [NSBlockOperation blockOperationWithBlock:(void (^)(void))nil];' \
+              '  [operation start];' \
               '  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];' \
               '  [defaults setObject:path forKey:@"aos"];' \
               '  id defaultValue = [defaults objectForKey:@"aos"];' \
@@ -470,10 +476,10 @@
               '  FSRef legacyApplication;' \
               '  OSStatus findStatus = LSFindApplicationForInfo(kLSUnknownCreator, CFSTR("com.andyl.aos"), NULL, &legacyApplication, NULL);' \
               '  [pool drain];' \
-              '  return characterString == nil || image == nil || defaultValue == nil || !synchronized || decodedPath == nil || number.unsignedLongLongValue != 42 || enumeratedValue == nil || path.UTF8String == NULL || bundlePath == NULL || mediaDirectories[0] == 0 || handlers == NULL || roleHandlers == NULL || roleHandler == NULL || schemeHandler == NULL || uti == NULL || tag == NULL || utiDescription == NULL || utiMatches || !utiConforms || launchStatus == -1 || findStatus < kLSApplicationNotFoundErr;' \
+              '  return characterString == nil || operation == nil || image == nil || defaultValue == nil || !synchronized || decodedPath == nil || number.unsignedLongLongValue != 42 || enumeratedValue == nil || path.UTF8String == NULL || bundlePath == NULL || mediaDirectories[0] == 0 || handlers == NULL || roleHandlers == NULL || roleHandler == NULL || schemeHandler == NULL || uti == NULL || tag == NULL || utiDescription == NULL || utiMatches || !utiConforms || launchStatus == -1 || findStatus < kLSApplicationNotFoundErr;' \
               '}' \
               > foundation-appkit-smoke.m
-            "$CC" foundation-appkit-smoke.m \
+            "$CC" -fblocks foundation-appkit-smoke.m \
               -framework Foundation \
               -framework AppKit \
               -lobjc \
@@ -732,10 +738,14 @@
               -o "$c/bin/aos-darwin-iokit-smoke"
 
             printf '%s\n' \
+              '#include <Security/AuthSession.h>' \
               '#include <Security/Security.h>' \
               'static OSStatus aos_ssl_read(SSLConnectionRef connection, void *data, size_t *length) { (void)connection; (void)data; (void)length; return errSSLClosedGraceful; }' \
               'static OSStatus aos_ssl_write(SSLConnectionRef connection, const void *data, size_t *length) { (void)connection; (void)data; (void)length; return errSSLClosedGraceful; }' \
               'int main(void) {' \
+              '  SecuritySessionId session = 0;' \
+              '  SessionAttributeBits attributes = 0;' \
+              '  OSStatus sessionStatus = SessionGetInfo(callerSecuritySession, &session, &attributes);' \
               '  SSLContextRef context = SSLCreateContext(kCFAllocatorDefault, kSSLClientSide, kSSLStreamType);' \
               '  SSLSetIOFuncs(context, aos_ssl_read, aos_ssl_write);' \
               '  SSLSetConnection(context, NULL);' \
@@ -794,7 +804,7 @@
               '  if (certificateData != NULL) CFRelease(certificateData);' \
               '  if (trust != NULL) CFRelease(trust);' \
               '  if (context != NULL) CFRelease(context);' \
-              '  return trustResult == kSecTrustResultOtherError && processed == (size_t)-1 && createdTrust == copiedTrustSettings && copiedItems == errSecItemNotFound && policyConstants[0] == NULL && trustSettingKeys[0] == NULL && policyScoped && sslPolicy && trusted && kSecTrustSettingsResultTrustRoot != 1 && kSecTrustSettingsResultTrustAsRoot != 2 && kSecTrustSettingsResultDeny != 3 && kSecTrustSettingsDomainAdmin != 1 && copiedKeychain == addedPassword && foundPassword == modifiedPassword && freedPassword == deletedPassword;' \
+              '  return trustResult == kSecTrustResultOtherError && processed == (size_t)-1 && sessionStatus == errSecItemNotFound && session == callerSecuritySession && attributes == sessionHasGraphicAccess && createdTrust == copiedTrustSettings && copiedItems == errSecItemNotFound && policyConstants[0] == NULL && trustSettingKeys[0] == NULL && policyScoped && sslPolicy && trusted && kSecTrustSettingsResultTrustRoot != 1 && kSecTrustSettingsResultTrustAsRoot != 2 && kSecTrustSettingsResultDeny != 3 && kSecTrustSettingsDomainAdmin != 1 && copiedKeychain == addedPassword && foundPassword == modifiedPassword && freedPassword == deletedPassword;' \
               '}' \
               > security-smoke.c
             "$CC" security-smoke.c \
