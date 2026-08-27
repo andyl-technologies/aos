@@ -345,6 +345,15 @@
                 # dependencies produce identical fixed-output contents.
                 rm -f "$out/rules_jvm_external~~maven~maven/outdated.sh"
 
+                # Bazel links the imported Maven manifest back into its temporary
+                # source tree. Materialize that metadata so the vendor output is
+                # self-contained and remains valid after the build tree disappears.
+                imported_maven_install="$out/rules_jvm_external~~maven~maven/imported_maven_install.json"
+                if [ -L "$imported_maven_install" ]; then
+                  rm "$imported_maven_install"
+                  install -m 0644 maven_install.json "$imported_maven_install"
+                fi
+
                 # Remove files/directories that reference Nix store paths.
                 # FODs must not contain store path references. Marker files from
                 # rules_python and similar repo rules record the build environment
