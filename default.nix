@@ -89,6 +89,12 @@
       if builtins.isAttrs args && args ? operatorModules
       then args.operatorModules
       else [];
+    # Generation-pinned supplemental modules are a distinct resolver lane:
+    # equal operator priority, separately attributable runtime provenance.
+    runtimeModules =
+      if builtins.isAttrs args && args ? runtimeModules
+      then args.runtimeModules
+      else [];
     packageModules =
       if builtins.isAttrs args && args ? packageModules
       then args.packageModules
@@ -111,7 +117,7 @@
               };
             }
           ];
-        inherit pkgs lib specialArgs operatorModules packageModules;
+        inherit pkgs lib specialArgs operatorModules runtimeModules packageModules;
       })
       .config
       .aos
@@ -134,7 +140,7 @@
             };
           }
         ];
-      inherit pkgs lib specialArgs operatorModules packageModules;
+      inherit pkgs lib specialArgs operatorModules runtimeModules packageModules;
     };
 
   # Auto-discover system definitions from ./systems/*.nix

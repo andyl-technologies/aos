@@ -58,7 +58,7 @@
         };
       }
     ];
-    operatorModules = [
+    runtimeModules = [
       {
         nginx = {
           enable = true;
