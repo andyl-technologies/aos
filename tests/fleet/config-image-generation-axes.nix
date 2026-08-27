@@ -91,6 +91,9 @@
     ../../systems/server-verity.nix
     ../../systems/_fleet-transition-test.nix
     {
+      # Git is image-bundled fixture tooling for cloning the authenticated
+      # registry. Keep its additional root footprint local to this test.
+      aos.image.budgets.maxRootMiB = 640;
       environment.systemPackages = [pkgs.git];
       # This acceptance test runs three guests while generating and serving a
       # full closure. Give evaluation enough wall time on shared CI builders;
