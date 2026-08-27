@@ -49,6 +49,7 @@
               '#include <netinet/tcp_timer.h>' \
               '#include <rpc/pmap_prot.h>' \
               '#include <rpc/rpc.h>' \
+              '#include <sys/ptrace.h>' \
               '#include <sys/syscall.h>' \
               '#include <sys/ttydev.h>' \
               '#include <sys/xattr.h>' \
@@ -58,7 +59,11 @@
               '_Static_assert(kSCNetworkReachabilityFlagsConnectionOnTraffic == (1u << 3), "on-traffic reachability flag");' \
               '_Static_assert(BPF_MAJOR_VERSION == 1, "BPF ABI major version");' \
               '_Static_assert(BPF_MINOR_VERSION == 1, "BPF ABI minor version");' \
+              '_Static_assert(PT_CONTINUE == 7, "ptrace continue request");' \
+              '_Static_assert(PT_ATTACH == 10, "ptrace attach request");' \
+              '_Static_assert(PT_DETACH == 11, "ptrace detach request");' \
               'int main(void) {' \
+              '  int (*ptraceFunction)(int, pid_t, caddr_t, int) = ptrace;' \
               '  CFStringRef label = CFSTR("aos Darwin SDK");' \
               '  CFStringRef canonicalLanguage = CFLocaleCreateCanonicalLanguageIdentifierFromString(kCFAllocatorDefault, label);' \
               '  CFIndex maximum = CFStringGetMaximumSizeForEncoding(CFStringGetLength(label), kCFStringEncodingUTF8);' \
@@ -106,7 +111,7 @@
               '  if (canonicalLanguage != NULL) CFRelease(canonicalLanguage);' \
               '  struct ether_addr address = { { 0 } };' \
               '  struct bpf_hdr bpfHeader = { 0 };' \
-              '  return label == NULL || canonicalLanguage == NULL || maximum < 0 || convertedCharacters < 0 || usedStringBytes < 0 || zoneName == NULL || systemZone == NULL || pathComparison != kCFCompareEqualTo || !pathHasPrefix || identifier == value || !represented || launchStatus == -1 || attributeSize < -1 || attributeListSize < -1 || attributeSetStatus < -1 || attributeRemoveStatus < -1 || address.octet[0] != 0 || bpfHeader.bh_hdrlen != 0 || ETHER_ADDR_LEN != 6 || XATTR_CREATE != 0x0002 || XATTR_REPLACE != 0x0004;' \
+              '  return ptraceFunction == NULL || label == NULL || canonicalLanguage == NULL || maximum < 0 || convertedCharacters < 0 || usedStringBytes < 0 || zoneName == NULL || systemZone == NULL || pathComparison != kCFCompareEqualTo || !pathHasPrefix || identifier == value || !represented || launchStatus == -1 || attributeSize < -1 || attributeListSize < -1 || attributeSetStatus < -1 || attributeRemoveStatus < -1 || address.octet[0] != 0 || bpfHeader.bh_hdrlen != 0 || ETHER_ADDR_LEN != 6 || XATTR_CREATE != 0x0002 || XATTR_REPLACE != 0x0004;' \
               '}' \
               > framework-smoke.c
             "$CC" framework-smoke.c \
