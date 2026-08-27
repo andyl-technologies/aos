@@ -9,7 +9,7 @@ one adversarial review of the containing phase are complete.
 | Phase | Scope | Status |
 | --- | --- | --- |
 | 0 | Contracts and executable spikes | Complete |
-| 1 | OCI types and deterministic Nix builders | Not started |
+| 1 | OCI types and deterministic Nix builders | Complete |
 | 2 | The single `aos` image and runtime contract | Not started |
 | 3 | Local `aos container` CLI | Not started |
 | 4 | Hub OCI catalog, storage, and pull data plane | Not started |
@@ -84,55 +84,62 @@ used.
 
 ### Shared OCI contracts
 
-- [ ] Add a dependency-light OCI types crate usable by native Hub, Worker,
+- [x] Add a dependency-light OCI types crate usable by native Hub, Worker,
   console, and CLI builds.
-- [ ] Document every public type and validate digests, media types, descriptors,
+- [x] Document every public type and validate digests, media types, descriptors,
   platforms, references, annotations, and exact byte sizes.
-- [ ] Preserve unknown extension annotations while bounding their size.
-- [ ] Add canonical JSON serialization with ordered maps and no floating-point
+- [x] Preserve unknown extension annotations while bounding their size.
+- [x] Add canonical JSON serialization with ordered maps and no floating-point
   fields.
-- [ ] Add golden vectors for image config, manifest, index, descriptor, and
+- [x] Add golden vectors for image config, manifest, index, descriptor, and
   Distribution error payloads.
-- [ ] Reject Docker schema 1 and freeze the accepted OCI/Docker schema 2 media
+- [x] Reject Docker schema 1 and freeze the accepted OCI/Docker schema 2 media
   type matrix.
 
 ### Nix builders
 
-- [ ] Factor structured closure inventory from `closure-info.nix` without
+- [x] Factor structured closure inventory from `closure-info.nix` without
   weakening existing rootfs consumers.
-- [ ] Implement `mkClosureLayer { roots; subtractRoots; }`.
-- [ ] Implement the deterministic tar and gzip policy.
-- [ ] Compute and emit descriptor digest, compressed size, DiffID, uncompressed
+- [x] Implement `mkClosureLayer { roots; subtractRoots; }`.
+- [x] Implement the deterministic tar and gzip policy.
+- [x] Compute and emit descriptor digest, compressed size, DiffID, uncompressed
   size, and closure inventory.
-- [ ] Implement `mkRootMetadataLayer` with collision-safe facade links and
+- [x] Implement `mkRootMetadataLayer` with collision-safe facade links and
   deterministic identities/modes.
-- [ ] Implement canonical image config and manifest assembly.
-- [ ] Implement OCI layout and deterministic OCI archive assembly.
-- [ ] Implement deterministic Docker archive conversion.
-- [ ] Implement multi-platform OCI index assembly without unpacking layers.
-- [ ] Ensure outputs are self-contained and do not retain input closures only
+- [x] Implement canonical image config and manifest assembly.
+- [x] Implement OCI layout and deterministic OCI archive assembly.
+- [x] Implement deterministic Docker archive conversion.
+- [x] Implement multi-platform OCI index assembly without unpacking layers.
+- [x] Ensure outputs are self-contained and do not retain input closures only
   because serialized store path names were reference-scanned.
-- [ ] Reuse the runtime closure audit for forbidden build/dev payloads and byte
+- [x] Reuse the runtime closure audit for forbidden build/dev payloads and byte
   budgets.
 
 ### Evaluation and exports
 
-- [ ] Add the separate typed container module evaluator.
-- [ ] Reject base images, host roots, secrets, unsafe paths, duplicate layers,
+- [x] Add the separate typed container module evaluator.
+- [x] Reject base images, host roots, secrets, unsafe paths, duplicate layers,
   duplicate store paths, facade collisions, and invalid exec-form config.
-- [ ] Map AOS targets to OCI platforms and preserve AOS identity annotations.
-- [ ] Export `containerImages`, checks, and flake packages.
-- [ ] Enforce that only the `aos` definition is registered.
+- [x] Map AOS targets to OCI platforms and preserve AOS identity annotations.
+- [x] Export `containerImages`, checks, and flake packages.
+- [x] Enforce that only the `aos` definition is registered.
 
 ### Tests and review
 
-- [ ] Build equivalent layers and images under different derivation names and
+- [x] Build equivalent layers and images under different derivation names and
   compare every output byte.
-- [ ] Audit tar ordering, modes, ownership, timestamps, links, and paths.
-- [ ] Verify compressed descriptors and uncompressed DiffIDs independently.
-- [ ] Verify changed app roots do not change unaffected canonical layers.
-- [ ] Run `nix-build -A checks.eval` and all new focused checks.
-- [ ] Complete one Phase-1 adversarial review and resolve blocking findings.
+- [x] Audit tar ordering, modes, ownership, timestamps, links, and paths.
+- [x] Verify compressed descriptors and uncompressed DiffIDs independently.
+- [x] Verify changed app roots do not change unaffected canonical layers.
+- [x] Run `nix-build -A checks.eval` and all new focused checks.
+- [x] Complete one Phase-1 adversarial review and resolve blocking findings.
+
+The Phase-1 adversarial review found four blockers: overlapping realized store
+paths across layers, facade targets not proven present and executable, Nix/Rust
+reference-parser drift, and premature package-management claims on the
+intermediate image. Realized-inventory admission, closure-backed facade target
+validation, shared reference vectors, and an explicitly disabled Phase-1
+mutation capability resolve them. No second review round was used.
 
 ## Phase 2: The single `aos` image and runtime contract
 

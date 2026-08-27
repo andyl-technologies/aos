@@ -185,6 +185,26 @@
 
   # The default system used for eval/build checks and package integration tests.
   serverSystem = mkSystem ./systems/server.nix;
+  containerConfigurations = import ./containers {
+    inherit lib pkgs;
+    goldenRoots = discoverSystems.server.config.environment.systemPackages;
+    aosSystem = hostPlatform.system;
+  };
+  ociBuilders = import ./lib/build/oci {
+    inherit lib;
+    inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
+  };
+  containerImages =
+    lib.mapAttrs
+    (_: container:
+      import ./lib/containers/build.nix {
+        inherit lib pkgs container;
+        oci = ociBuilders;
+        systemIdentity = {
+          inherit (discoverSystems.server.config.aos.system) name version;
+        };
+      })
+    containerConfigurations;
 
   # Testing harness (headless mode for package integration tests)
   testing = import ./lib/testing {inherit pkgs lib;};
@@ -1001,7 +1021,7 @@
       referenceIntegrity = crucibleReferenceIntegrity;
     };
 in {
-  inherit lib pkgs stdenv modules mkSystem packagesWithExpose;
+  inherit lib pkgs stdenv modules mkSystem packagesWithExpose containerImages;
 
   # Auto-discovered golden image systems.
   # Each system has .config, .options, .build, and .checks.
@@ -1098,6 +1118,13 @@ in {
         inherit pkgs lib;
         goldenRoots = discoverSystems.server.config.environment.systemPackages;
       };
+      eval = import ./tests/containers/eval.nix {
+        inherit pkgs lib;
+        goldenRoots = discoverSystems.server.config.environment.systemPackages;
+        aosSystem = hostPlatform.system;
+      };
+      oci-builders = import ./tests/containers/oci-builders.nix {inherit pkgs lib;};
+      aos-runtime-closure = containerImages.aos.checks.runtimeAudit;
     };
     config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
     config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};

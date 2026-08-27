@@ -82,6 +82,33 @@
           value = p.${name};
         })
         p.packageNames);
+
+    containerPackages = system: aos:
+      builtins.listToAttrs (
+        builtins.concatMap (
+          name: let
+            container = aos.containerImages.${name};
+            platform = container.platforms.${system};
+          in [
+            {
+              name = "container-${name}-oci";
+              value = platform.ociLayout;
+            }
+            {
+              name = "container-${name}-docker";
+              value = platform.dockerArchive;
+            }
+            {
+              name = "container-${name}-metadata";
+              value = platform.metadata;
+            }
+            {
+              name = "container-${name}-index";
+              value = container.ociIndex;
+            }
+          ]
+        ) (builtins.attrNames aos.containerImages)
+      );
   in {
     aosSystems = genAttrs systems (system: (aosFor system).systems);
 
@@ -89,6 +116,7 @@
       system: let
         aos = aosFor system;
         individualPackages = pkgPackages aos;
+        containers = containerPackages system aos;
         allPackages = aos.pkgs.mkDerivation {
           pname = "aos-all-packages";
           version = "0";
@@ -114,6 +142,7 @@
           };
         }
         // systemPackages aos
+        // containers
         // individualPackages
     );
 

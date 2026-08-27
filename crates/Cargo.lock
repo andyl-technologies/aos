@@ -453,6 +453,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-oci-types"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aos-package"
 version = "0.1.0"
 dependencies = [

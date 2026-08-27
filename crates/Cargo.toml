@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "aos",
+    "aos-oci-types",
     "aos-core",
     "aos-boot-identity",
     "aos-recovery",
@@ -192,6 +193,7 @@ rcgen = "0.14"
 # Internal crates
 crucible-cas = { path = "crucible-cas" }
 aos-core = { path = "aos-core" }
+aos-oci-types = { path = "aos-oci-types" }
 aos-boot-identity = { path = "aos-boot-identity" }
 aos-net = { path = "aos-net" }
 aos-proto = { path = "aos-proto" }
