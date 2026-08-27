@@ -311,6 +311,100 @@
               > carbon-smoke.c
             "$CC" carbon-smoke.c -o "$c/bin/aos-darwin-carbon-smoke"
 
+            # QEMU's Cocoa UI combines AppKit objects with CoreGraphics
+            # scanout/event APIs, CoreVideo display timing, QuartzCore layers,
+            # and the surviving Carbon process transform. Compile and link
+            # those framework boundaries directly so an umbrella-only header
+            # stub or an incomplete TAPI export cannot pass this smoke.
+            printf '%s\n' \
+              '#import <Cocoa/Cocoa.h>' \
+              '#import <Carbon/Carbon.h>' \
+              '#import <CoreVideo/CoreVideo.h>' \
+              '#import <QuartzCore/QuartzCore.h>' \
+              'static CGEventRef aos_event_tap(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *info) {' \
+              '  return proxy == NULL || info == NULL || type == kCGEventKeyDown ? event : event;' \
+              '}' \
+              '@interface AosCocoaView : NSView @end' \
+              '@implementation AosCocoaView @end' \
+              '@interface AosCocoaApplication : NSApplication<NSApplicationDelegate, NSWindowDelegate, NSPasteboardTypeOwner> @end' \
+              '@implementation AosCocoaApplication @end' \
+              'int main(void) {' \
+              '  NSRect frame = NSMakeRect(0, 0, 64, 64);' \
+              '  CGRect scanout = NSRectToCGRect(frame);' \
+              '  AosCocoaView *view = [[AosCocoaView alloc] initWithFrame:frame];' \
+              '  [view setWantsLayer:YES];' \
+              '  [view addTrackingArea:[[NSTrackingArea alloc] initWithRect:frame options:NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect owner:view userInfo:nil]];' \
+              '  CALayer *layer = [CALayer layer];' \
+              '  layer.anchorPoint = CGPointMake(0, 0);' \
+              '  layer.autoresizingMask = kCALayerMaxXMargin | kCALayerMinYMargin;' \
+              '  layer.bounds = scanout;' \
+              '  [CATransaction begin];' \
+              '  [CATransaction setDisableActions:YES];' \
+              '  [CATransaction commit];' \
+              '  NSWindow *window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];' \
+              '  window.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;' \
+              '  window.contentView = view;' \
+              '  [window makeKeyAndOrderFront:nil];' \
+              '  NSTextField *field = [[NSTextField alloc] initWithFrame:frame];' \
+              '  field.stringValue = [NSString stringWithCString:"aos" encoding:NSASCIIStringEncoding];' \
+              '  [field sizeToFit];' \
+              '  NSMutableAttributedString *title = [[NSMutableAttributedString alloc] initWithString:field.stringValue];' \
+              '  [title addAttribute:NSFontAttributeName value:[NSFont fontWithName:@"Menlo" size:12] range:NSMakeRange(0, title.description.length)];' \
+              '  [title addAttribute:NSForegroundColorAttributeName value:[NSColor whiteColor] range:NSMakeRange(0, 0)];' \
+              '  [title addAttribute:NSUnderlineStyleAttributeName value:[NSNumber numberWithInt:1] range:NSMakeRange(0, 0)];' \
+              '  NSMenu *menu = [[NSMenu alloc] initWithTitle:@"AOS"];' \
+              '  NSMenuItem *item = [menu addItemWithTitle:@"Open" action:NULL keyEquivalent:@"o"];' \
+              '  item.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;' \
+              '  item.attributedTitle = title;' \
+              '  NSFont *panelFont = [[NSFontManager sharedFontManager] fontWithFamily:@"Helvetica" traits:NSBoldFontMask | NSItalicFontMask weight:0 size:14];' \
+              '  NSAlert *alert = [NSAlert new];' \
+              '  alert.messageText = @"AOS";' \
+              '  [alert addButtonWithTitle:@"OK"];' \
+              '  NSOpenPanel *panel = [NSOpenPanel openPanel];' \
+              '  panel.canChooseFiles = YES;' \
+              '  NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];' \
+              '  [pasteboard declareTypes:@[ NSPasteboardTypeString ] owner:nil];' \
+              '  [pasteboard setData:[[NSData alloc] initWithBytes:"aos" length:3] forType:NSPasteboardTypeString];' \
+              '  [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:@"/" isDirectory:YES]];' \
+              '  NSEvent *event = [NSEvent eventWithCGEvent:NULL];' \
+              '  NSEventModifierFlags modifiers = event.modifierFlags | NSEventModifierFlagCapsLock | NSEventModifierFlagControl | NSEventModifierFlagOption;' \
+              '  CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);' \
+              '  CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, "aos", 3, NULL);' \
+              '  CGImageRef image = CGImageCreate(1, 1, 8, 32, 4, colorSpace, kCGImageAlphaFirst | kCGBitmapByteOrder32Little, provider, NULL, false, kCGRenderingIntentDefault);' \
+              '  CGImageRef cropped = CGImageCreateWithImageInRect(image, scanout);' \
+              '  CGContextRef context = [NSGraphicsContext currentContext].CGContext;' \
+              '  CGContextSetInterpolationQuality(context, kCGInterpolationNone);' \
+              '  CGContextSetShouldAntialias(context, false);' \
+              '  CGContextSetRGBFillColor(context, 0, 0, 0, 1);' \
+              '  CGContextFillRect(context, scanout);' \
+              '  CGContextDrawImage(context, scanout, image);' \
+              '  CFMachPortRef tap = CGEventTapCreate(kCGHIDEventTap, kCGHeadInsertEventTap, kCGEventTapOptionDefault, CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp) | CGEventMaskBit(kCGEventFlagsChanged), aos_event_tap, view);' \
+              '  CFRunLoopSourceRef tapSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0);' \
+              '  CGAssociateMouseAndMouseCursorPosition(true);' \
+              '  CGSize screenSize = CGDisplayScreenSize(0);' \
+              '  CVDisplayLinkRef displayLink = NULL;' \
+              '  CVDisplayLinkCreateWithCGDisplay(0, &displayLink);' \
+              '  CVTime refresh = CVDisplayLinkGetNominalOutputVideoRefreshPeriod(displayLink);' \
+              '  if (displayLink != NULL) CVDisplayLinkRelease(displayLink);' \
+              '  if (cropped != NULL) CGImageRelease(cropped);' \
+              '  if (image != NULL) CGImageRelease(image);' \
+              '  if (provider != NULL) CGDataProviderRelease(provider);' \
+              '  if (colorSpace != NULL) CGColorSpaceRelease(colorSpace);' \
+              '  ProcessSerialNumber process = { 0, kCurrentProcess };' \
+              '  OSStatus transform = TransformProcessType(&process, kProcessTransformToForegroundApplication);' \
+              '  NSDictionary *about = @{ NSAboutPanelOptionApplicationIcon: [NSImage new], NSAboutPanelOptionApplicationVersion: @"1" };' \
+              '  [[NSApplication sharedApplication] orderFrontStandardAboutPanelWithOptions:about];' \
+              '  [[NSApplication sharedApplication] sendEvent:event];' \
+              '  NSBeep();' \
+              '  return tap == NULL || tapSource == NULL || refresh.flags == kCVTimeIsIndefinite || screenSize.width < 0 || modifiers == 0 || panelFont == nil || [alert runModal] == NSAlertSecondButtonReturn || [panel runModal] != NSModalResponseOK || transform == -1;' \
+              '}' \
+              > qemu-cocoa-sdk-smoke.m
+            "$CC" qemu-cocoa-sdk-smoke.m \
+              -framework Cocoa \
+              -framework CoreVideo \
+              -framework QuartzCore \
+              -o "$c/bin/aos-darwin-qemu-cocoa-sdk-smoke"
+
             printf '%s\n' \
               '#import <ApplicationServices/ApplicationServices.h>' \
               '#import <CoreServices/CoreServices.h>' \

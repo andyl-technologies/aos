@@ -148,6 +148,221 @@
     ];
     hash = "sha256-LPZdRfksAi3RY5sNAm3YTr4JPcMW5TuHtYOFCAv+vZQ=";
   };
+
+  # Keep the framework payload out of the builder's argv: the SDK installer
+  # is intentionally large and Linux limits each exec argument to 128 KiB.
+  qemuCocoaSdkFragment = builtins.toFile "aos-qemu-cocoa-sdk-fragment.sh" ''
+    # QEMU's Cocoa display presents guest scanouts with the public
+    # CoreGraphics image, context, display, and event-tap APIs. Publish
+    # the exact documented ABI surface it uses and let the umbrella
+    # frameworks reexport it just as the platform SDK does.
+    cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGGeometry.h" <<'EOF'
+    #ifndef _AOS_COREGRAPHICS_CGGEOMETRY_H_
+    #define _AOS_COREGRAPHICS_CGGEOMETRY_H_
+    #include <CoreFoundation/CoreFoundation.h>
+
+    typedef double CGFloat;
+    typedef struct CGPoint { CGFloat x; CGFloat y; } CGPoint;
+    typedef struct CGSize { CGFloat width; CGFloat height; } CGSize;
+    typedef struct CGRect { CGPoint origin; CGSize size; } CGRect;
+    extern const CGRect CGRectZero;
+
+    static inline CGPoint CGPointMake(CGFloat x, CGFloat y) {
+      CGPoint point = { x, y };
+      return point;
+    }
+
+    #endif
+    EOF
+    cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGColorSpace.h" <<'EOF'
+    #ifndef _AOS_COREGRAPHICS_CGCOLORSPACE_H_
+    #define _AOS_COREGRAPHICS_CGCOLORSPACE_H_
+    #include <CoreFoundation/CoreFoundation.h>
+    typedef struct CGColorSpace *CGColorSpaceRef;
+    extern CFStringRef kCGColorSpaceSRGB;
+    CGColorSpaceRef CGColorSpaceCreateWithName(CFStringRef name);
+    void CGColorSpaceRelease(CGColorSpaceRef space);
+    #endif
+    EOF
+    cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGDataProvider.h" <<'EOF'
+    #ifndef _AOS_COREGRAPHICS_CGDATAPROVIDER_H_
+    #define _AOS_COREGRAPHICS_CGDATAPROVIDER_H_
+    #include <stddef.h>
+    typedef struct CGDataProvider *CGDataProviderRef;
+    typedef void (*CGDataProviderReleaseDataCallback)(void *info, const void *data, size_t size);
+    CGDataProviderRef CGDataProviderCreateWithData(
+      void *info,
+      const void *data,
+      size_t size,
+      CGDataProviderReleaseDataCallback releaseData
+    );
+    void CGDataProviderRelease(CGDataProviderRef provider);
+    #endif
+    EOF
+    cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGImage.h" <<'EOF'
+    #ifndef _AOS_COREGRAPHICS_CGIMAGE_H_
+    #define _AOS_COREGRAPHICS_CGIMAGE_H_
+    #include <CoreGraphics/CGColorSpace.h>
+    #include <CoreGraphics/CGDataProvider.h>
+    #include <CoreGraphics/CGGeometry.h>
+    #include <stddef.h>
+    #include <stdint.h>
+
+    typedef struct CGImage *CGImageRef;
+    typedef uint32_t CGBitmapInfo;
+    typedef uint32_t CGImageAlphaInfo;
+    typedef int32_t CGColorRenderingIntent;
+    enum {
+      kCGImageAlphaFirst = 4,
+      kCGImageAlphaNoneSkipFirst = 6,
+      kCGBitmapByteOrder32Little = 2 << 12,
+      kCGRenderingIntentDefault = 0
+    };
+
+    CGImageRef CGImageCreate(
+      size_t width,
+      size_t height,
+      size_t bitsPerComponent,
+      size_t bitsPerPixel,
+      size_t bytesPerRow,
+      CGColorSpaceRef space,
+      CGBitmapInfo bitmapInfo,
+      CGDataProviderRef provider,
+      const CGFloat *decode,
+      bool shouldInterpolate,
+      CGColorRenderingIntent intent
+    );
+    CGImageRef CGImageCreateWithImageInRect(CGImageRef image, CGRect rect);
+    void CGImageRelease(CGImageRef image);
+    #endif
+    EOF
+    cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGContext.h" <<'EOF'
+    #ifndef _AOS_COREGRAPHICS_CGCONTEXT_H_
+    #define _AOS_COREGRAPHICS_CGCONTEXT_H_
+    #include <CoreGraphics/CGImage.h>
+    #include <stdint.h>
+    typedef struct CGContext *CGContextRef;
+    typedef int32_t CGInterpolationQuality;
+    enum {
+      kCGInterpolationDefault = 0,
+      kCGInterpolationNone = 1,
+      kCGInterpolationLow = 2,
+      kCGInterpolationHigh = 3,
+      kCGInterpolationMedium = 4
+    };
+    void CGContextDrawImage(CGContextRef context, CGRect rect, CGImageRef image);
+    void CGContextFillRect(CGContextRef context, CGRect rect);
+    void CGContextSetInterpolationQuality(CGContextRef context, CGInterpolationQuality quality);
+    void CGContextSetRGBFillColor(CGContextRef context, CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha);
+    void CGContextSetShouldAntialias(CGContextRef context, bool shouldAntialias);
+    #endif
+    EOF
+    cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGDirectDisplay.h" <<'EOF'
+    #ifndef _AOS_COREGRAPHICS_CGDIRECTDISPLAY_H_
+    #define _AOS_COREGRAPHICS_CGDIRECTDISPLAY_H_
+    #include <CoreGraphics/CGGeometry.h>
+    #include <stdint.h>
+    typedef uint32_t CGDirectDisplayID;
+    CGSize CGDisplayScreenSize(CGDirectDisplayID display);
+    #endif
+    EOF
+    cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGEvent.h" <<'EOF'
+    #ifndef _AOS_COREGRAPHICS_CGEVENT_H_
+    #define _AOS_COREGRAPHICS_CGEVENT_H_
+    #include <CoreFoundation/CoreFoundation.h>
+    #include <stdint.h>
+    typedef struct __CFMachPort *CFMachPortRef;
+    typedef struct __CGEvent *CGEventRef;
+    typedef void *CGEventTapProxy;
+    typedef uint32_t CGEventType;
+    typedef uint64_t CGEventMask;
+    typedef uint32_t CGEventTapLocation;
+    typedef uint32_t CGEventTapPlacement;
+    typedef uint32_t CGEventTapOptions;
+    typedef CGEventRef (*CGEventTapCallBack)(
+      CGEventTapProxy proxy,
+      CGEventType type,
+      CGEventRef event,
+      void *userInfo
+    );
+    enum {
+      kCGEventKeyDown = 10,
+      kCGEventKeyUp = 11,
+      kCGEventFlagsChanged = 12,
+      kCGHIDEventTap = 0,
+      kCGHeadInsertEventTap = 0,
+      kCGEventTapOptionDefault = 0
+    };
+    #define CGEventMaskBit(eventType) ((CGEventMask)1 << (eventType))
+    CFMachPortRef CGEventTapCreate(
+      CGEventTapLocation tap,
+      CGEventTapPlacement place,
+      CGEventTapOptions options,
+      CGEventMask eventsOfInterest,
+      CGEventTapCallBack callback,
+      void *userInfo
+    );
+    #endif
+    EOF
+    cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CGRemoteOperation.h" <<'EOF'
+    #ifndef _AOS_COREGRAPHICS_CGREMOTEOPERATION_H_
+    #define _AOS_COREGRAPHICS_CGREMOTEOPERATION_H_
+    #include <stdint.h>
+    typedef int32_t CGError;
+    CGError CGAssociateMouseAndMouseCursorPosition(bool connected);
+    #endif
+    EOF
+    cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CoreGraphics.h" <<'EOF'
+    #ifndef _AOS_COREGRAPHICS_H_
+    #define _AOS_COREGRAPHICS_H_
+    #include <CoreGraphics/CGGeometry.h>
+    #include <CoreGraphics/CGColorSpace.h>
+    #include <CoreGraphics/CGDataProvider.h>
+    #include <CoreGraphics/CGImage.h>
+    #include <CoreGraphics/CGContext.h>
+    #include <CoreGraphics/CGDirectDisplay.h>
+    #include <CoreGraphics/CGEvent.h>
+    #include <CoreGraphics/CGRemoteOperation.h>
+    #endif
+    EOF
+    cat > "$out/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics.tbd" <<'EOF'
+    --- !tapi-tbd
+    tbd-version: 4
+    targets: [ x86_64-macos, arm64-macos ]
+    install-name: '/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics'
+    current-version: 1894.0.0
+    compatibility-version: 64.0.0
+    reexported-libraries:
+      - targets: [ x86_64-macos, arm64-macos ]
+        libraries: [ '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation' ]
+    exports:
+      - targets: [ x86_64-macos, arm64-macos ]
+        symbols:
+          - _CGAssociateMouseAndMouseCursorPosition
+          - _CGColorSpaceCreateWithName
+          - _CGColorSpaceRelease
+          - _CGContextDrawImage
+          - _CGContextFillRect
+          - _CGContextSetInterpolationQuality
+          - _CGContextSetRGBFillColor
+          - _CGContextSetShouldAntialias
+          - _CGDataProviderCreateWithData
+          - _CGDataProviderRelease
+          - _CGDisplayScreenSize
+          - _CGEventTapCreate
+          - _CGImageCreate
+          - _CGImageCreateWithImageInRect
+          - _CGImageRelease
+          - _CGRectZero
+          - _kCGColorSpaceSRGB
+    ...
+    EOF
+    ln -s ../../CoreGraphics.tbd \
+      "$out/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics.tbd"
+    ln -s CoreGraphics.tbd \
+      "$out/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics"
+
+  '';
 in
   mkDerivation {
     pname = "darwin-sdk";
@@ -230,6 +445,8 @@ in
             "$out/System/Library/Frameworks/Cocoa.framework/Headers" \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Headers" \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Versions/A" \
+            "$out/System/Library/Frameworks/CoreGraphics.framework/Headers" \
+            "$out/System/Library/Frameworks/CoreGraphics.framework/Versions/A" \
             "$out/System/Library/Frameworks/CoreServices.framework/Headers" \
             "$out/System/Library/Frameworks/CoreServices.framework/Versions/A" \
             "$out/System/Library/Frameworks/CoreVideo.framework/Headers" \
@@ -1014,6 +1231,7 @@ in
                 - _CFEqual
                 - _CFGetTypeID
                 - _CFLocaleCreateCanonicalLanguageIdentifierFromString
+                - _CFMachPortCreateRunLoopSource
                 - _CFNumberCreate
                 - _CFNumberGetTypeID
                 - _CFNumberGetValue
@@ -1324,6 +1542,7 @@ in
           ln -s IOSurface.tbd \
             "$out/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface"
 
+          . ${qemuCocoaSdkFragment}
           # Dawn maps WebGPU multiplanar formats to CoreVideo's public pixel
           # format codes. The production sources use only these ABI constants,
           # but Bazel still links the framework as part of the Apple backend.
@@ -1360,10 +1579,30 @@ in
 
           #endif
           EOF
+          cat > "$out/System/Library/Frameworks/CoreVideo.framework/Headers/CVDisplayLink.h" <<'EOF'
+          #ifndef _AOS_COREVIDEO_CVDISPLAYLINK_H_
+          #define _AOS_COREVIDEO_CVDISPLAYLINK_H_
+          #include <CoreGraphics/CoreGraphics.h>
+          #include <stdint.h>
+          typedef int32_t CVReturn;
+          typedef uint64_t CVOptionFlags;
+          typedef struct __CVDisplayLink *CVDisplayLinkRef;
+          typedef struct {
+            int64_t timeValue;
+            int32_t timeScale;
+            int32_t flags;
+          } CVTime;
+          enum { kCVTimeIsIndefinite = 1 << 0 };
+          CVReturn CVDisplayLinkCreateWithCGDisplay(CGDirectDisplayID displayID, CVDisplayLinkRef *displayLinkOut);
+          CVTime CVDisplayLinkGetNominalOutputVideoRefreshPeriod(CVDisplayLinkRef displayLink);
+          void CVDisplayLinkRelease(CVDisplayLinkRef displayLink);
+          #endif
+          EOF
           cat > "$out/System/Library/Frameworks/CoreVideo.framework/Headers/CoreVideo.h" <<'EOF'
           #ifndef _AOS_COREVIDEO_H_
           #define _AOS_COREVIDEO_H_
           #include <CoreVideo/CVPixelBuffer.h>
+          #include <CoreVideo/CVDisplayLink.h>
           #endif
           EOF
           cat > "$out/System/Library/Frameworks/CoreVideo.framework/CoreVideo.tbd" <<'EOF'
@@ -1375,7 +1614,15 @@ in
           compatibility-version: 1.2.0
           reexported-libraries:
             - targets: [ x86_64-macos, arm64-macos ]
-              libraries: [ '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation' ]
+              libraries:
+                - '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'
+                - '/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics'
+          exports:
+            - targets: [ x86_64-macos, arm64-macos ]
+              symbols:
+                - _CVDisplayLinkCreateWithCGDisplay
+                - _CVDisplayLinkGetNominalOutputVideoRefreshPeriod
+                - _CVDisplayLinkRelease
           ...
           EOF
           ln -s ../../CoreVideo.tbd \
@@ -1812,23 +2059,42 @@ in
           ln -s Metal.tbd \
             "$out/System/Library/Frameworks/Metal.framework/Versions/A/Metal"
 
-          # QuartzCore owns the layer which presents Metal drawables. Dawn's
-          # backend needs only the public CALayer/CAMetalLayer contract, while
-          # all GPU objects remain declared and linked by Metal itself.
+          # QuartzCore owns the layers which present both Metal drawables and
+          # QEMU's Cocoa scanout. Keep their shared geometry tied to
+          # CoreGraphics rather than introducing a second CGSize definition.
           cat > "$out/System/Library/Frameworks/QuartzCore.framework/Headers/CALayer.h" <<'EOF'
           #ifndef _AOS_QUARTZCORE_CALAYER_H_
           #define _AOS_QUARTZCORE_CALAYER_H_
 
           #import <Foundation/Foundation.h>
+          #import <CoreGraphics/CoreGraphics.h>
 
-          typedef struct CGSize {
-            double width;
-            double height;
-          } CGSize;
+          typedef NSUInteger CAAutoresizingMask;
+          enum {
+            kCALayerMinXMargin = 1U << 0,
+            kCALayerWidthSizable = 1U << 1,
+            kCALayerMaxXMargin = 1U << 2,
+            kCALayerMinYMargin = 1U << 3,
+            kCALayerHeightSizable = 1U << 4,
+            kCALayerMaxYMargin = 1U << 5
+          };
 
           @interface CALayer : NSObject
           + (instancetype)layer;
           @property(getter=isOpaque) BOOL opaque;
+          @property CGPoint anchorPoint;
+          @property CAAutoresizingMask autoresizingMask;
+          @property CGPoint position;
+          @property(getter=isHidden) BOOL hidden;
+          @property CGRect bounds;
+          @property(retain) id contents;
+          - (void)addSublayer:(CALayer *)layer;
+          @end
+
+          @interface CATransaction : NSObject
+          + (void)begin;
+          + (void)commit;
+          + (void)setDisableActions:(BOOL)flag;
           @end
 
           #endif
@@ -1873,12 +2139,14 @@ in
             - targets: [ x86_64-macos, arm64-macos ]
               libraries:
                 - '/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation'
+                - '/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics'
                 - '/System/Library/Frameworks/Metal.framework/Versions/A/Metal'
           exports:
             - targets: [ x86_64-macos, arm64-macos ]
               symbols:
                 - '_OBJC_CLASS_$_CALayer'
                 - '_OBJC_CLASS_$_CAMetalLayer'
+                - '_OBJC_CLASS_$_CATransaction'
           ...
           EOF
           ln -s ../../QuartzCore.tbd \
@@ -1895,6 +2163,7 @@ in
           #define _AOS_FOUNDATION_H_
           #import <objc/NSObject.h>
           #import <CoreFoundation/CFAvailability.h>
+          #import <CoreGraphics/CoreGraphics.h>
           #include <dispatch/dispatch.h>
 
           #define NS_ENUM(_type, _name) CF_ENUM(_type, _name)
@@ -1937,25 +2206,35 @@ in
           @end
 
           @class NSData;
+          typedef unsigned short unichar;
           typedef NSUInteger NSStringEncoding;
-          enum { NSUTF8StringEncoding = 4 };
+          enum { NSASCIIStringEncoding = 1, NSUTF8StringEncoding = 4 };
 
           @interface NSString : NSObject
+          + (instancetype)stringWithCString:(const char *)bytes encoding:(NSStringEncoding)encoding;
+          + (instancetype)stringWithFormat:(NSString *)format, ...;
           + (instancetype)stringWithUTF8String:(const char *)bytes;
           - (instancetype)initWithUTF8String:(const char *)bytes;
           - (instancetype)initWithData:(NSData *)data encoding:(NSStringEncoding)encoding;
           - (const char *)UTF8String;
           - (const char *)cStringUsingEncoding:(NSStringEncoding)encoding;
           - (NSData *)dataUsingEncoding:(NSStringEncoding)encoding;
+          @property(readonly) NSUInteger length;
+          - (unichar)characterAtIndex:(NSUInteger)index;
+          @property(readonly, copy) NSString *stringByDeletingLastPathComponent;
           - (NSComparisonResult)compare:(NSString *)string;
           - (NSComparisonResult)caseInsensitiveCompare:(NSString *)string;
           @end
 
           @interface NSData : NSObject
+          - (instancetype)initWithBytes:(const void *)bytes length:(NSUInteger)length;
+          @property(readonly) NSUInteger length;
+          @property(readonly) const void *bytes;
           @end
 
           @interface NSNumber : NSObject
           + (NSNumber *)numberWithBool:(BOOL)value;
+          + (NSNumber *)numberWithInt:(int)value;
           + (NSNumber *)numberWithUnsignedChar:(unsigned char)value;
           + (NSNumber *)numberWithShort:(short)value;
           + (NSNumber *)numberWithUnsignedShort:(unsigned short)value;
@@ -1965,6 +2244,8 @@ in
           + (NSNumber *)numberWithUnsignedLongLong:(unsigned long long)value;
           + (NSNumber *)numberWithDouble:(double)value;
           - (BOOL)boolValue;
+          - (int)intValue;
+          - (unsigned int)unsignedIntValue;
           - (unsigned char)unsignedCharValue;
           - (short)shortValue;
           - (unsigned short)unsignedShortValue;
@@ -1980,7 +2261,9 @@ in
           @end
 
           @interface NSArray<ObjectType> : NSObject <NSFastEnumeration>
+          + (instancetype)arrayWithObjects:(const ObjectType [])objects count:(NSUInteger)count;
           @property(readonly) ObjectType firstObject;
+          - (ObjectType)objectAtIndex:(NSUInteger)index;
           @end
 
           @interface NSMutableArray<ObjectType> : NSArray<ObjectType>
@@ -1989,6 +2272,7 @@ in
           @end
 
           @interface NSDictionary<KeyType, ObjectType> : NSObject
+          + (instancetype)dictionaryWithObjects:(const ObjectType [])objects forKeys:(const KeyType [])keys count:(NSUInteger)count;
           - (ObjectType)objectForKey:(KeyType)aKey;
           - (ObjectType)objectForKeyedSubscript:(KeyType)key;
           - (NSEnumerator<KeyType> *)objectEnumerator;
@@ -2015,6 +2299,8 @@ in
 
           @interface NSURL : NSObject
           + (NSURL *)fileURLWithPath:(NSString *)path;
+          + (NSURL *)fileURLWithPath:(NSString *)path isDirectory:(BOOL)isDir;
+          @property(readonly, copy) NSString *path;
           @end
 
           @interface NSBundle : NSObject
@@ -2022,7 +2308,20 @@ in
           + (NSBundle *)bundleWithURL:(NSURL *)url;
           @property(readonly, copy) NSString *bundleIdentifier;
           @property(readonly, copy) NSString *bundlePath;
+          @property(readonly, copy) NSString *executablePath;
           - (id)objectForInfoDictionaryKey:(NSString *)key;
+          @end
+
+          @interface NSMutableAttributedString : NSObject
+          - (instancetype)initWithString:(NSString *)string;
+          - (void)addAttribute:(NSString *)name value:(id)value range:(NSRange)range;
+          @end
+
+          @interface NSNotification : NSObject
+          @end
+
+          @interface NSThread : NSObject
+          + (void)sleepForTimeInterval:(CFTimeInterval)timeInterval;
           @end
 
           typedef struct {
@@ -2102,10 +2401,313 @@ in
           #define _AOS_APPKIT_H_
 
           #import <Foundation/Foundation.h>
+          #import <CoreVideo/CoreVideo.h>
+          #import <QuartzCore/CALayer.h>
+
+          #define IBAction void
+
+          typedef CGPoint NSPoint;
+          typedef CGSize NSSize;
+          typedef CGRect NSRect;
+          typedef struct NSEdgeInsets {
+            CGFloat top;
+            CGFloat left;
+            CGFloat bottom;
+            CGFloat right;
+          } NSEdgeInsets;
+          NS_INLINE NSPoint NSMakePoint(CGFloat x, CGFloat y) { return CGPointMake(x, y); }
+          NS_INLINE NSSize NSMakeSize(CGFloat width, CGFloat height) {
+            NSSize size = { width, height };
+            return size;
+          }
+          NS_INLINE NSRect NSMakeRect(CGFloat x, CGFloat y, CGFloat width, CGFloat height) {
+            NSRect rect = { { x, y }, { width, height } };
+            return rect;
+          }
+          NS_INLINE CGRect NSRectToCGRect(NSRect rect) { return rect; }
+
+          typedef NSUInteger NSWindowStyleMask;
+          enum {
+            NSWindowStyleMaskTitled = 1U << 0,
+            NSWindowStyleMaskClosable = 1U << 1,
+            NSWindowStyleMaskMiniaturizable = 1U << 2,
+            NSWindowStyleMaskResizable = 1U << 3,
+            NSWindowStyleMaskFullScreen = 1U << 14
+          };
+          typedef NSUInteger NSWindowCollectionBehavior;
+          enum { NSWindowCollectionBehaviorFullScreenPrimary = 1U << 7 };
+          typedef NSUInteger NSBackingStoreType;
+          enum { NSBackingStoreBuffered = 2 };
+          typedef NSUInteger NSTrackingAreaOptions;
+          enum {
+            NSTrackingMouseEnteredAndExited = 1U << 0,
+            NSTrackingMouseMoved = 1U << 1,
+            NSTrackingActiveInKeyWindow = 1U << 5,
+            NSTrackingInVisibleRect = 1U << 9
+          };
+          typedef NSUInteger NSEventModifierFlags;
+          enum {
+            NSEventModifierFlagCapsLock = 1U << 16,
+            NSEventModifierFlagShift = 1U << 17,
+            NSEventModifierFlagControl = 1U << 18,
+            NSEventModifierFlagOption = 1U << 19,
+            NSEventModifierFlagCommand = 1U << 20
+          };
+          typedef NSUInteger NSEventType;
+          enum {
+            NSEventTypeKeyDown = 10,
+            NSEventTypeKeyUp = 11,
+            NSEventTypeFlagsChanged = 12,
+            NSEventTypeScrollWheel = 22
+          };
+          typedef NSUInteger NSApplicationPresentationOptions;
+          enum {
+            NSApplicationPresentationAutoHideDock = 1U << 0,
+            NSApplicationPresentationHideDock = 1U << 1,
+            NSApplicationPresentationAutoHideMenuBar = 1U << 2,
+            NSApplicationPresentationHideMenuBar = 1U << 3
+          };
+          typedef NSUInteger NSApplicationTerminateReply;
+          typedef NSInteger NSModalResponse;
+          enum {
+            NSModalResponseOK = 1,
+            NSAlertSecondButtonReturn = 1001,
+            NSControlStateValueOff = 0,
+            NSControlStateValueOn = 1,
+            NSItalicFontMask = 1U << 0,
+            NSBoldFontMask = 1U << 1
+          };
+
+          typedef NSString *NSPasteboardType;
+          extern NSPasteboardType const NSPasteboardTypeString;
+          extern NSString *const NSAboutPanelOptionApplicationIcon;
+          extern NSString *const NSAboutPanelOptionApplicationVersion;
+          extern NSString *const NSFontAttributeName;
+          extern NSString *const NSForegroundColorAttributeName;
+          extern NSString *const NSScreenNumber;
+          extern NSString *const NSUnderlineStyleAttributeName;
+
+          @class NSApplication;
+          @class NSEvent;
+          @class NSMenu;
+          @class NSMenuItem;
+          @class NSNotification;
+          @class NSPasteboard;
+          @class NSView;
+          @class NSWindow;
+
+          @protocol NSApplicationDelegate <NSObject>
+          @optional
+          - (void)applicationDidFinishLaunching:(NSNotification *)notification;
+          - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender;
+          - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender;
+          @end
+
+          @protocol NSWindowDelegate <NSObject>
+          @optional
+          - (void)windowDidResize:(NSNotification *)notification;
+          - (void)windowDidEnterFullScreen:(NSNotification *)notification;
+          - (void)windowDidExitFullScreen:(NSNotification *)notification;
+          - (BOOL)windowShouldClose:(id)sender;
+          @end
+
+          @protocol NSPasteboardTypeOwner <NSObject>
+          @optional
+          - (void)pasteboard:(NSPasteboard *)sender provideDataForType:(NSPasteboardType)type;
+          @end
+
+          @interface NSResponder : NSObject
+          - (void)mouseDown:(NSEvent *)event;
+          - (void)mouseUp:(NSEvent *)event;
+          - (void)mouseMoved:(NSEvent *)event;
+          - (void)mouseDragged:(NSEvent *)event;
+          - (void)rightMouseDown:(NSEvent *)event;
+          - (void)rightMouseUp:(NSEvent *)event;
+          - (void)rightMouseDragged:(NSEvent *)event;
+          - (void)otherMouseDown:(NSEvent *)event;
+          - (void)otherMouseUp:(NSEvent *)event;
+          - (void)otherMouseDragged:(NSEvent *)event;
+          - (void)scrollWheel:(NSEvent *)event;
+          - (void)keyDown:(NSEvent *)event;
+          - (void)keyUp:(NSEvent *)event;
+          - (void)flagsChanged:(NSEvent *)event;
+          @end
+
+          @interface NSTrackingArea : NSObject
+          - (instancetype)initWithRect:(NSRect)rect
+                               options:(NSTrackingAreaOptions)options
+                                 owner:(id)owner
+                              userInfo:(NSDictionary *)userInfo;
+          @end
+
+          @interface NSView : NSResponder
+          - (instancetype)initWithFrame:(NSRect)frameRect;
+          @property NSRect frame;
+          @property NSSize boundsSize;
+          @property(getter=wantsLayer) BOOL wantsLayer;
+          @property(getter=isHidden) BOOL hidden;
+          @property(readonly, retain) CALayer *layer;
+          @property(readonly, assign) NSWindow *window;
+          - (void)addSubview:(NSView *)view;
+          - (void)removeFromSuperview;
+          - (void)addTrackingArea:(NSTrackingArea *)trackingArea;
+          - (void)setClipsToBounds:(BOOL)clipsToBounds;
+          - (void)getRectsBeingDrawn:(const NSRect **)rects count:(NSInteger *)count;
+          - (void)setNeedsDisplayInRect:(NSRect)invalidRect;
+          @end
+
+          @interface NSScreen : NSObject
+          @property(readonly) NSRect frame;
+          @property(readonly) NSEdgeInsets safeAreaInsets;
+          @property(readonly, copy) NSDictionary *deviceDescription;
+          @end
+
+          @interface NSWindow : NSResponder
+          - (instancetype)initWithContentRect:(NSRect)contentRect
+                                    styleMask:(NSWindowStyleMask)style
+                                      backing:(NSBackingStoreType)backingStoreType
+                                        defer:(BOOL)flag;
+          @property(copy) NSString *title;
+          @property(retain) NSView *contentView;
+          @property(assign) id<NSWindowDelegate> delegate;
+          @property NSWindowStyleMask styleMask;
+          @property NSWindowCollectionBehavior collectionBehavior;
+          @property BOOL acceptsMouseMovedEvents;
+          @property NSSize contentAspectRatio;
+          @property NSSize contentMinSize;
+          @property(readonly, retain) NSScreen *screen;
+          - (void)makeKeyAndOrderFront:(id)sender;
+          - (void)orderFront:(id)sender;
+          - (void)center;
+          - (void)setContentSize:(NSSize)size;
+          - (void)toggleFullScreen:(id)sender;
+          @end
+
+          @interface NSEvent : NSObject
+          + (NSEvent *)eventWithCGEvent:(CGEventRef)cgEvent;
+          @property(readonly) NSEventType type;
+          @property(readonly) unsigned short keyCode;
+          @property(readonly) NSEventModifierFlags modifierFlags;
+          @property(readonly, copy) NSString *characters;
+          @property(readonly, copy) NSString *charactersIgnoringModifiers;
+          @property(readonly) CGFloat deltaX;
+          @property(readonly) CGFloat deltaY;
+          @property(readonly) NSPoint locationInWindow;
+          @end
+
+          @interface NSApplication : NSResponder
+          + (NSApplication *)sharedApplication;
+          @property(assign) id<NSApplicationDelegate> delegate;
+          @property(retain) NSMenu *mainMenu;
+          @property(retain) NSMenu *servicesMenu;
+          @property(retain) NSMenu *windowsMenu;
+          @property NSApplicationPresentationOptions presentationOptions;
+          - (void)run;
+          - (void)sendEvent:(NSEvent *)event;
+          - (void)terminate:(id)sender;
+          - (void)orderFrontStandardAboutPanelWithOptions:(NSDictionary *)optionsDictionary;
+          @end
+          extern NSApplication *NSApp;
 
           @interface NSImage : NSObject
           - (instancetype)initByReferencingFile:(NSString *)fileName;
+          - (instancetype)initWithContentsOfFile:(NSString *)fileName;
           @end
+
+          @interface NSAlert : NSObject
+          @property(copy) NSString *messageText;
+          - (void)addButtonWithTitle:(NSString *)title;
+          - (NSModalResponse)runModal;
+          @end
+
+          @interface NSOpenPanel : NSObject
+          + (NSOpenPanel *)openPanel;
+          @property BOOL canChooseFiles;
+          @property BOOL canChooseDirectories;
+          @property BOOL allowsMultipleSelection;
+          @property(readonly, copy) NSArray<NSURL *> *URLs;
+          - (NSModalResponse)runModal;
+          @end
+
+          @interface NSMenu : NSObject
+          - (instancetype)initWithTitle:(NSString *)title;
+          @property(copy) NSString *title;
+          @property BOOL autoenablesItems;
+          @property(readonly, copy) NSArray<NSMenuItem *> *itemArray;
+          - (void)addItem:(NSMenuItem *)newItem;
+          - (NSMenuItem *)addItemWithTitle:(NSString *)string action:(SEL)selector keyEquivalent:(NSString *)charCode;
+          - (NSMenuItem *)itemWithTitle:(NSString *)title;
+          @end
+
+          @interface NSMenuItem : NSObject
+          + (NSMenuItem *)separatorItem;
+          - (instancetype)initWithTitle:(NSString *)string action:(SEL)selector keyEquivalent:(NSString *)charCode;
+          @property(retain) NSMenu *submenu;
+          @property NSEventModifierFlags keyEquivalentModifierMask;
+          @property(getter=isEnabled) BOOL enabled;
+          @property NSInteger state;
+          @property NSInteger tag;
+          @property(readonly, assign) NSMenu *menu;
+          @property(retain) id representedObject;
+          @property(copy) NSMutableAttributedString *attributedTitle;
+          @end
+
+          @interface NSColor : NSObject
+          + (NSColor *)whiteColor;
+          + (NSColor *)blackColor;
+          @end
+
+          @interface NSFont : NSObject
+          + (NSFont *)fontWithName:(NSString *)fontName size:(CGFloat)fontSize;
+          @end
+
+          @interface NSFontManager : NSObject
+          + (NSFontManager *)sharedFontManager;
+          - (NSFont *)convertFont:(NSFont *)font toHaveTrait:(NSUInteger)trait;
+          - (NSFont *)fontWithFamily:(NSString *)family
+                              traits:(NSUInteger)traits
+                              weight:(NSInteger)weight
+                                size:(CGFloat)size;
+          @end
+
+          @interface NSTextField : NSView
+          @property(copy) NSString *stringValue;
+          @property(copy) NSMutableAttributedString *attributedStringValue;
+          @property BOOL editable;
+          @property BOOL selectable;
+          @property BOOL bezeled;
+          @property BOOL drawsBackground;
+          @property(retain) NSColor *textColor;
+          @property(retain) NSColor *backgroundColor;
+          @property(retain) NSFont *font;
+          - (void)sizeToFit;
+          @end
+
+          @interface NSGraphicsContext : NSObject
+          + (NSGraphicsContext *)currentContext;
+          @property(readonly) CGContextRef CGContext;
+          @end
+
+          @interface NSCursor : NSObject
+          + (void)hide;
+          + (void)unhide;
+          @end
+
+          @interface NSPasteboard : NSObject
+          + (NSPasteboard *)generalPasteboard;
+          @property(readonly) NSInteger changeCount;
+          - (NSInteger)declareTypes:(NSArray<NSPasteboardType> *)newTypes owner:(id)newOwner;
+          - (BOOL)setData:(NSData *)data forType:(NSPasteboardType)dataType;
+          - (NSData *)dataForType:(NSPasteboardType)dataType;
+          - (NSPasteboardType)availableTypeFromArray:(NSArray<NSPasteboardType> *)types;
+          @end
+
+          @interface NSWorkspace : NSObject
+          + (NSWorkspace *)sharedWorkspace;
+          - (BOOL)openURL:(NSURL *)url;
+          @end
+
+          void NSBeep(void);
 
           typedef NSInteger NSUserNotificationActivationType;
           enum {
@@ -2159,6 +2761,11 @@ in
           install-name: '/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation'
           current-version: 3100.0.0
           compatibility-version: 300.0.0
+          reexported-libraries:
+            - targets: [ x86_64-macos, arm64-macos ]
+              libraries:
+                - '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'
+                - '/usr/lib/libobjc.A.dylib'
           exports:
             - targets: [ x86_64-macos, arm64-macos ]
               symbols:
@@ -2170,11 +2777,14 @@ in
                 - '_OBJC_CLASS_$_NSEnumerator'
                 - '_OBJC_CLASS_$_NSAutoreleasePool'
                 - '_OBJC_CLASS_$_NSMutableArray'
+                - '_OBJC_CLASS_$_NSMutableAttributedString'
                 - '_OBJC_CLASS_$_NSMutableDictionary'
                 - '_OBJC_CLASS_$_NSNumber'
+                - '_OBJC_CLASS_$_NSNotification'
                 - '_OBJC_CLASS_$_NSObject'
                 - '_OBJC_CLASS_$_NSProcessInfo'
                 - '_OBJC_CLASS_$_NSString'
+                - '_OBJC_CLASS_$_NSThread'
                 - '_OBJC_CLASS_$_NSURL'
                 - '_OBJC_CLASS_$_NSUserDefaults'
                 - '_OBJC_METACLASS_$_NSObject'
@@ -2200,10 +2810,44 @@ in
           exports:
             - targets: [ x86_64-macos, arm64-macos ]
               symbols:
+                - _NSAboutPanelOptionApplicationIcon
+                - _NSAboutPanelOptionApplicationVersion
+                - _NSApp
+                - _NSBeep
+                - _NSFontAttributeName
+                - _NSForegroundColorAttributeName
+                - _NSPasteboardTypeString
+                - _NSScreenNumber
+                - _NSUnderlineStyleAttributeName
+                - '_OBJC_CLASS_$_NSAlert'
+                - '_OBJC_CLASS_$_NSApplication'
+                - '_OBJC_CLASS_$_NSColor'
+                - '_OBJC_CLASS_$_NSCursor'
+                - '_OBJC_CLASS_$_NSEvent'
+                - '_OBJC_CLASS_$_NSFont'
+                - '_OBJC_CLASS_$_NSFontManager'
+                - '_OBJC_CLASS_$_NSGraphicsContext'
                 - '_OBJC_CLASS_$_NSImage'
+                - '_OBJC_CLASS_$_NSMenu'
+                - '_OBJC_CLASS_$_NSMenuItem'
+                - '_OBJC_CLASS_$_NSOpenPanel'
+                - '_OBJC_CLASS_$_NSPasteboard'
+                - '_OBJC_CLASS_$_NSResponder'
+                - '_OBJC_CLASS_$_NSScreen'
+                - '_OBJC_CLASS_$_NSTextField'
+                - '_OBJC_CLASS_$_NSTrackingArea'
                 - '_OBJC_CLASS_$_NSUserNotification'
                 - '_OBJC_CLASS_$_NSUserNotificationCenter'
+                - '_OBJC_CLASS_$_NSView'
+                - '_OBJC_CLASS_$_NSWindow'
+                - '_OBJC_CLASS_$_NSWorkspace'
+                - '_OBJC_METACLASS_$_NSApplication'
+                - '_OBJC_METACLASS_$_NSResponder'
+                - '_OBJC_METACLASS_$_NSView'
+                - '_OBJC_PROTOCOL_$_NSApplicationDelegate'
+                - '_OBJC_PROTOCOL_$_NSPasteboardTypeOwner'
                 - '_OBJC_PROTOCOL_$_NSUserNotificationCenterDelegate'
+                - '_OBJC_PROTOCOL_$_NSWindowDelegate'
           ...
           EOF
           ln -s ../../AppKit.tbd \
@@ -2248,6 +2892,7 @@ in
           #define __APPLICATIONSERVICES__
 
           #include <CoreFoundation/CoreFoundation.h>
+          #include <CoreGraphics/CoreGraphics.h>
 
           CF_EXTERN_C_BEGIN
           typedef UInt32 LSLaunchFlags;
@@ -2313,7 +2958,9 @@ in
           compatibility-version: 1.0.0
           reexported-libraries:
             - targets: [ x86_64-macos, arm64-macos ]
-              libraries: [ '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation' ]
+              libraries:
+                - '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'
+                - '/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics'
           exports:
             - targets: [ x86_64-macos, arm64-macos ]
               symbols:
@@ -2326,6 +2973,7 @@ in
                 - _LSFindApplicationForInfo
                 - _LSOpenCFURLRef
                 - _LSOpenFromURLSpec
+                - _TransformProcessType
                 - _UTTypeConformsTo
                 - _UTTypeCopyDescription
                 - _UTTypeCopyPreferredTagWithClass
@@ -2355,6 +3003,16 @@ in
 
           #include <CoreServices/CoreServices.h>
           #include <ApplicationServices/ApplicationServices.h>
+
+          typedef UInt32 ProcessApplicationTransformState;
+          enum {
+            kCurrentProcess = 2,
+            kProcessTransformToForegroundApplication = 1
+          };
+          OSStatus TransformProcessType(
+            const ProcessSerialNumber *psn,
+            ProcessApplicationTransformState transformState
+          );
 
           enum {
             kVK_ANSI_A = 0x00, kVK_ANSI_S = 0x01, kVK_ANSI_D = 0x02,
@@ -3107,6 +3765,7 @@ in
                 - _objc_retainAutoreleasedReturnValue
                 - _objc_storeStrong
                 - _objc_storeWeak
+                - _objc_terminate
                 - _object_getClass
                 - _object_setClass
                 - _protocol_addMethodDescription
