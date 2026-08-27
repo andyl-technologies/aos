@@ -249,22 +249,6 @@ in {
             --registry runtime-reg \
             --key-id release
 
-          REG_DIR=$HOME/.local/share/apm/registries/runtime-reg
-          mkdir -p /var/lib/runtime-module-registry-cache
-          {APR} release 1.0.0 \
-            --registry runtime-reg \
-            --key-id release \
-            --cache-url file:///var/lib/runtime-module-registry-cache \
-            --upload-url file:///var/lib/runtime-module-registry-cache
-
-          HOME=/tmp USER=root {APM} registry --system add \
-            "file://$REG_DIR" \
-            --name runtime-reg \
-            --version '=1.0.0' \
-            --trust-key "$PUBKEY"
-          HOME=/tmp USER=root {APM} update \
-            --system --registry runtime-reg
-
           mkdir -p "$HOME/.local/share/apm/remote"
           cp -a "$HOME/.local/share/apm/registries/runtime-reg" \
             "$HOME/.local/share/apm/remote/runtime-reg"
@@ -280,6 +264,22 @@ in {
           EOF
 
           {APM} install nginx --registry runtime-reg --yes
+
+          REG_DIR=$HOME/.local/share/apm/registries/runtime-reg
+          mkdir -p /var/lib/runtime-module-registry-cache
+          {APR} release 1.0.0 \
+            --registry runtime-reg \
+            --key-id release \
+            --cache-url file:///var/lib/runtime-module-registry-cache \
+            --upload-url file:///var/lib/runtime-module-registry-cache
+
+          HOME=/tmp USER=root {APM} registry --system add \
+            "file://$REG_DIR" \
+            --name runtime-reg \
+            --version '=1.0.0' \
+            --trust-key "$PUBKEY"
+          HOME=/tmp USER=root {APM} update \
+            --system --registry runtime-reg
 
       """), timeout=1200)
       installed = runtime.succeed(
