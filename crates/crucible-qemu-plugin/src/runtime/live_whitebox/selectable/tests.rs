@@ -1,3 +1,5 @@
+//! Selectable live-whitebox request, continuation, and delivery regressions.
+
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 

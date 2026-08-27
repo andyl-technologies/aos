@@ -18,93 +18,20 @@ use crucible_shmem::{
 
 use crate::{
     DeviceIoFreezeError, DeviceIoRequestRelease, DeviceIoRequestToken, PluginDeviceIoFreeze,
-    shmem_ordering::PluginShmemOrdering,
+    PluginStorageHistoryLimits, shmem_ordering::PluginShmemOrdering,
 };
+
+mod history;
+use history::{CompletedEpochHistory, CompletedIdentityHistory, reserve_history};
 
 const BLOCK_IO_SLOT_U32: u32 = SLOT_BLK_IO as u32;
 const BLOCK_WIRE_VERSION: u8 = 4;
 const BLOCK_REQUEST_HEADER_LEN: usize = 28;
 const BLOCK_RESPONSE_HEADER_LEN: usize = 20;
-const HARD_BLOCK_HISTORY_EPOCHS: usize = 1_048_576;
-const HARD_BLOCK_HISTORY_GAPS: usize = 1_048_576;
 const BLOCK_TRANSPORT_CONTINUATION_MAGIC: &[u8; 4] = b"CBTS";
 const BLOCK_TRANSPORT_CONTINUATION_VERSION: u16 = 1;
 const BLOCK_TRANSPORT_CONTINUATION_HEADER_LEN: usize = 28;
 const BLOCK_TRANSPORT_CONTINUATION_EPOCH_LEN: usize = 24;
-
-#[derive(Debug, Default, PartialEq, Eq)]
-struct CompletedIdentityHistory {
-    epochs: BTreeMap<u64, CompletedEpochHistory>,
-    gaps: usize,
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-struct CompletedEpochHistory {
-    contiguous_exclusive: u64,
-    out_of_order: BTreeSet<u32>,
-}
-
-impl CompletedIdentityHistory {
-    fn contains(&self, identity: BlockRequestIdentity) -> bool {
-        self.epochs.get(&identity.epoch).is_some_and(|epoch| {
-            u64::from(identity.request_id) < epoch.contiguous_exclusive
-                || epoch.out_of_order.contains(&identity.request_id)
-        })
-    }
-
-    fn ensure_record_capacity(&self, identity: BlockRequestIdentity) -> Result<(), BlockIoError> {
-        if self.contains(identity) {
-            return Ok(());
-        }
-        if !self.epochs.contains_key(&identity.epoch)
-            && self.epochs.len() == HARD_BLOCK_HISTORY_EPOCHS
-        {
-            return Err(BlockIoError::CompletedHistoryExhausted {
-                dimension: "epochs",
-                hard: HARD_BLOCK_HISTORY_EPOCHS,
-            });
-        }
-        let fills_prefix = self
-            .epochs
-            .get(&identity.epoch)
-            .is_none_or(|epoch| u64::from(identity.request_id) == epoch.contiguous_exclusive);
-        if !fills_prefix && self.gaps == HARD_BLOCK_HISTORY_GAPS {
-            return Err(BlockIoError::CompletedHistoryExhausted {
-                dimension: "out-of-order identities",
-                hard: HARD_BLOCK_HISTORY_GAPS,
-            });
-        }
-        Ok(())
-    }
-
-    fn record(&mut self, identity: BlockRequestIdentity) {
-        let epoch = self.epochs.entry(identity.epoch).or_default();
-        let request_id = u64::from(identity.request_id);
-        if request_id < epoch.contiguous_exclusive {
-            return;
-        }
-        if request_id > epoch.contiguous_exclusive {
-            if epoch.out_of_order.insert(identity.request_id) {
-                self.gaps += 1;
-            }
-            return;
-        }
-        epoch.contiguous_exclusive += 1;
-        while epoch.contiguous_exclusive <= u64::from(u32::MAX) {
-            let next = epoch.contiguous_exclusive as u32;
-            if !epoch.out_of_order.remove(&next) {
-                break;
-            }
-            self.gaps -= 1;
-            epoch.contiguous_exclusive += 1;
-        }
-    }
-
-    fn clear(&mut self) {
-        self.epochs.clear();
-        self.gaps = 0;
-    }
-}
 
 /// Epoch-scoped identity of one request on the block transport.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -141,6 +68,7 @@ pub struct PluginBlockIo {
     inbound_ring_index: u32,
     request_epoch: Cell<u64>,
     next_request_id: Cell<u32>,
+    completed_history_limits: PluginStorageHistoryLimits,
     completed_identities: RefCell<CompletedIdentityHistory>,
 }
 
@@ -152,10 +80,32 @@ impl PluginBlockIo {
     /// Returns [`BlockIoError::WrongOutboundRing`] or
     /// [`BlockIoError::WrongInboundRing`] when either ring is not the reserved
     /// block executor ring for `vm_slot`.
+    #[cfg(test)]
     pub fn from_directed_rings(
         vm_slot: u32,
         outbound_ring: DirectedRing,
         inbound_ring: DirectedRing,
+    ) -> Result<Self, BlockIoError> {
+        Self::from_directed_rings_with_history_limits(
+            vm_slot,
+            outbound_ring,
+            inbound_ring,
+            PluginStorageHistoryLimits::compiled_maximum(),
+        )
+    }
+
+    /// Builds block callback state with explicit authored history limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlockIoError::WrongOutboundRing`] or
+    /// [`BlockIoError::WrongInboundRing`] when either ring is not the reserved
+    /// block executor ring for `vm_slot`.
+    pub fn from_directed_rings_with_history_limits(
+        vm_slot: u32,
+        outbound_ring: DirectedRing,
+        inbound_ring: DirectedRing,
+        completed_history_limits: PluginStorageHistoryLimits,
     ) -> Result<Self, BlockIoError> {
         if outbound_ring.src_slot != vm_slot || outbound_ring.dst_slot != BLOCK_IO_SLOT_U32 {
             return Err(BlockIoError::WrongOutboundRing {
@@ -178,12 +128,34 @@ impl PluginBlockIo {
             });
         }
 
-        Ok(Self::new(vm_slot, outbound_ring.index, inbound_ring.index))
+        Ok(Self::new_with_history_limits(
+            vm_slot,
+            outbound_ring.index,
+            inbound_ring.index,
+            completed_history_limits,
+        ))
     }
 
     /// Builds block callback state for the reserved block rings.
     #[must_use]
+    #[cfg(test)]
     pub const fn new(vm_slot: u32, outbound_ring_index: u32, inbound_ring_index: u32) -> Self {
+        Self::new_with_history_limits(
+            vm_slot,
+            outbound_ring_index,
+            inbound_ring_index,
+            PluginStorageHistoryLimits::compiled_maximum(),
+        )
+    }
+
+    /// Builds block callback state with explicit authored history limits.
+    #[must_use]
+    pub const fn new_with_history_limits(
+        vm_slot: u32,
+        outbound_ring_index: u32,
+        inbound_ring_index: u32,
+        completed_history_limits: PluginStorageHistoryLimits,
+    ) -> Self {
         Self {
             vm_slot,
             block_slot: BLOCK_IO_SLOT_U32,
@@ -191,6 +163,7 @@ impl PluginBlockIo {
             inbound_ring_index,
             request_epoch: Cell::new(0),
             next_request_id: Cell::new(0),
+            completed_history_limits,
             completed_identities: RefCell::new(CompletedIdentityHistory {
                 epochs: BTreeMap::new(),
                 gaps: 0,
@@ -360,11 +333,20 @@ impl PluginBlockIo {
         .map_err(|_error| BlockIoError::InvalidTransportContinuation {
             reason: "transport continuation gap count does not fit usize",
         })?;
-        if epoch_count > HARD_BLOCK_HISTORY_EPOCHS || expected_gaps > HARD_BLOCK_HISTORY_GAPS {
-            return Err(BlockIoError::InvalidTransportContinuation {
-                reason: "transport continuation exceeds duplicate-history bounds",
-            });
-        }
+        reserve_history(
+            "storage_completed_history_epochs",
+            0,
+            u64::try_from(epoch_count).unwrap_or(u64::MAX),
+            self.completed_history_limits.epochs(),
+            crate::HARD_STORAGE_COMPLETED_HISTORY_EPOCHS,
+        )?;
+        reserve_history(
+            "storage_completed_history_gaps",
+            0,
+            u64::try_from(expected_gaps).unwrap_or(u64::MAX),
+            self.completed_history_limits.gaps(),
+            crate::HARD_STORAGE_COMPLETED_HISTORY_GAPS,
+        )?;
         let mut cursor = BLOCK_TRANSPORT_CONTINUATION_HEADER_LEN;
         let mut history = CompletedIdentityHistory::default();
         let mut previous_epoch = None;
@@ -643,7 +625,7 @@ impl PluginBlockIo {
         }
         self.completed_identities
             .borrow()
-            .ensure_record_capacity(response.identity())?;
+            .ensure_record_capacity(response.identity(), self.completed_history_limits)?;
         let release = freeze
             .complete_request(slot, token.device_token)
             .map_err(|source| BlockIoError::DeviceIoFreeze { source })?;
@@ -2091,13 +2073,21 @@ pub enum BlockIoError {
         /// Frame identity retained for deterministic diagnostics.
         frame: FrameDeliveryKey,
     },
-    /// Completed-identity history reached its declared hard resource bound.
-    #[error("block completed-identity history exhausted {dimension} limit {hard}")]
-    CompletedHistoryExhausted {
-        /// Bounded history dimension that was exhausted.
-        dimension: &'static str,
-        /// Immutable hard limit for that dimension.
-        hard: usize,
+    /// Completed-identity history exceeded an authored resource limit.
+    #[error(
+        "block completed-identity history limit `{field}` refused current={current} requested={requested} configured={configured} hard={hard}"
+    )]
+    CompletedHistoryResourceLimit {
+        /// Stable public resource-limit field.
+        field: &'static str,
+        /// Usage already owned before the refused reservation.
+        current: u64,
+        /// Additional atomic usage that was refused.
+        requested: u64,
+        /// Authored scenario ceiling.
+        configured: u64,
+        /// Immutable compiled ceiling.
+        hard: u64,
     },
     /// A reset response did not describe the only valid next epoch.
     #[error(

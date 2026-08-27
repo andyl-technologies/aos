@@ -553,7 +553,9 @@ impl ProductionExactCheckpointClosure {
             .targets
             .into_iter()
             .map(|target| ProductionExactCheckpointReplayDescriptor {
-                node: NodeId { name: target.node },
+                node: NodeId {
+                    name: target.node.into_string(),
+                },
                 snapshot: target.snapshot,
                 overlay: ProductionExactCheckpointReplayArtifact {
                     object_directory: self.object_directory.clone(),
@@ -616,7 +618,9 @@ impl ProductionExactCheckpointClosure {
         let manifest = decode::decode_manifest_with_limits(self.manifest(), limits)?;
         let mut targets = BTreeMap::new();
         for target in manifest.targets {
-            let node = NodeId { name: target.node };
+            let node = NodeId {
+                name: target.node.into_string(),
+            };
             let descriptor = ProductionExactCheckpointReplayDescriptor {
                 node: node.clone(),
                 snapshot: target.snapshot,
@@ -1059,7 +1063,7 @@ fn prepare_production_replay_oracle_promotion_source(
     for target in &mut manifest.targets {
         boundary()?;
         let node = NodeId {
-            name: target.node.clone(),
+            name: target.node.to_string(),
         };
         let check = checks.get(&node).copied().ok_or_else(|| {
             loop_factory_error(format!(
@@ -1201,7 +1205,7 @@ pub(super) fn authenticate_replay_oracle_source_pair(
         }
         let source_identity = source_snapshot.id();
         let node = NodeId {
-            name: source_target.node.clone(),
+            name: source_target.node.to_string(),
         };
         let expected_source_manifest =
             exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {

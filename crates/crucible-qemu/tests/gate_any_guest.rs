@@ -91,10 +91,10 @@ fn gate_any_guest_whitebox_switch_is_host_plugin_configuration_without_agent_con
         runner.plugin_args,
         vec![
             format!(
-                "simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off"
+                "simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=4,wakefd=5,whitebox=off,coverage=off"
             ),
             format!(
-                "simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,shmemfd=4,wakefd=5,whitebox=on,coverage=off,whitebox_setup=x86-port-00e7-unclaimed-v1"
+                "simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=4,wakefd=5,whitebox=on,coverage=off,whitebox_setup=x86-port-00e7-unclaimed-v1"
             ),
         ]
     );
