@@ -12,12 +12,16 @@
   fetchCargoVendor,
   rust,
   wasm-bindgen-cli,
-  protobuf,
-  stdenv,
+  buildPackages,
 }: let
   version = "0.1.0";
   repoRoot = ../..;
   repoRootString = toString repoRoot;
+
+  # Protobuf and the C toolchain execute on Linux while producing the
+  # target-independent WebAssembly distribution.
+  buildProtobuf = buildPackages.protobuf;
+  buildCc = buildPackages.cc;
   src = builtins.path {
     path = repoRoot;
     name = "aos-hub-console-workspace-src";
@@ -43,7 +47,7 @@
     sourceRoot = "source/crates";
     hash = "sha256-HpIXteO0Adw3+VmLING6Fd5vDHrGHUt+KQ8gZ312bkU=";
   };
-  cargoEnv = {PROTOC = "${protobuf}/bin/protoc";};
+  cargoEnv = {PROTOC = "${buildProtobuf}/bin/protoc";};
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-hub-console-wasm-artifacts";
     inherit version cargoDeps cargoEnv;
@@ -57,16 +61,16 @@
     cargoArtifactContract = {
       family = "aos-hub-console-wasm-release";
       target = "wasm32-unknown-unknown";
-      nativeInputs = map toString [protobuf stdenv.cc];
+      nativeInputs = map toString [buildProtobuf buildCc];
     };
-    buildDeps = [protobuf stdenv.cc];
+    buildDeps = [buildProtobuf buildCc];
   };
 in
   mkDerivation {
     pname = "aos-hub-console-dist";
     inherit version src;
 
-    buildDeps = [rust wasm-bindgen-cli protobuf stdenv.cc];
+    buildDeps = [rust wasm-bindgen-cli buildProtobuf buildCc];
     inherit cargoDeps;
 
     phases = [
@@ -85,7 +89,7 @@ in
           mkdir -p "$CARGO_HOME" .cargo
           sed "s|@vendor@|$cargoDeps|g" "$cargoDeps/.cargo/config.toml" \
             > .cargo/config.toml
-          export PROTOC="${protobuf}/bin/protoc"
+          export PROTOC="${buildProtobuf}/bin/protoc"
           mkdir -p target
           tar xf ${cargoArtifacts}/target.tar -C target
           chmod -R u+w target
@@ -96,7 +100,7 @@ in
         name = "build";
         script = ''
           export CARGO_HOME="$TMPDIR/cargo"
-          export PROTOC="${protobuf}/bin/protoc"
+          export PROTOC="${buildProtobuf}/bin/protoc"
           cargo build -p aos-hub-console --target wasm32-unknown-unknown \
             --release --frozen --offline -j"$NIX_BUILD_CORES"
           mkdir -p generated

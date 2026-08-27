@@ -68,11 +68,8 @@
   fetchCargoVendor,
   rust,
   wasm-bindgen-cli,
-  miniflare,
   nodejs,
-  protobuf,
-  stdenv,
-  aos-hub-console-dist,
+  buildPackages,
   # Extra cargo feature flags for purpose-built test artifacts. Space-separated;
   # empty for the default production build.
   cargoFeatures ? "",
@@ -80,6 +77,13 @@
   version = "0.1.0";
   repoRoot = ../..;
   repoRootString = toString repoRoot;
+
+  # Every generator and generated browser input is consumed on Linux even
+  # when the final WebAssembly distribution is evaluated for Darwin.
+  buildProtobuf = buildPackages.protobuf;
+  buildCc = buildPackages.cc;
+  buildConsoleDist = buildPackages.aos-hub-console-dist;
+  buildMiniflare = buildPackages.miniflare;
 
   # The Cargo workspace plus its generated API-manifest input are the source.
   # `aos-proto-types` validates that manifest in its build script, so the Worker
@@ -106,7 +110,7 @@
 
   # The native `esbuild` binary inside the vendored miniflare/wrangler closure
   # (the platform package, not the `#!/usr/bin/env node` JS launcher).
-  esbuildBin = "${miniflare}/lib/node_modules/@esbuild/linux-x64/bin/esbuild";
+  esbuildBin = "${buildMiniflare}/lib/node_modules/@esbuild/linux-x64/bin/esbuild";
   cargoDeps = fetchCargoVendor {
     inherit src;
     name = "aos-vendor-${version}";
@@ -118,10 +122,10 @@
     then ""
     else lib.concatMapStringsSep "," (feature: "aos-hub-worker/${feature}") (lib.splitString " " cargoFeatures);
   cargoEnv = {
-    PROTOC = "${protobuf}/bin/protoc";
-    AOS_HUB_CONSOLE_JS = "${aos-hub-console-dist}/hub-console.js";
-    AOS_HUB_CONSOLE_WASM = "${aos-hub-console-dist}/hub-console_bg.wasm";
-    AOS_HUB_CONSOLE_CSS = "${aos-hub-console-dist}/hub-console.css";
+    PROTOC = "${buildProtobuf}/bin/protoc";
+    AOS_HUB_CONSOLE_JS = "${buildConsoleDist}/hub-console.js";
+    AOS_HUB_CONSOLE_WASM = "${buildConsoleDist}/hub-console_bg.wasm";
+    AOS_HUB_CONSOLE_CSS = "${buildConsoleDist}/hub-console.css";
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-hub-worker-wasm-artifacts";
@@ -137,9 +141,9 @@
       family = "aos-hub-worker-wasm-release";
       target = "wasm32-unknown-unknown";
       features = lib.splitString " " cargoFeatures;
-      nativeInputs = map toString [protobuf stdenv.cc aos-hub-console-dist];
+      nativeInputs = map toString [buildProtobuf buildCc buildConsoleDist];
     };
-    buildDeps = [protobuf stdenv.cc aos-hub-console-dist];
+    buildDeps = [buildProtobuf buildCc buildConsoleDist];
   };
 in
   mkDerivation {
@@ -149,7 +153,7 @@ in
     # The wasm32 toolchain (rustc + cargo + the wasm32 std + rust-lld), the
     # version-locked bindgen CLI, node for the glue-rewrite script, and a host
     # `cc` on PATH for any build-script native compile during the cargo build.
-    buildDeps = [rust wasm-bindgen-cli nodejs protobuf stdenv.cc];
+    buildDeps = [rust wasm-bindgen-cli nodejs buildProtobuf buildCc];
 
     # The workspace's vendored dependency set, fetched offline. Same shape as
     # `aos.nix`/`aos-hub.nix` but its own fixed-output derivation.
@@ -190,10 +194,10 @@ in
           # aos-proto-types' build script runs protoc to generate the
           # aos.hub.v1 message structs (the worker depends on it via
           # aos-hub-core), so point prost-build at the hermetic protoc.
-          export PROTOC="${protobuf}/bin/protoc"
-          export AOS_HUB_CONSOLE_JS="${aos-hub-console-dist}/hub-console.js"
-          export AOS_HUB_CONSOLE_WASM="${aos-hub-console-dist}/hub-console_bg.wasm"
-          export AOS_HUB_CONSOLE_CSS="${aos-hub-console-dist}/hub-console.css"
+          export PROTOC="${buildProtobuf}/bin/protoc"
+          export AOS_HUB_CONSOLE_JS="${buildConsoleDist}/hub-console.js"
+          export AOS_HUB_CONSOLE_WASM="${buildConsoleDist}/hub-console_bg.wasm"
+          export AOS_HUB_CONSOLE_CSS="${buildConsoleDist}/hub-console.css"
           # Step 1 — compile the worker cdylib to wasm32. rust-lld (shipped in
           # pkgs.rust's rustlib bin) is the wasm linker; no env override needed.
           #
@@ -375,9 +379,9 @@ in
           cp aos-hub-core/src/web/static_assets/OFL.txt   "$out/assets/_assets/OFL.txt"
           cat aos-hub-core/src/web/static_assets/style.css \
             aos-hub-core/src/web/static_assets/app.js \
-            ${aos-hub-console-dist}/hub-console.js \
-            ${aos-hub-console-dist}/hub-console_bg.wasm \
-            ${aos-hub-console-dist}/hub-console.css \
+            ${buildConsoleDist}/hub-console.js \
+            ${buildConsoleDist}/hub-console_bg.wasm \
+            ${buildConsoleDist}/hub-console.css \
             > "$TMPDIR/hub-console-version-input"
           # The generated bootstrap is immutable under the same content key.
           # Include its API contract revision so template-only changes cannot
@@ -389,11 +393,11 @@ in
           cut -c1-8 "$TMPDIR/hub-console-version-hash" \
             > "$TMPDIR/hub-console-version"
           read -r console_version < "$TMPDIR/hub-console-version"
-          cp ${aos-hub-console-dist}/hub-console.js \
+          cp ${buildConsoleDist}/hub-console.js \
             "$out/assets/_assets/hub-console-$console_version.js"
-          cp ${aos-hub-console-dist}/hub-console_bg.wasm \
+          cp ${buildConsoleDist}/hub-console_bg.wasm \
             "$out/assets/_assets/hub-console-''${console_version}_bg.wasm"
-          cp ${aos-hub-console-dist}/hub-console.css \
+          cp ${buildConsoleDist}/hub-console.css \
             "$out/assets/_assets/hub-console-$console_version.css"
           printf "import init, { mount } from './hub-console-%s.js';\n\nawait init({ module_or_path: new URL('./hub-console-%s_bg.wasm', import.meta.url) });\nmount();\n" \
             "$console_version" "$console_version" \
