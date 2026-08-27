@@ -53,7 +53,7 @@ impl LiveDeviceCallbackState {
             block,
             block_rings,
             block_tokens: BTreeMap::new(),
-            block_retry_preserve: BTreeSet::new(),
+            block_reissue_preserve: BTreeSet::new(),
             pending_block_event: None,
             ninep,
             ninep_rings,
