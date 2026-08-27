@@ -247,8 +247,23 @@ in {
             --config-module '${pkgs.nginx.config}' \
             --config-base-lib '${runtimeSystem.config.aos.config.evalAtBoot.baseLib}' \
             --registry runtime-reg \
+            --key-id release
+
+          REG_DIR=$HOME/.local/share/apm/registries/runtime-reg
+          mkdir -p /var/lib/runtime-module-registry-cache
+          {APR} release 1.0.0 \
+            --registry runtime-reg \
             --key-id release \
-            --no-commit
+            --cache-url file:///var/lib/runtime-module-registry-cache \
+            --upload-url file:///var/lib/runtime-module-registry-cache
+
+          HOME=/tmp USER=root {APM} registry --system add \
+            "file://$REG_DIR" \
+            --name runtime-reg \
+            --version '=1.0.0' \
+            --trust-key "$PUBKEY"
+          HOME=/tmp USER=root {APM} update \
+            --system --registry runtime-reg
 
           mkdir -p "$HOME/.local/share/apm/remote"
           cp -a "$HOME/.local/share/apm/registries/runtime-reg" \
@@ -266,15 +281,7 @@ in {
 
           {APM} install nginx --registry runtime-reg --yes
 
-          mkdir -p /var/lib/apm/registries /var/lib/apm/remote \
-            /var/lib/apm/config/registries.d
-          cp -a "$HOME/.local/share/apm/registries/runtime-reg" \
-            /var/lib/apm/registries/runtime-reg
-          cp -a "$HOME/.local/share/apm/registries/runtime-reg" \
-            /var/lib/apm/remote/runtime-reg
-          cp "$HOME/.config/apm/registries.d/runtime-reg.toml" \
-            /var/lib/apm/config/registries.d/runtime-reg.toml
-      """), timeout=600)
+      """), timeout=1200)
       installed = runtime.succeed(
           f"HOME=/tmp/runtime-publisher USER=root {APM} list --installed 2>&1"
       )
