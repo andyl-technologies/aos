@@ -49,6 +49,7 @@
         # package activation across measured configuration generations.
         aos.image.testArtifactRoots = [pkgs.binutils pkgs.test-http-server.expose];
         aos.image.budgets.maxRootMiB = 640;
+        aos.image.budgets.maxEspMiB = 640;
       }
     ];
   };
