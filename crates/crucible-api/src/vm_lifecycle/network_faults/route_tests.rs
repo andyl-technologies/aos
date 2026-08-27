@@ -1,16 +1,14 @@
 //! Tests for deterministic route and forwarding fault behavior.
 
-use std::sync::Arc;
-
 use super::*;
 use crucible::model::{
     BindingActionCause, BindingActionKind, CountLimit, EFFECT_SEMANTIC_VERSION, EffectLifetime,
     EffectRequest, NetworkInFlightPolicy, PositiveU64, ResolvedFaultTarget, ResolvedMappingOutput,
 };
+use std::sync::Arc;
 
 #[path = "route_tests/frame_effects.rs"]
 mod frame_effects;
-
 fn id(value: &str) -> FaultObjectId {
     FaultObjectId::parse(value)
         .unwrap_or_else(|error| panic!("test object ID should be valid: {error}"))

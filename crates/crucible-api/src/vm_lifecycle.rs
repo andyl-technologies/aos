@@ -11,6 +11,7 @@ use crate::vm_resume::{
     launch_production_live_node, launch_production_live_node_exact_snapshot,
     launch_production_live_node_exact_snapshot_paused,
 };
+use crate::{LifecycleApiError, debug_gateway::DebugGatewayProcess};
 use crucible::model::{
     FaultCoordinate, FaultResourceLimits, HostFaultAdapterManifests,
     OwnedDagSignalArtifactProvider, ResolvedEffectTrace, SignalArtifactProvider,
@@ -36,6 +37,10 @@ use crucible_qemu::{
     QemuProcessIdentity, QemuSharedBlockDevice, QemuVmSnapshot as ExactSnapshotHandle,
     linux_process_identity, quarantine_orphaned_qemu_process,
 };
+use quantum_loop::{
+    DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
+    decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
+};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
@@ -44,13 +49,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
-
-use crate::{LifecycleApiError, debug_gateway::DebugGatewayProcess};
-use quantum_loop::{
-    DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
-    decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
-};
-
 mod assets;
 use assets::*;
 mod checkpoint_store;

@@ -6,6 +6,68 @@
 
 use super::*;
 
+pub(super) fn stage_pending_network_output(
+    pending: &mut Vec<crucible::BackendNetworkOutput>,
+    output: crucible::BackendNetworkOutput,
+    limits: FaultResourceLimits,
+) -> Result<(), SchedulerError> {
+    if output.fault_continuation.protocol_expansion_path().len()
+        > crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "network protocol-expansion depth exceeds hard bound {}",
+                crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
+            ),
+        });
+    }
+    reserve_network_resource("network_frame_bytes", 0, output.payload.len(), limits)?;
+    reserve_network_resource("network_pending_frames", pending.len(), 1, limits)?;
+    pending.push(output);
+    Ok(())
+}
+
+pub(super) fn validate_pending_network_outputs(
+    pending: &[crucible::BackendNetworkOutput],
+    limits: FaultResourceLimits,
+) -> Result<(), SchedulerError> {
+    reserve_network_resource("network_pending_frames", 0, pending.len(), limits)?;
+    if pending.iter().any(|output| {
+        output.fault_continuation.protocol_expansion_path().len()
+            > crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
+    }) {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "restored network protocol-expansion depth exceeds hard bound {}",
+                crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
+            ),
+        });
+    }
+    if pending.iter().any(|output| {
+        let cursor = output.fault_continuation.cursor();
+        cursor.queue_priority().is_some_and(|priority| priority > 3)
+            || cursor.queue_priority().is_some()
+                && cursor.repeated_phase_effect()
+                    != Some(crucible::model::EffectKind::NetworkCustodyQueue)
+    }) {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "restored network queue priority is invalid or has no custody owner",
+            ),
+        });
+    }
+    for output in pending {
+        reserve_network_resource("network_frame_bytes", 0, output.payload.len(), limits)?;
+        reserve_network_resource(
+            "network_loop_hops",
+            0,
+            output.fault_continuation.forwarding_mutation_path().len(),
+            limits,
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn reserve_network_resource(
     field: &'static str,
     current: usize,

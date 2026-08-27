@@ -150,6 +150,17 @@ pub(super) fn validate_world_resource_limits(
                 .map_err(FaultSignalAuthoringError::ResourceLimit)?;
         }
     }
+    for policy in &topology.storage_policy_artifacts {
+        if let StoragePolicyArtifactKind::Path(path) = &policy.artifact {
+            limits
+                .reserve(
+                    "storage_retries_per_operation",
+                    0,
+                    u64::from(path.maximum_attempts.get().saturating_sub(1)),
+                )
+                .map_err(FaultSignalAuthoringError::ResourceLimit)?;
+        }
+    }
     let queue_operations = topology
         .storage_controllers
         .iter()

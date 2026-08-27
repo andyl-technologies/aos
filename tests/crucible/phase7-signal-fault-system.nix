@@ -338,7 +338,7 @@ in
           run_exact_crucible_test \
             scheduler::tests::production_backend::lifecycle_activity_requirement_rejects_release_before_scheduler_publication
           run_exact_crucible_test \
-            model::fault_signal::plan::tests::world_resource_admission_applies_authored_static_topology_limits
+            model::fault_signal::plan::tests::resource_admission::world_resource_admission_applies_authored_static_topology_limits
           run_exact_crucible_test \
             model::fault_signal::binding_runtime::tests::refined_coordinate::locked_replay_retains_and_enforces_a_backend_refined_coordinate
           run_exact_crucible_test \
@@ -379,6 +379,8 @@ in
             node::tests::exact_lifecycle::restored_replacement_requires_explicit_release_after_install
           run_exact_qemu_test \
             node::tests::shutdown_and_preemption::process_identity_components_reuse_preowned_executable_storage
+          run_exact_qemu_test \
+            node::error::tests::resource_limit_coordinates_survive_node_and_scheduler_conversion
           run_exact_qemu_test \
             node::tests::fault_event_budget::node_set_arms_one_node_from_one_aggregate_fault_event_budget
           run_exact_qemu_test \
@@ -470,7 +472,9 @@ in
           run_exact_api_test \
             vm_lifecycle::storage_faults::tests::storage_resource_limits_preserve_exact_coordinates_through_scheduler
           run_exact_device_test \
-            block::fault::tests::pending_operation_usage_tracks_count_and_largest_request_extent
+            block::fault::tests::resource_usage::pending_operation_usage_tracks_count_and_largest_request_extent
+          run_exact_device_test \
+            block::fault::tests::resource_usage::media_rule_usage_tracks_existing_and_prospective_intervals
           run_exact_device_test \
             ninep::fault_policy_tests::fault_resource_usage_tracks_sessions_fids_and_object_versions
           test "$(grep -Fc 'let prepared_targets = prepare_exact_checkpoint_targets(' \

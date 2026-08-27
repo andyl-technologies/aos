@@ -68,7 +68,7 @@ use crucible_device::block::{
     BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
     BlockRetainedRelease, BlockRetainedReleaseOutcome, BlockServiceCompletion, BlockStorageOutcome,
     ResolvedBlockControllerTransition, ResolvedBlockDeliveryDirective,
-    ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
+    ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective, ResolvedBlockMediaRule,
     ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
     install_cross_device_misdirected_persistence,
 };
@@ -1546,6 +1546,23 @@ impl QemuLiveBlockIoServicer {
             .lock()?
             .storage_fault_state()
             .pending_operation_usage()
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
+    /// Returns current media intervals and prospective new rule ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the device lock is poisoned or either count cannot
+    /// be represented.
+    pub fn storage_media_rule_usage(
+        &self,
+        rules: &[ResolvedBlockMediaRule],
+    ) -> Result<(u64, u64), QemuLiveBlockIoServicerError> {
+        self.device
+            .lock()?
+            .storage_fault_state()
+            .media_rule_usage(rules)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 
