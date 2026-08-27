@@ -323,9 +323,12 @@
         # The wrapper requests Darling's normal shutdown. Stopping the scoped
         # transient unit is a bounded fallback that also reaps launchd if the
         # upstream shutdown command races the final emulated process.
-        darwin.succeed(
+        stop_status, stop_stdout, stop_stderr = darwin.execute(
             "${pkgs.systemd}/bin/systemctl stop aos-darling-runner.service"
         )
+        # A completed transient unit is garbage-collected before this fallback
+        # on the normal path. systemctl reports that benign state as exit 5.
+        assert stop_status in (0, 5), (stop_status, stop_stdout, stop_stderr)
 
         runtime_log = text_output(
             darwin.succeed(
