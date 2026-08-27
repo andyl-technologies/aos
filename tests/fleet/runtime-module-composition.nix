@@ -274,6 +274,10 @@ in {
 
           [config.envoy.service]
           ENVOY_ENABLED = "0"
+
+          [config.envoy.bootstrap]
+          node = { id = "package-install", cluster = "package-install" }
+          static_resources = { listeners = [], clusters = [] }
           EOF
           HOME=/tmp USER=root {APM} install --system \
             --from /run/runtime-module-desired.toml --yes
