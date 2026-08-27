@@ -112,7 +112,12 @@
 
   targetSystem = mkSystem [
     ../../systems/server-verity.nix
-    {environment.systemPackages = [pkgs.git];}
+    {
+      # Git is fixture tooling for the registry workflow and intentionally
+      # expands this image beyond the production server contract.
+      environment.systemPackages = [pkgs.git];
+      aos.image.budgets.maxRootMiB = 640;
+    }
   ];
 
   # The server profile keeps the test fixtures and guest agent out of the
