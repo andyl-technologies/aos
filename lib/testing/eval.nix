@@ -58,6 +58,16 @@
       serverRoleSystem.config.systemd.services.sshd.after
     then throw "server sshd must not form a cycle with graph activation"
     else "post-swap marker";
+  activationRestoresRoutedSources = let
+    script = builtins.readFile ../../modules/base/activate.sh.in;
+  in
+    if !(containsStr "activate-restore-routed-sources" script)
+    then throw "activation aborts must restore routed sources from the retained plan"
+    else if !(containsStr ''if [ "''${etc_swapped:-0}" = 1 ]; then'' script)
+    then throw "activation recovery must select old versus candidate definitions at the /etc crossing"
+    else if !(containsStr "reconcile_plan_active=0" script)
+    then throw "successful post-swap reconciliation must disarm activation-plan recovery"
+    else "phase-aware and idempotent";
   # The kernel-lockdown option was removed: SECURITY_LOCKDOWN_LSM selects
   # MODULE_SIG, whose default key generation breaks third-party
   # bit-reproducibility of the public base image. Fail loudly at eval time
@@ -1413,6 +1423,7 @@ in
         echo "verity LUKS gate: exact (${verityDisablesGenericLuks})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
         echo "server SSH:      waits for live host policy (${serverSshWaitsForLiveHostPolicy})"
+        echo "activation recovery: routed sources (${activationRestoresRoutedSources})"
         echo "activation overlay: changed job scripts and removed image artifacts (${activationImageOverride}), structural replacements (${activationStructuralReplacement})"
         echo "lifecycle units: recurrent provisioning/tmpfiles/sysusers (${rfcLifecycleRecurrence})"
         echo "edge boundary:   image capability only (${edgeImageHostBoundary}), host-selectable runtime role (${edgeHostRole})"

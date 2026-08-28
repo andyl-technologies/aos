@@ -4091,6 +4091,49 @@ pub async fn activate_post_etc_swap(plan_path: &Path, printer: &Printer) -> i32 
     }
 }
 
+/// Restores the routed activation sources recorded by a split activation plan.
+///
+/// The activation shell invokes this idempotently from its exit trap when a
+/// failure occurs after pre-swap quiescing but outside either Rust phase.
+pub async fn activate_restore_routed_sources(
+    plan_path: &Path,
+    candidate: bool,
+    printer: &Printer,
+) -> i32 {
+    let result = async {
+        let plan = read_validated_plan(plan_path)?;
+        ensure_secure_run_dir(Path::new(APM_RUN_DIR))?;
+        let client = SystemdClient::connect()
+            .await
+            .context("connecting to systemd over D-Bus")?;
+        if candidate {
+            client
+                .daemon_reload()
+                .await
+                .context("loading candidate unit definitions before routed-source recovery")?;
+        }
+        let sources = plan_restore_sources(&plan, candidate);
+        restore_routed_sources(&client, sources).await
+    }
+    .await;
+
+    match result {
+        Ok(()) => RECONCILE_OK,
+        Err(error) => {
+            printer.error(&format!("activate-restore-routed-sources: {error:#}"));
+            RECONCILE_CATASTROPHIC
+        }
+    }
+}
+
+fn plan_restore_sources(plan: &Plan, candidate: bool) -> &BTreeSet<String> {
+    if candidate {
+        &plan.restore_external_activation_sources
+    } else {
+        &plan.quiesced_external_activation_sources
+    }
+}
+
 async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Result<i32> {
     let plan = read_validated_plan(plan_path)?;
     ensure_secure_run_dir(Path::new(APM_RUN_DIR))?;
@@ -7324,6 +7367,31 @@ mod tests {
                 helper.to_string(),
                 "aos-pkg-web.target".to_string(),
             ])
+        );
+    }
+
+    #[test]
+    fn restore_plan_selects_old_or_candidate_sources_idempotently() {
+        let plan = Plan {
+            quiesced_external_activation_sources: BTreeSet::from([
+                "removed.socket".to_string(),
+                "retained.socket".to_string(),
+            ]),
+            restore_external_activation_sources: BTreeSet::from(["retained.socket".to_string()]),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            plan_restore_sources(&plan, false),
+            &BTreeSet::from(["removed.socket".to_string(), "retained.socket".to_string(),])
+        );
+        assert_eq!(
+            plan_restore_sources(&plan, true),
+            &BTreeSet::from(["retained.socket".to_string()])
+        );
+        assert_eq!(
+            plan_restore_sources(&plan, true),
+            plan_restore_sources(&plan, true)
         );
     }
 
