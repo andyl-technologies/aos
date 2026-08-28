@@ -881,6 +881,69 @@
       .provisioning
       .test))
     .success;
+  runtimeUnknownOptionRejected =
+    !(builtins.tryEval ((lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.known = lib.mkOption {type = lib.types.bool;};
+          })
+        ];
+        runtimeModules = [
+          {
+            config = {
+              known = true;
+              unknown.value = true;
+            };
+          }
+        ];
+        inherit lib;
+      })
+      .config
+      .known))
+    .success;
+  runtimeImportedUnknownOptionRejected =
+    !(builtins.tryEval ((lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.known = lib.mkOption {type = lib.types.bool;};
+          })
+        ];
+        runtimeModules = [
+          {
+            imports = [
+              {
+                config = {
+                  known = true;
+                  unknown.value = true;
+                };
+              }
+            ];
+          }
+        ];
+        inherit lib;
+      })
+      .config
+      .known))
+    .success;
+  hostUnknownOptionRemainsLazy =
+    (lib.evalModules {
+      modules = [
+        ({lib, ...}: {
+          options.known = lib.mkOption {type = lib.types.bool;};
+        })
+      ];
+      operatorModules = [
+        {
+          config = {
+            known = true;
+            unknown.value = true;
+          };
+        }
+      ];
+      inherit lib;
+    })
+    .config
+    .known;
 
   # --- types.uniqEnum (owned shared scalar) ---------------------------
   uniqEnumAgrees =
@@ -1206,8 +1269,8 @@
         message = "host import ownership and priority";
       }
       {
-        ok = runtimeDirectGetsOperatorPriority && runtimeNestedMatchesOperator && runtimeOwnershipMatchesMergePriority && runtimeImportKeepsNormalPriority && runtimeNestedImportKeepsNormalPriority && runtimeProvisioningRejected;
-        message = "runtime module priority and provisioning confinement";
+        ok = runtimeDirectGetsOperatorPriority && runtimeNestedMatchesOperator && runtimeOwnershipMatchesMergePriority && runtimeImportKeepsNormalPriority && runtimeNestedImportKeepsNormalPriority && runtimeProvisioningRejected && runtimeUnknownOptionRejected && runtimeImportedUnknownOptionRejected && hostUnknownOptionRemainsLazy;
+        message = "runtime module priority, declared surface, and provisioning confinement";
       }
       {
         ok = uniqEnumAgrees && uniqEnumRejectsConflict && uniqEnumRejectsBadValue;

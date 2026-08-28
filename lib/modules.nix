@@ -1033,6 +1033,29 @@
         true
         evaluatedModules;
 
+      runtimeDeclarationCheck = let
+        hasDeclaredPrefix = path:
+          builtins.any
+          (length:
+            optionMap
+            ? ${builtins.concatStringsSep "." (lists.take length path)})
+          (builtins.genList (index: index + 1) (builtins.length path));
+      in
+        builtins.foldl'
+        (checked: module:
+          if !builtins.elem (module._provenance or "") ["@runtime" "@runtime-import"]
+          then checked
+          else
+            builtins.foldl'
+            (inner: path:
+              if hasDeclaredPrefix path
+              then inner
+              else throw "evalModules: ${module._provenance} module '${module._file}' writes undeclared option '${builtins.concatStringsSep "." path}'")
+            checked
+            (configLeafPaths [] module.config))
+        true
+        evaluatedModules;
+
       authorizePackageDeclaration = decl: let
         package = strings.removePrefix "package:" decl.provenance;
         root =
@@ -1500,7 +1523,7 @@
       freeformType = finalConfig._module.freeformType or null;
       isStrict = finalConfig._module.strict or false;
 
-      configWithFreeform = builtins.seq runtimeProvisioningCheck (builtins.seq packageDeclarationCheck (builtins.seq packageAuthorizationCheck (
+      configWithFreeform = builtins.seq runtimeProvisioningCheck (builtins.seq runtimeDeclarationCheck (builtins.seq packageDeclarationCheck (builtins.seq packageAuthorizationCheck (
         if freeformType == null && !isStrict
         then finalConfig
         else let
@@ -1610,7 +1633,7 @@
 
               Because `_module.strict = true` on this evaluation, undeclared options are not allowed. Declare the option, or set `_module.freeformType` to a type that accepts these values.
             ''
-      )));
+      ))));
     in {
       config = configWithFreeform;
       # Exposed as the nested options tree (matching nixpkgs'
