@@ -41,4 +41,5 @@ in
     prevRust = rust-1_85;
     llvm = llvm-19;
     needsDownloadRustc = true;
+    disableDarwinLld = true;
   }

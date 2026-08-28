@@ -30,6 +30,7 @@ in
       buildPackages.gnumake
       buildPackages.flex
       buildPackages.bison
+      buildPackages.m4
       buildPackages.texinfo
     ];
     runtimeDeps = [
@@ -55,10 +56,32 @@ in
         '';
       }
       {
+        name = "patch";
+        script = ''
+          # Sourceware PR libctf/33194: libctf-nobfd used an ELF weak-symbol
+          # trick for optional BFD-backed lazy opening. Mach-O does not model
+          # that pragma as an allowed undefined reference, so use the upstream
+          # fix and reject lazy opening based on the NOBFD build identity.
+          patch -p1 < ${./binutils-libctf-nobfd-darwin.patch}
+        '';
+      }
+      {
         name = "configure";
         script = ''
           mkdir "$TMPDIR/binutils-build"
           cd "$TMPDIR/binutils-build"
+          # Libtool cannot execute its command-length probe while crossing to
+          # Darwin and otherwise assumes 512 bytes. That forces a relocatable
+          # `ld -r` prelink, which is not implemented by ld64.lld. Darwin's
+          # documented ARG_MAX is 262144 bytes, large enough to link BFD's
+          # complete object list directly without dropping shared libraries.
+          export lt_cv_sys_max_cmd_len=262144
+
+          # Bundled gettext's relocatable support calls the public GNU iconv
+          # relocation hook. Darwin exports it from libiconv rather than the
+          # libSystem compatibility surface used for the POSIX iconv calls.
+          export LDFLAGS="$LDFLAGS -liconv"
+
           CC_FOR_BUILD=${buildPackages.cc}/bin/cc \
           CXX_FOR_BUILD=${buildPackages.cc}/bin/c++ \
           "$TMPDIR/binutils-${version}/configure" \
@@ -96,6 +119,13 @@ in
           make install \
             CC_FOR_BUILD=${buildPackages.cc}/bin/cc \
             CXX_FOR_BUILD=${buildPackages.cc}/bin/c++
+
+          # Installed libtool metadata otherwise retains transient build-tree
+          # search directories for bundled libiberty and gettext. They cannot
+          # exist for downstream consumers and must not escape in the target
+          # development output; keep the library flags themselves intact.
+          find "$out/lib" -name '*.la' -type f \
+            -exec sed -i 's|-L/build/[^ ]* ||g' {} +
 
           # Any installed helper scripts must execute with the target AOS bash,
           # never with a path supplied by the eventual macOS host.

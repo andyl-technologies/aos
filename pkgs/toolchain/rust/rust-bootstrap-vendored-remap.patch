@@ -1,0 +1,28 @@
+diff --git a/src/bootstrap/src/core/builder.rs b/src/bootstrap/src/core/builder.rs
+index 07b593fd3a0..c9f0e00696d 100644
+--- a/src/bootstrap/src/core/builder.rs
++++ b/src/bootstrap/src/core/builder.rs
+@@ -1797,14 +1797,19 @@ impl<'a> Builder<'a> {
+         }
+ 
+         if self.config.rust_remap_debuginfo {
+-            // FIXME: handle vendored sources
+-            let registry_src = t!(home::cargo_home()).join("registry").join("src");
+             let mut env_var = OsString::new();
+-            for entry in t!(std::fs::read_dir(registry_src)) {
++            let remap_sources = if self.config.vendor {
++                vec![t!(std::fs::canonicalize(self.build.src.join("vendor")))]
++            } else {
++                let registry_src = t!(home::cargo_home()).join("registry").join("src");
++                t!(std::fs::read_dir(registry_src)).map(|entry| t!(entry).path()).collect()
++            };
++
++            for entry in remap_sources {
+                 if !env_var.is_empty() {
+                     env_var.push("\t");
+                 }
+-                env_var.push(t!(entry).path());
++                env_var.push(entry);
+                 env_var.push("=/rust/deps");
+             }
+             cargo.env("RUSTC_CARGO_REGISTRY_SRC_TO_REMAP", env_var);

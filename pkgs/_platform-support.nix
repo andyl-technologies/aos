@@ -220,7 +220,6 @@ let
     "ninja"
     "nix"
     "nodejs"
-    "nuke-references"
     "python3"
     "python3-3_12"
     "python3-pefile"
@@ -330,6 +329,7 @@ let
     "desired-prune-test"
     "expose-smoke"
     "landlock-argv-test"
+    "nuke-references"
   ];
 
   # These outputs implement Linux kernel, userspace, guest or service
@@ -559,8 +559,11 @@ let
     "build-support/_expose-module.nix" = "target-independent-source";
     "build-support/_expose-renderer.nix" = "native-build-helper";
     "build-support/_generated-expose-config-module.nix" = "target-independent-source";
+    "darwin/_apple-libtapi.nix" = "linux-only-build-helper";
     "darwin/_darwin-binutils.nix" = "cross-build-helper";
     "darwin/_darwin-cc.nix" = "cross-build-helper";
+    "darwin/_darwin-cctools-linker.nix" = "linux-only-build-helper";
+    "darwin/_darwin-dtrace-compiler.nix" = "linux-only-build-helper";
     "darwin/_darwin-gcc.nix" = "cross-build-helper";
     "emulation/_darwin-signer.nix" = "linux-only-build-helper";
     "emulation/_darling-sources.nix" = "linux-only-source";

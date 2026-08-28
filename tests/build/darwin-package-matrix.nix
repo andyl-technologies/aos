@@ -50,7 +50,6 @@
     "ninja"
     "nix"
     "nodejs"
-    "nuke-references"
     "patch"
     "perl"
     "pkg-config"
@@ -89,7 +88,14 @@
     lib.concatMap (
       package:
         builtins.map (
-          outputName: toString (builtins.getAttr outputName package)
+          # These are blacklist keys for the structured target graph, not
+          # inputs to the check itself. Discard string context so every shard
+          # does not realize the complete native compiler/tool inventory just
+          # to compare store-path names.
+          outputName:
+            builtins.unsafeDiscardStringContext (
+              toString (builtins.getAttr outputName package)
+            )
         ) (package.outputs or ["out"])
     )
     nativeToolPackages
@@ -183,7 +189,7 @@
         waveOutputs;
       prohibitedChecks =
         lib.concatMapStringsSep "\n" (path: ''
-          if grep -F -x -q ${lib.escapeShellArg path} closure-paths; then
+          if grep -F -x -q ${lib.escapeShellArg path} audited-closure-paths; then
             printf '%s\n' ${lib.escapeShellArg path} >> prohibited-native-paths
           fi
         '')
@@ -225,7 +231,12 @@
 
               audit_build_path() {
                 file=$1
-                if grep -a -F -q '/build/' "$file"; then
+                # Match the sandbox root as a path boundary. Package sources
+                # legitimately contain components such as src/go/build/;
+                # treating every `/build/` component as ephemeral rejects
+                # canonical language package names rather than build roots.
+                if ${pkgs.llvm}/bin/llvm-strings -a "$file" \
+                  | grep -E '(^|[[:space:]"=:(;,])/build/' >/dev/null; then
                   echo "ephemeral /build path in Darwin output: $file" >&2
                   exit 1
                 fi
@@ -338,7 +349,26 @@
                   \) -print | while IFS= read -r file; do
                     audit_build_path "$file"
 
-                    if header=$(${pkgs.llvm}/bin/llvm-objdump --macho --private-header "$file" 2>/dev/null); then
+                    # GDB auto-load helpers conventionally include the full
+                    # shared-library SONAME before their `-gdb.py` suffix.
+                    # Audit their text for build paths, but do not classify
+                    # the Python source as a shared object from its basename.
+                    case "$file" in
+                      *-gdb.py) continue ;;
+                    esac
+
+                    magic=$(od -An -tx1 -N4 "$file" 2>/dev/null | tr -d ' \n')
+                    case "$magic" in
+                      cffaedfe|feedfacf|cefaedfe|feedface|cafebabe|bebafeca|cafebabf|bfbafeca)
+                        is_macho=1
+                        ;;
+                      *)
+                        is_macho=0
+                        ;;
+                    esac
+
+                    if [ "$is_macho" = 1 ]; then
+                      header=$(${pkgs.llvm}/bin/llvm-objdump --macho --private-header "$file")
                       if ! printf '%s\n' "$header" | grep -q "$expected_cpu"; then
                         echo "wrong Mach-O CPU in $file: expected $expected_cpu" >&2
                         printf '%s\n' "$header" >&2
@@ -347,7 +377,6 @@
                       continue
                     fi
 
-                    magic=$(od -An -tx1 -N4 "$file" 2>/dev/null | tr -d ' \n')
                     if [ "$magic" = 7f454c46 ]; then
                       echo "ELF executable or shared library in Darwin output: $file" >&2
                       exit 1
@@ -377,6 +406,39 @@
               ${pkgs.jq}/bin/jq -r '.matrix[].path' "$NIX_ATTRS_JSON_FILE" \
                 | sort -u > closure-paths
 
+              # The public SDK and compiler publications deliberately retain
+              # their Linux-hosted compiler SDK and wrapper so downstream cross
+              # compilers can consume them.
+              # Perl's dev output is likewise an explicitly forensic copy of
+              # its unsanitized build configuration; the runnable output is
+              # scrubbed and remains subject to the complete closure audit.
+              # Exclude only those documented publication roots so unrelated
+              # native-tool leaks remain visible.
+              : > audited-closure-paths
+              while IFS="$(printf '\t')" read -r package output_name root; do
+                if [ "$package" = darwin-sdk ] \
+                  || [ "$package" = cc ] \
+                  || [ "$package" = gcc ] \
+                  || [ "$package" = gcc-libs ] \
+                  || [ "$package" = gccUnwrapped ] \
+                  || { [ "$package" = perl ] && [ "$output_name" = dev ]; }; then
+                  continue
+                fi
+                ${pkgs.jq}/bin/jq -r --arg root "$root" '
+                  .matrix as $nodes
+                  | ($nodes | map({key: .path, value: .references}) | from_entries) as $refs
+                  | def walk($path; $seen):
+                      if $seen | index($path) then
+                        empty
+                      else
+                        $path,
+                        (($refs[$path] // [])[] | walk(.; $seen + [$path]))
+                      end;
+                    walk($root; [])
+                ' "$NIX_ATTRS_JSON_FILE" >> audited-closure-paths
+              done < "$out/outputs.tsv"
+              sort -u -o audited-closure-paths audited-closure-paths
+
               # Any marked object in a Darwin runtime closure must carry the
               # same target. Unmarked fixed-output sources remain valid, then
               # the explicit native-tool blacklist covers compiler and build
@@ -387,7 +449,7 @@
                 if [ -f "$marker" ] && [ "$(cat "$marker")" != "$expected_platform" ]; then
                   printf '%s\n' "$path" >> wrong-platform-paths
                 fi
-              done < closure-paths
+              done < audited-closure-paths
               if [ -s wrong-platform-paths ]; then
                 echo "Darwin closure contains outputs marked for another platform:" >&2
                 sort -u wrong-platform-paths >&2
