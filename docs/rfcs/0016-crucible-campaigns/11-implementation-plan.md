@@ -1469,12 +1469,16 @@ canonical keys before the first effect and cannot inventory or delete committed
 objects. The optional S3 ref backend now uses fixed domain-separated hashed keys
 with exact name/target bodies, provider ETag CAS with read-back evidence,
 strongly consistent bounded listing, one process-wide lifecycle per exact
-namespace, and one absolute deadline across a complete remote scan. The AWS SDK
+namespace, and one absolute deadline across a complete remote scan. Its
+exclusive `RefStoreAdmin` fence blocks publications and mutations, streams the
+validated namespace, and verifies one ETag-CAS/read-back persistent monotonic
+inventory generation across the scan for global-GC root fencing. The AWS SDK
 adapter exposes those primitives only through an explicit conformant-service
 wrapper. Tests cover maximum ref names, stale conflicts, cross-instance races,
-malformed bodies, false committed versions, strict provider pages, and
-non-resetting scan deadlines. S3 committed-object inventory/deletion,
-`RefStoreAdmin`, automated live-service conformance, daemon configuration
+malformed bodies, false committed versions, strict provider pages,
+non-resetting scan deadlines, publication and mutation exclusion,
+restart-stable generations, and same-value ABA. S3 committed-object
+inventory/deletion, automated live-service conformance, daemon configuration
 wiring, and the realistic operator flight remain open under T-CAM-5.7 and
 T-CAM-5.8.
 Broader layered transforms remain open;

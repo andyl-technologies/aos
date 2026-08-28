@@ -406,8 +406,34 @@ validates each bounded body, visits at most 65,536 refs, and selects the bounded
 result page in canonical `RefName` order. One scan session owns a single
 absolute SDK deadline across every provider page and body read; progress never
 resets it. The in-daemon namespace lifecycle lock excludes local replacements
-for the complete scan. This checkpoint does not provide `RefStoreAdmin` for S3,
-so S3 authoritative refs do not yet satisfy the complete global-GC root fence.
+for the complete scan.
+
+The separate S3 `RefStoreAdmin` capability acquires the exclusive side of both
+the children-before-ref publication lifecycle and the local ref-state fence.
+It streams every validated binding and verifies that the persistent inventory
+state remains exact across the complete remote scan. The state is stored at
+`<prefix>/ref-admin/state-v1` (or `ref-admin/state-v1` for an empty prefix) with
+this private physical grammar:
+
+```text
+"crucible.content-store.s3-ref-inventory-state.v1\0"
+instance[32]
+generation:u64be
+checksum[32]
+```
+
+`checksum` is BLAKE3 over the exact preceding bytes prefixed by the ASCII
+domain
+`crucible.content-store.s3-ref-inventory-state-checksum.v1`. The state is
+created with an atomic absent precondition and read-back evidence. Before every
+attempted cooperating replacement whose logical expected value held, its
+nonzero generation advances with an exact ETag precondition and read-back
+evidence. A later ref-write failure may therefore advance the generation
+conservatively, while a stale logical comparison does not. The standard
+`RefInventoryGeneration` formula above binds the persistent random instance and
+counter, so change-and-restore ABA remains distinct across restart. The
+terminal generation can participate in global-GC root planning and apply. It
+does not grant committed-object inventory or deletion for the S3 blob leaf.
 
 The concrete `crucible-s3-store` AWS SDK adapter owns a command queue of 1
 through 1,024 entries, an active-operation ceiling of 1 through 64, an
@@ -419,10 +445,10 @@ exhausted byte budget fails promptly. Endpoint credentials or service denial
 map to `Unauthorized`, transient transport/service failures to `Unavailable`,
 and malformed or unsupported provider behavior to `Incompatible`. This
 checkpoint grants bounded unfinished-upload listing/abort and the optional
-strong-CAS ref boundary above. It does not grant committed-object
-inventory/deletion, S3 ref-inventory fencing, automatic live-service
-conformance, or daemon configuration wiring; those remain required before the
-S3 leaf participates in global GC or is selected as the production
+strong-CAS ref and ref-inventory boundaries above. It does not grant
+committed-object inventory/deletion, automatic live-service conformance, or
+daemon configuration wiring; those remain required before the S3 blob leaf
+participates in global GC or the S3 ref backend is selected as the production
 authoritative ref backend.
 
 - **[CSTORE-7]** The directory backend MUST leave either no object or a complete
