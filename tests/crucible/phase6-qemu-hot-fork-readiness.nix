@@ -593,7 +593,15 @@ in
               "backend-count",
               "complete",
               "generation",
+              "graph-barrier-generation",
+              "graph-held",
+              "graph-mutation-generation",
+              "graph-owner-thread-id",
+              "graph-stable",
+              "graph-waiting-writers",
+              "graph-writer-active",
               "held",
+              "held-graph-mutation-generation",
               "in-flight",
               "owner-thread-id",
               "quiesced-rooted-backends",
@@ -602,10 +610,18 @@ in
               "schema-version",
               "writable-backends"
             ] and
-            $report."schema-version" == 1 and
+            $report."schema-version" == 2 and
             $report.generation == 0 and
             $report."owner-thread-id" == 0 and
+            ($report."graph-barrier-generation" | type) == "number" and
+            ($report."graph-mutation-generation" | type) == "number" and
+            $report."held-graph-mutation-generation" == 0 and
+            $report."graph-owner-thread-id" == 0 and
             $report.held == false and
+            $report."graph-held" == false and
+            $report."graph-writer-active" == false and
+            $report."graph-waiting-writers" == 0 and
+            $report."graph-stable" == false and
             $report.complete == true and
             $report."backend-count" == $inventory_report."backend-count" and
             $report."rooted-backends" == $inventory_report."rooted-backends" and
@@ -624,12 +640,9 @@ in
           qmp "$patched_socket" \
             '{"execute":"crucible-hot-fork-block-barrier","arguments":{"action":"query"}}' \
             "$out/block-barrier-after-rejection.json"
-          jq -e -s '
-            [.[] | select(has("return"))][-1].return as $report |
-            $report.generation == 0 and
-            $report."owner-thread-id" == 0 and
-            $report.held == false and
-            $report.quiescent == false
+          jq -e -s --slurpfile initial "$out/block-barrier-query.json" '
+            [.[] | select(has("return"))][-1].return ==
+              ($initial | map(select(has("return"))) | .[-1].return)
           ' "$out/block-barrier-after-rejection.json" >/dev/null \
             || { cat "$out/block-barrier-after-rejection.json" >&2; fail "QEMU retained block barrier state after a rejected hold"; }
 
@@ -897,7 +910,7 @@ in
               "schema-version",
               "transaction-active"
             ] and
-            $report."schema-version" == 5 and
+            $report."schema-version" == 6 and
             $report.generation == 0 and
             $report.outcome == "idle" and
             $report."transaction-active" == false and
@@ -1183,7 +1196,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0130-crucible-hot-fork-block-template-coordinator.patch
+          patch=0131-crucible-hot-fork-block-graph-barrier.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -1222,9 +1235,11 @@ in
           block_backend_inventory_stable=true
           block_backends_context_bound=true
           block_backends_vmstate_observed=true
-          block_barrier_schema_version=1
+          block_barrier_schema_version=2
           block_barrier_released_stable=true
           block_barrier_hold_without_exact_boundary_rejected=true
+          block_graph_writer_admission_retained=true
+          block_graph_generation_bound=true
           block_snapshot_proof_acknowledged=false
           block_barrier_template_bound=true
           plugin_resource_inventory_schema_version=1
@@ -1235,7 +1250,7 @@ in
           plugin_barrier_unregistered_shape=true
           plugin_barrier_release_unregistered_rejected=true
           plugin_ring_proof_acknowledged=false
-          template_coordinator_schema_version=5
+          template_coordinator_schema_version=6
           template_coordinator_idle_stable=true
           template_coordinator_unregistered_shape=true
           template_prepare_without_exact_boundary_rejected=true

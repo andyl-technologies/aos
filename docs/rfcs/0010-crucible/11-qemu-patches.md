@@ -2091,6 +2091,36 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   coordinator rolls the otherwise quiescent transaction back as blocked.
 - **Risk:** F.
 
+### crucible-hot-fork-block-graph-barrier — retain graph-writer exclusion
+
+- **Patch:** `0131-crucible-hot-fork-block-graph-barrier.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the version-2 block barrier closes block-graph writer
+  admission on the main AioContext before it enters QEMU's native all-block
+  drain. It rejects an already-active writer, captures the exact completed
+  graph-mutation generation, and parks later graph writers behind the retained
+  hold. The bounded response exposes exact graph-barrier and mutation
+  generations, owner, active-writer state, and waiting-writer count. The
+  version-6 OOB template coordinator composes this graph barrier with native
+  block drain, RCU, asynchronous-source, and plugin barriers. On rollback it
+  reopens graph admission immediately before native drain cleanup in the same
+  main-loop callback, so a parked outer writer cannot interleave and nested
+  cleanup graph operations cannot deadlock.
+- **Micro-test:** the QEMU block unit test holds the graph barrier, enters a
+  real graph writer, observes that writer parked through a scheduled release
+  callback, and requires the completed-mutation generation to advance only
+  after the writer runs. Strict Rust decoding binds every generation and owner,
+  rejects active-writer and held-generation contradictions, and bounds waiting
+  writers to `u32`. The live gate requires the exact released schema-version-2
+  shape and unchanged state after a rejected hold.
+- **Inertness:** graph admission remains unchanged until an authorized
+  main-loop block hold at the exact paused/device-flush boundary. This patch
+  does not create or authenticate an immutable external-snapshot root, rotate
+  or bind writable overlays, retain child root identity, reconstruct a child
+  graph, call `fork(2)`, or acknowledge proof bit 5. The otherwise quiescent
+  coordinator therefore still rolls back as blocked.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
