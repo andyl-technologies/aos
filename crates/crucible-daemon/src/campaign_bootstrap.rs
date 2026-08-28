@@ -24,7 +24,9 @@ use crucible_campaign::{
     CampaignServiceOperation, CandidateGeneratorSpec, CandidateGeneratorSpecId,
     ConfigurationArtifactId, DebuggerAuthorityKey, PlannerAuthorityKey,
 };
-use crucible_cas::content_store::{DirectoryBlobBackend, DirectoryRefBackend};
+use crucible_cas::content_store::{
+    DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend, MutableRefBackend,
+};
 use rustix::fs::{FlockOperation, Mode, OFlags, flock};
 
 use crate::{
@@ -45,6 +47,8 @@ const REF_DIRECTORY: &str = "refs";
 const MAX_DEPLOYMENT_PATH_BYTES: usize = 4_095;
 const COMPONENT_AUTHORITY_MAGIC: &[u8; 8] = b"CRUCCA01";
 const COMPONENT_AUTHORITY_FILE_BYTES: usize = 8 + 32 + 32;
+type CampaignComponentAuthorities = Option<(PlannerAuthorityKey, DebuggerAuthorityKey)>;
+type AuthenticatedCampaignDeployment = (Arc<UnixPeerCampaignPolicy>, CampaignComponentAuthorities);
 
 mod runtime_registry;
 mod service;
@@ -70,6 +74,51 @@ pub enum CampaignLocalServiceMode {
     ReadWrite,
     /// Denies every mutation even when the deployment policy grants it.
     ReadOnly,
+}
+
+/// Consumed repository-store capability for one local campaign service.
+///
+/// This value lets a deployment bind a composed immutable [`StoreGraph`](
+/// crucible_cas::content_store::StoreGraph), an S3-compatible leaf, or another
+/// durable backend to the same managed daemon lifecycle without exposing the
+/// resulting [`CampaignRepository`]. The mutable-ref implementation remains a
+/// separate exact-CAS capability. Production callers must supply a persistent
+/// ref backend with the same single-writer and publication-fence semantics as
+/// [`DirectoryRefBackend`] or
+/// [`S3RefBackend`](crucible_cas::content_store::S3RefBackend).
+pub struct CampaignLocalRepositoryStore {
+    blobs: Arc<dyn ImmutableBlobBackend>,
+    refs: Arc<dyn MutableRefBackend>,
+}
+
+impl CampaignLocalRepositoryStore {
+    /// Binds durable immutable and conditional-ref capabilities.
+    ///
+    /// The immutable backend must advertise durable conditional creation.
+    /// Construction performs no backend I/O; the value is consumed by
+    /// [`CampaignLocalServiceConfig::prepare_with_store`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError::InvalidRepositoryStore`] when the
+    /// immutable backend is not durable or can overwrite existing logical IDs,
+    /// or when the mutable-ref backend does not retain successful comparisons
+    /// across restart.
+    pub fn new(
+        blobs: Arc<dyn ImmutableBlobBackend>,
+        refs: Arc<dyn MutableRefBackend>,
+    ) -> Result<Self, CampaignLocalServiceError> {
+        let capabilities = blobs.capabilities();
+        if !capabilities.durable || !capabilities.conditional_create || !refs.capabilities().durable
+        {
+            return Err(CampaignLocalServiceError::InvalidRepositoryStore);
+        }
+        Ok(Self { blobs, refs })
+    }
+
+    fn into_parts(self) -> (Arc<dyn ImmutableBlobBackend>, Arc<dyn MutableRefBackend>) {
+        (self.blobs, self.refs)
+    }
 }
 
 impl CampaignLocalServiceMode {
@@ -212,6 +261,71 @@ impl CampaignLocalServiceConfig {
     /// durable subdirectories, or repository lock cannot be authenticated and
     /// acquired exactly.
     pub fn prepare(&self) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
+        let (policy, component_authorities) = self.authenticate_deployment()?;
+        let state = CampaignStateOwner::open(
+            &self.state_directory,
+            self.endpoint.owner_user_id(),
+            self.endpoint.owner_group_id(),
+            true,
+        )?;
+        let store = CampaignLocalRepositoryStore::new(
+            Arc::new(DirectoryBlobBackend::new(
+                "campaign-primary",
+                self.state_directory.join(OBJECT_DIRECTORY),
+            )),
+            Arc::new(DirectoryRefBackend::new(
+                self.state_directory.join(REF_DIRECTORY),
+            )),
+        )?;
+        self.prepare_repository(store, state, policy, component_authorities)
+    }
+
+    /// Authenticates deployment input and acquires an externally supplied store.
+    ///
+    /// Policy and component-authority authentication complete before the local
+    /// state namespace is locked, and the supplied backends are not accessed by
+    /// preparation. The state root retains the same exact-owner lifetime lock
+    /// as the directory profile but does not create `objects` or `refs`
+    /// subdirectories. The prepared service retains the consumed store
+    /// capability and does not expose its repository through the public API.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError`] when policy, component authority,
+    /// or state-root authentication fails or another daemon owns the state lock.
+    pub fn prepare_with_store(
+        &self,
+        store: CampaignLocalRepositoryStore,
+    ) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
+        let (policy, component_authorities) = self.authenticate_deployment()?;
+        let state = CampaignStateOwner::open(
+            &self.state_directory,
+            self.endpoint.owner_user_id(),
+            self.endpoint.owner_group_id(),
+            false,
+        )?;
+        self.prepare_repository(store, state, policy, component_authorities)
+    }
+
+    /// Authenticates and opens one service over an externally supplied store.
+    ///
+    /// This is equivalent to [`Self::prepare_with_store`] followed by
+    /// [`PreparedCampaignLocalService::bind`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError`] when preparation or managed
+    /// endpoint binding fails.
+    pub fn open_with_store(
+        &self,
+        store: CampaignLocalRepositoryStore,
+    ) -> Result<CampaignLocalService, CampaignLocalServiceError> {
+        self.prepare_with_store(store)?.bind()
+    }
+
+    fn authenticate_deployment(
+        &self,
+    ) -> Result<AuthenticatedCampaignDeployment, CampaignLocalServiceError> {
         let policy = Arc::new(load_policy(
             &self.policy_path,
             self.endpoint.owner_user_id(),
@@ -228,17 +342,17 @@ impl CampaignLocalServiceConfig {
                 )
             })
             .transpose()?;
-        let state = CampaignStateOwner::open(
-            &self.state_directory,
-            self.endpoint.owner_user_id(),
-            self.endpoint.owner_group_id(),
-        )?;
+        Ok((policy, component_authorities))
+    }
 
-        let blobs = Arc::new(DirectoryBlobBackend::new(
-            "campaign-primary",
-            state.object_directory.clone(),
-        ));
-        let refs = Arc::new(DirectoryRefBackend::new(state.ref_directory.clone()));
+    fn prepare_repository(
+        &self,
+        store: CampaignLocalRepositoryStore,
+        state: CampaignStateOwner,
+        policy: Arc<UnixPeerCampaignPolicy>,
+        component_authorities: CampaignComponentAuthorities,
+    ) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
+        let (blobs, refs) = store.into_parts();
         let (repository, planner_authority) = match component_authorities {
             Some((planner, debugger)) => {
                 let retained_planner = planner.clone();
@@ -730,6 +844,9 @@ pub enum CampaignLocalServiceError {
     /// A required object/ref subdirectory was not a secure exact-owner directory.
     #[error("campaign service repository subdirectory is invalid")]
     InvalidStateSubdirectory,
+    /// The supplied immutable repository backend is not durably conditional.
+    #[error("campaign service repository store is not durably conditional")]
+    InvalidRepositoryStore,
     /// The policy was not a secure exact-owner regular file.
     #[error("campaign service policy file is invalid")]
     InvalidPolicyFile,
@@ -828,14 +945,17 @@ pub enum CampaignLocalServiceError {
 }
 
 struct CampaignStateOwner {
-    object_directory: PathBuf,
-    ref_directory: PathBuf,
     _root: File,
     _lock: File,
 }
 
 impl CampaignStateOwner {
-    fn open(path: &Path, user_id: u32, group_id: u32) -> Result<Self, CampaignLocalServiceError> {
+    fn open(
+        path: &Path,
+        user_id: u32,
+        group_id: u32,
+        prepare_directory_repository: bool,
+    ) -> Result<Self, CampaignLocalServiceError> {
         let metadata = fs::symlink_metadata(path)
             .map_err(|source| io_error("stat-state-directory", path, source))?;
         validate_secure_directory(&metadata, user_id, group_id)
@@ -896,14 +1016,14 @@ impl CampaignStateOwner {
         })?;
         revalidate_state_path(&root, &metadata, path, user_id, group_id)?;
 
-        let object_directory = prepare_subdirectory(path, OBJECT_DIRECTORY, user_id, group_id)?;
-        let ref_directory = prepare_subdirectory(path, REF_DIRECTORY, user_id, group_id)?;
-        revalidate_state_path(&root, &metadata, path, user_id, group_id)?;
+        if prepare_directory_repository {
+            prepare_subdirectory(path, OBJECT_DIRECTORY, user_id, group_id)?;
+            prepare_subdirectory(path, REF_DIRECTORY, user_id, group_id)?;
+            revalidate_state_path(&root, &metadata, path, user_id, group_id)?;
+        }
         root.sync_all()
             .map_err(|source| io_error("sync-state-directory", path, source))?;
         Ok(Self {
-            object_directory,
-            ref_directory,
             _root: root,
             _lock: lock,
         })

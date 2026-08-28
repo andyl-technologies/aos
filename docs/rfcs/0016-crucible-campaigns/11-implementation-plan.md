@@ -667,12 +667,15 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   and reject relaunch; the guarded replay session transfers that authority into
   its abstract attempt guard before returning the realization error. The exact
   process-local cancellation incarnation now supports a bounded blocking wait,
-  wakes all guards on cancellation, and fails closed after synchronization
-  poison. The process owner can lend a narrow sticky-event signal and refuses
-  child-contract access after it fires. The daemon now registers exactly one
-  synchronous idempotent resource callback on that incarnation and composes it
-  with exact quantum accounting plus an indivisible process/filesystem host
-  owner. Exact-limit mismatch and pre-cancellation roll back before admission;
+  publishes its predicate under the waiter-registration mutex before waking
+  every guard, and fails closed after synchronization poison. The regression
+  serializes cancellation against wait registration so the lost-wake ordering
+  is deterministic. The process owner can lend a narrow sticky-event signal
+  and refuses child-contract access after it fires. The daemon now registers
+  exactly one synchronous idempotent resource callback on that incarnation and
+  composes it with exact quantum accounting plus an indivisible
+  process/filesystem host owner. Exact-limit mismatch and pre-cancellation roll
+  back before admission;
   failed reap and live-owner drop transfer the complete host authority to
   quarantine. Linux composition of failed-child and active-node handoff into
   the cgroup owner now has a sealed process-only facade: it validates its
@@ -1496,9 +1499,13 @@ ABA generation behavior; backend-specific fault suites remain additive. The AWS
 SDK adapter's ignored environment-gated integration test runs those exact
 routines against one exclusively owned unversioned live-service namespace and
 cleans its unique prefix after success. This completes T-CAM-5.7's backend and
-fault-conformance implementation. Daemon configuration wiring, a hermetic
-service fixture, and the realistic operator flight remain open under Phase 5
-and T-CAM-5.8.
+fault-conformance implementation. The managed local daemon now also accepts a
+consumed durable immutable/ref store capability: it checks both halves before
+locking state, retains the same exact-owner lifecycle without creating default
+leaf directories, and restarts over a reconstructed composed graph. The default
+CLI profile remains directory-backed; strict public S3/graph deployment-file
+parsing, a hermetic service fixture, and the realistic operator flight remain
+open under Phase 5 and T-CAM-5.8.
 Broader layered transforms remain open;
 therefore T-CAM-5.5 is not checked by this checkpoint.
 

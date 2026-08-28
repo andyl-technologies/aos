@@ -25,6 +25,10 @@ use crucible_campaign::{
     ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, RetentionPolicy, ScenarioDefId,
     SubmitAttemptRequest, SubmitAttemptResponse, WatchExecutorCapacityRequest,
 };
+use crucible_cas::content_store::{
+    ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend, ObjectKind, StoreGraph,
+    StoreGraphConfig, StoreNodeId, StoreNodeSpec,
+};
 use crucible_qemu::{
     LinuxQemuAttemptHostConfig, QemuChildProcessContract, QemuLaunchResourceRequirements,
     QemuNodeChild, QemuPreparedRunDirectory, QemuVmRealizationError,
@@ -1023,6 +1027,108 @@ fn repository_lock_excludes_a_second_socket_incarnation() {
     ));
     assert!(!second.endpoint().path().exists());
     drop(first);
+}
+
+fn external_graph_store(
+    directory: &tempfile::TempDir,
+) -> (CampaignLocalRepositoryStore, Arc<StoreGraph>) {
+    let root = StoreNodeId::new("campaign-external").expect("external graph node");
+    let graph = Arc::new(
+        StoreGraph::build(StoreGraphConfig {
+            root: root.clone(),
+            admitted_kinds: BTreeSet::from([
+                ObjectKind::Scenario,
+                ObjectKind::Configuration,
+                ObjectKind::Policy,
+            ]),
+            nodes: BTreeMap::from([(
+                root,
+                StoreNodeSpec::Directory {
+                    root: directory.path().join("external-objects"),
+                },
+            )]),
+        })
+        .expect("external directory store graph"),
+    );
+    let refs = Arc::new(DirectoryRefBackend::new(
+        directory.path().join("external-refs"),
+    ));
+    let store = CampaignLocalRepositoryStore::new(graph.clone(), refs)
+        .expect("durable external repository store");
+    (store, graph)
+}
+
+#[test]
+fn external_store_uses_the_managed_lock_without_creating_default_leafs() {
+    let (directory, config) = fixture();
+    let (store, graph) = external_graph_store(&directory);
+    let prepared = config
+        .prepare_with_store(store)
+        .expect("prepare external repository store");
+    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
+    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
+
+    let scenario = crucible::happy_path_scenario()
+        .expect("happy-path scenario")
+        .scenario;
+    let configuration = prepared
+        .import_configuration(&scenario, &crucible::Schedule::empty())
+        .expect("import through external store graph");
+    assert!(
+        graph
+            .contains(configuration.content_id())
+            .expect("external graph contains configuration")
+    );
+
+    let (contending_store, _contending_graph) = external_graph_store(&directory);
+    assert!(matches!(
+        config.prepare_with_store(contending_store),
+        Err(CampaignLocalServiceError::StateInUse)
+    ));
+    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
+    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
+
+    drop(prepared);
+    drop(graph);
+    let (restarted_store, restarted_graph) = external_graph_store(&directory);
+    let restarted = config
+        .prepare_with_store(restarted_store)
+        .expect("restart external repository store");
+    assert_eq!(
+        restarted
+            .import_configuration(&scenario, &crucible::Schedule::empty())
+            .expect("authenticate imported configuration after restart"),
+        configuration
+    );
+    assert!(
+        restarted_graph
+            .contains(configuration.content_id())
+            .expect("restarted graph contains configuration")
+    );
+}
+
+#[test]
+fn external_store_rejects_a_nondurable_immutable_backend() {
+    let blobs = Arc::new(MemoryBlobBackend::new("volatile-campaign", 1024 * 1024));
+    let refs = Arc::new(MemoryRefBackend::new());
+    assert!(matches!(
+        CampaignLocalRepositoryStore::new(blobs, refs),
+        Err(CampaignLocalServiceError::InvalidRepositoryStore)
+    ));
+}
+
+#[test]
+fn external_store_rejects_a_nondurable_ref_backend() {
+    let directory = tempdir().expect("external store directory");
+    let blobs = Arc::new(DirectoryBlobBackend::new(
+        "durable-campaign",
+        directory.path().join("objects"),
+    ));
+    let refs = Arc::new(MemoryRefBackend::new());
+    assert!(matches!(
+        CampaignLocalRepositoryStore::new(blobs, refs),
+        Err(CampaignLocalServiceError::InvalidRepositoryStore)
+    ));
 }
 
 #[test]

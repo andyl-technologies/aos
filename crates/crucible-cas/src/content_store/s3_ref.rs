@@ -22,9 +22,9 @@ use std::sync::{
 use super::admin::persistent_ref_inventory_generation;
 use super::s3::{StoreS3EndpointId, validate_configuration};
 use super::{
-    ContentId, MAX_REF_SCAN_VISITS, MutableRefBackend, RefCasOutcome, RefInventoryFence,
-    RefInventoryRecord, RefInventorySummary, RefName, RefPublicationGuard, RefScanEntry,
-    RefScanPage, RefStoreAdmin, StoreError, encode_hex, ref_name_is_descendant,
+    ContentId, MAX_REF_SCAN_VISITS, MutableRefBackend, RefBackendCapabilities, RefCasOutcome,
+    RefInventoryFence, RefInventoryRecord, RefInventorySummary, RefName, RefPublicationGuard,
+    RefScanEntry, RefScanPage, RefStoreAdmin, StoreError, encode_hex, ref_name_is_descendant,
     validate_ref_scan_basis,
 };
 
@@ -626,6 +626,10 @@ impl S3RefBackend {
 }
 
 impl MutableRefBackend for S3RefBackend {
+    fn capabilities(&self) -> RefBackendCapabilities {
+        RefBackendCapabilities { durable: true }
+    }
+
     fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError> {
         let guard =
             self.capability

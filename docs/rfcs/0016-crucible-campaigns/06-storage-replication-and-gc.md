@@ -111,6 +111,7 @@ pub trait ImmutableBlobBackend: Send + Sync {
 }
 
 pub trait MutableRefBackend: Send + Sync {
+    fn capabilities(&self) -> RefBackendCapabilities;
     fn read_ref(&self, name: &RefName)
         -> Result<Option<ContentId>, StoreError>;
     fn compare_exchange(
@@ -129,6 +130,14 @@ pub trait StoreAdmin: Send + Sync {
     fn repack(&self, plan: RepackPlanId) -> Result<RepackReport, StoreError>;
 }
 ```
+
+`RefBackendCapabilities` currently declares whether accepted ref comparisons
+survive process restart. The durable local daemon profile rejects a supplied
+repository store unless both the immutable side advertises durable conditional
+creation and the ref side advertises durable comparison state. Volatile memory
+implementations remain valid for tests and embedded ephemeral repositories but
+cannot be promoted into a durable daemon merely by pairing them with a durable
+blob leaf.
 
 `StoreAdmin` above is the complete maintenance target, not authority granted to
 a campaign repository. The current leaf checkpoint implements its physical
@@ -489,9 +498,14 @@ exhausted byte budget fails promptly. Endpoint credentials or service denial
 map to `Unauthorized`, transient transport/service failures to `Unavailable`,
 and malformed or unsupported provider behavior to `Incompatible`. This
 checkpoint grants bounded unfinished-upload listing/abort and the optional
-strong-CAS committed-object, ref, and ref-inventory boundaries above. It does
-not grant daemon configuration wiring; that remains required before selecting
-either S3 boundary in production.
+strong-CAS committed-object, ref, and ref-inventory boundaries above. The local
+daemon lifecycle now accepts one consumed repository-store capability after
+checking durable conditional immutable creation and durable ref state, so an
+operator-owned S3/composed graph can share the same policy, authority,
+state-lock, endpoint, runtime, and shutdown owner as the directory profile.
+Public deployment-file/CLI parsing of endpoint, credentials, graph, and
+maintenance authority remains required before selecting S3 through shipped
+porcelain.
 
 Directory and S3 persistent leaves run through one backend-neutral semantic
 conformance suite. For immutable objects it proves authenticated full, range,
