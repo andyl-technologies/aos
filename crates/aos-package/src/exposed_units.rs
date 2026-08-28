@@ -209,41 +209,54 @@ pub(crate) async fn reconcile_system_profile(config: &ApmConfig, printer: &Print
         .collect::<Vec<_>>();
     let mut attached_diff = compute_attached_unit_diff(&root, &packages)?;
     attached_diff.normalize_service_root_lifecycle();
+    retain_active_routed_sources(&root, &mut attached_diff).await?;
 
     stop_service_root_barriers_before_swap(&root, &mut attached_diff).await?;
 
-    let had_attached_units = has_attached_units(&root)?;
-    if packages.is_empty() && removed_targets.is_empty() {
+    let reconcile_result: Result<()> = async {
+        let had_attached_units = has_attached_units(&root)?;
+        if packages.is_empty() && removed_targets.is_empty() {
+            write_attached_units(&root, &packages)?;
+            let changed_credential_units = write_generated_credential_blobs(&root, &packages)?;
+            write_exact_preset(&root, &current_targets)?;
+            if had_attached_units {
+                apply_systemd_changes(
+                    &root,
+                    &current_targets,
+                    &attached_diff,
+                    &changed_credential_units,
+                )
+                .await?;
+            }
+            return Ok(());
+        }
+
+        disable_removed_targets(&root, &removed_targets)?;
         write_attached_units(&root, &packages)?;
         let changed_credential_units = write_generated_credential_blobs(&root, &packages)?;
         write_exact_preset(&root, &current_targets)?;
-        if had_attached_units {
-            apply_systemd_changes(
-                &root,
-                &current_targets,
-                &attached_diff,
-                &changed_credential_units,
-            )
-            .await?;
-        }
+        load_ebpf_lsm_before_package_targets(&root, &current_targets)?;
+        crate::package_attestation::measure_activated_packages(&root, &installed)
+            .context("measuring exposed package set into PCR 15")?;
+        apply_systemd_changes(
+            &root,
+            &current_targets,
+            &attached_diff,
+            &changed_credential_units,
+        )
+        .await?;
+        Ok(())
+    }
+    .await;
+    if let Err(error) = reconcile_result {
+        restore_external_activation_sources(&root, &attached_diff).await?;
+        return Err(error);
+    }
+
+    if packages.is_empty() && removed_targets.is_empty() {
         printer.info("No exposed package targets are installed.");
         return Ok(());
     }
-
-    disable_removed_targets(&root, &removed_targets)?;
-    write_attached_units(&root, &packages)?;
-    let changed_credential_units = write_generated_credential_blobs(&root, &packages)?;
-    write_exact_preset(&root, &current_targets)?;
-    load_ebpf_lsm_before_package_targets(&root, &current_targets)?;
-    crate::package_attestation::measure_activated_packages(&root, &installed)
-        .context("measuring exposed package set into PCR 15")?;
-    apply_systemd_changes(
-        &root,
-        &current_targets,
-        &attached_diff,
-        &changed_credential_units,
-    )
-    .await?;
 
     if current_targets.is_empty() {
         printer.info("Removed exposed package target enablement.");
@@ -3111,31 +3124,35 @@ async fn apply_systemd_changes(
     if root == Path::new("/") {
         let client = SystemdClient::connect().await?;
         let start_mode = exposed_target_start_mode();
-        client.daemon_reload().await?;
-        preset_targets(root, current_targets)?;
-        apply_attached_unit_diff(&client, attached_diff).await?;
-        for target in current_targets {
-            match start_mode {
-                ExposedTargetStartMode::QueueOnly => {
-                    client.start_unit_no_wait(target).await.with_context(|| {
-                        format!("queueing start for exposed package target {target}")
-                    })?;
-                }
-                ExposedTargetStartMode::AwaitJob => {
-                    let outcome = client.start_unit(target).await?;
-                    if !outcome.result.is_done() {
-                        bail!(
-                            "systemd failed to start exposed package target {target}: {}",
-                            outcome.result.label()
-                        );
+        let apply_result: Result<()> = async {
+            client.daemon_reload().await?;
+            preset_targets(root, current_targets)?;
+            apply_attached_unit_diff(&client, attached_diff).await?;
+            for target in current_targets {
+                match start_mode {
+                    ExposedTargetStartMode::QueueOnly => {
+                        client.start_unit_no_wait(target).await.with_context(|| {
+                            format!("queueing start for exposed package target {target}")
+                        })?;
+                    }
+                    ExposedTargetStartMode::AwaitJob => {
+                        let outcome = client.start_unit(target).await?;
+                        if !outcome.result.is_done() {
+                            bail!(
+                                "systemd failed to start exposed package target {target}: {}",
+                                outcome.result.label()
+                            );
+                        }
                     }
                 }
             }
+            Ok(())
         }
-        for source in &attached_diff.restore_external_activation_sources {
-            let outcome = client.start_unit(source).await?;
-            ensure_job_done("restore", source, outcome)?;
-        }
+        .await;
+        let restore_result =
+            restore_external_activation_sources_with_client(&client, attached_diff).await;
+        apply_result?;
+        restore_result?;
         let restarted_units = attached_diff
             .to_restart
             .iter()
@@ -3148,6 +3165,51 @@ async fn apply_systemd_changes(
         try_restart_changed_credential_units(root, &credential_restart_units)?;
     } else {
         preset_targets(root, current_targets)?;
+    }
+    Ok(())
+}
+
+async fn retain_active_routed_sources(root: &Path, diff: &mut UnitDiff) -> Result<()> {
+    if root != Path::new("/") {
+        return Ok(());
+    }
+    let client = SystemdClient::connect().await?;
+    let sources = diff
+        .service_root_barriers
+        .values()
+        .flat_map(|barrier| barrier.live_external_activation_sources.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    let mut active = BTreeSet::new();
+    for source in sources {
+        if client.is_active(&source).await? {
+            active.insert(source);
+        }
+    }
+    diff.retain_active_external_activation_sources(&active);
+    Ok(())
+}
+
+async fn restore_external_activation_sources(root: &Path, diff: &UnitDiff) -> Result<()> {
+    if root != Path::new("/") {
+        return Ok(());
+    }
+    let client = SystemdClient::connect().await?;
+    restore_external_activation_sources_with_client(&client, diff).await
+}
+
+async fn restore_external_activation_sources_with_client(
+    client: &SystemdClient,
+    diff: &UnitDiff,
+) -> Result<()> {
+    restore_activation_sources_with_client(client, &diff.restore_external_activation_sources).await
+}
+
+async fn restore_activation_sources_with_client(
+    client: &SystemdClient,
+    sources: &BTreeSet<String>,
+) -> Result<()> {
+    for source in sources {
+        ensure_job_done("restore", source, client.start_unit(source).await?)?;
     }
     Ok(())
 }
@@ -3165,32 +3227,43 @@ async fn stop_service_root_barriers_before_swap(
     }
 
     let client = SystemdClient::connect().await?;
-    for unit in attached_diff
-        .to_stop
-        .iter()
-        .filter(|unit| attached_diff.required_stops.contains(*unit))
-    {
-        if attached_diff.required_pre_stop_starts.contains(unit) {
-            match client.start_unit(unit).await {
-                Ok(outcome) => ensure_job_done("prepare", unit, outcome)?,
+    let barrier_result: Result<()> = async {
+        for unit in attached_diff
+            .to_stop
+            .iter()
+            .filter(|unit| attached_diff.required_stops.contains(*unit))
+        {
+            if attached_diff.required_pre_stop_starts.contains(unit) {
+                match client.start_unit(unit).await {
+                    Ok(outcome) => ensure_job_done("prepare", unit, outcome)?,
+                    Err(err) => {
+                        return Err(err).with_context(|| {
+                            format!(
+                                "preparing exposed package service-root helper {unit} before cleanup"
+                            )
+                        });
+                    }
+                }
+            }
+            match client.stop_unit(unit).await {
+                Ok(outcome) => ensure_job_done("stop", unit, outcome)?,
                 Err(err) => {
                     return Err(err).with_context(|| {
-                        format!(
-                            "preparing exposed package service-root helper {unit} before cleanup"
-                        )
+                        format!("stopping exposed package service-root barrier {unit} before attached-unit swap")
                     });
                 }
             }
         }
-        match client.stop_unit(unit).await {
-            Ok(outcome) => ensure_job_done("stop", unit, outcome)?,
-            Err(err) => {
-                return Err(err).with_context(|| {
-                    format!("stopping exposed package service-root barrier {unit} before attached-unit swap")
-                });
-            }
-        }
+        Ok(())
     }
+    .await;
+    crate::sysroot::recover_quiesced_sources(barrier_result, || {
+        restore_activation_sources_with_client(
+            &client,
+            &attached_diff.quiesced_external_activation_sources,
+        )
+    })
+    .await?;
     attached_diff
         .to_stop
         .retain(|unit| !attached_diff.required_stops.contains(unit));

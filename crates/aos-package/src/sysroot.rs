@@ -3931,7 +3931,7 @@ const RECONCILE_OK: i32 = 0;
 const RECONCILE_FAILED_UNITS: i32 = 1;
 const RECONCILE_CATASTROPHIC: i32 = 2;
 
-const PLAN_SCHEMA_VERSION: u32 = 3;
+const PLAN_SCHEMA_VERSION: u32 = 4;
 
 /// Where the activation orchestrator keeps the switch lock and plan files. It
 /// lives on tmpfs (`/run`), so crash debris disappears on reboot.
@@ -3951,6 +3951,10 @@ struct Plan {
     required_stops: BTreeSet<String>,
     /// Old helpers re-started under old definitions immediately before stop.
     required_pre_stop_starts: BTreeSet<String>,
+    /// Routed sources stopped under old definitions, including removed ones.
+    quiesced_external_activation_sources: BTreeSet<String>,
+    /// Routed sources that were active before quiescing and remain candidates.
+    restore_external_activation_sources: BTreeSet<String>,
     /// Remaining post-swap actions, already in apply order.
     to_reload: Vec<String>,
     to_restart: Vec<String>,
@@ -3997,11 +4001,6 @@ async fn activate_pre_etc_swap_inner(
         printer.warning(w);
     }
 
-    if dry_run {
-        print_diff(&diff, printer);
-        return Ok(RECONCILE_OK);
-    }
-
     // The candidate systemd tree must exist and be readable; otherwise the
     // diff would look like "everything removed" and stop live units.
     let candidate_units = candidate_etc.join("systemd/system");
@@ -4018,6 +4017,12 @@ async fn activate_pre_etc_swap_inner(
     let client = SystemdClient::connect()
         .await
         .context("connecting to systemd over D-Bus")?;
+    retain_active_routed_sources(&mut diff, &client).await?;
+
+    if dry_run {
+        print_diff(&diff, printer);
+        return Ok(RECONCILE_OK);
+    }
 
     let plan = plan_from_diff(generation, diff);
     let plan_path = write_plan(run_dir, &plan)?;
@@ -4031,7 +4036,7 @@ async fn activate_pre_etc_swap_inner(
     // introduced by this activation before the health scan.
     client.reset_failed().await.context("reset-failed")?;
 
-    await_required_barrier_actions(
+    let barrier_result = await_required_barrier_actions(
         &plan.stopped,
         &plan.required_stops,
         &plan.required_pre_stop_starts,
@@ -4046,6 +4051,10 @@ async fn activate_pre_etc_swap_inner(
             async move { client.stop_unit(&unit).await.map(|outcome| outcome.result) }
         },
     )
+    .await;
+    recover_quiesced_sources(barrier_result, || {
+        restore_routed_sources(&client, &plan.quiesced_external_activation_sources)
+    })
     .await?;
 
     for unit in plan
@@ -4101,7 +4110,10 @@ async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Re
         ));
     }
 
-    client.daemon_reload().await.context("daemon-reload")?;
+    if let Err(error) = client.daemon_reload().await.context("daemon-reload") {
+        restore_routed_sources(&client, &plan.restore_external_activation_sources).await?;
+        return Err(error);
+    }
 
     let mut action_failed = false;
     for unit in &plan.to_reload {
@@ -4136,6 +4148,11 @@ async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Re
             client.start_unit(unit).await.map(|outcome| outcome.result),
         );
     }
+
+    // This is deliberately separate from ordinary start actions: every
+    // post-swap path restores the exact sources recorded active pre-swap,
+    // including degraded action outcomes that are reported only after health.
+    restore_routed_sources(&client, &plan.restore_external_activation_sources).await?;
 
     // Drain late job events so the scan below sees settled unit states. Do not
     // reset failed state here; pre-swap reset already cleared stale failures.
@@ -4188,6 +4205,8 @@ fn plan_from_diff(generation: u32, mut diff: UnitDiff) -> Plan {
             diff.to_start.push(unit);
         }
     }
+    diff.to_start
+        .retain(|unit| !diff.restore_external_activation_sources.contains(unit));
 
     Plan {
         schema_version: PLAN_SCHEMA_VERSION,
@@ -4195,6 +4214,8 @@ fn plan_from_diff(generation: u32, mut diff: UnitDiff) -> Plan {
         stopped: diff.to_stop,
         required_stops: diff.required_stops,
         required_pre_stop_starts: diff.required_pre_stop_starts,
+        quiesced_external_activation_sources: diff.quiesced_external_activation_sources,
+        restore_external_activation_sources: diff.restore_external_activation_sources,
         to_reload: diff.to_reload,
         to_restart: diff.to_restart,
         to_start: diff.to_start,
@@ -4229,6 +4250,54 @@ fn ensure_required_start_succeeded<E: std::fmt::Display>(
             "required pre-swap start for {unit} returned systemd job result '{}'",
             result.label()
         );
+    }
+    Ok(())
+}
+
+async fn retain_active_routed_sources(diff: &mut UnitDiff, client: &SystemdClient) -> Result<()> {
+    let sources = diff
+        .service_root_barriers
+        .values()
+        .flat_map(|barrier| barrier.live_external_activation_sources.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    let mut active = BTreeSet::new();
+    for source in sources {
+        if client
+            .is_active(&source)
+            .await
+            .with_context(|| format!("checking routed activation source {source}"))?
+        {
+            active.insert(source);
+        }
+    }
+    diff.retain_active_external_activation_sources(&active);
+    Ok(())
+}
+
+async fn restore_routed_sources(client: &SystemdClient, sources: &BTreeSet<String>) -> Result<()> {
+    for source in sources {
+        ensure_required_start_succeeded(
+            source,
+            client.start_unit(source).await.map(|job| job.result),
+        )
+        .with_context(|| format!("restoring routed activation source {source}"))?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn recover_quiesced_sources<R, Fut>(
+    barrier_result: Result<()>,
+    restore: R,
+) -> Result<()>
+where
+    R: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    if let Err(error) = barrier_result {
+        restore()
+            .await
+            .with_context(|| format!("restoring quiesced activation sources after: {error:#}"))?;
+        return Err(error);
     }
     Ok(())
 }
@@ -7167,6 +7236,8 @@ mod tests {
             stopped: vec!["old.service".to_string()],
             required_stops: BTreeSet::from(["old.service".to_string()]),
             required_pre_stop_starts: BTreeSet::new(),
+            quiesced_external_activation_sources: BTreeSet::new(),
+            restore_external_activation_sources: BTreeSet::new(),
             to_reload: vec!["reload.service".to_string()],
             to_restart: vec!["restart.socket".to_string(), "restart.service".to_string()],
             to_start: vec!["new.service".to_string()],
@@ -7552,6 +7623,29 @@ mod tests {
             *calls.lock().unwrap(),
             vec![("stop", "web.service".to_string()), ("start", helper)]
         );
+    }
+
+    #[tokio::test]
+    async fn failed_barrier_restores_quiesced_provider_before_returning_error() {
+        use std::sync::{Arc, Mutex};
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let restore_calls = Arc::clone(&calls);
+        let error = recover_quiesced_sources(
+            Err(anyhow::anyhow!("helper cleanup failed")),
+            move || async move {
+                restore_calls
+                    .lock()
+                    .unwrap()
+                    .push("provider.socket".to_string());
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("helper cleanup failed"));
+        assert_eq!(*calls.lock().unwrap(), vec!["provider.socket".to_string()]);
     }
 
     #[test]
