@@ -12,12 +12,14 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use aos_oci::{PlatformSelector, verify_layout};
-use aos_oci_types::{MediaType, Sha256Digest};
+use aos_oci::{PlatformSelector, verify_layout, write_oci_archive};
+use aos_oci_types::{MediaType, Sha256Digest, to_canonical_json};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, LOCATION, RANGE, WWW_AUTHENTICATE};
+use axum::http::header::{
+    AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, LOCATION, RANGE, WWW_AUTHENTICATE,
+};
 use axum::http::{HeaderMap, Method, Request, Response, StatusCode, Uri};
 use axum::routing::any;
 use serde_json::Value;
@@ -35,6 +37,8 @@ struct RegistryState {
     manifests: Mutex<BTreeMap<String, (String, Vec<u8>)>>,
     uploads: Mutex<BTreeMap<String, Vec<u8>>>,
     events: Mutex<Vec<String>>,
+    control_calls: Mutex<Vec<String>>,
+    publication_root: Mutex<Option<String>>,
     next_upload: AtomicU64,
     token_requests: AtomicU64,
 }
@@ -113,6 +117,8 @@ async fn process_pull_then_push_is_checkout_and_nix_independent() {
             .expect("pulled fixture blob");
         assert_eq!(&actual, expected, "pulled blob differs for {digest}");
     }
+    write_oci_archive(&pulled, &workspace.path().join("pulled.oci.tar"))
+        .expect("archive pulled layout for daemon-free push");
 
     let destination_reference = destination.reference("stable");
     let push = run_aos(
@@ -126,7 +132,7 @@ async fn process_pull_then_push_is_checkout_and_nix_independent() {
             "never",
             "container",
             "push",
-            "pulled.oci",
+            "pulled.oci.tar",
             &destination_reference,
             "--hub",
             &destination.origin,
@@ -167,6 +173,154 @@ async fn process_pull_then_push_is_checkout_and_nix_independent() {
         .expect("mutable tag upload");
     assert!(immutable_position < tag_position, "events: {events:?}");
     assert_eq!(events.last().map(String::as_str), Some("manifest:stable"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn process_publish_finalizes_complete_signed_graph_without_a_data_plane_tag_write() {
+    let fixture = oci_support::fixture();
+    let release = oci_support::add_signed_release_graph(&fixture);
+    let registry = spawn_registry("aos", None).await;
+    *registry
+        .state
+        .publication_root
+        .lock()
+        .expect("publication root") = Some(release.oci.index.digest.to_string());
+    let workspace = tempfile::tempdir().expect("process workspace");
+    let home = workspace.path().join("home");
+    fs::create_dir(&home).expect("process home");
+    let sidecar = workspace.path().join("containers-v1-index.json");
+    fs::write(
+        &sidecar,
+        to_canonical_json(&release).expect("canonical release sidecar"),
+    )
+    .expect("release sidecar");
+    let release_value = serde_json::to_value(&release).expect("release JSON");
+    let signature_input = serde_json::json!({
+        "schema": "aos.container.signature-input/v1",
+        "identity": release_value["identity"].clone(),
+        "oci": release_value["oci"].clone(),
+        "nix": release_value["nix"].clone(),
+        "evidence": {
+            "sbom": release_value["evidence"]["sbom"].clone(),
+            "source": release_value["evidence"]["source"].clone(),
+            "license": release_value["evidence"]["license"].clone(),
+            "provenance": release_value["evidence"]["provenance"].clone(),
+        },
+        "qualification": release_value["qualification"].clone(),
+    });
+    let signature_input_path = workspace.path().join("signature-input.json");
+    fs::write(
+        &signature_input_path,
+        to_canonical_json(&signature_input).expect("canonical signature input JSON"),
+    )
+    .expect("signature input");
+    let reference = registry.reference("stable");
+
+    let staged = run_aos(
+        workspace.path(),
+        &home,
+        &[
+            "--json",
+            "--progress",
+            "off",
+            "--color",
+            "never",
+            "container",
+            "publish",
+            "aos",
+            &reference,
+            "--release",
+            sidecar.to_str().expect("sidecar path"),
+            "--release-layout",
+            fixture.root().to_str().expect("layout path"),
+            "--signature-input",
+            signature_input_path.to_str().expect("signature input path"),
+            "--registry",
+            "core",
+            "--idempotency-key",
+            "process-release-1",
+            "--registry-origin",
+            &registry.origin,
+            "--registry-token",
+            SEED_CREDENTIAL,
+            "--stage-only",
+        ],
+    );
+    let staged_output = successful_json("publish --stage-only", &staged);
+    assert_eq!(staged_output["state"], "staged");
+    assert_eq!(
+        staged_output["verification"],
+        "pending-control-plane-commit"
+    );
+    assert_eq!(staged_output["tag_updated"], false);
+    assert_eq!(staged_output["object_count"], 18);
+    assert_output_is_redacted(&staged);
+    assert!(
+        registry
+            .state
+            .control_calls
+            .lock()
+            .expect("stage control calls")
+            .is_empty()
+    );
+    {
+        let manifests = registry.state.manifests.lock().expect("staged manifests");
+        assert!(manifests.contains_key(&release.oci.index.digest.to_string()));
+        assert!(!manifests.contains_key("stable"));
+    }
+
+    let publish = run_aos(
+        workspace.path(),
+        &home,
+        &[
+            "--json",
+            "--progress",
+            "off",
+            "--color",
+            "never",
+            "container",
+            "publish",
+            "aos",
+            &reference,
+            "--release",
+            sidecar.to_str().expect("sidecar path"),
+            "--release-layout",
+            fixture.root().to_str().expect("layout path"),
+            "--signature-input",
+            signature_input_path.to_str().expect("signature input path"),
+            "--registry",
+            "core",
+            "--idempotency-key",
+            "process-release-1",
+            "--registry-origin",
+            &registry.origin,
+            "--hub",
+            &registry.origin,
+            "--token",
+            SEED_CREDENTIAL,
+        ],
+    );
+    let output = successful_json("publish", &publish);
+    assert_eq!(output["operation"], "publish");
+    assert_eq!(output["verification"], "verified");
+    assert_eq!(output["object_count"], 18);
+    assert_eq!(
+        output["verified_release_root"],
+        release.oci.index.digest.to_string()
+    );
+    assert_output_is_redacted(&publish);
+
+    assert_eq!(
+        *registry.state.control_calls.lock().expect("control calls"),
+        [
+            "/aos.hub.v1.ContainerService/BeginContainerPublication",
+            "/aos.hub.v1.ContainerService/GetContainerPublication",
+            "/aos.hub.v1.ContainerService/CommitContainerPublication",
+        ]
+    );
+    let manifests = registry.state.manifests.lock().expect("registry manifests");
+    assert!(manifests.contains_key(&release.oci.index.digest.to_string()));
+    assert!(!manifests.contains_key("stable"));
 }
 
 fn run_aos(directory: &Path, home: &Path, arguments: &[&str]) -> Output {
@@ -256,6 +410,8 @@ async fn spawn_registry(repository: &str, fixture: Option<&oci_support::Fixture>
         manifests: Mutex::new(manifests),
         uploads: Mutex::new(BTreeMap::new()),
         events: Mutex::new(Vec::new()),
+        control_calls: Mutex::new(Vec::new()),
+        publication_root: Mutex::new(None),
         next_upload: AtomicU64::new(1),
         token_requests: AtomicU64::new(0),
     });
@@ -285,6 +441,9 @@ async fn handle_registry_request(
         .await
         .expect("registry request body");
     let path = parts.uri.path();
+    if path.starts_with("/aos.hub.v1.ContainerService/") {
+        return container_control_response(&state, path, &parts.headers, body);
+    }
     if path == "/token" {
         return token_response(&state, &parts.headers);
     }
@@ -315,6 +474,75 @@ async fn handle_registry_request(
         return upload_response(&state, &parts.method, identifier, &parts.uri, body);
     }
     response(StatusCode::NOT_FOUND, Body::empty())
+}
+
+fn container_control_response(
+    state: &RegistryState,
+    path: &str,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Response<Body> {
+    assert_eq!(
+        headers
+            .get(AUTHORIZATION)
+            .and_then(|value| value.to_str().ok()),
+        Some(SEED_AUTHORIZATION)
+    );
+    assert_eq!(
+        headers
+            .get("connect-protocol-version")
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+    let request: Value = serde_json::from_slice(&body).expect("container control request");
+    if path.ends_with("/BeginContainerPublication") {
+        assert_eq!(request["registry"], "core");
+        assert_eq!(request["repository"], "aos");
+        assert_eq!(request["targetTag"], "stable");
+        assert_eq!(request["idempotencyKey"], "process-release-1");
+        assert!(request["containerReleaseJson"].is_string());
+    } else if path.ends_with("/CommitContainerPublication") {
+        assert_eq!(request["expectedResourceVersion"], "2");
+        assert_eq!(request["idempotencyKey"], "process-release-1:commit");
+    }
+    state
+        .control_calls
+        .lock()
+        .expect("control calls")
+        .push(path.to_string());
+
+    let ready = path.ends_with("/CommitContainerPublication");
+    let root = state
+        .publication_root
+        .lock()
+        .expect("publication root")
+        .clone()
+        .expect("configured publication root");
+    let value = serde_json::json!({
+        "publicationId": "publication-1",
+        "registry": "core",
+        "repository": "aos",
+        "rootDigest": root,
+        "catalogDigest": Sha256Digest::digest(b"catalog").to_string(),
+        "topologyDigest": Sha256Digest::digest(b"topology").to_string(),
+        "requiredPlacementCount": "1",
+        "sourceKind": "channel",
+        "state": if ready { "ready" } else { "preparing" },
+        "targetTag": "stable",
+        "resourceVersion": if ready { "3" } else { "2" },
+        "expiresAt": "1800000000",
+        "createdAt": "1700000000",
+        "committedAt": if ready { "1700000001" } else { "0" },
+        "confirmationHash": Sha256Digest::digest(b"confirmation").to_string(),
+        "verifiedReleaseRoot": if ready { root } else { String::new() },
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&value).expect("container control response"),
+        ))
+        .expect("container control response")
 }
 
 fn authorized(headers: &HeaderMap) -> bool {
@@ -403,7 +631,12 @@ fn blob_response(state: &RegistryState, method: &Method, digest: &str) -> Respon
         return response(StatusCode::NOT_FOUND, Body::empty());
     };
     if method == Method::HEAD {
-        return response(StatusCode::OK, Body::empty());
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_LENGTH, bytes.len())
+            .header("docker-content-digest", digest)
+            .body(Body::empty())
+            .expect("blob HEAD response");
     }
     if method == Method::GET {
         return response(StatusCode::OK, Body::from(bytes.clone()));

@@ -331,6 +331,21 @@ service ImageService {
   rpc ResolveImage(ResolveImageRequest) returns (GetImageResponse);
 }
 
+// OCI container publication is a distinct control plane from AOS disk images
+// and from the standard Distribution data plane. Begin accepts the exact
+// canonical signed-release declaration only after all referenced bytes were
+// uploaded; commit advances a verified root and optional tag atomically.
+service ContainerService {
+  rpc BeginContainerPublication(BeginContainerPublicationRequest)
+      returns (ContainerPublication);
+  rpc GetContainerPublication(GetContainerPublicationRequest)
+      returns (ContainerPublication);
+  rpc CommitContainerPublication(CommitContainerPublicationRequest)
+      returns (ContainerPublication);
+  rpc AbortContainerPublication(AbortContainerPublicationRequest)
+      returns (ContainerPublication);
+}
+
 // The managed, placement-aware registry publication path. Producers declare an
 // exact manifest, upload bytes through object-id URLs, and commit only after
 // every required placement has verified every immutable object and mutable
@@ -541,6 +556,60 @@ message SystemImage {
   uint64 nar_size = 24;
   // Ordered binary-cache bases from the registry's signed consumer stack.
   repeated string cache_urls = 25;
+}
+
+// Opens or resumes verified admission for one already-uploaded OCI graph.
+// container_release_json is the canonical JSON encoding of the strict
+// aos.container-release/v1 contract used at containers/v1/index.json.
+message BeginContainerPublicationRequest {
+  string registry = 1;
+  string repository = 2;
+  bytes container_release_json = 3;
+  string target_tag = 4;
+  string expected_tag_resource_version = 5;
+  string expected_tag_digest = 6;
+  string idempotency_key = 7;
+  // Closed verified tag ownership: "release" or "channel". A release tag
+  // equals the signed release identity; a channel requires 256-partition
+  // convergence on that identity.
+  string target_kind = 8;
+}
+
+message GetContainerPublicationRequest {
+  string publication_id = 1;
+}
+
+message CommitContainerPublicationRequest {
+  string publication_id = 1;
+  string expected_resource_version = 2;
+  string idempotency_key = 3;
+  string confirmation_hash = 4;
+}
+
+message AbortContainerPublicationRequest {
+  string publication_id = 1;
+  string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+
+// Durable state of one verified container publication transaction.
+message ContainerPublication {
+  string publication_id = 1;
+  string registry = 2;
+  string repository = 3;
+  string root_digest = 4;
+  string catalog_digest = 5;
+  string state = 6;
+  string target_tag = 7;
+  string resource_version = 8;
+  int64 expires_at = 9;
+  int64 created_at = 10;
+  int64 committed_at = 11;
+  string confirmation_hash = 12;
+  string verified_release_root = 13;
+  string topology_digest = 14;
+  int64 required_placement_count = 15;
+  string source_kind = 16;
 }
 
 message ImageUki {

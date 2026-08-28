@@ -750,6 +750,16 @@ async fn main() -> Result<()> {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
                 loop {
                     tick.tick().await;
+                    if let Err(error) = aos_hub_core::oci::recover_expired_oci_work(
+                        &inventory_db,
+                        &inventory_writers,
+                        now_secs(),
+                        100,
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %format!("{error:#}"), "expired OCI work recovery failed");
+                    }
                     if let Err(error) = aos_hub_core::cache_scan::reap_due_cache_tombstones(
                         &inventory_db,
                         now_secs(),

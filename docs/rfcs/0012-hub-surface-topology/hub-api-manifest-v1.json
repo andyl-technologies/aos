@@ -71,6 +71,34 @@
          "service" : "ImageService"
       },
       {
+         "method" : "BeginContainerPublication",
+         "path" : "aos.hub.v1.ContainerService/BeginContainerPublication",
+         "request" : "BeginContainerPublicationRequest",
+         "response" : "ContainerPublication",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "GetContainerPublication",
+         "path" : "aos.hub.v1.ContainerService/GetContainerPublication",
+         "request" : "GetContainerPublicationRequest",
+         "response" : "ContainerPublication",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "CommitContainerPublication",
+         "path" : "aos.hub.v1.ContainerService/CommitContainerPublication",
+         "request" : "CommitContainerPublicationRequest",
+         "response" : "ContainerPublication",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "AbortContainerPublication",
+         "path" : "aos.hub.v1.ContainerService/AbortContainerPublication",
+         "request" : "AbortContainerPublicationRequest",
+         "response" : "ContainerPublication",
+         "service" : "ContainerService"
+      },
+      {
          "method" : "PlanCreateRegistry",
          "path" : "aos.hub.v1.RegistryService/PlanCreateRegistry",
          "request" : "PlanCreateRegistryRequest",
@@ -2486,7 +2514,7 @@
    },
    "protobuf_package" : "aos.hub.v1",
    "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 327,
+   "rpc_count" : 331,
    "services" : [
       "RegistryService",
       "OrganizationService",
@@ -2505,6 +2533,7 @@
       "PackageService",
       "ChannelService",
       "ImageService",
+      "ContainerService",
       "PublishService",
       "GitService",
       "WebhookService",

@@ -1388,6 +1388,12 @@ pub enum RegistryCommand {
     Release {
         /// Semver release tag, with no `v` prefix
         semver: String,
+        /// Canonical signed container release sidecar to commit in the release
+        #[arg(long = "container-release")]
+        container_release: Option<PathBuf>,
+        /// Canonical Nix signature input bound by the container release
+        #[arg(long = "container-signature-input")]
+        container_signature_input: Option<PathBuf>,
         /// Optional Nix store path to publish before tagging
         #[arg(long)]
         store_path: Option<String>,
@@ -4453,6 +4459,8 @@ async fn run_registry(
         RegistryCommand::Web { command } => registry_ops::run_web(config, command, printer).await,
         RegistryCommand::Release {
             semver,
+            container_release,
+            container_signature_input,
             store_path,
             name,
             version,
@@ -4492,6 +4500,8 @@ async fn run_registry(
             registry_ops::release(
                 config,
                 semver,
+                container_release.as_deref(),
+                container_signature_input.as_deref(),
                 store_path.as_deref(),
                 name.as_deref(),
                 version.as_deref(),

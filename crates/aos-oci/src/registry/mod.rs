@@ -6,6 +6,7 @@
 //! persists only upload locations and offsets - never credentials - and updates
 //! a mutable tag only after the entire descriptor graph is verified and durable.
 
+mod publication;
 mod pull;
 mod push;
 
@@ -29,7 +30,12 @@ use zeroize::Zeroizing;
 
 use crate::layout::VerifiedImage;
 use crate::reference::{PlatformSelector, RegistryReference};
-use aos_oci_types::Sha256Digest;
+use aos_oci_types::{ContainerRelease, RepositoryName, Sha256Digest};
+
+pub use publication::{
+    VerifiedPublicationCommit, VerifiedPublicationHook, VerifiedPublicationRequest,
+    VerifiedPublicationResult, VerifiedPublicationSession,
+};
 
 const TOKEN_RESPONSE_LIMIT: usize = 1024 * 1024;
 
@@ -119,6 +125,15 @@ pub struct PushOptions {
     pub cancellation: CancellationToken,
     /// Optional stable progress-event sink.
     pub events: Option<UnboundedSender<TransferEvent>>,
+}
+
+/// Result of uploading every object named by one signed AOS release graph.
+#[derive(Clone, Debug, Serialize)]
+pub struct ReleaseGraphPushResult {
+    /// Exact immutable OCI index digest declared by the release sidecar.
+    pub root_index_digest: Sha256Digest,
+    /// Number of distinct content-addressed objects admitted by the graph walk.
+    pub object_count: usize,
 }
 
 impl PushOptions {
@@ -222,6 +237,90 @@ impl RegistryClient {
         push::run(self, reference, options).await
     }
 
+    /// Pushes an image while attempting authorized cross-repository blob mounts.
+    ///
+    /// Each source is a repository in the same registry authority. The client
+    /// obtains source-pull and destination-push grants together, checks that the
+    /// source owns the blob, and falls back to a normal upload when mounting is
+    /// unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::push`], plus authorization or protocol
+    /// failures while checking and mounting source blobs.
+    pub async fn push_with_mounts(
+        &self,
+        reference: &RegistryReference,
+        options: &PushOptions,
+        mount_sources: &[RepositoryName],
+    ) -> Result<PushResult> {
+        self.ensure_reference(reference)?;
+        push::run_with_mounts(self, reference, options, mount_sources).await
+    }
+
+    /// Verifies and uploads the complete graph declared by a signed AOS release.
+    ///
+    /// The destination must use the release's immutable index digest. Every
+    /// config, layer, platform manifest, index, and evidence payload is checked
+    /// locally before the first request. Documents are then written by digest
+    /// only; this operation never mutates a tag or marks a release verified.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the sidecar and local layout disagree, the graph
+    /// is incomplete or cyclic, a descriptor fails exact verification, the
+    /// destination is not the declared digest, or a Distribution transfer fails.
+    pub async fn push_release_graph(
+        &self,
+        reference: &RegistryReference,
+        options: &PushOptions,
+        release: &ContainerRelease,
+        mount_sources: &[RepositoryName],
+    ) -> Result<ReleaseGraphPushResult> {
+        self.ensure_reference(reference)?;
+        push::run_release_graph(self, reference, options, release, mount_sources).await
+    }
+
+    /// Deletes an immutable manifest or index digest.
+    ///
+    /// Tag deletion is deliberately rejected because it is ambiguous across
+    /// registries and bypasses the Hub's tag compare-and-swap history.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a tag reference, authentication or HTTP failure,
+    /// cancellation, or a registry that refuses digest deletion.
+    pub async fn delete_manifest(
+        &self,
+        reference: &RegistryReference,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.ensure_reference(reference)?;
+        push::delete_manifest(self, reference, cancellation).await
+    }
+
+    /// Cancels all resumable upload sessions recorded for a repository.
+    ///
+    /// Checkpoints are removed only after the registry accepts deletion or
+    /// reports the session absent. A bounded retry absorbs transient service
+    /// unavailability while an in-flight upload request finishes. Credentials
+    /// are never stored in the state directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsafe or foreign checkpoint state, cancellation,
+    /// authentication failure, or a registry that refuses an upload deletion
+    /// after the bounded retry window.
+    pub async fn cancel_uploads(
+        &self,
+        reference: &RegistryReference,
+        state_directory: &std::path::Path,
+        cancellation: &CancellationToken,
+    ) -> Result<usize> {
+        self.ensure_reference(reference)?;
+        push::cancel_uploads(self, reference, state_directory, cancellation).await
+    }
+
     fn ensure_reference(&self, reference: &RegistryReference) -> Result<()> {
         ensure!(
             reference.authority() == self.inner.reference_authority,
@@ -246,9 +345,25 @@ impl RegistryClient {
         body: Option<Bytes>,
         cancellation: &CancellationToken,
     ) -> Result<Response> {
+        let scopes = [scope.to_string()];
+        self.send_scoped(method, url, &scopes, headers, body, cancellation)
+            .await
+    }
+
+    async fn send_scoped(
+        &self,
+        method: Method,
+        url: Url,
+        scopes: &[String],
+        headers: &HeaderMap,
+        body: Option<Bytes>,
+        cancellation: &CancellationToken,
+    ) -> Result<Response> {
+        let scopes = normalized_scopes(scopes)?;
+        let cache_key = scopes.join("\n");
         let mut retried = false;
         loop {
-            let token = self.token_for_scope(scope)?;
+            let token = self.token_for_scope(&cache_key)?;
             let mut request = self
                 .inner
                 .http
@@ -273,8 +388,8 @@ impl RegistryClient {
                 .context("registry returned 401 without WWW-Authenticate")?
                 .to_str()
                 .context("registry returned a non-ASCII authentication challenge")?;
-            let token = self.authorize(challenge, scope, cancellation).await?;
-            self.store_scoped_token(scope, token)?;
+            let token = self.authorize(challenge, &scopes, cancellation).await?;
+            self.store_scoped_token(&cache_key, token)?;
             retried = true;
         }
     }
@@ -355,7 +470,7 @@ impl RegistryClient {
     async fn authorize(
         &self,
         challenge: &str,
-        requested_scope: &str,
+        requested_scopes: &[String],
         cancellation: &CancellationToken,
     ) -> Result<Zeroizing<String>> {
         let parameters = parse_bearer_challenge(challenge)?;
@@ -378,8 +493,10 @@ impl RegistryClient {
         validate_bearer_realm(&self.inner.origin, &realm)?;
         if let Some(challenge_scope) = parameters.get("scope") {
             ensure!(
-                challenge_scope == requested_scope,
-                "registry challenged for a different repository scope"
+                requested_scopes
+                    .iter()
+                    .any(|scope| challenge_scope_is_subset(scope, challenge_scope)),
+                "registry challenged for a different repository or additional action scope"
             );
         }
         {
@@ -387,7 +504,9 @@ impl RegistryClient {
             if let Some(service) = parameters.get("service") {
                 query.append_pair("service", service);
             }
-            query.append_pair("scope", requested_scope);
+            for scope in requested_scopes {
+                query.append_pair("scope", scope);
+            }
         }
 
         let same_origin = same_authority(&realm, &self.inner.origin);
@@ -432,6 +551,52 @@ impl RegistryClient {
             .context("registry bearer-token response lacks a token")?;
         Ok(Zeroizing::new(token))
     }
+}
+
+fn normalized_scopes(scopes: &[String]) -> Result<Vec<String>> {
+    ensure!(!scopes.is_empty(), "registry request requires a scope");
+    let mut normalized = scopes.to_vec();
+    for scope in &normalized {
+        ensure!(
+            !scope.is_empty()
+                && scope.is_ascii()
+                && !scope.bytes().any(|byte| byte.is_ascii_control()),
+            "registry scope contains invalid bytes"
+        );
+    }
+    normalized.sort();
+    normalized.dedup();
+    Ok(normalized)
+}
+
+fn challenge_scope_is_subset(requested: &str, challenged: &str) -> bool {
+    fn split(value: &str) -> Option<(RepositoryName, Vec<&str>)> {
+        let mut parts = value.splitn(3, ':');
+        let kind = parts.next()?;
+        let name = parts.next()?;
+        let mut actions = parts.next()?.split(',').collect::<Vec<_>>();
+        if kind != "repository"
+            || actions.is_empty()
+            || actions.iter().any(|action| action.is_empty())
+        {
+            return None;
+        }
+        let repository = RepositoryName::parse(name).ok()?;
+        actions.sort_unstable();
+        actions.dedup();
+        Some((repository, actions))
+    }
+
+    let Some((requested_repository, requested_actions)) = split(requested) else {
+        return false;
+    };
+    let Some((challenged_repository, challenged_actions)) = split(challenged) else {
+        return false;
+    };
+    requested_repository == challenged_repository
+        && challenged_actions
+            .iter()
+            .all(|action| requested_actions.contains(action))
 }
 
 fn bearer_header(token: &str) -> Result<HeaderValue> {
@@ -622,10 +787,13 @@ fn same_authority(left: &Url, right: &Url) -> bool {
 }
 
 fn parse_bearer_challenge(value: &str) -> Result<BTreeMap<String, String>> {
-    let parameters = value
-        .strip_prefix("Bearer ")
-        .or_else(|| value.strip_prefix("bearer "))
-        .context("registry authentication challenge is not Bearer")?;
+    let (scheme, parameters) = value
+        .split_once(' ')
+        .context("registry authentication challenge is malformed")?;
+    ensure!(
+        scheme.eq_ignore_ascii_case("Bearer"),
+        "registry authentication challenge is not Bearer"
+    );
     let mut result = BTreeMap::new();
     let mut cursor = parameters.trim();
     while !cursor.is_empty() {
@@ -784,6 +952,31 @@ mod tests {
         );
         assert!(parse_bearer_challenge("Basic abc").is_err());
         assert!(parse_bearer_challenge("Bearer realm=https://bad").is_err());
+        assert!(parse_bearer_challenge("BEARER realm=\"https://registry.example/token\"").is_ok());
+        assert!(challenge_scope_is_subset(
+            "repository:aos:pull,push",
+            "repository:aos:push,pull"
+        ));
+        assert!(challenge_scope_is_subset(
+            "repository:aos:pull,push",
+            "repository:aos:pull"
+        ));
+        assert!(!challenge_scope_is_subset(
+            "repository:aos:pull,push",
+            "repository:other:pull,push"
+        ));
+        assert!(!challenge_scope_is_subset(
+            "repository:aos:pull,push",
+            "repository:aos:pull,delete"
+        ));
+        assert!(!challenge_scope_is_subset(
+            "repository:aos:pull,push",
+            "repository:aos:"
+        ));
+        assert!(!challenge_scope_is_subset(
+            "repository:aos:pull,push",
+            "repository:AOS:pull"
+        ));
     }
 
     #[test]

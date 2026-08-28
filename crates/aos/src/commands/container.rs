@@ -16,10 +16,15 @@ use aos_core::nix::NixRunner;
 use aos_core::output::{OutputMode, Printer, ProgressMode, TransferProgress};
 use aos_oci::{
     ArtifactFormat, PlatformSelector, PullOptions, PushOptions, RegistryClient, RegistryReference,
-    TransferEvent, prepare_layout, read_verified_index, verify_layout, write_docker_archive,
-    write_oci_archive, write_oci_layout,
+    TransferEvent, VerifiedPublicationCommit, VerifiedPublicationHook, VerifiedPublicationRequest,
+    VerifiedPublicationResult, VerifiedPublicationSession, prepare_layout, read_verified_index,
+    verify_layout, write_docker_archive, write_oci_archive, write_oci_layout,
 };
-use aos_oci_types::{ManifestReference, RepositoryName};
+use aos_oci_types::{
+    ContainerRelease, ContainerSignatureInput, ManifestReference, RepositoryName, Sha256Digest,
+    to_canonical_json,
+};
+use aos_remote::{HubClient, hub_rpc, hub_types};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -103,6 +108,7 @@ pub async fn run(command: &ContainerCommand, printer: &Printer) -> Result<()> {
             source,
             reference,
             platform,
+            mount_from,
             hub,
             token,
         } => {
@@ -110,6 +116,7 @@ pub async fn run(command: &ContainerCommand, printer: &Printer) -> Result<()> {
                 source,
                 reference,
                 platform.as_deref(),
+                mount_from,
                 hub.as_deref(),
                 token.as_deref(),
                 printer,
@@ -119,16 +126,38 @@ pub async fn run(command: &ContainerCommand, printer: &Printer) -> Result<()> {
         ContainerCommand::Publish {
             name,
             reference,
-            platform,
+            release,
+            release_layout,
+            signature_input,
+            registry,
+            mount_from,
+            expected_tag_resource_version,
+            expected_tag_digest,
+            idempotency_key,
+            stage_only,
+            registry_origin,
+            registry_token,
             hub,
             token,
         } => {
             publish(
-                name,
-                reference,
-                platform.as_deref(),
-                hub.as_deref(),
-                token.as_deref(),
+                PublishInput {
+                    name,
+                    reference,
+                    release_path: release,
+                    release_layout,
+                    signature_input_path: signature_input,
+                    registry,
+                    mount_from,
+                    expected_tag_resource_version: expected_tag_resource_version.as_deref(),
+                    expected_tag_digest: expected_tag_digest.as_deref(),
+                    idempotency_key,
+                    stage_only: *stage_only,
+                    registry_origin: registry_origin.as_deref(),
+                    registry_token: registry_token.as_deref(),
+                    hub: hub.as_deref(),
+                    token: token.as_deref(),
+                },
                 printer,
             )
             .await
@@ -425,25 +454,28 @@ async fn push(
     source: &str,
     reference: &str,
     platform: Option<&str>,
+    mount_from: &[String],
     hub: Option<&str>,
     token: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
     let reference = RegistryReference::parse(reference)?;
     let selector = parse_platform(platform)?;
+    let mount_from = parse_mount_sources(mount_from, &reference)?;
     let source_path = Path::new(source);
     if source_path.exists() {
         let prepared = prepare_layout(source_path)?;
-        return push_layout(
+        let published = push_layout(
             prepared.root(),
-            source,
             &reference,
             selector,
+            &mount_from,
             hub,
             token,
             printer,
         )
-        .await;
+        .await?;
+        return render_push_result(source, &reference, &published, printer);
     }
 
     validate_definition_name(source)
@@ -457,48 +489,640 @@ async fn push(
         None,
         printer,
     )?;
-    push_layout(
+    let published = push_layout(
         &produced.store_path,
-        source,
         &reference,
         selector,
+        &mount_from,
         hub,
         token,
         printer,
+    )
+    .await?;
+    render_push_result(source, &reference, &published, printer)
+}
+
+struct PublishInput<'a> {
+    name: &'a str,
+    reference: &'a str,
+    release_path: &'a Path,
+    release_layout: &'a Path,
+    signature_input_path: &'a Path,
+    registry: &'a str,
+    mount_from: &'a [String],
+    expected_tag_resource_version: Option<&'a str>,
+    expected_tag_digest: Option<&'a str>,
+    idempotency_key: &'a str,
+    stage_only: bool,
+    registry_origin: Option<&'a str>,
+    registry_token: Option<&'a str>,
+    hub: Option<&'a str>,
+    token: Option<&'a str>,
+}
+
+async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
+    let PublishInput {
+        name,
+        reference,
+        release_path,
+        release_layout,
+        signature_input_path,
+        registry,
+        mount_from,
+        expected_tag_resource_version,
+        expected_tag_digest,
+        idempotency_key,
+        stage_only,
+        registry_origin,
+        registry_token,
+        hub,
+        token,
+    } = input;
+    validate_definition_name(name)?;
+    let reference = RegistryReference::parse(reference)?;
+    ensure!(
+        !registry.is_empty() && registry.len() <= 255,
+        "--registry must contain 1..255 bytes"
+    );
+    ensure!(
+        !idempotency_key.is_empty() && idempotency_key.len() <= 120,
+        "--idempotency-key must contain 1..120 bytes"
+    );
+    let release_bytes = read_release_sidecar(release_path)?;
+    let release = ContainerRelease::from_canonical_json(&release_bytes)
+        .context("validating signed container release sidecar")?;
+    ensure!(
+        release.identity.image == name,
+        "signed release image '{}' does not match definition '{name}'",
+        release.identity.image
+    );
+    ensure!(
+        release.nix.definition.attribute == format!("containerImages.{name}"),
+        "signed release Nix attribute '{}' does not match container definition '{name}'",
+        release.nix.definition.attribute
+    );
+    validate_signature_input(signature_input_path, &release)?;
+
+    let target_tag = match reference.manifest_reference() {
+        ManifestReference::Tag(tag) => Some(tag.to_string()),
+        ManifestReference::Digest(digest) => {
+            ensure!(
+                digest == &release.oci.index.digest,
+                "destination digest does not match the signed release index"
+            );
+            None
+        }
+    };
+    ensure!(
+        target_tag.is_some()
+            || (expected_tag_resource_version.is_none() && expected_tag_digest.is_none()),
+        "tag compare-and-swap inputs require a tagged destination"
+    );
+    ensure!(
+        expected_tag_digest.is_none() || expected_tag_resource_version.is_some(),
+        "--expected-tag-digest requires --expected-tag-resource-version"
+    );
+    let expected_tag_digest = expected_tag_digest
+        .map(Sha256Digest::parse)
+        .transpose()
+        .context("parsing --expected-tag-digest")?;
+
+    let mount_from = parse_mount_sources(mount_from, &reference)?;
+    ensure!(
+        release_layout.exists(),
+        "signed release layout does not exist: {}",
+        release_layout.display()
+    );
+    let prepared = prepare_layout(release_layout)
+        .with_context(|| format!("opening signed release layout {}", release_layout.display()))?;
+    let immutable_reference = RegistryReference::parse(&format!(
+        "{}/{}@{}",
+        reference.authority(),
+        reference.repository(),
+        release.oci.index.digest
+    ))?;
+    let default_registry_origin = immutable_reference.default_origin()?.to_string();
+    let registry_origin = registry_origin.unwrap_or(&default_registry_origin);
+    let control_access = if !stage_only || registry_token.is_none() {
+        if hub.is_none() || token.is_none() {
+            crate::commands::hub_auth::prepare_active_profile().await?;
+        }
+        let (control_origin, control_token) =
+            crate::commands::hub_auth::resolve_access(hub, token)?;
+        let control_token = control_token.context(
+            "verified publication requires an authenticated Hub profile or explicit --token",
+        )?;
+        Some((control_origin, control_token))
+    } else {
+        None
+    };
+    let registry_token = match registry_token {
+        Some(token) => token.to_string(),
+        None => {
+            let (control_origin, control_token) = control_access.as_ref().context(
+                "staging requires --registry-token or same-origin authenticated Hub access",
+            )?;
+            publication_registry_token(registry_origin, control_origin, None, control_token)?
+        }
+    };
+    let registry_client = RegistryClient::new(
+        &immutable_reference,
+        Some(registry_origin),
+        Some(registry_token),
+    )?;
+    let cancellation = CancellationToken::new();
+    let signal = cancellation_on_signal(cancellation.clone());
+    let (events, reporter) = progress_reporter(printer, "Publishing");
+    let options = PushOptions {
+        source: prepared.root().to_path_buf(),
+        // Complete release publication is platform-independent. This field is
+        // unused by push_release_graph and remains part of the generic upload
+        // options only for checkpoint/progress compatibility.
+        platform: PlatformSelector::native(),
+        state_directory: upload_state_directory(&immutable_reference)?,
+        chunk_bytes: 4 * 1024 * 1024,
+        cancellation: cancellation.clone(),
+        events,
+    };
+    let graph = registry_client
+        .push_release_graph(&immutable_reference, &options, &release, &mount_from)
+        .await;
+    drop(options);
+    let report = finish_reporter(reporter).await;
+    if let Err(error) = report {
+        signal.abort();
+        return Err(error);
+    }
+    let graph = match graph {
+        Ok(graph) => graph,
+        Err(error) => {
+            signal.abort();
+            return Err(error);
+        }
+    };
+
+    if stage_only {
+        signal.abort();
+        let response = json!({
+            "schema": OUTPUT_SCHEMA,
+            "operation": "publish",
+            "state": "staged",
+            "name": name,
+            "reference": reference.to_string(),
+            "registry": registry,
+            "release": release.identity.release,
+            "index_digest": graph.root_index_digest,
+            "object_count": graph.object_count,
+            "tag_updated": false,
+            "verification": "pending-control-plane-commit",
+        });
+        if !printer.json_if_active(&response) {
+            printer.success(&format!(
+                "Staged immutable release graph {} ({} objects); no tag was updated.",
+                graph.root_index_digest, graph.object_count
+            ));
+        }
+        return Ok(());
+    }
+
+    let (control_origin, control_token) = control_access
+        .context("verified publication finalization requires authenticated Hub control access")?;
+    let hub_client = HubClient::connect_with_token(&control_origin, &control_token)?;
+
+    let target_kind = if target_tag.is_none()
+        || target_tag.as_deref() == Some(release.identity.release.as_str())
+    {
+        "release"
+    } else {
+        "channel"
+    };
+    let request = VerifiedPublicationRequest {
+        registry: registry.to_string(),
+        repository: reference.repository().clone(),
+        release,
+        target_kind: target_kind.to_string(),
+        target_tag,
+        expected_tag_version: expected_tag_resource_version.map(str::to_owned),
+        expected_tag_digest,
+        idempotency_key: idempotency_key.to_string(),
+    };
+    let adapter = HubPublicationAdapter { client: hub_client };
+    let publication = publish_verified(&adapter, &request, &cancellation)
+        .await
+        .context(
+            "finalizing verified container publication; the canonical sidecar must already be committed and indexed through a signed AOS registry release",
+        );
+    signal.abort();
+    let publication = publication?;
+
+    ensure!(
+        publication.root_index_digest == graph.root_index_digest,
+        "Hub committed a different container index than the uploaded graph"
+    );
+    let response = json!({
+        "schema": OUTPUT_SCHEMA,
+        "operation": "publish",
+        "name": name,
+        "reference": reference.to_string(),
+        "registry": registry,
+        "release": request.release.identity.release,
+        "publication_id": publication.publication_id,
+        "resource_version": publication.resource_version,
+        "verified_release_root": publication.verified_release_root,
+        "index_digest": publication.root_index_digest,
+        "target_tag": publication.target_tag,
+        "topology_digest": publication.topology_digest,
+        "required_placement_count": publication.required_placement_count,
+        "source_kind": publication.source_kind,
+        "object_count": graph.object_count,
+        "verification": "verified",
+    });
+    if !printer.json_if_active(&response) {
+        printer.success(&format!(
+            "Published verified {} -> {}",
+            publication.root_index_digest, reference
+        ));
+    }
+    Ok(())
+}
+
+fn read_release_sidecar(path: &Path) -> Result<Vec<u8>> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("reading signed release sidecar metadata {}", path.display()))?;
+    ensure!(metadata.is_file(), "signed release sidecar is not a file");
+    ensure!(
+        metadata.len() <= 4 * 1024 * 1024,
+        "signed release sidecar exceeds the 4 MiB limit"
+    );
+    let bytes = fs::read(path)
+        .with_context(|| format!("reading signed release sidecar {}", path.display()))?;
+    ensure!(
+        bytes.len() <= 4 * 1024 * 1024,
+        "signed release sidecar grew beyond the 4 MiB limit"
+    );
+    Ok(bytes)
+}
+
+fn validate_signature_input(path: &Path, release: &ContainerRelease) -> Result<()> {
+    let bytes = read_bounded_json_file(path, "Nix signature input")?;
+    let input = ContainerSignatureInput::from_canonical_json(&bytes)
+        .with_context(|| format!("validating Nix signature input {}", path.display()))?;
+    input
+        .validate_final_release(release)
+        .context("binding Nix signature input to the signed container release")
+}
+
+fn read_bounded_json_file(path: &Path, label: &str) -> Result<Vec<u8>> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("reading {label} metadata {}", path.display()))?;
+    ensure!(metadata.is_file(), "{label} is not a file");
+    ensure!(
+        metadata.len() <= 4 * 1024 * 1024,
+        "{label} exceeds the 4 MiB limit"
+    );
+    let bytes = fs::read(path).with_context(|| format!("reading {label} {}", path.display()))?;
+    ensure!(
+        bytes.len() <= 4 * 1024 * 1024,
+        "{label} grew beyond the 4 MiB limit"
+    );
+    Ok(bytes)
+}
+
+struct HubPublicationAdapter {
+    client: HubClient,
+}
+
+impl VerifiedPublicationHook for HubPublicationAdapter {
+    async fn begin(
+        &self,
+        request: &VerifiedPublicationRequest,
+        cancellation: &CancellationToken,
+    ) -> Result<VerifiedPublicationSession> {
+        ensure_publication_active(cancellation)?;
+        let container_release_json = to_canonical_json(&request.release)?;
+        let response = self
+            .client
+            .call_topology(
+                hub_rpc::BeginContainerPublication,
+                &hub_types::BeginContainerPublicationRequest {
+                    registry: request.registry.clone(),
+                    repository: request.repository.to_string(),
+                    container_release_json,
+                    target_tag: request.target_tag.clone().unwrap_or_default(),
+                    expected_tag_resource_version: request
+                        .expected_tag_version
+                        .clone()
+                        .unwrap_or_default(),
+                    expected_tag_digest: request
+                        .expected_tag_digest
+                        .map(|digest| digest.to_string())
+                        .unwrap_or_default(),
+                    idempotency_key: request.idempotency_key.clone(),
+                    target_kind: request.target_kind.clone(),
+                },
+            )
+            .await?;
+        publication_session(response)
+    }
+
+    async fn get(
+        &self,
+        publication_id: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<VerifiedPublicationSession> {
+        ensure_publication_active(cancellation)?;
+        let response = self
+            .client
+            .call_topology(
+                hub_rpc::GetContainerPublication,
+                &hub_types::GetContainerPublicationRequest {
+                    publication_id: publication_id.to_string(),
+                },
+            )
+            .await?;
+        publication_session(response)
+    }
+
+    async fn commit(
+        &self,
+        request: &VerifiedPublicationCommit,
+        cancellation: &CancellationToken,
+    ) -> Result<VerifiedPublicationResult> {
+        ensure_publication_active(cancellation)?;
+        let response = self
+            .client
+            .call_topology(
+                hub_rpc::CommitContainerPublication,
+                &hub_types::CommitContainerPublicationRequest {
+                    publication_id: request.publication_id.clone(),
+                    expected_resource_version: request.resource_version.clone(),
+                    idempotency_key: request.idempotency_key.clone(),
+                    confirmation_hash: request.confirmation_hash.to_string(),
+                },
+            )
+            .await?;
+        publication_result(response)
+    }
+
+    async fn abort(
+        &self,
+        publication_id: &str,
+        resource_version: &str,
+        idempotency_key: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        ensure_publication_active(cancellation)?;
+        let response = self
+            .client
+            .call_topology(
+                hub_rpc::AbortContainerPublication,
+                &hub_types::AbortContainerPublicationRequest {
+                    publication_id: publication_id.to_string(),
+                    expected_resource_version: resource_version.to_string(),
+                    idempotency_key: idempotency_key.to_string(),
+                },
+            )
+            .await?;
+        ensure!(
+            response.publication_id == publication_id && response.state == "aborted",
+            "Hub did not confirm the requested container publication abort"
+        );
+        Ok(())
+    }
+}
+
+fn publication_session(
+    publication: hub_types::ContainerPublication,
+) -> Result<VerifiedPublicationSession> {
+    ensure!(
+        !publication.publication_id.is_empty(),
+        "Hub returned a container publication without an id"
+    );
+    ensure!(
+        !publication.resource_version.is_empty(),
+        "Hub returned a container publication without a resource version"
+    );
+    ensure!(
+        !publication.state.is_empty(),
+        "Hub returned a container publication without a state"
+    );
+    let (topology_digest, required_placement_count, source_kind) =
+        publication_topology(&publication)?;
+    Ok(VerifiedPublicationSession {
+        publication_id: publication.publication_id,
+        resource_version: publication.resource_version,
+        expires_at: publication.expires_at,
+        state: publication.state,
+        confirmation_hash: Sha256Digest::parse(&publication.confirmation_hash)
+            .context("Hub returned an invalid publication confirmation hash")?,
+        topology_digest,
+        required_placement_count,
+        source_kind,
+    })
+}
+
+fn publication_result(
+    publication: hub_types::ContainerPublication,
+) -> Result<VerifiedPublicationResult> {
+    ensure!(
+        publication.state == "ready",
+        "Hub commit returned container publication state '{}'",
+        publication.state
+    );
+    ensure!(
+        !publication.verified_release_root.is_empty(),
+        "Hub ready publication omitted its verified release root"
+    );
+    let root_index_digest = Sha256Digest::parse(&publication.root_digest)
+        .context("Hub returned an invalid root index digest")?;
+    let verified_release_root = Sha256Digest::parse(&publication.verified_release_root)
+        .context("Hub returned an invalid verified release root")?;
+    ensure!(
+        verified_release_root == root_index_digest,
+        "Hub verified release root differs from its container index"
+    );
+    let (topology_digest, required_placement_count, source_kind) =
+        publication_topology(&publication)?;
+    Ok(VerifiedPublicationResult {
+        publication_id: publication.publication_id,
+        resource_version: publication.resource_version,
+        verified_release_root,
+        root_index_digest,
+        target_tag: (!publication.target_tag.is_empty()).then_some(publication.target_tag),
+        topology_digest,
+        required_placement_count,
+        source_kind,
+    })
+}
+
+fn publication_topology(
+    publication: &hub_types::ContainerPublication,
+) -> Result<(Sha256Digest, u64, String)> {
+    let topology_digest = Sha256Digest::parse(&publication.topology_digest)
+        .context("Hub returned an invalid publication topology digest")?;
+    let required_placement_count = u64::try_from(publication.required_placement_count)
+        .context("Hub returned a negative required placement count")?;
+    ensure!(
+        required_placement_count > 0,
+        "Hub returned a publication without required placements"
+    );
+    ensure!(
+        matches!(publication.source_kind.as_str(), "release" | "channel"),
+        "Hub returned invalid publication source kind '{}'",
+        publication.source_kind
+    );
+    Ok((
+        topology_digest,
+        required_placement_count,
+        publication.source_kind.clone(),
+    ))
+}
+
+async fn publish_verified(
+    hook: &impl VerifiedPublicationHook,
+    request: &VerifiedPublicationRequest,
+    cancellation: &CancellationToken,
+) -> Result<VerifiedPublicationResult> {
+    let begun = hook.begin(request, cancellation).await?;
+    let current = hook
+        .get(&begun.publication_id, cancellation)
+        .await
+        .context(
+            "publication began, but its current state could not be recovered; retry with the same --idempotency-key",
+        )?;
+    ensure!(
+        current.publication_id == begun.publication_id,
+        "Hub recovered a different container publication"
+    );
+    ensure!(
+        current.topology_digest == begun.topology_digest
+            && current.required_placement_count == begun.required_placement_count
+            && current.source_kind == begun.source_kind,
+        "Hub changed the frozen container publication topology"
+    );
+    if current.confirmation_hash != begun.confirmation_hash {
+        abort_confirmed_publication(hook, request, &current, cancellation).await?;
+        bail!("Hub changed the frozen container publication confirmation hash");
+    }
+    ensure!(
+        current.state != "aborted",
+        "container publication is already aborted"
+    );
+
+    let commit = VerifiedPublicationCommit {
+        publication_id: current.publication_id.clone(),
+        resource_version: current.resource_version.clone(),
+        idempotency_key: publication_retry_key(&request.idempotency_key, "commit"),
+        confirmation_hash: current.confirmation_hash,
+    };
+    match hook.commit(&commit, cancellation).await {
+        Ok(result) => validate_publication_result(request, &current, result),
+        Err(commit_error) => {
+            let recovered = hook
+                .get(&current.publication_id, cancellation)
+                .await
+                .with_context(|| {
+                    format!(
+                        "container publication commit failed ({commit_error:#}); its outcome is ambiguous, so it was not aborted; retry with the same --idempotency-key"
+                    )
+                })?;
+            ensure!(
+                recovered.publication_id == current.publication_id,
+                "Hub recovered a different container publication after commit failure"
+            );
+            ensure!(
+                recovered.confirmation_hash == current.confirmation_hash,
+                "Hub changed the frozen container publication after commit failure; the ambiguous publication was not aborted"
+            );
+            if recovered.state == "ready" {
+                let retry = VerifiedPublicationCommit {
+                    publication_id: recovered.publication_id.clone(),
+                    resource_version: recovered.resource_version.clone(),
+                    idempotency_key: commit.idempotency_key,
+                    confirmation_hash: recovered.confirmation_hash,
+                };
+                return hook
+                    .commit(&retry, cancellation)
+                    .await
+                    .and_then(|result| validate_publication_result(request, &recovered, result))
+                    .with_context(|| {
+                        format!(
+                            "container publication committed, but result recovery failed after the initial error: {commit_error:#}"
+                        )
+                    });
+            }
+            if recovered.state != "aborted" {
+                abort_confirmed_publication(hook, request, &recovered, cancellation)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "container publication commit failed ({commit_error:#}) and safe abort also failed"
+                        )
+                    })?;
+            }
+            Err(commit_error).context("container publication was not committed and is aborted")
+        }
+    }
+}
+
+async fn abort_confirmed_publication(
+    hook: &impl VerifiedPublicationHook,
+    request: &VerifiedPublicationRequest,
+    session: &VerifiedPublicationSession,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    ensure!(
+        session.state != "ready",
+        "refusing to abort an already committed container publication"
+    );
+    if session.state == "aborted" {
+        return Ok(());
+    }
+    hook.abort(
+        &session.publication_id,
+        &session.resource_version,
+        &publication_retry_key(&request.idempotency_key, "abort"),
+        cancellation,
     )
     .await
 }
 
-async fn publish(
-    name: &str,
-    reference: &str,
-    platform: Option<&str>,
-    hub: Option<&str>,
-    token: Option<&str>,
-    printer: &Printer,
-) -> Result<()> {
-    validate_definition_name(name)?;
-    let reference = RegistryReference::parse(reference)?;
-    let selector = parse_platform(platform)?;
-    let nix = NixRunner::new(0, printer.mode() == OutputMode::Quiet)?;
-    let produced = build_local(
-        &nix,
-        name,
-        &selector,
-        ArtifactFormat::OciLayout,
-        None,
-        printer,
-    )?;
-    push_layout(
-        &produced.store_path,
-        name,
-        &reference,
-        selector,
-        hub,
-        token,
-        printer,
-    )
-    .await
+fn publication_retry_key(base: &str, operation: &str) -> String {
+    format!("{base}:{operation}")
+}
+
+fn validate_publication_result(
+    request: &VerifiedPublicationRequest,
+    session: &VerifiedPublicationSession,
+    result: VerifiedPublicationResult,
+) -> Result<VerifiedPublicationResult> {
+    ensure!(
+        result.verified_release_root == request.release.oci.index.digest
+            && result.root_index_digest == request.release.oci.index.digest,
+        "Hub committed a verified release root different from the signed sidecar"
+    );
+    ensure!(
+        result.target_tag == request.target_tag,
+        "Hub committed a different target tag than requested"
+    );
+    ensure!(
+        result.topology_digest == session.topology_digest
+            && result.required_placement_count == session.required_placement_count,
+        "Hub committed a different placement topology than the frozen publication"
+    );
+    ensure!(
+        result.source_kind == request.target_kind && result.source_kind == session.source_kind,
+        "Hub committed a different tag source kind than requested"
+    );
+    Ok(result)
+}
+
+fn ensure_publication_active(cancellation: &CancellationToken) -> Result<()> {
+    ensure!(
+        !cancellation.is_cancelled(),
+        "container publication cancelled"
+    );
+    Ok(())
 }
 
 async fn pull_layout(
@@ -528,13 +1152,13 @@ async fn pull_layout(
 
 async fn push_layout(
     source: &Path,
-    source_label: &str,
     reference: &RegistryReference,
     platform: PlatformSelector,
+    mount_from: &[RepositoryName],
     hub: Option<&str>,
     token: Option<&str>,
     printer: &Printer,
-) -> Result<()> {
+) -> Result<aos_oci::PushResult> {
     let client = registry_client(reference, hub, token).await?;
     let cancellation = CancellationToken::new();
     let signal = cancellation_on_signal(cancellation.clone());
@@ -547,18 +1171,27 @@ async fn push_layout(
         cancellation,
         events,
     };
-    let result = client.push(reference, &options).await;
+    let result = client
+        .push_with_mounts(reference, &options, mount_from)
+        .await;
     drop(options);
     finish_reporter(reporter).await?;
     signal.abort();
-    let published = result?;
+    result
+}
 
+fn render_push_result(
+    source_label: &str,
+    reference: &RegistryReference,
+    published: &aos_oci::PushResult,
+    printer: &Printer,
+) -> Result<()> {
     let response = json!({
         "schema": OUTPUT_SCHEMA,
         "operation": "push",
         "source": source_label,
         "reference": reference.to_string(),
-        "platform": platform,
+        "platform": published.image.platform,
         "index_digest": published.published_index_digest,
         "manifest_digest": published.image.manifest.digest,
     });
@@ -568,19 +1201,64 @@ async fn push_layout(
     Ok(())
 }
 
+fn parse_mount_sources(
+    values: &[String],
+    reference: &RegistryReference,
+) -> Result<Vec<RepositoryName>> {
+    let mut sources = values
+        .iter()
+        .map(|value| RepositoryName::parse(value).map_err(anyhow::Error::from))
+        .collect::<Result<Vec<_>>>()?;
+    sources.retain(|source| source != reference.repository());
+    sources.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    sources.dedup();
+    Ok(sources)
+}
+
 async fn registry_client(
     reference: &RegistryReference,
     hub: Option<&str>,
     token: Option<&str>,
 ) -> Result<RegistryClient> {
+    let (origin, token) = registry_access(reference, hub, token).await?;
+    RegistryClient::new(reference, Some(&origin), token)
+}
+
+async fn registry_access(
+    reference: &RegistryReference,
+    hub: Option<&str>,
+    token: Option<&str>,
+) -> Result<(String, Option<String>)> {
     let default_origin = reference.default_origin()?.to_string();
     let selected_origin = hub.unwrap_or(&default_origin);
     if token.is_none() {
         crate::commands::hub_auth::prepare_registry_profile(selected_origin).await?;
     }
-    let (origin, token) =
-        crate::commands::hub_auth::resolve_registry_access(hub, token, &default_origin)?;
-    RegistryClient::new(reference, Some(&origin), token)
+    crate::commands::hub_auth::resolve_registry_access(hub, token, &default_origin)
+}
+
+fn same_http_origin(left: &str, right: &str) -> Result<bool> {
+    let left = url::Url::parse(left).context("parsing OCI Distribution origin")?;
+    let right = url::Url::parse(right).context("parsing Hub control origin")?;
+    Ok(left.scheme() == right.scheme()
+        && left.host() == right.host()
+        && left.port_or_known_default() == right.port_or_known_default())
+}
+
+fn publication_registry_token(
+    registry_origin: &str,
+    control_origin: &str,
+    explicit_registry_token: Option<&str>,
+    control_token: &str,
+) -> Result<String> {
+    if let Some(token) = explicit_registry_token {
+        return Ok(token.to_string());
+    }
+    ensure!(
+        same_http_origin(registry_origin, control_origin)?,
+        "OCI Distribution origin {registry_origin} differs from Hub control origin {control_origin}; provide a separate --registry-token"
+    );
+    Ok(control_token.to_string())
 }
 
 struct BuildOutput {
@@ -1062,6 +1740,101 @@ async fn finish_reporter(reporter: Option<JoinHandle<()>>) -> Result<()> {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use aos_oci_types::{
+        Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA,
+        ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
+        ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
+        ContainerReleaseEvidence, ContainerReleaseIdentity, Descriptor, MediaType,
+        NixDefinitionIdentity, NixOutputIdentity, Platform,
+    };
+    use axum::Router;
+    use axum::body::{Body, to_bytes};
+    use axum::extract::State;
+    use axum::http::{Request, Response, StatusCode};
+    use axum::routing::any;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    struct MockPublicationHook {
+        calls: Mutex<Vec<&'static str>>,
+        fail_commit: bool,
+    }
+
+    struct ConnectPublicationState {
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl MockPublicationHook {
+        fn session(&self) -> VerifiedPublicationSession {
+            VerifiedPublicationSession {
+                publication_id: "publication-1".to_string(),
+                resource_version: "2".to_string(),
+                expires_at: 1_800_000_000,
+                state: "preparing".to_string(),
+                confirmation_hash: Sha256Digest::digest(b"confirmation"),
+                topology_digest: Sha256Digest::digest(b"topology"),
+                required_placement_count: 2,
+                source_kind: "channel".to_string(),
+            }
+        }
+
+        fn record(&self, call: &'static str) {
+            self.calls.lock().expect("call log").push(call);
+        }
+    }
+
+    impl VerifiedPublicationHook for MockPublicationHook {
+        async fn begin(
+            &self,
+            _request: &VerifiedPublicationRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<VerifiedPublicationSession> {
+            self.record("begin");
+            Ok(self.session())
+        }
+
+        async fn get(
+            &self,
+            _publication_id: &str,
+            _cancellation: &CancellationToken,
+        ) -> Result<VerifiedPublicationSession> {
+            self.record("get");
+            Ok(self.session())
+        }
+
+        async fn commit(
+            &self,
+            _request: &VerifiedPublicationCommit,
+            _cancellation: &CancellationToken,
+        ) -> Result<VerifiedPublicationResult> {
+            self.record("commit");
+            if self.fail_commit {
+                bail!("deliberate commit rejection");
+            }
+            let request = publication_request();
+            Ok(VerifiedPublicationResult {
+                publication_id: "publication-1".to_string(),
+                resource_version: "3".to_string(),
+                verified_release_root: request.release.oci.index.digest,
+                root_index_digest: request.release.oci.index.digest,
+                target_tag: request.target_tag,
+                topology_digest: Sha256Digest::digest(b"topology"),
+                required_placement_count: 2,
+                source_kind: "channel".to_string(),
+            })
+        }
+
+        async fn abort(
+            &self,
+            _publication_id: &str,
+            _resource_version: &str,
+            _idempotency_key: &str,
+            _cancellation: &CancellationToken,
+        ) -> Result<()> {
+            self.record("abort");
+            Ok(())
+        }
+    }
 
     #[test]
     fn exact_path_wins_and_missing_slash_values_are_definitions() {
@@ -1091,6 +1864,54 @@ mod tests {
                 ArtifactFormat::OciLayout,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn credential_reuse_requires_the_exact_same_http_origin() {
+        assert!(
+            same_http_origin("https://hub.example", "https://hub.example/").expect("same origin")
+        );
+        assert!(
+            !same_http_origin("https://oci.example", "https://hub.example")
+                .expect("different host")
+        );
+        assert!(
+            !same_http_origin("https://hub.example", "http://hub.example")
+                .expect("different scheme")
+        );
+        assert!(
+            !same_http_origin("https://hub.example:8443", "https://hub.example")
+                .expect("different port")
+        );
+        assert_eq!(
+            publication_registry_token(
+                "https://hub.example",
+                "https://hub.example/",
+                None,
+                "hub-secret",
+            )
+            .expect("same-origin credential"),
+            "hub-secret"
+        );
+        assert!(
+            publication_registry_token(
+                "https://oci.example",
+                "https://hub.example",
+                None,
+                "hub-secret",
+            )
+            .is_err()
+        );
+        assert_eq!(
+            publication_registry_token(
+                "https://oci.example",
+                "https://hub.example",
+                Some("registry-secret"),
+                "hub-secret",
+            )
+            .expect("explicit registry credential"),
+            "registry-secret"
         );
     }
 
@@ -1157,5 +1978,241 @@ mod tests {
         let output = directory.path().join("image.oci");
         std::os::unix::fs::symlink("missing", &output).expect("broken output symlink");
         assert!(prepare_pull_output(&output, ArtifactFormat::OciLayout, true).is_err());
+    }
+
+    #[tokio::test]
+    async fn verified_publication_uses_begin_get_and_commit_in_order() {
+        let hook = MockPublicationHook {
+            calls: Mutex::new(Vec::new()),
+            fail_commit: false,
+        };
+        let request = publication_request();
+        let result = publish_verified(&hook, &request, &CancellationToken::new())
+            .await
+            .expect("verified publication");
+        assert_eq!(result.root_index_digest, request.release.oci.index.digest);
+        assert_eq!(result.required_placement_count, 2);
+        assert_eq!(result.source_kind, "channel");
+        assert_eq!(
+            *hook.calls.lock().expect("call log"),
+            ["begin", "get", "commit"]
+        );
+    }
+
+    #[tokio::test]
+    async fn verified_publication_aborts_only_after_confirming_nonterminal_state() {
+        let hook = MockPublicationHook {
+            calls: Mutex::new(Vec::new()),
+            fail_commit: true,
+        };
+        let error = publish_verified(&hook, &publication_request(), &CancellationToken::new())
+            .await
+            .expect_err("deliberate commit failure");
+        assert!(error.to_string().contains("aborted"));
+        assert_eq!(
+            *hook.calls.lock().expect("call log"),
+            ["begin", "get", "commit", "get", "abort"]
+        );
+    }
+
+    #[tokio::test]
+    async fn hub_adapter_uses_typed_connect_lifecycle_and_control_credential() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Connect listener");
+        let origin = format!(
+            "http://{}/",
+            listener.local_addr().expect("listener address")
+        );
+        let state = Arc::new(ConnectPublicationState {
+            calls: Mutex::new(Vec::new()),
+        });
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .fallback(any(connect_publication_response))
+                    .with_state(server_state),
+            )
+            .await
+            .expect("serve Connect fixture");
+        });
+        let adapter = HubPublicationAdapter {
+            client: HubClient::connect_with_token(&origin, "control-secret").expect("Hub client"),
+        };
+        let request = publication_request();
+        let result = publish_verified(&adapter, &request, &CancellationToken::new())
+            .await
+            .expect("Connect publication");
+        assert_eq!(result.root_index_digest, request.release.oci.index.digest);
+        assert_eq!(result.required_placement_count, 2);
+        assert_eq!(result.source_kind, "channel");
+        assert_eq!(
+            *state.calls.lock().expect("Connect calls"),
+            [
+                "/aos.hub.v1.ContainerService/BeginContainerPublication",
+                "/aos.hub.v1.ContainerService/GetContainerPublication",
+                "/aos.hub.v1.ContainerService/CommitContainerPublication",
+            ]
+        );
+        task.abort();
+    }
+
+    async fn connect_publication_response(
+        State(state): State<Arc<ConnectPublicationState>>,
+        request: Request<Body>,
+    ) -> Response<Body> {
+        assert_eq!(
+            request
+                .headers()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer control-secret")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("connect-protocol-version")
+                .and_then(|value| value.to_str().ok()),
+            Some("1")
+        );
+        let path = request.uri().path().to_string();
+        let body = to_bytes(request.into_body(), 4 * 1024 * 1024)
+            .await
+            .expect("Connect request body");
+        let body: Value = serde_json::from_slice(&body).expect("Connect request JSON");
+        if path.ends_with("/BeginContainerPublication") {
+            assert_eq!(body["registry"], "core");
+            assert_eq!(body["repository"], "aos");
+            assert_eq!(body["targetTag"], "stable");
+            assert_eq!(body["targetKind"], "channel");
+            assert_eq!(body["idempotencyKey"], "release-1");
+            assert!(body["containerReleaseJson"].is_string());
+        } else if path.ends_with("/CommitContainerPublication") {
+            assert_eq!(body["expectedResourceVersion"], "2");
+            assert_eq!(body["idempotencyKey"], "release-1:commit");
+        }
+        state
+            .calls
+            .lock()
+            .expect("Connect calls")
+            .push(path.clone());
+
+        let ready = path.ends_with("/CommitContainerPublication");
+        let root = publication_request().release.oci.index.digest.to_string();
+        let response = json!({
+            "publicationId": "publication-1",
+            "registry": "core",
+            "repository": "aos",
+            "rootDigest": root,
+            "catalogDigest": Sha256Digest::digest(b"catalog").to_string(),
+            "state": if ready { "ready" } else { "preparing" },
+            "targetTag": "stable",
+            "resourceVersion": if ready { "3" } else { "2" },
+            "expiresAt": "1800000000",
+            "createdAt": "1700000000",
+            "committedAt": if ready { "1700000001" } else { "0" },
+            "confirmationHash": Sha256Digest::digest(b"confirmation").to_string(),
+            "verifiedReleaseRoot": if ready { root } else { String::new() },
+            "topologyDigest": Sha256Digest::digest(b"topology").to_string(),
+            "requiredPlacementCount": "2",
+            "sourceKind": "channel",
+        });
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&response).expect("Connect response JSON"),
+            ))
+            .expect("Connect response")
+    }
+
+    fn publication_request() -> VerifiedPublicationRequest {
+        VerifiedPublicationRequest {
+            registry: "core".to_string(),
+            repository: RepositoryName::parse("aos").expect("repository"),
+            release: release_fixture(),
+            target_tag: Some("stable".to_string()),
+            target_kind: "channel".to_string(),
+            expected_tag_version: None,
+            expected_tag_digest: None,
+            idempotency_key: "release-1".to_string(),
+        }
+    }
+
+    fn release_fixture() -> ContainerRelease {
+        let mut platform_manifest = descriptor(MediaType::OciImageManifest, "manifest");
+        platform_manifest.platform = Some(Platform::linux_amd64());
+        ContainerRelease {
+            schema_version: 1,
+            media_type: MediaType::AosContainerRelease,
+            identity: ContainerReleaseIdentity {
+                release: "1.0.0".to_string(),
+                package: "aos".to_string(),
+                package_version: "0.1.0".to_string(),
+                image: "aos".to_string(),
+            },
+            oci: ContainerOciRelease {
+                index: descriptor(MediaType::OciImageIndex, "index"),
+                platform_manifests: vec![platform_manifest],
+            },
+            nix: ContainerNixProvenance {
+                definition: NixDefinitionIdentity {
+                    attribute: "containerImages.aos".to_string(),
+                    derivation_path:
+                        "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container.drv".to_string(),
+                },
+                output: NixOutputIdentity {
+                    name: "out".to_string(),
+                    store_path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container"
+                        .to_string(),
+                },
+                closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
+            },
+            qualification: ContainerEvidenceQualification {
+                schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
+                mapping: ContainerEvidenceMappingQualification {
+                    complete: true,
+                    unknown_paths: Vec::new(),
+                },
+                corresponding_source: ContainerEvidenceQualificationCheck {
+                    complete: true,
+                    unknown_paths: Vec::new(),
+                },
+                licensing: ContainerEvidenceQualificationCheck {
+                    complete: true,
+                    unknown_paths: Vec::new(),
+                },
+                ready_for_verified_publication: true,
+            },
+            evidence: ContainerReleaseEvidence {
+                sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
+                source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
+                license: evidence_descriptor(MediaType::AosLicenseReport, "license"),
+                provenance: evidence_descriptor(MediaType::InTotoJson, "provenance"),
+                signature: evidence_descriptor(MediaType::DsseEnvelope, "signature"),
+            },
+        }
+    }
+
+    fn evidence_descriptor(artifact_type: MediaType, label: &str) -> Descriptor {
+        Descriptor {
+            artifact_type: Some(artifact_type),
+            ..descriptor(MediaType::OciImageManifest, label)
+        }
+    }
+
+    fn descriptor(media_type: MediaType, label: &str) -> Descriptor {
+        Descriptor {
+            media_type,
+            digest: Sha256Digest::digest(label.as_bytes()),
+            size: label.len() as u64,
+            urls: Vec::new(),
+            annotations: Annotations::new(),
+            data: None,
+            artifact_type: None,
+            platform: None,
+        }
     }
 }

@@ -56,6 +56,10 @@ use anyhow::{Context, Result, bail};
 use aos_cache::AuthOptions;
 use aos_core::nar::info as narinfo;
 use aos_core::nix::aos_nix_env;
+use aos_oci_types::{
+    CONTAINER_RELEASE_SIDECAR_PATH, ContainerRelease, ContainerSignatureInput,
+    limits::MAX_JSON_BYTES,
+};
 use clap::ValueEnum as _;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -13753,8 +13757,19 @@ pub struct ReleaseTreeOptions {
     pub jobs: Option<usize>,
     /// Optional package publish payload to run under the release lock.
     pub store_publish: Option<ReleaseStorePublish>,
+    /// Canonical signed container sidecar validated against its Nix input.
+    pub container_release: Option<ContainerReleaseAttachment>,
     /// Staged cache retention after a successful release.
     pub cache_max_age_days: u64,
+}
+
+/// Validated final container sidecar bytes to attach to one signed release.
+#[derive(Debug, Clone)]
+pub struct ContainerReleaseAttachment {
+    /// Strict parsed sidecar used for release identity checks and reporting.
+    pub release: ContainerRelease,
+    /// Exact canonical bytes committed to [`CONTAINER_RELEASE_SIDECAR_PATH`].
+    pub canonical_bytes: Vec<u8>,
 }
 
 /// Optional `--store-path` publish payload carried into the locked release.
@@ -13848,8 +13863,10 @@ impl Drop for ReleaseLock {
 ///
 /// When `--store-path` is given, first publishes that store path into the
 /// release metadata under the release version (committed and SSH-signed),
-/// including explicit `--source-drv` provenance when provided, then
-/// delegates to [`release_registry_tree`] to create the signed
+/// including explicit `--source-drv` provenance when provided. Paired
+/// `--container-release` and `--container-signature-input` paths bind and
+/// attach one externally finalized canonical container sidecar. The command
+/// then delegates to [`release_registry_tree`] to create the signed
 /// release tag, generate pack artifacts, and run the optional cache,
 /// channel, and upload steps. `--dry-run` prints the plan without changing
 /// anything.
@@ -13866,6 +13883,8 @@ impl Drop for ReleaseLock {
 pub async fn release(
     config: &ApmConfig,
     semver: &str,
+    container_release: Option<&Path>,
+    container_signature_input: Option<&Path>,
     store_path: Option<&str>,
     name: Option<&str>,
     version_override: Option<&str>,
@@ -13907,6 +13926,8 @@ pub async fn release(
 
     let version = semver::Version::parse(semver)
         .with_context(|| format!("parsing release semver '{semver}'"))?;
+    let container_release =
+        load_container_release_attachment(&version, container_release, container_signature_input)?;
     if let Some(store_path) = store_path {
         let info = introspect_store_path(store_path)?;
         validate_store_path_release_policy(&info)?;
@@ -13971,11 +13992,87 @@ pub async fn release(
         resume,
         jobs,
         store_publish,
+        container_release,
         cache_max_age_days: registry_cache_max_age_days(config, &registry_name),
     };
 
     release_registry_tree(&dir, &registry_name, &options, printer).await?;
     Ok(())
+}
+
+fn load_container_release_attachment(
+    version: &semver::Version,
+    release_path: Option<&Path>,
+    signature_input_path: Option<&Path>,
+) -> Result<Option<ContainerReleaseAttachment>> {
+    let (release_path, signature_input_path) = match (release_path, signature_input_path) {
+        (None, None) => return Ok(None),
+        (Some(_), None) => {
+            bail!("--container-release requires the paired --container-signature-input")
+        }
+        (None, Some(_)) => {
+            bail!("--container-signature-input requires the paired --container-release")
+        }
+        (Some(release_path), Some(signature_input_path)) => (release_path, signature_input_path),
+    };
+
+    let canonical_bytes = read_bounded_container_json(release_path, "container release sidecar")?;
+    let release = ContainerRelease::from_canonical_json(&canonical_bytes)
+        .context("validating --container-release")?;
+    let signature_input_bytes =
+        read_bounded_container_json(signature_input_path, "container signature input")?;
+    let signature_input = ContainerSignatureInput::from_canonical_json(&signature_input_bytes)
+        .context("validating --container-signature-input")?;
+    signature_input
+        .validate_final_release(&release)
+        .context("binding container release to its Nix signature input")?;
+
+    let release_version = version.to_string();
+    if release.identity.release != release_version {
+        bail!(
+            "container release identity '{}' does not match apr release semver '{}'",
+            release.identity.release,
+            release_version,
+        );
+    }
+    if release.identity.package != "aos" || release.identity.image != "aos" {
+        bail!("the initial container release policy requires package 'aos' and image 'aos'");
+    }
+    if release.nix.definition.attribute != "containerImages.aos" {
+        bail!("the initial container release policy requires Nix attribute 'containerImages.aos'");
+    }
+
+    Ok(Some(ContainerReleaseAttachment {
+        release,
+        canonical_bytes,
+    }))
+}
+
+fn read_bounded_container_json(path: &Path, label: &str) -> Result<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("reading {label} metadata {}", path.display()))?;
+    if !metadata.file_type().is_file() {
+        bail!(
+            "{label} is not a non-symlink regular file: {}",
+            path.display()
+        );
+    }
+    let size = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+    if size > MAX_JSON_BYTES {
+        bail!(
+            "{label} is {size} bytes; the limit is {MAX_JSON_BYTES} bytes: {}",
+            path.display()
+        );
+    }
+    let bytes = fs::read(path).with_context(|| format!("reading {label} {}", path.display()))?;
+    if bytes.len() > MAX_JSON_BYTES {
+        bail!(
+            "{label} grew to {} bytes; the limit is {MAX_JSON_BYTES} bytes: {}",
+            bytes.len(),
+            path.display()
+        );
+    }
+    Ok(bytes)
 }
 
 /// Publish a release's `--store-path` into the registry tree.
@@ -14027,9 +14124,10 @@ async fn publish_release_store_path(
 ///
 /// Under an exclusive release lock, this: rejects up front a release whose
 /// tag already exists (unless `resume`), so a doomed release fails before any
-/// mutating work; optionally publishes `--store-path` (whose package version
-/// comes from the store path, independent of the release tag); optionally
-/// commits a `registry.toml` cache pointer; creates the signed semver release
+/// mutating work; optionally commits a canonical container sidecar and
+/// publishes `--store-path` (whose package version comes from the store path,
+/// independent of the release tag); optionally commits a `registry.toml`
+/// cache pointer; creates the signed semver release
 /// tag at HEAD (or reuses an existing tag there when `resume` is set);
 /// generates the release pack artifacts under `.git/releases/<version>/` — a
 /// full pack for major/minor releases plus zstd-compressed thin deltas from
@@ -14076,6 +14174,7 @@ pub async fn release_registry_tree(
     objectstore::assert_sha256(dir)?;
     ensure_release_worktree_clean(dir)?;
     ensure_release_tag_available(dir, &options.version, options.resume)?;
+    attach_container_release(dir, registry_name, options, printer)?;
 
     if let Some(publish) = &options.store_publish {
         publish_release_store_path(publish, &options.signing_key, printer).await?;
@@ -14514,6 +14613,9 @@ fn static_cache_report_json(report: &nixcache::StaticCacheReport) -> serde_json:
 
 fn release_plan_steps_json(options: &ReleaseTreeOptions) -> Vec<&'static str> {
     let mut steps = vec!["ensure_clean_worktree"];
+    if options.container_release.is_some() {
+        steps.push("commit_container_release_sidecar");
+    }
     if options.store_publish.is_some() {
         steps.push("publish_store_path");
     }
@@ -14550,6 +14652,9 @@ fn print_release_plan(
     printer.kv("Directory", &dir.display().to_string());
     printer.kv("Release", &options.version.to_string());
     printer.plain("- ensure registry working tree is clean");
+    if options.container_release.is_some() {
+        printer.plain("- commit canonical containers/v1/index.json with the release signing key");
+    }
     if options.store_publish.is_some() {
         printer.plain("- publish store path into release metadata");
     }
@@ -14575,6 +14680,148 @@ fn print_release_plan(
     if !options.upload_urls.is_empty() {
         printer.plain("- upload static git origin (immutable objects first, refs last)");
     }
+}
+
+fn attach_container_release(
+    dir: &Path,
+    registry_name: &str,
+    options: &ReleaseTreeOptions,
+    printer: &Printer,
+) -> Result<()> {
+    let Some(attachment) = &options.container_release else {
+        return Ok(());
+    };
+
+    if let Some(tagged_commit) = existing_release_tag_commit(dir, &options.version)? {
+        if !options.resume {
+            bail!(
+                "release tag {} already exists; container sidecar attachment requires --resume",
+                options.version
+            );
+        }
+        let head = git(dir, &["rev-parse", "HEAD"])?;
+        if tagged_commit != head {
+            bail!(
+                "release tag {} points at {}, but HEAD is {}; refusing to mutate a divergent resume",
+                options.version,
+                tagged_commit,
+                head,
+            );
+        }
+        let tagged_bytes = crate::registry::repo::read_blob_at_blocking(
+            dir,
+            &tagged_commit,
+            CONTAINER_RELEASE_SIDECAR_PATH,
+        )?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "release tag {} does not contain {}; refusing container resume",
+                options.version,
+                CONTAINER_RELEASE_SIDECAR_PATH,
+            )
+        })?;
+        if tagged_bytes != attachment.canonical_bytes {
+            bail!(
+                "release tag {} contains different {} bytes; refusing container resume",
+                options.version,
+                CONTAINER_RELEASE_SIDECAR_PATH,
+            );
+        }
+        printer.info(&format!(
+            "Release tag {} already contains the requested container sidecar; resuming.",
+            options.version
+        ));
+        return Ok(());
+    }
+
+    let path = dir.join(CONTAINER_RELEASE_SIDECAR_PATH);
+    if path.exists() {
+        let existing_bytes =
+            read_bounded_container_json(&path, "committed container release sidecar")?;
+        if existing_bytes == attachment.canonical_bytes {
+            let path_commit = git(
+                dir,
+                &[
+                    "log",
+                    "-1",
+                    "--format=%H",
+                    "--",
+                    CONTAINER_RELEASE_SIDECAR_PATH,
+                ],
+            )?;
+            if path_commit.is_empty() {
+                bail!(
+                    "{} exists but is not committed; refusing container release retry",
+                    CONTAINER_RELEASE_SIDECAR_PATH
+                );
+            }
+            let committed_bytes = crate::registry::repo::read_blob_at_blocking(
+                dir,
+                &path_commit,
+                CONTAINER_RELEASE_SIDECAR_PATH,
+            )?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "commit {path_commit} does not contain {}; refusing container release retry",
+                    CONTAINER_RELEASE_SIDECAR_PATH
+                )
+            })?;
+            if committed_bytes != attachment.canonical_bytes {
+                bail!(
+                    "working-tree {} does not match its introducing commit {path_commit}",
+                    CONTAINER_RELEASE_SIDECAR_PATH
+                );
+            }
+            let trusted_key = derive_trust_key(registry_name, &options.signing_key)?;
+            if !crate::security::verify_commit_signature(
+                dir,
+                &path_commit,
+                std::slice::from_ref(&trusted_key),
+            )? {
+                bail!(
+                    "commit {path_commit} containing {} is not signed by the selected release key",
+                    CONTAINER_RELEASE_SIDECAR_PATH
+                );
+            }
+            printer.info(&format!(
+                "Canonical container sidecar is already committed at {path_commit}; continuing release {}.",
+                options.version
+            ));
+            return Ok(());
+        }
+
+        let existing = ContainerRelease::from_canonical_json(&existing_bytes)
+            .context("validating the existing committed container sidecar before replacement")?;
+        if existing.identity.release == attachment.release.identity.release {
+            bail!(
+                "committed {} has different bytes for release {}; refusing container release retry",
+                CONTAINER_RELEASE_SIDECAR_PATH,
+                options.version
+            );
+        }
+    }
+
+    let parent = path.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "container release sidecar path has no parent: {}",
+            path.display()
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("creating container release directory {}", parent.display()))?;
+    fs::write(&path, &attachment.canonical_bytes)
+        .with_context(|| format!("staging canonical container release {}", path.display()))?;
+    commit_registry_paths(
+        dir,
+        &format!("registry: attach container release {}", options.version),
+        &[path],
+        Some(&options.signing_key),
+    )?;
+    printer.success(&format!(
+        "Attached canonical container sidecar for release {}.",
+        options.version
+    ));
+    Ok(())
 }
 
 /// Require a clean working tree before releasing; bare repositories pass
@@ -15336,6 +15583,14 @@ mod tests {
     use crate::types::{
         ApmSettings, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot, ProfileScope, RegistryConfig,
         RegistryUploadAuthConfig,
+    };
+    use aos_oci_types::{
+        Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
+        CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerEvidenceMappingQualification,
+        ContainerEvidenceQualification, ContainerEvidenceQualificationCheck,
+        ContainerNixProvenance, ContainerOciRelease, ContainerReleaseEvidence,
+        ContainerReleaseIdentity, ContainerSignatureInputEvidence, Descriptor, MediaType,
+        NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest, to_canonical_json,
     };
     use std::fs;
     use tempfile::TempDir;
@@ -16306,8 +16561,99 @@ mod tests {
             resume: false,
             jobs: None,
             store_publish: None,
+            container_release: None,
             cache_max_age_days: 30,
         }
+    }
+
+    fn container_release_inputs(version: &str) -> (ContainerRelease, ContainerSignatureInput) {
+        fn descriptor(media_type: MediaType, label: &str) -> Descriptor {
+            Descriptor {
+                media_type,
+                digest: Sha256Digest::digest(label.as_bytes()),
+                size: u64::try_from(label.len()).expect("fixture size"),
+                urls: Vec::new(),
+                annotations: Annotations::new(),
+                data: None,
+                artifact_type: None,
+                platform: None,
+            }
+        }
+
+        fn evidence_descriptor(artifact_type: MediaType, label: &str) -> Descriptor {
+            Descriptor {
+                artifact_type: Some(artifact_type),
+                ..descriptor(MediaType::OciImageManifest, label)
+            }
+        }
+
+        let mut manifest = descriptor(MediaType::OciImageManifest, "manifest");
+        manifest.platform = Some(Platform::linux_amd64());
+        let qualification = ContainerEvidenceQualification {
+            schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
+            mapping: ContainerEvidenceMappingQualification {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            corresponding_source: ContainerEvidenceQualificationCheck {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            licensing: ContainerEvidenceQualificationCheck {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            ready_for_verified_publication: true,
+        };
+        let release = ContainerRelease {
+            schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
+            media_type: MediaType::AosContainerRelease,
+            identity: ContainerReleaseIdentity {
+                release: version.to_string(),
+                package: "aos".to_string(),
+                package_version: "0.1.0".to_string(),
+                image: "aos".to_string(),
+            },
+            oci: ContainerOciRelease {
+                index: descriptor(MediaType::OciImageIndex, "index"),
+                platform_manifests: vec![manifest],
+            },
+            nix: ContainerNixProvenance {
+                definition: NixDefinitionIdentity {
+                    attribute: "containerImages.aos".to_string(),
+                    derivation_path:
+                        "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container.drv".to_string(),
+                },
+                output: NixOutputIdentity {
+                    name: "out".to_string(),
+                    store_path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container"
+                        .to_string(),
+                },
+                closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
+            },
+            qualification: qualification.clone(),
+            evidence: ContainerReleaseEvidence {
+                sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
+                source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
+                license: evidence_descriptor(MediaType::AosLicenseReport, "license"),
+                provenance: evidence_descriptor(MediaType::InTotoJson, "provenance"),
+                signature: evidence_descriptor(MediaType::DsseEnvelope, "signature"),
+            },
+        };
+        let input = ContainerSignatureInput {
+            schema: CONTAINER_SIGNATURE_INPUT_SCHEMA.to_string(),
+            identity: release.identity.clone(),
+            oci: release.oci.clone(),
+            nix: release.nix.clone(),
+            evidence: ContainerSignatureInputEvidence {
+                sbom: release.evidence.sbom.clone(),
+                source: release.evidence.source.clone(),
+                license: release.evidence.license.clone(),
+                provenance: release.evidence.provenance.clone(),
+            },
+            qualification,
+        };
+        (release, input)
     }
 
     fn release_policy_info(path: &Path, references: Vec<String>) -> StorePathInfo {
@@ -17000,6 +17346,131 @@ mod tests {
             format!("{:#}", validate_release_options(&options).unwrap_err())
                 .contains("--no-skip requires an upload destination")
         );
+    }
+
+    #[test]
+    fn container_release_attachment_requires_paired_canonical_inputs() {
+        let tmp = TempDir::new().unwrap();
+        let release_path = tmp.path().join("containers-v1-index.json");
+        let input_path = tmp.path().join("signature-input.json");
+        let version = semver::Version::parse("1.0.0").unwrap();
+
+        assert!(
+            load_container_release_attachment(&version, None, None)
+                .unwrap()
+                .is_none()
+        );
+
+        let error = load_container_release_attachment(&version, Some(&release_path), None)
+            .expect_err("missing signature input");
+        assert!(format!("{error:#}").contains("paired --container-signature-input"));
+        let error = load_container_release_attachment(&version, None, Some(&input_path))
+            .expect_err("missing release sidecar");
+        assert!(format!("{error:#}").contains("paired --container-release"));
+
+        let (release, input) = container_release_inputs("1.0.0");
+        fs::write(&release_path, serde_json::to_vec_pretty(&release).unwrap()).unwrap();
+        fs::write(&input_path, to_canonical_json(&input).unwrap()).unwrap();
+        let error =
+            load_container_release_attachment(&version, Some(&release_path), Some(&input_path))
+                .expect_err("noncanonical sidecar");
+        assert!(format!("{error:#}").contains("canonical JSON"));
+    }
+
+    #[test]
+    fn container_release_attachment_rejects_unsigned_mismatch_and_release_identity() {
+        let tmp = TempDir::new().unwrap();
+        let release_path = tmp.path().join("containers-v1-index.json");
+        let input_path = tmp.path().join("signature-input.json");
+        let version = semver::Version::parse("1.0.0").unwrap();
+        let (release, mut input) = container_release_inputs("1.0.0");
+        fs::write(&release_path, to_canonical_json(&release).unwrap()).unwrap();
+        input.identity.package_version = "0.2.0".to_string();
+        fs::write(&input_path, to_canonical_json(&input).unwrap()).unwrap();
+
+        let error =
+            load_container_release_attachment(&version, Some(&release_path), Some(&input_path))
+                .expect_err("unsigned identity mismatch");
+        assert!(format!("{error:#}").contains("final sidecar identity differs"));
+
+        let (release, input) = container_release_inputs("2.0.0");
+        fs::write(&release_path, to_canonical_json(&release).unwrap()).unwrap();
+        fs::write(&input_path, to_canonical_json(&input).unwrap()).unwrap();
+        let error =
+            load_container_release_attachment(&version, Some(&release_path), Some(&input_path))
+                .expect_err("release semver mismatch");
+        assert!(format!("{error:#}").contains("does not match apr release semver '1.0.0'"));
+
+        let (mut release, mut input) = container_release_inputs("1.0.0");
+        release.identity.image = "other".to_string();
+        input.identity.image = "other".to_string();
+        fs::write(&release_path, to_canonical_json(&release).unwrap()).unwrap();
+        fs::write(&input_path, to_canonical_json(&input).unwrap()).unwrap();
+        let error =
+            load_container_release_attachment(&version, Some(&release_path), Some(&input_path))
+                .expect_err("initial image policy");
+        assert!(format!("{error:#}").contains("requires package 'aos' and image 'aos'"));
+    }
+
+    #[test]
+    fn container_release_attachment_retries_exact_signed_head_before_tag() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--object-format=sha256",
+                "--initial-branch=main",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(&repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"aos-core\"\n",
+        )
+        .unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
+
+        let signing = write_test_signing_key(tmp.path(), "aos-core");
+        let (release, _) = container_release_inputs("1.0.0");
+        let attachment = ContainerReleaseAttachment {
+            canonical_bytes: to_canonical_json(&release).unwrap(),
+            release,
+        };
+        let mut options = test_release_options(&tmp);
+        options.signing_key = signing.private_key.to_string_lossy().into_owned();
+        options.container_release = Some(attachment.clone());
+        let printer = Printer::new(0, true, false);
+
+        attach_container_release(&repo, "aos-core", &options, &printer).unwrap();
+        let committed_head = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+        assert!(
+            existing_release_tag_commit(&repo, &options.version)
+                .unwrap()
+                .is_none()
+        );
+
+        attach_container_release(&repo, "aos-core", &options, &printer).unwrap();
+        assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), committed_head);
+        ensure_release_worktree_clean(&repo).unwrap();
+
+        options
+            .container_release
+            .as_mut()
+            .unwrap()
+            .canonical_bytes
+            .push(b' ');
+        let error = attach_container_release(&repo, "aos-core", &options, &printer)
+            .expect_err("same-release conflicting retry");
+        assert!(format!("{error:#}").contains("different bytes for release 1.0.0"));
+        assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), committed_head);
+        ensure_release_worktree_clean(&repo).unwrap();
     }
 
     #[test]

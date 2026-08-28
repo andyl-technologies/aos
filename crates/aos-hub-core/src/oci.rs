@@ -6,6 +6,11 @@
 //! repository before any tag, manifest, or blob lookup, preventing digest
 //! probing across repositories that share registry-wide CAS bytes.
 
+mod upload;
+
+pub use upload::{recover_expired_oci_work, OciRecoverySummary};
+
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
@@ -21,12 +26,12 @@ use base64::Engine as _;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-use crate::auth::jwt::OciTokenGrant;
-use crate::db::{InboundEndpointHost, RegistryRecord, SurfaceTarget};
+use crate::auth::jwt::{OciRepositoryGrant, OciTokenGrant};
+use crate::db::{InboundEndpointHost, RegistryRecord};
 use crate::delivery_http::{DeliveryMethod, HttpTimestamp};
 use crate::oci_http::{OciAccess, OciHttpMetadata, OciHttpRequest};
 use crate::placement_read::PlacementReadOutcome;
-use crate::service::{ReadAuthorization, RpcError, RpcService};
+use crate::service::{RpcError, RpcService};
 
 /// Distribution API version advertised on every OCI response.
 pub const DISTRIBUTION_API_VERSION: &str = "registry/2.0";
@@ -77,6 +82,18 @@ pub enum OciRequest {
         /// Exact SHA-256 digest.
         digest: Sha256Digest,
     },
+    /// Repository blob-upload collection.
+    BlobUploadCollection {
+        /// Exact repository local to the route's registry.
+        repository: RepositoryName,
+    },
+    /// One durable resumable blob-upload session.
+    BlobUpload {
+        /// Exact repository local to the route's registry.
+        repository: RepositoryName,
+        /// Opaque server-minted upload identity.
+        upload_id: String,
+    },
     /// Manifest or index bytes addressed by tag or digest.
     Manifest {
         /// Exact repository local to the route's registry.
@@ -104,6 +121,8 @@ impl OciRequest {
     pub const fn repository(&self) -> Option<&RepositoryName> {
         match self {
             Self::Blob { repository, .. }
+            | Self::BlobUploadCollection { repository }
+            | Self::BlobUpload { repository, .. }
             | Self::Manifest { repository, .. }
             | Self::Tags { repository }
             | Self::Referrers { repository, .. } => Some(repository),
@@ -151,6 +170,26 @@ pub fn parse_oci_path(path: &str) -> std::result::Result<OciRequest, OciPathErro
             digest: Sha256Digest::parse(digest).map_err(|_| OciPathError::InvalidReference)?,
         });
     }
+    if let Some(repository) = rest.strip_suffix("/blobs/uploads/") {
+        return RepositoryName::parse(repository)
+            .map(|repository| OciRequest::BlobUploadCollection { repository })
+            .map_err(|_| OciPathError::InvalidReference);
+    }
+    if let Some((repository, upload_id)) = rest.rsplit_once("/blobs/uploads/") {
+        if upload_id.is_empty()
+            || upload_id.len() > 128
+            || !upload_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(OciPathError::InvalidReference);
+        }
+        return Ok(OciRequest::BlobUpload {
+            repository: RepositoryName::parse(repository)
+                .map_err(|_| OciPathError::InvalidReference)?,
+            upload_id: upload_id.to_string(),
+        });
+    }
     if let Some((repository, digest)) = rest.rsplit_once("/blobs/") {
         return Ok(OciRequest::Blob {
             repository: RepositoryName::parse(repository)
@@ -174,11 +213,11 @@ pub fn parse_oci_path(path: &str) -> std::result::Result<OciRequest, OciPathErro
 pub struct OciTokenRequest {
     /// Exact canonical service authority.
     pub service: String,
-    /// Exact repository requested in the pull scope.
-    pub repository: RepositoryName,
+    /// Sorted, unique repository/action grants requested by the client.
+    pub grants: Vec<OciRepositoryGrant>,
 }
 
-/// Parses a single `service` and `repository:<name>:pull` query.
+/// Parses one `service` and one or more repository scope fields.
 ///
 /// # Errors
 ///
@@ -186,15 +225,36 @@ pub struct OciTokenRequest {
 /// query fields and scopes.
 pub fn parse_token_query(query: &str) -> Result<OciTokenRequest> {
     let pairs = url::form_urlencoded::parse(query.as_bytes()).collect::<Vec<_>>();
-    if pairs.len() != 2 {
-        bail!("OCI token query requires exactly service and scope");
+    if !(2..=9).contains(&pairs.len()) {
+        bail!("OCI token query requires service and one to eight scopes");
     }
     let mut service = None;
-    let mut scope = None;
+    let mut grants = BTreeMap::<RepositoryName, Vec<String>>::new();
     for (key, value) in pairs {
         match key.as_ref() {
             "service" if service.is_none() => service = Some(value.into_owned()),
-            "scope" if scope.is_none() => scope = Some(value.into_owned()),
+            "scope" => {
+                let scope = value
+                    .strip_prefix("repository:")
+                    .context("OCI token scope must start with repository")?;
+                let (repository, actions) = scope
+                    .rsplit_once(':')
+                    .context("OCI token scope must name repository actions")?;
+                let repository = RepositoryName::parse(repository)?;
+                let actions = actions.split(',').collect::<Vec<_>>();
+                if actions.is_empty()
+                    || actions.len() > 2
+                    || actions
+                        .iter()
+                        .any(|action| !matches!(*action, "pull" | "push"))
+                {
+                    bail!("OCI token scope actions must be pull and/or push");
+                }
+                let entry = grants.entry(repository).or_default();
+                entry.extend(actions.into_iter().map(str::to_string));
+                entry.sort();
+                entry.dedup();
+            }
             _ => bail!("OCI token query contains duplicate or unsupported fields"),
         }
     }
@@ -206,14 +266,18 @@ pub fn parse_token_query(query: &str) -> Result<OciTokenRequest> {
     {
         bail!("OCI token service is malformed");
     }
-    let scope = scope.context("OCI token scope is missing")?;
-    let repository = scope
-        .strip_prefix("repository:")
-        .and_then(|value| value.strip_suffix(":pull"))
-        .context("OCI token scope must be repository:<name>:pull")?;
+    if grants.is_empty() || grants.len() > 8 {
+        bail!("OCI token query contains no scopes or too many repositories");
+    }
     Ok(OciTokenRequest {
         service,
-        repository: RepositoryName::parse(repository)?,
+        grants: grants
+            .into_iter()
+            .map(|(repository, actions)| OciRepositoryGrant {
+                repository,
+                actions,
+            })
+            .collect(),
     })
 }
 
@@ -259,8 +323,19 @@ pub fn canonical_service_authority(
 /// Builds the standard same-authority Bearer challenge for one repository.
 #[must_use]
 pub fn pull_challenge(scheme: &str, authority: &str, repository: &RepositoryName) -> String {
+    repository_challenge(scheme, authority, repository, "pull")
+}
+
+/// Builds a standard same-authority Bearer challenge for exact actions.
+#[must_use]
+pub fn repository_challenge(
+    scheme: &str,
+    authority: &str,
+    repository: &RepositoryName,
+    actions: &str,
+) -> String {
     format!(
-        "Bearer realm=\"{scheme}://{authority}/v2/token\",service=\"{authority}\",scope=\"repository:{repository}:pull\""
+        "Bearer realm=\"{scheme}://{authority}/v2/token\",service=\"{authority}\",scope=\"repository:{repository}:{actions}\""
     )
 }
 
@@ -294,7 +369,7 @@ pub struct ResolvedOciRoute {
 
 impl RpcService {
     /// Exchanges an existing Hub bearer or provisioning-token Basic password
-    /// for one repository-scoped OCI pull token.
+    /// for one short-lived set of repository-scoped OCI grants.
     ///
     /// The repository need not exist; authorization is evaluated only against
     /// the already-resolved owning registry so the token endpoint is not a
@@ -305,14 +380,19 @@ impl RpcService {
     ///
     /// Returns an authentication, registry authorization, malformed credential,
     /// or token-signing error.
-    pub async fn mint_oci_pull_token(
+    pub async fn mint_oci_token(
         &self,
         registry: &RegistryRecord,
         authority: &str,
-        repository: &RepositoryName,
+        grants: &[OciRepositoryGrant],
         authorization: Option<&str>,
         route_requires_hub_auth: bool,
     ) -> Result<OciTokenResponse, RpcError> {
+        let wants_push = grants
+            .iter()
+            .any(|grant| grant.actions.iter().any(|action| action.as_str() == "push"));
+        let read_requires_auth = route_requires_hub_auth
+            || !(registry.visibility == "public" || registry.org_id.is_none());
         let (subject, hub_bearer) = match authorization {
             Some(value) if value.starts_with("Bearer ") => {
                 let claims = self.require_claims(Some(value))?;
@@ -344,26 +424,29 @@ impl RpcService {
                     "OCI token exchange requires Bearer or Basic credentials".into(),
                 ));
             }
-            None if !route_requires_hub_auth
-                && (registry.visibility == "public" || registry.org_id.is_none()) =>
-            {
-                ("anonymous".to_string(), String::new())
-            }
+            None if !wants_push && !read_requires_auth => ("anonymous".to_string(), String::new()),
             None => {
                 return Err(RpcError::Unauthenticated(
                     "credentials are required for this registry".into(),
                 ));
             }
         };
-        if route_requires_hub_auth {
+        if wants_push && !registry_supports_oci_writes(registry.org_id) {
+            return Err(RpcError::PermissionDenied(
+                "OCI writes require an organization-owned registry".into(),
+            ));
+        }
+        if wants_push {
+            self.require_authenticated_registry_publish(Some(&hub_bearer), registry)
+                .await?;
+        }
+        if read_requires_auth
+            && grants
+                .iter()
+                .any(|grant| grant.actions.iter().any(|action| action.as_str() == "pull"))
+        {
             self.require_authenticated_registry_read(Some(&hub_bearer), registry)
                 .await?;
-        } else if !(registry.visibility == "public" || registry.org_id.is_none()) {
-            self.authorize_delivery_surface_read(
-                ReadAuthorization::AuthorizationHeader(Some(&hub_bearer)),
-                SurfaceTarget::Registry(registry.id),
-            )
-            .await?;
         }
         let token = self
             .jwt_keys
@@ -372,8 +455,7 @@ impl RpcService {
                     subject,
                     authority: authority.to_string(),
                     registry_stable_id: registry.stable_id.clone(),
-                    repository: repository.clone(),
-                    actions: vec!["pull".to_string()],
+                    grants: grants.to_vec(),
                 },
                 OCI_PULL_TOKEN_TTL_SECONDS,
             )
@@ -386,28 +468,30 @@ impl RpcService {
         })
     }
 
-    /// Authorizes one exact repository pull without performing object lookup.
+    /// Authorizes one exact repository action without performing object lookup.
     ///
     /// # Errors
     ///
     /// Returns an authentication or repository-scope mismatch for a private
     /// registry or a `hub_auth` delivery route. Public registry pulls remain
     /// anonymous only on an explicitly public route.
-    pub fn authorize_oci_pull(
+    pub fn authorize_oci_action(
         &self,
         registry: &RegistryRecord,
         authority: &str,
         repository: &RepositoryName,
+        required_action: &str,
         authorization: Option<&str>,
         route_requires_oci_token: bool,
     ) -> Result<(), RpcError> {
-        if !route_requires_oci_token
+        if required_action == "pull"
+            && !route_requires_oci_token
             && (registry.visibility == "public" || registry.org_id.is_none())
         {
             return Ok(());
         }
         let header = authorization
-            .ok_or_else(|| RpcError::Unauthenticated("OCI pull token is required".into()))?;
+            .ok_or_else(|| RpcError::Unauthenticated("OCI repository token is required".into()))?;
         let token = header.strip_prefix("Bearer ").ok_or_else(|| {
             RpcError::Unauthenticated("Authorization header must start with Bearer".into())
         })?;
@@ -417,8 +501,10 @@ impl RpcService {
             .map_err(|error| RpcError::Unauthenticated(error.to_string()))?;
         if claims.aud != authority
             || claims.registry != registry.stable_id
-            || claims.repository != *repository
-            || claims.actions.as_slice() != ["pull"]
+            || !claims.grants.iter().any(|grant| {
+                grant.repository == *repository
+                    && grant.actions.iter().any(|action| action == required_action)
+            })
         {
             return Err(RpcError::PermissionDenied(
                 "OCI token is not authorized for this repository request".into(),
@@ -439,17 +525,9 @@ impl RpcService {
         method: Method,
         headers: HeaderMap,
         query: Option<&str>,
+        body: Body,
     ) -> Response {
         let head = method == Method::HEAD;
-        if !matches!(method, Method::GET | Method::HEAD) {
-            return distribution_error_response(
-                StatusCode::METHOD_NOT_ALLOWED,
-                DistributionErrorCode::Unsupported,
-                "read-only OCI delivery accepts only GET and HEAD",
-                None,
-                head,
-            );
-        }
         let registry = match self.db.registry_by_id(resolved.registry_id).await {
             Ok(Some(registry)) => registry,
             Ok(None) => {
@@ -479,6 +557,12 @@ impl RpcService {
             }
         }
         if resolved.request == OciRequest::Ping {
+            if !matches!(method, Method::GET | Method::HEAD) {
+                return method_not_allowed_response(
+                    "registry discovery accepts GET and HEAD",
+                    head,
+                );
+            }
             let mut response = if head {
                 (StatusCode::OK, Body::empty()).into_response()
             } else {
@@ -514,10 +598,10 @@ impl RpcService {
                 .get(header::AUTHORIZATION)
                 .and_then(|value| value.to_str().ok());
             return match self
-                .mint_oci_pull_token(
+                .mint_oci_token(
                     &registry,
                     &resolved.authority,
-                    &token_request.repository,
+                    &token_request.grants,
                     authorization,
                     route_requires_hub_auth,
                 )
@@ -547,11 +631,20 @@ impl RpcService {
                     false,
                 ),
                 Err(_) => {
-                    let challenge = pull_challenge(
-                        &resolved.scheme,
-                        &resolved.authority,
-                        &token_request.repository,
-                    );
+                    let repository = &token_request.grants[0].repository;
+                    let actions = token_request.grants[0].actions.join(",");
+                    let challenge =
+                        pull_challenge(&resolved.scheme, &resolved.authority, repository);
+                    let challenge = if actions == "pull" {
+                        challenge
+                    } else {
+                        repository_challenge(
+                            &resolved.scheme,
+                            &resolved.authority,
+                            repository,
+                            &actions,
+                        )
+                    };
                     distribution_error_response(
                         StatusCode::UNAUTHORIZED,
                         DistributionErrorCode::Unauthorized,
@@ -575,10 +668,17 @@ impl RpcService {
         let authorization = headers
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok());
-        if let Err(error) = self.authorize_oci_pull(
+        let Some(required_action) = oci_request_action(&resolved.request, &method) else {
+            return method_not_allowed_response(
+                "method is not supported for this Distribution endpoint",
+                head,
+            );
+        };
+        if let Err(error) = self.authorize_oci_action(
             &registry,
             &resolved.authority,
             repository_name,
+            required_action,
             authorization,
             route_requires_hub_auth,
         ) {
@@ -591,7 +691,12 @@ impl RpcService {
                     head,
                 );
             }
-            let challenge = pull_challenge(&resolved.scheme, &resolved.authority, repository_name);
+            let challenge = repository_challenge(
+                &resolved.scheme,
+                &resolved.authority,
+                repository_name,
+                required_action,
+            );
             return distribution_error_response(
                 StatusCode::UNAUTHORIZED,
                 DistributionErrorCode::Unauthorized,
@@ -600,8 +705,41 @@ impl RpcService {
                 head,
             );
         }
+        if required_action == "push" && !registry_supports_oci_writes(registry.org_id) {
+            return distribution_error_response(
+                StatusCode::FORBIDDEN,
+                DistributionErrorCode::Denied,
+                "OCI writes require an organization-owned registry",
+                None,
+                head,
+            );
+        }
+        let creates_repository = matches!(
+            (&resolved.request, &method),
+            (OciRequest::BlobUploadCollection { .. }, &Method::POST)
+                | (OciRequest::Manifest { .. }, &Method::PUT)
+        );
         let repository = match self.db.oci_repository(registry.id, repository_name).await {
             Ok(Some(repository)) => repository,
+            Ok(None) if creates_repository => {
+                match self
+                    .db
+                    .ensure_oci_repository(
+                        registry.id,
+                        repository_name,
+                        crate::clock::now_unix_secs(),
+                    )
+                    .await
+                {
+                    Ok(repository) => repository,
+                    Err(_) => {
+                        return unavailable_response(
+                            "repository could not be created for push",
+                            head,
+                        );
+                    }
+                }
+            }
             Ok(None) => {
                 return distribution_error_response(
                     StatusCode::NOT_FOUND,
@@ -615,6 +753,19 @@ impl RpcService {
         };
         let private = resolved.access_policy_kind != "public"
             || !(registry.visibility == "public" || registry.org_id.is_none());
+        if required_action == "push" {
+            return self
+                .serve_oci_write(
+                    &registry,
+                    &repository,
+                    resolved.request,
+                    method,
+                    headers,
+                    query,
+                    body,
+                )
+                .await;
+        }
         match resolved.request {
             OciRequest::Blob { digest, .. } => {
                 let blob = match self.db.oci_blob_for_repository(repository.id, digest).await {
@@ -688,6 +839,9 @@ impl RpcService {
             }
             OciRequest::Referrers { digest, .. } => {
                 serve_referrers(&self, &method, &repository, digest, query, private).await
+            }
+            OciRequest::BlobUploadCollection { .. } | OciRequest::BlobUpload { .. } => {
+                method_not_allowed_response("upload status accepts GET or HEAD", head)
             }
             OciRequest::Ping | OciRequest::Token => distribution_error_response(
                 StatusCode::NOT_FOUND,
@@ -840,6 +994,35 @@ impl RpcService {
             }
         }
     }
+}
+
+fn oci_request_action(request: &OciRequest, method: &Method) -> Option<&'static str> {
+    match (request, method) {
+        (
+            OciRequest::Blob { .. }
+            | OciRequest::Manifest { .. }
+            | OciRequest::Tags { .. }
+            | OciRequest::Referrers { .. },
+            &Method::GET | &Method::HEAD,
+        ) => Some("pull"),
+        (OciRequest::Manifest { .. }, &Method::PUT | &Method::DELETE)
+        | (OciRequest::BlobUploadCollection { .. }, &Method::POST)
+        | (
+            OciRequest::BlobUpload { .. },
+            &Method::GET | &Method::HEAD | &Method::PATCH | &Method::PUT | &Method::DELETE,
+        ) => Some("push"),
+        _ => None,
+    }
+}
+
+fn method_not_allowed_response(message: &'static str, head: bool) -> Response {
+    distribution_error_response(
+        StatusCode::METHOD_NOT_ALLOWED,
+        DistributionErrorCode::Unsupported,
+        message,
+        None,
+        head,
+    )
 }
 
 async fn serve_tags(
@@ -1175,6 +1358,15 @@ fn format_rfc3339_utc(unix_seconds: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
+/// Returns whether the registry can participate in quota-accounted OCI writes.
+///
+/// Instance registries have no owning organization and therefore cannot
+/// reserve the quota rows required by the upload and publication protocols.
+/// They remain valid pull-only registries.
+const fn registry_supports_oci_writes(org_id: Option<i64>) -> bool {
+    org_id.is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1191,6 +1383,16 @@ mod tests {
             Ok(OciRequest::Manifest { repository, reference: ManifestReference::Tag(_) })
                 if repository.as_str() == "team/base"
         ));
+        assert!(matches!(
+            parse_oci_path("v2/team/base/blobs/uploads/"),
+            Ok(OciRequest::BlobUploadCollection { repository })
+                if repository.as_str() == "team/base"
+        ));
+        assert!(matches!(
+            parse_oci_path("v2/team/base/blobs/uploads/01J7YJ-claim"),
+            Ok(OciRequest::BlobUpload { repository, upload_id })
+                if repository.as_str() == "team/base" && upload_id == "01J7YJ-claim"
+        ));
     }
 
     #[test]
@@ -1201,21 +1403,30 @@ mod tests {
             "v2/a/blobs/sha256:ABC",
             "v2/A/manifests/latest",
             "v2/a/manifests/bad@tag",
+            "v2/a/blobs/uploads",
+            "v2/a/blobs/uploads/bad_id",
+            "v2/a/blobs/uploads/../other",
         ] {
             assert!(parse_oci_path(path).is_err(), "accepted {path}");
         }
     }
 
     #[test]
-    fn token_query_is_exact_and_repository_scoped() {
+    fn token_query_is_exact_sorted_and_repository_scoped() {
         let request =
             parse_token_query("service=containers.example&scope=repository%3Aaos%3Apull").unwrap();
         assert_eq!(request.service, "containers.example");
-        assert_eq!(request.repository.as_str(), "aos");
-        assert!(
-            parse_token_query("service=containers.example&scope=repository%3Aaos%3Apush").is_err()
-        );
+        assert_eq!(request.grants[0].repository.as_str(), "aos");
+        assert_eq!(request.grants[0].actions, ["pull"]);
+        let mount = parse_token_query(
+            "scope=repository%3Asource%3Apull&service=containers.example&scope=repository%3Aaos%3Apush%2Cpull",
+        )
+        .unwrap();
+        assert_eq!(mount.grants[0].repository.as_str(), "aos");
+        assert_eq!(mount.grants[0].actions, ["pull", "push"]);
+        assert_eq!(mount.grants[1].repository.as_str(), "source");
         assert!(parse_token_query("service=x&service=y&scope=repository%3Aaos%3Apull").is_err());
+        assert!(parse_token_query("service=x&scope=repository%3Aaos%3Adelete").is_err());
     }
 
     #[test]
@@ -1322,5 +1533,11 @@ mod tests {
             "public, no-cache"
         );
         assert!(response.headers().get(header::VARY).is_none());
+    }
+
+    #[test]
+    fn only_organization_registries_admit_oci_writes() {
+        assert!(registry_supports_oci_writes(Some(7)));
+        assert!(!registry_supports_oci_writes(None));
     }
 }

@@ -14,6 +14,8 @@ use crate::error::{Error, Result};
 /// An exact media type admitted by RFC-0015.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MediaType {
+    /// Generic bytes accepted by the Distribution blob-upload transport.
+    OctetStream,
     /// OCI image manifest version 1.
     OciImageManifest,
     /// OCI image index version 1.
@@ -44,6 +46,8 @@ pub enum MediaType {
     AosNixClosure,
     /// AOS corresponding-source closure inventory.
     AosSourceClosure,
+    /// Deterministic gzip-compressed AOS corresponding-source archive.
+    AosSourceArchive,
     /// AOS license report.
     AosLicenseReport,
     /// SPDX 2.3 JSON software bill of materials.
@@ -56,7 +60,8 @@ pub enum MediaType {
 
 impl MediaType {
     /// Every media type admitted by the first-release compatibility contract.
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 21] = [
+        Self::OctetStream,
         Self::OciImageManifest,
         Self::OciImageIndex,
         Self::OciImageConfig,
@@ -72,6 +77,7 @@ impl MediaType {
         Self::AosContainerRelease,
         Self::AosNixClosure,
         Self::AosSourceClosure,
+        Self::AosSourceArchive,
         Self::AosLicenseReport,
         Self::SpdxJson,
         Self::InTotoJson,
@@ -87,6 +93,7 @@ impl MediaType {
     /// value outside the frozen allowlist.
     pub fn parse(value: &str) -> Result<Self> {
         match value {
+            "application/octet-stream" => Ok(Self::OctetStream),
             "application/vnd.oci.image.manifest.v1+json" => Ok(Self::OciImageManifest),
             "application/vnd.oci.image.index.v1+json" => Ok(Self::OciImageIndex),
             "application/vnd.oci.image.config.v1+json" => Ok(Self::OciImageConfig),
@@ -104,6 +111,7 @@ impl MediaType {
             "application/vnd.aos.container-release.v1+json" => Ok(Self::AosContainerRelease),
             "application/vnd.aos.nix-closure.v1+json" => Ok(Self::AosNixClosure),
             "application/vnd.aos.source-closure.v1+json" => Ok(Self::AosSourceClosure),
+            "application/vnd.aos.source-closure.v1.tar+gzip" => Ok(Self::AosSourceArchive),
             "application/vnd.aos.license-report.v1+json" => Ok(Self::AosLicenseReport),
             "application/spdx+json" => Ok(Self::SpdxJson),
             "application/vnd.in-toto+json" => Ok(Self::InTotoJson),
@@ -124,6 +132,7 @@ impl MediaType {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::OctetStream => "application/octet-stream",
             Self::OciImageManifest => "application/vnd.oci.image.manifest.v1+json",
             Self::OciImageIndex => "application/vnd.oci.image.index.v1+json",
             Self::OciImageConfig => "application/vnd.oci.image.config.v1+json",
@@ -139,6 +148,7 @@ impl MediaType {
             Self::AosContainerRelease => "application/vnd.aos.container-release.v1+json",
             Self::AosNixClosure => "application/vnd.aos.nix-closure.v1+json",
             Self::AosSourceClosure => "application/vnd.aos.source-closure.v1+json",
+            Self::AosSourceArchive => "application/vnd.aos.source-closure.v1.tar+gzip",
             Self::AosLicenseReport => "application/vnd.aos.license-report.v1+json",
             Self::SpdxJson => "application/spdx+json",
             Self::InTotoJson => "application/vnd.in-toto+json",
@@ -192,6 +202,12 @@ impl MediaType {
                 | Self::InTotoJson
                 | Self::DsseEnvelope
         )
+    }
+
+    /// Returns whether the media type identifies retained corresponding-source bytes.
+    #[must_use]
+    pub const fn is_source_archive(self) -> bool {
+        matches!(self, Self::AosSourceArchive)
     }
 }
 
@@ -276,6 +292,8 @@ mod tests {
         assert!(MediaType::OciLayerZstd.is_oci_layer());
         assert!(MediaType::DockerLayerGzip.is_docker_layer());
         assert!(MediaType::SpdxJson.is_artifact_payload());
+        assert!(MediaType::AosSourceArchive.is_source_archive());
+        assert!(!MediaType::AosSourceArchive.is_artifact_payload());
         assert!(!MediaType::OciEmptyJson.is_artifact_payload());
     }
 }

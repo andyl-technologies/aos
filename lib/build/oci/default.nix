@@ -49,6 +49,10 @@ in rec {
   mkImageLayout = import ./image-layout.nix baseDependencies;
   mkMultiPlatformIndex = import ./multi-platform-index.nix baseDependencies;
   mkDockerArchive = import ./docker-archive.nix baseDependencies;
+  mkEvidenceSourceGraph = import ./evidence-source-graph.nix {
+    inherit lib mkDerivation coreutils jq;
+  };
+  mkEvidenceLayout = import ./evidence-layout.nix baseDependencies;
 
   # Short aliases are useful to call sites while the long names preserve the
   # RFC vocabulary at the public boundary.

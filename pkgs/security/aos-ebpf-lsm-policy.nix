@@ -71,6 +71,21 @@ in
       }
     ];
 
+    passthru.evidenceSources = [
+      (builtins.path {
+        path = ./aos-ebpf-lsm-policy.nix;
+        name = "aos-ebpf-lsm-policy.nix";
+      })
+      (builtins.path {
+        path = bpfSource;
+        name = "aos-ebpf-lsm-policy.bpf.c";
+      })
+      (builtins.path {
+        path = loaderSource;
+        name = "aos-ebpf-lsm-policy.c";
+      })
+    ];
+
     checks = {
       testing,
       self,

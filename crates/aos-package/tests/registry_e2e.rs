@@ -2,13 +2,21 @@ mod common;
 
 use anyhow::{Context, Result};
 use aos_cache::AuthOptions;
+use aos_oci_types::{
+    Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
+    ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
+    ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
+    ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity, Descriptor, MediaType,
+    NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest, to_canonical_json,
+};
 use aos_package::registry::{
     Registry, fetch, git, keys, objectstore, pack, static_upload, store_path_hash, tuf,
 };
 use aos_package::registry_ops::{
-    ReleaseTreeOptions, release_registry_tree, resolve_mirrors_for_registry,
+    ContainerReleaseAttachment, ReleaseTreeOptions, release_registry_tree,
+    resolve_mirrors_for_registry,
 };
-use aos_package::security::verify_tag_signature;
+use aos_package::security::{verify_commit_signature, verify_tag_signature};
 use aos_package::types::{CacheEntry, RegistryState, TrackingMode};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -17,6 +25,85 @@ use std::sync::Mutex;
 use std::{env, fs};
 
 use common::{RegistryFixture, StaticHttpServer};
+
+fn container_release_attachment(version: &str) -> Result<ContainerReleaseAttachment> {
+    fn descriptor(media_type: MediaType, label: &str) -> Descriptor {
+        Descriptor {
+            media_type,
+            digest: Sha256Digest::digest(label.as_bytes()),
+            size: u64::try_from(label.len()).expect("fixture size"),
+            urls: Vec::new(),
+            annotations: Annotations::new(),
+            data: None,
+            artifact_type: None,
+            platform: None,
+        }
+    }
+
+    fn evidence_descriptor(artifact_type: MediaType, label: &str) -> Descriptor {
+        Descriptor {
+            artifact_type: Some(artifact_type),
+            ..descriptor(MediaType::OciImageManifest, label)
+        }
+    }
+
+    let mut manifest = descriptor(MediaType::OciImageManifest, "manifest");
+    manifest.platform = Some(Platform::linux_amd64());
+    let release = ContainerRelease {
+        schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
+        media_type: MediaType::AosContainerRelease,
+        identity: ContainerReleaseIdentity {
+            release: version.to_string(),
+            package: "aos".to_string(),
+            package_version: "0.1.0".to_string(),
+            image: "aos".to_string(),
+        },
+        oci: ContainerOciRelease {
+            index: descriptor(MediaType::OciImageIndex, "index"),
+            platform_manifests: vec![manifest],
+        },
+        nix: ContainerNixProvenance {
+            definition: NixDefinitionIdentity {
+                attribute: "containerImages.aos".to_string(),
+                derivation_path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container.drv"
+                    .to_string(),
+            },
+            output: NixOutputIdentity {
+                name: "out".to_string(),
+                store_path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container".to_string(),
+            },
+            closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
+        },
+        qualification: ContainerEvidenceQualification {
+            schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
+            mapping: ContainerEvidenceMappingQualification {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            corresponding_source: ContainerEvidenceQualificationCheck {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            licensing: ContainerEvidenceQualificationCheck {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            ready_for_verified_publication: true,
+        },
+        evidence: ContainerReleaseEvidence {
+            sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
+            source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
+            license: evidence_descriptor(MediaType::AosLicenseReport, "license"),
+            provenance: evidence_descriptor(MediaType::InTotoJson, "provenance"),
+            signature: evidence_descriptor(MediaType::DsseEnvelope, "signature"),
+        },
+    };
+    let canonical_bytes = to_canonical_json(&release)?;
+    Ok(ContainerReleaseAttachment {
+        release,
+        canonical_bytes,
+    })
+}
 
 fn publish_release(
     fixture: &RegistryFixture,
@@ -563,6 +650,7 @@ async fn release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer() ->
         resume: false,
         jobs: None,
         store_publish: None,
+        container_release: None,
         cache_max_age_days: 30,
     };
 
@@ -655,6 +743,141 @@ async fn release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer() ->
     let registry = Registry::load(fixture.cache_dir(), &config, "x86_64-linux")?;
     let package = registry.get("hello").expect("synced package exists");
     assert_eq!(package.store_path, store_path);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn release_orchestrator_commits_container_sidecar_before_signed_tag_and_resumes_exactly()
+-> Result<()> {
+    let fixture = RegistryFixture::new("container-release")?;
+    fixture.write_registry_toml_with_caches(&[])?;
+    fixture.write_gitattributes()?;
+    fixture.write_keys_toml()?;
+    fixture.commit_all("initialize container registry")?;
+
+    let attachment = container_release_attachment("1.0.0")?;
+    let mut options = ReleaseTreeOptions {
+        version: v("1.0.0"),
+        signing_key: fixture.private_key_path().to_string_lossy().into_owned(),
+        tuf_signing_keys: Vec::new(),
+        channel: None,
+        init_channel: false,
+        count: None,
+        partitions: None,
+        cache_dir: fixture.cache_dir().join("release-cache"),
+        cache_key: None,
+        cache_url: None,
+        cache_url_explicit: false,
+        cache_priority: 40,
+        cache_priority_explicit: false,
+        has_store_roots: false,
+        no_skip: false,
+        upload_urls: Vec::new(),
+        upload_auth: AuthOptions::default(),
+        dry_run: true,
+        resume: false,
+        jobs: None,
+        store_publish: None,
+        container_release: Some(attachment.clone()),
+        cache_max_age_days: 30,
+    };
+
+    let initial_head = git_stdout(fixture.source_path(), &["rev-parse", "HEAD"])?;
+    release_registry_tree(
+        fixture.source_path(),
+        fixture.name(),
+        &options,
+        &fixture.printer(),
+    )
+    .await?;
+    assert_eq!(
+        git_stdout(fixture.source_path(), &["rev-parse", "HEAD"])?,
+        initial_head
+    );
+    assert!(
+        !fixture
+            .source_path()
+            .join("containers/v1/index.json")
+            .exists()
+    );
+
+    options.dry_run = false;
+    release_registry_tree(
+        fixture.source_path(),
+        fixture.name(),
+        &options,
+        &fixture.printer(),
+    )
+    .await?;
+
+    let tagged_commit = git_stdout(fixture.source_path(), &["rev-parse", "1.0.0^{commit}"])?;
+    let sidecar_commit = git_stdout(
+        fixture.source_path(),
+        &["log", "-1", "--format=%H", "--", "containers/v1/index.json"],
+    )?;
+    git_success(
+        fixture.source_path(),
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &sidecar_commit,
+            &tagged_commit,
+        ],
+    )?;
+    assert!(verify_commit_signature(
+        fixture.source_path(),
+        &sidecar_commit,
+        &[fixture.trusted_key().to_string()],
+    )?);
+    assert!(verify_tag_signature(
+        fixture.source_path(),
+        "1.0.0",
+        &[fixture.trusted_key().to_string()],
+    )?);
+    assert_eq!(
+        git_stdout(
+            fixture.source_path(),
+            &["show", "1.0.0^{commit}:containers/v1/index.json"],
+        )?
+        .as_bytes(),
+        attachment.canonical_bytes
+    );
+
+    options.resume = true;
+    let resume_head = git_stdout(fixture.source_path(), &["rev-parse", "HEAD"])?;
+    release_registry_tree(
+        fixture.source_path(),
+        fixture.name(),
+        &options,
+        &fixture.printer(),
+    )
+    .await?;
+    assert_eq!(
+        git_stdout(fixture.source_path(), &["rev-parse", "HEAD"])?,
+        resume_head
+    );
+
+    options
+        .container_release
+        .as_mut()
+        .expect("container attachment")
+        .canonical_bytes
+        .push(b' ');
+    let error = release_registry_tree(
+        fixture.source_path(),
+        fixture.name(),
+        &options,
+        &fixture.printer(),
+    )
+    .await
+    .expect_err("resume rejects different exact sidecar bytes");
+    assert!(format!("{error:#}").contains("different containers/v1/index.json bytes"));
+    assert_eq!(
+        git_stdout(fixture.source_path(), &["rev-parse", "HEAD"])?,
+        resume_head
+    );
+    assert!(git_stdout(fixture.source_path(), &["status", "--porcelain"])?.is_empty());
 
     Ok(())
 }

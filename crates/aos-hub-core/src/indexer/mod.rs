@@ -47,7 +47,11 @@ pub mod load;
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
-use aos_oci_types::{ContainerRelease, Descriptor, ManifestReference, RepositoryName};
+use aos_oci_types::{
+    limits::MAX_JSON_BYTES as MAX_OCI_JSON_BYTES, ContainerDsseEnvelope, ContainerRelease,
+    Descriptor, ManifestReference, MediaType, RepositoryName, Sha256Digest,
+    CONTAINER_DSSE_SIGNATURE_NAMESPACE,
+};
 use aos_registry_surface::manifest::RegistryRootConfig;
 use aos_registry_surface::object::{Commit, ObjectKind};
 use aos_registry_surface::refs::{parse_head, parse_info_refs, Refs};
@@ -551,9 +555,13 @@ async fn index_registry_inner(
                         Some(
                             validate_container_release(
                                 db,
+                                fetch,
                                 registry.id,
                                 placement_id,
                                 &tag_name,
+                                signer.as_deref().context(
+                                    "signed container release signer identity is unavailable",
+                                )?,
                                 &release_tree.packages,
                                 &sidecar.document,
                                 &sidecar.catalog_digest,
@@ -806,9 +814,11 @@ fn release_requires_signature(
 
 async fn validate_container_release(
     db: &Database,
+    fetch: &dyn SurfaceFetch,
     registry_id: i64,
     placement_id: i64,
     release_tag: &str,
+    release_tag_signer: &str,
     packages: &[aos_registry_surface::manifest::PackageToml],
     release: &ContainerRelease,
     catalog_digest: &str,
@@ -918,8 +928,7 @@ async fn validate_container_release(
         anyhow::ensure!(
             manifest.media_type == descriptor.media_type
                 && manifest.byte_size == descriptor.size
-                && manifest.artifact_type.is_none()
-                && manifest.platform == descriptor.platform,
+                && manifest.artifact_type.is_none(),
             "signed container platform manifest {} conflicts with the admitted catalog",
             descriptor.digest
         );
@@ -947,6 +956,15 @@ async fn validate_container_release(
             "signed container {label} manifest conflicts with the admitted referrer catalog"
         );
     }
+    validate_container_dsse(
+        db,
+        fetch,
+        repository.id,
+        placement_id,
+        release,
+        release_tag_signer,
+    )
+    .await?;
     let placement_fence = required_descriptors
         .first()
         .context("signed container release has no required descriptors")?;
@@ -970,6 +988,98 @@ async fn validate_container_release(
         catalog_digest: catalog_digest.to_string(),
         required_descriptors,
     })
+}
+
+async fn validate_container_dsse(
+    db: &Database,
+    fetch: &dyn SurfaceFetch,
+    repository_id: i64,
+    placement_id: i64,
+    release: &ContainerRelease,
+    release_tag_signer: &str,
+) -> Result<()> {
+    let edges = db
+        .oci_descriptor_edges(repository_id, release.evidence.signature.digest)
+        .await?;
+    let mut payloads = edges.iter().filter(|edge| {
+        edge.role == "payload" && edge.descriptor.media_type == MediaType::DsseEnvelope
+    });
+    let payload = payloads
+        .next()
+        .context("container signature artifact lacks its DSSE payload")?;
+    anyhow::ensure!(
+        payloads.next().is_none()
+            && edges.iter().filter(|edge| edge.role == "payload").count() == 1,
+        "container signature artifact must contain exactly one DSSE payload"
+    );
+    anyhow::ensure!(
+        db.oci_repository_object_has_placement(
+            repository_id,
+            payload.descriptor.digest,
+            placement_id,
+            payload.descriptor.size,
+            payload.descriptor.media_type,
+        )
+        .await?,
+        "container DSSE payload lacks exact evidence on the frozen indexed placement"
+    );
+    let key = crate::db::oci_blob_object_key(payload.descriptor.digest);
+    let bytes = fetch
+        .fetch_bounded(&key, MAX_OCI_JSON_BYTES)
+        .await?
+        .context("container DSSE payload is absent from the indexed placement")?;
+    anyhow::ensure!(
+        bytes.len() as u64 == payload.descriptor.size
+            && Sha256Digest::digest(&bytes) == payload.descriptor.digest,
+        "container DSSE payload bytes conflict with the admitted descriptor"
+    );
+    verify_container_dsse(release, &bytes, release_tag_signer)
+}
+
+fn verify_container_dsse(
+    release: &ContainerRelease,
+    envelope_bytes: &[u8],
+    release_tag_signer: &str,
+) -> Result<()> {
+    let envelope = ContainerDsseEnvelope::from_json(envelope_bytes)
+        .context("parsing strict container DSSE envelope")?;
+    let (payload, input) = envelope
+        .signature_input()
+        .context("parsing exact canonical container signature input")?;
+    input
+        .validate_final_release(release)
+        .context("binding container DSSE payload to the signed release sidecar")?;
+    anyhow::ensure!(
+        aos_oci_types::to_canonical_json(&input)? == payload,
+        "container DSSE payload differs from the exact canonical signature input"
+    );
+
+    // The container envelope does not introduce a second trust root. Its
+    // `keyid` and SSHSIG must resolve to the exact Ed25519 public-key blob that
+    // authenticated the enclosing release tag. If tag verification cannot
+    // recover that identity, the caller fails closed before reaching here.
+    let signature = &envelope.signatures[0];
+    anyhow::ensure!(
+        signature.keyid == release_tag_signer,
+        "container DSSE signer differs from the authenticated release-tag signer"
+    );
+    aos_registry_surface::sshsig::trusted_key_ed25519(release_tag_signer)
+        .context("parsing authenticated release-tag signer identity")?;
+    let armor = signature
+        .armored_signature()
+        .context("decoding container DSSE SSHSIG")?;
+    let verified = aos_registry_surface::sshsig::verify_armored_namespace(
+        &armor,
+        &envelope.pae()?,
+        &[release_tag_signer.to_string()],
+        CONTAINER_DSSE_SIGNATURE_NAMESPACE,
+    )
+    .context("verifying container DSSE PAE signature")?;
+    anyhow::ensure!(
+        verified == release_tag_signer,
+        "container DSSE verification returned a different trust identity"
+    );
+    Ok(())
 }
 
 async fn validate_oci_descriptor_presence(
@@ -2215,6 +2325,171 @@ mod tests {
     use super::*;
     use crate::db::Database;
     use crate::fetch::{StreamedRead, SurfaceFetch};
+    use aos_oci_types::{
+        to_canonical_json, Annotations, ContainerDsseSignature,
+        ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
+        ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
+        ContainerReleaseEvidence, ContainerReleaseIdentity, ContainerSignatureInput,
+        ContainerSignatureInputEvidence, NixDefinitionIdentity, NixOutputIdentity, Platform,
+        CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
+        CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE, CONTAINER_SIGNATURE_INPUT_SCHEMA,
+    };
+
+    fn container_descriptor(media_type: MediaType, label: &str) -> Descriptor {
+        Descriptor {
+            media_type,
+            digest: Sha256Digest::digest(label.as_bytes()),
+            size: label.len() as u64,
+            urls: Vec::new(),
+            annotations: Annotations::new(),
+            data: None,
+            artifact_type: None,
+            platform: None,
+        }
+    }
+
+    fn container_release_fixture() -> (ContainerRelease, ContainerSignatureInput) {
+        let mut platform_manifest =
+            container_descriptor(MediaType::OciImageManifest, "platform-manifest");
+        platform_manifest.platform = Some(Platform::linux_amd64());
+        let evidence = |kind, label| {
+            let mut descriptor = container_descriptor(MediaType::OciImageManifest, label);
+            descriptor.artifact_type = Some(kind);
+            descriptor
+        };
+        let qualification = ContainerEvidenceQualification {
+            schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
+            mapping: ContainerEvidenceMappingQualification {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            corresponding_source: ContainerEvidenceQualificationCheck {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            licensing: ContainerEvidenceQualificationCheck {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            ready_for_verified_publication: true,
+        };
+        let identity = ContainerReleaseIdentity {
+            release: "1.0.0".to_string(),
+            package: "aos".to_string(),
+            package_version: "0.1.0".to_string(),
+            image: "aos".to_string(),
+        };
+        let oci = ContainerOciRelease {
+            index: container_descriptor(MediaType::OciImageIndex, "index"),
+            platform_manifests: vec![platform_manifest],
+        };
+        let nix = ContainerNixProvenance {
+            definition: NixDefinitionIdentity {
+                attribute: "containerImages.aos".to_string(),
+                derivation_path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-a.drv".to_string(),
+            },
+            output: NixOutputIdentity {
+                name: "out".to_string(),
+                store_path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-a".to_string(),
+            },
+            closure: evidence(MediaType::AosNixClosure, "closure"),
+        };
+        let release_evidence = ContainerReleaseEvidence {
+            sbom: evidence(MediaType::SpdxJson, "sbom"),
+            source: evidence(MediaType::AosSourceClosure, "source"),
+            license: evidence(MediaType::AosLicenseReport, "license"),
+            provenance: evidence(MediaType::InTotoJson, "provenance"),
+            signature: evidence(MediaType::DsseEnvelope, "signature"),
+        };
+        let input = ContainerSignatureInput {
+            schema: CONTAINER_SIGNATURE_INPUT_SCHEMA.to_string(),
+            identity: identity.clone(),
+            oci: oci.clone(),
+            nix: nix.clone(),
+            evidence: ContainerSignatureInputEvidence {
+                sbom: release_evidence.sbom.clone(),
+                source: release_evidence.source.clone(),
+                license: release_evidence.license.clone(),
+                provenance: release_evidence.provenance.clone(),
+            },
+            qualification: qualification.clone(),
+        };
+        let release = ContainerRelease {
+            schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
+            media_type: MediaType::AosContainerRelease,
+            identity,
+            oci,
+            nix,
+            qualification,
+            evidence: release_evidence,
+        };
+        (release, input)
+    }
+
+    fn container_dsse_fixture(
+        input: &ContainerSignatureInput,
+        signing_key: &ed25519_dalek::SigningKey,
+    ) -> (Vec<u8>, String) {
+        let payload = to_canonical_json(input).unwrap();
+        let trusted = sshsig::trusted_key_line("fixture", &signing_key.verifying_key());
+        let keyid = trusted.rsplit(':').next().unwrap().to_string();
+        let mut envelope = ContainerDsseEnvelope {
+            payload_type: CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE.to_string(),
+            payload: base64::engine::general_purpose::STANDARD.encode(payload),
+            signatures: vec![ContainerDsseSignature {
+                keyid: keyid.clone(),
+                sig: base64::engine::general_purpose::STANDARD.encode(b"pending"),
+            }],
+        };
+        let armor = sshsig::sign_armored_namespace(
+            &envelope.pae().unwrap(),
+            signing_key,
+            CONTAINER_DSSE_SIGNATURE_NAMESPACE,
+        );
+        envelope.signatures[0].sig =
+            base64::engine::general_purpose::STANDARD.encode(armor.as_bytes());
+        (to_canonical_json(&envelope).unwrap(), keyid)
+    }
+
+    #[test]
+    fn container_dsse_binds_exact_input_signature_and_release_signer() {
+        let (release, input) = container_release_fixture();
+        let signer = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        let (bytes, signer_id) = container_dsse_fixture(&input, &signer);
+        verify_container_dsse(&release, &bytes, &signer_id).unwrap();
+
+        let wrong = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let wrong_id = sshsig::trusted_key_line("wrong", &wrong.verifying_key())
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .to_string();
+        assert!(verify_container_dsse(&release, &bytes, &wrong_id).is_err());
+        assert!(verify_container_dsse(&release, br#"{}"#, &signer_id).is_err());
+
+        let (wrong_signature_bytes, _) = container_dsse_fixture(&input, &wrong);
+        let mut wrong_signature: ContainerDsseEnvelope =
+            serde_json::from_slice(&wrong_signature_bytes).unwrap();
+        wrong_signature.signatures[0].keyid = signer_id.clone();
+        assert!(verify_container_dsse(
+            &release,
+            &to_canonical_json(&wrong_signature).unwrap(),
+            &signer_id,
+        )
+        .is_err());
+
+        let mut altered: ContainerDsseEnvelope = serde_json::from_slice(&bytes).unwrap();
+        altered.signatures[0].sig = base64::engine::general_purpose::STANDARD.encode(b"malformed");
+        assert!(
+            verify_container_dsse(&release, &to_canonical_json(&altered).unwrap(), &signer_id)
+                .is_err()
+        );
+
+        let mut different_input = input;
+        different_input.identity.package_version = "0.1.1".to_string();
+        let (different_bytes, _) = container_dsse_fixture(&different_input, &signer);
+        assert!(verify_container_dsse(&release, &different_bytes, &signer_id).is_err());
+    }
 
     #[test]
     fn pack_path_splits_semver_components() {

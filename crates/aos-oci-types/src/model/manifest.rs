@@ -3,7 +3,7 @@
 //! ```text
 //! manifest = schemaVersion + config descriptor + ordered layer descriptors
 //! index    = schemaVersion + ordered manifest descriptors and platforms
-//! artifact = OCI manifest + artifactType + subject + empty config + one layer
+//! artifact = OCI manifest + artifactType + subject + empty config + payload layers
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -32,7 +32,7 @@ pub struct ImageManifest {
     pub artifact_type: Option<MediaType>,
     /// Descriptor of the image or empty artifact configuration.
     pub config: Descriptor,
-    /// Ordered filesystem layers or the single artifact payload.
+    /// Ordered filesystem layers or type-specific artifact payload descriptors.
     pub layers: Vec<Descriptor>,
     /// Optional referred manifest; required for RFC-0015 artifacts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -62,7 +62,7 @@ impl ImageManifest {
     /// Returns an error for a schema other than 2, too many descriptors or
     /// runnable layers, invalid nested descriptors, incompatible OCI/Docker
     /// media families, or an artifact that lacks its exact empty-config,
-    /// subject, and one-payload shape.
+    /// subject, and type-specific payload shape.
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != SCHEMA_VERSION {
             return Err(Error::invalid(
@@ -197,21 +197,32 @@ impl ImageManifest {
                 "artifact manifests require a subject descriptor",
             ));
         }
-        if self.layers.len() != 1 {
-            return Err(Error::invalid(
-                "artifact layers",
-                "artifact manifests require exactly one JSON payload descriptor",
-            ));
-        }
-        if self.layers[0].media_type != artifact_type {
-            return Err(Error::invalid(
-                "artifact layer",
-                "payload media type must equal artifactType",
-            ));
-        }
+        let json_payload = match artifact_type {
+            MediaType::AosSourceClosure => {
+                if self.layers.len() != 2
+                    || self.layers[0].media_type != MediaType::AosSourceClosure
+                    || self.layers[1].media_type != MediaType::AosSourceArchive
+                {
+                    return Err(Error::invalid(
+                        "artifact layers",
+                        "source-closure artifacts require ordered JSON inventory and source archive descriptors",
+                    ));
+                }
+                &self.layers[0]
+            }
+            _ => {
+                if self.layers.len() != 1 || self.layers[0].media_type != artifact_type {
+                    return Err(Error::invalid(
+                        "artifact layers",
+                        "JSON artifacts require exactly one payload matching artifactType",
+                    ));
+                }
+                &self.layers[0]
+            }
+        };
         let maximum_payload_size = u64::try_from(MAX_JSON_BYTES)
             .map_err(|error| Error::invalid("artifact layer size", error.to_string()))?;
-        if self.layers[0].size > maximum_payload_size {
+        if json_payload.size > maximum_payload_size {
             return Err(Error::invalid(
                 "artifact layer size",
                 format!("JSON payload exceeds the {MAX_JSON_BYTES}-byte limit"),
@@ -384,6 +395,22 @@ mod tests {
             annotations: Annotations::new(),
         };
         artifact.validate().expect("artifact manifest");
+
+        let source_artifact = ImageManifest {
+            schema_version: SCHEMA_VERSION,
+            media_type: Some(MediaType::OciImageManifest),
+            artifact_type: Some(MediaType::AosSourceClosure),
+            config: Descriptor::canonical_empty(),
+            layers: vec![
+                descriptor(MediaType::AosSourceClosure, "source-inventory"),
+                descriptor(MediaType::AosSourceArchive, "source-archive"),
+            ],
+            subject: Some(descriptor(MediaType::OciImageIndex, "subject-index")),
+            annotations: Annotations::new(),
+        };
+        source_artifact
+            .validate()
+            .expect("source artifact manifest");
     }
 
     #[test]
@@ -407,6 +434,26 @@ mod tests {
         };
         oversized.layers[0].size = u64::try_from(MAX_JSON_BYTES + 1).expect("fixture size");
         assert!(oversized.validate().is_err());
+
+        let mut source = ImageManifest {
+            schema_version: SCHEMA_VERSION,
+            media_type: Some(MediaType::OciImageManifest),
+            artifact_type: Some(MediaType::AosSourceClosure),
+            config: Descriptor::canonical_empty(),
+            layers: vec![
+                descriptor(MediaType::AosSourceClosure, "source-inventory"),
+                descriptor(MediaType::AosSourceArchive, "source-archive"),
+            ],
+            subject: Some(descriptor(MediaType::OciImageIndex, "subject-index")),
+            annotations: Annotations::new(),
+        };
+        source.layers.swap(0, 1);
+        assert!(source.validate().is_err());
+
+        let mut non_source = source;
+        non_source.layers.swap(0, 1);
+        non_source.artifact_type = Some(MediaType::SpdxJson);
+        assert!(non_source.validate().is_err());
     }
 
     #[test]

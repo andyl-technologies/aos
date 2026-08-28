@@ -28,3 +28,54 @@ pub struct PackageArgs {
     #[arg(short = 'y', long, global = true)]
     pub yes: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use aos_package::RegistryCommand;
+    use clap::Parser as _;
+
+    use super::*;
+    use crate::cli::{Cli, Commands};
+
+    #[test]
+    fn registry_release_parses_paired_container_attachment_paths() {
+        let cli = Cli::try_parse_from([
+            "aos",
+            "package",
+            "registry",
+            "release",
+            "1.0.0",
+            "--container-release",
+            "containers-v1-index.json",
+            "--container-signature-input",
+            "signature-input.json",
+        ])
+        .expect("container registry release command");
+        let Commands::Package(PackageArgs {
+            command:
+                PackageCommand::Registry {
+                    command:
+                        RegistryCommand::Release {
+                            container_release,
+                            container_signature_input,
+                            ..
+                        },
+                    ..
+                },
+            ..
+        }) = cli.command
+        else {
+            panic!("expected registry release command");
+        };
+        assert_eq!(
+            container_release,
+            Some(PathBuf::from("containers-v1-index.json"))
+        );
+        assert_eq!(
+            container_signature_input,
+            Some(PathBuf::from("signature-input.json"))
+        );
+    }
+}

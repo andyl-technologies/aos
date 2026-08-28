@@ -8,8 +8,12 @@ use std::io::Write as _;
 use std::path::Path;
 
 use aos_oci_types::{
-    Annotations, Descriptor, HistoryEntry, ImageConfig, ImageIndex, ImageManifest,
-    ImageRuntimeConfig, MediaType, Platform, RootFs, RootFsType, Sha256Digest, to_canonical_json,
+    Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, ContainerEvidenceMappingQualification,
+    ContainerEvidenceQualification, ContainerEvidenceQualificationCheck, ContainerNixProvenance,
+    ContainerOciRelease, ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity,
+    Descriptor, HistoryEntry, ImageConfig, ImageIndex, ImageManifest, ImageRuntimeConfig,
+    MediaType, NixDefinitionIdentity, NixOutputIdentity, Platform, RootFs, RootFsType,
+    Sha256Digest, to_canonical_json,
 };
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -122,6 +126,171 @@ pub fn fixture() -> Fixture {
         manifest_descriptor,
         blobs,
         layer_descriptor,
+    }
+}
+
+pub fn add_signed_release_graph(fixture: &Fixture) -> ContainerRelease {
+    let index = Descriptor {
+        media_type: MediaType::OciImageIndex,
+        digest: Sha256Digest::digest(&fixture.index),
+        size: fixture.index.len() as u64,
+        urls: Vec::new(),
+        annotations: Annotations::new(),
+        data: None,
+        artifact_type: None,
+        platform: None,
+    };
+    let artifact = |role: &str, artifact_type: MediaType| {
+        let payload = to_canonical_json(&serde_json::json!({"role": role}))
+            .expect("canonical evidence payload");
+        let payload_descriptor = content_descriptor(artifact_type, &payload);
+        let empty = b"{}".to_vec();
+        let empty_descriptor = content_descriptor(MediaType::OciEmptyJson, &empty);
+        let source_archive = (artifact_type == MediaType::AosSourceClosure)
+            .then(|| content_descriptor(MediaType::AosSourceArchive, b"source archive fixture"));
+        let mut layers = vec![payload_descriptor.clone()];
+        layers.extend(source_archive.clone());
+        let manifest = ImageManifest {
+            schema_version: 2,
+            media_type: Some(MediaType::OciImageManifest),
+            artifact_type: Some(artifact_type),
+            config: empty_descriptor.clone(),
+            layers,
+            subject: Some(index.clone()),
+            annotations: Annotations::new(),
+        };
+        let manifest = to_canonical_json(&manifest).expect("canonical evidence manifest");
+        let mut manifest_descriptor = content_descriptor(MediaType::OciImageManifest, &manifest);
+        manifest_descriptor.artifact_type = Some(artifact_type);
+        for (descriptor, bytes) in [
+            (&empty_descriptor, empty.as_slice()),
+            (&payload_descriptor, payload.as_slice()),
+            (&manifest_descriptor, manifest.as_slice()),
+        ] {
+            fs::write(
+                fixture
+                    .root()
+                    .join("blobs/sha256")
+                    .join(descriptor.digest.encoded()),
+                bytes,
+            )
+            .expect("release evidence blob");
+        }
+        if let Some(source_archive) = source_archive {
+            fs::write(
+                fixture
+                    .root()
+                    .join("blobs/sha256")
+                    .join(source_archive.digest.encoded()),
+                b"source archive fixture",
+            )
+            .expect("source archive blob");
+        }
+        manifest_descriptor
+    };
+
+    ContainerRelease {
+        schema_version: 1,
+        media_type: MediaType::AosContainerRelease,
+        identity: ContainerReleaseIdentity {
+            release: "1.0.0".to_string(),
+            package: "aos".to_string(),
+            package_version: "0.1.0".to_string(),
+            image: "aos".to_string(),
+        },
+        oci: ContainerOciRelease {
+            index: index.clone(),
+            platform_manifests: vec![fixture.manifest_descriptor.clone()],
+        },
+        nix: ContainerNixProvenance {
+            definition: NixDefinitionIdentity {
+                attribute: "containerImages.aos".to_string(),
+                derivation_path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container.drv"
+                    .to_string(),
+            },
+            output: NixOutputIdentity {
+                name: "out".to_string(),
+                store_path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container".to_string(),
+            },
+            closure: artifact("closure", MediaType::AosNixClosure),
+        },
+        qualification: ready_qualification(),
+        evidence: ContainerReleaseEvidence {
+            sbom: artifact("sbom", MediaType::SpdxJson),
+            source: artifact("source", MediaType::AosSourceClosure),
+            license: artifact("license", MediaType::AosLicenseReport),
+            provenance: artifact("provenance", MediaType::InTotoJson),
+            signature: artifact("signature", MediaType::DsseEnvelope),
+        },
+    }
+}
+
+pub fn replace_signature_artifact(
+    fixture: &Fixture,
+    release: &mut ContainerRelease,
+    envelope: &[u8],
+) {
+    let payload_descriptor = content_descriptor(MediaType::DsseEnvelope, envelope);
+    let empty = b"{}".to_vec();
+    let empty_descriptor = content_descriptor(MediaType::OciEmptyJson, &empty);
+    let manifest = ImageManifest {
+        schema_version: 2,
+        media_type: Some(MediaType::OciImageManifest),
+        artifact_type: Some(MediaType::DsseEnvelope),
+        config: empty_descriptor.clone(),
+        layers: vec![payload_descriptor.clone()],
+        subject: Some(release.oci.index.clone()),
+        annotations: Annotations::new(),
+    };
+    let manifest = to_canonical_json(&manifest).expect("canonical signature artifact manifest");
+    let mut descriptor = content_descriptor(MediaType::OciImageManifest, &manifest);
+    descriptor.artifact_type = Some(MediaType::DsseEnvelope);
+    for (object, bytes) in [
+        (&empty_descriptor, empty.as_slice()),
+        (&payload_descriptor, envelope),
+        (&descriptor, manifest.as_slice()),
+    ] {
+        fs::write(
+            fixture
+                .root()
+                .join("blobs/sha256")
+                .join(object.digest.encoded()),
+            bytes,
+        )
+        .expect("container signature artifact blob");
+    }
+    release.evidence.signature = descriptor;
+}
+
+pub fn ready_qualification() -> ContainerEvidenceQualification {
+    ContainerEvidenceQualification {
+        schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
+        mapping: ContainerEvidenceMappingQualification {
+            complete: true,
+            unknown_paths: Vec::new(),
+        },
+        corresponding_source: ContainerEvidenceQualificationCheck {
+            complete: true,
+            unknown_paths: Vec::new(),
+        },
+        licensing: ContainerEvidenceQualificationCheck {
+            complete: true,
+            unknown_paths: Vec::new(),
+        },
+        ready_for_verified_publication: true,
+    }
+}
+
+fn content_descriptor(media_type: MediaType, bytes: &[u8]) -> Descriptor {
+    Descriptor {
+        media_type,
+        digest: Sha256Digest::digest(bytes),
+        size: bytes.len() as u64,
+        urls: Vec::new(),
+        annotations: Annotations::new(),
+        data: None,
+        artifact_type: None,
+        platform: None,
     }
 }
 

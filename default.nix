@@ -188,6 +188,34 @@
   containerConfigurations = import ./containers {
     inherit lib pkgs;
     goldenRoots = discoverSystems.server.config.environment.systemPackages;
+    evidenceOverrides = let
+      artifacts = discoverSystems.server.config.aos.config.artifacts;
+      version = discoverSystems.server.config.aos.system.version;
+      retainedSource = name: source:
+        pkgs.writeTextFile {
+          name = "aos-container-source-${name}";
+          text = builtins.readFile source;
+          destination = "/source/${builtins.baseNameOf source}";
+        };
+      bootStorageSource = retainedSource "boot-storage" ./modules/base/boot-storage.nix;
+    in [
+      {
+        output = artifacts.esp-mount;
+        outputName = "out";
+        pname = "aos-mount-esp";
+        inherit version;
+        licenses = ["Apache-2.0"];
+        sources = [bootStorageSource (retainedSource "mount-esp" ./modules/base/mount-esp.sh.in)];
+      }
+      {
+        output = artifacts.esp-sync;
+        outputName = "out";
+        pname = "aos-sync-esps";
+        inherit version;
+        licenses = ["Apache-2.0"];
+        sources = [bootStorageSource (retainedSource "sync-esps" ./modules/base/sync-esps.sh.in)];
+      }
+    ];
     aosSystem = hostPlatform.system;
   };
   ociBuilders = import ./lib/build/oci {
@@ -1131,6 +1159,11 @@ in {
         aosSystem = hostPlatform.system;
       };
       oci-builders = import ./tests/containers/oci-builders.nix {inherit pkgs lib;};
+      evidence = import ./tests/containers/evidence.nix {
+        inherit pkgs lib;
+        inherit (containerImages.aos.checks) evidence evidenceRepeat;
+        image = containerImages.aos.ociIndex;
+      };
       runtime = import ./tests/containers/runtime.nix {
         inherit pkgs lib;
         containerImage = containerImages.aos;

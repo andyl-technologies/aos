@@ -4,7 +4,9 @@
 
 use aos_oci_types::limits::SCHEMA_VERSION;
 use aos_oci_types::{
-    Annotations, CONTAINER_RELEASE_SCHEMA_VERSION, ContainerNixProvenance, ContainerOciRelease,
+    Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
+    ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
+    ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
     ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity, Descriptor,
     DistributionError, DistributionErrorCode, DistributionErrorEnvelope, HistoryEntry, ImageConfig,
     ImageIndex, ImageManifest, ImageRuntimeConfig, MediaType, NixDefinitionIdentity,
@@ -174,6 +176,22 @@ fn container_release_golden_vector() {
             },
             closure: artifact_descriptor(MediaType::AosNixClosure, b"closure"),
         },
+        qualification: ContainerEvidenceQualification {
+            schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
+            mapping: ContainerEvidenceMappingQualification {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            corresponding_source: ContainerEvidenceQualificationCheck {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            licensing: ContainerEvidenceQualificationCheck {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            ready_for_verified_publication: true,
+        },
         evidence: ContainerReleaseEvidence {
             sbom: artifact_descriptor(MediaType::SpdxJson, b"sbom"),
             source: artifact_descriptor(MediaType::AosSourceClosure, b"source"),
@@ -195,7 +213,8 @@ fn container_release_golden_vector() {
         r#""nix":{"closure":{"artifactType":"application/vnd.aos.nix-closure.v1+json","digest":"sha256:6d4cb937d6d22521566bba561458d0d1952df6df7a80e46ef5dab9014fbc3557","mediaType":"application/vnd.oci.image.manifest.v1+json","size":7},"#,
         r#""definition":{"attribute":"containerImages.aos","derivationPath":"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container.drv"},"output":{"name":"out","storePath":"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container"}},"#,
         r#""oci":{"index":{"digest":"sha256:1bc04b5291c26a46d918139138b992d2de976d6851d0893b0476b85bfbdfc6e6","mediaType":"application/vnd.oci.image.index.v1+json","size":5},"#,
-        r#""platformManifests":[{"digest":"sha256:8e7c7206e28f0d2a76643ceb44f86601b834c1dde73d45779114d7715c7dd7d7","mediaType":"application/vnd.oci.image.manifest.v1+json","platform":{"architecture":"amd64","os":"linux"},"size":14}]},"schemaVersion":1}"#,
+        r#""platformManifests":[{"digest":"sha256:8e7c7206e28f0d2a76643ceb44f86601b834c1dde73d45779114d7715c7dd7d7","mediaType":"application/vnd.oci.image.manifest.v1+json","platform":{"architecture":"amd64","os":"linux"},"size":14}]},"#,
+        r#""qualification":{"correspondingSource":{"complete":true,"unknownPaths":[]},"licensing":{"complete":true,"unknownPaths":[]},"mapping":{"complete":true,"unknownPaths":[]},"readyForVerifiedPublication":true,"schema":"aos.container.evidence-qualification/v1"},"schemaVersion":1}"#,
     );
     assert_eq!(json, expected.as_bytes());
     assert_eq!(

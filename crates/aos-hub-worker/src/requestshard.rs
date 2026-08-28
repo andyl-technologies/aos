@@ -183,13 +183,14 @@ pub(crate) fn oci_repository_from_path(path: &str) -> Option<aos_oci_types::Repo
 /// the shared router re-resolves authority and authorization from SQL.
 #[must_use]
 pub(crate) fn classify_oci_repository(
+    method: &str,
     registry_stable_id: &str,
     repository: &aos_oci_types::RepositoryName,
 ) -> RequestShardRoute {
     RequestShardRoute {
         kind: RequestShardKind::Registry,
         key: aos_hub_core::oci::oci_repository_affinity(registry_stable_id, repository),
-        read_only: true,
+        read_only: matches!(method, "GET" | "HEAD"),
         resource_specific: true,
     }
 }
@@ -502,22 +503,38 @@ mod tests {
         )
         .unwrap();
         assert_eq!(repository.as_str(), "team/runtime");
-        let first =
-            classify_oci_repository("registry:00000000000000000000000000000001", &repository);
+        let first = classify_oci_repository(
+            "GET",
+            "registry:00000000000000000000000000000001",
+            &repository,
+        );
         assert_eq!(first.kind, RequestShardKind::Registry);
         assert!(first.read_only);
         assert!(first.resource_specific);
         assert_eq!(first.key.len(), 32);
         assert_ne!(
             first,
-            classify_oci_repository("registry:00000000000000000000000000000002", &repository,)
+            classify_oci_repository(
+                "GET",
+                "registry:00000000000000000000000000000002",
+                &repository,
+            )
         );
         assert_ne!(
             first,
             classify_oci_repository(
+                "GET",
                 "registry:00000000000000000000000000000001",
                 &aos_oci_types::RepositoryName::parse("team/other").unwrap(),
             )
+        );
+        assert!(
+            !classify_oci_repository(
+                "PATCH",
+                "registry:00000000000000000000000000000001",
+                &repository,
+            )
+            .read_only
         );
         for path in [
             "/v2/",

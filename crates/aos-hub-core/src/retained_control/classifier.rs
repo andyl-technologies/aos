@@ -249,7 +249,10 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                 );
                 if !matches!(
                     path.as_str(),
-                    "PublishService/BeginRegistryPublication"
+                    "ContainerService/BeginContainerPublication"
+                        | "ContainerService/CommitContainerPublication"
+                        | "ContainerService/AbortContainerPublication"
+                        | "PublishService/BeginRegistryPublication"
                         | "PublishService/BeginRegistryPublicationManifest"
                         | "PublishService/AppendRegistryPublicationManifest"
                         | "PublishService/SealRegistryPublicationManifest"

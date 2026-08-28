@@ -24,6 +24,17 @@ mkDerivation {
     }
   ];
 
+  passthru.evidenceSources = [
+    (builtins.path {
+      path = ./aos-landlock.nix;
+      name = "aos-landlock.nix";
+    })
+    (builtins.path {
+      path = ./aos-landlock.c;
+      name = "aos-landlock.c";
+    })
+  ];
+
   checks = {
     testing,
     self,

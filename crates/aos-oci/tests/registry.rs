@@ -17,7 +17,7 @@ use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::header::{
-    AUTHORIZATION, CONTENT_RANGE, CONTENT_TYPE, LOCATION, RANGE, WWW_AUTHENTICATE,
+    AUTHORIZATION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, LOCATION, RANGE, WWW_AUTHENTICATE,
 };
 use axum::http::{HeaderMap, Method, Request, Response, StatusCode, Uri};
 use axum::routing::any;
@@ -29,18 +29,23 @@ struct RegistryState {
     base: String,
     blobs: Mutex<BTreeMap<String, Vec<u8>>>,
     manifests: Mutex<BTreeMap<String, (String, Vec<u8>)>>,
+    mount_sources: Mutex<BTreeMap<(String, String), Vec<u8>>>,
     uploads: Mutex<BTreeMap<String, Vec<u8>>>,
     events: Mutex<Vec<String>>,
     next_upload: AtomicU64,
     interrupt_blob_once: AtomicBool,
     stall_blob_once: AtomicBool,
     fail_patch_once: AtomicBool,
+    fail_cancel_once: AtomicBool,
     stall_patch_once: AtomicBool,
     invalid_ack_once: AtomicBool,
     delay_tag_once: AtomicBool,
     tag_started: Notify,
     fail_token: AtomicBool,
+    reject_registry_token_once: AtomicBool,
     token_requests: AtomicU64,
+    token_scopes: Mutex<Vec<Vec<String>>>,
+    challenge_scope: Mutex<Option<String>>,
 }
 
 struct TestRegistry {
@@ -48,6 +53,59 @@ struct TestRegistry {
     reference: RegistryReference,
     origin: String,
     task: tokio::task::JoinHandle<()>,
+}
+
+#[tokio::test]
+async fn signed_release_push_uploads_every_evidence_object_by_digest_only() {
+    let fixture = support::fixture();
+    let release = support::add_signed_release_graph(&fixture);
+    let registry = spawn_registry(None, false, false, false).await;
+    let reference = RegistryReference::parse(&format!(
+        "{}/aos@{}",
+        registry.reference.authority(),
+        release.oci.index.digest
+    ))
+    .expect("immutable release reference");
+    let client =
+        RegistryClient::new(&reference, Some(&registry.origin), None).expect("registry client");
+    let options = PushOptions {
+        source: fixture.root().to_path_buf(),
+        platform: PlatformSelector::native(),
+        state_directory: tempfile::tempdir()
+            .expect("state parent")
+            .path()
+            .join("state"),
+        chunk_bytes: 17,
+        cancellation: CancellationToken::new(),
+        events: None,
+    };
+
+    let pushed = client
+        .push_release_graph(&reference, &options, &release, &[])
+        .await
+        .expect("complete signed graph push");
+    assert_eq!(pushed.root_index_digest, release.oci.index.digest);
+    assert_eq!(pushed.object_count, 18);
+
+    let manifests = registry.state.manifests.lock().expect("manifest lock");
+    for descriptor in [
+        &release.oci.index,
+        &release.oci.platform_manifests[0],
+        &release.nix.closure,
+        &release.evidence.sbom,
+        &release.evidence.source,
+        &release.evidence.license,
+        &release.evidence.provenance,
+        &release.evidence.signature,
+    ] {
+        assert!(
+            manifests.contains_key(&descriptor.digest.to_string()),
+            "missing document {}",
+            descriptor.digest
+        );
+    }
+    assert!(!manifests.contains_key("latest"));
+    assert!(!manifests.contains_key("stable"));
 }
 
 impl Drop for TestRegistry {
@@ -277,6 +335,66 @@ async fn manifest_redirect_does_not_forward_credentials_or_follow_the_body() {
 }
 
 #[tokio::test]
+async fn upload_redirect_does_not_forward_credentials_or_chunk_bodies() {
+    let fixture = support::fixture();
+    let sink_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("upload redirect sink listener");
+    let sink_address = sink_listener.local_addr().expect("upload sink address");
+    let sink_requests = Arc::new(AtomicU64::new(0));
+    let sink_router = Router::new()
+        .fallback(any(record_redirect_sink))
+        .with_state(sink_requests.clone());
+    let sink_task = tokio::spawn(async move {
+        axum::serve(sink_listener, sink_router)
+            .await
+            .expect("upload redirect sink");
+    });
+
+    let registry_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("upload redirect registry listener");
+    let registry_address = registry_listener
+        .local_addr()
+        .expect("upload redirect registry address");
+    let redirect = format!("http://{sink_address}/credential-and-body-sink");
+    let registry_router = Router::new()
+        .fallback(any(redirect_upload_chunk))
+        .with_state(redirect);
+    let registry_task = tokio::spawn(async move {
+        axum::serve(registry_listener, registry_router)
+            .await
+            .expect("upload redirect registry");
+    });
+
+    let reference = RegistryReference::parse(&format!("{registry_address}/aos:latest"))
+        .expect("upload redirect reference");
+    let client = RegistryClient::new(
+        &reference,
+        Some(&format!("http://{registry_address}/")),
+        Some("credential-that-must-not-be-forwarded".to_string()),
+    )
+    .expect("upload redirect client");
+    let state_parent = tempfile::tempdir().expect("upload redirect state");
+    let options = PushOptions {
+        source: fixture.root().to_path_buf(),
+        platform: PlatformSelector::parse("linux/amd64").expect("platform"),
+        state_directory: state_parent.path().join("uploads"),
+        chunk_bytes: 11,
+        cancellation: CancellationToken::new(),
+        events: None,
+    };
+    let error = client
+        .push(&reference, &options)
+        .await
+        .expect_err("cross-origin upload redirect must be refused");
+    assert!(format!("{error:#}").contains("HTTP 307"));
+    assert_eq!(sink_requests.load(Ordering::SeqCst), 0);
+    registry_task.abort();
+    sink_task.abort();
+}
+
+#[tokio::test]
 async fn in_flight_manifest_wait_is_cancellable_and_clients_are_authority_bound() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -408,6 +526,28 @@ async fn in_flight_blob_and_upload_waits_are_cancellable() {
         .await
         .expect_err("stalled upload cancellation");
     assert!(format!("{error:#}").contains("cancelled"));
+
+    let resumed = PushOptions {
+        source: push_options.source.clone(),
+        platform: push_options.platform.clone(),
+        state_directory: push_options.state_directory.clone(),
+        chunk_bytes: push_options.chunk_bytes,
+        cancellation: CancellationToken::new(),
+        events: None,
+    };
+    push_client
+        .push(&push_registry.reference, &resumed)
+        .await
+        .expect("resume zero-byte live upload");
+    assert!(
+        push_registry
+            .state
+            .events
+            .lock()
+            .expect("push events")
+            .iter()
+            .any(|event| event == "upload-query:0")
+    );
 }
 
 #[tokio::test]
@@ -486,6 +626,11 @@ async fn interrupted_push_resumes_and_updates_the_tag_last() {
             .iter()
             .any(|event| event.starts_with("upload-query:"))
     );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.starts_with("upload-hint:sha256:") && event.contains(":size="))
+    );
     assert_eq!(events.last().map(String::as_str), Some("manifest:latest"));
     let digest_event = format!("manifest:{}", published.published_index_digest);
     let digest_position = events
@@ -509,6 +654,275 @@ async fn interrupted_push_resumes_and_updates_the_tag_last() {
     assert_eq!(
         Sha256Digest::digest(&tagged),
         published.published_index_digest
+    );
+}
+
+#[tokio::test]
+async fn duplicate_blobs_are_reused_and_cross_repository_mounts_use_both_grants() {
+    let fixture = support::fixture();
+    let registry = spawn_registry(None, false, false, false).await;
+    {
+        let mut sources = registry
+            .state
+            .mount_sources
+            .lock()
+            .expect("mount source lock");
+        for (digest, bytes) in &fixture.blobs {
+            if digest != &fixture.manifest_descriptor.digest {
+                sources.insert(("base".to_string(), digest.to_string()), bytes.clone());
+            }
+        }
+    }
+    let client = RegistryClient::new(
+        &registry.reference,
+        Some(&registry.origin),
+        Some("hub-seed-secret".to_string()),
+    )
+    .expect("registry client");
+    let state_directory = tempfile::tempdir().expect("upload state");
+    let options = PushOptions {
+        source: fixture.root().to_path_buf(),
+        platform: PlatformSelector::parse("linux/amd64").expect("platform"),
+        state_directory: state_directory.path().join("uploads"),
+        chunk_bytes: 11,
+        cancellation: CancellationToken::new(),
+        events: None,
+    };
+    let source = aos_oci_types::RepositoryName::parse("base").expect("source repository");
+
+    client
+        .push_with_mounts(&registry.reference, &options, &[source])
+        .await
+        .expect("mounted push");
+    let source = aos_oci_types::RepositoryName::parse("base").expect("source repository");
+    client
+        .push_with_mounts(&registry.reference, &options, &[source])
+        .await
+        .expect("duplicate-reuse push");
+
+    let events = registry.state.events.lock().expect("events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.starts_with("mount:base:"))
+            .count(),
+        2,
+        "events: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .filter(|event| event.starts_with("mount:base:"))
+            .all(|event| !event.ends_with("size=missing")),
+        "events: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.starts_with("PATCH:/v2/aos/blobs/uploads/")),
+        "events: {events:?}"
+    );
+    drop(events);
+
+    let scopes = registry.state.token_scopes.lock().expect("token scopes");
+    assert!(scopes.iter().any(|scopes| {
+        scopes
+            == &[
+                "repository:aos:pull,push".to_string(),
+                "repository:base:pull".to_string(),
+            ]
+    }));
+}
+
+#[tokio::test]
+async fn exact_noncanonical_manifest_and_index_bytes_are_preserved() {
+    let fixture = support::fixture();
+    let source_index = serde_json::to_vec_pretty(
+        &serde_json::from_slice::<serde_json::Value>(&fixture.index).expect("fixture index JSON"),
+    )
+    .expect("pretty index");
+    fs::write(fixture.root().join("index.json"), &source_index).expect("replace exact index");
+
+    let registry = spawn_registry(None, false, false, false).await;
+    let client = RegistryClient::new(&registry.reference, Some(&registry.origin), None)
+        .expect("registry client");
+    let state_directory = tempfile::tempdir().expect("upload state");
+    let options = PushOptions {
+        source: fixture.root().to_path_buf(),
+        platform: PlatformSelector::parse("linux/amd64").expect("platform"),
+        state_directory: state_directory.path().join("uploads"),
+        chunk_bytes: 1024,
+        cancellation: CancellationToken::new(),
+        events: None,
+    };
+    client
+        .push(&registry.reference, &options)
+        .await
+        .expect("exact push");
+
+    let manifests = registry.state.manifests.lock().expect("manifests");
+    assert_eq!(
+        &manifests.get("latest").expect("tagged exact index").1,
+        &source_index
+    );
+    assert_eq!(
+        &manifests
+            .get(&fixture.manifest_descriptor.digest.to_string())
+            .expect("exact child manifest")
+            .1,
+        &fixture.manifest
+    );
+}
+
+#[tokio::test]
+async fn multi_platform_push_publishes_only_the_selected_closed_graph() {
+    let fixture = support::fixture();
+    let mut index = ImageIndex::from_json(&fixture.index).expect("fixture index");
+    let unselected_digest = Sha256Digest::digest(b"unselected-arm64-manifest");
+    index.manifests.push(Descriptor {
+        media_type: MediaType::OciImageManifest,
+        digest: unselected_digest,
+        size: 4096,
+        urls: Vec::new(),
+        annotations: Annotations::new(),
+        data: None,
+        artifact_type: None,
+        platform: Some(Platform {
+            architecture: "arm64".to_string(),
+            os: "linux".to_string(),
+            os_version: None,
+            os_features: Vec::new(),
+            variant: None,
+            features: Vec::new(),
+        }),
+    });
+    index.validate().expect("multi-platform fixture index");
+    fs::write(
+        fixture.root().join("index.json"),
+        to_canonical_json(&index).expect("multi-platform fixture JSON"),
+    )
+    .expect("multi-platform index");
+
+    let registry = spawn_registry(None, false, false, false).await;
+    let client = RegistryClient::new(&registry.reference, Some(&registry.origin), None)
+        .expect("registry client");
+    let state_directory = tempfile::tempdir().expect("upload state");
+    let options = PushOptions {
+        source: fixture.root().to_path_buf(),
+        platform: PlatformSelector::parse("linux/amd64").expect("platform"),
+        state_directory: state_directory.path().join("uploads"),
+        chunk_bytes: 1024,
+        cancellation: CancellationToken::new(),
+        events: None,
+    };
+    client
+        .push(&registry.reference, &options)
+        .await
+        .expect("selected-platform push");
+
+    let manifests = registry.state.manifests.lock().expect("manifests");
+    let selected = ImageIndex::from_json(&manifests.get("latest").expect("tagged index").1)
+        .expect("selected index");
+    assert_eq!(selected.manifests.len(), 1);
+    assert_eq!(
+        selected.manifests[0].platform.as_ref(),
+        Some(&Platform::linux_amd64())
+    );
+    assert!(
+        !registry
+            .state
+            .events
+            .lock()
+            .expect("events")
+            .iter()
+            .any(|event| event.contains(&unselected_digest.to_string()))
+    );
+}
+
+#[tokio::test]
+async fn digest_delete_and_upload_cancellation_retries_transient_unavailability() {
+    let fixture = support::fixture();
+    let registry = spawn_registry(None, false, true, false).await;
+    let client = RegistryClient::new(&registry.reference, Some(&registry.origin), None)
+        .expect("registry client");
+    let state_directory = tempfile::tempdir().expect("upload state");
+    let upload_state = state_directory.path().join("uploads");
+    let options = PushOptions {
+        source: fixture.root().to_path_buf(),
+        platform: PlatformSelector::parse("linux/amd64").expect("platform"),
+        state_directory: upload_state.clone(),
+        chunk_bytes: 11,
+        cancellation: CancellationToken::new(),
+        events: None,
+    };
+    client
+        .push(&registry.reference, &options)
+        .await
+        .expect_err("interrupted upload fixture");
+    registry
+        .state
+        .fail_cancel_once
+        .store(true, Ordering::SeqCst);
+    assert_eq!(
+        client
+            .cancel_uploads(
+                &registry.reference,
+                &upload_state,
+                &CancellationToken::new()
+            )
+            .await
+            .expect("cancel upload"),
+        1
+    );
+    assert_eq!(
+        client
+            .cancel_uploads(
+                &registry.reference,
+                &upload_state,
+                &CancellationToken::new()
+            )
+            .await
+            .expect("idempotent cancellation"),
+        0
+    );
+    assert_eq!(
+        registry
+            .state
+            .events
+            .lock()
+            .expect("events")
+            .iter()
+            .filter(|event| event.starts_with("DELETE:/v2/aos/blobs/uploads/"))
+            .count(),
+        2
+    );
+
+    client
+        .delete_manifest(&registry.reference, &CancellationToken::new())
+        .await
+        .expect_err("tag deletion is forbidden");
+    let digest = Sha256Digest::digest(b"delete-me");
+    registry.state.manifests.lock().expect("manifests").insert(
+        digest.to_string(),
+        (
+            MediaType::OciImageIndex.as_str().to_string(),
+            b"delete-me".to_vec(),
+        ),
+    );
+    let digest_reference =
+        RegistryReference::parse(&format!("{}/aos@{digest}", registry.reference.authority()))
+            .expect("digest reference");
+    client
+        .delete_manifest(&digest_reference, &CancellationToken::new())
+        .await
+        .expect("delete digest");
+    assert!(
+        !registry
+            .state
+            .manifests
+            .lock()
+            .expect("manifests")
+            .contains_key(&digest.to_string())
     );
 }
 
@@ -817,6 +1231,100 @@ async fn bearer_failures_never_render_seed_credentials() {
     assert!(!format!("{error:#}").contains(secret));
 }
 
+#[tokio::test]
+async fn bearer_challenge_accepts_only_same_repository_action_subsets() {
+    let fixture = support::fixture();
+    let registry = spawn_registry(None, false, false, false).await;
+    *registry
+        .state
+        .challenge_scope
+        .lock()
+        .expect("challenge scope lock") = Some("repository:aos:pull".to_string());
+    let client = RegistryClient::new(
+        &registry.reference,
+        Some(&registry.origin),
+        Some("hub-seed-secret".to_string()),
+    )
+    .expect("registry client");
+    let state_parent = tempfile::tempdir().expect("upload state parent");
+    let options = PushOptions::native(
+        fixture.root().to_path_buf(),
+        state_parent.path().join("uploads"),
+    );
+
+    client
+        .push(&registry.reference, &options)
+        .await
+        .expect("same-repository pull challenge must narrow pull,push");
+    assert_eq!(
+        *registry.state.token_scopes.lock().expect("token scopes"),
+        vec![vec!["repository:aos:pull,push".to_string()]]
+    );
+
+    assert_push_challenge_rejected(&fixture, "repository:other:pull").await;
+    assert_push_challenge_rejected(&fixture, "repository:aos:pull,delete").await;
+}
+
+async fn assert_push_challenge_rejected(fixture: &support::Fixture, challenge_scope: &str) {
+    let registry = spawn_registry(None, false, false, false).await;
+    *registry
+        .state
+        .challenge_scope
+        .lock()
+        .expect("challenge scope lock") = Some(challenge_scope.to_string());
+    let client = RegistryClient::new(
+        &registry.reference,
+        Some(&registry.origin),
+        Some("hub-seed-secret".to_string()),
+    )
+    .expect("registry client");
+    let state_parent = tempfile::tempdir().expect("upload state parent");
+    let options = PushOptions::native(
+        fixture.root().to_path_buf(),
+        state_parent.path().join("uploads"),
+    );
+
+    let error = client
+        .push(&registry.reference, &options)
+        .await
+        .expect_err("challenge must not expand the requested repository grant");
+    assert!(
+        error
+            .to_string()
+            .contains("different repository or additional action scope")
+    );
+    assert_eq!(registry.state.token_requests.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn an_expired_cached_registry_token_is_refreshed_once() {
+    let fixture = support::fixture();
+    let registry = spawn_registry(Some(&fixture), false, false, false).await;
+    let client = RegistryClient::new(
+        &registry.reference,
+        Some(&registry.origin),
+        Some("hub-seed-secret".to_string()),
+    )
+    .expect("registry client");
+    let first_parent = tempfile::tempdir().expect("first pull parent");
+    let first = PullOptions::native(first_parent.path().join("layout"));
+    client
+        .pull(&registry.reference, &first)
+        .await
+        .expect("initial authenticated pull");
+    registry
+        .state
+        .reject_registry_token_once
+        .store(true, Ordering::SeqCst);
+    let second_parent = tempfile::tempdir().expect("second pull parent");
+    let second = PullOptions::native(second_parent.path().join("layout"));
+    client
+        .pull(&registry.reference, &second)
+        .await
+        .expect("pull after token refresh");
+    assert_eq!(registry.state.token_requests.load(Ordering::SeqCst), 2);
+}
+
 async fn spawn_registry(
     fixture: Option<&support::Fixture>,
     interrupt_blob_once: bool,
@@ -864,18 +1372,23 @@ async fn spawn_registry(
         base: origin.clone(),
         blobs: Mutex::new(blobs),
         manifests: Mutex::new(manifests),
+        mount_sources: Mutex::new(BTreeMap::new()),
         uploads: Mutex::new(BTreeMap::new()),
         events: Mutex::new(Vec::new()),
         next_upload: AtomicU64::new(1),
         interrupt_blob_once: AtomicBool::new(interrupt_blob_once),
         stall_blob_once: AtomicBool::new(false),
         fail_patch_once: AtomicBool::new(fail_patch_once),
+        fail_cancel_once: AtomicBool::new(false),
         stall_patch_once: AtomicBool::new(false),
         invalid_ack_once: AtomicBool::new(false),
         delay_tag_once: AtomicBool::new(false),
         tag_started: Notify::new(),
         fail_token: AtomicBool::new(fail_token),
+        reject_registry_token_once: AtomicBool::new(false),
         token_requests: AtomicU64::new(0),
+        token_scopes: Mutex::new(Vec::new()),
+        challenge_scope: Mutex::new(None),
     });
     let router = Router::new()
         .fallback(any(handle))
@@ -912,6 +1425,29 @@ async fn redirect_every_request(
         .expect("redirect response")
 }
 
+async fn redirect_upload_chunk(
+    State(location): State<String>,
+    request: Request<Body>,
+) -> Response<Body> {
+    let path = request.uri().path();
+    match (request.method(), path) {
+        (&Method::HEAD, path) if path.starts_with("/v2/aos/blobs/") => {
+            response(StatusCode::NOT_FOUND, Body::empty())
+        }
+        (&Method::POST, "/v2/aos/blobs/uploads/") => Response::builder()
+            .status(StatusCode::ACCEPTED)
+            .header(LOCATION, "/upload/1")
+            .body(Body::empty())
+            .expect("upload start response"),
+        (&Method::PATCH, "/upload/1") => Response::builder()
+            .status(StatusCode::TEMPORARY_REDIRECT)
+            .header(LOCATION, location)
+            .body(Body::empty())
+            .expect("upload body redirect"),
+        _ => response(StatusCode::NOT_FOUND, Body::empty()),
+    }
+}
+
 async fn stall_forever(_request: Request<Body>) -> Response<Body> {
     std::future::pending::<Response<Body>>().await
 }
@@ -923,7 +1459,13 @@ async fn handle(State(state): State<Arc<RegistryState>>, request: Request<Body>)
         .expect("request body");
     let path = parts.uri.path();
     if path == "/token" {
-        return token_response(&state, &parts.headers);
+        return token_response(&state, &parts.headers, &parts.uri);
+    }
+    if state
+        .reject_registry_token_once
+        .swap(false, Ordering::SeqCst)
+    {
+        return challenge(&state);
     }
     if !authorized(&parts.headers) {
         return challenge(&state);
@@ -949,8 +1491,27 @@ async fn handle(State(state): State<Arc<RegistryState>>, request: Request<Body>)
     {
         return blob_response(&state, &parts.method, digest, &parts.headers);
     }
+    if let Some(remainder) = path.strip_prefix("/v2/")
+        && let Some((repository, digest)) = remainder.split_once("/blobs/")
+        && repository != "aos"
+        && parts.method == Method::HEAD
+    {
+        let sources = state.mount_sources.lock().expect("mount source lock");
+        let Some(bytes) = sources.get(&(repository.to_string(), digest.to_string())) else {
+            return response(StatusCode::NOT_FOUND, Body::empty());
+        };
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_LENGTH, bytes.len())
+            .header("docker-content-digest", digest)
+            .body(Body::empty())
+            .expect("mount source HEAD response");
+    }
     if path == "/v2/aos/blobs/uploads/" && parts.method == Method::POST {
-        return start_upload(&state);
+        if let Some(mounted) = mount_response(&state, &parts.uri) {
+            return mounted;
+        }
+        return start_upload(&state, &parts.uri);
     }
     if let Some(identifier) = path.strip_prefix("/v2/aos/blobs/uploads/") {
         return upload_response(&state, &parts.method, identifier, &parts.uri, body).await;
@@ -966,17 +1527,27 @@ fn authorized(headers: &HeaderMap) -> bool {
 }
 
 fn challenge(state: &RegistryState) -> Response<Body> {
+    let scope = state
+        .challenge_scope
+        .lock()
+        .expect("challenge scope lock")
+        .as_ref()
+        .map(|scope| format!(",scope=\"{scope}\""))
+        .unwrap_or_default();
     Response::builder()
         .status(StatusCode::UNAUTHORIZED)
         .header(
             WWW_AUTHENTICATE,
-            format!("Bearer realm=\"{}token\",service=\"aos-test\"", state.base),
+            format!(
+                "Bearer realm=\"{}token\",service=\"aos-test\"{scope}",
+                state.base
+            ),
         )
         .body(Body::empty())
         .expect("challenge response")
 }
 
-fn token_response(state: &RegistryState, headers: &HeaderMap) -> Response<Body> {
+fn token_response(state: &RegistryState, headers: &HeaderMap, uri: &Uri) -> Response<Body> {
     state.token_requests.fetch_add(1, Ordering::SeqCst);
     let authorization = headers
         .get(AUTHORIZATION)
@@ -991,7 +1562,49 @@ fn token_response(state: &RegistryState, headers: &HeaderMap) -> Response<Body> 
     if state.fail_token.load(Ordering::SeqCst) {
         return response(StatusCode::INTERNAL_SERVER_ERROR, Body::empty());
     }
+    let mut scopes = uri
+        .query()
+        .into_iter()
+        .flat_map(|query| url::form_urlencoded::parse(query.as_bytes()))
+        .filter_map(|(key, value)| (key == "scope").then(|| value.into_owned()))
+        .collect::<Vec<_>>();
+    scopes.sort();
+    state
+        .token_scopes
+        .lock()
+        .expect("token scopes")
+        .push(scopes);
     response(StatusCode::OK, Body::from(r#"{"token":"registry-token"}"#))
+}
+
+fn mount_response(state: &RegistryState, uri: &Uri) -> Option<Response<Body>> {
+    let query = url::form_urlencoded::parse(uri.query()?.as_bytes())
+        .into_owned()
+        .collect::<BTreeMap<_, _>>();
+    let source = query.get("from")?;
+    let digest = query.get("mount")?;
+    let bytes = state
+        .mount_sources
+        .lock()
+        .expect("mount source lock")
+        .get(&(source.clone(), digest.clone()))
+        .cloned()?;
+    state
+        .blobs
+        .lock()
+        .expect("blob lock")
+        .insert(digest.clone(), bytes);
+    state.events.lock().expect("event lock").push(format!(
+        "mount:{source}:{digest}:size={}",
+        query.get("size").map(String::as_str).unwrap_or("missing")
+    ));
+    Some(
+        Response::builder()
+            .status(StatusCode::CREATED)
+            .header("docker-content-digest", digest)
+            .body(Body::empty())
+            .expect("mount response"),
+    )
 }
 
 fn manifest_response(
@@ -1036,6 +1649,14 @@ fn manifest_response(
             .push(format!("manifest:{reference}"));
         return response(StatusCode::CREATED, Body::empty());
     }
+    if method == Method::DELETE {
+        state
+            .manifests
+            .lock()
+            .expect("manifest lock")
+            .remove(reference);
+        return response(StatusCode::ACCEPTED, Body::empty());
+    }
     response(StatusCode::METHOD_NOT_ALLOWED, Body::empty())
 }
 
@@ -1050,7 +1671,12 @@ fn blob_response(
         return response(StatusCode::NOT_FOUND, Body::empty());
     };
     if method == Method::HEAD {
-        return response(StatusCode::OK, Body::empty());
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_LENGTH, bytes.len())
+            .header("docker-content-digest", digest)
+            .body(Body::empty())
+            .expect("blob HEAD response");
     }
     if method != Method::GET {
         return response(StatusCode::METHOD_NOT_ALLOWED, Body::empty());
@@ -1088,7 +1714,18 @@ fn blob_response(
     response(StatusCode::OK, Body::from(bytes.clone()))
 }
 
-fn start_upload(state: &RegistryState) -> Response<Body> {
+fn start_upload(state: &RegistryState, uri: &Uri) -> Response<Body> {
+    let hints = uri
+        .query()
+        .into_iter()
+        .flat_map(|query| url::form_urlencoded::parse(query.as_bytes()))
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<BTreeMap<_, _>>();
+    state.events.lock().expect("event lock").push(format!(
+        "upload-hint:{}:size={}",
+        hints.get("digest").map(String::as_str).unwrap_or("missing"),
+        hints.get("size").map(String::as_str).unwrap_or("missing")
+    ));
     let identifier = state.next_upload.fetch_add(1, Ordering::SeqCst).to_string();
     state
         .uploads
@@ -1179,6 +1816,17 @@ async fn upload_response(
             .header("docker-content-digest", digest)
             .body(Body::empty())
             .expect("final upload response");
+    }
+    if method == Method::DELETE {
+        if state.fail_cancel_once.swap(false, Ordering::SeqCst) {
+            return response(StatusCode::SERVICE_UNAVAILABLE, Body::empty());
+        }
+        state
+            .uploads
+            .lock()
+            .expect("upload lock")
+            .remove(identifier);
+        return response(StatusCode::NO_CONTENT, Body::empty());
     }
     response(StatusCode::METHOD_NOT_ALLOWED, Body::empty())
 }

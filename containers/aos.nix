@@ -8,6 +8,7 @@
   lib,
   pkgs,
   goldenRoots,
+  evidenceOverrides ? [],
   aosSystem,
 }: let
   hostSystem = pkgs.stdenv.hostPlatform.system;
@@ -167,7 +168,10 @@ in {
     };
     publication = {
       repository = "aos";
-      releaseIdentity = "containers/aos";
+      # The strict Hub sidecar binds the exact signed APR package release.
+      # Repository/image identity is carried separately as `aos`.
+      releaseIdentity = pkgs.aos.version;
+      inherit evidenceOverrides;
     };
   };
 }
