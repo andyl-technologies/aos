@@ -157,10 +157,16 @@ table {
   margin: 0.6rem 0 1.6rem;
 }
 .table-scroll {
+  width: 100%;
   max-width: 100%;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
 }
+.table-scroll table {
+  width: max-content;
+  min-width: 100%;
+}
+.table-scroll td { max-width: 36rem; }
 .table-scroll:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -183,10 +189,11 @@ th, td {
    * headings (which the eye otherwise reads as another table line). */
   border-bottom: 1px solid var(--rule-faint);
   vertical-align: top;
-  /* Long unbreakable strings (trust keys, store paths, NAR hashes) must
-   * wrap inside the cell rather than widen the table past the page. */
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  /* Keep identifiers and headings intact. Tables live in bounded horizontal
+   * scroll regions, so narrow viewports do not force words to split in the
+   * middle or allow the page itself to grow wider than its content area. */
+  overflow-wrap: normal;
+  word-break: normal;
 }
 th {
   color: var(--dim);
@@ -199,38 +206,44 @@ th {
 }
 td.num { text-align: right; }
 
-/* Hashes use one bounded identity control everywhere: a distinctive pill for
- * scanning, the complete value in a custom tooltip, and an adjacent copy
- * action. The button appears only after the enhancement bundle confirms that
- * the Clipboard API is available. */
+/* Hashes use one bounded identity control everywhere: a license-pill-sized
+ * identity and an icon-only copy action inside the same outline. The complete
+ * value remains available in a tooltip. */
 .hash-control {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
   max-width: 100%;
+  padding: 0 0.12rem 0 0.45rem;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--ink);
+  font-size: 0.8rem;
+  line-height: 1.45;
   white-space: nowrap;
 }
 .hash-value {
   display: inline-flex;
   min-width: 0;
-  padding: 0.08rem 0.48rem;
-  border: 1px solid var(--rule-strong);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--ink) 4%, var(--paper));
   color: var(--ink);
   cursor: help;
   text-decoration: none;
 }
 .hash-value code {
   overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: inherit;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .hash-value:hover,
 .hash-value:focus-visible {
-  border-color: var(--accent);
+  color: var(--accent);
   outline: none;
 }
+.hash-control:hover,
+.hash-control:focus-within { border-color: var(--accent); }
 .hash-tooltip {
   display: none;
   position: fixed;
@@ -249,12 +262,32 @@ td.num { text-align: right; }
 .hash-tooltip.open { display: block; }
 .hash-copy {
   display: none;
-  padding: 0.05rem 0.38rem;
-  border-color: var(--rule-strong);
+  width: 1.35rem;
+  height: 1.35rem;
+  margin-left: 0.18rem;
+  padding: 0.2rem;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
   color: var(--dim);
-  font-size: 0.72rem;
+  line-height: 1;
 }
-.hash-controls-ready .hash-copy { display: inline-block; }
+.hash-controls-ready .hash-copy { display: inline-grid; place-items: center; }
+.hash-copy:hover { color: var(--accent); background: transparent; }
+.hash-copy:focus-visible { border: 0; outline-offset: 0; }
+.hash-copy svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.4;
+}
+.hash-copy-done { display: none; }
+.hash-copy.copied { color: var(--ok); }
+.hash-copy.copied .hash-copy-icon { display: none; }
+.hash-copy.copied .hash-copy-done { display: block; }
 
 /* Bindings — a compact stacked list, not a 4-column table: a long
  * object-store endpoint URL gets the full content width to wrap into rather

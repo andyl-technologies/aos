@@ -228,9 +228,16 @@ pub fn key_fingerprint(b64: &str) -> String {
 /// escape all dynamic text via [`escape`].
 #[must_use]
 pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
-    let mut out = String::from("<table>\n<thead><tr>");
+    let subject = headers.first().copied().unwrap_or("Data");
+    let label = format!("{subject} table");
+    let mut out = format!(
+        "<div class=\"table-scroll\" role=\"region\" aria-label=\"{}\" tabindex=\"0\">\
+         <table>\n<caption class=\"visually-hidden\">{}</caption><thead><tr>",
+        escape(&format!("Scrollable {label}")),
+        escape(&label),
+    );
     for header in headers {
-        let _ = write!(out, "<th>{}</th>", escape(header));
+        let _ = write!(out, "<th scope=\"col\">{}</th>", escape(header));
     }
     out.push_str("</tr></thead>\n<tbody>\n");
     for row in rows {
@@ -240,7 +247,7 @@ pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
         }
         out.push_str("</tr>\n");
     }
-    out.push_str("</tbody>\n</table>\n");
+    out.push_str("</tbody>\n</table></div>\n");
     out
 }
 
@@ -283,7 +290,12 @@ fn hash_value_with_link(value: &str, href: Option<&str>) -> String {
     format!(
         "<span class=\"hash-control\">{}\
          <button type=\"button\" class=\"hash-copy\" data-copy-value=\"{}\" \
-         aria-label=\"Copy full hash\">copy</button></span>",
+         aria-label=\"Copy full hash\" title=\"Copy full hash\">\
+         <svg class=\"hash-copy-icon\" aria-hidden=\"true\" viewBox=\"0 0 16 16\">\
+         <rect x=\"5.5\" y=\"5.5\" width=\"7\" height=\"7\" rx=\"1\"/>\
+         <path d=\"M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2\"/>\
+         </svg><svg class=\"hash-copy-done\" aria-hidden=\"true\" viewBox=\"0 0 16 16\">\
+         <path d=\"m3 8 3 3 7-7\"/></svg></button></span>",
         identity,
         escape(presentation.full),
     )
@@ -785,6 +797,16 @@ mod tests {
         assert!(html.contains(">sha256:01234…</code>"));
         assert!(html.contains(&format!("data-hash-value=\"{hash}\"")));
         assert!(html.contains(&format!("data-copy-value=\"{hash}\"")));
+        assert!(html.contains("class=\"hash-copy-icon\""));
+        assert!(!html.contains(">copy</button>"));
+    }
+
+    #[test]
+    fn tables_render_inside_bounded_scroll_regions() {
+        let html = table(&["very long heading"], &[vec!["value".to_string()]]);
+        assert!(html.starts_with("<div class=\"table-scroll\""));
+        assert!(html.contains("<th scope=\"col\">very long heading</th>"));
+        assert!(html.ends_with("</table></div>\n"));
     }
 
     #[test]

@@ -735,6 +735,54 @@ pub struct PackageBrowse<'a> {
     pub platforms: &'a [String],
 }
 
+/// Returns the compact identifier displayed inside a package license pill.
+///
+/// Package metadata retains the complete SPDX-style expression for filtering
+/// and the hover title. This presentation map keeps the inventory scannable;
+/// an unknown or already-short value passes through unchanged.
+fn license_pill_label(license: &str) -> &str {
+    match license {
+        "AFL-2.1" => "AFL",
+        "AGPL-3.0" => "AGPLv3",
+        "Apache-2.0" => "Apache",
+        "Artistic-1.0-Perl" => "Artistic",
+        "BSD-2-Clause" => "BSD-2",
+        "BSD-2-Clause-Patent" => "BSD-2-Patent",
+        "BSD-3-Clause" => "BSD-3",
+        "BSD-3-Clause OR GPL-2.0-only" => "BSD-3/GPLv2",
+        "BSL-1.0" => "BSL",
+        "CC0-1.0" => "CC0",
+        "CDDL-1.0" => "CDDL",
+        "EPL-1.0" => "EPL",
+        "FTL OR GPL-2.0-or-later" => "FTL/GPLv2+",
+        "GPL-2.0" | "GPL-2.0-only" => "GPLv2",
+        "GPL-2.0-only AND GPL-2.0-or-later AND MIT" => "GPLv2/MIT",
+        "GPL-2.0-only WITH GCC-exception-3.1" => "GPLv2+GCC",
+        "GPL-2.0-or-later" => "GPLv2+",
+        "GPL-2.0-or-later OR Apache-2.0" => "GPLv2+/Apache",
+        "GPL-2.0-with-classpath-exception" => "GPLv2+Classpath",
+        "GPL-3.0-only" => "GPLv3",
+        "GPL-3.0-or-later" => "GPLv3+",
+        "GPL-3.0-or-later WITH GCC-exception-3.1" => "GPLv3+GCC",
+        "IPL-1.0" => "IPL",
+        "Intel-ACPI OR GPL-2.0-only OR BSD-3-Clause" => "ACPI/GPL2/BSD3",
+        "LGPL-2.1-only" => "LGPLv2.1",
+        "LGPL-2.1-only OR BSD-2-Clause" => "LGPLv2.1/BSD-2",
+        "LGPL-2.1-or-later" => "LGPLv2.1+",
+        "LGPL-3.0-or-later" => "LGPLv3+",
+        "Linux-firmware" => "Linux FW",
+        "MIT OR Apache-2.0" => "MIT/Apache",
+        "MIT OR GPL-2.0-only" => "MIT/GPLv2",
+        "MPL-2.0" => "MPLv2",
+        "NVIDIA-Software-License" => "NVIDIA",
+        "PSF-2.0" => "PSF",
+        "Public Domain" | "public-domain" => "Public domain",
+        "Python-2.0" => "Python",
+        "bzip2-1.0.6" => "bzip2",
+        _ => license,
+    }
+}
+
 /// Render a sortable column header as a tri-state sort link.
 ///
 /// The displayed glyph reflects this column's *current* state (▼ descending,
@@ -866,7 +914,7 @@ pub fn package_index(
                     escape(&p.license),
                     escape(slug),
                     urlencode(&format!("license == \"{}\"", p.license)),
-                    escape(&p.license),
+                    escape(license_pill_label(&p.license)),
                 )
             };
             vec![
@@ -3310,6 +3358,17 @@ mod tests {
         assert!(html.contains("filter error:"));
     }
 
+    #[test]
+    fn package_license_pills_use_short_mapped_labels() {
+        assert_eq!(license_pill_label("Apache-2.0"), "Apache");
+        assert_eq!(license_pill_label("LGPL-2.1-or-later"), "LGPLv2.1+");
+        assert_eq!(
+            license_pill_label("Intel-ACPI OR GPL-2.0-only OR BSD-3-Clause"),
+            "ACPI/GPL2/BSD3"
+        );
+        assert_eq!(license_pill_label("custom-license"), "custom-license");
+    }
+
     #[tokio::test]
     async fn health_page_caps_missing_drilldown() {
         let run = ValidationRunRow {
@@ -3474,7 +3533,7 @@ mod tests {
         assert!(html.contains("Missing from https://cache.example"));
         assert!(html.contains("miss000"));
         // The validation table carries a corrupt column.
-        assert!(html.contains("<th>corrupt</th>"));
+        assert!(html.contains("<th scope=\"col\">corrupt</th>"));
         // The repair history surfaces both a done and a plan-only job.
         assert!(html.contains("Repair history"));
         assert!(html.contains("done"));
