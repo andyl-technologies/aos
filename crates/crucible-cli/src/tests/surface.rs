@@ -1626,6 +1626,10 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "campaign_state",
                 "campaign_policy",
                 "campaign_store",
+                "campaign_maintenance_interval_ms",
+                "campaign_maintenance_write_back_transfers",
+                "campaign_maintenance_s3_nodes",
+                "campaign_maintenance_s3_uploads",
                 "campaign_component_authority",
                 "campaign_import_manifest",
                 "campaign_runtime",
@@ -1634,7 +1638,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "campaign_packaged_executor",
                 "campaign_socket_mode",
             ][..],
-            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_store=Load a strict composed campaign repository-store deployment\ncampaign_component_authority=Load distinct planner/debugger component authority keys from this file\ncampaign_import_manifest=Import verified campaign creation artifacts before binding the socket\ncampaign_runtime=Attach the packaged planner and an authenticated local executor to a campaign\ncampaign_runtime_all=Attach every authenticated campaign in the bounded local catalog\ncampaign_executor_socket=Connect one attached campaign runtime to this owner-only Unix socket; repeat in runtime order unless a packaged pool shares one endpoint\ncampaign_packaged_executor=Start one scenario-catalogued packaged QEMU pool from this deployment file\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
+            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_store=Load a strict composed campaign repository-store deployment\ncampaign_maintenance_interval_ms=Run bounded campaign-store maintenance at this fixed cadence\ncampaign_maintenance_write_back_transfers=Complete at most this many write-back transfers per maintenance pass\ncampaign_maintenance_s3_nodes=Visit at most this many S3 leaves per maintenance pass\ncampaign_maintenance_s3_uploads=Abort at most this many unfinished uploads per visited S3 leaf\ncampaign_component_authority=Load distinct planner/debugger component authority keys from this file\ncampaign_import_manifest=Import verified campaign creation artifacts before binding the socket\ncampaign_runtime=Attach the packaged planner and an authenticated local executor to a campaign\ncampaign_runtime_all=Attach every authenticated campaign in the bounded local catalog\ncampaign_executor_socket=Connect one attached campaign runtime to this owner-only Unix socket; repeat in runtime order unless a packaged pool shares one endpoint\ncampaign_packaged_executor=Start one scenario-catalogued packaged QEMU pool from this deployment file\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
         ),
         (
             "debug",
@@ -2370,6 +2374,86 @@ pub(super) fn cli_serve_campaign_profile_rejects_partial_or_invalid_input() {
             "888",
         ])
         .is_err()
+    );
+
+    let invalid_maintenance = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+        "--campaign-socket",
+        "/tmp/campaign.sock",
+        "--campaign-state",
+        "/tmp/campaign-state",
+        "--campaign-policy",
+        "/tmp/campaign-policy",
+        "--campaign-store",
+        "/tmp/campaign-store.toml",
+        "--campaign-maintenance-interval-ms",
+        "99",
+    ]);
+    let Commands::Serve(args) = &invalid_maintenance.command else {
+        panic!("expected serve command");
+    };
+    let error = validate_serve_invocation(args)
+        .expect_err("maintenance bounds must fail before deployment file I/O");
+    assert!(matches!(error, CliError::Usage(_)));
+    assert!(error.to_string().contains("outside 100ms..=24h"));
+
+    let valid_maintenance = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+        "--campaign-socket",
+        "/tmp/campaign.sock",
+        "--campaign-state",
+        "/tmp/campaign-state",
+        "--campaign-policy",
+        "/tmp/campaign-policy",
+        "--campaign-store",
+        "/tmp/campaign-store.toml",
+        "--campaign-maintenance-interval-ms",
+        "100",
+        "--campaign-maintenance-write-back-transfers",
+        "65536",
+        "--campaign-maintenance-s3-nodes",
+        "256",
+        "--campaign-maintenance-s3-uploads",
+        "1000",
+    ]);
+    let Commands::Serve(args) = &valid_maintenance.command else {
+        panic!("expected serve command");
+    };
+    validate_serve_invocation(args).expect("maximum maintenance bounds are valid");
+    assert!(
+        Cli::try_parse_from([
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--campaign-maintenance-s3-uploads",
+            "1",
+        ])
+        .is_err(),
+        "maintenance bounds require an explicit cadence"
+    );
+    assert!(
+        Cli::try_parse_from([
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--read-only",
+            "--campaign-store",
+            "/tmp/campaign-store.toml",
+            "--campaign-maintenance-interval-ms",
+            "100",
+        ])
+        .is_err(),
+        "read-only service cannot schedule physical mutations"
     );
     assert!(
         Cli::try_parse_from([

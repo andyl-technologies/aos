@@ -655,6 +655,10 @@ crucible serve --listen 127.0.0.1:0 --trusted-unauthenticated-bind \
   --campaign-state /var/lib/crucible/campaign \
   --campaign-policy /etc/crucible/campaign-policy.toml \
   --campaign-store /etc/crucible/campaign-store.toml \
+  --campaign-maintenance-interval-ms 30000 \
+  --campaign-maintenance-write-back-transfers 64 \
+  --campaign-maintenance-s3-nodes 8 \
+  --campaign-maintenance-s3-uploads 128 \
   --campaign-component-authority /etc/crucible/campaign-authority.bin \
   --campaign-runtime-all \
   --campaign-executor-socket /run/crucible/executor.sock \
@@ -696,9 +700,12 @@ namespace. It checks the exact endpoint capability set and segment-disjoint
 physical namespaces before credential I/O, retains graph/ref maintenance
 authority through shutdown, and never exposes that authority to the campaign
 service. The strong-CAS flag is an operator conformance attestation rather than
-automatic service discovery. Bounded owner-side maintenance scheduling and
-porcelain, a hermetic live-service fixture, and the realistic operator flight
-remain open.
+automatic service discovery. The optional fixed-cadence maintenance flags lend
+only bounded write-back and unfinished-upload capabilities to one joined
+worker; exact bounds fail before deployment-file I/O, backend failures stop the
+service visibly, and committed-object/ref deletion authority remains withheld.
+Destructive GC porcelain, a hermetic live-service fixture, and the realistic
+operator flight remain open.
 
 The separately hosted or daemon-packaged executor endpoint has one coupled
 lifecycle owner: a shutdown closes assignment admission, signals active

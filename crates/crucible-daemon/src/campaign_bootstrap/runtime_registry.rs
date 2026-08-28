@@ -244,7 +244,6 @@ impl CampaignRuntimeRegistryOwner {
         mode: CampaignLocalServiceMode,
         shutdown: CampaignLoopbackServerShutdown,
         repository_owner: CampaignStateOwner,
-        repository_maintenance: Option<super::CampaignLocalRepositoryMaintenance>,
         packaged_scope: Option<(PathBuf, BTreeSet<ScenarioArtifactId>)>,
     ) -> Self {
         Self {
@@ -256,7 +255,6 @@ impl CampaignRuntimeRegistryOwner {
                 packaged_scope,
                 state: Mutex::new(RegistryState::open()),
                 changed: Condvar::new(),
-                _repository_maintenance: repository_maintenance,
                 _repository_owner: repository_owner,
             }),
         }
@@ -294,7 +292,6 @@ struct CampaignRuntimeRegistry {
     packaged_scope: Option<(PathBuf, BTreeSet<ScenarioArtifactId>)>,
     state: Mutex<RegistryState>,
     changed: Condvar,
-    _repository_maintenance: Option<super::CampaignLocalRepositoryMaintenance>,
     _repository_owner: CampaignStateOwner,
 }
 
@@ -634,13 +631,16 @@ enum RuntimeControlReservation {
 fn runtime_control_failure(error: &CampaignLocalServiceError) -> CampaignServiceFailure {
     match error {
         CampaignLocalServiceError::RuntimeReadOnly
-        | CampaignLocalServiceError::RuntimeAuthorityUnavailable => {
+        | CampaignLocalServiceError::RuntimeAuthorityUnavailable
+        | CampaignLocalServiceError::StoreMaintenanceReadOnly => {
             CampaignServiceFailure::Unauthorized
         }
         CampaignLocalServiceError::DuplicateRuntimeCampaign => CampaignServiceFailure::CommandReuse,
         CampaignLocalServiceError::RuntimeAttachmentInFlight
         | CampaignLocalServiceError::RuntimeAttachmentClosed
-        | CampaignLocalServiceError::RuntimeMonitorSpawn { .. } => {
+        | CampaignLocalServiceError::RuntimeMonitorSpawn { .. }
+        | CampaignLocalServiceError::StoreMaintenanceSpawn { .. }
+        | CampaignLocalServiceError::StoreMaintenanceFailed { .. } => {
             CampaignServiceFailure::Unavailable
         }
         CampaignLocalServiceError::InvalidRuntimeCount => CampaignServiceFailure::ResourceExhausted,
@@ -664,6 +664,8 @@ fn runtime_control_failure(error: &CampaignLocalServiceError) -> CampaignService
         | CampaignLocalServiceError::InvalidStateLock
         | CampaignLocalServiceError::InvalidStateSubdirectory
         | CampaignLocalServiceError::InvalidRepositoryStore
+        | CampaignLocalServiceError::StoreMaintenanceUnavailable
+        | CampaignLocalServiceError::StoreMaintenancePanicked
         | CampaignLocalServiceError::InvalidPolicyFile
         | CampaignLocalServiceError::InvalidComponentAuthorityFile
         | CampaignLocalServiceError::Policy(_)

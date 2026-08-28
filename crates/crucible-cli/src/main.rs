@@ -1428,6 +1428,23 @@ struct ServeArgs {
     /// Load a strict composed campaign repository-store deployment.
     #[arg(long, value_name = "path", requires = "campaign_socket")]
     campaign_store: Option<PathBuf>,
+    /// Run bounded campaign-store maintenance at this fixed cadence.
+    #[arg(
+        long,
+        value_name = "milliseconds",
+        requires = "campaign_store",
+        conflicts_with = "read_only"
+    )]
+    campaign_maintenance_interval_ms: Option<u64>,
+    /// Complete at most this many write-back transfers per maintenance pass.
+    #[arg(long, value_name = "n", requires = "campaign_maintenance_interval_ms")]
+    campaign_maintenance_write_back_transfers: Option<u32>,
+    /// Visit at most this many S3 leaves per maintenance pass.
+    #[arg(long, value_name = "n", requires = "campaign_maintenance_interval_ms")]
+    campaign_maintenance_s3_nodes: Option<u16>,
+    /// Abort at most this many unfinished uploads per visited S3 leaf.
+    #[arg(long, value_name = "n", requires = "campaign_maintenance_interval_ms")]
+    campaign_maintenance_s3_uploads: Option<u16>,
     /// Load distinct planner/debugger component authority keys from this file.
     #[arg(long, value_name = "path", requires = "campaign_socket")]
     campaign_component_authority: Option<PathBuf>,

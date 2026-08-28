@@ -26,7 +26,7 @@ use crucible_campaign::{
 };
 use crucible_cas::content_store::{
     DirectoryRefBackend, ImmutableBlobBackend, MutableRefBackend, ObjectKind, RefStoreAdmin,
-    StoreGraph, StoreGraphAdmin, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
+    StoreError, StoreGraph, StoreGraphAdmin, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
 };
 use rustix::fs::{FlockOperation, Mode, OFlags, flock};
 
@@ -67,9 +67,12 @@ const COMPONENT_AUTHORITY_FILE_BYTES: usize = 8 + 32 + 32;
 type CampaignComponentAuthorities = Option<(PlannerAuthorityKey, DebuggerAuthorityKey)>;
 type AuthenticatedCampaignDeployment = (Arc<UnixPeerCampaignPolicy>, CampaignComponentAuthorities);
 
+mod maintenance;
 mod runtime_registry;
 mod service;
 
+use maintenance::CampaignStoreMaintenanceOwner;
+pub use maintenance::{CampaignStoreMaintenanceConfig, CampaignStoreMaintenanceConfigError};
 pub use runtime_registry::CampaignRuntimeAttachmentHandle;
 use runtime_registry::{CampaignRuntimeRegistryOwner, CanonicalCampaignRuntimeController};
 
@@ -114,7 +117,8 @@ pub struct CampaignLocalRepositoryStore {
 /// CampaignService, runtime, planner, and executor capabilities cannot borrow
 /// physical inventory/deletion, multipart-cleanup, or ref-inventory access.
 struct CampaignLocalRepositoryMaintenance {
-    _graph: StoreGraphAdmin,
+    store: Arc<StoreGraph>,
+    graph: StoreGraphAdmin,
     _refs: Arc<dyn RefStoreAdmin>,
 }
 
@@ -172,6 +176,7 @@ impl CampaignLocalRepositoryStore {
         if graph.configuration_id() != graph_maintenance.configuration_id() {
             return Err(CampaignLocalServiceError::InvalidRepositoryStore);
         }
+        let maintenance_store = Arc::clone(&graph);
         let blobs: Arc<dyn ImmutableBlobBackend> = graph;
         let mutable_refs: Arc<dyn MutableRefBackend> = refs.clone();
         let maintenance_refs: Arc<dyn RefStoreAdmin> = refs;
@@ -186,7 +191,8 @@ impl CampaignLocalRepositoryStore {
             blobs,
             refs: mutable_refs,
             maintenance: Some(CampaignLocalRepositoryMaintenance {
-                _graph: graph_maintenance,
+                store: maintenance_store,
+                graph: graph_maintenance,
                 _refs: maintenance_refs,
             }),
         })
@@ -470,6 +476,7 @@ impl CampaignLocalServiceConfig {
             mode: self.mode,
             state,
             maintenance,
+            maintenance_config: None,
             runtime_control_planner: None,
         })
     }
@@ -503,10 +510,38 @@ pub struct PreparedCampaignLocalService {
     mode: CampaignLocalServiceMode,
     state: CampaignStateOwner,
     maintenance: Option<CampaignLocalRepositoryMaintenance>,
+    maintenance_config: Option<CampaignStoreMaintenanceConfig>,
     runtime_control_planner: Option<CanonicalPlannerProcessConfig>,
 }
 
 impl PreparedCampaignLocalService {
+    /// Enables fixed-cadence bounded write-back and unfinished-upload cleanup.
+    ///
+    /// This operational worker receives neither committed-object deletion nor
+    /// campaign mutation authority. Destructive GC remains a separately
+    /// authorized generation-bound plan/apply operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError::StoreMaintenanceReadOnly`] in
+    /// read-only mode or
+    /// [`CampaignLocalServiceError::StoreMaintenanceUnavailable`] when this
+    /// prepared service was not built from a composed graph with its separately
+    /// returned maintenance authority.
+    pub fn with_store_maintenance(
+        mut self,
+        config: CampaignStoreMaintenanceConfig,
+    ) -> Result<Self, CampaignLocalServiceError> {
+        if self.mode == CampaignLocalServiceMode::ReadOnly {
+            return Err(CampaignLocalServiceError::StoreMaintenanceReadOnly);
+        }
+        if self.maintenance.is_none() {
+            return Err(CampaignLocalServiceError::StoreMaintenanceUnavailable);
+        }
+        self.maintenance_config = Some(config);
+        Ok(self)
+    }
+
     /// Enables authenticated post-bind runtime attachment with one planner.
     ///
     /// The planner process contract is deployment state and is never encoded
@@ -771,6 +806,7 @@ impl PreparedCampaignLocalService {
             mode,
             state,
             maintenance,
+            maintenance_config,
             runtime_control_planner,
         } = self;
         let endpoint_owner_user_id = endpoint.owner_user_id();
@@ -795,7 +831,6 @@ impl PreparedCampaignLocalService {
             mode,
             server.shutdown_handle(),
             state,
-            maintenance,
             packaged_scope,
         );
         if let Some(planner_process) = runtime_control_planner {
@@ -821,10 +856,36 @@ impl PreparedCampaignLocalService {
                 return Err(source);
             }
         }
+        let maintenance_result = maintenance
+            .map(|authority| match maintenance_config {
+                Some(config) => CampaignStoreMaintenanceOwner::start(
+                    authority,
+                    config,
+                    server.shutdown_handle(),
+                ),
+                None => Ok(CampaignStoreMaintenanceOwner::retain(authority)),
+            })
+            .transpose();
+        let maintenance = match maintenance_result {
+            Ok(maintenance) => maintenance,
+            Err(source) => {
+                let runtime_result = runtime_registry.close_and_join();
+                let executor_result = executor
+                    .take()
+                    .map(AttachedPackagedQemuExecutor::shutdown_and_join)
+                    .transpose()
+                    .map(|_| ())
+                    .map_err(CampaignLocalServiceError::PackagedExecutorJoin);
+                executor_result?;
+                runtime_result?;
+                return Err(CampaignLocalServiceError::StoreMaintenanceSpawn { source });
+            }
+        };
         Ok(CampaignLocalService {
             server,
-            runtime_registry,
             executor,
+            maintenance,
+            runtime_registry,
         })
     }
 
@@ -865,6 +926,7 @@ impl PreparedCampaignLocalService {
 pub struct CampaignLocalService {
     server: CampaignLoopbackServer<UnixPeerCampaignPolicy, CampaignLocalAuthorizer>,
     executor: Option<AttachedPackagedQemuExecutor>,
+    maintenance: Option<CampaignStoreMaintenanceOwner>,
     // This owner is last so its repository lock outlives runtime and executor
     // cleanup even when the containing service is dropped without `serve`.
     runtime_registry: CampaignRuntimeRegistryOwner,
@@ -944,6 +1006,32 @@ pub enum CampaignLocalServiceError {
     /// The supplied immutable repository backend is not durably conditional.
     #[error("campaign service repository store is not durably conditional")]
     InvalidRepositoryStore,
+    /// Store maintenance was requested without retained graph administration.
+    #[error("campaign service repository store has no maintenance authority")]
+    StoreMaintenanceUnavailable,
+    /// Store maintenance was requested through a read-only service profile.
+    #[error("campaign store maintenance is unavailable in read-only mode")]
+    StoreMaintenanceReadOnly,
+    /// The bounded store-maintenance worker could not be created.
+    #[error("campaign store maintenance thread could not be created")]
+    StoreMaintenanceSpawn {
+        /// Underlying operating-system failure.
+        source: io::Error,
+    },
+    /// One scheduled write-back or unfinished-upload operation failed.
+    #[error("campaign store maintenance {operation} failed at {boundary}: {source}")]
+    StoreMaintenanceFailed {
+        /// Stable maintenance operation category.
+        operation: &'static str,
+        /// Exact graph boundary or node identifier.
+        boundary: String,
+        /// Classified storage failure.
+        #[source]
+        source: StoreError,
+    },
+    /// The bounded store-maintenance worker escaped through an invariant panic.
+    #[error("campaign store maintenance thread panicked")]
+    StoreMaintenancePanicked,
     /// The policy was not a secure exact-owner regular file.
     #[error("campaign service policy file is invalid")]
     InvalidPolicyFile,
