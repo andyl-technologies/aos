@@ -30,6 +30,8 @@ use crate::{
     AssignmentRetentionVisitorError, DirectoryAssignmentLedger, MemoryAssignmentLedger,
 };
 
+mod s3;
+
 fn hash(domain: &str, byte: u8) -> CampaignHash {
     CampaignHash::derive(domain, &[byte])
 }

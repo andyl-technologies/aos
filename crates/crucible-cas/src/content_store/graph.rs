@@ -791,9 +791,10 @@ impl StoreGraph {
     /// authority separately.
     ///
     /// Physical-quota binders return guards rather than quota mutation
-    /// authority. The latter remains solely operator-owned. S3 client
-    /// capabilities provide ordinary immutable transport plus separately held
-    /// unfinished-upload cleanup. They do not add S3 committed-object
+    /// authority. The latter remains solely operator-owned. Ordinary S3 client
+    /// capabilities provide immutable transport plus separately held
+    /// unfinished-upload cleanup. A separately supplied strong S3
+    /// administration capability additionally contributes committed-object
     /// inventory/delete authority to the returned administration value.
     ///
     /// # Errors

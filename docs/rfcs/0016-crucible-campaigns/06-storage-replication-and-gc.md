@@ -1597,8 +1597,12 @@ lengths, persist and reopen the journal and graph, delete the respective
 unreachable physical placement, and reauthenticate the retained plaintext
 object. The packed leaf separately provides generation-bound repack
 plan/apply and logical candidate deletion under its exclusive lifecycle fence;
-composed transform/S3 tiers and policy-aware reachable-cache eviction still
-require their additional administration before global deletion.
+the S3 integration regression persists and reopens the journal and graph,
+revalidates its remote monotonic generation, deletes only the unreachable
+committed object, and reauthenticates the retained object. A publication after
+planning changes that generation and prevents every deletion. Composed broader
+transform tiers and policy-aware reachable-cache eviction still require their
+additional administration before global deletion.
 
 - **[CSTORE-19]** GC MUST derive liveness from authenticated refs, pins, and
   child references, never access time, cache temperature, or backend listing
