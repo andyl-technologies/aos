@@ -1198,6 +1198,7 @@ pub(super) fn cli_skeleton_exposes_closed_subcommand_set() {
             "search",
             "selftest",
             "serve",
+            "store",
             "triage",
             "verify",
         ]
@@ -1639,6 +1640,11 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "campaign_socket_mode",
             ][..],
             "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_store=Load a strict composed campaign repository-store deployment\ncampaign_maintenance_interval_ms=Run bounded campaign-store maintenance at this fixed cadence\ncampaign_maintenance_write_back_transfers=Complete at most this many write-back transfers per maintenance pass\ncampaign_maintenance_s3_nodes=Visit at most this many S3 leaves per maintenance pass\ncampaign_maintenance_s3_uploads=Abort at most this many unfinished uploads per visited S3 leaf\ncampaign_component_authority=Load distinct planner/debugger component authority keys from this file\ncampaign_import_manifest=Import verified campaign creation artifacts before binding the socket\ncampaign_runtime=Attach the packaged planner and an authenticated local executor to a campaign\ncampaign_runtime_all=Attach every authenticated campaign in the bounded local catalog\ncampaign_executor_socket=Connect one attached campaign runtime to this owner-only Unix socket; repeat in runtime order unless a packaged pool shares one endpoint\ncampaign_packaged_executor=Start one scenario-catalogued packaged QEMU pool from this deployment file\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
+        ),
+        (
+            "store",
+            &[][..],
+            "about=Perform stopped-owner maintenance on a configured content store\nusage=Usage: crucible store [OPTIONS] <COMMAND>\ncommand.gc=Plan or apply stopped-owner campaign-store garbage collection\n",
         ),
         (
             "debug",
@@ -2826,6 +2832,23 @@ pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_
             vec!["crucible", "serve", "--listen", "127.0.0.1:9000"],
         ),
         (
+            CliSubcommand::Store,
+            vec![
+                "crucible",
+                "store",
+                "gc",
+                "--state",
+                "/var/lib/crucible/campaign",
+                "--policy",
+                "/etc/crucible/campaign-policy.toml",
+                "--store",
+                "/etc/crucible/campaign-store.toml",
+                "--journal",
+                "/var/lib/crucible-maintenance/gc",
+                "plan",
+            ],
+        ),
+        (
             CliSubcommand::Completions,
             vec!["crucible", "completions", "bash"],
         ),
@@ -2868,8 +2891,9 @@ pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_
         assert_eq!(recorder.state_references, plan.state_references);
     }
 
-    assert_eq!(observed.len(), 13);
+    assert_eq!(observed.len(), 14);
     assert!(observed.contains(&CliSubcommand::Run));
+    assert!(observed.contains(&CliSubcommand::Store));
     assert!(observed.contains(&CliSubcommand::Completions));
 }
 

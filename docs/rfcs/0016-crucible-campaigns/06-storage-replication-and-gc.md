@@ -788,6 +788,46 @@ destructive GC. Generation-bound GC remains an explicit owner operation that
 also authenticates exact refs, pins, assignment ledgers, and in-flight
 publication/transfer roots before plan/apply.
 
+The shipped stopped-owner porcelain is deliberately separate from `serve`:
+
+```text
+crucible store gc \
+  --state /var/lib/crucible/campaign \
+  --policy /etc/crucible/campaign-policy.toml \
+  --store /etc/crucible/campaign-store.toml \
+  --journal /var/lib/crucible-maintenance/gc-2026-08-28 \
+  plan
+
+crucible store gc \
+  --state /var/lib/crucible/campaign \
+  --policy /etc/crucible/campaign-policy.toml \
+  --store /etc/crucible/campaign-store.toml \
+  --journal /var/lib/crucible-maintenance/gc-2026-08-28 \
+  apply
+```
+
+Every path is absolute, normalized, and at most 4,095 bytes; the authored
+paths and journal are pairwise distinct. The command authenticates the same
+policy and composed-store deployment, takes the service state lock, and then
+opens the packaged executor's one canonical assignment ledger at
+`STATE/executor-ledger`. There is no flag that can substitute another ledger.
+An active service or packaged executor therefore excludes both plan and apply.
+The current production owner has not yet wired an exact-pin materialization
+journal; if any current semantic pin requires exact retention, root inventory
+fails before the external GC journal is created. It never silently treats a
+caller-selected empty pin directory as authoritative.
+
+`plan` is non-destructive. It inventories every generation under the existing
+fixed bounds and durably creates, or exactly reopens, the external plan/root/
+candidate journal. `apply` accepts only that journal, reacquires every root,
+transfer, ledger, ref, and physical fence, and reproduces every generation
+before advancing the journal to `Applying`. A mismatch leaves the journal
+`Planned` and deletes nothing. An interrupted `Applying` journal remains
+recovery evidence and requires a fresh plan; a completed journal replays as
+`already-complete`. Human, JSON, JSONL, and Markdown reports expose the plan
+ID, journal disposition and phase, root/candidate/byte counts, and every
+physical backend basis without exposing a deletion capability.
+
 The first write-back layer requires durable streaming staging and destination
 children. A put authenticates its complete source, publishes the staging child,
 and appends a checksummed pending record to the durable

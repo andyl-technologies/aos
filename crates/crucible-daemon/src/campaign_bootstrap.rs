@@ -10,6 +10,7 @@
 //! capabilities.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::error::Error as StdError;
 use std::fs::{self, File, Permissions};
 use std::io::{self, Read};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -119,7 +120,7 @@ pub struct CampaignLocalRepositoryStore {
 struct CampaignLocalRepositoryMaintenance {
     store: Arc<StoreGraph>,
     graph: StoreGraphAdmin,
-    _refs: Arc<dyn RefStoreAdmin>,
+    refs: Arc<dyn RefStoreAdmin>,
 }
 
 impl CampaignLocalRepositoryStore {
@@ -193,7 +194,7 @@ impl CampaignLocalRepositoryStore {
             maintenance: Some(CampaignLocalRepositoryMaintenance {
                 store: maintenance_store,
                 graph: graph_maintenance,
-                _refs: maintenance_refs,
+                refs: maintenance_refs,
             }),
         })
     }
@@ -514,7 +515,108 @@ pub struct PreparedCampaignLocalService {
     runtime_control_planner: Option<CanonicalPlannerProcessConfig>,
 }
 
+/// Borrowed destructive-maintenance authority for one stopped local service.
+///
+/// The authority is available only before endpoint binding and while the
+/// prepared owner retains the exclusive repository namespace lock. It joins
+/// the repository, authoritative ref inventory, write-back roots, and exact
+/// graph administration without exposing any of those capabilities directly.
+pub struct CampaignLocalStoreGcAuthority<'a> {
+    repository: &'a CampaignRepository,
+    maintenance: &'a CampaignLocalRepositoryMaintenance,
+}
+
+impl CampaignLocalStoreGcAuthority<'_> {
+    /// Builds one complete non-destructive single-host deletion plan.
+    ///
+    /// The caller supplies the stopped executor's exact assignment ledger and,
+    /// when semantic exact pins exist, its exact-pin materialization store.
+    /// Every authority is fenced and reduced to a generation-bound canonical
+    /// plan; this method does not delete storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CampaignGcPlanningError`] when any root, ledger,
+    /// write-back transfer, ref, exact pin, or physical inventory cannot be
+    /// authenticated completely and within its fixed bound.
+    pub fn plan<L>(
+        &self,
+        ledger: &mut L,
+        exact_pins: Option<&mut dyn crate::ExactPinRetentionAdmin>,
+    ) -> Result<crate::CampaignGcPreparedPlan, crate::CampaignGcPlanningError<L::Error>>
+    where
+        L: crate::AssignmentRetentionAdmin,
+        L::Error: StdError + Send + Sync + 'static,
+    {
+        crate::plan_single_host_campaign_gc(
+            self.repository,
+            self.maintenance.refs.as_ref(),
+            ledger,
+            Some(self.maintenance.store.as_ref()),
+            exact_pins,
+            &self.maintenance.graph,
+        )
+    }
+
+    /// Revalidates and applies one exact durable GC journal.
+    ///
+    /// Deletion begins only after every logical and physical generation in the
+    /// journal has been reproduced under the corresponding exclusive fence.
+    /// A journal already in `Applying` remains recovery evidence and is never
+    /// resumed by this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CampaignGcApplyError`] if any current authority differs
+    /// from the journal or if durable journal advancement or planned deletion
+    /// fails.
+    pub fn apply<L>(
+        &self,
+        journal: &mut crate::DirectoryCampaignGcJournal,
+        ledger: &mut L,
+        exact_pins: Option<&mut dyn crate::ExactPinRetentionAdmin>,
+    ) -> Result<crate::CampaignGcApplyReport, crate::CampaignGcApplyError<L::Error>>
+    where
+        L: crate::AssignmentRetentionAdmin,
+        L::Error: StdError + Send + Sync + 'static,
+    {
+        crate::apply_single_host_campaign_gc(
+            journal,
+            self.repository,
+            self.maintenance.refs.as_ref(),
+            ledger,
+            Some(self.maintenance.store.as_ref()),
+            exact_pins,
+            &self.maintenance.graph,
+        )
+    }
+}
+
 impl PreparedCampaignLocalService {
+    /// Borrows the complete owner-only destructive-store maintenance boundary.
+    ///
+    /// The returned authority cannot outlive this prepared owner and disappears
+    /// when the service endpoint is bound. Ordinary service, runtime, planner,
+    /// and executor APIs cannot obtain it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError::StoreMaintenanceUnavailable`] when
+    /// the repository was not constructed with its exact graph and ref
+    /// administration capabilities.
+    pub fn store_gc_authority(
+        &self,
+    ) -> Result<CampaignLocalStoreGcAuthority<'_>, CampaignLocalServiceError> {
+        let maintenance = self
+            .maintenance
+            .as_ref()
+            .ok_or(CampaignLocalServiceError::StoreMaintenanceUnavailable)?;
+        Ok(CampaignLocalStoreGcAuthority {
+            repository: self.repository.as_ref(),
+            maintenance,
+        })
+    }
+
     /// Enables fixed-cadence bounded write-back and unfinished-upload cleanup.
     ///
     /// This operational worker receives neither committed-object deletion nor
