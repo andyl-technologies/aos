@@ -10,6 +10,41 @@
   zstd,
 }: let
   registryPorts = [9418 15000];
+  gitLauncher = mkDerivation {
+    pname = "aos-registry-server-git-launcher";
+    version = "0";
+    src = null;
+    runtimeDeps = [bash coreutils git];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/bin"
+          cat > "$out/bin/aos-registry-server-git" <<'SH'
+          #!${bash}/bin/bash
+          set -euo pipefail
+          config=/etc/aos/packages/aos-registry-server/git.env
+          test -r "$config"
+          set -a
+          . "$config"
+          set +a
+          test "$REGISTRY_GIT_ENABLED" = true
+          args=(
+            --reuseaddr
+            "--listen=$REGISTRY_GIT_LISTEN"
+            "--port=$REGISTRY_GIT_PORT"
+            "--base-path=$REGISTRY_GIT_BASE_PATH"
+          )
+          if [ "$REGISTRY_GIT_EXPORT_ALL" = true ]; then
+            args+=(--export-all)
+          fi
+          exec ${git}/bin/git daemon "''${args[@]}"
+          SH
+          chmod +x "$out/bin/aos-registry-server-git"
+        '';
+      }
+    ];
+  };
 in
   mkDerivation {
     pname = "aos-registry-server";
@@ -57,18 +92,7 @@ in
           SH
           chmod +x "$out/bin/aos-registry-server-init-db"
 
-          cat > "$out/share/aos-registry-server/serve.toml" <<'TOML'
-          listen = "0.0.0.0:15000"
-
-          [[views]]
-          name = "default"
-          anonymous_read = true
-          max_concurrent_builds = 2
-
-          [bootstrap]
-          socket = "/run/aos-registry-server/bootstrap.sock"
-          socket_group = "root"
-          TOML
+          ln -s ${gitLauncher}/bin/aos-registry-server-git "$out/bin/aos-registry-server-git"
         '';
       }
     ];
@@ -78,19 +102,14 @@ in
         "aos-registry-server-gitd.service" = {
           description = "Git daemon serving AOS registries on :9418";
           serviceConfig = {
-            ExecStartPre = "${bash}/bin/bash -c '${coreutils}/bin/chown -R \"$(${coreutils}/bin/id -u):$(${coreutils}/bin/id -g)\" /var/lib/aos-registry-server/registries'";
-            ExecStart = lib.concatStringsSep " " [
-              "${git}/bin/git daemon"
-              "--reuseaddr"
-              "--listen=0.0.0.0"
-              "--port=9418"
-              "--base-path=/var/lib/aos-registry-server/registries"
-              "--export-all"
-            ];
+            EnvironmentFile = "/etc/aos/packages/aos-registry-server/git.env";
+            ExecCondition = "${bash}/bin/bash -c 'test \"$REGISTRY_GIT_ENABLED\" = true'";
+            ExecStart = "/bin/aos-registry-server-git";
             Restart = "on-failure";
             RestartSec = "5s";
             User = "aos-gitd";
             Group = "aos-gitd";
+            DynamicUser = true;
             StateDirectory = "aos-registry-server/registries";
             StateDirectoryMode = "0755";
             ProtectSystem = "strict";
@@ -102,8 +121,10 @@ in
         "aos-registry-server-cache.service" = {
           description = "aos serve binary cache on :15000";
           serviceConfig = {
+            EnvironmentFile = "/etc/aos/packages/aos-registry-server/cache.env";
+            ExecCondition = "${bash}/bin/bash -c 'test \"$REGISTRY_CACHE_ENABLED\" = true'";
             ExecStartPre = "/bin/aos-registry-server-init-db";
-            ExecStart = "${aos}/bin/aos serve --config /share/aos-registry-server/serve.toml";
+            ExecStart = "${aos}/bin/aos serve --config /etc/aos/packages/aos-registry-server/serve.toml";
             Environment = [
               "PATH=${nix}/bin:${zstd}/bin:${coreutils}/bin"
               "AOS_ROOT=/var/lib/aos-registry-server/store-root"
@@ -113,6 +134,7 @@ in
             RestartSec = "5s";
             User = "aos-gitd";
             Group = "aos-gitd";
+            DynamicUser = true;
             StateDirectory = "aos-registry-server/cache aos-registry-server/store-root";
             StateDirectoryMode = "0755";
             RuntimeDirectory = "aos-registry-server";
@@ -124,13 +146,46 @@ in
         };
       };
 
+      config.artifacts = [
+        {
+          name = "git";
+          path = "/etc/aos/packages/aos-registry-server/git.env";
+          format = "env";
+          required = [
+            "REGISTRY_GIT_ENABLED"
+            "REGISTRY_GIT_LISTEN"
+            "REGISTRY_GIT_PORT"
+            "REGISTRY_GIT_BASE_PATH"
+            "REGISTRY_GIT_EXPORT_ALL"
+          ];
+          units = ["aos-registry-server-gitd.service"];
+          reload = "restart";
+        }
+        {
+          name = "cache";
+          path = "/etc/aos/packages/aos-registry-server/cache.env";
+          format = "env";
+          required = ["REGISTRY_CACHE_ENABLED"];
+          units = ["aos-registry-server-cache.service"];
+          reload = "restart";
+        }
+        {
+          name = "serve";
+          path = "/etc/aos/packages/aos-registry-server/serve.toml";
+          format = "toml";
+          required = ["listen" "views" "bootstrap"];
+          units = ["aos-registry-server-cache.service"];
+          reload = "restart";
+        }
+      ];
+
       firewall.allowedTCP = registryPorts;
       prepareHostPathDirectories = ["/run/aos-registry-server"];
 
       permissions = {
         network = "host";
         tcp-bind = registryPorts;
-        capabilities = ["CAP_CHOWN"];
+        capabilities = [];
         devices = [
           "/dev/null"
           "/dev/random"
@@ -138,16 +193,32 @@ in
         ];
         host-paths = [
           {
-            path = "/dev";
-            mode = "rw";
-          }
-          {
             path = "/run/aos-registry-server";
             mode = "rw";
           }
         ];
         syscalls = "system-service";
       };
+    };
+
+    configModule = {
+      src = ./_aos-registry-server-config;
+      moduleAbiCompat = {
+        min = 1;
+        max = 2;
+      };
+      declares = [
+        "aos-registry-server.cache"
+        "aos-registry-server.enable"
+        "aos-registry-server.git"
+      ];
+      ownsRoots = [
+        {
+          root = "aos-registry-server";
+          interfaceAbi = 1;
+          contributable = [];
+        }
+      ];
     };
 
     meta = {

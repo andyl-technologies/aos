@@ -15,10 +15,10 @@ upstream distribution includes a daemon.
 - [x] nginx
 - [x] Envoy
 - [x] k3s worker, control-plane, and combined roles
-- [ ] AOS registry server
+- [x] AOS registry server
 - [ ] containerd standalone role
 - [ ] kubelet standalone role
-- [ ] etcd
+- [x] etcd
 - [ ] PostgreSQL
 - [ ] MariaDB
 - [ ] Garage
