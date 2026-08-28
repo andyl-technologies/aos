@@ -32,7 +32,10 @@ static void errorf(const char *format, ...) {
 static bool token_valid(const char *token, bool unit) {
         size_t length;
 
-        if (!token || token[0] == '\0' || token[0] == '.' || token[0] == '-')
+        if (!token || token[0] == '\0' ||
+            !((token[0] >= 'a' && token[0] <= 'z') ||
+              (token[0] >= 'A' && token[0] <= 'Z') ||
+              (token[0] >= '0' && token[0] <= '9')))
                 return false;
 
         length = strlen(token);

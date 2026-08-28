@@ -3931,7 +3931,7 @@ const RECONCILE_OK: i32 = 0;
 const RECONCILE_FAILED_UNITS: i32 = 1;
 const RECONCILE_CATASTROPHIC: i32 = 2;
 
-const PLAN_SCHEMA_VERSION: u32 = 1;
+const PLAN_SCHEMA_VERSION: u32 = 2;
 
 /// Where the activation orchestrator keeps the switch lock and plan files. It
 /// lives on tmpfs (`/run`), so crash debris disappears on reboot.
@@ -3947,6 +3947,8 @@ struct Plan {
     generation: u32,
     /// Stopped by the pre-swap phase. Best-effort, informational.
     stopped: Vec<String>,
+    /// Stops that must succeed before the generation swap is authorized.
+    required_stops: BTreeSet<String>,
     /// Remaining post-swap actions, already in apply order.
     to_reload: Vec<String>,
     to_restart: Vec<String>,
@@ -3987,7 +3989,8 @@ async fn activate_pre_etc_swap_inner(
 ) -> Result<i32> {
     // `compute_diff` takes /etc roots and appends `systemd/system` itself.
     // In this phase live `/etc` is intentionally the old generation.
-    let diff = unit_diff::compute_diff(Path::new("/etc"), candidate_etc);
+    let mut diff = unit_diff::compute_diff(Path::new("/etc"), candidate_etc);
+    normalize_service_root_lifecycle(&mut diff);
     for w in &diff.warnings {
         printer.warning(w);
     }
@@ -4028,12 +4031,12 @@ async fn activate_pre_etc_swap_inner(
 
     for unit in &plan.stopped {
         printer.plain(&format!("  stopping   {unit}"));
-        let _ = reconcile_job_failed(
-            printer,
-            "stop",
-            unit,
-            client.stop_unit(unit).await.map(|outcome| outcome.result),
-        );
+        let outcome = client.stop_unit(unit).await.map(|outcome| outcome.result);
+        if plan.required_stops.contains(unit) {
+            ensure_required_stop_succeeded(unit, outcome)?;
+        } else {
+            let _ = reconcile_job_failed(printer, "stop", unit, outcome);
+        }
     }
 
     println!("{}", plan_path.display());
@@ -4159,27 +4162,45 @@ async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Re
 
 /// Convert a [`UnitDiff`] into a serializable [`Plan`], folding install-only
 /// units and newly enabled targets into the start list.
-fn plan_from_diff(generation: u32, mut diff: UnitDiff) -> Plan {
+fn normalize_service_root_lifecycle(diff: &mut UnitDiff) {
     // A generated roots unit embeds the authenticated payload path in both
-    // ExecStart and strict ExecStop. Stop its owning target before /etc is
-    // swapped so systemd necessarily executes the old cleanup identity, then
-    // start the target after daemon-reload to prepare the new lowerdir.
-    let changed_root_targets = diff
+    // ExecStart and strict ExecStop. Whether the helper changes or disappears,
+    // stop its owning target before /etc is swapped so systemd necessarily
+    // executes the old cleanup identity. Restart the target only when the
+    // candidate retains it (for example, a confined-to-socket-only transition).
+    let affected_helpers = diff
         .to_restart
         .iter()
-        .filter_map(|unit| unit_diff::service_root_target(unit))
+        .chain(&diff.to_stop)
+        .filter(|unit| diff.service_root_barriers.contains_key(*unit))
+        .cloned()
         .collect::<BTreeSet<_>>();
-    diff.to_restart
-        .retain(|unit| unit_diff::service_root_target(unit).is_none());
-    for target in changed_root_targets {
-        if !diff.to_stop.contains(&target) {
-            diff.to_stop.push(target.clone());
+
+    for helper in affected_helpers {
+        let barrier = diff.service_root_barriers[&helper].clone();
+        let members = barrier
+            .live_members
+            .union(&barrier.candidate_members)
+            .cloned()
+            .chain([helper])
+            .collect::<BTreeSet<_>>();
+        diff.to_stop.retain(|unit| !members.contains(unit));
+        diff.to_restart.retain(|unit| !members.contains(unit));
+        diff.to_reload.retain(|unit| !members.contains(unit));
+        diff.to_start.retain(|unit| !members.contains(unit));
+        diff.install_only.retain(|unit| !members.contains(unit));
+
+        if !diff.to_stop.contains(&barrier.target) {
+            diff.to_stop.push(barrier.target.clone());
         }
-        if !diff.to_start.contains(&target) {
-            diff.to_start.push(target);
+        diff.required_stops.insert(barrier.target.clone());
+        if barrier.candidate_target_present && !diff.to_start.contains(&barrier.target) {
+            diff.to_start.push(barrier.target);
         }
     }
+}
 
+fn plan_from_diff(generation: u32, mut diff: UnitDiff) -> Plan {
     let install_only = std::mem::take(&mut diff.install_only);
     for unit in install_only {
         if !diff.to_start.contains(&unit) {
@@ -4191,12 +4212,28 @@ fn plan_from_diff(generation: u32, mut diff: UnitDiff) -> Plan {
         schema_version: PLAN_SCHEMA_VERSION,
         generation,
         stopped: diff.to_stop,
+        required_stops: diff.required_stops,
         to_reload: diff.to_reload,
         to_restart: diff.to_restart,
         to_start: diff.to_start,
         blanket_targets: diff.blanket_targets,
         warnings: diff.warnings,
     }
+}
+
+fn ensure_required_stop_succeeded<E: std::fmt::Display>(
+    unit: &str,
+    result: std::result::Result<JobResult, E>,
+) -> Result<()> {
+    let result = result
+        .map_err(|error| anyhow::anyhow!("required pre-swap stop failed for {unit}: {error}"))?;
+    if !result.is_done() {
+        bail!(
+            "required pre-swap stop for {unit} returned systemd job result '{}'",
+            result.label()
+        );
+    }
+    Ok(())
 }
 
 /// Create `/run/apm` securely if absent; otherwise reject anything other than a
@@ -7096,6 +7133,7 @@ mod tests {
             schema_version: PLAN_SCHEMA_VERSION,
             generation: 42,
             stopped: vec!["old.service".to_string()],
+            required_stops: BTreeSet::from(["old.service".to_string()]),
             to_reload: vec!["reload.service".to_string()],
             to_restart: vec!["restart.socket".to_string(), "restart.service".to_string()],
             to_start: vec!["new.service".to_string()],
@@ -7136,19 +7174,131 @@ mod tests {
 
     #[test]
     fn plan_stops_old_service_root_target_before_generation_swap() {
+        let helper = "aos-pkg-web-service-roots.service";
         let diff = UnitDiff {
-            to_restart: vec![
-                "aos-pkg-web-service-roots.service".to_string(),
-                "ordinary.service".to_string(),
-            ],
+            service_root_barriers: std::collections::BTreeMap::from([(
+                helper.to_string(),
+                unit_diff::ServiceRootBarrier {
+                    target: "aos-pkg-web.target".to_string(),
+                    live_members: BTreeSet::from(["web.service".to_string()]),
+                    candidate_members: BTreeSet::from(["web.service".to_string()]),
+                    candidate_target_present: true,
+                },
+            )]),
+            to_restart: vec![helper.to_string(), "ordinary.service".to_string()],
+            to_reload: vec!["web.service".to_string()],
             ..Default::default()
         };
 
+        let mut diff = diff;
+        normalize_service_root_lifecycle(&mut diff);
         let plan = plan_from_diff(8, diff);
 
         assert_eq!(plan.stopped, vec!["aos-pkg-web.target"]);
         assert_eq!(plan.to_restart, vec!["ordinary.service"]);
+        assert!(plan.to_reload.is_empty());
         assert_eq!(plan.to_start, vec!["aos-pkg-web.target"]);
+        assert_eq!(
+            plan.required_stops,
+            BTreeSet::from(["aos-pkg-web.target".to_string()])
+        );
+    }
+
+    #[test]
+    fn dry_run_normalization_reports_root_target_barrier_not_member_actions() {
+        let helper = "aos-pkg-web-service-roots.service";
+        let mut diff = UnitDiff {
+            service_root_barriers: std::collections::BTreeMap::from([(
+                helper.to_string(),
+                unit_diff::ServiceRootBarrier {
+                    target: "aos-pkg-web.target".to_string(),
+                    live_members: BTreeSet::from(["web.service".to_string()]),
+                    candidate_members: BTreeSet::from(["web.service".to_string()]),
+                    candidate_target_present: true,
+                },
+            )]),
+            to_restart: vec![helper.to_string(), "web.service".to_string()],
+            ..Default::default()
+        };
+
+        normalize_service_root_lifecycle(&mut diff);
+
+        assert_eq!(diff.to_stop, vec!["aos-pkg-web.target"]);
+        assert_eq!(diff.to_start, vec!["aos-pkg-web.target"]);
+        assert!(diff.to_restart.is_empty());
+        assert_eq!(
+            diff.required_stops,
+            BTreeSet::from(["aos-pkg-web.target".to_string()])
+        );
+    }
+
+    #[test]
+    fn plan_cleans_removed_overlay_before_retained_socket_only_target() {
+        let root_unit = "aos-pkg-web-service-roots.service";
+        let diff = UnitDiff {
+            service_root_barriers: std::collections::BTreeMap::from([(
+                root_unit.to_string(),
+                unit_diff::ServiceRootBarrier {
+                    target: "aos-pkg-web.target".to_string(),
+                    live_members: BTreeSet::from(["web.service".to_string()]),
+                    candidate_members: BTreeSet::from(["web.socket".to_string()]),
+                    candidate_target_present: true,
+                },
+            )]),
+            to_stop: vec![root_unit.to_string(), "web.service".to_string()],
+            to_start: vec!["web.socket".to_string()],
+            ..Default::default()
+        };
+
+        let mut diff = diff;
+        normalize_service_root_lifecycle(&mut diff);
+        let plan = plan_from_diff(9, diff);
+
+        assert_eq!(plan.stopped, vec!["aos-pkg-web.target"]);
+        assert!(!plan.stopped.iter().any(|unit| unit == root_unit));
+        assert_eq!(plan.to_start, vec!["aos-pkg-web.target"]);
+    }
+
+    #[test]
+    fn plan_does_not_restart_removed_overlay_package_target() {
+        let root_unit = "aos-pkg-web-service-roots.service";
+        let diff = UnitDiff {
+            service_root_barriers: std::collections::BTreeMap::from([(
+                root_unit.to_string(),
+                unit_diff::ServiceRootBarrier {
+                    target: "aos-pkg-web.target".to_string(),
+                    live_members: BTreeSet::from(["web.service".to_string()]),
+                    ..Default::default()
+                },
+            )]),
+            to_stop: vec![root_unit.to_string(), "web.service".to_string()],
+            ..Default::default()
+        };
+
+        let mut diff = diff;
+        normalize_service_root_lifecycle(&mut diff);
+        let plan = plan_from_diff(10, diff);
+
+        assert_eq!(plan.stopped, vec!["aos-pkg-web.target"]);
+        assert!(plan.to_start.is_empty());
+    }
+
+    #[test]
+    fn required_service_root_barrier_failure_aborts_pre_swap() {
+        let dependency =
+            ensure_required_stop_succeeded::<&str>("aos-pkg-web.target", Ok(JobResult::Dependency))
+                .unwrap_err();
+        assert!(dependency.to_string().contains("required pre-swap stop"));
+
+        let transport =
+            ensure_required_stop_succeeded("aos-pkg-web.target", Err("injected D-Bus failure"))
+                .unwrap_err();
+        assert!(
+            transport
+                .to_string()
+                .contains("required pre-swap stop failed")
+        );
+        ensure_required_stop_succeeded::<&str>("aos-pkg-web.target", Ok(JobResult::Done)).unwrap();
     }
 
     #[test]
