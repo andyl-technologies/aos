@@ -4,7 +4,7 @@
 #![allow(clippy::expect_used)]
 
 use std::cell::Cell;
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -33,6 +33,36 @@ fn execution_cancellation_wakes_blocked_guards_and_times_out_cleanly() {
 
     assert!(waiter.join().expect("cancellation waiter"));
     assert!(cancellation.wait_for_cancellation(Duration::ZERO));
+}
+
+#[test]
+fn execution_cancellation_serializes_predicate_publication_with_wait_registration() {
+    let cancellation = ExecutionCancellation::default();
+    let wait = cancellation
+        .state
+        .wait_lock
+        .lock()
+        .expect("hold cancellation wait registration");
+    let canceling = cancellation.clone();
+    let (finished_sender, finished_receiver) = mpsc::sync_channel(1);
+    let canceler = thread::spawn(move || {
+        canceling.cancel_for_test();
+        finished_sender.send(()).expect("report cancellation");
+    });
+
+    assert!(
+        finished_receiver
+            .recv_timeout(Duration::from_millis(25))
+            .is_err()
+    );
+    assert!(!cancellation.is_canceled());
+    drop(wait);
+
+    finished_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("cancellation completed after wait registration");
+    assert!(cancellation.is_canceled());
+    canceler.join().expect("canceler thread");
 }
 
 #[test]

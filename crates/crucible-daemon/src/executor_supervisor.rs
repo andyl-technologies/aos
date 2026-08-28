@@ -432,8 +432,17 @@ impl ExecutionCancellation {
     }
 
     pub(crate) fn cancel(&self) {
+        // The predicate publication and notification share the wait mutex.
+        // Without this ordering a waiter can observe `false`, lose a notify
+        // immediately before entering the kernel wait, and remain blocked even
+        // though the atomic predicate is already true.
+        let wait = match self.state.wait_lock.lock() {
+            Ok(wait) => wait,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         self.state.canceled.store(true, Ordering::Release);
         self.state.changed.notify_all();
+        drop(wait);
         let hook = match self.state.hook.lock() {
             Ok(installed) => installed.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),

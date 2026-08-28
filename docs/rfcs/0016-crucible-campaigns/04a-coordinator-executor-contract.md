@@ -2306,6 +2306,10 @@ retry, and an unrecoverable worker-start failure leaks it fail-closed.
 
 The process-local cancellation incarnation supports lock-free boundary polling,
 a bounded blocking wait, and exactly one registered attempt-resource callback.
+Cancellation publishes the blocking-wait predicate while holding the same
+mutex used to register a condition-variable wait, then wakes all waiters before
+releasing that mutex. This ordering prevents a waiter from observing the old
+predicate and losing the wake immediately before it blocks.
 Cancellation invokes that callback synchronously after making the process-local
 state sticky; registration after cancellation invokes it before returning.
 Registration and cancellation may race, so the callback is idempotent. A
