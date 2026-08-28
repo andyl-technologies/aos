@@ -350,6 +350,9 @@ media types are accepted according to an explicit compatibility matrix.
 
 The first-release media-type allowlist is:
 
+- `application/octet-stream`, used only as the generic storage type while a
+  Distribution blob upload has not yet been admitted in a repository-specific
+  manifest role;
 - `application/vnd.oci.image.manifest.v1+json`;
 - `application/vnd.oci.image.index.v1+json`;
 - `application/vnd.oci.image.config.v1+json`;
@@ -367,6 +370,7 @@ The first-release media-type allowlist is:
 - `application/vnd.aos.container-release.v1+json`;
 - `application/vnd.aos.nix-closure.v1+json`;
 - `application/vnd.aos.source-closure.v1+json`;
+- `application/vnd.aos.source-closure.v1.tar+gzip`;
 - `application/vnd.aos.license-report.v1+json`;
 - `application/spdx+json`, restricted initially to SPDX 2.3 JSON;
 - `application/vnd.in-toto+json`, restricted to the versioned AOS provenance
@@ -375,8 +379,12 @@ The first-release media-type allowlist is:
 
 Descriptors with external URLs and foreign/nondistributable layer media types
 are rejected initially. OCI artifacts use an OCI image manifest with a required
-`artifactType` and `subject`, the canonical empty config, and exactly one
-bounded JSON payload layer from the AOS artifact allowlist. The signed
+`artifactType` and `subject` plus the canonical empty config. Every artifact
+except corresponding source has exactly one bounded JSON payload layer from
+the AOS artifact allowlist. A source-closure artifact has exactly two ordered
+layers: its bounded JSON inventory followed by its deterministic gzip source
+archive; the archive size is controlled by repository quota and descriptor
+bounds rather than the JSON limit. The signed
 `containers/v1/index.json` sidecar is validated using the
 `application/vnd.aos.container-release.v1+json` schema whether it is read from
 Git or exposed as a referrer. Adding a media type is an API compatibility change
@@ -473,12 +481,31 @@ binds:
 - logical container name, initially only `aos`;
 - OCI index and per-platform manifest descriptors;
 - Nix definition and output provenance;
+- full-closure package mapping, corresponding-source, and license
+  qualification, with `readyForVerifiedPublication = true`;
 - closure manifest and SBOM descriptors;
 - source, license, signature, and attestation referrers.
 
 The Hub indexer verifies this sidecar before creating a signed release root.
 Generic clients may pull an unverified manual tag, but only AOS-aware
 publication creates verified release and channel associations.
+
+Signing and OCI transfer deliberately remain separate transactions. Nix emits
+the deterministic unsigned evidence graph and `signature-input.json`; it never
+receives a private key. After an external signer has produced the DSSE object,
+final layout, and canonical sidecar, the producer runs `aos container publish
+--stage-only` to upload the complete immutable graph by digest without a tag or
+control-plane mutation. The paired `apr release --container-release
+containers/v1/index.json --container-signature-input signature-input.json`
+arguments then validate their exact unsigned identity and qualification and
+commit the canonical sidecar under the release lock before creating the signed
+release tag. Resume proves the tagged commit contains the exact same sidecar.
+Once the Hub indexer has authenticated it, rerunning `aos container publish`
+without `--stage-only` revalidates and idempotently uploads the graph before it
+invokes `ContainerService` Begin/Get/Commit. Only the control-plane commit
+advances the requested tag and marks the root verified. Neither command
+fabricates or signs DSSE bytes, and a generic Distribution push never becomes
+a verified root.
 
 ## Garbage collection
 
@@ -511,18 +538,34 @@ aos container build aos
 aos container inspect <name|path|reference>
 aos container pull <reference>
 aos container push <name|path> <reference>
-aos container publish aos <registry/repository>
+aos container publish aos <registry/repository:tag> \
+  --release containers/v1/index.json \
+  --release-layout <final-signed-layout-or-archive> \
+  --signature-input <nix-evidence>/signature-input.json \
+  --registry <hub-registry-slug> \
+  --idempotency-key <stable-retry-key> \
+  --stage-only
+apr release <semver> \
+  --container-release containers/v1/index.json \
+  --container-signature-input <nix-evidence>/signature-input.json
+# After APR's signed release is indexed, rerun publish without --stage-only.
 ```
 
 Only commands that evaluate definitions or build artifacts instantiate Nix.
-Inspect, pull, and push work outside a repository and without Nix.
+Inspect, pull, push, and publish work outside a repository and without Nix.
+Publish accepts distinct `--registry-origin`/`--registry-token` Distribution
+credentials and `--hub`/`--token` control-plane credentials. A stored Hub token
+is reused for Distribution only when both normalized origins are exactly equal;
+a dedicated registry authority requires an explicit registry credential.
+`--stage-only` can operate with only explicit Distribution credentials and
+makes no Connect call.
 
 Hub administration remains under `aos hub registry container`, with repository,
 tag, publication, retention, and GC operations following existing
 plan/apply/idempotency/resource-version conventions. `aos image` remains the
-system-disk namespace. APR remains package-registry porcelain; it may attach a
-container digest to signed release metadata but does not become another OCI
-transfer client.
+system-disk namespace. APR remains package-registry porcelain. Its paired
+container flags commit exact canonical release bytes into the signed Git
+release; APR does not become an OCI transfer client or a DSSE signer.
 
 The Hub console renames the current area to "System images" and adds
 "Containers" pages for repositories, tags, platforms, config, layers, shared

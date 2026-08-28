@@ -1035,15 +1035,6 @@ pub async fn rewrite_for_route(
                 head,
             ));
         }
-        if !matches!(*request.method(), Method::GET | Method::HEAD) {
-            return Err(crate::oci::distribution_error_response(
-                StatusCode::METHOD_NOT_ALLOWED,
-                aos_oci_types::DistributionErrorCode::Unsupported,
-                "read-only OCI delivery accepts only GET and HEAD",
-                None,
-                head,
-            ));
-        }
         let parsed = match crate::oci::parse_oci_path(surface_path) {
             Ok(parsed) => parsed,
             Err(crate::oci::OciPathError::InvalidReference) => {
@@ -1460,14 +1451,29 @@ async fn resolved_delivery_handler(
         .cloned()
     {
         let query = request.uri().query().map(str::to_owned);
+        let body = request.into_body();
         return from_state(state)
-            .serve_oci(resolved, method, headers, query.as_deref())
+            .serve_oci(resolved, method, headers, query.as_deref(), body)
             .await;
     }
     let Some(resolved) = request.extensions().get::<ResolvedRoute>().cloned() else {
         return StatusCode::NOT_FOUND.into_response();
     };
     serve_resolved_delivery(from_state(state), method, headers, resolved).await
+}
+
+/// Bridges an explicitly admitted internal delivery method to the shared handler.
+///
+/// The route remains private because typed dispatch must attach a resolved route
+/// extension before the handler will serve it. Listing the Distribution methods
+/// here keeps the native transport boundary auditable rather than accepting any
+/// method on the reserved internal path.
+async fn internal_delivery_handler(
+    state: State<SharedState>,
+    headers: HeaderMap,
+    request: Request,
+) -> Response {
+    send_bridge(resolved_delivery_handler(state, headers, request)).await
 }
 
 /// Runs typed delivery-route rewriting before native router dispatch.
@@ -1572,11 +1578,12 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     let mut r = Router::new()
         .route(
             "/_aos-internal/delivery",
-            get(
-                |state: State<SharedState>, headers: HeaderMap, request: Request| {
-                    send_bridge(resolved_delivery_handler(state, headers, request))
-                },
-            ),
+            get(internal_delivery_handler)
+                .head(internal_delivery_handler)
+                .post(internal_delivery_handler)
+                .patch(internal_delivery_handler)
+                .put(internal_delivery_handler)
+                .delete(internal_delivery_handler),
         )
         .route(
             DOMAIN_PROBE_PATH,
@@ -2414,6 +2421,27 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     r = rpc_route!(r, "/aos.hub.v1.ImageService/ListImages", list_images);
     r = rpc_route!(r, "/aos.hub.v1.ImageService/GetImage", get_image);
     r = rpc_route!(r, "/aos.hub.v1.ImageService/ResolveImage", resolve_image);
+    // ContainerService - verified OCI container publication control plane.
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/BeginContainerPublication",
+        begin_container_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerPublication",
+        get_container_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/CommitContainerPublication",
+        commit_container_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/AbortContainerPublication",
+        abort_container_publication
+    );
     // AuditService
     r = rpc_route!(r, "/aos.hub.v1.AuditService/ListAudit", list_audit);
     // InstanceService

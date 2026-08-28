@@ -69,7 +69,7 @@ const OCI_HEADER_JSON: &[u8] = br#"{"alg":"HS256","typ":"application/vnd.aos.oci
 pub const AUTHORIZATION_CLAIMS_VERSION: &str = "stable-scope-1";
 
 /// Authorization-model epoch for repository-scoped Distribution tokens.
-pub const OCI_AUTHORIZATION_CLAIMS_VERSION: &str = "aos-oci-pull-1";
+pub const OCI_AUTHORIZATION_CLAIMS_VERSION: &str = "aos-oci-repository-grants-2";
 
 /// The HS256-signed claims carried by a hub access token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +92,16 @@ pub struct Claims {
     pub exp: i64,
 }
 
+/// One exact repository/action grant in an OCI Distribution token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OciRepositoryGrant {
+    /// Exact repository local to the owning registry.
+    pub repository: RepositoryName,
+    /// Sorted, unique Distribution actions drawn from `pull` and `push`.
+    pub actions: Vec<String>,
+}
+
 /// Inputs bound into one repository-scoped OCI token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OciTokenGrant {
@@ -101,10 +111,8 @@ pub struct OciTokenGrant {
     pub authority: String,
     /// Stable id of the owning AOS registry incarnation.
     pub registry_stable_id: String,
-    /// Exact repository local to that registry.
-    pub repository: RepositoryName,
-    /// Sorted exact Distribution actions, currently only `pull`.
-    pub actions: Vec<String>,
+    /// Sorted, unique repository grants local to that registry.
+    pub grants: Vec<OciRepositoryGrant>,
 }
 
 /// Claims carried only by a repository-scoped OCI Distribution token.
@@ -119,10 +127,8 @@ pub struct OciClaims {
     pub aud: String,
     /// Stable owning-registry incarnation.
     pub registry: String,
-    /// Exact registry-local repository.
-    pub repository: RepositoryName,
-    /// Sorted exact Distribution actions.
-    pub actions: Vec<String>,
+    /// Sorted, unique repository/action grants local to the registry.
+    pub grants: Vec<OciRepositoryGrant>,
     /// Issued-at timestamp in Unix seconds.
     pub iat: i64,
     /// Expiry timestamp in Unix seconds.
@@ -240,8 +246,7 @@ impl JwtKeys {
             sub: grant.subject.clone(),
             aud: grant.authority.clone(),
             registry: grant.registry_stable_id.clone(),
-            repository: grant.repository.clone(),
-            actions: grant.actions.clone(),
+            grants: grant.grants.clone(),
             iat: now,
             exp: now + ttl_secs,
         };
@@ -266,11 +271,10 @@ impl JwtKeys {
         let claims = self.verify_oci_claims(token)?;
         if claims.aud != authority
             || claims.registry != registry_stable_id
-            || &claims.repository != repository
-            || !claims
-                .actions
-                .iter()
-                .any(|action| action == required_action)
+            || !claims.grants.iter().any(|grant| {
+                &grant.repository == repository
+                    && grant.actions.iter().any(|action| action == required_action)
+            })
         {
             bail!("OCI token is not authorized for this repository request");
         }
@@ -304,8 +308,7 @@ impl JwtKeys {
             subject: claims.sub.clone(),
             authority: claims.aud.clone(),
             registry_stable_id: claims.registry.clone(),
-            repository: claims.repository.clone(),
-            actions: claims.actions.clone(),
+            grants: claims.grants.clone(),
         };
         validate_oci_grant(&grant)?;
         Ok(claims)
@@ -387,8 +390,30 @@ fn validate_oci_grant(grant: &OciTokenGrant) -> Result<()> {
     {
         bail!("OCI token registry identity is not canonical");
     }
-    if grant.actions.as_slice() != ["pull"] {
-        bail!("OCI token actions must be exactly the sorted pull action");
+    if grant.grants.is_empty() || grant.grants.len() > 8 {
+        bail!("OCI token must contain between one and eight repository grants");
+    }
+    let mut previous_repository = None;
+    for repository_grant in &grant.grants {
+        if previous_repository
+            .as_ref()
+            .is_some_and(|previous| previous >= &repository_grant.repository)
+        {
+            bail!("OCI token repository grants must be sorted and unique");
+        }
+        previous_repository = Some(repository_grant.repository.clone());
+        if repository_grant.actions.is_empty() || repository_grant.actions.len() > 2 {
+            bail!("OCI token repository actions are empty or excessive");
+        }
+        let mut previous_action: Option<&str> = None;
+        for action in &repository_grant.actions {
+            if !matches!(action.as_str(), "pull" | "push")
+                || previous_action.is_some_and(|previous| previous >= action.as_str())
+            {
+                bail!("OCI token repository actions must be sorted, unique pull/push actions");
+            }
+            previous_action = Some(action);
+        }
     }
     Ok(())
 }
@@ -505,8 +530,10 @@ mod tests {
             subject: "token:tok-1".to_string(),
             authority: "containers.example:8443".to_string(),
             registry_stable_id: "registry:0123456789abcdef0123456789abcdef".to_string(),
-            repository: RepositoryName::parse("aos").unwrap(),
-            actions: vec!["pull".to_string()],
+            grants: vec![OciRepositoryGrant {
+                repository: RepositoryName::parse("aos").unwrap(),
+                actions: vec!["pull".to_string()],
+            }],
         }
     }
 
@@ -515,23 +542,24 @@ mod tests {
         let keys = JwtKeys::from_secret(b"oci-token-test-secret");
         let grant = sample_oci_grant();
         let token = keys.mint_oci(&grant, 300).unwrap();
+        let repository = &grant.grants[0].repository;
 
         let claims = keys
             .verify_oci(
                 &token,
                 &grant.authority,
                 &grant.registry_stable_id,
-                &grant.repository,
+                repository,
                 "pull",
             )
             .unwrap();
-        assert_eq!(claims.repository, grant.repository);
+        assert_eq!(claims.grants, grant.grants);
         assert!(keys
             .verify_oci(
                 &token,
                 "other.example",
                 &grant.registry_stable_id,
-                &grant.repository,
+                repository,
                 "pull"
             )
             .is_err());
@@ -552,6 +580,7 @@ mod tests {
         let hub = keys.mint(&sample_auth(), 300).unwrap();
         let grant = sample_oci_grant();
         let oci = keys.mint_oci(&grant, 300).unwrap();
+        let repository = &grant.grants[0].repository;
 
         assert!(keys.verify(&oci).is_err());
         assert!(keys
@@ -559,25 +588,67 @@ mod tests {
                 &hub,
                 &grant.authority,
                 &grant.registry_stable_id,
-                &grant.repository,
+                repository,
                 "pull"
             )
             .is_err());
     }
 
     #[test]
-    fn oci_grants_reject_broader_actions_and_lifetimes() {
+    fn oci_grants_reject_noncanonical_shapes_and_lifetimes() {
         let keys = JwtKeys::random();
         let mut grant = sample_oci_grant();
-        grant.actions.push("push".to_string());
+        grant.grants[0].actions.push("delete".to_string());
         assert!(keys.mint_oci(&grant, 300).is_err());
-        grant.actions = vec!["pull".to_string()];
+        grant.grants[0].actions = vec!["pull".to_string()];
         assert!(keys.mint_oci(&grant, 901).is_err());
         assert!(keys.mint_oci(&grant, 0).is_err());
         grant.authority = "EXAMPLE.test".to_string();
         assert!(keys.mint_oci(&grant, 300).is_err());
         grant.authority = "example.test".to_string();
         grant.registry_stable_id = "registry:ABCDEF0123456789ABCDEF0123456789".to_string();
+        assert!(keys.mint_oci(&grant, 300).is_err());
+    }
+
+    #[test]
+    fn oci_tokens_bind_sorted_multi_repository_mount_grants() {
+        let keys = JwtKeys::from_secret(b"oci-mount-token-test-secret");
+        let mut grant = sample_oci_grant();
+        grant.grants[0].actions.push("push".to_string());
+        grant.grants.push(OciRepositoryGrant {
+            repository: RepositoryName::parse("source").unwrap(),
+            actions: vec!["pull".to_string()],
+        });
+        let token = keys.mint_oci(&grant, 300).unwrap();
+        assert!(keys
+            .verify_oci(
+                &token,
+                &grant.authority,
+                &grant.registry_stable_id,
+                &grant.grants[0].repository,
+                "push"
+            )
+            .is_ok());
+        assert!(keys
+            .verify_oci(
+                &token,
+                &grant.authority,
+                &grant.registry_stable_id,
+                &grant.grants[1].repository,
+                "pull"
+            )
+            .is_ok());
+        assert!(keys
+            .verify_oci(
+                &token,
+                &grant.authority,
+                &grant.registry_stable_id,
+                &grant.grants[1].repository,
+                "push"
+            )
+            .is_err());
+
+        grant.grants.reverse();
         assert!(keys.mint_oci(&grant, 300).is_err());
     }
 }

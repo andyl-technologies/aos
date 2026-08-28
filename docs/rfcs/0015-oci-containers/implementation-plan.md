@@ -264,7 +264,7 @@ daemonless transfer tests freeze the fixes. No second review round was used.
 - [x] Require repository linkage for private blob access.
 - [x] Store bounded parsed catalog projections for manifests and descriptor
   graphs.
-- [ ] Preserve exact noncanonical manifest bytes admitted by the Phase-5 upload
+- [x] Preserve exact noncanonical manifest bytes admitted by the Phase-5 upload
   path rather than reconstructing them from parsed projections.
 
 ### Distribution pull and authentication
@@ -322,44 +322,75 @@ evaluation gates passed after these fixes. No second review round was used.
 
 ## Phase 5: Upload, publication, and signed release roots
 
+Status: Complete. Broader administration, retention/GC, and final packaged
+end-to-end qualification remain in Phases 6 through 8.
+
 ### Standard uploads
 
-- [ ] Implement upload `POST`, `PATCH`, status, final `PUT`, and cancellation.
-- [ ] Persist portable digest state and bounded staging sessions.
-- [ ] Verify digest and size before promotion into CAS storage.
-- [ ] Implement cross-repository mounts with source-pull/destination-push
+- [x] Implement upload `POST`, `PATCH`, status, final `PUT`, and cancellation.
+- [x] Persist portable digest state and bounded staging sessions.
+- [x] Verify digest and size before promotion into CAS storage.
+- [x] Implement cross-repository mounts with source-pull/destination-push
   authorization.
-- [ ] Handle duplicate concurrent uploads idempotently.
+- [x] Handle duplicate concurrent uploads idempotently.
 
 ### Manifests and tags
 
-- [ ] Implement manifest/index `PUT` and digest deletion.
-- [ ] Validate the closed descriptor graph, platform/config agreement, bounds,
+- [x] Implement manifest/index `PUT` and digest deletion.
+- [x] Validate the closed descriptor graph, platform/config agreement, bounds,
   cycles, and placement completeness.
-- [ ] Implement mutable manual tag CAS and append-only history.
-- [ ] Make signed release tags immutable.
-- [ ] Advance a channel tag only after partition convergence.
-- [ ] Keep manual pushes visibly unverified until an AOS publication binds the
+- [x] Implement mutable manual tag CAS and append-only history.
+- [x] Make signed release tags immutable.
+- [x] Advance a channel tag only after partition convergence.
+- [x] Keep manual pushes visibly unverified until an AOS publication binds the
   digest.
 
 ### AOS publication
 
-- [ ] Add begin/query/commit/abort container publication operations.
-- [ ] Reuse placement-aware immutable-before-pointer mechanics.
-- [ ] Upload layers/configs before manifests and the index before tags.
-- [ ] Bind the exact index digest and provenance into signed release metadata.
-- [ ] Publish SBOM/source/license/provenance/signature referrers.
-- [ ] Enforce full-closure licensing and corresponding-source gates.
-- [ ] Implement `aos container push` and `aos container publish` end to end.
+- [x] Add begin/query/commit/abort container publication operations.
+- [x] Reuse placement-aware immutable-before-pointer mechanics.
+- [x] Upload layers/configs before manifests and the index before tags.
+- [x] Bind the exact index digest and provenance into signed release metadata.
+- [x] Publish SBOM/source/license/provenance/signature referrers.
+- [x] Enforce full-closure licensing and corresponding-source gates.
+- [x] Implement `aos container push` and `aos container publish` end to end.
 
 ### Tests and review
 
-- [ ] Inject interruption at every upload and publication boundary.
-- [ ] Test tag races, stale resource versions, placement failures, and retry
+- [x] Inject interruption at every upload and publication boundary.
+- [x] Test tag races, stale resource versions, placement failures, and retry
   idempotency.
-- [ ] Prove a tag is never observable before the complete graph is durable.
-- [ ] Prove layer reuse causes one physical write and zero-byte mounts.
-- [ ] Complete one Phase-5 adversarial review and resolve blocking findings.
+- [x] Prove a tag is never observable before the complete graph is durable.
+- [x] Prove layer reuse causes one physical write and zero-byte mounts.
+- [x] Complete one Phase-5 adversarial review and resolve blocking findings.
+
+Phase 5 used one adversarial round for the Nix evidence boundary and one for
+the transactional Hub publication section, as allowed for these distinct
+larger sections. The Nix review found store-hardlink-dependent source archives,
+incomplete runnable-index and closure-layer binding, insufficient output
+override validation, and missing archive/JSON bounds. Hard-dereferenced source
+archives with a no-hardlink assertion, exact one-platform child/blob and
+ordered closure-prefix checks, strict realized-output override matching, and
+bounded traversal-safe evidence assembly resolve those findings.
+
+The transactional review found upload expiry and recovery gaps, resumable
+writer reselection, losing-retry cleanup hazards, pre-admission manifest CAS
+writes, cross-backend quota races, unsafe MySQL migration replay, artifact tags
+pointing at their subjects, incomplete placement/channel convergence, missing
+config-platform binding, and an unverified DSSE boundary. Durable cleanup and
+completion leases, frozen binding revisions, attempt-unique staging keys,
+validate-before-promotion admission, digest-scoped quota claims, forward-only
+replay-safe session tables, artifact-root tags, complete object-by-placement
+publication plans with 256-partition channel convergence, exact config-derived
+platform projection, and DSSE/SSHSIG verification against the authenticated
+release signer resolve them. Exact terminal operation keys also make response
+loss replayable while conflicting commit/abort attempts fail closed. No second
+review round was used for either section.
+
+The final live SQL VM gate passed against SQLite, PostgreSQL 18, and MariaDB
+11.4. It covers fresh schemas, the physical MariaDB v19-to-v21 upgrade, every
+Phase-5 crash cut, concurrent migration startup, and concurrent first catalog
+publication.
 
 ## Phase 6: Connect API, administration CLI, and console
 

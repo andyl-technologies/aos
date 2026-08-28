@@ -510,6 +510,15 @@ impl SurfaceWriteProvider for DoE2eSurfaceProvider {
         }))
     }
 
+    async fn placement_writer_at_revision(
+        &self,
+        placement: &SurfacePlacementRecord,
+        revision: &aos_hub_core::db::BindingWriteRevisionRecord,
+    ) -> Result<Box<dyn SurfaceWrite>> {
+        anyhow::ensure!(placement.binding_id == revision.binding_id);
+        self.placement_writer(placement).await
+    }
+
     async fn placement_deleter(
         &self,
         placement: &SurfacePlacementRecord,

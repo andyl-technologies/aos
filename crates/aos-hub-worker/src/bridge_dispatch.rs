@@ -26,7 +26,7 @@ use aos_hub_core::web::console::{dispatch_nested, ConsoleDeps};
 /// console dispatcher.
 #[must_use]
 pub(crate) fn is_streaming_upload_request(method: &Method, uri: &Uri) -> bool {
-    if !matches!(*method, Method::PUT | Method::POST) {
+    if !matches!(*method, Method::PUT | Method::POST | Method::PATCH) {
         return false;
     }
 
@@ -361,6 +361,10 @@ mod tests {
             &"/andyl/main/nar/object.nar?size=99&uploads"
                 .parse()
                 .unwrap()
+        ));
+        assert!(is_streaming_upload_request(
+            &Method::PATCH,
+            &"/v2/aos/blobs/uploads/upload-1".parse().unwrap()
         ));
     }
 

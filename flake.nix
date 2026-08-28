@@ -106,6 +106,10 @@
               name = "container-${name}-index";
               value = container.ociIndex;
             }
+            {
+              name = "container-${name}-evidence";
+              value = container.evidence;
+            }
           ]
         ) (builtins.attrNames aos.containerImages)
       );

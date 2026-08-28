@@ -1,16 +1,19 @@
 //! Verified, resumable Distribution push with immutable-before-tag ordering.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use aos_oci_types::{
-    Descriptor, ImageIndex, ManifestReference, MediaType, Sha256Digest, to_canonical_json,
+    ContainerRelease, Descriptor, ImageIndex, ImageManifest, ManifestReference, MediaType,
+    RepositoryName, Sha256Digest, to_canonical_json,
 };
 use bytes::Bytes;
-use reqwest::header::{HeaderMap, HeaderValue, RANGE};
+use reqwest::header::{CONTENT_LENGTH, HeaderMap, HeaderValue, RANGE};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -18,8 +21,8 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use super::{
-    PushOptions, PushResult, RegistryClient, TransferEvent, build_headers, check_response, emit,
-    ensure_not_cancelled, header, repository_path, resolve_location,
+    PushOptions, PushResult, RegistryClient, ReleaseGraphPushResult, TransferEvent, build_headers,
+    check_response, emit, ensure_not_cancelled, header, repository_path, resolve_location,
 };
 use crate::layout::{
     VerifiedImage, open_verified_blob, read_root_file, read_verified_blob, verify_layout,
@@ -28,12 +31,27 @@ use crate::reference::RegistryReference;
 
 const CHECKPOINT_SCHEMA: &str = "aos.oci.upload-checkpoint/v1";
 const UPLOAD_STATE_SCHEMA: &str = "aos.oci.upload-state/v1";
+const UPLOAD_CANCELLATION_RETRY_DELAYS: [Duration; 4] = [
+    Duration::from_millis(20),
+    Duration::from_millis(50),
+    Duration::from_millis(100),
+    Duration::from_millis(200),
+];
 static CHECKPOINT_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(super) async fn run(
     client: &RegistryClient,
     reference: &RegistryReference,
     options: &PushOptions,
+) -> Result<PushResult> {
+    run_with_mounts(client, reference, options, &[]).await
+}
+
+pub(super) async fn run_with_mounts(
+    client: &RegistryClient,
+    reference: &RegistryReference,
+    options: &PushOptions,
+    mount_sources: &[RepositoryName],
 ) -> Result<PushResult> {
     ensure!(
         options.chunk_bytes > 0,
@@ -61,10 +79,20 @@ pub(super) async fn run(
         &scope,
         &state_directory,
         options,
+        mount_sources,
     )
     .await?;
     for layer in &verified.layers {
-        upload_blob(client, reference, layer, &scope, &state_directory, options).await?;
+        upload_blob(
+            client,
+            reference,
+            layer,
+            &scope,
+            &state_directory,
+            options,
+            mount_sources,
+        )
+        .await?;
     }
 
     let manifest_bytes = read_verified_blob(&options.source, &verified.manifest)?;
@@ -114,6 +142,201 @@ pub(super) async fn run(
     })
 }
 
+pub(super) async fn run_release_graph(
+    client: &RegistryClient,
+    reference: &RegistryReference,
+    options: &PushOptions,
+    release: &ContainerRelease,
+    mount_sources: &[RepositoryName],
+) -> Result<ReleaseGraphPushResult> {
+    ensure!(
+        options.chunk_bytes > 0,
+        "OCI upload chunk size must be positive"
+    );
+    ensure_not_cancelled(&options.cancellation)?;
+    release.validate()?;
+    let ManifestReference::Digest(destination_digest) = reference.manifest_reference() else {
+        bail!("verified release graph upload requires an immutable @sha256 digest destination");
+    };
+    ensure!(
+        destination_digest == &release.oci.index.digest,
+        "destination digest does not match the signed release index"
+    );
+
+    // Verify the complete signed graph before the first network effect. The
+    // root index lives at index.json; every other object is content-addressed
+    // below blobs/sha256.
+    let graph = ReleaseGraph::collect(&options.source, release)?;
+    let scope = reference.scope("pull,push");
+    let state_directory = open_private_state_directory(&options.state_directory, reference)?;
+    for descriptor in &graph.blobs {
+        upload_blob(
+            client,
+            reference,
+            descriptor,
+            &scope,
+            &state_directory,
+            options,
+            mount_sources,
+        )
+        .await?;
+    }
+    for document in &graph.documents {
+        ensure_not_cancelled(&options.cancellation)?;
+        put_manifest(
+            client,
+            reference,
+            &document.descriptor.digest.to_string(),
+            document.descriptor.media_type,
+            document.bytes.clone(),
+            &scope,
+            Some(&options.cancellation),
+        )
+        .await?;
+    }
+
+    Ok(ReleaseGraphPushResult {
+        root_index_digest: release.oci.index.digest,
+        object_count: graph
+            .blobs
+            .len()
+            .checked_add(graph.documents.len())
+            .context("release graph object count overflow")?,
+    })
+}
+
+struct ReleaseGraphDocument {
+    descriptor: Descriptor,
+    bytes: Vec<u8>,
+}
+
+struct ReleaseGraph {
+    blobs: Vec<Descriptor>,
+    documents: Vec<ReleaseGraphDocument>,
+}
+
+impl ReleaseGraph {
+    fn collect(root: &Path, release: &ContainerRelease) -> Result<Self> {
+        let roots = [
+            &release.oci.index,
+            &release.nix.closure,
+            &release.evidence.sbom,
+            &release.evidence.source,
+            &release.evidence.license,
+            &release.evidence.provenance,
+            &release.evidence.signature,
+        ];
+        let mut collector = ReleaseGraphCollector {
+            root,
+            release,
+            visiting: BTreeSet::new(),
+            visited: BTreeMap::new(),
+            blobs: Vec::new(),
+            documents: Vec::new(),
+        };
+        for descriptor in roots {
+            collector.visit(descriptor)?;
+        }
+        Ok(Self {
+            blobs: collector.blobs,
+            documents: collector.documents,
+        })
+    }
+}
+
+struct ReleaseGraphCollector<'a> {
+    root: &'a Path,
+    release: &'a ContainerRelease,
+    visiting: BTreeSet<Sha256Digest>,
+    visited: BTreeMap<Sha256Digest, (MediaType, u64)>,
+    blobs: Vec<Descriptor>,
+    documents: Vec<ReleaseGraphDocument>,
+}
+
+impl ReleaseGraphCollector<'_> {
+    fn visit(&mut self, descriptor: &Descriptor) -> Result<()> {
+        if let Some((media_type, size)) = self.visited.get(&descriptor.digest) {
+            ensure!(
+                *media_type == descriptor.media_type && *size == descriptor.size,
+                "release graph reuses digest {} with conflicting content identity",
+                descriptor.digest
+            );
+            return Ok(());
+        }
+        ensure!(
+            self.visiting.insert(descriptor.digest),
+            "release graph contains a cycle at {}",
+            descriptor.digest
+        );
+
+        if descriptor.media_type.is_image_index() || descriptor.media_type.is_image_manifest() {
+            let bytes = self.read_document(descriptor)?;
+            let dependencies = if descriptor.media_type.is_image_index() {
+                let index = ImageIndex::from_json(&bytes).context("validating release index")?;
+                if descriptor.digest == self.release.oci.index.digest {
+                    ensure!(
+                        index.manifests == self.release.oci.platform_manifests,
+                        "signed release platform manifests do not exactly match index.json"
+                    );
+                }
+                let mut dependencies = index.manifests;
+                dependencies.extend(index.subject);
+                dependencies
+            } else {
+                let manifest =
+                    ImageManifest::from_json(&bytes).context("validating release manifest")?;
+                let mut dependencies = Vec::with_capacity(
+                    manifest
+                        .layers
+                        .len()
+                        .checked_add(2)
+                        .context("release manifest dependency count overflow")?,
+                );
+                dependencies.push(manifest.config);
+                dependencies.extend(manifest.layers);
+                dependencies.extend(manifest.subject);
+                dependencies
+            };
+            for dependency in &dependencies {
+                self.visit(dependency)?;
+            }
+            self.documents.push(ReleaseGraphDocument {
+                descriptor: descriptor.clone(),
+                bytes,
+            });
+        } else {
+            open_verified_blob(self.root, descriptor)
+                .with_context(|| format!("verifying release graph object {}", descriptor.digest))?;
+            self.blobs.push(descriptor.clone());
+        }
+
+        self.visiting.remove(&descriptor.digest);
+        self.visited
+            .insert(descriptor.digest, (descriptor.media_type, descriptor.size));
+        ensure!(
+            self.visited.len() <= 16_384,
+            "release graph exceeds the 16384-object client limit"
+        );
+        Ok(())
+    }
+
+    fn read_document(&self, descriptor: &Descriptor) -> Result<Vec<u8>> {
+        if descriptor.digest != self.release.oci.index.digest {
+            return read_verified_blob(self.root, descriptor);
+        }
+        let bytes = read_root_file(self.root, "index.json")?;
+        ensure!(
+            u64::try_from(bytes.len()).context("root index size conversion")? == descriptor.size,
+            "root index size does not match the signed release descriptor"
+        );
+        ensure!(
+            Sha256Digest::digest(&bytes) == descriptor.digest,
+            "root index digest does not match the signed release descriptor"
+        );
+        Ok(bytes)
+    }
+}
+
 async fn upload_blob(
     client: &RegistryClient,
     reference: &RegistryReference,
@@ -121,6 +344,7 @@ async fn upload_blob(
     scope: &str,
     state_directory: &File,
     options: &PushOptions,
+    mount_sources: &[RepositoryName],
 ) -> Result<()> {
     ensure_not_cancelled(&options.cancellation)?;
     emit(
@@ -143,6 +367,7 @@ async fn upload_blob(
         .await?;
     match response.status() {
         StatusCode::OK => {
+            validate_remote_blob_head(&response, descriptor)?;
             emit(
                 &options.events,
                 TransferEvent::Complete {
@@ -167,12 +392,50 @@ async fn upload_blob(
                     ..checkpoint
                 },
                 None => {
-                    start_upload(client, reference, descriptor, scope, &options.cancellation)
+                    match start_upload(client, reference, descriptor, scope, &options.cancellation)
                         .await?
+                    {
+                        StartOutcome::Complete => {
+                            complete_event(options, descriptor);
+                            return Ok(());
+                        }
+                        StartOutcome::Upload(checkpoint) => checkpoint,
+                    }
                 }
             }
         }
-        None => start_upload(client, reference, descriptor, scope, &options.cancellation).await?,
+        None => match try_mount(
+            client,
+            reference,
+            descriptor,
+            mount_sources,
+            &options.cancellation,
+        )
+        .await?
+        {
+            MountOutcome::Mounted => {
+                emit(
+                    &options.events,
+                    TransferEvent::Complete {
+                        digest: descriptor.digest.to_string(),
+                        size: descriptor.size,
+                    },
+                );
+                return Ok(());
+            }
+            MountOutcome::Upload(checkpoint) => checkpoint,
+            MountOutcome::Unavailable => {
+                match start_upload(client, reference, descriptor, scope, &options.cancellation)
+                    .await?
+                {
+                    StartOutcome::Complete => {
+                        complete_event(options, descriptor);
+                        return Ok(());
+                    }
+                    StartOutcome::Upload(checkpoint) => checkpoint,
+                }
+            }
+        },
     };
     save_checkpoint(state_directory, &checkpoint_name, &checkpoint)?;
 
@@ -248,12 +511,19 @@ async fn upload_blob(
             &options.cancellation,
         )
         .await?;
-    check_response(
-        &response,
-        &[StatusCode::CREATED],
-        "blob upload finalization",
-    )?;
-    if let Some(remote_digest) = response.headers().get("docker-content-digest") {
+    let finalized = response.status() == StatusCode::CREATED;
+    if !finalized {
+        ensure!(
+            matches!(
+                response.status(),
+                StatusCode::NOT_FOUND | StatusCode::CONFLICT
+            ) && remote_blob_exists(client, reference, descriptor, scope, &options.cancellation)
+                .await?,
+            "blob upload finalization failed with HTTP {}",
+            response.status()
+        );
+    }
+    if finalized && let Some(remote_digest) = response.headers().get("docker-content-digest") {
         let remote_digest = Sha256Digest::parse(
             remote_digest
                 .to_str()
@@ -282,16 +552,178 @@ async fn upload_blob(
     Ok(())
 }
 
+async fn remote_blob_exists(
+    client: &RegistryClient,
+    reference: &RegistryReference,
+    descriptor: &Descriptor,
+    scope: &str,
+    cancellation: &CancellationToken,
+) -> Result<bool> {
+    let repository = repository_path(reference);
+    let path = format!("v2/{repository}/blobs/{}", descriptor.digest);
+    let response = client
+        .send(
+            Method::HEAD,
+            client.url(&path)?,
+            scope,
+            &HeaderMap::new(),
+            None,
+            cancellation,
+        )
+        .await?;
+    match response.status() {
+        StatusCode::OK => {
+            validate_remote_blob_head(&response, descriptor)?;
+            Ok(true)
+        }
+        StatusCode::NOT_FOUND => Ok(false),
+        status => bail!("blob race verification failed with HTTP {status}"),
+    }
+}
+
+fn complete_event(options: &PushOptions, descriptor: &Descriptor) {
+    emit(
+        &options.events,
+        TransferEvent::Complete {
+            digest: descriptor.digest.to_string(),
+            size: descriptor.size,
+        },
+    );
+}
+
+enum MountOutcome {
+    Mounted,
+    Upload(UploadCheckpoint),
+    Unavailable,
+}
+
+enum StartOutcome {
+    Complete,
+    Upload(UploadCheckpoint),
+}
+
+async fn try_mount(
+    client: &RegistryClient,
+    reference: &RegistryReference,
+    descriptor: &Descriptor,
+    mount_sources: &[RepositoryName],
+    cancellation: &CancellationToken,
+) -> Result<MountOutcome> {
+    for source in mount_sources {
+        if source == reference.repository() {
+            continue;
+        }
+        let source_scope = format!("repository:{source}:pull");
+        let source_path = format!("v2/{source}/blobs/{}", descriptor.digest);
+        let response = client
+            .send(
+                Method::HEAD,
+                client.url(&source_path)?,
+                &source_scope,
+                &HeaderMap::new(),
+                None,
+                cancellation,
+            )
+            .await?;
+        match response.status() {
+            StatusCode::OK => validate_remote_blob_head(&response, descriptor)?,
+            StatusCode::NOT_FOUND => continue,
+            status => bail!("mount source blob check failed with HTTP {status}"),
+        }
+
+        let destination_scope = reference.scope("pull,push");
+        let scopes = [destination_scope, source_scope];
+        let repository = repository_path(reference);
+        let path = format!("v2/{repository}/blobs/uploads/");
+        let mut url = client.url(&path)?;
+        url.query_pairs_mut()
+            .append_pair("mount", &descriptor.digest.to_string())
+            .append_pair("from", source.as_str())
+            .append_pair("size", &descriptor.size.to_string());
+        let response = client
+            .send_scoped(
+                Method::POST,
+                url.clone(),
+                &scopes,
+                &HeaderMap::new(),
+                Some(Bytes::new()),
+                cancellation,
+            )
+            .await?;
+        match response.status() {
+            StatusCode::CREATED => {
+                if let Some(remote_digest) = response.headers().get("docker-content-digest") {
+                    let remote_digest = Sha256Digest::parse(
+                        remote_digest
+                            .to_str()
+                            .context("mounted digest response header is not ASCII")?,
+                    )?;
+                    ensure!(
+                        remote_digest == descriptor.digest,
+                        "registry mounted a different blob digest"
+                    );
+                }
+                return Ok(MountOutcome::Mounted);
+            }
+            StatusCode::ACCEPTED => {
+                let location = resolve_location(&url, &response)?;
+                validate_upload_location(client, &location)?;
+                return Ok(MountOutcome::Upload(UploadCheckpoint {
+                    schema: CHECKPOINT_SCHEMA.to_string(),
+                    authority: reference.authority().to_string(),
+                    repository: reference.repository().to_string(),
+                    digest: descriptor.digest,
+                    size: descriptor.size,
+                    location: location.to_string(),
+                    offset: 0,
+                }));
+            }
+            StatusCode::NOT_FOUND => continue,
+            status => bail!("cross-repository blob mount failed with HTTP {status}"),
+        }
+    }
+    Ok(MountOutcome::Unavailable)
+}
+
+fn validate_remote_blob_head(response: &reqwest::Response, descriptor: &Descriptor) -> Result<()> {
+    if let Some(length) = response.headers().get(CONTENT_LENGTH) {
+        let length = length
+            .to_str()
+            .context("blob Content-Length is not ASCII")?
+            .parse::<u64>()
+            .context("blob Content-Length is invalid")?;
+        ensure!(
+            length == descriptor.size,
+            "registry blob size differs from the local descriptor"
+        );
+    }
+    if let Some(digest) = response.headers().get("docker-content-digest") {
+        let digest = Sha256Digest::parse(
+            digest
+                .to_str()
+                .context("blob digest response header is not ASCII")?,
+        )?;
+        ensure!(
+            digest == descriptor.digest,
+            "registry blob digest differs from the requested descriptor"
+        );
+    }
+    Ok(())
+}
+
 async fn start_upload(
     client: &RegistryClient,
     reference: &RegistryReference,
     descriptor: &Descriptor,
     scope: &str,
     cancellation: &CancellationToken,
-) -> Result<UploadCheckpoint> {
+) -> Result<StartOutcome> {
     let repository = repository_path(reference);
     let path = format!("v2/{repository}/blobs/uploads/");
-    let url = client.url(&path)?;
+    let mut url = client.url(&path)?;
+    url.query_pairs_mut()
+        .append_pair("digest", &descriptor.digest.to_string())
+        .append_pair("size", &descriptor.size.to_string());
     let response = client
         .send(
             Method::POST,
@@ -302,10 +734,24 @@ async fn start_upload(
             cancellation,
         )
         .await?;
+    if response.status() == StatusCode::CREATED {
+        if let Some(remote_digest) = response.headers().get("docker-content-digest") {
+            let remote_digest = Sha256Digest::parse(
+                remote_digest
+                    .to_str()
+                    .context("upload-start digest response header is not ASCII")?,
+            )?;
+            ensure!(
+                remote_digest == descriptor.digest,
+                "registry reused a different blob at upload start"
+            );
+        }
+        return Ok(StartOutcome::Complete);
+    }
     check_response(&response, &[StatusCode::ACCEPTED], "starting blob upload")?;
     let location = resolve_location(&url, &response)?;
     validate_upload_location(client, &location)?;
-    Ok(UploadCheckpoint {
+    Ok(StartOutcome::Upload(UploadCheckpoint {
         schema: CHECKPOINT_SCHEMA.to_string(),
         authority: reference.authority().to_string(),
         repository: reference.repository().to_string(),
@@ -313,7 +759,7 @@ async fn start_upload(
         size: descriptor.size,
         location: location.to_string(),
         offset: 0,
-    })
+    }))
 }
 
 async fn query_upload(
@@ -343,9 +789,9 @@ async fn query_upload(
     )?;
     let next = resolve_location(&location, &response).unwrap_or(location);
     validate_upload_location(client, &next)?;
-    let Some(offset) = acknowledged_offset(response.headers().get(RANGE))? else {
-        return Ok(None);
-    };
+    // Distribution omits Range for a live zero-byte session. `0-0` would mean
+    // one accepted byte, so absence is the only unambiguous zero offset.
+    let offset = acknowledged_offset(response.headers().get(RANGE))?.unwrap_or(0);
     Ok(Some((next, offset)))
 }
 
@@ -364,6 +810,7 @@ async fn put_manifest(
     let headers = build_headers([header("content-type", media_type.as_str())?]);
     let commit = CancellationToken::new();
     let cancellation = cancellation.unwrap_or(&commit);
+    let expected_digest = Sha256Digest::digest(&bytes);
     let response = client
         .send(
             Method::PUT,
@@ -378,7 +825,143 @@ async fn put_manifest(
         &response,
         &[StatusCode::CREATED, StatusCode::ACCEPTED],
         "manifest upload",
+    )?;
+    if let Some(remote_digest) = response.headers().get("docker-content-digest") {
+        let remote_digest = Sha256Digest::parse(
+            remote_digest
+                .to_str()
+                .context("manifest digest response header is not ASCII")?,
+        )?;
+        ensure!(
+            remote_digest == expected_digest,
+            "registry stored different manifest bytes"
+        );
+    }
+    Ok(())
+}
+
+pub(super) async fn delete_manifest(
+    client: &RegistryClient,
+    reference: &RegistryReference,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let ManifestReference::Digest(digest) = reference.manifest_reference() else {
+        bail!("manifest deletion requires an immutable @sha256 digest reference");
+    };
+    ensure_not_cancelled(cancellation)?;
+    let repository = repository_path(reference);
+    let path = format!("v2/{repository}/manifests/{digest}");
+    let response = client
+        .send(
+            Method::DELETE,
+            client.url(&path)?,
+            &reference.scope("pull,push"),
+            &HeaderMap::new(),
+            None,
+            cancellation,
+        )
+        .await?;
+    check_response(
+        &response,
+        &[StatusCode::ACCEPTED, StatusCode::NOT_FOUND],
+        "manifest digest deletion",
     )
+}
+
+pub(super) async fn cancel_uploads(
+    client: &RegistryClient,
+    reference: &RegistryReference,
+    state_path: &Path,
+    cancellation: &CancellationToken,
+) -> Result<usize> {
+    ensure_not_cancelled(cancellation)?;
+    let state_directory = open_private_state_directory(state_path, reference)?;
+    let mut names = Vec::new();
+    for entry in rustix::fs::Dir::read_from(&state_directory)? {
+        let entry = entry.context("reading upload-state directory")?;
+        let name = entry
+            .file_name()
+            .to_str()
+            .context("upload checkpoint name is not UTF-8")?;
+        if is_checkpoint_name(name) {
+            names.push(name.to_string());
+        }
+    }
+    names.sort();
+
+    let scope = reference.scope("pull,push");
+    let mut cancelled = 0_usize;
+    for name in names {
+        ensure_not_cancelled(cancellation)?;
+        let checkpoint = load_checkpoint(&state_directory, &name)?
+            .context("upload checkpoint disappeared during cancellation")?;
+        ensure!(
+            checkpoint.authority == reference.authority()
+                && checkpoint.repository == reference.repository().as_str(),
+            "upload checkpoint belongs to a different repository"
+        );
+        let location = checked_upload_url(client, &checkpoint.location)?;
+        cancel_upload(client, location, &scope, cancellation).await?;
+        rustix::fs::unlinkat(
+            &state_directory,
+            name.as_str(),
+            rustix::fs::AtFlags::empty(),
+        )
+        .context("removing cancelled upload checkpoint")?;
+        cancelled = cancelled
+            .checked_add(1)
+            .context("cancelled upload count overflow")?;
+    }
+    Ok(cancelled)
+}
+
+async fn cancel_upload(
+    client: &RegistryClient,
+    location: Url,
+    scope: &str,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let mut retry_delays = UPLOAD_CANCELLATION_RETRY_DELAYS.into_iter();
+    loop {
+        let response = client
+            .send(
+                Method::DELETE,
+                location.clone(),
+                scope,
+                &HeaderMap::new(),
+                None,
+                cancellation,
+            )
+            .await?;
+        if response.status() != StatusCode::SERVICE_UNAVAILABLE {
+            return check_response(
+                &response,
+                &[
+                    StatusCode::ACCEPTED,
+                    StatusCode::NO_CONTENT,
+                    StatusCode::NOT_FOUND,
+                ],
+                "upload cancellation",
+            );
+        }
+
+        let Some(delay) = retry_delays.next() else {
+            return check_response(&response, &[], "upload cancellation");
+        };
+        // A cancelled PATCH future can leave its server-side transaction in
+        // flight. DELETE is idempotent, so briefly retry the resulting 503
+        // without discarding the checkpoint that makes later cleanup safe.
+        tokio::select! {
+            () = cancellation.cancelled() => bail!("OCI transfer cancelled"),
+            () = tokio::time::sleep(delay) => {}
+        }
+    }
+}
+
+fn is_checkpoint_name(name: &str) -> bool {
+    name.len() == 64 + ".json".len()
+        && name.ends_with(".json")
+        && name[..64].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn selected_index_bytes(root: &Path, verified: &VerifiedImage) -> Result<(Vec<u8>, Sha256Digest)> {

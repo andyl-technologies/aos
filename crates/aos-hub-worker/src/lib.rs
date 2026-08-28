@@ -192,9 +192,30 @@ fn registry_index_build_id(
     hex::encode(digest.finalize())
 }
 
+/// Controls which requests the outer Worker may move onto execution shards.
+#[cfg(any(test, target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestShardingMode {
+    Off,
+    ReadOnly,
+    On,
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+impl RequestShardingMode {
+    /// Returns whether a route with the given mutability may use a shard.
+    fn allows(self, read_only: bool) -> bool {
+        match self {
+            Self::Off => false,
+            Self::ReadOnly => read_only,
+            Self::On => true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod index_build_identity_tests {
-    use super::registry_index_build_id;
+    use super::{registry_index_build_id, RequestShardingMode};
 
     #[test]
     fn identity_coalesces_duplicates_and_tracks_both_input_versions() {
@@ -212,6 +233,31 @@ mod index_build_identity_tests {
             registry_index_build_id(7, 3, Some("publication-b"))
         );
         assert_ne!(original, registry_index_build_id(7, 3, None));
+    }
+
+    #[test]
+    fn sharding_modes_preserve_the_read_only_cutover_for_oci_methods() {
+        for method in ["GET", "HEAD"] {
+            let route = crate::requestshard::classify_oci_repository(
+                method,
+                "registry-00000000000000000000000000000001",
+                &aos_oci_types::RepositoryName::parse("team/aos").unwrap(),
+            );
+            assert!(!RequestShardingMode::Off.allows(route.read_only));
+            assert!(RequestShardingMode::ReadOnly.allows(route.read_only));
+            assert!(RequestShardingMode::On.allows(route.read_only));
+        }
+
+        for method in ["POST", "PATCH", "PUT", "DELETE"] {
+            let route = crate::requestshard::classify_oci_repository(
+                method,
+                "registry-00000000000000000000000000000001",
+                &aos_oci_types::RepositoryName::parse("team/aos").unwrap(),
+            );
+            assert!(!RequestShardingMode::Off.allows(route.read_only));
+            assert!(!RequestShardingMode::ReadOnly.allows(route.read_only));
+            assert!(RequestShardingMode::On.allows(route.read_only));
+        }
     }
 }
 
@@ -259,6 +305,7 @@ mod entry {
         sealer_from_secret, WorkerCloudflareControlPlaneClient, WorkerEgressClient,
         WorkerHttpClient, WorkerMailer, WorkerReindexer, WorkerStorageCredentialProbeProvider,
     };
+    use crate::RequestShardingMode;
 
     /// The Wrangler secret holding the HS256 JWT signing secret.
     const HUB_JWT_SECRET: &str = "HUB_JWT_SECRET";
@@ -334,13 +381,6 @@ mod entry {
     /// Optional `[vars]` entry: the verified sender address the Email Service
     /// binding sends `from`. Required to use the [`EMAIL_BINDING`].
     const HUB_EMAIL_FROM: &str = "HUB_EMAIL_FROM";
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum RequestShardingMode {
-        Off,
-        ReadOnly,
-        On,
-    }
 
     fn request_sharding_mode(env: &Env) -> Result<RequestShardingMode> {
         match env
@@ -450,11 +490,13 @@ mod entry {
             return Ok(None);
         }
         let mode = request_sharding_mode(env)?;
-        if mode == RequestShardingMode::Off {
+        if !mode.allows(true) {
             return Ok(None);
         }
         let url = req.url()?;
         let path = url.path();
+        let request_method = req.method();
+        let method = request_method.as_ref();
         if path.starts_with("/_internal/") || path.starts_with("/_admin/") {
             return Ok(None);
         }
@@ -480,13 +522,13 @@ mod entry {
                 // current stable registry incarnation for the next request.
                 return Ok(None);
             };
-            return Ok(Some(crate::requestshard::classify_oci_repository(
+            let route = crate::requestshard::classify_oci_repository(
+                method,
                 &registry_stable_id,
                 &repository,
-            )));
+            );
+            return Ok(mode.allows(route.read_only).then_some(route));
         }
-        let request_method = req.method();
-        let method = request_method.as_ref();
         let authority = url.host_str().unwrap_or_default();
         let initial = crate::requestshard::classify_request(method, path, authority, None);
         let content_length = req
@@ -508,10 +550,7 @@ mod entry {
             None
         };
         let route = crate::requestshard::classify_request(method, path, authority, body.as_deref());
-        if mode == RequestShardingMode::ReadOnly && !route.read_only {
-            return Ok(None);
-        }
-        Ok(Some(route))
+        Ok(mode.allows(route.read_only).then_some(route))
     }
 
     fn worker_egress(env: &Env) -> worker::Result<Arc<WorkerEgressClient>> {
@@ -1319,6 +1358,7 @@ mod entry {
         let mut jobs = vec![
             aos_hub_core::jobs::Job::RunTopologyProbes,
             aos_hub_core::jobs::Job::RecoverCacheWrites,
+            aos_hub_core::jobs::Job::RecoverOciUploads,
             aos_hub_core::jobs::Job::RunCacheGc,
             aos_hub_core::jobs::Job::RebuildDirectory,
         ];
@@ -1351,6 +1391,7 @@ mod entry {
                 let cursor = match &job {
                     aos_hub_core::jobs::Job::RunTopologyProbes => "topology".to_string(),
                     aos_hub_core::jobs::Job::RecoverCacheWrites => "cache-recovery".to_string(),
+                    aos_hub_core::jobs::Job::RecoverOciUploads => "oci-recovery".to_string(),
                     aos_hub_core::jobs::Job::RunCacheGc => "cache-gc".to_string(),
                     aos_hub_core::jobs::Job::RebuildDirectory => "directory".to_string(),
                     aos_hub_core::jobs::Job::Reindex { registry_id } => {
@@ -1655,6 +1696,29 @@ mod entry {
                 .map_err(|error| {
                     worker::Error::RustError(format!("job recover expired cache writes: {error:#}"))
                 })?;
+            }
+            Job::RecoverOciUploads => {
+                let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
+                    worker::Error::RustError(format!("job recover OCI uploads R2 binding: {error}"))
+                })?;
+                let secret_versions = crate::secretversions::from_env(env).map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "job recover OCI uploads secret versions: {error}"
+                    ))
+                })?;
+                let egress = worker_egress(env)?;
+                let db = Arc::new(aos_hub_core::db::Database::attach(make()));
+                let writers = crate::surface::R2SurfaceWriteProvider::new(
+                    bucket,
+                    Arc::clone(&db),
+                    secret_versions,
+                    egress,
+                );
+                aos_hub_core::oci::recover_expired_oci_work(&db, &writers, now_for_worker(), 100)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!("job recover OCI uploads: {error:#}"))
+                    })?;
             }
             Job::RunCacheGc => {
                 let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {

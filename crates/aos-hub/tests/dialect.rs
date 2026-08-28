@@ -15,7 +15,7 @@
 //! failure. The pg/mysql cases drop and recreate a clean schema before
 //! connecting, so repeated runs against long-lived servers are idempotent. The
 //! mysql case also creates a physical v19 schema and reopens it through the
-//! production migration path to cover the v19-to-v20 catalog upgrade.
+//! production migration path to cover the v19-to-current OCI upgrade.
 //!
 //! Run the live cases with, e.g.:
 //!
@@ -35,10 +35,156 @@ use aos_hub::db::Database;
 use aos_hub::domain::{Permission, Principal};
 use aos_hub_core::db::{
     BeginCacheGcGeneration, CacheGcCoverageError, CacheInventoryNarinfoCandidate,
-    CacheObjectPresenceObservation, NewBindingWriteRevision, SurfacePlacementRecord, SurfaceTarget,
+    CacheObjectPresenceObservation, IndexOciRepositoryCatalog, NewBindingWriteRevision,
+    OciCatalogObject, OciCatalogProjection, SurfacePlacementRecord, SurfaceTarget,
+};
+use aos_oci_types::{
+    Annotations, Descriptor, ImageIndex, ImageManifest, ManifestReference, MediaType, Platform,
+    RepositoryName, Sha256Digest, Tag,
 };
 
 mod common;
+
+fn oci_descriptor(media_type: MediaType, bytes: &[u8]) -> Descriptor {
+    Descriptor {
+        media_type,
+        digest: Sha256Digest::digest(bytes),
+        size: bytes.len() as u64,
+        urls: Vec::new(),
+        annotations: Annotations::new(),
+        data: None,
+        artifact_type: None,
+        platform: None,
+    }
+}
+
+/// Races exact catalog replays at a barrier and proves digest-scoped charging.
+async fn exercise_oci_catalog_race(
+    db: &Database,
+    org_id: i64,
+    registry_id: i64,
+    placement: &SurfacePlacementRecord,
+) {
+    let config = oci_descriptor(MediaType::OciImageConfig, b"{}");
+    let layer = oci_descriptor(MediaType::OciLayerGzip, b"dialect-layer");
+    let manifest = ImageManifest {
+        schema_version: 2,
+        media_type: Some(MediaType::OciImageManifest),
+        artifact_type: None,
+        config: config.clone(),
+        layers: vec![layer.clone()],
+        subject: None,
+        annotations: Annotations::new(),
+    };
+    let manifest_bytes = aos_oci_types::to_canonical_json(&manifest).unwrap();
+    let mut manifest_descriptor = oci_descriptor(MediaType::OciImageManifest, &manifest_bytes);
+    manifest_descriptor.platform = Some(Platform::linux_amd64());
+    let index = ImageIndex {
+        schema_version: 2,
+        media_type: Some(MediaType::OciImageIndex),
+        artifact_type: None,
+        manifests: vec![manifest_descriptor.clone()],
+        subject: None,
+        annotations: Annotations::new(),
+    };
+    let index_bytes = aos_oci_types::to_canonical_json(&index).unwrap();
+    let root = oci_descriptor(MediaType::OciImageIndex, &index_bytes);
+    let catalog = IndexOciRepositoryCatalog {
+        registry_id,
+        placement_id: placement.id,
+        // Exercise the concurrent first-push repository creation path rather
+        // than racing catalog admission into an already-created repository.
+        repository: RepositoryName::parse("first/push-race").unwrap(),
+        objects: vec![
+            OciCatalogObject {
+                descriptor: root.clone(),
+                projection: Some(OciCatalogProjection::Index(index)),
+            },
+            OciCatalogObject {
+                descriptor: manifest_descriptor,
+                projection: Some(OciCatalogProjection::Manifest {
+                    document: manifest,
+                    platform: Some(Platform::linux_amd64()),
+                }),
+            },
+            OciCatalogObject {
+                descriptor: config.clone(),
+                projection: None,
+            },
+            OciCatalogObject {
+                descriptor: layer.clone(),
+                projection: None,
+            },
+        ],
+        root_digest: root.digest,
+        tag: Some(Tag::parse("catalog-race").unwrap()),
+        source_kind: "manual".to_string(),
+        actor_id: "test:dialect-catalog-race".to_string(),
+        observed_at: 1_800_000_000,
+    };
+    for object in &catalog.objects {
+        db.record_oci_uploaded_object(
+            registry_id,
+            placement.id,
+            object.descriptor.digest,
+            object.descriptor.size,
+            &format!("dialect-{}", object.descriptor.digest.encoded()),
+            catalog.observed_at,
+        )
+        .await
+        .unwrap();
+    }
+
+    let before = db.org_usage(org_id).await.unwrap();
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+    let first_barrier = std::sync::Arc::clone(&barrier);
+    let second_barrier = std::sync::Arc::clone(&barrier);
+    let first = async {
+        first_barrier.wait().await;
+        db.index_oci_repository_catalog(&catalog).await
+    };
+    let second = async {
+        second_barrier.wait().await;
+        db.index_oci_repository_catalog(&catalog).await
+    };
+    let (first, second) = tokio::join!(first, second);
+    first.unwrap();
+    second.unwrap();
+
+    let expected_bytes = catalog
+        .objects
+        .iter()
+        .map(|object| object.descriptor.size as i64)
+        .sum::<i64>();
+    let after = db.org_usage(org_id).await.unwrap();
+    assert_eq!(after.used_bytes - before.used_bytes, expected_bytes);
+    assert_eq!(after.object_count - before.object_count, 4);
+    let repository = db
+        .oci_repository(registry_id, &catalog.repository)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        db.oci_repository_closed_graph(repository.id, &[root])
+            .await
+            .unwrap()
+            .len(),
+        4
+    );
+    let indexed_root = db
+        .oci_manifest_for_repository(
+            repository.id,
+            &ManifestReference::Tag(Tag::parse("catalog-race").unwrap()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(indexed_root.digest, catalog.root_digest);
+    assert_eq!(indexed_root.artifact_type, None);
+    assert_eq!(indexed_root.subject_digest, None);
+    assert_eq!(indexed_root.config_digest, None);
+    assert_eq!(indexed_root.platform, None);
+}
 
 /// Stages one complete NAR/narinfo candidate for a placement inventory scan.
 async fn stage_dialect_inventory_candidate(
@@ -883,6 +1029,9 @@ async fn exercise(db: &Database) {
     // The frontier from the prior OK sync survives the later failure.
     assert_eq!(source.upstream_frontier.as_deref(), Some("2.0.0"));
     assert_eq!(db.list_mirror_sources().await.unwrap().len(), 1);
+
+    // -- OCI digest ownership -------------------------------------------------
+    exercise_oci_catalog_race(db, org, reg, &registry_placement).await;
 }
 
 #[tokio::test]
@@ -933,11 +1082,15 @@ async fn mysql_contract() {
     seed_legacy_mysql_v19(&url).await;
     let upgraded = Database::connect(&url)
         .await
-        .expect("upgrade a physical mysql v19 schema to v20");
+        .expect("upgrade a physical mysql v19 schema through current OCI migrations");
     assert_mysql_v19_catalog_upgrade(&url).await;
     drop(upgraded);
 
-    println!("dialect contract: mysql fresh + v19 upgrade OK ({url})");
+    assert_mysql_v21_crash_replay_and_concurrent_start(&url).await;
+
+    println!(
+        "dialect contract: mysql fresh + v19-to-current + v21 crash/concurrency replay OK ({url})"
+    );
 }
 
 /// Drops every table in the target postgres database, so the subsequent
@@ -999,8 +1152,8 @@ async fn seed_legacy_mysql_v19(url: &str) {
     const LEGACY_VERSION: usize = 19;
     assert_eq!(
         MIGRATIONS.len(),
-        LEGACY_VERSION + 1,
-        "the OCI catalog must remain migration v20"
+        LEGACY_VERSION + 2,
+        "the OCI catalog and upload protocol must remain migrations v20-v21"
     );
 
     let mut connection = MySqlConnection::connect(url)
@@ -1064,19 +1217,125 @@ async fn seed_legacy_mysql_v19(url: &str) {
     );
 }
 
-/// Verifies that production migration v20 links roots without changing v19.
+/// Creates the exact shipped v20 schema and marker without applying v21.
+#[cfg(feature = "mysql")]
+async fn seed_current_mysql_v20(url: &str) {
+    use aos_hub_core::backend::split_statements;
+    use aos_hub_core::db::MIGRATIONS;
+    use aos_hub_core::dialect::Dialect;
+    use sqlx::{Connection as _, MySqlConnection};
+
+    const CATALOG_VERSION: usize = 20;
+    seed_legacy_mysql_v19(url).await;
+    let mut connection = MySqlConnection::connect(url)
+        .await
+        .expect("connecting to mysql to seed v20");
+    for statement in split_statements(MIGRATIONS[CATALOG_VERSION - 1]) {
+        let translated = Dialect::Mysql
+            .translate(&statement)
+            .expect("translating the v20 OCI catalog migration");
+        sqlx::query(&translated.sql)
+            .execute(&mut connection)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "applying the v20 OCI catalog failed: {error}; SQL: {}",
+                    translated.sql
+                )
+            });
+    }
+    sqlx::query("UPDATE schema_version SET version = ?")
+        .bind(CATALOG_VERSION as i64)
+        .execute(&mut connection)
+        .await
+        .expect("stamping mysql schema v20");
+}
+
+/// Mirrors the production MySQL statement replay transform for fault injection.
+#[cfg(feature = "mysql")]
+fn mysql_replay_safe_for_test(sql: &str) -> String {
+    if sql.contains("CREATE TABLE ") && !sql.contains("CREATE TABLE IF NOT EXISTS ") {
+        return sql.replacen("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1);
+    }
+    if sql.contains("CREATE VIEW ") {
+        return sql.replacen("CREATE VIEW ", "CREATE OR REPLACE VIEW ", 1);
+    }
+    if sql.contains("ALTER TABLE ")
+        && sql.contains("ADD COLUMN ")
+        && !sql.contains("ADD COLUMN IF NOT EXISTS ")
+    {
+        return sql.replacen("ADD COLUMN ", "ADD COLUMN IF NOT EXISTS ", 1);
+    }
+    if sql.contains("INSERT INTO ") && !sql.contains("ON CONFLICT") {
+        return sql.replacen("INSERT INTO ", "INSERT IGNORE INTO ", 1);
+    }
+    sql.to_string()
+}
+
+/// Proves every implicit-commit v21 cut replays and concurrent starters converge.
+#[cfg(feature = "mysql")]
+async fn assert_mysql_v21_crash_replay_and_concurrent_start(url: &str) {
+    use aos_hub_core::backend::split_statements;
+    use aos_hub_core::db::MIGRATIONS;
+    use aos_hub_core::dialect::Dialect;
+    use sqlx::{Connection as _, MySqlConnection};
+
+    let migration = MIGRATIONS.last().expect("v21 OCI upload migration");
+    let statements = split_statements(migration);
+    assert!(
+        migration.contains("CREATE TABLE oci_upload_sessions")
+            && migration.contains("CREATE TABLE oci_publication_sessions"),
+        "v21 must use replayable versioned session tables"
+    );
+
+    for cut in 0..=statements.len() {
+        reset_mysql_schema(url).await;
+        seed_current_mysql_v20(url).await;
+        let mut connection = MySqlConnection::connect(url)
+            .await
+            .expect("connecting to inject a v21 migration crash");
+        for statement in &statements[..cut] {
+            let translated = Dialect::Mysql
+                .translate(statement)
+                .expect("translating a v21 crash prefix");
+            let replay_safe = mysql_replay_safe_for_test(&translated.sql);
+            sqlx::query(&replay_safe)
+                .execute(&mut connection)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "injecting v21 crash after statement {cut} failed: {error}; SQL: {replay_safe}"
+                    )
+                });
+        }
+        drop(connection);
+
+        let recovered = Database::connect(url)
+            .await
+            .unwrap_or_else(|error| panic!("v21 recovery after statement {cut}: {error:#}"));
+        drop(recovered);
+    }
+
+    reset_mysql_schema(url).await;
+    seed_current_mysql_v20(url).await;
+    let (first, second) = tokio::join!(Database::connect(url), Database::connect(url));
+    first.expect("first concurrent v21 migrator");
+    second.expect("second concurrent v21 migrator");
+}
+
+/// Verifies that current production migrations preserve the v19 release key.
 #[cfg(feature = "mysql")]
 async fn assert_mysql_v19_catalog_upgrade(url: &str) {
     use sqlx::{Connection as _, MySqlConnection};
 
     let mut connection = MySqlConnection::connect(url)
         .await
-        .expect("connecting to mysql after v20 upgrade");
+        .expect("connecting to mysql after the OCI upgrade");
     let version: i64 = sqlx::query_scalar("SELECT version FROM hub_schema_version WHERE id = 1")
         .fetch_one(&mut connection)
         .await
         .expect("reading the upgraded mysql schema version");
-    assert_eq!(version, 20);
+    assert_eq!(version, 21);
 
     let numeric_release_fk: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
@@ -1105,4 +1364,28 @@ async fn assert_mysql_v19_catalog_upgrade(url: &str) {
     .await
     .expect("checking for an incompatible v20 release-tag foreign key");
     assert_eq!(incompatible_tag_fk, 0);
+
+    let contextual_media_type: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM information_schema.columns
+         WHERE table_schema = DATABASE()
+           AND table_name = 'oci_repository_objects'
+           AND column_name = 'media_type'",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .expect("checking for the v21 contextual media type");
+    assert_eq!(contextual_media_type, 1);
+
+    let portable_sha_state: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM information_schema.columns
+         WHERE table_schema = DATABASE()
+           AND table_name = 'oci_upload_sessions'
+           AND column_name IN ('sha256_h0', 'sha256_tail_hex')",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .expect("checking for the v21 portable upload state");
+    assert_eq!(portable_sha_state, 2);
 }

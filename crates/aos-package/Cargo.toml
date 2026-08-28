@@ -8,6 +8,7 @@ license.workspace = true
 aos-core = { workspace = true }
 aos-cache = { workspace = true }
 aos-net = { workspace = true }
+aos-oci-types = { workspace = true }
 aos-systemd = { workspace = true }
 aos-registry-surface = { workspace = true }
 aos-boot-identity = { workspace = true }

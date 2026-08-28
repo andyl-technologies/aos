@@ -153,6 +153,68 @@ mod tests {
     }
 
     #[test]
+    fn phase5_guard_and_quota_identities_translate_portably() {
+        let migration = crate::db::MIGRATIONS
+            .iter()
+            .find(|migration| {
+                migration.contains("CREATE TABLE IF NOT EXISTS oci_phase5_upgrade_guard")
+            })
+            .expect("Phase 5 OCI migration");
+        let statements = crate::db::backend::split_statements(migration);
+        let guard = statements
+            .iter()
+            .find(|statement| {
+                statement.contains("CREATE TABLE IF NOT EXISTS oci_phase5_upgrade_guard")
+            })
+            .expect("Phase 5 upgrade guard");
+        let quota = statements
+            .iter()
+            .find(|statement| statement.contains("CREATE TABLE oci_quota_reservations"))
+            .expect("Phase 5 quota reservations");
+        let upload = statements
+            .iter()
+            .find(|statement| statement.contains("CREATE TABLE oci_upload_sessions"))
+            .expect("Phase 5 upload sessions");
+
+        let postgres_guard = Dialect::Postgres.translate(guard).unwrap().sql;
+        assert!(
+            postgres_guard.contains("id VARCHAR(16) COLLATE \"C\" PRIMARY KEY"),
+            "{postgres_guard}"
+        );
+        assert!(!postgres_guard.contains("BIGSERIAL"), "{postgres_guard}");
+        let mysql_guard = Dialect::Mysql.translate(guard).unwrap().sql;
+        assert!(
+            mysql_guard.contains("id VARBINARY(16) PRIMARY KEY"),
+            "{mysql_guard}"
+        );
+        assert!(
+            !mysql_guard.contains("AUTO_INCREMENT"),
+            "the explicit singleton key must not become auto-incrementing: {mysql_guard}"
+        );
+
+        for (dialect, exact_type) in [
+            (Dialect::Sqlite, "TEXT COLLATE BINARY"),
+            (Dialect::Postgres, "VARCHAR(128) COLLATE \"C\""),
+            (Dialect::Mysql, "VARBINARY(128)"),
+        ] {
+            let quota = dialect.translate(quota).unwrap().sql;
+            let upload = dialect.translate(upload).unwrap().sql;
+            assert!(
+                quota.contains(&format!("id {exact_type} PRIMARY KEY")),
+                "{dialect:?}: {quota}"
+            );
+            assert!(
+                quota.contains(&format!("owner_id {exact_type} NOT NULL")),
+                "{dialect:?}: {quota}"
+            );
+            assert!(
+                upload.contains(&format!("quota_reservation_id {exact_type} NOT NULL")),
+                "{dialect:?}: {upload}"
+            );
+        }
+    }
+
+    #[test]
     fn ddl_text_narrowed_only_on_mysql() {
         let src = "CREATE TABLE t (id TEXT PRIMARY KEY, name TEXT)";
         assert!(Dialect::Postgres

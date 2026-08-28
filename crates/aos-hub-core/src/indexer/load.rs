@@ -21,7 +21,8 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
 use aos_oci_types::{
-    limits::MAX_JSON_BYTES as MAX_OCI_JSON_BYTES, ContainerRelease, CONTAINER_RELEASE_SIDECAR_PATH,
+    limits::MAX_JSON_BYTES as MAX_OCI_JSON_BYTES, to_canonical_json, ContainerRelease,
+    CONTAINER_RELEASE_SIDECAR_PATH,
 };
 use aos_registry_surface::manifest::{
     parse_package_file, KeysToml, PackageToml, ReferenceField, RegistryRootConfig,
@@ -610,6 +611,10 @@ fn parse_container_release(bytes: &[u8]) -> Result<LoadedContainerRelease> {
     );
     let document = ContainerRelease::from_json(bytes)
         .with_context(|| format!("parsing committed {CONTAINER_RELEASE_SIDECAR_PATH}"))?;
+    anyhow::ensure!(
+        to_canonical_json(&document)? == bytes,
+        "committed {CONTAINER_RELEASE_SIDECAR_PATH} must use canonical JSON"
+    );
     let catalog_digest = hex::encode(sha2::Sha256::digest(bytes));
     Ok(LoadedContainerRelease {
         document,
@@ -620,6 +625,88 @@ fn parse_container_release(bytes: &[u8]) -> Result<LoadedContainerRelease> {
 #[cfg(test)]
 mod container_release_tests {
     use super::*;
+    use aos_oci_types::{
+        Annotations, ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
+        ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
+        ContainerReleaseEvidence, ContainerReleaseIdentity, Descriptor, MediaType,
+        NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest,
+        CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
+    };
+
+    fn descriptor(media_type: MediaType, label: &str) -> Descriptor {
+        Descriptor {
+            media_type,
+            digest: Sha256Digest::digest(label.as_bytes()),
+            size: u64::try_from(label.len()).unwrap(),
+            urls: Vec::new(),
+            annotations: Annotations::new(),
+            data: None,
+            artifact_type: None,
+            platform: None,
+        }
+    }
+
+    fn evidence_descriptor(artifact_type: MediaType, label: &str) -> Descriptor {
+        Descriptor {
+            artifact_type: Some(artifact_type),
+            ..descriptor(MediaType::OciImageManifest, label)
+        }
+    }
+
+    fn release_fixture() -> ContainerRelease {
+        let mut platform_manifest = descriptor(MediaType::OciImageManifest, "amd64-manifest");
+        platform_manifest.platform = Some(Platform::linux_amd64());
+        ContainerRelease {
+            schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
+            media_type: MediaType::AosContainerRelease,
+            identity: ContainerReleaseIdentity {
+                release: "1.0.0".to_string(),
+                package: "aos".to_string(),
+                package_version: "0.1.0".to_string(),
+                image: "aos".to_string(),
+            },
+            oci: ContainerOciRelease {
+                index: descriptor(MediaType::OciImageIndex, "index"),
+                platform_manifests: vec![platform_manifest],
+            },
+            nix: ContainerNixProvenance {
+                definition: NixDefinitionIdentity {
+                    attribute: "containerImages.aos".to_string(),
+                    derivation_path:
+                        "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container.drv".to_string(),
+                },
+                output: NixOutputIdentity {
+                    name: "out".to_string(),
+                    store_path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container"
+                        .to_string(),
+                },
+                closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
+            },
+            qualification: ContainerEvidenceQualification {
+                schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
+                mapping: ContainerEvidenceMappingQualification {
+                    complete: true,
+                    unknown_paths: Vec::new(),
+                },
+                corresponding_source: ContainerEvidenceQualificationCheck {
+                    complete: true,
+                    unknown_paths: Vec::new(),
+                },
+                licensing: ContainerEvidenceQualificationCheck {
+                    complete: true,
+                    unknown_paths: Vec::new(),
+                },
+                ready_for_verified_publication: true,
+            },
+            evidence: ContainerReleaseEvidence {
+                sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
+                source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
+                license: evidence_descriptor(MediaType::AosLicenseReport, "license"),
+                provenance: evidence_descriptor(MediaType::InTotoJson, "provenance"),
+                signature: evidence_descriptor(MediaType::DsseEnvelope, "signature"),
+            },
+        }
+    }
 
     #[test]
     fn legacy_tree_without_container_sidecar_remains_compatible() {
@@ -630,6 +717,18 @@ mod container_release_tests {
     fn malformed_container_sidecar_fails_closed() {
         let error = parse_optional_container_release(Some(br#"{"schemaVersion":1}"#)).unwrap_err();
         assert!(format!("{error:#}").contains(CONTAINER_RELEASE_SIDECAR_PATH));
+    }
+
+    #[test]
+    fn noncanonical_container_sidecar_is_rejected_before_hashing() {
+        let release = release_fixture();
+        let canonical = to_canonical_json(&release).unwrap();
+        let mut noncanonical = Vec::with_capacity(canonical.len() + 1);
+        noncanonical.push(b' ');
+        noncanonical.extend(canonical);
+
+        let error = parse_container_release(&noncanonical).unwrap_err();
+        assert!(format!("{error:#}").contains("must use canonical JSON"));
     }
 
     #[test]

@@ -28,6 +28,7 @@
 //!   -> 404 { "code": "not_found", "message": "registry not found" }
 //! ```
 
+mod container;
 mod publication_manifest;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -10476,6 +10477,36 @@ impl RpcService {
             .await
     }
 
+    /// Requires an authenticated Hub principal with current registry publish access.
+    ///
+    /// Distribution push-token exchange uses this gate before minting a
+    /// protocol token. Registry visibility never makes writes anonymous.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found for an inactive owner, authentication or permission
+    /// errors for an invalid caller, and internal errors for database failures.
+    pub(crate) async fn require_authenticated_registry_publish(
+        &self,
+        auth: Option<&str>,
+        registry: &RegistryRecord,
+    ) -> Result<(), RpcError> {
+        if let Some(org_id) = registry.org_id {
+            if !self
+                .db
+                .org_is_active(org_id)
+                .await
+                .map_err(RpcError::internal)?
+            {
+                return Err(RpcError::not_found("registry"));
+            }
+        }
+        let claims = self.require_claims(auth)?;
+        let scope = self.registry_scope(registry).await?;
+        self.require_permission(&claims, Permission::Publish, &scope)
+            .await
+    }
+
     /// Authorize a registry machine read while rechecking registry liveness.
     async fn require_registry_stream_read(
         &self,
@@ -14225,7 +14256,7 @@ impl RpcService {
     }
 
     /// Resolves the single fully reconciled placement that may receive writes.
-    async fn effective_surface_writer(
+    pub(crate) async fn effective_surface_writer(
         &self,
         surface: SurfaceTarget,
     ) -> Result<crate::db::SurfacePlacementRecord, RpcError> {
@@ -36071,6 +36102,14 @@ mod cache_upload_tests {
                 bail!("injected placement writer resolution failure");
             }
             Ok(Box::new(InjectedWriter { behavior }))
+        }
+
+        async fn placement_writer_at_revision(
+            &self,
+            placement: &crate::db::SurfacePlacementRecord,
+            _revision: &crate::db::BindingWriteRevisionRecord,
+        ) -> Result<Box<dyn SurfaceWrite>> {
+            self.placement_writer(placement).await
         }
 
         async fn placement_deleter(

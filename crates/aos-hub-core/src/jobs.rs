@@ -41,6 +41,8 @@ pub enum Job {
     RunTopologyProbes,
     /// Recovers one bounded page of expired cache writes and tombstones.
     RecoverCacheWrites,
+    /// Expires OCI sessions and retries exact-placement staging cleanup.
+    RecoverOciUploads,
     /// Runs one bounded page of due cache physical-deletion work.
     RunCacheGc,
     /// Regenerate a registry's machine surface (NAR/narinfo pointers) after a
@@ -234,6 +236,7 @@ impl JobEnvelope {
             Job::DispatchMaintenance => "dispatch_maintenance",
             Job::RunTopologyProbes => "run_topology_probes",
             Job::RecoverCacheWrites => "recover_cache_writes",
+            Job::RecoverOciUploads => "recover_oci_uploads",
             Job::RunCacheGc => "run_cache_gc",
             Job::RegenerateSurface { .. } => "regenerate_surface",
             Job::RebuildDirectory => "rebuild_directory",

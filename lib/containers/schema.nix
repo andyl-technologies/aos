@@ -99,6 +99,37 @@
       };
     };
   };
+
+  evidenceOverrideType = types.submodule {
+    config._module.strict = true;
+    options = {
+      output = mkOption {
+        type = package;
+        description = "Exact generated package output receiving explicit evidence attribution.";
+      };
+      outputName = mkOption {
+        type = safeName;
+        default = "out";
+        description = "Named Nix output represented by this attribution.";
+      };
+      pname = mkOption {
+        type = safeName;
+        description = "Package identity assigned by the container definition.";
+      };
+      version = mkOption {
+        type = validatedString;
+        description = "Package version assigned by the container definition.";
+      };
+      licenses = mkOption {
+        type = types.listOf validatedString;
+        description = "Reviewed license expressions covering the generated output.";
+      };
+      sources = mkOption {
+        type = types.listOf package;
+        description = "Exact source inputs retained for the generated output.";
+      };
+    };
+  };
 in {
   options = {
     name = mkOption {
@@ -233,6 +264,11 @@ in {
         type = validatedString;
         description = "Stable signed-release identity for Hub publication.";
       };
+      evidenceOverrides = mkOption {
+        type = types.listOf evidenceOverrideType;
+        default = [];
+        description = "Explicit source/license attribution for generated runtime outputs.";
+      };
     };
 
     assertions = mkOption {
@@ -261,6 +297,12 @@ in {
       rootPaths = map builtins.toString config.packageRoots;
       annotationKeys = builtins.attrNames config.annotations;
       annotationValues = builtins.attrValues config.annotations;
+      evidenceOverridePaths = map (override: builtins.toString override.output) config.publication.evidenceOverrides;
+      evidenceOverrideOutputNames = map (override: override.outputName) config.publication.evidenceOverrides;
+      selectedEvidenceOverrideOutputNames =
+        map
+        (override: override.output.outputName or "out")
+        config.publication.evidenceOverrides;
       annotationBytes =
         builtins.foldl'
         (total: value: total + builtins.stringLength value)
@@ -300,6 +342,18 @@ in {
       {
         assertion = builtins.length rootPaths == builtins.length (lib.unique rootPaths);
         message = "container baked package roots must not contain duplicate store paths";
+      }
+      {
+        assertion = builtins.length evidenceOverridePaths == builtins.length (lib.unique evidenceOverridePaths);
+        message = "container evidence overrides must name unique output paths";
+      }
+      {
+        assertion = evidenceOverrideOutputNames == selectedEvidenceOverrideOutputNames;
+        message = "container evidence override outputName must equal the selected Nix output";
+      }
+      {
+        assertion = builtins.all (override: override.licenses != [] && override.sources != []) config.publication.evidenceOverrides;
+        message = "container evidence overrides require non-empty licenses and exact source inputs";
       }
       {
         assertion = builtins.length directoryPaths == builtins.length (lib.unique directoryPaths);

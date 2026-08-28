@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 use worker::Bucket;
 
-use aos_hub_core::db::{Database, SurfacePlacementRecord};
+use aos_hub_core::db::{BindingWriteRevisionRecord, Database, SurfacePlacementRecord};
 use aos_hub_core::fetch::{
     OriginFetch, StreamedRead, SurfaceFetch, SurfaceListPage, SurfaceListedEvidence,
     SurfaceObjectEvidence, SurfaceProvider,
@@ -341,7 +341,7 @@ async fn placement_s3_surface(
     db: &Database,
     credentials: &dyn StorageCredentialResolver,
     placement: &SurfacePlacementRecord,
-    write: bool,
+    write_revision: Option<&BindingWriteRevisionRecord>,
 ) -> Result<Option<S3Surface>> {
     let binding = db.binding(placement.binding_id).await?.ok_or_else(|| {
         aos_hub_core::placement_read::terminal_read_error(format!(
@@ -359,11 +359,11 @@ async fn placement_s3_surface(
         )));
     }
     let credential = if binding.access_mode.as_deref() == Some("private") {
-        if write {
-            let revision = db
-                .placement_publication_write_revision(placement.id)
-                .await?
-                .context("placement has no validated publication write revision")?;
+        if let Some(revision) = write_revision {
+            anyhow::ensure!(
+                placement.binding_id == revision.binding_id,
+                "placement does not match frozen binding revision"
+            );
             Some(
                 credentials
                     .resolve_exact(
@@ -631,7 +631,7 @@ impl SurfaceProvider for R2SurfaceProvider {
         placement: &SurfacePlacementRecord,
     ) -> Result<Box<dyn SurfaceFetch>> {
         if let Some(surface) =
-            placement_s3_surface(&self.db, self.credentials.as_ref(), placement, false).await?
+            placement_s3_surface(&self.db, self.credentials.as_ref(), placement, None).await?
         {
             return Ok(Box::new(S3SurfaceFetch {
                 surface,
@@ -1345,7 +1345,8 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
         &self,
         placement: &SurfacePlacementRecord,
     ) -> Result<Box<dyn SurfaceWrite>> {
-        self.db
+        let revision = self
+            .db
             .placement_publication_write_revision(placement.id)
             .await?
             .with_context(|| {
@@ -1354,8 +1355,27 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
                     placement.name
                 )
             })?;
-        if let Some(surface) =
-            placement_s3_surface(&self.db, self.credentials.as_ref(), placement, true).await?
+        self.placement_writer_at_revision(placement, &revision)
+            .await
+    }
+
+    async fn placement_writer_at_revision(
+        &self,
+        placement: &SurfacePlacementRecord,
+        revision: &BindingWriteRevisionRecord,
+    ) -> Result<Box<dyn SurfaceWrite>> {
+        anyhow::ensure!(
+            placement.binding_id == revision.binding_id,
+            "placement '{}' does not match frozen binding revision",
+            placement.name
+        );
+        if let Some(surface) = placement_s3_surface(
+            &self.db,
+            self.credentials.as_ref(),
+            placement,
+            Some(revision),
+        )
+        .await?
         {
             return Ok(Box::new(S3Write {
                 surface,

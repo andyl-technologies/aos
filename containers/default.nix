@@ -6,12 +6,13 @@
   lib,
   pkgs,
   goldenRoots,
+  evidenceOverrides ? [],
   aosSystem,
 }: let
   evaluator = import ../lib/containers {inherit lib pkgs;};
   definitions = {
     aos = import ./aos.nix {
-      inherit lib pkgs goldenRoots aosSystem;
+      inherit lib pkgs goldenRoots evidenceOverrides aosSystem;
     };
   };
   registeredNames = builtins.attrNames definitions;

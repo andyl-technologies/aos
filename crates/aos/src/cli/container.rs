@@ -110,6 +110,9 @@ pub enum ContainerCommand {
         /// Select OS/architecture, such as linux/amd64
         #[arg(long)]
         platform: Option<String>,
+        /// Try mounting blobs from this same-registry repository
+        #[arg(long = "mount-from")]
+        mount_from: Vec<String>,
         /// Override the registry HTTP(S) origin
         #[arg(long, env = "AOS_HUB")]
         hub: Option<String>,
@@ -117,19 +120,49 @@ pub enum ContainerCommand {
         #[arg(long, env = "AOS_TOKEN")]
         token: Option<String>,
     },
-    /// Build a definition and push it with immutable-before-tag ordering
+    /// Finalize a complete graph from an indexed signed AOS release
     Publish {
         /// Container definition name
         name: String,
         /// AUTHORITY/REPOSITORY[:TAG|@DIGEST]
         reference: String,
-        /// Select OS/architecture, such as linux/amd64
+        /// Canonical sidecar already committed in the signed AOS release
         #[arg(long)]
-        platform: Option<String>,
-        /// Override the registry HTTP(S) origin
+        release: PathBuf,
+        /// Final OCI layout or archive containing every sidecar-declared object
+        #[arg(long)]
+        release_layout: PathBuf,
+        /// Nix-generated unsigned signature-input.json
+        #[arg(long)]
+        signature_input: PathBuf,
+        /// Hub registry slug that owns the destination repository
+        #[arg(long)]
+        registry: String,
+        /// Try mounting blobs from this same-registry repository
+        #[arg(long = "mount-from")]
+        mount_from: Vec<String>,
+        /// Expected mutable-tag resource version for compare-and-swap
+        #[arg(long)]
+        expected_tag_resource_version: Option<String>,
+        /// Expected current mutable-tag digest for compare-and-swap
+        #[arg(long)]
+        expected_tag_digest: Option<String>,
+        /// Stable retry identity shared by begin, commit, and recovery
+        #[arg(long)]
+        idempotency_key: String,
+        /// Upload and verify the immutable graph without calling Hub control
+        #[arg(long)]
+        stage_only: bool,
+        /// Override the OCI Distribution origin
+        #[arg(long, env = "AOS_REGISTRY_ORIGIN")]
+        registry_origin: Option<String>,
+        /// Seed credential sent only to the OCI Distribution origin
+        #[arg(long, env = "AOS_REGISTRY_TOKEN")]
+        registry_token: Option<String>,
+        /// Hub Connect control-plane origin
         #[arg(long, env = "AOS_HUB")]
         hub: Option<String>,
-        /// Use this Hub access token
+        /// Hub control-plane access token
         #[arg(long, env = "AOS_TOKEN")]
         token: Option<String>,
     },
@@ -213,6 +246,97 @@ mod tests {
         assert_eq!(token.as_deref(), Some("redacted"));
         assert_eq!(format, ContainerFormat::OciArchive);
         assert_eq!(output.as_deref(), Some(std::path::Path::new("aos.tar")));
+    }
+
+    #[test]
+    fn parses_same_registry_mount_sources_for_push() {
+        let cli = Cli::try_parse_from([
+            "aos",
+            "container",
+            "push",
+            "image.oci.tar",
+            "registry.example/team/aos:edge",
+            "--mount-from",
+            "team/base",
+            "--mount-from",
+            "team/runtime",
+        ])
+        .expect("container push command");
+        let Commands::Container {
+            command: ContainerCommand::Push { mount_from, .. },
+        } = cli.command
+        else {
+            panic!("expected container push command");
+        };
+        assert_eq!(mount_from, ["team/base", "team/runtime"]);
+    }
+
+    #[test]
+    fn verified_publish_requires_signed_and_concurrency_inputs() {
+        let cli = Cli::try_parse_from([
+            "aos",
+            "container",
+            "publish",
+            "aos",
+            "registry.example/aos:stable",
+            "--release",
+            "containers-v1-index.json",
+            "--release-layout",
+            "aos.signed.oci.tar",
+            "--signature-input",
+            "signature-input.json",
+            "--registry",
+            "core",
+            "--idempotency-key",
+            "release-42",
+            "--stage-only",
+            "--expected-tag-resource-version",
+            "7",
+            "--expected-tag-digest",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--registry-origin",
+            "https://oci.example",
+            "--registry-token",
+            "registry-secret",
+            "--hub",
+            "https://hub.example",
+            "--token",
+            "hub-secret",
+        ])
+        .expect("verified publish command");
+        let Commands::Container {
+            command:
+                ContainerCommand::Publish {
+                    release,
+                    release_layout,
+                    signature_input,
+                    registry,
+                    idempotency_key,
+                    stage_only,
+                    expected_tag_resource_version,
+                    expected_tag_digest,
+                    registry_origin,
+                    registry_token,
+                    hub,
+                    token,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("expected container publish command");
+        };
+        assert_eq!(release, PathBuf::from("containers-v1-index.json"));
+        assert_eq!(release_layout, PathBuf::from("aos.signed.oci.tar"));
+        assert_eq!(signature_input, PathBuf::from("signature-input.json"));
+        assert_eq!(registry, "core");
+        assert_eq!(idempotency_key, "release-42");
+        assert!(stage_only);
+        assert_eq!(expected_tag_resource_version.as_deref(), Some("7"));
+        assert!(expected_tag_digest.is_some());
+        assert_eq!(registry_origin.as_deref(), Some("https://oci.example"));
+        assert_eq!(registry_token.as_deref(), Some("registry-secret"));
+        assert_eq!(hub.as_deref(), Some("https://hub.example"));
+        assert_eq!(token.as_deref(), Some("hub-secret"));
     }
 
     #[test]

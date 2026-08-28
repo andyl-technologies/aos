@@ -875,6 +875,20 @@ impl core_sw::SurfaceWriteProvider for HubSurfaceWriteProvider {
                     placement.name
                 )
             })?;
+        self.placement_writer_at_revision(placement, &revision)
+            .await
+    }
+
+    async fn placement_writer_at_revision(
+        &self,
+        placement: &SurfacePlacementRecord,
+        revision: &aos_hub_core::db::BindingWriteRevisionRecord,
+    ) -> Result<Box<dyn core_sw::SurfaceWrite>> {
+        anyhow::ensure!(
+            placement.binding_id == revision.binding_id,
+            "placement '{}' does not match frozen binding revision",
+            placement.name
+        );
         let binding = self
             .db
             .binding(placement.binding_id)

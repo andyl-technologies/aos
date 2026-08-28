@@ -245,6 +245,19 @@
       "methods": ["ListImages", "GetImage", "ResolveImage"]
     },
     {
+      "service": "ContainerService",
+      "audience": "end-user",
+      "cli_families": ["container publish"],
+      "web_workflows": ["registry-containers"],
+      "web_method_exceptions": [
+        {"method": "BeginContainerPublication", "reason": "Verified container publication is currently initiated by the CLI; the browser workflow does not yet admit a signed release declaration."},
+        {"method": "GetContainerPublication", "reason": "Verified container publication state is currently resumed by the CLI; the browser workflow is not yet implemented."},
+        {"method": "CommitContainerPublication", "reason": "Verified container publication is currently committed by the CLI; the browser workflow does not yet expose the confirmation step."},
+        {"method": "AbortContainerPublication", "reason": "Verified container publication is currently aborted by the CLI; the browser workflow does not yet expose publication recovery controls."}
+      ],
+      "methods": ["BeginContainerPublication", "GetContainerPublication", "CommitContainerPublication", "AbortContainerPublication"]
+    },
+    {
       "service": "PublishService",
       "audience": "end-user",
       "cli_families": ["registry publish"],

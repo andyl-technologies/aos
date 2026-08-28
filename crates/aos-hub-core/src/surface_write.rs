@@ -35,7 +35,7 @@ use anyhow::Result;
 use md5::{Digest as _, Md5};
 
 use crate::backend::BackendBounds;
-use crate::db::SurfacePlacementRecord;
+use crate::db::{BindingWriteRevisionRecord, SurfacePlacementRecord};
 
 /// One multipart-upload part's identity: its 1-based `part_number` and the
 /// backend's entity tag.
@@ -369,6 +369,24 @@ pub trait SurfaceWriteProvider: BackendBounds {
     async fn placement_writer(
         &self,
         placement: &SurfacePlacementRecord,
+    ) -> Result<Box<dyn SurfaceWrite>>;
+
+    /// Builds a writer from an immutable binding revision frozen by durable work.
+    ///
+    /// Unlike [`Self::placement_writer`], this resolver must not consult the
+    /// placement's current desired state or write authority. It is used only
+    /// to finish or clean up work which already wrote bytes through `revision`.
+    /// Implementations must verify that the placement and revision share the
+    /// same binding and resolve the revision's exact credential generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the frozen physical identity disappeared, does
+    /// not match, or cannot be addressed by this runtime.
+    async fn placement_writer_at_revision(
+        &self,
+        placement: &SurfacePlacementRecord,
+        revision: &BindingWriteRevisionRecord,
     ) -> Result<Box<dyn SurfaceWrite>>;
 
     /// Builds a conditional deleter for one explicit physical placement.

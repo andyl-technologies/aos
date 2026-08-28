@@ -23,4 +23,8 @@ pub use archive::{
 };
 pub use layout::{VerifiedImage, read_verified_index, verify_layout};
 pub use reference::{ArtifactFormat, PlatformSelector, RegistryReference};
-pub use registry::{PullOptions, PushOptions, PushResult, RegistryClient, TransferEvent};
+pub use registry::{
+    PullOptions, PushOptions, PushResult, RegistryClient, ReleaseGraphPushResult, TransferEvent,
+    VerifiedPublicationCommit, VerifiedPublicationHook, VerifiedPublicationRequest,
+    VerifiedPublicationResult, VerifiedPublicationSession,
+};

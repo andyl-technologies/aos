@@ -317,12 +317,39 @@
     referenceName = "${container.publication.repository}:latest";
     annotations = releaseAnnotations;
   };
+  packageEvidence = import ./package-evidence.nix {
+    inherit lib pkgs;
+    overrides = container.publication.evidenceOverrides;
+  };
+  sourceGraph = oci.mkEvidenceSourceGraph {
+    pname = "aos-container-${container.name}-source-reference-graph";
+    inherit referenceGraph;
+    packageCatalog = packageEvidence.catalog;
+    candidateSources = packageEvidence.sourcePaths;
+  };
+  mkEvidence = pname:
+    oci.mkEvidenceLayout {
+      inherit pname;
+      image = ociIndex;
+      inherit referenceGraph sourceGraph closureLayers;
+      packageCatalog = packageEvidence.catalog;
+      definitionAttribute = "containerImages.${container.name}";
+      releaseIdentity = container.publication.releaseIdentity;
+      packageName = pkgs.aos.pname;
+      packageVersion = pkgs.aos.version;
+      imageName = container.name;
+    };
+  evidence = mkEvidence "aos-container-${container.name}-evidence";
+  evidenceRepeat = mkEvidence "aos-container-${container.name}-evidence-repeat";
 
   metadataSpec = {
     schema = "aos.container.definition/v1";
     inherit (container) name;
     annotations = releaseAnnotations;
-    inherit (container) platform runtime publication packageManagement budgets;
+    inherit (container) platform runtime packageManagement budgets;
+    publication = {
+      inherit (container.publication) repository releaseIdentity;
+    };
     packageRoots = map builtins.toString container.packageRoots;
     layers =
       map (layer: {
@@ -362,10 +389,10 @@ in {
   platforms.${container.platform.aosSystem} = {
     ociLayout = image;
     ociArchive = image;
-    inherit dockerArchive metadata image;
+    inherit dockerArchive metadata image evidence;
   };
-  inherit ociIndex;
+  inherit ociIndex evidence;
   checks = {
-    inherit runtimeAudit referenceGraph facadeLayer metadataLayer;
+    inherit runtimeAudit referenceGraph sourceGraph facadeLayer metadataLayer evidence evidenceRepeat;
   };
 }

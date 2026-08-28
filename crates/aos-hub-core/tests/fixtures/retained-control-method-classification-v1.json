@@ -60,6 +60,46 @@
     "external_effects": false
   },
   {
+    "service": "ContainerService",
+    "method": "BeginContainerPublication",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "GetContainerPublication",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "CommitContainerPublication",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "AbortContainerPublication",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
     "service": "PublishService",
     "method": "BeginRegistryPublication",
     "exposure": "public",

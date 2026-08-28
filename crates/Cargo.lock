@@ -157,6 +157,8 @@ dependencies = [
  "aos-cache",
  "aos-core",
  "aos-doc",
+ "aos-hub",
+ "aos-hub-core",
  "aos-net",
  "aos-oci",
  "aos-oci-types",
@@ -196,6 +198,7 @@ dependencies = [
  "tower",
  "tracing",
  "url",
+ "uuid",
  "zeroize",
 ]
 
@@ -506,6 +509,7 @@ dependencies = [
  "aos-cache",
  "aos-core",
  "aos-net",
+ "aos-oci-types",
  "aos-registry-surface",
  "aos-systemd",
  "async-trait",

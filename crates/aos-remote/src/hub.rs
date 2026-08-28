@@ -678,6 +678,14 @@ enum HubTopologyMethod {
     RetireAccessToken,
     /// Selects the normalized `ListAccessTokens` Connect operation.
     ListAccessTokens,
+    /// Selects verified container-publication admission.
+    BeginContainerPublication,
+    /// Selects verified container-publication recovery.
+    GetContainerPublication,
+    /// Selects verified container-publication commit.
+    CommitContainerPublication,
+    /// Selects verified container-publication cancellation.
+    AbortContainerPublication,
 }
 
 impl HubTopologyMethod {
@@ -1135,6 +1143,10 @@ impl HubTopologyMethod {
             PlanRetireAccessToken => "aos.hub.v1.IdentityService/PlanRetireAccessToken",
             RetireAccessToken => "aos.hub.v1.IdentityService/RetireAccessToken",
             ListAccessTokens => "aos.hub.v1.IdentityService/ListAccessTokens",
+            BeginContainerPublication => "aos.hub.v1.ContainerService/BeginContainerPublication",
+            GetContainerPublication => "aos.hub.v1.ContainerService/GetContainerPublication",
+            CommitContainerPublication => "aos.hub.v1.ContainerService/CommitContainerPublication",
+            AbortContainerPublication => "aos.hub.v1.ContainerService/AbortContainerPublication",
         }
     }
 }
@@ -1527,6 +1539,10 @@ pub mod hub_rpc {
         PlanRetireAccessToken: PlanRetireAccessTokenRequest => TopologyPlanResponse;
         RetireAccessToken: ApplyTopologyPlanRequest => AccessTokenRetirementResponse;
         ListAccessTokens: ListAccessTokensRequest => ListAccessTokensResponse;
+        BeginContainerPublication: BeginContainerPublicationRequest => ContainerPublication;
+        GetContainerPublication: GetContainerPublicationRequest => ContainerPublication;
+        CommitContainerPublication: CommitContainerPublicationRequest => ContainerPublication;
+        AbortContainerPublication: AbortContainerPublicationRequest => ContainerPublication;
     }
 }
 
@@ -1964,6 +1980,26 @@ mod tests {
         assert_eq!(
             request.headers()[reqwest::header::CONTENT_TYPE],
             "application/json"
+        );
+    }
+
+    #[test]
+    fn container_publication_methods_use_the_distinct_service() {
+        assert_eq!(
+            HubTopologyMethod::BeginContainerPublication.path(),
+            "aos.hub.v1.ContainerService/BeginContainerPublication"
+        );
+        assert_eq!(
+            HubTopologyMethod::GetContainerPublication.path(),
+            "aos.hub.v1.ContainerService/GetContainerPublication"
+        );
+        assert_eq!(
+            HubTopologyMethod::CommitContainerPublication.path(),
+            "aos.hub.v1.ContainerService/CommitContainerPublication"
+        );
+        assert_eq!(
+            HubTopologyMethod::AbortContainerPublication.path(),
+            "aos.hub.v1.ContainerService/AbortContainerPublication"
         );
     }
 

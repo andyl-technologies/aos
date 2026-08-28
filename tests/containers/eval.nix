@@ -94,6 +94,25 @@
     (definitionFor aosSystem)
     {config.runtime.entrypoint = lib.mkForce ["aos --help"];}
   ];
+  overrideSource = pkgs.writeTextFile {
+    name = "container-evidence-override-test-source";
+    text = "source\n";
+  };
+  mismatchedEvidenceOverrideOutput = tryEvaluate [
+    (definitionFor aosSystem)
+    {
+      config.publication.evidenceOverrides = [
+        {
+          output = pkgs.aos;
+          outputName = "bin";
+          pname = "aos";
+          inherit (pkgs.aos) version;
+          licenses = ["Apache-2.0"];
+          sources = [overrideSource];
+        }
+      ];
+    }
+  ];
 in
   assert aos.name == "aos";
   assert builtins.attrNames registered == ["aos"];
@@ -130,6 +149,7 @@ in
   assert !traversalDirectory.success;
   assert !unsafeRepository.success;
   assert !shellEntrypoint.success;
+  assert !mismatchedEvidenceOverrideOutput.success;
     pkgs.mkDerivation {
       pname = "aos-container-evaluator-check";
       version = "1";

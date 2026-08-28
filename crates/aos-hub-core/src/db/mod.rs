@@ -537,6 +537,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("placement_policy_build_event_history.sql"),
     include_str!("placement_policy_publication_history.sql"),
     include_str!("oci_catalog.sql"),
+    include_str!("oci_upload_publication.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -569,8 +570,11 @@ fn mysql_replay_safe_migration_sql(sql: &str) -> String {
     if sql.contains("CREATE VIEW ") {
         return sql.replacen("CREATE VIEW ", "CREATE OR REPLACE VIEW ", 1);
     }
-    if sql.contains(" ADD COLUMN ") && !sql.contains(" ADD COLUMN IF NOT EXISTS ") {
-        return sql.replacen(" ADD COLUMN ", " ADD COLUMN IF NOT EXISTS ", 1);
+    if sql.contains("ALTER TABLE ")
+        && sql.contains("ADD COLUMN ")
+        && !sql.contains("ADD COLUMN IF NOT EXISTS ")
+    {
+        return sql.replacen("ADD COLUMN ", "ADD COLUMN IF NOT EXISTS ", 1);
     }
     if sql.contains("INSERT INTO ") && !sql.contains("ON CONFLICT") {
         return sql.replacen("INSERT INTO ", "INSERT IGNORE INTO ", 1);
@@ -25083,7 +25087,7 @@ fn oci_release_root_statements(
           AND manifest.media_type = ?6 AND manifest.byte_size = ?7
          JOIN oci_blobs blob
            ON blob.registry_id = link.registry_id AND blob.digest = link.digest
-          AND blob.media_type = ?6 AND blob.byte_size = ?7
+          AND link.media_type = ?6 AND blob.byte_size = ?7
           AND blob.lifecycle_state = 'active'
          JOIN surface_objects object
            ON object.id = blob.surface_object_id
@@ -25304,7 +25308,7 @@ fn oci_release_descriptor_placement_guard(
                AND repository.lifecycle_state = 'active'
                AND link.digest = ?11 AND link.object_kind = 'manifest'
                AND manifest.media_type = ?12 AND manifest.byte_size = ?5
-               AND blob.media_type = ?12 AND blob.byte_size = ?5
+               AND link.media_type = ?12 AND blob.byte_size = ?5
                AND blob.lifecycle_state = 'active'
                AND object.id = ?1 AND object.object_kind = 'immutable'
                AND object.lifecycle_state = 'active'
@@ -26074,6 +26078,161 @@ source_nar_hash = ""
         assert_eq!(public_boundary, (1, "active".to_string()));
     }
 
+    fn seed_oci_migration_registry(connection: &Connection) {
+        const REGISTRY_STABLE_ID: &str = "registry:0123456789abcdef0123456789abcdef";
+
+        connection
+            .execute(
+                "INSERT INTO authorization_scopes(
+                   scope_key, kind, parent_scope_key, resource_stable_id, created_at)
+                 VALUES(?1, 'registry', 'instance', ?1, 1)",
+                [REGISTRY_STABLE_ID],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO registries(
+                   id, stable_id, slug, trust_keys, require_signatures,
+                   created_at, scope_key, owner_scope_key)
+                 VALUES(1, ?1, 'oci-migration', '[]', 1, 1, ?1, 'instance')",
+                [REGISTRY_STABLE_ID],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO oci_repositories(
+                   id, registry_id, name, created_at, updated_at)
+                 VALUES(4, 1, 'aos', 1, 1)",
+                [],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn oci_phase5_migration_upgrades_v20_and_backfills_contextual_media() {
+        const OCI_CATALOG_VERSION: usize = 20;
+
+        assert_eq!(MIGRATIONS.len(), OCI_CATALOG_VERSION + 1);
+        let connection = Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..OCI_CATALOG_VERSION] {
+            connection.execute_batch(migration).unwrap();
+        }
+        seed_oci_migration_registry(&connection);
+
+        connection
+            .execute(
+                "INSERT INTO surface_objects(
+                   id, registry_id, object_key, object_kind, partition_key,
+                   content_hash, size, created_at, updated_at)
+                 VALUES(2, 1, 'oci/blobs/sha256/phase4', 'immutable',
+                        zeroblob(32), 'sha256:phase4', 11, 2, 2)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO oci_blobs(
+                   registry_id, digest, byte_size, media_type,
+                   surface_object_id, quota_bytes, created_at, updated_at)
+                 VALUES(1, 'sha256:phase4', 11,
+                        'application/vnd.oci.image.manifest.v1+json',
+                        2, 11, 3, 3)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO oci_repository_objects(
+                   repository_id, registry_id, digest, object_kind, linked_at)
+                 VALUES(4, 1, 'sha256:phase4', 'manifest', 5)",
+                [],
+            )
+            .unwrap();
+
+        connection
+            .execute_batch(MIGRATIONS[OCI_CATALOG_VERSION])
+            .unwrap();
+
+        let media_type: String = connection
+            .query_row(
+                "SELECT media_type FROM oci_repository_objects
+                 WHERE repository_id = 4 AND digest = 'sha256:phase4'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(media_type, "application/vnd.oci.image.manifest.v1+json");
+
+        let upload_columns: Vec<String> = connection
+            .prepare("PRAGMA table_info(oci_upload_sessions)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        for required in [
+            "quota_reservation_id",
+            "writer_id",
+            "token_id",
+            "maximum_size",
+            "sha256_h0",
+            "sha256_tail_hex",
+        ] {
+            assert!(
+                upload_columns.iter().any(|column| column == required),
+                "phase 5 upload column {required} is missing"
+            );
+        }
+
+        let publication_fence_default: String = connection
+            .query_row(
+                "SELECT dflt_value FROM pragma_table_info('oci_release_roots')
+                 WHERE name = 'publication_fence'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(publication_fence_default, "0");
+    }
+
+    #[test]
+    fn oci_phase5_migration_refuses_unknown_placeholder_state() {
+        const OCI_CATALOG_VERSION: usize = 20;
+
+        let connection = Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..OCI_CATALOG_VERSION] {
+            connection.execute_batch(migration).unwrap();
+        }
+        seed_oci_migration_registry(&connection);
+        connection
+            .execute(
+                "INSERT INTO oci_publications(
+                   id, registry_id, repository_id, root_digest, source_kind,
+                   state, idempotency_key, expires_at, created_at)
+                 VALUES('phase4-publication', 1, 4, 'sha256:unknown', 'manual',
+                        'preparing', 'phase4-idempotency', 3, 3)",
+                [],
+            )
+            .unwrap();
+
+        let error = connection
+            .execute_batch(MIGRATIONS[OCI_CATALOG_VERSION])
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("CHECK constraint failed"),
+            "unexpected phase 5 upgrade error: {error}"
+        );
+        let publications: i64 = connection
+            .query_row("SELECT COUNT(*) FROM oci_publications", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            publications, 1,
+            "failed upgrade discarded placeholder state"
+        );
+    }
+
     #[test]
     fn publication_multipart_migration_upgrades_an_existing_database() {
         let multipart_index = MIGRATIONS
@@ -26364,12 +26523,45 @@ source_nar_hash = ""
             if sql.contains("CREATE VIEW ") {
                 assert!(replay_safe.contains("CREATE OR REPLACE VIEW "));
             }
-            if sql.contains(" ADD COLUMN ") {
-                assert!(replay_safe.contains(" ADD COLUMN IF NOT EXISTS "));
+            if sql.contains("ADD COLUMN ") {
+                assert!(replay_safe.contains("ADD COLUMN IF NOT EXISTS "));
             }
             if sql.contains("INSERT INTO ") && !sql.contains("ON CONFLICT") {
                 assert!(replay_safe.contains("INSERT IGNORE INTO "));
             }
+        }
+    }
+
+    #[test]
+    fn mysql_phase5_multiline_add_columns_are_replay_safe() {
+        let phase5 = MIGRATIONS
+            .last()
+            .expect("Phase 5 OCI upload and publication migration");
+        let add_columns: Vec<_> = crate::backend::split_statements(phase5)
+            .into_iter()
+            .filter(|statement| statement.contains("ALTER TABLE "))
+            .collect();
+
+        assert_eq!(add_columns.len(), 2, "unexpected Phase 5 ALTER statements");
+        for statement in add_columns {
+            assert!(
+                statement.contains("\nADD COLUMN "),
+                "the regression requires the multiline migration shape: {statement}"
+            );
+            let translated = crate::dialect::Dialect::Mysql
+                .translate(&statement)
+                .expect("translating Phase 5 ALTER statement");
+            let replay_safe = mysql_replay_safe_migration_sql(&translated.sql);
+
+            assert!(
+                replay_safe.contains("\nADD COLUMN IF NOT EXISTS "),
+                "MySQL implicit-commit replay remained non-idempotent: {replay_safe}"
+            );
+            assert_eq!(
+                mysql_replay_safe_migration_sql(&replay_safe),
+                replay_safe,
+                "the replay transform itself must be idempotent"
+            );
         }
     }
 
@@ -26801,8 +26993,10 @@ source_nar_hash = ""
                 ),
                 Statement::new(
                     "INSERT INTO oci_repository_objects
-                       (repository_id, registry_id, digest, object_kind, linked_at)
-                     VALUES (42001, ?1, ?2, 'manifest', 1)",
+                       (repository_id, registry_id, digest, object_kind,
+                        media_type, linked_at)
+                     VALUES (42001, ?1, ?2, 'manifest',
+                       'application/vnd.oci.image.index.v1+json', 1)",
                     vals![registry_id, digest].to_vec(),
                 ),
                 Statement::new(
@@ -26896,8 +27090,10 @@ source_nar_hash = ""
                     ),
                     Statement::new(
                         "INSERT INTO oci_repository_objects
-                           (repository_id, registry_id, digest, object_kind, linked_at)
-                         VALUES (42001, ?1, ?2, 'manifest', 1)",
+                           (repository_id, registry_id, digest, object_kind,
+                            media_type, linked_at)
+                         VALUES (42001, ?1, ?2, 'manifest',
+                           'application/vnd.oci.image.manifest.v1+json', 1)",
                         vals![registry_id, descriptor_digest].to_vec(),
                     ),
                     Statement::new(

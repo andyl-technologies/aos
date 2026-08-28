@@ -65,6 +65,21 @@ in
       }
     ];
 
+    passthru.evidenceSources = [
+      (builtins.path {
+        path = ./aos-ebpf-net-policy.nix;
+        name = "aos-ebpf-net-policy.nix";
+      })
+      (builtins.path {
+        path = bpfSource;
+        name = "aos-ebpf-net-policy.bpf.c";
+      })
+      (builtins.path {
+        path = loaderSource;
+        name = "aos-ebpf-net-policy.c";
+      })
+    ];
+
     checks = {
       testing,
       self,

@@ -202,6 +202,8 @@ in
       }
     ];
 
+    passthru.evidenceSources = [gcc-src gmp-src mpfr-src mpc-src];
+
     meta = {
       description = "GCC runtime shared libraries (libstdc++.so, libgcc_s.so)";
       homepage = "https://gcc.gnu.org/";

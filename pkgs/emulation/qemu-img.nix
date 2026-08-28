@@ -30,6 +30,8 @@ in
       }
     ];
 
+    passthru.evidenceSources = [qemu.src];
+
     meta = {
       description = "QEMU disk image utility without the system emulators";
       homepage = "https://www.qemu.org";
