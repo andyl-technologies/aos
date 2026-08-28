@@ -1772,6 +1772,8 @@ in
           grep -q "ExecStart=.*/bin/aos-service-root prepare expose-smoke $payload expose-smoke.service" "$service_roots"
           grep -q "ExecStop=.*/bin/aos-service-root cleanup expose-smoke $payload expose-smoke.service" "$service_roots"
           grep -q 'Before=expose-smoke.service' "$service_roots"
+          grep -q '^CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN$' "$service_roots"
+          grep -q '^AmbientCapabilities=CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN$' "$service_roots"
           grep -q 'MountAPIVFS=true' "$unit"
           grep -q 'ProtectSystem=strict' "$unit"
           grep -q 'ProtectHome=true' "$unit"

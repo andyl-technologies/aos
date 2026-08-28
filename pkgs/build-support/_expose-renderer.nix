@@ -2107,8 +2107,11 @@ in rec {
             ExecStopPost = serviceRootsCleanupCommand;
             NoNewPrivileges = false;
             PrivateMounts = false;
-            CapabilityBoundingSet = "CAP_SYS_ADMIN";
-            AmbientCapabilities = "CAP_SYS_ADMIN";
+            # OverlayFS creates a mode-000 private work directory and probes
+            # whiteout creation while mounting. Keep the helper narrowly
+            # bounded to the three capabilities those kernel paths require.
+            CapabilityBoundingSet = "CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN";
+            AmbientCapabilities = "CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN";
             RestrictAddressFamilies = ["AF_UNIX"];
             UMask = "0077";
           };
