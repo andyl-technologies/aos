@@ -305,9 +305,9 @@ in
           root = "envoy";
           interfaceAbi = 1;
           contributable = [
-            "clusters.*"
-            "listeners.*"
-            "runtimeLayers.*"
+            "clusters"
+            "listeners"
+            "runtimeLayers"
           ];
         }
       ];

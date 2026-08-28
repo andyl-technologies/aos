@@ -246,8 +246,8 @@ in
           root = "nginx";
           interfaceAbi = 1;
           contributable = [
-            "upstreams.*"
-            "virtualHosts.*"
+            "upstreams"
+            "virtualHosts"
           ];
         }
       ];
