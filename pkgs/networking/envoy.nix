@@ -316,6 +316,8 @@ in
           Restart = "on-failure";
           RestartSec = "2s";
           StateDirectory = "aos-pkg-envoy";
+          LogsDirectory = "aos-pkg-envoy";
+          LogsDirectoryMode = "0750";
           LimitNOFILE = "1048576";
         };
       };
@@ -823,6 +825,14 @@ in
         };
       };
       invalidAdmin = evalConfig {admin.address = "0.0.0.0";};
+      invalidAdminLog = builtins.tryEval (builtins.deepSeq
+        ((evalConfig {
+            admin.accessLogPath = "/dev/stderr";
+          })
+          .config
+          .envoy
+          .renderedBootstrap)
+        true);
       validSds = evalConfig {
         dynamicResources = {
           enableAds = true;
@@ -869,7 +879,8 @@ in
         && credentialDeclarationsHold
         && !assertionsHoldFor invalidRoute
         && !assertionsHoldFor invalidTls
-        && !assertionsHoldFor invalidAdmin;
+        && !assertionsHoldFor invalidAdmin
+        && !invalidAdminLog.success;
       renderedBootstrap =
         if assertionsHoldFor evaluatedConfig
         then builtins.toFile "envoy-config-module-check.json" (builtins.toJSON evaluatedConfig.config.envoy.renderedBootstrap)
@@ -964,6 +975,11 @@ in
             fi
             ${pkgs.grep}/bin/grep -F -- '-- /bin/envoy --mode validate' ${self.expose}/units/envoy.service
             ${pkgs.grep}/bin/grep -F -- '-- /bin/envoy --config-path' ${self.expose}/units/envoy.service
+            ${pkgs.grep}/bin/grep -qx 'LogsDirectory=aos-pkg-envoy' ${self.expose}/units/envoy.service
+            ${pkgs.grep}/bin/grep -qx 'LogsDirectoryMode=0750' ${self.expose}/units/envoy.service
+            ${pkgs.grep}/bin/grep -Fq -- '--fs-rw /var/log/aos-pkg-envoy' ${self.expose}/units/envoy.service
+            ${pkgs.grep}/bin/grep -Fq '"/var/log/aos-pkg-envoy"' ${self.expose}/network-policy.json
+            ${pkgs.grep}/bin/grep -Fq '"access_log_path":"/var/log/aos-pkg-envoy/admin-access.log"' ${renderedBootstrap}
             mkdir -p "$out"
             printf '%s\n' PASS > "$out/result"
           ''
