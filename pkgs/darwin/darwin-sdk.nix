@@ -1460,6 +1460,8 @@ in
           #endif
           EOF
 
+          # Exact public subset from the pinned Apple Security
+          # trust/headers/SecTrustSettings.h surface.
           cat > "$out/System/Library/Frameworks/Security.framework/Headers/SecTrustSettings.h" <<'EOF'
           #ifndef _SECURITY_SECTRUSTSETTINGS_H_
           #define _SECURITY_SECTRUSTSETTINGS_H_
@@ -1489,6 +1491,10 @@ in
             SecCertificateRef certificate,
             SecTrustSettingsDomain domain,
             CFArrayRef *trustSettings
+          );
+          OSStatus SecTrustSettingsCopyCertificates(
+            SecTrustSettingsDomain domain,
+            CFArrayRef * __nullable CF_RETURNS_RETAINED certArray
           );
           __END_DECLS
           #endif
