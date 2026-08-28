@@ -299,9 +299,13 @@ pub struct UnitMap {
 pub struct ServiceRootBarrier {
     /// Owning package target stopped while the old helper is still loaded.
     pub target: String,
-    /// Units controlled by the live target and therefore stopped with it.
+    /// Live socket, timer, and path units that can reactivate root workloads.
+    pub live_activation_sources: BTreeSet<String>,
+    /// Live workloads authenticated by both sides of the helper dependency.
     pub live_members: BTreeSet<String>,
-    /// Units controlled by the candidate target and started with it.
+    /// Live generated package side effects stopped after overlay cleanup.
+    pub live_side_effects: BTreeSet<String>,
+    /// Candidate `PartOf=` members started with the owning target.
     pub candidate_members: BTreeSet<String>,
     /// Whether the owning target remains present in the candidate.
     pub candidate_target_present: bool,
@@ -349,7 +353,13 @@ impl UnitDiff {
         for helper in affected_helpers {
             let barrier = self.service_root_barriers[&helper].clone();
             let members = barrier
-                .live_members
+                .live_activation_sources
+                .union(&barrier.live_members)
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .union(&barrier.live_side_effects)
+                .cloned()
+                .collect::<BTreeSet<_>>()
                 .union(&barrier.candidate_members)
                 .cloned()
                 .chain([helper.clone(), barrier.target.clone()])
@@ -361,8 +371,13 @@ impl UnitDiff {
             self.install_only.retain(|unit| !members.contains(unit));
             self.blanket_targets.retain(|unit| !members.contains(unit));
 
-            // Stop every authenticated old member explicitly so the later
-            // target stop cannot race PartOf-propagated helper cleanup.
+            // Drain activation sources before workloads so none can be
+            // reactivated while the old overlay is being dismantled.
+            for source in &barrier.live_activation_sources {
+                self.to_stop.push(source.clone());
+                self.required_stops.insert(source.clone());
+            }
+
             for member in barrier
                 .live_members
                 .iter()
@@ -376,6 +391,13 @@ impl UnitDiff {
             // is the authoritative old-overlay cleanup outcome.
             self.to_stop.push(helper.clone());
             self.required_stops.insert(helper);
+
+            // Keep confinement active until workloads and their overlay have
+            // terminated, then await each old side effect before unit swap.
+            for side_effect in &barrier.live_side_effects {
+                self.to_stop.push(side_effect.clone());
+                self.required_stops.insert(side_effect.clone());
+            }
 
             self.to_stop.push(barrier.target.clone());
             self.required_stops.insert(barrier.target.clone());
@@ -819,50 +841,160 @@ fn build_service_root_barriers(
                 return None;
             }
 
-            Some((
-                helper,
-                ServiceRootBarrier {
-                    live_members: target_members(live, &target),
-                    candidate_members: target_members(candidate, &target),
-                    candidate_target_present: candidate
-                        .units
-                        .get(&target)
-                        .is_some_and(LogicalUnit::is_present),
-                    target,
-                },
-            ))
+            let barrier = ServiceRootBarrier {
+                live_members: service_root_workloads(live, &target, &helper),
+                live_activation_sources: BTreeSet::new(),
+                live_side_effects: generated_side_effects(live, &target, &helper),
+                candidate_members: target_part_of_members(candidate, &target),
+                candidate_target_present: candidate
+                    .units
+                    .get(&target)
+                    .is_some_and(LogicalUnit::is_present),
+                target,
+            };
+            Some((helper, barrier))
+        })
+        .map(|(helper, mut barrier)| {
+            barrier.live_activation_sources =
+                activation_sources(live, &barrier.target, &barrier.live_members);
+            (helper, barrier)
         })
         .collect()
 }
 
-fn target_members(units: &UnitMap, target: &str) -> BTreeSet<String> {
-    let wanted = units
-        .units
-        .get(target)
-        .filter(|unit| unit.is_present())
-        .map(|unit| unit_section_words(unit, "Wants"))
-        .unwrap_or_default();
-
+fn target_part_of_members(units: &UnitMap, target: &str) -> BTreeSet<String> {
     units
         .units
         .iter()
         .filter(|(name, unit)| {
             unit.is_present()
-                && (wanted.contains(*name) || unit_section_words(unit, "PartOf").contains(target))
+                && *name != target
+                && unit_section_words(unit, "PartOf").contains(target)
         })
         .map(|(name, _)| name.clone())
         .collect()
 }
 
-fn unit_section_words(unit: &LogicalUnit, key: &str) -> BTreeSet<String> {
-    unit.merged()
-        .get("Unit")
-        .and_then(|section| section.get(key))
+fn service_root_workloads(units: &UnitMap, target: &str, helper: &str) -> BTreeSet<String> {
+    let before = units
+        .units
+        .get(helper)
+        .filter(|unit| unit.is_present())
+        .map(|unit| unit_section_words(unit, "Before"))
+        .unwrap_or_default();
+
+    before
         .into_iter()
-        .flatten()
-        .flat_map(|value| value.split_ascii_whitespace())
-        .map(str::to_string)
+        .filter(|name| name.ends_with(".service"))
+        .filter(|name| {
+            units.units.get(name).is_some_and(|unit| {
+                unit.is_present()
+                    && unit_section_words(unit, "PartOf").contains(target)
+                    && unit_section_words(unit, "Requires").contains(helper)
+                    && unit_section_words(unit, "After").contains(helper)
+            })
+        })
         .collect()
+}
+
+fn activation_sources(
+    units: &UnitMap,
+    target: &str,
+    workloads: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    units
+        .units
+        .iter()
+        .filter(|(_, unit)| unit.is_present())
+        .filter(|(_, unit)| unit_section_words(unit, "PartOf").contains(target))
+        .filter_map(|(name, unit)| {
+            activated_service(name, unit)
+                .filter(|service| workloads.contains(service))
+                .map(|_| name.clone())
+        })
+        .collect()
+}
+
+fn activated_service(name: &str, unit: &LogicalUnit) -> Option<String> {
+    let (suffix, section, key) = [
+        (".socket", "Socket", "Service"),
+        (".timer", "Timer", "Unit"),
+        (".path", "Path", "Unit"),
+    ]
+    .into_iter()
+    .find(|(suffix, _, _)| name.ends_with(suffix))?;
+    match effective_section_values(unit, section, key)
+        .into_iter()
+        .last()
+    {
+        Some(value) => {
+            let mut words = value.split_ascii_whitespace();
+            let service = words.next()?;
+            words.next().is_none().then(|| service.to_string())
+        }
+        None => name
+            .strip_suffix(suffix)
+            .map(|stem| format!("{stem}.service")),
+    }
+}
+
+fn generated_side_effects(units: &UnitMap, target: &str, helper: &str) -> BTreeSet<String> {
+    let Some(prefix) = helper.strip_suffix("-service-roots.service") else {
+        return BTreeSet::new();
+    };
+    [
+        "host-paths",
+        "modules",
+        "sysctl",
+        "firewall",
+        "netns",
+        "mac",
+        "ebpf",
+    ]
+    .into_iter()
+    .map(|suffix| format!("{prefix}-{suffix}.service"))
+    .filter(|name| {
+        units.units.get(name).is_some_and(|unit| {
+            unit.is_present() && unit_section_words(unit, "PartOf").contains(target)
+        })
+    })
+    .collect()
+}
+
+fn unit_section_words(unit: &LogicalUnit, key: &str) -> BTreeSet<String> {
+    section_words(unit, "Unit", key)
+}
+
+fn section_words(unit: &LogicalUnit, section: &str, key: &str) -> BTreeSet<String> {
+    effective_section_values(unit, section, key)
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .split_ascii_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn effective_section_values(unit: &LogicalUnit, section: &str, key: &str) -> Vec<String> {
+    let mut effective = Vec::new();
+    for file in unit.primary.iter().chain(&unit.drop_ins) {
+        let Some(values) = file
+            .parsed
+            .sections
+            .get(section)
+            .and_then(|keys| keys.get(key))
+        else {
+            continue;
+        };
+        if values.is_empty() {
+            effective.clear();
+        } else {
+            effective.extend(values.iter().cloned());
+        }
+    }
+    effective
 }
 
 /// Route a unit present live but gone in the candidate: stop it, unless it
@@ -1185,37 +1317,58 @@ mod tests {
         write(
             &live_units,
             helper,
-            "[Unit]\nPartOf=aos-pkg-web.target\n[Service]\nType=oneshot\n",
+            "[Unit]\nPartOf=aos-pkg-web.target\nBefore=web.service\n[Service]\nType=oneshot\n",
         );
         write(
             &live_units,
             "aos-pkg-web.target",
-            "[Unit]\nWants=web.service wanted-only.service\n",
+            "[Unit]\nWants=aos-pkg-web.slice web.socket web.service aos-pkg-web-mac.service provider.socket\n",
         );
         write(
             &live_units,
             "web.service",
-            "[Unit]\nPartOf=aos-pkg-web.target\n[Service]\nExecStart=/bin/old\n",
+            "[Unit]\nPartOf=aos-pkg-web.target maintenance.target\nRequires=aos-pkg-web-service-roots.service\nAfter=aos-pkg-web-service-roots.service\n[Service]\nExecStart=/bin/old\n",
         );
         write(
             &live_units,
-            "socket-activated.service",
-            "[Unit]\nPartOf=aos-pkg-web.target\n[Service]\nExecStart=/bin/socket-activated\n",
+            "web.socket",
+            "[Unit]\nPartOf=aos-pkg-web.target\n[Socket]\nListenStream=8080\n",
         );
         write(
             &live_units,
-            "wanted-only.service",
-            "[Service]\nExecStart=/bin/wanted-only\n",
+            "aos-pkg-web-mac.service",
+            "[Unit]\nPartOf=aos-pkg-web.target\nBefore=web.service\n[Service]\nType=oneshot\n",
+        );
+        write(&live_units, "aos-pkg-web.slice", "[Slice]\nCPUWeight=100\n");
+        write(
+            &live_units,
+            "provider.socket",
+            "[Socket]\nListenStream=9090\n",
         );
         write(
             &candidate_units,
             "aos-pkg-web.target",
-            "[Unit]\nWants=web.socket\n",
+            "[Unit]\nWants=aos-pkg-web.slice web.socket aos-pkg-web-mac.service provider.socket\n",
         );
         write(
             &candidate_units,
             "web.socket",
             "[Unit]\nPartOf=aos-pkg-web.target\n[Socket]\nListenStream=8080\n",
+        );
+        write(
+            &candidate_units,
+            "aos-pkg-web.slice",
+            "[Slice]\nCPUWeight=100\n",
+        );
+        write(
+            &candidate_units,
+            "provider.socket",
+            "[Socket]\nListenStream=9090\n",
+        );
+        write(
+            &candidate_units,
+            "aos-pkg-web-mac.service",
+            "[Unit]\nDescription=updated policy\nPartOf=aos-pkg-web.target\n[Service]\nType=oneshot\n",
         );
 
         let mut diff = compute_diff(live.path(), candidate.path());
@@ -1223,8 +1376,16 @@ mod tests {
 
         assert_eq!(barrier.target, "aos-pkg-web.target");
         assert!(barrier.live_members.contains("web.service"));
-        assert!(barrier.live_members.contains("socket-activated.service"));
-        assert!(barrier.live_members.contains("wanted-only.service"));
+        assert_eq!(
+            barrier.live_activation_sources,
+            BTreeSet::from(["web.socket".to_string()])
+        );
+        assert_eq!(
+            barrier.live_side_effects,
+            BTreeSet::from(["aos-pkg-web-mac.service".to_string()])
+        );
+        assert!(!barrier.live_members.contains("provider.socket"));
+        assert!(!barrier.live_members.contains("aos-pkg-web.slice"));
         assert!(barrier.candidate_members.contains("web.socket"));
         assert!(barrier.candidate_target_present);
         assert!(diff.to_stop.contains(&helper.to_string()));
@@ -1233,13 +1394,15 @@ mod tests {
         assert_eq!(
             diff.to_stop,
             vec![
-                "socket-activated.service",
-                "wanted-only.service",
+                "web.socket",
                 "web.service",
                 "aos-pkg-web-service-roots.service",
+                "aos-pkg-web-mac.service",
                 "aos-pkg-web.target",
             ]
         );
+        assert!(!diff.to_stop.contains(&"provider.socket".to_string()));
+        assert!(!diff.to_stop.contains(&"aos-pkg-web.slice".to_string()));
         assert_eq!(diff.to_start, vec!["aos-pkg-web.target"]);
         assert!(diff.to_restart.is_empty());
     }

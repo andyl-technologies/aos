@@ -6902,6 +6902,7 @@ mod tests {
                         live_members: BTreeSet::from(["web.service".to_string()]),
                         candidate_members: BTreeSet::from(["web.service".to_string()]),
                         candidate_target_present: true,
+                        ..Default::default()
                     },
                 ),
                 (
