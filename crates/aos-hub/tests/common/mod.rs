@@ -53,27 +53,41 @@ pub async fn create_local_binding(
 ) -> i64 {
     // Local filesystem bindings are instance-owned: accepting an
     // organization-controlled host path would cross the tenancy boundary.
-    // Creating the instance binding eagerly materializes a grant for every
-    // existing organization, including this fixture's owner.
-    db.org_by_id(org_id).await.unwrap().unwrap();
-    db.create_topology_binding(
-        None,
-        &uuid::Uuid::new_v4().simple().to_string(),
-        "instance",
-        name,
-        "local_fs",
-        Some(path),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
+    // Tests grant the exact fixture organization through the ordinary model.
+    let owner_scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
+    let stable_id = uuid::Uuid::new_v4().simple().to_string();
+    let binding_id = db
+        .create_topology_binding(
+            None,
+            &stable_id,
+            "instance",
+            name,
+            "local_fs",
+            Some(path),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    db.grant_consumer_scope(
+        aos_hub::db::GrantResource::Binding {
+            id: binding_id,
+            stable_id: &stable_id,
+        },
+        &owner_scope,
+        "explicit",
+        "test",
+        &format!("request:{stable_id}:binding-grant"),
     )
     .await
-    .unwrap()
+    .unwrap();
+    binding_id
 }
 
 /// Creates and reconciles one native Hub endpoint and route.

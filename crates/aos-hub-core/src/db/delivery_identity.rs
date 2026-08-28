@@ -2245,6 +2245,7 @@ impl Database {
         owner_scope_key: &str,
         page_size: u32,
         after_id: Option<&str>,
+        include_granted: bool,
     ) -> Result<DeliveryIdentityPage<NetworkPolicyRecord>> {
         validate_scope(owner_scope_key)?;
         let limit = normalize_page_size(page_size);
@@ -2254,10 +2255,20 @@ impl Database {
                 &format!(
                     "SELECT {BOUNDARY_COLUMNS} FROM network_policies b
                      LEFT JOIN network_policy_defaults nd ON nd.boundary_id = b.id
-                     WHERE b.owner_scope_key = ?1 AND b.id > ?2
+                     WHERE (b.owner_scope_key = ?1 OR (?4 AND EXISTS (
+                         SELECT 1 FROM network_policy_consumer_scopes grant_record
+                         WHERE grant_record.boundary_id = b.id
+                           AND grant_record.consumer_scope_key = ?1
+                           AND grant_record.state = 'active'
+                     ))) AND b.id > ?2
                      ORDER BY b.id LIMIT ?3"
                 ),
-                &vals![owner_scope_key, after_id.unwrap_or(""), limit + 1],
+                &vals![
+                    owner_scope_key,
+                    after_id.unwrap_or(""),
+                    limit + 1,
+                    include_granted
+                ],
             )
             .await?;
         let mut records: Vec<_> = rows.iter().map(row_to_boundary).collect::<Result<_>>()?;
@@ -4273,6 +4284,7 @@ impl Database {
         owner_scope_key: &str,
         page_size: u32,
         after_id: Option<&str>,
+        include_granted: bool,
     ) -> Result<DeliveryIdentityPage<EndpointRecord>> {
         validate_scope(owner_scope_key)?;
         let limit = normalize_page_size(page_size);
@@ -4282,9 +4294,19 @@ impl Database {
                 &format!(
                     "SELECT {ENDPOINT_COLUMNS} FROM endpoints e
                      LEFT JOIN domains d ON d.id = e.domain_id
-                     WHERE e.owner_scope_key = ?1 AND e.id > ?2 ORDER BY e.id LIMIT ?3"
+                     WHERE (e.owner_scope_key = ?1 OR (?4 AND EXISTS (
+                         SELECT 1 FROM endpoint_route_scopes grant_record
+                         WHERE grant_record.endpoint_id = e.id
+                           AND grant_record.consumer_scope_key = ?1
+                           AND grant_record.state = 'active'
+                     ))) AND e.id > ?2 ORDER BY e.id LIMIT ?3"
                 ),
-                &vals![owner_scope_key, after_id.unwrap_or(""), limit + 1],
+                &vals![
+                    owner_scope_key,
+                    after_id.unwrap_or(""),
+                    limit + 1,
+                    include_granted
+                ],
             )
             .await?;
         let mut records: Vec<_> = rows.iter().map(row_to_endpoint).collect::<Result<_>>()?;

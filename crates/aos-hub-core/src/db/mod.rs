@@ -534,6 +534,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("gateway_revision_event_history.sql"),
     include_str!("placement_policy_build_event_history.sql"),
     include_str!("placement_policy_publication_history.sql"),
+    include_str!("explicit_topology.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -720,7 +721,7 @@ pub struct BindingReadDetail {
     pub name: String,
     /// Provider kind without its connection coordinates.
     pub kind: String,
-    /// Whether this is the deployment-provisioned singleton.
+    /// Whether this is the instance-owned singleton.
     pub is_instance_default: bool,
     /// Stable API identity.
     pub stable_id: String,
@@ -745,7 +746,7 @@ pub struct BindingReadSummary {
     pub name: String,
     /// Provider kind without its connection coordinates.
     pub kind: String,
-    /// Whether this is the deployment-provisioned singleton.
+    /// Whether this is the instance-owned singleton.
     pub is_instance_default: bool,
     /// Stable API identity.
     pub stable_id: String,
@@ -14739,7 +14740,6 @@ impl Database {
         let org_id = self.max_id("orgs").await? + 1;
         let consumer_scope_key = format!("org:{}", uuid::Uuid::new_v4().simple());
         let now = unix_now();
-        let event_id = format!("grant-event:{}", uuid::Uuid::new_v4().simple());
         self.backend
             .checked_batch(&[
                 Statement::new(
@@ -14777,40 +14777,6 @@ impl Database {
                     vals![consumer_scope_key],
                 )
                 .unchecked(),
-                Statement::new(
-                    "INSERT INTO network_policy_consumer_scopes
-                     (boundary_id, consumer_scope_key, grant_generation, grant_kind,
-                      state, granted_by, granted_at, resource_version)
-                     VALUES ('instance:public', ?1, 1, 'instance_default',
-                       'active', 'system:org-create', ?2, 1)",
-                    vals![consumer_scope_key, now],
-                )
-                .expecting(1),
-                Statement::new(
-                    "INSERT INTO binding_consumer_scopes
-                     (binding_id, consumer_scope_key, grant_generation, grant_kind,
-                      state, granted_by, granted_at, resource_version)
-                     SELECT id, ?1, 1, 'instance_default', 'active',
-                            'system:org-create', ?2, 1
-                     FROM bindings WHERE is_instance_default = 1",
-                    vals![consumer_scope_key, now],
-                )
-                .unchecked(),
-                Statement::new(
-                    "INSERT INTO consumer_scope_grant_events
-                     (event_id, resource_kind, resource_stable_id, resource_generation_key,
-                      consumer_scope_key, grant_generation, transition, previous_state,
-                      resulting_state, actor_id, occurred_at, request_id)
-                     VALUES (?1, 'network_policy', 'instance:public', 0, ?2, 1,
-                       'granted', NULL, 'active', 'system:org-create', ?3, ?4)",
-                    vals![
-                        event_id,
-                        consumer_scope_key,
-                        now,
-                        format!("org-create:{slug}")
-                    ],
-                )
-                .expecting(1),
             ])
             .await?;
         Ok(org_id)
@@ -14828,7 +14794,6 @@ impl Database {
         let org_id = self.max_id("orgs").await? + 1;
         let consumer_scope_key = format!("org:{}", uuid::Uuid::new_v4().simple());
         let now = unix_now();
-        let event_id = format!("grant-event:{}", uuid::Uuid::new_v4().simple());
         self.backend
             .checked_batch(&[
                 Statement::new(
@@ -14867,35 +14832,6 @@ impl Database {
                     vals![consumer_scope_key],
                 )
                 .unchecked(),
-                Statement::new(
-                    "INSERT INTO network_policy_consumer_scopes
-                     (boundary_id, consumer_scope_key, grant_generation, grant_kind,
-                      state, granted_by, granted_at, resource_version)
-                     VALUES ('instance:public', ?1, 1, 'instance_default',
-                       'active', 'system:org-create', ?2, 1)",
-                    vals![consumer_scope_key, now],
-                )
-                .expecting(1),
-                Statement::new(
-                    "INSERT INTO binding_consumer_scopes
-                     (binding_id, consumer_scope_key, grant_generation, grant_kind,
-                      state, granted_by, granted_at, resource_version)
-                     SELECT id, ?1, 1, 'instance_default', 'active',
-                            'system:org-create', ?2, 1
-                     FROM bindings WHERE is_instance_default = 1",
-                    vals![consumer_scope_key, now],
-                )
-                .unchecked(),
-                Statement::new(
-                    "INSERT INTO consumer_scope_grant_events
-                     (event_id, resource_kind, resource_stable_id, resource_generation_key,
-                      consumer_scope_key, grant_generation, transition, previous_state,
-                      resulting_state, actor_id, occurred_at, request_id)
-                     VALUES (?1, 'network_policy', 'instance:public', 0, ?2, 1,
-                       'granted', NULL, 'active', 'system:org-create', ?3, ?4)",
-                    vals![event_id, consumer_scope_key, now, plan_id],
-                )
-                .expecting(1),
             ])
             .await?;
         Ok(org_id)
@@ -17165,7 +17101,7 @@ impl Database {
         let now = unix_now();
         let id = self.max_id("bindings").await? + 1;
         let default_key = is_instance_default.then_some("singleton");
-        let mut statements = vec![
+        let statements = [
             Statement::new(
                 "INSERT INTO bindings
                  (id, org_id, name, kind, is_instance_default, instance_default_key, created_at,
@@ -17206,20 +17142,6 @@ impl Database {
             )
             .expecting(1),
         ];
-        if is_instance_default {
-            statements.push(
-                Statement::new(
-                    "INSERT INTO binding_consumer_scopes
-                 (binding_id, consumer_scope_key, grant_generation, grant_kind,
-                  state, granted_by, granted_at, resource_version)
-                 SELECT ?1, stable_id, 1, 'instance_default', 'active',
-                        'system:binding-create', ?2, 1
-                 FROM orgs WHERE deleted_at IS NULL",
-                    vals![id, now],
-                )
-                .unchecked(),
-            );
-        }
         self.backend.checked_batch(&statements).await?;
         Ok(id)
     }
@@ -18154,6 +18076,37 @@ impl Database {
                  signing_region, access_mode, resource_version, created_at, updated_at
                  FROM bindings WHERE owner_scope_key = ?1 ORDER BY stable_id",
                 &vals![owner_scope_key],
+            )
+            .await?;
+        rows.iter().map(row_to_binding).collect()
+    }
+
+    /// Lists bindings owned by or explicitly granted to one consumer scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_bindings_available_to_scope(
+        &self,
+        consumer_scope_key: &str,
+    ) -> Result<Vec<BindingRecord>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT id, org_id, name, kind, is_instance_default, stable_id, owner_scope_key,
+                 local_root_path, object_bucket, object_prefix, endpoint_scheme,
+                 endpoint_host_kind, endpoint_host_bytes, endpoint_port,
+                 signing_region, access_mode, resource_version, created_at, updated_at
+                 FROM bindings binding
+                 WHERE binding.owner_scope_key = ?1
+                    OR EXISTS (
+                       SELECT 1 FROM binding_consumer_scopes grant_record
+                       WHERE grant_record.binding_id = binding.id
+                         AND grant_record.consumer_scope_key = ?1
+                         AND grant_record.state = 'active'
+                    )
+                 ORDER BY stable_id",
+                &vals![consumer_scope_key],
             )
             .await?;
         rows.iter().map(row_to_binding).collect()
@@ -25361,11 +25314,19 @@ mod tests {
     async fn deployment_default_records_one_valid_write_revision() {
         let db = Database::open_in_memory().await.unwrap();
         let first = db
-            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .ensure_instance_default_binding(
+                "deployment_r2",
+                None,
+                Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
+            )
             .await
             .unwrap();
         let second = db
-            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .ensure_instance_default_binding(
+                "deployment_r2",
+                None,
+                Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
+            )
             .await
             .unwrap();
         assert_eq!(first.id, second.id);
@@ -25407,6 +25368,124 @@ mod tests {
             .ensure_instance_default_binding("deployment_r2", None, Some("different"))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn instance_resources_require_explicit_organization_grants() {
+        let db = Database::open_in_memory().await.unwrap();
+        let binding = db
+            .ensure_instance_default_binding(
+                "deployment_r2",
+                None,
+                Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
+            )
+            .await
+            .unwrap();
+        let org_id = db
+            .create_org("explicit-grants", "Explicit grants")
+            .await
+            .unwrap();
+        let scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
+
+        assert!(db
+            .load_consumer_scope_grant(
+                crate::db::GrantResource::NetworkPolicy {
+                    id: "instance:public"
+                },
+                &scope,
+            )
+            .await
+            .unwrap()
+            .is_none());
+        assert!(db
+            .list_bindings_available_to_scope(&scope)
+            .await
+            .unwrap()
+            .is_empty());
+        let registry_id = db
+            .create_managed_registry(org_id, "", "main", "public", &[], false)
+            .await
+            .unwrap();
+        let placement = NewSurfacePlacementSpec {
+            surface: SurfaceTarget::Registry(registry_id),
+            name: "primary".to_owned(),
+            binding_id: binding.id,
+            prefix: "explicit-grants/main".to_owned(),
+            kind: "complete".to_owned(),
+            desired_state: "active".to_owned(),
+            hash_range: None,
+            desired_read_enabled: true,
+            read_order: 0,
+            requires_conditional_writes: false,
+        };
+        assert!(db.create_surface_placement(&placement).await.is_err());
+
+        db.grant_consumer_scope(
+            crate::db::GrantResource::Binding {
+                id: binding.id,
+                stable_id: &binding.stable_id,
+            },
+            &scope,
+            "instance_default",
+            "legacy-test",
+            "request:legacy-binding-grant",
+        )
+        .await
+        .unwrap();
+        assert!(db.create_surface_placement(&placement).await.is_ok());
+
+        let adopted = db
+            .grant_consumer_scope(
+                crate::db::GrantResource::Binding {
+                    id: binding.id,
+                    stable_id: &binding.stable_id,
+                },
+                &scope,
+                "explicit",
+                "test",
+                "request:adopt-binding-grant",
+            )
+            .await
+            .unwrap();
+        assert_eq!(adopted.grant_generation, 1);
+        assert_eq!(adopted.grant_kind, "explicit");
+
+        let available = db.list_bindings_available_to_scope(&scope).await.unwrap();
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].stable_id, binding.stable_id);
+        assert_eq!(
+            db.list_surface_placements(SurfaceTarget::Registry(registry_id))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        db.grant_consumer_scope(
+            crate::db::GrantResource::NetworkPolicy {
+                id: "instance:public",
+            },
+            &scope,
+            "instance_default",
+            "legacy-test",
+            "request:legacy-network-grant",
+        )
+        .await
+        .unwrap();
+        let adopted = db
+            .grant_consumer_scope(
+                crate::db::GrantResource::NetworkPolicy {
+                    id: "instance:public",
+                },
+                &scope,
+                "explicit",
+                "test",
+                "request:adopt-network-grant",
+            )
+            .await
+            .unwrap();
+        assert_eq!(adopted.grant_generation, 1);
+        assert_eq!(adopted.grant_kind, "explicit");
     }
 
     #[tokio::test]
@@ -29944,6 +30023,17 @@ source_nar_hash = ""
         let db = Database::open_in_memory().await.unwrap();
         let org_id = db.create_org("race", "Race").await.unwrap();
         let scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
+        db.grant_consumer_scope(
+            crate::db::GrantResource::NetworkPolicy {
+                id: "instance:public",
+            },
+            &scope,
+            "explicit",
+            "test",
+            "request:grant-before-revoke",
+        )
+        .await
+        .unwrap();
         db.revoke_consumer_scope(
             crate::db::GrantResource::NetworkPolicy {
                 id: "instance:public",

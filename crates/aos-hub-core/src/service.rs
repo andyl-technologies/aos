@@ -3069,6 +3069,7 @@ impl RpcService {
                 &req.owner_scope_key,
                 req.page_size,
                 (!req.page_token.is_empty()).then_some(req.page_token.as_str()),
+                req.include_granted,
             )
             .await
             .map_err(RpcError::internal)?;
@@ -5216,6 +5217,7 @@ impl RpcService {
                 &req.owner_scope_key,
                 req.page_size,
                 (!req.page_token.is_empty()).then_some(req.page_token.as_str()),
+                req.include_granted,
             )
             .await
             .map_err(RpcError::internal)?;
@@ -12078,9 +12080,9 @@ impl RpcService {
             }
             Some(pb::binding_spec::Provider::DeploymentR2(provider)) => {
                 provider.bucket_binding = provider.bucket_binding.trim().to_string();
-                if provider.bucket_binding.is_empty() {
+                if provider.bucket_binding != crate::binding::DEPLOYMENT_R2_ATTACHMENT {
                     return Err(RpcError::invalid(
-                        "deployment R2 bindings require bucketBinding",
+                        "deployment R2 bucketBinding must name the REGISTRY_BUCKET runtime attachment",
                     ));
                 }
             }
@@ -12372,11 +12374,14 @@ impl RpcService {
     ) -> Result<pb::ListBindingsResponse, RpcError> {
         self.readable_storage_owner(auth, &req.owner_scope_key)
             .await?;
-        let records = self
-            .db
-            .list_bindings_by_scope(&req.owner_scope_key)
-            .await
-            .map_err(RpcError::internal)?;
+        let records = if req.include_granted {
+            self.db
+                .list_bindings_available_to_scope(&req.owner_scope_key)
+                .await
+        } else {
+            self.db.list_bindings_by_scope(&req.owner_scope_key).await
+        }
+        .map_err(RpcError::internal)?;
         let mut bindings = Vec::with_capacity(records.len());
         for record in records {
             bindings.push(self.binding_message(record).await?);
@@ -14077,24 +14082,23 @@ impl RpcService {
         if stable_id.is_empty() {
             return Err(RpcError::invalid("bindingId is required"));
         }
-        let binding = match org_id {
-            Some(id) => self
-                .db
-                .list_bindings(id)
-                .await
-                .map_err(RpcError::internal)?
-                .into_iter()
-                .find(|binding| binding.stable_id == stable_id),
-            None => None,
+        let owner_scope_key = match org_id {
+            Some(id) => {
+                self.db
+                    .org_by_id(id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::not_found("organization"))?
+                    .stable_id
+            }
+            None => "instance".to_owned(),
         };
-        if let Some(binding) = binding {
-            return Ok(binding.id);
-        }
         self.db
-            .instance_default_binding()
+            .list_bindings_available_to_scope(&owner_scope_key)
             .await
             .map_err(RpcError::internal)?
-            .filter(|binding| binding.stable_id == stable_id)
+            .into_iter()
+            .find(|binding| binding.stable_id == stable_id)
             .map(|binding| binding.id)
             .ok_or_else(|| RpcError::not_found("binding"))
     }
@@ -16307,42 +16311,6 @@ impl RpcService {
             req.hash_range.as_ref(),
         )?;
         let binding_id = self.topology_binding_id(org_id, &req.binding_id).await?;
-        let mut warnings = Vec::new();
-        if let SurfaceTarget::Registry(registry_id) = surface {
-            let binding = self
-                .db
-                .binding(binding_id)
-                .await
-                .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("binding"))?;
-            let registry = self
-                .db
-                .registry_by_id(registry_id)
-                .await
-                .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("registry"))?;
-            if binding.is_instance_default
-                && registry.visibility == "public"
-                && req.kind == "complete"
-                && req.desired_read_enabled.unwrap_or(false)
-                && (binding
-                    .object_prefix
-                    .as_deref()
-                    .is_some_and(|prefix| !prefix.is_empty())
-                    || req.prefix.trim_matches('/') != registry.slug)
-            {
-                warnings.push(format!(
-                    "default public delivery remains unavailable because the binding-root-relative prefix '{}' does not equal canonical slug '{}'",
-                    [binding.object_prefix.as_deref().unwrap_or(""), &req.prefix]
-                        .into_iter()
-                        .map(|part| part.trim_matches('/'))
-                        .filter(|part| !part.is_empty())
-                        .collect::<Vec<_>>()
-                        .join("/"),
-                    registry.slug
-                ));
-            }
-        }
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
         let (registry_id, cache_id) = Self::topology_surface_ids(surface);
         let input = PlacementCreatePlanInput {
@@ -16365,7 +16333,7 @@ impl RpcService {
                 "create placement '{}' without write authority",
                 input.request.name
             )],
-            warnings,
+            Vec::new(),
             Some(confirmation_hash),
         )
         .await
@@ -36219,7 +36187,11 @@ mod cache_upload_tests {
     async fn registry_without_a_canonical_route_has_no_consumer_url() {
         let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
         let binding_id = db
-            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .ensure_instance_default_binding(
+                "deployment_r2",
+                None,
+                Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
+            )
             .await
             .unwrap()
             .id;

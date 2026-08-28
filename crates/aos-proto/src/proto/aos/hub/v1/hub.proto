@@ -3267,6 +3267,7 @@ message ListTopologyResourcesRequest {
   string owner_scope_key = 1;
   uint32 page_size = 2;
   string page_token = 3;
+  bool include_granted = 4;
 }
 
 message GetTopologyResourceRequest {
@@ -3379,6 +3380,7 @@ message ListBindingsRequest {
   string owner_scope_key = 1;
   uint32 page_size = 2;
   string page_token = 3;
+  bool include_granted = 4;
 }
 message ListBindingsResponse {
   repeated Binding bindings = 1;

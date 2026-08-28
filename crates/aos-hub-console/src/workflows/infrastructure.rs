@@ -26,6 +26,7 @@ pub(super) fn InfrastructureWorkflow(route: ConsoleRoute, client: ApiClient) -> 
                 client=client
                 owner_scope_key="instance".to_string()
                 organization_slug=None
+                include_granted=false
                 creation_only=false
             />
         }
@@ -35,6 +36,7 @@ pub(super) fn InfrastructureWorkflow(route: ConsoleRoute, client: ApiClient) -> 
                 client=client
                 owner_scope_key="instance".to_string()
                 organization_slug=None
+                include_granted=false
                 creation_only=true
             />
         }
@@ -84,6 +86,7 @@ fn OrganizationBindings(
                                 client=client
                                 owner_scope_key=owner_scope_key.clone()
                                 organization_slug=Some(organization)
+                                include_granted=true
                                 creation_only=creation_only
                             />
                         }
@@ -101,6 +104,7 @@ fn Bindings(
     client: ApiClient,
     owner_scope_key: String,
     organization_slug: Option<String>,
+    include_granted: bool,
     creation_only: bool,
 ) -> impl IntoView {
     let can_create = client.allows("binding.manage");
@@ -117,6 +121,7 @@ fn Bindings(
                         owner_scope_key: owner_scope_key.clone(),
                         page_size: 100,
                         page_token,
+                        include_granted,
                     },
                     |response| (response.bindings, response.next_page_token),
                 )
@@ -151,7 +156,7 @@ fn Bindings(
                                 Ok(bindings) => view! {
                                     <div class="binding-list">
                                         {bindings.iter().cloned().map(|binding| view! {
-                                            <BindingCard client=client.clone() binding=binding organization_slug=organization_slug.clone()/>
+                                            <BindingCard client=client.clone() binding=binding organization_slug=organization_slug.clone() consumer_scope_key=owner_scope_key.clone()/>
                                         }).collect_view()}
                                     </div>
                                 }.into_any(),
@@ -168,6 +173,7 @@ fn Bindings(
 
 #[component]
 fn BindingCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
+    let stable_id = RwSignal::new(String::new());
     let name = RwSignal::new(String::new());
     let kind = RwSignal::new("s3".to_string());
     let root = RwSignal::new(String::new());
@@ -178,7 +184,7 @@ fn BindingCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
     let endpoint_port = RwSignal::new("443".to_string());
     let region = RwSignal::new("auto".to_string());
     let access = RwSignal::new("private".to_string());
-    let deployment_binding = RwSignal::new(String::new());
+    let deployment_binding = RwSignal::new("REGISTRY_BUCKET".to_string());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -208,7 +214,7 @@ fn BindingCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
         let client = plan_client.clone();
         let idempotency_key = idempotency_key("storage-binding-create");
         let request = aos_proto_types::PlanBindingMutationRequest {
-            stable_id: String::new(),
+            stable_id: stable_id.get_untracked().trim().to_string(),
             owner_scope_key: plan_scope.clone(),
             spec: Some(aos_proto_types::BindingSpec {
                 name: name.get_untracked().trim().to_string(),
@@ -263,13 +269,14 @@ fn BindingCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
         <section class="panel editor-panel">
             <h2>"Create binding"</h2>
             <form class="editor-form" on:submit=on_plan>
+                <label><span>"Stable ID"</span><input required placeholder="binding:primary" prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label>
                 <label><span>"Name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label>
                 <label><span>"Provider"</span><select prop:value=move || kind.get() on:change=move |event| kind.set(event_target_value(&event))>
                     <option value="s3">"S3-compatible"</option><option value="r2">"Cloudflare R2 API"</option><option value="deployment-r2">"Worker R2 binding"</option><option value="local-fs">"Local filesystem"</option>
                 </select></label>
                 {move || match kind.get().as_str() {
                     "local-fs" => view! { <label class="full-field"><span>"Root path"</span><input required placeholder="/var/lib/aos-hub/storage" prop:value=move || root.get() on:input=move |event| root.set(event_target_value(&event))/></label> }.into_any(),
-                    "deployment-r2" => view! { <label class="full-field"><span>"Worker R2 binding name"</span><input required placeholder="STORAGE" prop:value=move || deployment_binding.get() on:input=move |event| deployment_binding.set(event_target_value(&event))/></label> }.into_any(),
+                    "deployment-r2" => view! { <label class="full-field"><span>"Worker R2 runtime attachment"</span><input required readonly aria-readonly="true" prop:value=move || deployment_binding.get()/></label> }.into_any(),
                     _ => view! {
                         <label><span>"Bucket"</span><input required prop:value=move || bucket.get() on:input=move |event| bucket.set(event_target_value(&event))/></label>
                         <label><span>"Object prefix"</span><input prop:value=move || prefix.get() on:input=move |event| prefix.set(event_target_value(&event))/></label>
@@ -293,6 +300,7 @@ fn BindingCard(
     client: ApiClient,
     binding: aos_proto_types::Binding,
     organization_slug: Option<String>,
+    consumer_scope_key: String,
 ) -> impl IntoView {
     let health = binding.health.clone().unwrap_or_default();
     let capabilities = binding.capabilities.clone().unwrap_or_default();
@@ -307,11 +315,12 @@ fn BindingCard(
         .as_ref()
         .and_then(storage_provider_details)
         .unwrap_or_default();
+    let owned = binding.owner_scope_key == consumer_scope_key;
 
     view! {
         <details class="binding-card">
             <summary>
-                <div><span class="resource-kind">{provider}</span><h3>{binding.spec.as_ref().map(|spec| spec.name.clone()).unwrap_or_default()}</h3><code>{binding.stable_id.clone()}</code></div>
+                <div><span class="resource-kind">{if owned { provider } else { "granted" }}</span><h3>{binding.spec.as_ref().map(|spec| spec.name.clone()).unwrap_or_default()}</h3><code>{binding.stable_id.clone()}</code></div>
                 <div class="binding-summary-state"><StatusBadge state=health.state.clone() positive=health.state == "healthy"/><span>{if capabilities.writes_supported { "read/write" } else { "read only" }}</span></div>
             </summary>
             <div class="binding-details">
@@ -325,15 +334,17 @@ fn BindingCard(
                     <div><span>"Conditional writes"</span><strong>{yes_no(capabilities.conditional_writes_supported)}</strong></div>
                 </div>
                 {(!health.error.is_empty()).then(|| view! { <InlineError detail=health.error/> })}
-                <div class="subworkflow-grid">
-                    <div class="subworkflow-stack">
-                        <StorageWriteRevisions client=client.clone() binding=binding.clone() organization_slug=organization_slug/>
-                        <StorageCredentialEditor client=client.clone() binding=binding.clone()/>
-                        <StorageCredentialValidation client=client.clone() binding=binding.clone()/>
+                {owned.then(|| view! {
+                    <div class="subworkflow-grid">
+                        <div class="subworkflow-stack">
+                            <StorageWriteRevisions client=client.clone() binding=binding.clone() organization_slug=organization_slug/>
+                            <StorageCredentialEditor client=client.clone() binding=binding.clone()/>
+                            <StorageCredentialValidation client=client.clone() binding=binding.clone()/>
+                        </div>
+                        <StorageGrantEditor client=client.clone() binding=binding.clone()/>
                     </div>
-                    <StorageGrantEditor client=client.clone() binding=binding.clone()/>
-                </div>
-                <BindingDelete client=client binding=binding/>
+                    <BindingDelete client=client binding=binding/>
+                })}
             </div>
         </details>
     }
@@ -362,7 +373,7 @@ fn storage_provider_details(
         // Calling it a deployment bucket prevents operators from mistaking it
         // for the Worker's JavaScript binding identifier.
         Provider::DeploymentR2(provider) => {
-            vec![("Deployment bucket", provider.bucket_binding.clone())]
+            vec![("Runtime attachment", provider.bucket_binding.clone())]
         }
     };
     Some(details)
@@ -856,6 +867,7 @@ async fn load_topology_defaults(
                 owner_scope_key: binding_scope.clone(),
                 page_size: 100,
                 page_token,
+                include_granted: true,
             },
             |response| (response.bindings, response.next_page_token),
         )
@@ -881,6 +893,7 @@ async fn load_topology_defaults(
                 owner_scope_key: owner_scope_key.clone(),
                 page_size: 100,
                 page_token,
+                include_granted: true,
             },
             |response| (response.endpoints, response.next_page_token),
         )
@@ -1158,21 +1171,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deployment_binding_displays_physical_bucket() {
+    fn deployment_binding_displays_runtime_attachment() {
         let spec = aos_proto_types::BindingSpec {
             name: "default".to_string(),
             provider: Some(aos_proto_types::binding_spec::Provider::DeploymentR2(
                 aos_proto_types::DeploymentR2StorageProvider {
-                    bucket_binding: "aos-hub-staging-surfaces".to_string(),
+                    bucket_binding: "REGISTRY_BUCKET".to_string(),
                 },
             )),
         };
         assert_eq!(
             storage_provider_details(&spec),
-            Some(vec![(
-                "Deployment bucket",
-                "aos-hub-staging-surfaces".to_string()
-            )])
+            Some(vec![("Runtime attachment", "REGISTRY_BUCKET".to_string())])
         );
     }
 }
