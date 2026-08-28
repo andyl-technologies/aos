@@ -30,6 +30,7 @@ mod graph;
 mod memory;
 mod namespace;
 mod packed;
+mod physical_quota;
 mod profile;
 mod quota;
 mod write_back;
@@ -57,6 +58,10 @@ pub use namespace::{
 pub use packed::{
     PackedBlobBackend, PackedRepackPlan, PackedRepackPlanId, PackedRepackReport,
     PackedStorageAccounting,
+};
+pub use physical_quota::{
+    StoreGraphPhysicalQuotaBinders, StorePhysicalQuotaBinder, StorePhysicalQuotaGuard,
+    StorePhysicalQuotaPolicyId,
 };
 pub use profile::{
     ObjectProfile, Reconstructibility, RetentionRole, SensitivityClass, StoreGraphObjectProfilers,
@@ -955,6 +960,10 @@ pub enum GraphViolation {
     InvalidLogicalQuotaBounds,
     /// A logical quota does not exclusively own one physical leaf.
     InvalidLogicalQuotaChild,
+    /// A physical quota has a zero or invalid hard limit or project ID.
+    InvalidPhysicalQuotaBounds,
+    /// A physical quota does not exclusively own one persistent physical leaf.
+    InvalidPhysicalQuotaChild,
     /// A journal and another persistent graph path overlap lexically.
     OverlappingAdministrativePath,
     /// A persistent graph path is relative to ambient process state.
@@ -990,6 +999,10 @@ impl fmt::Display for GraphViolation {
             Self::InvalidEncryptedObjectLimit => "invalid encrypted-object limit",
             Self::InvalidLogicalQuotaBounds => "invalid logical-quota bounds",
             Self::InvalidLogicalQuotaChild => "logical quota must exclusively own a physical leaf",
+            Self::InvalidPhysicalQuotaBounds => "invalid physical-quota bounds",
+            Self::InvalidPhysicalQuotaChild => {
+                "physical quota must exclusively own a persistent physical leaf"
+            }
             Self::OverlappingAdministrativePath => "overlapping administrative path",
             Self::RelativeAdministrativePath => "relative administrative path",
             Self::AdministrativePathTooLong => "administrative path is too long",

@@ -1437,7 +1437,19 @@ repeat the same validation. Profile and namespace boundaries compose only as
 the unary root prefix. Tests cover policy grammar/capability binding, identity
 sensitivity, buried-boundary rejection, wrong-kind profiler output, range
 reads, denied puts, and combined namespace/profile operation.
-Broader layered transforms, physical-filesystem quota, and S3 remain open;
+The graph now also admits a version-nine physical-quota boundary. It
+exclusively owns one persistent leaf, commits the external binder policy plus
+exact project/byte/inode limits to identity, and transfers the leaf's physical
+administration capability so GC cannot bypass the boundary. The safe graph
+contract checks a bound guard before ordinary and administrative operations;
+the concrete Apache host-resource binder pins an ext4 directory incarnation,
+authenticates inherited project assignment and exact kernel hard limits, and
+checks current usage without granting quota mutation to the repository. The
+same raw project-quota primitive remains shared with QEMU attempt storage.
+Tests cover capability mismatch/duplication, exact binding, restart, exhaustion
+before child access, deletion, identity sensitivity, exclusive ownership, and
+logical-plus-physical composition.
+Broader layered transforms and S3 remain open;
 therefore T-CAM-5.5 is not checked by this checkpoint.
 
 The packed leaf now provides immutable bounded multi-object pack files, a

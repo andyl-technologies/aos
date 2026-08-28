@@ -78,12 +78,6 @@ mod linux_attempt_storage;
 #[allow(dead_code)]
 mod linux_cgroup;
 #[cfg(target_os = "linux")]
-// Raw project-quota mutation stays internal; `linux_attempt_storage` owns its
-// allocation, naming, directory, and release lifecycle.
-// crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
-#[allow(dead_code)]
-mod linux_project_quota;
-#[cfg(target_os = "linux")]
 mod live_coverage_gate;
 #[cfg(target_os = "linux")]
 mod live_plugin_gate;

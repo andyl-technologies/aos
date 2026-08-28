@@ -1,11 +1,11 @@
-//! Linux ext4 project-quota enforcement for one QEMU run directory.
+//! Linux ext4 project-quota enforcement for ephemeral and persistent roots.
 //!
-//! This module owns the raw kernel transaction needed by the concrete attempt
-//! resource guard. It accepts a freshly created, pinned directory on an ext4
-//! filesystem with project quotas already enabled, installs hard block and
-//! inode limits for one unused project ID, and only then marks the directory
-//! with that ID and `FS_XFLAG_PROJINHERIT`. Every setting is read back and the
-//! quota metadata is synchronized before the authority is returned.
+//! This module owns the raw kernel transaction needed by concrete host-resource
+//! guards. Its reservation path accepts a freshly created, pinned directory on
+//! an ext4 filesystem with project quotas already enabled, installs hard block
+//! and inode limits for one unused project ID, and only then marks the
+//! directory with that ID and `FS_XFLAG_PROJINHERIT`. Every setting is read
+//! back and the quota metadata is synchronized before the authority is returned.
 //!
 //! The transaction deliberately does not allocate project IDs, create directory
 //! names, provision VMState, or decide when process reap permits release. Those
@@ -20,6 +20,10 @@ use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "cas")]
+use crucible_cas::content_store::{StoreError, StorePhysicalQuotaBinder, StorePhysicalQuotaGuard};
+#[cfg(feature = "cas")]
+use rustix::fs::open;
 use rustix::fs::{FileType, Mode, OFlags, RawDir, fstat, fstatfs, fsync, openat};
 use rustix::ioctl::{Getter, Setter, ioctl, opcode};
 use thiserror::Error;
@@ -37,7 +41,7 @@ const FS_IOC_FSSETXATTR: rustix::ioctl::Opcode = opcode::write::<Fsxattr>(b'X', 
 
 /// Exact hard aggregate limits installed for one ext4 project.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct LinuxProjectQuotaLimits {
+pub struct LinuxProjectQuotaLimits {
     requested_bytes: u64,
     quota_blocks: u64,
     maximum_inodes: u64,
@@ -55,7 +59,7 @@ impl LinuxProjectQuotaLimits {
     /// Returns [`LinuxProjectQuotaError::InvalidLimits`] when fewer than one
     /// quota block or inode is admitted, or the inode ceiling exceeds the
     /// fixed cleanup-work bound.
-    pub(crate) fn new(
+    pub fn new(
         maximum_writable_bytes: u64,
         maximum_inodes: u64,
     ) -> Result<Self, LinuxProjectQuotaError> {
@@ -72,19 +76,19 @@ impl LinuxProjectQuotaLimits {
 
     /// Returns the caller's admitted aggregate writable-byte ceiling.
     #[must_use]
-    pub(crate) const fn requested_bytes(self) -> u64 {
+    pub const fn requested_bytes(self) -> u64 {
         self.requested_bytes
     }
 
     /// Returns the conservative byte ceiling enforced by ext4.
     #[must_use]
-    pub(crate) const fn enforced_bytes(self) -> u64 {
+    pub const fn enforced_bytes(self) -> u64 {
         self.quota_blocks * EXT4_QUOTA_BLOCK_BYTES
     }
 
     /// Returns the hard inode ceiling, including the run directory itself.
     #[must_use]
-    pub(crate) const fn maximum_inodes(self) -> u64 {
+    pub const fn maximum_inodes(self) -> u64 {
         self.maximum_inodes
     }
 }
@@ -92,7 +96,7 @@ impl LinuxProjectQuotaLimits {
 /// Installed project-quota and pinned-directory authority.
 #[derive(Debug)]
 #[must_use = "release the project quota after process reap or retain it in quarantine"]
-pub(crate) struct LinuxProjectQuotaReservation {
+pub struct LinuxProjectQuotaReservation {
     filesystem: Option<OwnedFd>,
     directory: Option<OwnedFd>,
     path: PathBuf,
@@ -117,7 +121,7 @@ impl LinuxProjectQuotaReservation {
     /// when filesystem validation, quota installation, attribute assignment,
     /// synchronization, or read-back authentication fails. Once a kernel limit
     /// may have changed, the error retains a cleanup authority.
-    pub(crate) fn install(
+    pub fn install(
         filesystem: OwnedFd,
         directory: OwnedFd,
         path: impl Into<PathBuf>,
@@ -177,13 +181,13 @@ impl LinuxProjectQuotaReservation {
 
     /// Returns the assigned project identifier.
     #[must_use]
-    pub(crate) const fn project_id(&self) -> u32 {
+    pub const fn project_id(&self) -> u32 {
         self.project_id
     }
 
     /// Returns the exact admitted and kernel-rounded limits.
     #[must_use]
-    pub(crate) const fn limits(&self) -> LinuxProjectQuotaLimits {
+    pub const fn limits(&self) -> LinuxProjectQuotaLimits {
         self.limits
     }
 
@@ -191,7 +195,7 @@ impl LinuxProjectQuotaReservation {
     ///
     /// The descriptor is lent only for descriptor-relative preparation. It
     /// does not grant quota release or project-ID reuse.
-    pub(crate) fn directory(&self) -> Result<&OwnedFd, LinuxProjectQuotaError> {
+    pub fn directory(&self) -> Result<&OwnedFd, LinuxProjectQuotaError> {
         self.directory
             .as_ref()
             .ok_or_else(|| LinuxProjectQuotaError::MissingAuthority {
@@ -209,7 +213,7 @@ impl LinuxProjectQuotaReservation {
     ///
     /// Returns [`LinuxProjectQuotaError`] when the quota record cannot be read
     /// or its current byte or inode usage exceeds the installed ceiling.
-    pub(crate) fn verify_usage(&self) -> Result<(), LinuxProjectQuotaError> {
+    pub fn verify_usage(&self) -> Result<(), LinuxProjectQuotaError> {
         verify_project_usage_within_limit(
             self.filesystem()?,
             &self.path,
@@ -229,7 +233,7 @@ impl LinuxProjectQuotaReservation {
     /// Returns [`LinuxProjectQuotaReleaseError`] with this complete authority
     /// when emptiness, attribute restoration, usage reconciliation, quota
     /// clearing, synchronization, or read-back validation fails.
-    pub(crate) fn release(mut self) -> Result<(), LinuxProjectQuotaReleaseError> {
+    pub fn release(mut self) -> Result<(), LinuxProjectQuotaReleaseError> {
         if let Err(source) = self.release_in_place() {
             return Err(LinuxProjectQuotaReleaseError {
                 reservation: Box::new(self),
@@ -306,7 +310,7 @@ impl LinuxProjectQuotaReservation {
 ///
 /// Returns [`LinuxProjectQuotaError`] when `directory` is not an ext4
 /// directory or project-quota state cannot be queried through it.
-pub(crate) fn validate_project_quota_root(
+pub fn validate_project_quota_root(
     directory: &OwnedFd,
     path: &Path,
 ) -> Result<(), LinuxProjectQuotaError> {
@@ -319,6 +323,144 @@ pub(crate) fn validate_project_quota_root(
         });
     }
     Ok(())
+}
+
+/// Safe binder for an operator-installed ext4 project quota on a CAS leaf.
+#[cfg(feature = "cas")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LinuxProjectQuotaBinder;
+
+#[cfg(feature = "cas")]
+impl LinuxProjectQuotaBinder {
+    /// Constructs the stateless Linux project-quota binder.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(feature = "cas")]
+#[derive(Debug)]
+struct BoundLinuxProjectQuota {
+    directory: OwnedFd,
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+    project_id: u32,
+    limits: LinuxProjectQuotaLimits,
+}
+
+#[cfg(feature = "cas")]
+impl StorePhysicalQuotaBinder for LinuxProjectQuotaBinder {
+    fn bind(
+        &self,
+        root: &Path,
+        project_id: u32,
+        maximum_physical_bytes: u64,
+        maximum_inodes: u64,
+    ) -> Result<std::sync::Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        if !project_id_is_supported(project_id) {
+            return Err(StoreError::Quota);
+        }
+        let limits = LinuxProjectQuotaLimits::new(maximum_physical_bytes, maximum_inodes)
+            .map_err(project_quota_store_error)?;
+        let directory = open(
+            root,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|source| StoreError::Io {
+            operation: "open-physical-quota-root",
+            path: root.to_owned(),
+            source: source.into(),
+        })?;
+        validate_ext4_filesystem(&directory, &directory, root)
+            .map_err(project_quota_store_error)?;
+        project_quota_info(&directory, root).map_err(project_quota_store_error)?;
+        verify_assigned_project(&directory, root, project_id).map_err(project_quota_store_error)?;
+        verify_project_quota(&directory, root, project_id, limits)
+            .map_err(project_quota_store_error)?;
+        verify_project_usage_within_limit(&directory, root, project_id, limits)
+            .map_err(project_quota_store_error)?;
+        let identity = fstat(&directory).map_err(|source| StoreError::Io {
+            operation: "identify-physical-quota-root",
+            path: root.to_owned(),
+            source: source.into(),
+        })?;
+        Ok(std::sync::Arc::new(BoundLinuxProjectQuota {
+            directory,
+            path: root.to_owned(),
+            device: identity.st_dev,
+            inode: identity.st_ino,
+            project_id,
+            limits,
+        }))
+    }
+}
+
+#[cfg(feature = "cas")]
+impl StorePhysicalQuotaGuard for BoundLinuxProjectQuota {
+    fn verify(&self) -> Result<(), StoreError> {
+        let current = open(
+            &self.path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|source| StoreError::Io {
+            operation: "reopen-physical-quota-root",
+            path: self.path.clone(),
+            source: source.into(),
+        })?;
+        let current_identity = fstat(&current).map_err(|source| StoreError::Io {
+            operation: "reauthenticate-physical-quota-root",
+            path: self.path.clone(),
+            source: source.into(),
+        })?;
+        if current_identity.st_dev != self.device || current_identity.st_ino != self.inode {
+            return Err(StoreError::Quota);
+        }
+
+        validate_ext4_filesystem(&self.directory, &self.directory, &self.path)
+            .map_err(project_quota_store_error)?;
+        verify_assigned_project(&self.directory, &self.path, self.project_id)
+            .map_err(project_quota_store_error)?;
+        verify_project_quota(&self.directory, &self.path, self.project_id, self.limits)
+            .map_err(project_quota_store_error)?;
+        verify_project_usage_within_limit(&self.directory, &self.path, self.project_id, self.limits)
+            .map_err(project_quota_store_error)
+    }
+}
+
+#[cfg(feature = "cas")]
+fn verify_assigned_project(
+    directory: &OwnedFd,
+    path: &Path,
+    project_id: u32,
+) -> Result<(), LinuxProjectQuotaError> {
+    let attributes = get_project_attributes(directory, path)?;
+    if attributes.fsx_projid != project_id || attributes.fsx_xflags & FS_XFLAG_PROJINHERIT == 0 {
+        return Err(LinuxProjectQuotaError::QuotaMismatch {
+            path: path.to_owned(),
+            project_id,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cas")]
+fn project_quota_store_error(error: LinuxProjectQuotaError) -> StoreError {
+    match error {
+        LinuxProjectQuotaError::Io {
+            operation,
+            path,
+            source,
+        } => StoreError::Io {
+            operation,
+            path,
+            source,
+        },
+        _ => StoreError::Quota,
+    }
 }
 
 impl Drop for LinuxProjectQuotaReservation {
@@ -339,7 +481,7 @@ impl Drop for LinuxProjectQuotaReservation {
 #[derive(Debug, Error)]
 #[error("failed to install Linux project quota: {source}")]
 #[must_use = "recover partial project-quota authority or leave it enforced fail-closed"]
-pub(crate) struct LinuxProjectQuotaInstallError {
+pub struct LinuxProjectQuotaInstallError {
     source: LinuxProjectQuotaError,
     cleanup: Option<Box<LinuxProjectQuotaReservation>>,
 }
@@ -361,21 +503,19 @@ impl LinuxProjectQuotaInstallError {
 
     /// Returns the installation diagnostic without consuming cleanup authority.
     #[must_use]
-    pub(crate) const fn source_error(&self) -> &LinuxProjectQuotaError {
+    pub const fn source_error(&self) -> &LinuxProjectQuotaError {
         &self.source
     }
 
     /// Recovers the partially installed kernel authority, when present.
     #[must_use = "retain partial project-quota authority for cleanup or quarantine"]
-    pub(crate) fn into_cleanup(mut self) -> Option<LinuxProjectQuotaReservation> {
+    pub fn into_cleanup(mut self) -> Option<LinuxProjectQuotaReservation> {
         self.cleanup.take().map(|cleanup| *cleanup)
     }
 
     /// Splits the failure into its diagnostic and optional cleanup authority.
     #[must_use = "retain partial project-quota authority for cleanup or quarantine"]
-    pub(crate) fn into_parts(
-        mut self,
-    ) -> (LinuxProjectQuotaError, Option<LinuxProjectQuotaReservation>) {
+    pub fn into_parts(mut self) -> (LinuxProjectQuotaError, Option<LinuxProjectQuotaReservation>) {
         let cleanup = self.cleanup.take().map(|cleanup| *cleanup);
         (self.source, cleanup)
     }
@@ -385,7 +525,7 @@ impl LinuxProjectQuotaInstallError {
 #[derive(Debug, Error)]
 #[error("failed to release Linux project quota: {source}")]
 #[must_use = "retry release or transfer the project quota to quarantine"]
-pub(crate) struct LinuxProjectQuotaReleaseError {
+pub struct LinuxProjectQuotaReleaseError {
     reservation: Box<LinuxProjectQuotaReservation>,
     source: LinuxProjectQuotaError,
 }
@@ -393,26 +533,26 @@ pub(crate) struct LinuxProjectQuotaReleaseError {
 impl LinuxProjectQuotaReleaseError {
     /// Returns the release diagnostic without consuming the reservation.
     #[must_use]
-    pub(crate) const fn source_error(&self) -> &LinuxProjectQuotaError {
+    pub const fn source_error(&self) -> &LinuxProjectQuotaError {
         &self.source
     }
 
     /// Recovers the complete installed reservation for retry or quarantine.
     #[must_use = "retry release or transfer the project-quota authority to quarantine"]
-    pub(crate) fn into_reservation(self) -> LinuxProjectQuotaReservation {
+    pub fn into_reservation(self) -> LinuxProjectQuotaReservation {
         *self.reservation
     }
 
     /// Splits the failure into its diagnostic and retained reservation.
     #[must_use = "retry release or transfer the project-quota authority to quarantine"]
-    pub(crate) fn into_parts(self) -> (LinuxProjectQuotaError, LinuxProjectQuotaReservation) {
+    pub fn into_parts(self) -> (LinuxProjectQuotaError, LinuxProjectQuotaReservation) {
         (self.source, *self.reservation)
     }
 }
 
 /// Stable project-quota validation or kernel-operation failure.
 #[derive(Debug, Error)]
-pub(crate) enum LinuxProjectQuotaError {
+pub enum LinuxProjectQuotaError {
     /// Aggregate bytes or inode bounds cannot be enforced safely.
     #[error("project-quota limits are outside the supported range")]
     InvalidLimits,

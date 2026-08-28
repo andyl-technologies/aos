@@ -14,6 +14,7 @@ const GRAPH_CONFIGURATION_V5_MAGIC: &[u8] = b"crucible.content-store.graph-confi
 const GRAPH_CONFIGURATION_V6_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v6\0";
 const GRAPH_CONFIGURATION_V7_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v7\0";
 const GRAPH_CONFIGURATION_V8_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v8\0";
+const GRAPH_CONFIGURATION_V9_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v9\0";
 
 pub(super) fn canonical_graph_configuration(
     config: &StoreGraphConfig,
@@ -47,7 +48,13 @@ pub(super) fn canonical_graph_configuration(
         .nodes
         .values()
         .any(|node| matches!(node, StoreNodeSpec::ProfileValidated { .. }));
-    bytes.extend_from_slice(if has_profile_validation {
+    let has_physical_quota = config
+        .nodes
+        .values()
+        .any(|node| matches!(node, StoreNodeSpec::PhysicalQuota { .. }));
+    bytes.extend_from_slice(if has_physical_quota {
+        GRAPH_CONFIGURATION_V9_MAGIC
+    } else if has_profile_validation {
         GRAPH_CONFIGURATION_V8_MAGIC
     } else if has_namespaced {
         GRAPH_CONFIGURATION_V7_MAGIC
@@ -219,6 +226,20 @@ pub(super) fn canonical_graph_configuration(
                 bytes.push(17);
                 encode_node_id(&mut bytes, child)?;
                 encode_string(&mut bytes, policy.as_str())?;
+            }
+            StoreNodeSpec::PhysicalQuota {
+                child,
+                policy,
+                project_id,
+                maximum_physical_bytes,
+                maximum_inodes,
+            } => {
+                bytes.push(18);
+                encode_node_id(&mut bytes, child)?;
+                encode_string(&mut bytes, policy.as_str())?;
+                bytes.extend_from_slice(&project_id.to_be_bytes());
+                bytes.extend_from_slice(&maximum_physical_bytes.to_be_bytes());
+                bytes.extend_from_slice(&maximum_inodes.to_be_bytes());
             }
         }
     }

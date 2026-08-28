@@ -64,6 +64,79 @@ struct RecordingObjectProfiler {
     returned_kind: Mutex<Option<ObjectKind>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RecordedPhysicalQuotaBinding {
+    root: PathBuf,
+    project_id: u32,
+    maximum_physical_bytes: u64,
+    maximum_inodes: u64,
+}
+
+#[derive(Default)]
+struct RecordingPhysicalQuotaGuard {
+    allowed: AtomicBool,
+    calls: AtomicUsize,
+}
+
+impl RecordingPhysicalQuotaGuard {
+    fn set_allowed(&self, allowed: bool) {
+        self.allowed.store(allowed, Ordering::SeqCst);
+    }
+}
+
+impl StorePhysicalQuotaGuard for RecordingPhysicalQuotaGuard {
+    fn verify(&self) -> Result<(), StoreError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.allowed.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err(StoreError::Quota)
+        }
+    }
+}
+
+struct RecordingPhysicalQuotaBinder {
+    guard: Arc<RecordingPhysicalQuotaGuard>,
+    bindings: Mutex<Vec<RecordedPhysicalQuotaBinding>>,
+}
+
+impl RecordingPhysicalQuotaBinder {
+    fn new(allowed: bool) -> Self {
+        let guard = Arc::new(RecordingPhysicalQuotaGuard::default());
+        guard.set_allowed(allowed);
+        Self {
+            guard,
+            bindings: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn bindings(&self) -> Vec<RecordedPhysicalQuotaBinding> {
+        self.bindings.lock().expect("quota binding lock").clone()
+    }
+}
+
+impl StorePhysicalQuotaBinder for RecordingPhysicalQuotaBinder {
+    fn bind(
+        &self,
+        root: &Path,
+        project_id: u32,
+        maximum_physical_bytes: u64,
+        maximum_inodes: u64,
+    ) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        self.bindings
+            .lock()
+            .expect("quota binding lock")
+            .push(RecordedPhysicalQuotaBinding {
+                root: root.to_owned(),
+                project_id,
+                maximum_physical_bytes,
+                maximum_inodes,
+            });
+        self.guard.verify()?;
+        Ok(self.guard.clone())
+    }
+}
+
 impl RecordingObjectProfiler {
     fn new(allowed: bool) -> Self {
         Self {
@@ -2550,6 +2623,7 @@ fn profile_graph_derives_authenticated_classes_without_caller_hints() {
         &keys,
         &authorizers,
         &profilers,
+        &StoreGraphPhysicalQuotaBinders::new(),
     )
     .expect("profile graph");
     assert_eq!(graph.describe()[1].kind, StoreNodeKind::ProfileValidated);
@@ -2591,6 +2665,7 @@ fn profile_graph_derives_authenticated_classes_without_caller_hints() {
         &keys,
         &authorizers,
         &other_profilers,
+        &StoreGraphPhysicalQuotaBinders::new(),
     )
     .expect("other profile graph");
     assert_ne!(graph.configuration_id(), other.configuration_id());
@@ -2682,6 +2757,7 @@ fn profile_and_namespace_boundaries_compose_at_the_graph_root() {
         &StoreGraphKeyring::new(),
         &authorizers,
         &profilers,
+        &StoreGraphPhysicalQuotaBinders::new(),
     )
     .expect("composed boundaries");
     let bytes = b"composed operational boundaries";
@@ -2743,6 +2819,7 @@ fn profile_graph_validates_deferred_transfer_and_root_inventory() {
         &StoreGraphKeyring::new(),
         &StoreGraphNamespaceAuthorizers::new(),
         &profilers,
+        &StoreGraphPhysicalQuotaBinders::new(),
     )
     .expect("profiled write-back graph");
     let bytes = b"profiled deferred finding";
@@ -3181,6 +3258,358 @@ fn compressed_encrypted_directory_is_a_versioned_graph_leaf() {
             violation: GraphViolation::InvalidEncryptedObjectLimit,
             ..
         })
+    ));
+}
+
+#[test]
+fn physical_quota_binds_exact_leaf_limits_and_survives_restart_and_admin() {
+    let temp = TempDir::new().expect("temporary directory");
+    let physical = node_id("physical-quota");
+    let directory = node_id("directory");
+    let policy =
+        StorePhysicalQuotaPolicyId::new("host/ext4/campaign-store").expect("physical quota policy");
+    let object_root = temp.path().join("objects");
+    let config = |root: PathBuf, maximum_physical_bytes| StoreGraphConfig {
+        root: physical.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                physical.clone(),
+                StoreNodeSpec::PhysicalQuota {
+                    child: directory.clone(),
+                    policy: policy.clone(),
+                    project_id: 41,
+                    maximum_physical_bytes,
+                    maximum_inodes: 64,
+                },
+            ),
+            (
+                directory.clone(),
+                StoreNodeSpec::CompressedDirectory {
+                    root,
+                    maximum_logical_object_bytes: 1_024,
+                },
+            ),
+        ]),
+    };
+    assert!(matches!(
+        StoreGraph::build(config(object_root.clone(), 128 * 1024)),
+        Err(StoreError::Unauthorized)
+    ));
+
+    let binder = Arc::new(RecordingPhysicalQuotaBinder::new(true));
+    let mut binders = StoreGraphPhysicalQuotaBinders::new();
+    binders
+        .insert(policy.clone(), binder.clone())
+        .expect("physical quota capability");
+    assert!(matches!(
+        binders.insert(policy.clone(), binder.clone()),
+        Err(StoreError::InvalidComposition { .. })
+    ));
+    let build = |config| {
+        StoreGraph::build_with_admin_and_all_capabilities(
+            config,
+            &StoreGraphKeyring::new(),
+            &StoreGraphNamespaceAuthorizers::new(),
+            &StoreGraphObjectProfilers::new(),
+            &binders,
+        )
+    };
+    let (graph, admin) =
+        build(config(object_root.clone(), 128 * 1024)).expect("physical quota graph");
+    assert_eq!(admin.physical().len(), 1);
+    assert_eq!(admin.physical()[0].node(), &physical);
+    assert_eq!(
+        binder.bindings(),
+        vec![RecordedPhysicalQuotaBinding {
+            root: object_root.clone(),
+            project_id: 41,
+            maximum_physical_bytes: 128 * 1024,
+            maximum_inodes: 64,
+        }]
+    );
+
+    let bytes = b"physically bounded trace";
+    let id = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
+    let receipt = put_bytes(&graph, id, bytes).expect("physical quota put");
+    assert_eq!(receipt.placements[0].backend, "physical-quota");
+    assert!(graph.contains(id).expect("physical quota contains"));
+    assert_eq!(
+        read_bytes(&graph, id, None).expect("physical quota read"),
+        bytes
+    );
+    let mut fence = admin.physical()[0]
+        .admin()
+        .acquire_inventory_fence()
+        .expect("physical quota inventory fence");
+    let summary = fence
+        .visit_inventory(&mut |_| Ok(()))
+        .expect("physical quota inventory");
+    assert_eq!(summary.backend(), "physical-quota");
+    assert_eq!(summary.objects(), 1);
+    drop(fence);
+    drop(admin);
+    drop(graph);
+
+    let (restarted, restarted_admin) =
+        build(config(object_root.clone(), 128 * 1024)).expect("restarted physical quota graph");
+    assert!(restarted.contains(id).expect("restart retained object"));
+    let mut fence = restarted_admin.physical()[0]
+        .admin()
+        .acquire_inventory_fence()
+        .expect("restarted inventory fence");
+    assert_eq!(
+        fence.delete_candidate(id).expect("quota deletion"),
+        PlannedDeleteDisposition::Deleted
+    );
+    drop(fence);
+    assert!(!restarted.contains(id).expect("deleted object absent"));
+
+    binder.guard.set_allowed(false);
+    let rejected_bytes = b"rejected before child allocation";
+    let rejected = ContentId::for_bytes(ObjectKind::Trace, 1, rejected_bytes);
+    assert!(matches!(
+        put_bytes(&restarted, rejected, rejected_bytes),
+        Err(StoreError::Quota)
+    ));
+    binder.guard.set_allowed(true);
+    let direct = CompressedDirectoryBlobBackend::new("direct", &object_root, 1_024)
+        .expect("direct compressed leaf");
+    assert!(!direct.contains(rejected).expect("rejected child absent"));
+
+    let (changed, _admin) =
+        build(config(object_root, 256 * 1024)).expect("changed physical quota graph");
+    assert_ne!(restarted.configuration_id(), changed.configuration_id());
+    let (golden, _admin) = build(config(
+        PathBuf::from("/var/lib/crucible/campaign-store/objects"),
+        128 * 1024,
+    ))
+    .expect("golden physical quota graph");
+    assert_eq!(
+        encode_hex(&golden.configuration_id().as_bytes()),
+        "60249effc2190eab11c6a0996cedfb82ded56b39871711b680a03a53f6c6c491"
+    );
+}
+
+#[test]
+fn physical_quota_admission_rejects_invalid_shared_and_nonleaf_children() {
+    let temp = TempDir::new().expect("temporary directory");
+    let physical = node_id("physical-quota");
+    let directory = node_id("directory");
+    let policy = StorePhysicalQuotaPolicyId::new("host/ext4").expect("quota policy");
+    let config = |project_id, maximum_physical_bytes, maximum_inodes| StoreGraphConfig {
+        root: physical.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                physical.clone(),
+                StoreNodeSpec::PhysicalQuota {
+                    child: directory.clone(),
+                    policy: policy.clone(),
+                    project_id,
+                    maximum_physical_bytes,
+                    maximum_inodes,
+                },
+            ),
+            (
+                directory.clone(),
+                StoreNodeSpec::Directory {
+                    root: temp.path().join("objects"),
+                },
+            ),
+        ]),
+    };
+    for invalid in [config(0, 1, 1), config(1, 0, 1), config(1, 1, 0)] {
+        assert!(matches!(
+            StoreGraph::build(invalid),
+            Err(StoreError::InvalidGraph {
+                violation: GraphViolation::InvalidPhysicalQuotaBounds,
+                ..
+            })
+        ));
+    }
+
+    let metrics = node_id("metrics");
+    assert!(matches!(
+        StoreGraph::build(StoreGraphConfig {
+            root: physical.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+            nodes: BTreeMap::from([
+                (
+                    physical.clone(),
+                    StoreNodeSpec::PhysicalQuota {
+                        child: metrics.clone(),
+                        policy: policy.clone(),
+                        project_id: 1,
+                        maximum_physical_bytes: 1,
+                        maximum_inodes: 1,
+                    },
+                ),
+                (
+                    metrics,
+                    StoreNodeSpec::Metrics {
+                        child: directory.clone(),
+                    },
+                ),
+                (
+                    directory.clone(),
+                    StoreNodeSpec::Directory {
+                        root: temp.path().join("nonleaf"),
+                    },
+                ),
+            ]),
+        }),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::InvalidPhysicalQuotaChild,
+            ..
+        })
+    ));
+
+    let mirror = node_id("mirror");
+    assert!(matches!(
+        StoreGraph::build(StoreGraphConfig {
+            root: mirror.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+            nodes: BTreeMap::from([
+                (
+                    mirror,
+                    StoreNodeSpec::WriteThrough {
+                        children: vec![physical.clone(), directory.clone()],
+                    },
+                ),
+                (
+                    physical,
+                    StoreNodeSpec::PhysicalQuota {
+                        child: directory.clone(),
+                        policy,
+                        project_id: 1,
+                        maximum_physical_bytes: 1,
+                        maximum_inodes: 1,
+                    },
+                ),
+                (
+                    directory,
+                    StoreNodeSpec::Directory {
+                        root: temp.path().join("shared"),
+                    },
+                ),
+            ]),
+        }),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::InvalidPhysicalQuotaChild,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn physical_quota_binding_precedes_allocating_leaf_construction() {
+    let temp = TempDir::new().expect("temporary directory");
+    let physical = node_id("physical-quota");
+    let packed = node_id("packed");
+    let policy =
+        StorePhysicalQuotaPolicyId::new("host/ext4/preflight").expect("physical quota policy");
+    let pack_root = temp.path().join("packs");
+    let binder = Arc::new(RecordingPhysicalQuotaBinder::new(false));
+    let mut binders = StoreGraphPhysicalQuotaBinders::new();
+    binders
+        .insert(policy.clone(), binder)
+        .expect("physical quota capability");
+    let result = StoreGraph::build_with_admin_and_all_capabilities(
+        StoreGraphConfig {
+            root: physical.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+            nodes: BTreeMap::from([
+                (
+                    physical,
+                    StoreNodeSpec::PhysicalQuota {
+                        child: packed.clone(),
+                        policy,
+                        project_id: 43,
+                        maximum_physical_bytes: 128 * 1024,
+                        maximum_inodes: 64,
+                    },
+                ),
+                (
+                    packed,
+                    StoreNodeSpec::Packed {
+                        root: pack_root.clone(),
+                        target_pack_bytes: 4 * 1024,
+                    },
+                ),
+            ]),
+        },
+        &StoreGraphKeyring::new(),
+        &StoreGraphNamespaceAuthorizers::new(),
+        &StoreGraphObjectProfilers::new(),
+        &binders,
+    );
+    assert!(matches!(result, Err(StoreError::Quota)));
+    assert!(!pack_root.exists());
+}
+
+#[test]
+fn logical_and_physical_quotas_compose_without_an_admin_bypass() {
+    let temp = TempDir::new().expect("temporary directory");
+    let logical = node_id("logical-quota");
+    let physical = node_id("physical-quota");
+    let directory = node_id("directory");
+    let policy =
+        StorePhysicalQuotaPolicyId::new("host/ext4/composed").expect("physical quota policy");
+    let binder = Arc::new(RecordingPhysicalQuotaBinder::new(true));
+    let mut binders = StoreGraphPhysicalQuotaBinders::new();
+    binders
+        .insert(policy.clone(), binder)
+        .expect("physical quota capability");
+    let (graph, admin) = StoreGraph::build_with_admin_and_all_capabilities(
+        StoreGraphConfig {
+            root: logical.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+            nodes: BTreeMap::from([
+                (
+                    logical.clone(),
+                    StoreNodeSpec::LogicalQuota {
+                        child: physical.clone(),
+                        state_root: temp.path().join("logical-state"),
+                        maximum_objects: 1,
+                        maximum_logical_bytes: 64,
+                    },
+                ),
+                (
+                    physical,
+                    StoreNodeSpec::PhysicalQuota {
+                        child: directory.clone(),
+                        policy,
+                        project_id: 42,
+                        maximum_physical_bytes: 128 * 1024,
+                        maximum_inodes: 64,
+                    },
+                ),
+                (
+                    directory,
+                    StoreNodeSpec::Directory {
+                        root: temp.path().join("objects"),
+                    },
+                ),
+            ]),
+        },
+        &StoreGraphKeyring::new(),
+        &StoreGraphNamespaceAuthorizers::new(),
+        &StoreGraphObjectProfilers::new(),
+        &binders,
+    )
+    .expect("composed quota graph");
+    assert_eq!(admin.physical().len(), 1);
+    assert_eq!(admin.physical()[0].node(), &logical);
+
+    let bytes = b"one quota-owned object";
+    let id = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
+    put_bytes(&graph, id, bytes).expect("composed quota put");
+    let rejected_bytes = b"second object";
+    let rejected = ContentId::for_bytes(ObjectKind::Trace, 1, rejected_bytes);
+    assert!(matches!(
+        put_bytes(&graph, rejected, rejected_bytes),
+        Err(StoreError::Quota)
     ));
 }
 

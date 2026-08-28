@@ -348,6 +348,7 @@ PackedStore         map many logical small objects into immutable physical packs
 CompressedStore     encode/decode without changing logical identity
 EncryptedStore      authenticated physical encryption outside plaintext identity
 LogicalQuotaStore   enforce bounded aggregate logical accounting
+PhysicalQuotaStore require an authenticated kernel-enforced leaf quota
 MetricsStore        emit operation/stream/byte/error/latency counters without changing results
 NamespacedStore     isolate deployments and authorization domains
 ```
@@ -577,6 +578,30 @@ bytes)`. Same-directory staging, file sync, atomic rename, and directory sync
 make each acknowledged state transition restart-safe. The state root is an
 absolute, non-overlapping administrative path in the graph identity.
 
+The `PhysicalQuota` composition owns exactly one persistent directory,
+compressed-directory, encrypted-directory, compressed-encrypted-directory, or
+packed leaf. A `LogicalQuota` may in turn exclusively own that physical-quota
+node, so authenticated logical accounting and real allocation enforcement
+compose without a sibling bypass. The physical boundary commits a non-secret
+policy ID, positive filesystem project ID, nonzero aggregate physical-byte
+ceiling, and nonzero inode ceiling to graph identity. Its child has exactly one
+incoming edge and its inventory/delete capability moves to the quota node.
+
+Construction resolves the policy through a non-serializable external binder.
+The binder opens the exact leaf root without following a final symlink,
+authenticates and pins its filesystem incarnation, requires the configured
+project ID plus inherited project assignment, verifies exact hard byte and
+inode limits and current usage, and returns a revalidation guard. The graph
+checks that guard before every ordinary operation and administrative fence.
+The operator MUST exclude concurrent quota-control and leaf-root namespace
+mutation for the guard lifetime. The kernel, not caller hints or logical
+lengths, rejects allocations beyond the ceiling, including staging files,
+compression or encryption frames, pack slack and replacement packs, directory
+metadata, and restart recovery. Deletion and GC naturally reclaim charged
+allocation. The initial concrete binder is Linux ext4 project quota; another
+backend may conform only with an equivalent hard aggregate allocation and inode
+boundary.
+
 The registered v1 journal encoding is:
 
 ```text
@@ -681,8 +706,8 @@ separate, non-cloneable `StoreGraphAdmin`. The graph does not retain or expose
 physical inventory/delete authority. The administrative value retains exactly
 one capability for every admitted memory, directory, compressed-directory,
 encrypted-directory, compressed-encrypted-directory, or packed leaf except that
-a logical-quota node owns and
-replaces its child's direct capability. It lends those boundaries in canonical
+a logical- or physical-quota node owns and replaces its child's direct
+capability. It lends those boundaries in canonical
 node-ID order to the daemon maintenance owner. Shared graph paths therefore do not duplicate a leaf
 inventory, and a campaign repository that receives only `StoreGraph` cannot
 construct a deletion fence. Both values retain the same content-derived
@@ -690,7 +715,7 @@ construct a deletion fence. Both values retain the same content-derived
 cannot pair independently supplied leaves with an unrelated graph hash.
 
 The registered `crucible.content-store.graph-configuration` schemas v1 through
-v8 freeze that identity basis. New writers retain the byte-for-byte v1 body
+v9 freeze that identity basis. New writers retain the byte-for-byte v1 body
 when the graph has no compressed-directory, logical-quota, encrypted,
 compressed-encrypted, durability-policy, or namespaced nodes,
 emit v2 when it has a compressed-directory node but no logical quota or
@@ -699,7 +724,8 @@ emit v4 when it has any encrypted-directory node but no compressed-encrypted
 node. A graph with any compressed-encrypted-directory node but no durability
 policy emits v5. A graph with any durability-policy node but no namespaced node
 emits v6. A graph with any namespaced node but no profile-validation node emits
-v7. A graph with any profile-validation node emits v8. V2 uses
+v7. A graph with any profile-validation node but no physical-quota node emits
+v8. A graph with any physical-quota node emits v9. V2 uses
 the same grammar and existing tags as v1, changes the magic suffix from `v1`
 to `v2`, and adds tag 11. V3 changes the suffix to `v3`, retains tags 1 through
 11, and adds tag 12. V4 changes the suffix to `v4`, retains tags 1 through 12,
@@ -708,6 +734,7 @@ adds tag 14.
 V6 changes the suffix to `v6`, retains tags 1 through 14, and adds tag 15.
 V7 changes the suffix to `v7`, retains tags 1 through 15, and adds tag 16.
 V8 changes the suffix to `v8`, retains tags 1 through 16, and adds tag 17.
+V9 changes the suffix to `v9`, retains tags 1 through 17, and adds tag 18.
 Every persistent
 path is an absolute host-local Unix path; its opaque bytes, rather than a lossy
 Unicode rendering, enter the identity.
@@ -762,6 +789,11 @@ node tag 15 DurabilityPolicy:
 node tag 16 Namespaced: child:string_u16 || namespace:string_u16
 node tag 17 ProfileValidated:
                          child:string_u16 || policy_id:string_u16
+node tag 18 PhysicalQuota:
+                         child:string_u16 || policy_id:string_u16
+                         || project_id:u32be
+                         || maximum_physical_bytes:u64be
+                         || maximum_inodes:u64be
 ```
 
 Let `D` be `crucible.content-store.graph-configuration-id.v1` and `B` the
@@ -1443,3 +1475,10 @@ logs, or placement receipts returned to ordinary operators.
   action, and repeat validation for deferred transfer and retention-root
   inventory. Separately held physical maintenance authority remains governed by
   the plan/apply GC boundary.
+- **[CSTORE-28]** A physical-quota boundary MUST exclusively own one persistent
+  leaf, commit its non-secret binder policy and exact project/byte/inode limits
+  to graph identity, authenticate and pin the leaf incarnation before use,
+  revalidate the kernel-enforced quota before logical and administrative
+  operations, and rely on the physical backend rather than logical lengths to
+  reject aggregate staging, encoding, packing, metadata, and recovery
+  allocation beyond the ceiling.

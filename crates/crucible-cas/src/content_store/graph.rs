@@ -21,6 +21,9 @@ use super::namespace::{
     StoreNamespaceOperation,
 };
 use super::packed::PackedBlobBackend;
+use super::physical_quota::{
+    PhysicalQuotaStore, StoreGraphPhysicalQuotaBinders, StorePhysicalQuotaPolicyId,
+};
 use super::profile::{
     ProfileValidatedStore, StoreGraphObjectProfilers, StoreObjectProfilePolicyId,
 };
@@ -200,6 +203,19 @@ pub enum StoreNodeSpec {
         /// Hard aggregate authenticated logical bytes.
         maximum_logical_bytes: u64,
     },
+    /// Requires an exact kernel-enforced physical quota on one owned leaf.
+    PhysicalQuota {
+        /// Exclusively owned physical child leaf.
+        child: StoreNodeId,
+        /// Non-secret quota policy resolved through an external capability.
+        policy: StorePhysicalQuotaPolicyId,
+        /// Exact nonzero filesystem project identifier.
+        project_id: u32,
+        /// Hard aggregate physical byte ceiling.
+        maximum_physical_bytes: u64,
+        /// Hard aggregate physical inode ceiling.
+        maximum_inodes: u64,
+    },
     /// Emits bounded operational counters around one child.
     Metrics {
         /// Child node whose synchronous operations are observed.
@@ -242,6 +258,7 @@ impl StoreNodeSpec {
             } => vec![staging, destination],
             Self::DurabilityPolicy { child, .. } => vec![child],
             Self::LogicalQuota { child, .. } => vec![child],
+            Self::PhysicalQuota { child, .. } => vec![child],
             Self::Metrics { child } => vec![child],
             Self::Namespaced { child, .. } => vec![child],
             Self::ProfileValidated { child, .. } => vec![child],
@@ -266,6 +283,7 @@ impl StoreNodeSpec {
             Self::WriteBack { .. } => StoreNodeKind::WriteBack,
             Self::DurabilityPolicy { .. } => StoreNodeKind::DurabilityPolicy,
             Self::LogicalQuota { .. } => StoreNodeKind::LogicalQuota,
+            Self::PhysicalQuota { .. } => StoreNodeKind::PhysicalQuota,
             Self::Metrics { .. } => StoreNodeKind::Metrics,
             Self::Namespaced { .. } => StoreNodeKind::Namespaced,
             Self::ProfileValidated { .. } => StoreNodeKind::ProfileValidated,
@@ -315,6 +333,8 @@ pub enum StoreNodeKind {
     DurabilityPolicy,
     /// Restart-safe aggregate logical quota.
     LogicalQuota,
+    /// Kernel-enforced aggregate physical quota.
+    PhysicalQuota,
     /// Operational metrics facade.
     Metrics,
     /// Deployment-namespace authorization facade.
@@ -485,8 +505,14 @@ impl StoreGraph {
         let keys = StoreGraphKeyring::new();
         let authorizers = StoreGraphNamespaceAuthorizers::new();
         let profilers = StoreGraphObjectProfilers::new();
-        let (graph, _admin) =
-            Self::build_with_admin_and_all_capabilities(config, &keys, &authorizers, &profilers)?;
+        let physical_quotas = StoreGraphPhysicalQuotaBinders::new();
+        let (graph, _admin) = Self::build_with_admin_and_all_capabilities(
+            config,
+            &keys,
+            &authorizers,
+            &profilers,
+            &physical_quotas,
+        )?;
         Ok(graph)
     }
 
@@ -505,8 +531,14 @@ impl StoreGraph {
     ) -> Result<Self, StoreError> {
         let authorizers = StoreGraphNamespaceAuthorizers::new();
         let profilers = StoreGraphObjectProfilers::new();
-        let (graph, _admin) =
-            Self::build_with_admin_and_all_capabilities(config, keys, &authorizers, &profilers)?;
+        let physical_quotas = StoreGraphPhysicalQuotaBinders::new();
+        let (graph, _admin) = Self::build_with_admin_and_all_capabilities(
+            config,
+            keys,
+            &authorizers,
+            &profilers,
+            &physical_quotas,
+        )?;
         Ok(graph)
     }
 
@@ -526,8 +558,14 @@ impl StoreGraph {
     ) -> Result<Self, StoreError> {
         let keys = StoreGraphKeyring::new();
         let profilers = StoreGraphObjectProfilers::new();
-        let (graph, _admin) =
-            Self::build_with_admin_and_all_capabilities(config, &keys, authorizers, &profilers)?;
+        let physical_quotas = StoreGraphPhysicalQuotaBinders::new();
+        let (graph, _admin) = Self::build_with_admin_and_all_capabilities(
+            config,
+            &keys,
+            authorizers,
+            &profilers,
+            &physical_quotas,
+        )?;
         Ok(graph)
     }
 
@@ -549,14 +587,21 @@ impl StoreGraph {
         authorizers: &StoreGraphNamespaceAuthorizers,
     ) -> Result<Self, StoreError> {
         let profilers = StoreGraphObjectProfilers::new();
-        let (graph, _admin) =
-            Self::build_with_admin_and_all_capabilities(config, keys, authorizers, &profilers)?;
+        let physical_quotas = StoreGraphPhysicalQuotaBinders::new();
+        let (graph, _admin) = Self::build_with_admin_and_all_capabilities(
+            config,
+            keys,
+            authorizers,
+            &profilers,
+            &physical_quotas,
+        )?;
         Ok(graph)
     }
 
     /// Validates and constructs a graph with every external capability class.
     ///
     /// Object profilers derive classes from authenticated canonical bytes;
+    /// physical-quota binders authenticate kernel-enforced leaf allocation;
     /// namespace policy and encryption key material remain operational.
     ///
     /// # Errors
@@ -568,9 +613,15 @@ impl StoreGraph {
         keys: &StoreGraphKeyring,
         authorizers: &StoreGraphNamespaceAuthorizers,
         profilers: &StoreGraphObjectProfilers,
+        physical_quotas: &StoreGraphPhysicalQuotaBinders,
     ) -> Result<Self, StoreError> {
-        let (graph, _admin) =
-            Self::build_with_admin_and_all_capabilities(config, keys, authorizers, profilers)?;
+        let (graph, _admin) = Self::build_with_admin_and_all_capabilities(
+            config,
+            keys,
+            authorizers,
+            profilers,
+            physical_quotas,
+        )?;
         Ok(graph)
     }
 
@@ -579,8 +630,8 @@ impl StoreGraph {
     /// The graph value carries only ordinary immutable-object operations. The
     /// second return value owns every physical inventory/delete boundary in
     /// canonical node-ID order and should be retained only by the daemon
-    /// maintenance owner. A logical quota replaces its exclusively owned
-    /// child's direct boundary.
+    /// maintenance owner. A logical or physical quota replaces its exclusively
+    /// owned child's direct boundary.
     ///
     /// # Errors
     ///
@@ -592,7 +643,14 @@ impl StoreGraph {
         let keys = StoreGraphKeyring::new();
         let authorizers = StoreGraphNamespaceAuthorizers::new();
         let profilers = StoreGraphObjectProfilers::new();
-        Self::build_with_admin_and_all_capabilities(config, &keys, &authorizers, &profilers)
+        let physical_quotas = StoreGraphPhysicalQuotaBinders::new();
+        Self::build_with_admin_and_all_capabilities(
+            config,
+            &keys,
+            &authorizers,
+            &profilers,
+            &physical_quotas,
+        )
     }
 
     /// Validates a keyed graph and returns physical maintenance authority.
@@ -610,7 +668,14 @@ impl StoreGraph {
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         let authorizers = StoreGraphNamespaceAuthorizers::new();
         let profilers = StoreGraphObjectProfilers::new();
-        Self::build_with_admin_and_all_capabilities(config, keys, &authorizers, &profilers)
+        let physical_quotas = StoreGraphPhysicalQuotaBinders::new();
+        Self::build_with_admin_and_all_capabilities(
+            config,
+            keys,
+            &authorizers,
+            &profilers,
+            &physical_quotas,
+        )
     }
 
     /// Validates a graph with keys and namespace capabilities and returns
@@ -633,11 +698,21 @@ impl StoreGraph {
         authorizers: &StoreGraphNamespaceAuthorizers,
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         let profilers = StoreGraphObjectProfilers::new();
-        Self::build_with_admin_and_all_capabilities(config, keys, authorizers, &profilers)
+        let physical_quotas = StoreGraphPhysicalQuotaBinders::new();
+        Self::build_with_admin_and_all_capabilities(
+            config,
+            keys,
+            authorizers,
+            &profilers,
+            &physical_quotas,
+        )
     }
 
     /// Validates a graph with all external capabilities and returns physical
     /// maintenance authority separately.
+    ///
+    /// Physical-quota binders return guards rather than quota mutation
+    /// authority. The latter remains solely operator-owned.
     ///
     /// # Errors
     ///
@@ -648,6 +723,7 @@ impl StoreGraph {
         keys: &StoreGraphKeyring,
         authorizers: &StoreGraphNamespaceAuthorizers,
         profilers: &StoreGraphObjectProfilers,
+        physical_quotas: &StoreGraphPhysicalQuotaBinders,
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         validate_structure(&config)?;
         validate_demands(&config)?;
@@ -667,13 +743,17 @@ impl StoreGraph {
             .any(|node| matches!(node, StoreNodeSpec::ProfileValidated { .. }));
 
         let mut state = GraphBuildState::default();
+        let capabilities = GraphBuildCapabilities {
+            keys,
+            authorizers,
+            profilers,
+            physical_quotas,
+        };
         let root = instantiate(
             configuration,
             &config.root,
             &config.nodes,
-            keys,
-            authorizers,
-            profilers,
+            &capabilities,
             &mut state,
         )?;
         validate_capability_edges(&config.nodes, &state.built)?;
@@ -938,7 +1018,7 @@ fn validate_structure(config: &StoreGraphConfig) -> Result<(), StoreError> {
         ));
     }
     validate_administrative_paths(config)?;
-    validate_logical_quota_ownership(config)?;
+    validate_quota_ownership(config)?;
 
     let mut visiting = BTreeSet::new();
     let mut visited = BTreeSet::new();
@@ -1000,7 +1080,7 @@ fn validate_administrative_paths(config: &StoreGraphConfig) -> Result<(), StoreE
     Ok(())
 }
 
-fn validate_logical_quota_ownership(config: &StoreGraphConfig) -> Result<(), StoreError> {
+fn validate_quota_ownership(config: &StoreGraphConfig) -> Result<(), StoreError> {
     let mut inbound = BTreeMap::<StoreNodeId, u32>::new();
     for node in config.nodes.values() {
         for child in node.child_ids() {
@@ -1022,6 +1102,7 @@ fn validate_logical_quota_ownership(config: &StoreGraphConfig) -> Result<(), Sto
                     | StoreNodeSpec::EncryptedDirectory { .. }
                     | StoreNodeSpec::CompressedEncryptedDirectory { .. }
                     | StoreNodeSpec::Packed { .. }
+                    | StoreNodeSpec::PhysicalQuota { .. }
             )
         );
         if !owned_leaf || inbound.get(child).copied() != Some(1) {
@@ -1031,7 +1112,34 @@ fn validate_logical_quota_ownership(config: &StoreGraphConfig) -> Result<(), Sto
             ));
         }
     }
+    for (id, node) in &config.nodes {
+        let StoreNodeSpec::PhysicalQuota { child, .. } = node else {
+            continue;
+        };
+        if physical_leaf_root(&config.nodes, child).is_none()
+            || inbound.get(child).copied() != Some(1)
+        {
+            return Err(invalid_graph(
+                id.as_str(),
+                GraphViolation::InvalidPhysicalQuotaChild,
+            ));
+        }
+    }
     Ok(())
+}
+
+fn physical_leaf_root<'a>(
+    nodes: &'a BTreeMap<StoreNodeId, StoreNodeSpec>,
+    id: &StoreNodeId,
+) -> Option<&'a std::path::Path> {
+    match nodes.get(id)? {
+        StoreNodeSpec::Directory { root }
+        | StoreNodeSpec::CompressedDirectory { root, .. }
+        | StoreNodeSpec::EncryptedDirectory { root, .. }
+        | StoreNodeSpec::CompressedEncryptedDirectory { root, .. }
+        | StoreNodeSpec::Packed { root, .. } => Some(root),
+        _ => None,
+    }
 }
 
 fn visit(
@@ -1128,6 +1236,14 @@ fn validate_local_shape(id: &StoreNodeId, node: &StoreNodeSpec) -> Result<(), St
                 GraphViolation::InvalidLogicalQuotaBounds,
             ))
         }
+        StoreNodeSpec::PhysicalQuota {
+            project_id,
+            maximum_physical_bytes,
+            maximum_inodes,
+            ..
+        } if *project_id == 0 || *maximum_physical_bytes == 0 || *maximum_inodes == 0 => Err(
+            invalid_graph(id.as_str(), GraphViolation::InvalidPhysicalQuotaBounds),
+        ),
         _ => Ok(()),
     }
 }
@@ -1191,6 +1307,9 @@ fn validate_demands(config: &StoreGraphConfig) -> Result<(), StoreError> {
             StoreNodeSpec::LogicalQuota { child, .. } => {
                 extend_demand(child, &kinds, &mut demands, &mut queue);
             }
+            StoreNodeSpec::PhysicalQuota { child, .. } => {
+                extend_demand(child, &kinds, &mut demands, &mut queue);
+            }
             StoreNodeSpec::Metrics { child } => {
                 extend_demand(child, &kinds, &mut demands, &mut queue);
             }
@@ -1244,13 +1363,18 @@ struct GraphBuildState {
     write_back: BTreeMap<StoreNodeId, Arc<WriteBackStore>>,
 }
 
+struct GraphBuildCapabilities<'a> {
+    keys: &'a StoreGraphKeyring,
+    authorizers: &'a StoreGraphNamespaceAuthorizers,
+    profilers: &'a StoreGraphObjectProfilers,
+    physical_quotas: &'a StoreGraphPhysicalQuotaBinders,
+}
+
 fn instantiate(
     configuration: StoreGraphConfigurationId,
     id: &StoreNodeId,
     nodes: &BTreeMap<StoreNodeId, StoreNodeSpec>,
-    keys: &StoreGraphKeyring,
-    authorizers: &StoreGraphNamespaceAuthorizers,
-    profilers: &StoreGraphObjectProfilers,
+    capabilities: &GraphBuildCapabilities<'_>,
     state: &mut GraphBuildState,
 ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
     if let Some(backend) = state.built.get(id) {
@@ -1287,7 +1411,7 @@ fn instantiate(
             maximum_logical_object_bytes,
             key_id,
         } => {
-            let key = keys.resolve(key_id)?;
+            let key = capabilities.keys.resolve(key_id)?;
             let leaf = Arc::new(EncryptedDirectoryBlobBackend::open(
                 id.as_str(),
                 root.clone(),
@@ -1303,7 +1427,7 @@ fn instantiate(
             maximum_logical_object_bytes,
             key_id,
         } => {
-            let key = keys.resolve(key_id)?;
+            let key = capabilities.keys.resolve(key_id)?;
             let leaf = Arc::new(EncryptedDirectoryBlobBackend::open_compressed(
                 id.as_str(),
                 root.clone(),
@@ -1328,15 +1452,7 @@ fn instantiate(
         }
         StoreNodeSpec::Verified { child } => Arc::new(VerifiedStore::new(
             id.as_str(),
-            instantiate(
-                configuration,
-                child,
-                nodes,
-                keys,
-                authorizers,
-                profilers,
-                state,
-            )?,
+            instantiate(configuration, child, nodes, capabilities, state)?,
         )),
         StoreNodeSpec::Routed { routes } => {
             let routes = routes
@@ -1344,15 +1460,7 @@ fn instantiate(
                 .map(|(kind, child)| {
                     Ok((
                         *kind,
-                        instantiate(
-                            configuration,
-                            child,
-                            nodes,
-                            keys,
-                            authorizers,
-                            profilers,
-                            state,
-                        )?,
+                        instantiate(configuration, child, nodes, capabilities, state)?,
                     ))
                 })
                 .collect::<Result<BTreeMap<_, _>, StoreError>>()?;
@@ -1365,17 +1473,7 @@ fn instantiate(
         } => {
             let tiers = tiers
                 .iter()
-                .map(|child| {
-                    instantiate(
-                        configuration,
-                        child,
-                        nodes,
-                        keys,
-                        authorizers,
-                        profilers,
-                        state,
-                    )
-                })
+                .map(|child| instantiate(configuration, child, nodes, capabilities, state))
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(TieredStore::new(
                 id.as_str(),
@@ -1386,39 +1484,13 @@ fn instantiate(
         }
         StoreNodeSpec::ReadThrough { cache, source } => Arc::new(ReadThroughStore::new(
             id.as_str(),
-            instantiate(
-                configuration,
-                cache,
-                nodes,
-                keys,
-                authorizers,
-                profilers,
-                state,
-            )?,
-            instantiate(
-                configuration,
-                source,
-                nodes,
-                keys,
-                authorizers,
-                profilers,
-                state,
-            )?,
+            instantiate(configuration, cache, nodes, capabilities, state)?,
+            instantiate(configuration, source, nodes, capabilities, state)?,
         )),
         StoreNodeSpec::WriteThrough { children } => {
             let children = children
                 .iter()
-                .map(|child| {
-                    instantiate(
-                        configuration,
-                        child,
-                        nodes,
-                        keys,
-                        authorizers,
-                        profilers,
-                        state,
-                    )
-                })
+                .map(|child| instantiate(configuration, child, nodes, capabilities, state))
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(WriteThroughStore::new(id.as_str(), children)?)
         }
@@ -1431,24 +1503,8 @@ fn instantiate(
         } => {
             let store = Arc::new(WriteBackStore::new(
                 id.as_str(),
-                instantiate(
-                    configuration,
-                    staging,
-                    nodes,
-                    keys,
-                    authorizers,
-                    profilers,
-                    state,
-                )?,
-                instantiate(
-                    configuration,
-                    destination,
-                    nodes,
-                    keys,
-                    authorizers,
-                    profilers,
-                    state,
-                )?,
+                instantiate(configuration, staging, nodes, capabilities, state)?,
+                instantiate(configuration, destination, nodes, capabilities, state)?,
                 journal_root.clone(),
                 *maximum_pending_objects,
                 *maximum_pending_bytes,
@@ -1461,27 +1517,11 @@ fn instantiate(
             requirements,
         } => Arc::new(DurabilityPolicyStore::new(
             id.as_str(),
-            instantiate(
-                configuration,
-                child,
-                nodes,
-                keys,
-                authorizers,
-                profilers,
-                state,
-            )?,
+            instantiate(configuration, child, nodes, capabilities, state)?,
             requirements.clone(),
         )),
         StoreNodeSpec::Metrics { child } => {
-            let child = instantiate(
-                configuration,
-                child,
-                nodes,
-                keys,
-                authorizers,
-                profilers,
-                state,
-            )?;
+            let child = instantiate(configuration, child, nodes, capabilities, state)?;
             let (backend, metrics_state) = MetricsStore::new(id.as_str(), child);
             state.metrics.insert(id.clone(), metrics_state);
             Arc::new(backend)
@@ -1492,15 +1532,7 @@ fn instantiate(
             maximum_objects,
             maximum_logical_bytes,
         } => {
-            let child_backend = instantiate(
-                configuration,
-                child,
-                nodes,
-                keys,
-                authorizers,
-                profilers,
-                state,
-            )?;
+            let child_backend = instantiate(configuration, child, nodes, capabilities, state)?;
             let child_admin = state.physical.remove(child).ok_or_else(|| {
                 invalid_graph(id.as_str(), GraphViolation::InvalidLogicalQuotaChild)
             })?;
@@ -1516,31 +1548,47 @@ fn instantiate(
             state.physical.insert(id.clone(), store.clone());
             store
         }
+        StoreNodeSpec::PhysicalQuota {
+            child,
+            policy,
+            project_id,
+            maximum_physical_bytes,
+            maximum_inodes,
+        } => {
+            let root = physical_leaf_root(nodes, child).ok_or_else(|| {
+                invalid_graph(id.as_str(), GraphViolation::InvalidPhysicalQuotaChild)
+            })?;
+            // Bind the kernel allocation boundary before constructing a leaf:
+            // encrypted and packed leaf open paths may durably allocate
+            // metadata during construction.
+            let guard = capabilities.physical_quotas.resolve(policy)?.bind(
+                root,
+                *project_id,
+                *maximum_physical_bytes,
+                *maximum_inodes,
+            )?;
+            let child_backend = instantiate(configuration, child, nodes, capabilities, state)?;
+            let child_admin = state.physical.remove(child).ok_or_else(|| {
+                invalid_graph(id.as_str(), GraphViolation::InvalidPhysicalQuotaChild)
+            })?;
+            let store = Arc::new(PhysicalQuotaStore::new(
+                id.as_str(),
+                child_backend,
+                child_admin,
+                guard,
+            )?);
+            state.physical.insert(id.clone(), store.clone());
+            store
+        }
         StoreNodeSpec::Namespaced { child, namespace } => Arc::new(NamespacedStore::new(
             id.as_str(),
-            instantiate(
-                configuration,
-                child,
-                nodes,
-                keys,
-                authorizers,
-                profilers,
-                state,
-            )?,
-            authorizers.resolve(namespace)?,
+            instantiate(configuration, child, nodes, capabilities, state)?,
+            capabilities.authorizers.resolve(namespace)?,
         )),
         StoreNodeSpec::ProfileValidated { child, policy } => Arc::new(ProfileValidatedStore::new(
             id.as_str(),
-            instantiate(
-                configuration,
-                child,
-                nodes,
-                keys,
-                authorizers,
-                profilers,
-                state,
-            )?,
-            profilers.resolve(policy)?,
+            instantiate(configuration, child, nodes, capabilities, state)?,
+            capabilities.profilers.resolve(policy)?,
         )),
     };
     state.built.insert(id.clone(), backend.clone());
