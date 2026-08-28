@@ -91,6 +91,7 @@ in {
       APR = "${pkgs.aos}/bin/apr"
       CURL = "${pkgs.curl}/bin/curl"
       JQ = "${pkgs.jq}/bin/jq"
+      NIX_STORE = "${pkgs.nix}/bin/nix-store"
       SHA256SUM = "${pkgs.coreutils}/bin/sha256sum"
       XDG_CACHE_HOME = "/var/cache/aos-runtime-module-test"
 
@@ -189,6 +190,17 @@ in {
           )
 
 
+      def payload_nar_hash(path):
+          return runtime.succeed(
+              f"{NIX_STORE} --dump '{path}' | {SHA256SUM}"
+          ).split()[0]
+
+
+      def assert_payloads_immutable():
+          assert payload_nar_hash("${pkgs.nginx}") == payload_hashes["nginx"]
+          assert payload_nar_hash("${pkgs.envoy}") == payload_hashes["envoy"]
+
+
       wait_for_activation()
       runtime.succeed("systemctl is-active --quiet multi-user.target")
       runtime.succeed(f"install -d -m 0700 {XDG_CACHE_HOME}")
@@ -201,6 +213,10 @@ in {
       ))
       platform_host_input = initial_manifest["inputs"]["host_nix"]
       platform_facts_input = initial_manifest["inputs"]["instance_facts"]
+      payload_hashes = {
+          "nginx": payload_nar_hash("${pkgs.nginx}"),
+          "envoy": payload_nar_hash("${pkgs.envoy}"),
+      }
 
       status = runtime.succeed(f"{APM} config status 2>&1")
       assert "active runtime modules: empty" in status, status
@@ -371,6 +387,7 @@ in {
       configured = current_generation()
       assert configured != initial, (initial, configured)
       assert_package_configuration()
+      assert_payloads_immutable()
 
       manifest = json.loads(runtime.succeed(
           f"cat /var/lib/profiles/system/gen-{configured}/manifest.json"
@@ -419,6 +436,7 @@ in {
           == previous_configured
       )
       assert_package_configuration()
+      assert_payloads_immutable()
 
       # A bad supplemental fragment must fail before activation and preserve
       # both the durable pointer and live package state.
@@ -445,6 +463,7 @@ in {
       """), timeout=600)
       assert current_generation() == configured
       assert_package_configuration()
+      assert_payloads_immutable()
       runtime.succeed(f"{APM} config discard")
       listed = runtime.succeed(f"{APM} config list 2>&1").splitlines()
       assert listed == ["10-packages.nix", "20-services.nix"], listed
@@ -472,6 +491,7 @@ in {
       wait_for_activation()
       assert current_generation() == configured
       assert_package_configuration()
+      assert_payloads_immutable()
       reboot_manifest = json.loads(runtime.succeed(
           "cat /run/aos/manifest.json"
       ))
@@ -549,5 +569,6 @@ in {
       assert "worktree: /var/lib/aos/config/modules.d (0 entrypoints)" in status, status
       assert runtime.succeed(f"{APM} config list 2>&1") == ""
       assert_package_configuration()
+      assert_payloads_immutable()
     '';
 }

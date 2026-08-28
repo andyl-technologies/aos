@@ -1732,6 +1732,7 @@ in
           netns="$exposePath/units/aos-pkg-expose-smoke-netns.service"
           mac="$exposePath/units/aos-pkg-expose-smoke-mac.service"
           ebpf="$exposePath/units/aos-pkg-expose-smoke-ebpf.service"
+          service_roots="$exposePath/units/aos-pkg-expose-smoke-service-roots.service"
           manifest="$exposePath/manifest.json"
           policy="$exposePath/network-policy.json"
           mac_profile="$exposePath/mac-profile.json"
@@ -1749,6 +1750,7 @@ in
           test ! -f "$netns"
           test -f "$mac"
           test -f "$ebpf"
+          test -f "$service_roots"
           test -f "$manifest"
           test -f "$policy"
           test -f "$mac_profile"
@@ -1759,10 +1761,17 @@ in
           grep -q 'Description=RFC-0001 expose smoke service' "$unit"
           grep -q 'PartOf=aos-pkg-expose-smoke.target' "$unit"
           grep -q 'WantedBy=aos-pkg-expose-smoke.target' "$unit"
-          grep -q 'After=network.target aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' "$unit"
-          grep -q 'Requires=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' "$unit"
+          grep -q 'After=network.target aos-pkg-expose-smoke-service-roots.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' "$unit"
+          grep -q 'Requires=aos-pkg-expose-smoke-service-roots.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' "$unit"
           grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2eexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$unit"
-          grep -q "RootDirectory=$payload" "$unit"
+          grep -q 'RootDirectory=/run/aos/service-roots/expose-smoke/expose-smoke.service/merged' "$unit"
+          if grep -q "RootDirectory=$payload" "$unit"; then
+            echo "workload must not use the immutable payload as RootDirectory" >&2
+            exit 1
+          fi
+          grep -q "ExecStart=.*/bin/aos-service-root prepare expose-smoke $payload expose-smoke.service" "$service_roots"
+          grep -q "ExecStop=.*/bin/aos-service-root cleanup expose-smoke $payload expose-smoke.service" "$service_roots"
+          grep -q 'Before=expose-smoke.service' "$service_roots"
           grep -q 'MountAPIVFS=true' "$unit"
           grep -q 'ProtectSystem=strict' "$unit"
           grep -q 'ProtectHome=true' "$unit"
@@ -2008,7 +2017,11 @@ in
           test -s "$minimal_selinux_module"
           test -f "$minimal_selinux_source"
           grep -q 'Description=RFC-0001 expose minimal service' "$minimal_unit"
-          grep -q "RootDirectory=$minimalPayload" "$minimal_unit"
+          grep -q 'RootDirectory=/run/aos/service-roots/expose-minimal/expose-minimal.service/merged' "$minimal_unit"
+          if grep -q "RootDirectory=$minimalPayload" "$minimal_unit"; then
+            echo "minimal workload must not use the immutable payload as RootDirectory" >&2
+            exit 1
+          fi
           grep -q 'Slice=aos-pkg-expose-minimal.slice' "$minimal_unit"
           grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dminimal_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-minimal -- ${pkgs.bash}/bin/bash -c true' \
             "$minimal_unit"
@@ -2135,6 +2148,13 @@ in
           split_sidecar="$splitConfigExposePath/units/expose-config-split-sidecar.service"
           split_socket_service="$splitConfigExposePath/units/expose-config-split-socket.service"
           split_socket="$splitConfigExposePath/units/expose-config-split-socket.socket"
+          split_roots="$splitConfigExposePath/units/aos-pkg-expose-config-split-service-roots.service"
+          grep -q 'RootDirectory=/run/aos/service-roots/expose-config-split/expose-config-split-main.service/merged' "$split_main"
+          grep -q 'RootDirectory=/run/aos/service-roots/expose-config-split/expose-config-split-sidecar.service/merged' "$split_sidecar"
+          grep -q 'RootDirectory=/run/aos/service-roots/expose-config-split/expose-config-split-socket.service/merged' "$split_socket_service"
+          grep -q 'Before=expose-config-split-main.service expose-config-split-sidecar.service expose-config-split-socket.service' "$split_roots"
+          grep -q 'ExecStart=.*/bin/aos-service-root prepare expose-config-split ${splitConfigPackage} expose-config-split-main.service expose-config-split-sidecar.service expose-config-split-socket.service' "$split_roots"
+          grep -q 'ExecStop=.*/bin/aos-service-root cleanup expose-config-split ${splitConfigPackage} expose-config-split-main.service expose-config-split-sidecar.service expose-config-split-socket.service' "$split_roots"
           grep -q 'BindReadOnlyPaths=/etc/aos/packages/expose-config-split/main.env' "$split_main"
           grep -q 'ConditionPathExists=/etc/aos/packages/expose-config-split/main.env' "$split_main"
           grep -q 'ConditionPathExists=/usr/lib/credstore.encrypted/main-secret' "$split_main"

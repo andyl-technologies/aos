@@ -34,6 +34,7 @@ const GENERATED_CREDSTORE_SOURCE_PREFIX: &str = "/run/credstore.encrypted/";
 const LANDLOCK_WRAPPER_ENV: &str = "AOS_LANDLOCK_WRAPPER";
 const SELINUX_RUNNER_ENV: &str = "AOS_SELINUX_RUNNER";
 const VERITY_ROOT_GUARD_ENV: &str = "AOS_VERITY_ROOT_GUARD";
+const SERVICE_ROOT_HELPER_ENV: &str = "AOS_SERVICE_ROOT_HELPER";
 const EBPF_NET_POLICY_ENV: &str = "AOS_EBPF_NET_POLICY";
 const EBPF_NET_POLICY_OBJECT_ENV: &str = "AOS_EBPF_NET_POLICY_OBJECT";
 const SEMODULE_ENV: &str = "AOS_SEMODULE";
@@ -341,7 +342,15 @@ fn exposed_packages_from_expose_dir(
         }
         validate_socket_listener_permissions(&apm.name, &artifact_root, &units, &apm.permissions)?;
         validate_workload_exec_wrappers(&apm.name, &artifact_root, &units, &apm.permissions)?;
-        validate_workload_root_images(&apm.name, &artifact_root, &units, expose)?;
+        validate_workload_roots(
+            &apm.name,
+            Path::new(&entry.store_path),
+            Path::new(&artifact.store_path),
+            &artifact_root,
+            &units,
+            expose,
+            &apm.permissions,
+        )?;
         validate_ebpf_policy_service(
             &apm.name,
             &expose.target,
@@ -1088,11 +1097,14 @@ fn validate_workload_exec_wrappers(
     Ok(())
 }
 
-fn validate_workload_root_images(
+fn validate_workload_roots(
     package_name: &str,
+    runtime_store_path: &Path,
+    artifact_store_path: &Path,
     artifact_root: &Path,
     units: &BTreeSet<String>,
     expose: &ExposeMeta,
+    permissions: &PermissionsMeta,
 ) -> Result<()> {
     let verity_images = expose
         .images
@@ -1103,13 +1115,36 @@ fn validate_workload_root_images(
         bail!("package '{package_name}' declares multiple verity root images");
     }
     let expected = verity_images.first().copied();
+    let confinement = normalized_permissions(package_name, permissions)
+        .confinement
+        .context("normalized permissions have no confinement summary")?
+        .class;
+    let uses_overlay_roots = expected.is_none() && confinement != ConfinementClass::Unconfined;
+    let root_unit = format!("aos-pkg-{package_name}-service-roots.service");
+    let workload_units = units
+        .iter()
+        .filter(|unit| {
+            unit.ends_with(".service")
+                && !is_generated_expose_side_effect_service(package_name, unit)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
 
-    for unit in units {
-        if !unit.ends_with(".service")
-            || is_generated_expose_side_effect_service(package_name, unit)
-        {
-            continue;
-        }
+    if uses_overlay_roots {
+        validate_service_root_preparation(
+            package_name,
+            runtime_store_path,
+            artifact_root,
+            &root_unit,
+            &workload_units,
+        )?;
+    } else if units.contains(&root_unit) {
+        bail!(
+            "package '{package_name}' declares a service-root preparation unit without confined non-verity workloads"
+        );
+    }
+
+    for unit in &workload_units {
 
         let path = artifact_root.join(unit);
         let text = std::fs::read_to_string(&path)
@@ -1141,9 +1176,113 @@ fn validate_workload_root_images(
                 unit,
                 package_name
             );
+        } else if uses_overlay_roots {
+            let expected_root = format!(
+                "/run/aos/service-roots/{package_name}/{unit}/merged"
+            );
+            require_service_value(
+                package_name,
+                unit,
+                service,
+                "RootDirectory",
+                &expected_root,
+            )?;
+            if Path::new(&expected_root) == runtime_store_path
+                || expected_root.starts_with(artifact_store_path.to_string_lossy().as_ref())
+            {
+                bail!(
+                    "service unit '{unit}' for package '{package_name}' must use its volatile overlay root"
+                );
+            }
+            require_section_word(package_name, unit, &parsed, "Unit", "After", &root_unit)?;
+            require_section_word(package_name, unit, &parsed, "Unit", "Requires", &root_unit)?;
         }
     }
 
+    Ok(())
+}
+
+fn validate_service_root_preparation(
+    package_name: &str,
+    runtime_store_path: &Path,
+    artifact_root: &Path,
+    root_unit: &str,
+    workload_units: &[String],
+) -> Result<()> {
+    let path = artifact_root.join(root_unit);
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading service-root preparation unit {}", path.display()))?;
+    let parsed = Parsed::parse(&text);
+    let service = parsed.sections.get("Service").with_context(|| {
+        format!("service-root preparation unit '{root_unit}' has no [Service] section")
+    })?;
+    let trusted_helper = trusted_service_root_helper_path()?;
+    let mut expected_prepare = vec![
+        trusted_helper.as_str(),
+        "prepare",
+        package_name,
+        runtime_store_path
+            .to_str()
+            .context("runtime package store path is not UTF-8")?,
+    ];
+    expected_prepare.extend(workload_units.iter().map(String::as_str));
+    let prepare = single_service_value(package_name, root_unit, service, "ExecStart")?;
+    if prepare.split_whitespace().collect::<Vec<_>>() != expected_prepare {
+        bail!(
+            "service-root preparation unit '{root_unit}' for package '{package_name}' has an invalid trusted-helper prepare command"
+        );
+    }
+    let expected_cleanup = format!(
+        "{trusted_helper} cleanup {package_name} {} {}",
+        runtime_store_path.display(),
+        workload_units.join(" ")
+    );
+    require_service_value(
+        package_name,
+        root_unit,
+        service,
+        "ExecStop",
+        &expected_cleanup,
+    )?;
+    require_service_value(
+        package_name,
+        root_unit,
+        service,
+        "ExecStopPost",
+        &expected_cleanup,
+    )?;
+    require_service_value(package_name, root_unit, service, "Type", "oneshot")?;
+    require_service_value(package_name, root_unit, service, "RemainAfterExit", "true")?;
+    require_service_value(
+        package_name,
+        root_unit,
+        service,
+        "CapabilityBoundingSet",
+        "CAP_SYS_ADMIN",
+    )?;
+    require_service_value(
+        package_name,
+        root_unit,
+        service,
+        "AmbientCapabilities",
+        "CAP_SYS_ADMIN",
+    )?;
+    require_service_value(package_name, root_unit, service, "PrivateMounts", "false")?;
+    require_service_value(package_name, root_unit, service, "NoNewPrivileges", "false")?;
+    require_service_value(
+        package_name,
+        root_unit,
+        service,
+        "RestrictAddressFamilies",
+        "AF_UNIX",
+    )?;
+    require_service_value(package_name, root_unit, service, "UMask", "0077")?;
+    let target = format!("aos-pkg-{package_name}.target");
+    require_section_word(package_name, root_unit, &parsed, "Unit", "PartOf", &target)?;
+    require_section_word(package_name, root_unit, &parsed, "Install", "WantedBy", &target)?;
+    for unit in workload_units {
+        require_section_word(package_name, root_unit, &parsed, "Unit", "Before", unit)?;
+    }
     Ok(())
 }
 
@@ -1981,9 +2120,34 @@ fn trusted_verity_root_guard_path() -> Result<String> {
     }
 }
 
+fn trusted_service_root_helper_path() -> Result<String> {
+    if let Ok(path) = std::env::var(SERVICE_ROOT_HELPER_ENV) {
+        if path.is_empty() {
+            bail!("{SERVICE_ROOT_HELPER_ENV} must not be empty");
+        }
+        if !path.starts_with('/') || !path.ends_with("/bin/aos-service-root") {
+            bail!(
+                "{SERVICE_ROOT_HELPER_ENV} must point to an absolute aos-service-root binary"
+            );
+        }
+        return Ok(path);
+    }
+
+    #[cfg(test)]
+    {
+        return Ok("/nix/store/hash-aos-service-root-0/bin/aos-service-root".to_string());
+    }
+
+    #[cfg(not(test))]
+    {
+        bail!("{SERVICE_ROOT_HELPER_ENV} is not configured for service-root validation");
+    }
+}
+
 fn is_generated_expose_side_effect_service(package_name: &str, unit: &str) -> bool {
     [
         "host-paths",
+        "service-roots",
         "modules",
         "sysctl",
         "firewall",
