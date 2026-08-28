@@ -75,18 +75,23 @@ static int check_safe_directory_fd(int fd, const char *path) {
 static int open_safe_child(int parent_fd, const char *name, const char *path, mode_t mode,
                            bool create, bool *created) {
         int fd;
+        bool was_created = false;
 
         if (created)
                 *created = false;
 
         fd = openat(parent_fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         if (fd < 0 && errno == ENOENT && create) {
-                if (mkdirat(parent_fd, name, mode) < 0 && errno != EEXIST) {
-                        errorf("cannot create '%s': %s", path, strerror(errno));
-                        return -1;
+                if (mkdirat(parent_fd, name, mode) < 0) {
+                        if (errno != EEXIST) {
+                                errorf("cannot create '%s': %s", path, strerror(errno));
+                                return -1;
+                        }
+                } else {
+                        was_created = true;
+                        if (created)
+                                *created = true;
                 }
-                if (created)
-                        *created = true;
                 fd = openat(parent_fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         }
         if (fd < 0) {
@@ -98,8 +103,32 @@ static int open_safe_child(int parent_fd, const char *name, const char *path, mo
                 close(fd);
                 return -1;
         }
+        /* The preparation unit uses UMask=0077. Restore the explicitly requested
+         * mode only on directories this invocation created; never chmod a
+         * pre-existing object before its complete identity is verified. */
+        if (was_created && fchmod(fd, mode) < 0) {
+                errorf("cannot set trusted directory mode on '%s': %s", path, strerror(errno));
+                close(fd);
+                return -1;
+        }
 
         return fd;
+}
+
+static int set_directory_mode(int fd, const char *path, mode_t mode) {
+        struct stat st;
+
+        if (fchmod(fd, mode) < 0 || fstat(fd, &st) < 0) {
+                errorf("cannot set trusted directory mode on '%s': %s", path, strerror(errno));
+                return -1;
+        }
+        if ((st.st_mode & 07777) != mode) {
+                errorf("trusted directory '%s' did not retain its required mode", path);
+                errno = EPERM;
+                return -1;
+        }
+
+        return 0;
 }
 
 static int open_root(bool create) {
@@ -288,8 +317,13 @@ finish:
 static int remove_contents(int fd, const char *path) {
         DIR *dir;
         struct dirent *entry;
-        int duplicate = dup(fd);
+        int duplicate;
 
+        if (lseek(fd, 0, SEEK_SET) < 0) {
+                errorf("cannot rewind cleanup directory '%s': %s", path, strerror(errno));
+                return -1;
+        }
+        duplicate = dup(fd);
         if (duplicate < 0)
                 return -1;
         dir = fdopendir(duplicate);
@@ -365,6 +399,7 @@ static int unit_has_only_known_entries(int unit_fd, const char *unit_path) {
                 close(duplicate);
                 return -1;
         }
+        errno = 0;
         while ((entry = readdir(dir))) {
                 if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0 ||
                     strcmp(entry->d_name, "upper") == 0 || strcmp(entry->d_name, "work") == 0 ||
@@ -374,6 +409,45 @@ static int unit_has_only_known_entries(int unit_fd, const char *unit_path) {
                 closedir(dir);
                 return -1;
         }
+        if (errno != 0) {
+                int saved = errno;
+                closedir(dir);
+                errorf("cannot inspect '%s': %s", unit_path, strerror(saved));
+                errno = saved;
+                return -1;
+        }
+        closedir(dir);
+        return 0;
+}
+
+static int directory_has_only_entry(int fd, const char *path, const char *allowed) {
+        DIR *dir;
+        struct dirent *entry;
+        int duplicate = dup(fd);
+
+        if (duplicate < 0)
+                return -1;
+        dir = fdopendir(duplicate);
+        if (!dir) {
+                close(duplicate);
+                return -1;
+        }
+        errno = 0;
+        while ((entry = readdir(dir))) {
+                if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0 ||
+                    strcmp(entry->d_name, allowed) == 0)
+                        continue;
+                errorf("unsafe unexpected entry '%s/%s'", path, entry->d_name);
+                closedir(dir);
+                return -1;
+        }
+        if (errno != 0) {
+                int saved = errno;
+                closedir(dir);
+                errorf("cannot inspect '%s': %s", path, strerror(saved));
+                errno = saved;
+                return -1;
+        }
         closedir(dir);
         return 0;
 }
@@ -381,13 +455,16 @@ static int unit_has_only_known_entries(int unit_fd, const char *unit_path) {
 static int cleanup_unit(int package_fd, const char *package, const char *payload,
                         const char *unit) {
         static const char *children[] = {"merged", "work", "upper"};
-        char unit_path[PATH_MAX], upper[PATH_MAX], work[PATH_MAX], merged[PATH_MAX];
+        char unit_path[PATH_MAX], upper[PATH_MAX], upper_root[PATH_MAX];
+        char work[PATH_MAX], merged[PATH_MAX];
         int child_fds[3] = {-1, -1, -1};
-        int unit_fd, state, result = -1;
+        int unit_fd, upper_root_fd = -1, state, result = -1;
 
         if (snprintf(unit_path, sizeof(unit_path), ROOT_PATH "/%s/%s", package, unit) >=
                 (int) sizeof(unit_path) ||
             snprintf(upper, sizeof(upper), "%s/upper", unit_path) >= (int) sizeof(upper) ||
+            snprintf(upper_root, sizeof(upper_root), "%s/root", upper) >=
+                (int) sizeof(upper_root) ||
             snprintf(work, sizeof(work), "%s/work", unit_path) >= (int) sizeof(work) ||
             snprintf(merged, sizeof(merged), "%s/merged", unit_path) >= (int) sizeof(merged)) {
                 errorf("service root path is too long");
@@ -413,11 +490,20 @@ static int cleanup_unit(int package_fd, const char *package, const char *payload
                         goto finish;
         }
 
-        state = overlay_mount_state(merged, payload, upper, work);
+        if (child_fds[2] >= 0) {
+                if (directory_has_only_entry(child_fds[2], upper, "root") < 0)
+                        goto finish;
+                upper_root_fd = open_safe_child(child_fds[2], "root", upper_root, 0711, false, NULL);
+                if (upper_root_fd < 0 && errno != ENOENT)
+                        goto finish;
+        }
+
+        state = overlay_mount_state(merged, payload, upper_root, work);
         if (state < 0)
                 goto finish;
         if (state > 0) {
-                if (child_fds[0] < 0 || child_fds[1] < 0 || child_fds[2] < 0) {
+                if (child_fds[0] < 0 || child_fds[1] < 0 || child_fds[2] < 0 ||
+                    upper_root_fd < 0) {
                         errorf("trusted overlay '%s' has missing backing components", merged);
                         goto finish;
                 }
@@ -430,6 +516,11 @@ static int cleanup_unit(int package_fd, const char *package, const char *payload
                 child_fds[0] = open_safe_child(unit_fd, "merged", merged, 0700, false, NULL);
                 if (child_fds[0] < 0)
                         goto finish;
+        }
+
+        if (upper_root_fd >= 0) {
+                close(upper_root_fd);
+                upper_root_fd = -1;
         }
 
         for (size_t i = 0; i < sizeof(children) / sizeof(children[0]); i++) {
@@ -457,6 +548,8 @@ static int cleanup_unit(int package_fd, const char *package, const char *payload
         result = 0;
 
 finish:
+        if (upper_root_fd >= 0)
+                close(upper_root_fd);
         for (size_t i = 0; i < sizeof(child_fds) / sizeof(child_fds[0]); i++)
                 if (child_fds[i] >= 0)
                         close(child_fds[i]);
@@ -466,50 +559,62 @@ finish:
 
 static int prepare_unit(int package_fd, const char *package, const char *payload,
                         const char *unit, bool *mounted) {
-        char unit_path[PATH_MAX], upper[PATH_MAX], work[PATH_MAX], merged[PATH_MAX];
+        char unit_path[PATH_MAX], upper[PATH_MAX], upper_root[PATH_MAX];
+        char work[PATH_MAX], merged[PATH_MAX];
         char options[PATH_MAX * 3];
-        int unit_fd = -1, upper_fd = -1, work_fd = -1, merged_fd = -1;
+        int unit_fd = -1, upper_fd = -1, upper_root_fd = -1;
+        int work_fd = -1, merged_fd = -1;
         bool unit_created = false, upper_created = false, work_created = false;
-        bool merged_created = false;
+        bool upper_root_created = false, merged_created = false;
         int state;
 
         *mounted = false;
         if (snprintf(unit_path, sizeof(unit_path), ROOT_PATH "/%s/%s", package, unit) >=
                 (int) sizeof(unit_path) ||
             snprintf(upper, sizeof(upper), "%s/upper", unit_path) >= (int) sizeof(upper) ||
+            snprintf(upper_root, sizeof(upper_root), "%s/root", upper) >=
+                (int) sizeof(upper_root) ||
             snprintf(work, sizeof(work), "%s/work", unit_path) >= (int) sizeof(work) ||
             snprintf(merged, sizeof(merged), "%s/merged", unit_path) >= (int) sizeof(merged)) {
                 errorf("service root path is too long");
                 return -1;
         }
 
-        unit_fd = open_safe_child(package_fd, unit, unit_path, 0700, true, &unit_created);
+        unit_fd = open_safe_child(package_fd, unit, unit_path, 0711, true, &unit_created);
         if (unit_fd < 0 || unit_has_only_known_entries(unit_fd, unit_path) < 0)
                 goto fail;
         upper_fd = open_safe_child(unit_fd, "upper", upper, 0700, true, &upper_created);
+        if (upper_fd >= 0 && directory_has_only_entry(upper_fd, upper, "root") < 0)
+                goto fail;
+        if (upper_fd >= 0)
+                upper_root_fd = open_safe_child(upper_fd, "root", upper_root, 0700, true,
+                                                &upper_root_created);
         work_fd = open_safe_child(unit_fd, "work", work, 0700, true, &work_created);
-        merged_fd = open_safe_child(unit_fd, "merged", merged, 0700, true, &merged_created);
-        if (upper_fd < 0 || work_fd < 0 || merged_fd < 0)
+        merged_fd = open_safe_child(unit_fd, "merged", merged, 0711, true, &merged_created);
+        if (upper_fd < 0 || upper_root_fd < 0 || work_fd < 0 || merged_fd < 0)
                 goto fail;
 
-        state = overlay_mount_state(merged, payload, upper, work);
+        state = overlay_mount_state(merged, payload, upper_root, work);
         if (state < 0)
                 goto fail;
         if (state > 0) {
+                if (set_directory_mode(merged_fd, merged, 0711) < 0)
+                        goto fail;
                 close(merged_fd);
                 close(work_fd);
+                close(upper_root_fd);
                 close(upper_fd);
                 close(unit_fd);
                 return 0;
         }
 
-        if (directory_empty(upper_fd, upper) != 1 || directory_empty(work_fd, work) != 1 ||
+        if (directory_empty(upper_root_fd, upper_root) != 1 || directory_empty(work_fd, work) != 1 ||
             directory_empty(merged_fd, merged) != 1) {
                 errorf("unmounted service root '%s' is not empty", unit_path);
                 goto fail;
         }
         if (snprintf(options, sizeof(options), "lowerdir=%s,upperdir=%s,workdir=%s", payload,
-                     upper, work) >= (int) sizeof(options)) {
+                     upper_root, work) >= (int) sizeof(options)) {
                 errorf("overlay options are too long");
                 goto fail;
         }
@@ -518,14 +623,19 @@ static int prepare_unit(int package_fd, const char *package, const char *payload
                 goto fail;
         }
         *mounted = true;
-        if (overlay_mount_state(merged, payload, upper, work) != 1) {
+        if (overlay_mount_state(merged, payload, upper_root, work) != 1) {
                 (void) umount2(merged, 0);
                 *mounted = false;
                 goto fail;
         }
+        close(merged_fd);
+        merged_fd = open_safe_child(unit_fd, "merged", merged, 0711, false, NULL);
+        if (merged_fd < 0 || set_directory_mode(merged_fd, merged, 0711) < 0)
+                goto fail;
 
         close(merged_fd);
         close(work_fd);
+        close(upper_root_fd);
         close(upper_fd);
         close(unit_fd);
         return 0;
@@ -539,6 +649,8 @@ fail:
                 close(merged_fd);
         if (work_fd >= 0)
                 close(work_fd);
+        if (upper_root_fd >= 0)
+                close(upper_root_fd);
         if (upper_fd >= 0)
                 close(upper_fd);
         if (unit_fd >= 0)
@@ -555,8 +667,15 @@ fail:
                     {"upper", upper_created},
                 };
 
-                unit_fd = open_safe_child(package_fd, unit, unit_path, 0700, false, NULL);
+                unit_fd = open_safe_child(package_fd, unit, unit_path, 0711, false, NULL);
                 if (unit_fd >= 0) {
+                        if (upper_root_created) {
+                                upper_fd = open_safe_child(unit_fd, "upper", upper, 0700, false, NULL);
+                                if (upper_fd >= 0) {
+                                        (void) unlinkat(upper_fd, "root", AT_REMOVEDIR);
+                                        close(upper_fd);
+                                }
+                        }
                         for (size_t i = 0;
                              i < sizeof(created_children) / sizeof(created_children[0]); i++)
                                 if (created_children[i].created)
@@ -603,7 +722,7 @@ static int command_prepare(int argc, char **argv) {
         if (snprintf(package_path, sizeof(package_path), ROOT_PATH "/%s", package) >=
             (int) sizeof(package_path))
                 goto finish;
-        package_fd = open_safe_child(root_fd, package, package_path, 0700, true, NULL);
+        package_fd = open_safe_child(root_fd, package, package_path, 0711, true, NULL);
         if (package_fd < 0)
                 goto finish;
 

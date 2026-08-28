@@ -71,6 +71,14 @@ mkDerivation {
           *,nosuid,*) ;;
           *) echo "overlay is missing nosuid" >&2; exit 1 ;;
         esac
+        alpha_super_options=$(findmnt -n -o FS-OPTIONS /run/aos/service-roots/demo/alpha.service/merged)
+        case ",$alpha_super_options," in
+          *,upperdir=/run/aos/service-roots/demo/alpha.service/upper/root,*) ;;
+          *) echo "overlay does not use the private nested upper root" >&2; exit 1 ;;
+        esac
+        test "$(stat -c %a /run/aos/service-roots/demo/alpha.service/upper)" = 700
+        test "$(stat -c %a /run/aos/service-roots/demo/alpha.service/work)" = 700
+        test "$(stat -c %a /run/aos/service-roots/demo/alpha.service/merged)" = 711
 
         printf alpha > /run/aos/service-roots/demo/alpha.service/merged/created
         test ! -e "$fixture/created"
@@ -121,21 +129,22 @@ mkDerivation {
         rmdir /run/aos/service-roots/intruder
 
         # A later-unit failure rolls back an earlier overlay from this invocation.
-        mkdir -p /run/aos/service-roots/rollback/bad.service
-        ln -s /tmp /run/aos/service-roots/rollback/bad.service/upper
+        mkdir -p /run/aos/service-roots/rollback/bad.service/upper
+        ln -s /tmp /run/aos/service-roots/rollback/bad.service/upper/root
         if "$helper" prepare rollback "$fixture" good.service bad.service; then
           echo "unsafe existing component accepted" >&2
           exit 1
         fi
         test ! -e /run/aos/service-roots/rollback/good.service
-        test -L /run/aos/service-roots/rollback/bad.service/upper
+        test -L /run/aos/service-roots/rollback/bad.service/upper/root
 
         "$helper" cleanup demo "$fixture" alpha.service beta.service
         test ! -e /run/aos/service-roots/demo
         test -r "$fixture/share/payload"
         "$helper" cleanup demo "$fixture" alpha.service beta.service
 
-        rm /run/aos/service-roots/rollback/bad.service/upper
+        rm /run/aos/service-roots/rollback/bad.service/upper/root
+        rmdir /run/aos/service-roots/rollback/bad.service/upper
         rmdir /run/aos/service-roots/rollback/bad.service
         rmdir /run/aos/service-roots/rollback
         echo "aos-service-root overlay policy: PASS"
