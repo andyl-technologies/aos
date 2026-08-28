@@ -61,23 +61,6 @@ impl GatewayScope {
             } => owner_scope_key.clone(),
         }
     }
-
-    fn binding_ref(&self, binding_name: &str) -> aos_proto_types::BindingRef {
-        use aos_proto_types::binding_ref::Target;
-
-        let target = match self {
-            Self::Instance => Target::InstanceDefault(true),
-            Self::Organization { slug, .. } => {
-                Target::Organization(aos_proto_types::OrganizationBindingRef {
-                    org_slug: slug.clone(),
-                    name: binding_name.to_string(),
-                })
-            }
-        };
-        aos_proto_types::BindingRef {
-            target: Some(target),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -193,47 +176,41 @@ fn Gateways(client: ApiClient, scope: GatewayScope, creation_only: bool) -> impl
 
 async fn load_gateway_inventory(
     client: &ApiClient,
-    scope: &GatewayScope,
+    _scope: &GatewayScope,
 ) -> Result<Vec<GatewayInventory>, String> {
-    let binding_names = match scope {
-        GatewayScope::Instance => vec!["default".to_string()],
-        GatewayScope::Organization { .. } => client
-            .collect_pages::<_, aos_proto_types::ListBindingsResponse, _, _, _>(
-                aos_proto_types::BINDING_SERVICE_LIST_BINDINGS_PATH,
-                move |page_token| aos_proto_types::ListBindingsRequest {
-                    owner_scope_key: scope.owner_scope_key(),
-                    page_size: 100,
-                    page_token,
-                },
-                |response| (response.bindings, response.next_page_token),
-            )
-            .await
-            .map_err(|failure| failure.to_string())?
-            .into_iter()
-            .filter_map(|binding| binding.spec.map(|spec| spec.name))
-            .collect(),
-    };
+    let gateways = client
+        .collect_pages::<_, aos_proto_types::ListGatewaysResponse, _, _, _>(
+            aos_proto_types::DELIVERY_SERVICE_LIST_GATEWAYS_PATH,
+            move |page_token| aos_proto_types::ListGatewaysRequest {
+                binding: None,
+                page_size: 100,
+                page_token,
+            },
+            |response| (response.gateways, response.next_page_token),
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
 
-    let mut inventory = Vec::with_capacity(binding_names.len());
-    for binding_name in binding_names {
-        let binding = scope.binding_ref(&binding_name);
-        let gateways = client
-            .collect_pages::<_, aos_proto_types::ListGatewaysResponse, _, _, _>(
-                aos_proto_types::DELIVERY_SERVICE_LIST_GATEWAYS_PATH,
-                move |page_token| aos_proto_types::ListGatewaysRequest {
-                    binding: Some(binding.clone()),
-                    page_size: 100,
-                    page_token,
-                },
-                |response| (response.gateways, response.next_page_token),
-            )
-            .await
-            .map_err(|failure| failure.to_string())?;
-        inventory.push(GatewayInventory {
-            binding_name,
-            gateways,
-        });
+    let mut inventory: Vec<GatewayInventory> = Vec::new();
+    for gateway in gateways {
+        let binding_name = gateway
+            .desired
+            .as_ref()
+            .map(|desired| desired.binding_id.clone())
+            .unwrap_or_else(|| "unknown".to_owned());
+        if let Some(group) = inventory
+            .iter_mut()
+            .find(|group| group.binding_name == binding_name)
+        {
+            group.gateways.push(gateway);
+        } else {
+            inventory.push(GatewayInventory {
+                binding_name,
+                gateways: vec![gateway],
+            });
+        }
     }
+    inventory.sort_by(|left, right| left.binding_name.cmp(&right.binding_name));
     Ok(inventory)
 }
 
@@ -295,6 +272,7 @@ async fn load_gateway_create_choices(
                 owner_scope_key: binding_scope.clone(),
                 page_size: 100,
                 page_token,
+                include_granted: true,
             },
             |response| (response.bindings, response.next_page_token),
         )
@@ -308,6 +286,7 @@ async fn load_gateway_create_choices(
                 owner_scope_key: endpoint_scope.clone(),
                 page_size: 100,
                 page_token,
+                include_granted: true,
             },
             |response| (response.endpoints, response.next_page_token),
         )
@@ -320,6 +299,7 @@ async fn load_gateway_create_choices(
                 owner_scope_key: owner_scope_key.clone(),
                 page_size: 100,
                 page_token,
+                include_granted: true,
             },
             |response| (response.network_policies, response.next_page_token),
         )

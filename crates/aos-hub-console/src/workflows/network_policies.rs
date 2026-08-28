@@ -80,6 +80,7 @@ fn NetworkPolicies(
     #[prop(optional)] organization: Option<String>,
     #[prop(optional)] creation_only: bool,
 ) -> impl IntoView {
+    let include_granted = organization.is_some();
     let can_create = client.allows("network_policy.manage");
     let create_href = can_create.then(|| {
         organization.as_ref().map_or_else(
@@ -100,6 +101,7 @@ fn NetworkPolicies(
                         owner_scope_key: owner_scope_key.clone(),
                         page_size: 100,
                         page_token,
+                        include_granted,
                     },
                     |response| (response.network_policies, response.next_page_token),
                 )
@@ -107,7 +109,8 @@ fn NetworkPolicies(
         }
     });
     let view_client = client.clone();
-    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Trust and reachability"</p><div class="section-title"><h2>"Network policies"</h2><HelpTooltip term="Network policies" summary="Boundaries name verifiable network identity. Immutable revisions hold protected-transport, trusted-ingress, source, and probe policy."/></div></div>{create_href.map(|href| view! { <a class="button" href=href>"Create network policy"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading network policies…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(boundaries) if boundaries.is_empty() => view! { <p class="muted">"No network policies in this scope."</p> }.into_any(), Ok(boundaries) => view! { <div class="binding-list">{boundaries.iter().cloned().map(|boundary| view! { <NetworkPolicyCard client=client.clone() boundary=boundary/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <NetworkPolicyCreate client=client owner_scope_key=owner_scope_key/> })}</div> }
+    let card_scope = owner_scope_key.clone();
+    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Trust and reachability"</p><div class="section-title"><h2>"Network policies"</h2><HelpTooltip term="Network policies" summary="Boundaries name verifiable network identity. Immutable revisions hold protected-transport, trusted-ingress, source, and probe policy."/></div></div>{create_href.map(|href| view! { <a class="button" href=href>"Create network policy"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading network policies…"</p> }>{move || { let client = view_client.clone(); let consumer_scope_key = card_scope.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(boundaries) if boundaries.is_empty() => view! { <p class="muted">"No network policies in this scope."</p> }.into_any(), Ok(boundaries) => view! { <div class="binding-list">{boundaries.iter().cloned().map(|boundary| view! { <NetworkPolicyCard client=client.clone() boundary=boundary consumer_scope_key=consumer_scope_key.clone()/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <NetworkPolicyCreate client=client owner_scope_key=owner_scope_key/> })}</div> }
 }
 
 #[component]
@@ -195,9 +198,14 @@ fn NetworkPolicyCreate(client: ApiClient, owner_scope_key: String) -> impl IntoV
 }
 
 #[component]
-fn NetworkPolicyCard(client: ApiClient, boundary: aos_proto_types::NetworkPolicy) -> impl IntoView {
+fn NetworkPolicyCard(
+    client: ApiClient,
+    boundary: aos_proto_types::NetworkPolicy,
+    consumer_scope_key: String,
+) -> impl IntoView {
     let has_default_revision = boundary.default_revision > 0;
-    view! { <details class="binding-card"><summary><div><span class="resource-kind">{boundary.kind.clone()}</span><h3>{boundary.name.clone()}</h3><code>{boundary.stable_id.clone()}</code></div><div class="binding-summary-state"><StatusBadge state=format!("revision {}", boundary.default_revision) positive=has_default_revision/></div></summary><div class="binding-details"><div class="resource-identity"><div><span>"Owner"</span><code>{boundary.owner_scope_key.clone()}</code></div><div><span>"Identity fingerprint"</span><HashValue value=boundary.identity_fingerprint.clone()/></div><div><span>"Version"</span><code>{boundary.resource_version.clone()}</code></div></div><BoundaryRevisions client=client.clone() boundary=boundary.clone()/><div class="subworkflow-grid"><BoundaryRevisionCreate client=client.clone() boundary=boundary.clone()/><BoundaryGrants client=client.clone() boundary=boundary.clone()/></div><BoundaryDelete client=client boundary=boundary/></div></details> }
+    let owned = boundary.owner_scope_key == consumer_scope_key;
+    view! { <details class="binding-card"><summary><div><span class="resource-kind">{if owned { boundary.kind.clone() } else { "granted".to_string() }}</span><h3>{boundary.name.clone()}</h3><code>{boundary.stable_id.clone()}</code></div><div class="binding-summary-state"><StatusBadge state=format!("revision {}", boundary.default_revision) positive=has_default_revision/></div></summary><div class="binding-details"><div class="resource-identity"><div><span>"Owner"</span><code>{boundary.owner_scope_key.clone()}</code></div><div><span>"Identity fingerprint"</span><HashValue value=boundary.identity_fingerprint.clone()/></div><div><span>"Version"</span><code>{boundary.resource_version.clone()}</code></div></div>{owned.then(|| view! { <BoundaryRevisions client=client.clone() boundary=boundary.clone()/><div class="subworkflow-grid"><BoundaryRevisionCreate client=client.clone() boundary=boundary.clone()/><BoundaryGrants client=client.clone() boundary=boundary.clone()/></div><BoundaryDelete client=client boundary=boundary/> })}</div></details> }
 }
 
 #[component]
@@ -690,7 +698,7 @@ fn trusted_ingress(
             return Err(
                 "Signed-assertion ingress requires issuer, audience, and verification key"
                     .to_string(),
-            )
+            );
         }
         _ => return Err("Unsupported trusted-ingress mode".to_string()),
     };

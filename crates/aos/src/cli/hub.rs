@@ -805,6 +805,9 @@ pub enum HubBindingCmd {
         /// Organization slug; omit for instance-owned bindings
         #[arg(long)]
         org: Option<String>,
+        /// Include bindings explicitly granted to the selected scope
+        #[arg(long)]
+        include_granted: bool,
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
@@ -846,7 +849,7 @@ pub enum HubBindingCmd {
         /// Access mode for s3/r2: private (default) or public
         #[arg(long, value_parser = ["public", "private"])]
         access: Option<String>,
-        /// Cloudflare Worker R2 binding name for deployment-r2
+        /// Cloudflare Worker R2 attachment (REGISTRY_BUCKET) for deployment-r2
         #[arg(long)]
         bucket_binding: Option<String>,
         #[command(flatten)]
@@ -1110,6 +1113,9 @@ pub enum HubNetworkPolicyCmd {
         access: HubAccessArgs,
         #[arg(long)]
         org: Option<String>,
+        /// Include network policies explicitly granted to the selected scope
+        #[arg(long)]
+        include_granted: bool,
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
@@ -1270,6 +1276,9 @@ pub enum HubEndpointCmd {
         access: HubAccessArgs,
         #[arg(long)]
         org: Option<String>,
+        /// Include endpoints explicitly granted to the selected scope
+        #[arg(long)]
+        include_granted: bool,
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
@@ -1404,12 +1413,13 @@ pub enum HubEndpointCmd {
 
 #[derive(Subcommand)]
 pub enum HubGatewayCmd {
-    /// List gateways for a binding
+    /// List visible gateways, optionally filtered by binding
     List {
         #[command(flatten)]
         access: HubAccessArgs,
+        /// Restrict results to an instance or organization binding reference
         #[arg(long)]
-        binding: String,
+        binding: Option<String>,
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
@@ -3006,20 +3016,18 @@ mod tests {
             _ => panic!("unexpected command shape"),
         }
 
-        assert!(
-            parse_cli([
-                "aos",
-                "hub",
-                "surface",
-                "explain",
-                "cache:andyl/nix",
-                "--url",
-                "https://cache.example",
-                "--access-class",
-                "smtp",
-            ])
-            .is_err()
-        );
+        assert!(parse_cli([
+            "aos",
+            "hub",
+            "surface",
+            "explain",
+            "cache:andyl/nix",
+            "--url",
+            "https://cache.example",
+            "--access-class",
+            "smtp",
+        ])
+        .is_err());
     }
 
     #[test]
@@ -3134,19 +3142,17 @@ mod tests {
                 }
             }
         ));
-        assert!(
-            parse_cli([
-                "aos",
-                "hub",
-                "storage-binding",
-                "list",
-                "--hub",
-                "https://aos.example",
-                "--org",
-                "andyl",
-            ])
-            .is_err()
-        );
+        assert!(parse_cli([
+            "aos",
+            "hub",
+            "storage-binding",
+            "list",
+            "--hub",
+            "https://aos.example",
+            "--org",
+            "andyl",
+        ])
+        .is_err());
     }
 
     #[test]
@@ -3165,7 +3171,7 @@ mod tests {
             "--kind",
             "deployment-r2",
             "--bucket-binding",
-            "STORAGE",
+            "REGISTRY_BUCKET",
         ])
         .unwrap();
         assert!(matches!(
@@ -3179,7 +3185,7 @@ mod tests {
                         ..
                     }
                 }
-            } if stable_id == "storage-binding:worker-objects" && binding == "STORAGE"
+            } if stable_id == "storage-binding:worker-objects" && binding == "REGISTRY_BUCKET"
         ));
     }
 
@@ -3294,21 +3300,19 @@ mod tests {
 
     #[test]
     fn boundary_activation_requires_an_explicit_default_choice() {
-        assert!(
-            parse_cli([
-                "aos",
-                "hub",
-                "network-policy",
-                "revision",
-                "activate",
-                "--hub",
-                "https://aos.example",
-                "corp@2",
-                "--mode",
-                "overlap",
-            ])
-            .is_err()
-        );
+        assert!(parse_cli([
+            "aos",
+            "hub",
+            "network-policy",
+            "revision",
+            "activate",
+            "--hub",
+            "https://aos.example",
+            "corp@2",
+            "--mode",
+            "overlap",
+        ])
+        .is_err());
         let parsed = parse_cli([
             "aos",
             "hub",
@@ -3420,23 +3424,21 @@ mod tests {
                 }
             }
         ));
-        assert!(
-            parse_cli([
-                "aos",
-                "hub",
-                "registry",
-                "cache-stack",
-                "add",
-                "andyl/main",
-                "--hub",
-                "https://aos.example",
-                "--cache",
-                "nix",
-                "--url",
-                "https://cache.example",
-            ])
-            .is_err()
-        );
+        assert!(parse_cli([
+            "aos",
+            "hub",
+            "registry",
+            "cache-stack",
+            "add",
+            "andyl/main",
+            "--hub",
+            "https://aos.example",
+            "--cache",
+            "nix",
+            "--url",
+            "https://cache.example",
+        ])
+        .is_err());
     }
 
     #[test]
@@ -3697,19 +3699,17 @@ mod tests {
         ));
 
         assert!(parse_cli(["aos", "hub", "operation", "list", "registry:andyl/main"]).is_err());
-        assert!(
-            parse_cli([
-                "aos",
-                "hub",
-                "operation",
-                "list",
-                "--target",
-                "registry:andyl/main",
-                "--scope",
-                "instance",
-            ])
-            .is_err()
-        );
+        assert!(parse_cli([
+            "aos",
+            "hub",
+            "operation",
+            "list",
+            "--target",
+            "registry:andyl/main",
+            "--scope",
+            "instance",
+        ])
+        .is_err());
     }
 
     #[test]

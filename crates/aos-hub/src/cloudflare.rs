@@ -69,7 +69,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 /// The R2 binding name — must match the Worker's bindings.
-const R2_BINDING: &str = "REGISTRY_BUCKET";
+const R2_BINDING: &str = aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT;
 /// The KV binding name — must match the Worker's bindings.
 const KV_BINDING: &str = "SESSIONS";
 /// The Workers compatibility date the dist is built and tested against.

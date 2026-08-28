@@ -82,6 +82,7 @@ fn Endpoints(
     #[prop(optional)] organization: Option<String>,
     #[prop(optional)] creation_only: bool,
 ) -> impl IntoView {
+    let include_granted = organization.is_some();
     let can_create = client.allows("endpoint.manage");
     let create_href = can_create.then(|| {
         organization.as_ref().map_or_else(
@@ -102,6 +103,7 @@ fn Endpoints(
                         owner_scope_key: owner_scope_key.clone(),
                         page_size: 100,
                         page_token,
+                        include_granted,
                     },
                     |response| (response.endpoints, response.next_page_token),
                 )
@@ -109,7 +111,8 @@ fn Endpoints(
         }
     });
     let view_client = client.clone();
-    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Client ingress"</p><div class="section-title"><h2>"Endpoints"</h2><HelpTooltip term="Endpoints" summary="Endpoints bind one stable host identity to exact network-boundary and listener or TLS generations."/></div></div>{create_href.map(|href| view! { <a class="button" href=href>"Create endpoint"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading endpoints…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(endpoints) if endpoints.is_empty() => view! { <p class="muted">"No endpoints in this scope."</p> }.into_any(), Ok(endpoints) => view! { <div class="binding-list">{endpoints.iter().cloned().map(|endpoint| view! { <EndpointCard client=client.clone() endpoint=endpoint/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <EndpointCreate client=client owner_scope_key=owner_scope_key/> })}</div> }
+    let card_scope = owner_scope_key.clone();
+    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Client ingress"</p><div class="section-title"><h2>"Endpoints"</h2><HelpTooltip term="Endpoints" summary="Endpoints bind one stable host identity to exact network-boundary and listener or TLS generations."/></div></div>{create_href.map(|href| view! { <a class="button" href=href>"Create endpoint"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading endpoints…"</p> }>{move || { let client = view_client.clone(); let consumer_scope_key = card_scope.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(endpoints) if endpoints.is_empty() => view! { <p class="muted">"No endpoints in this scope."</p> }.into_any(), Ok(endpoints) => view! { <div class="binding-list">{endpoints.iter().cloned().map(|endpoint| view! { <EndpointCard client=client.clone() endpoint=endpoint consumer_scope_key=consumer_scope_key.clone()/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <EndpointCreate client=client owner_scope_key=owner_scope_key/> })}</div> }
 }
 
 #[derive(Clone, Debug)]
@@ -171,6 +174,7 @@ async fn load_endpoint_create_choices(
                 owner_scope_key: domain_scope.clone(),
                 page_size: 100,
                 page_token,
+                include_granted: true,
             },
             |response| (response.domains, response.next_page_token),
         )
@@ -183,6 +187,7 @@ async fn load_endpoint_create_choices(
                 owner_scope_key: owner_scope_key.clone(),
                 page_size: 100,
                 page_token,
+                include_granted: true,
             },
             |response| (response.network_policies, response.next_page_token),
         )
@@ -444,11 +449,16 @@ fn EndpointRevisionFields(
 }
 
 #[component]
-fn EndpointCard(client: ApiClient, endpoint: aos_proto_types::Endpoint) -> impl IntoView {
+fn EndpointCard(
+    client: ApiClient,
+    endpoint: aos_proto_types::Endpoint,
+    consumer_scope_key: String,
+) -> impl IntoView {
     let observed = endpoint.observed.clone().unwrap_or_default();
     let identity = endpoint_identity(&endpoint);
     let positive = observed.state == "ready" && observed.listener_observed && observed.tls_observed;
-    view! { <details class="binding-card"><summary><div><span class="resource-kind">{endpoint.scheme.clone()}</span><h3>{identity}</h3><code>{endpoint.stable_id.clone()}</code></div><div class="binding-summary-state"><StatusBadge state=if observed.state.is_empty() { "unknown".to_string() } else { observed.state.clone() } positive=positive/></div></summary><div class="binding-details"><div class="resource-identity"><div><span>"Boundary"</span><code>{format!("{}@{}", endpoint.network_policy_id, endpoint.desired.as_ref().map(|value| value.boundary_revision).unwrap_or_default())}</code></div><div><span>"Desired generation"</span><strong>{endpoint.desired_generation}</strong></div><div><span>"Observed generation"</span><strong>{observed.observed_generation}</strong></div><div><span>"Version"</span><code>{endpoint.resource_version.clone()}</code></div></div>{(!observed.error.is_empty()).then(|| view! { <InlineError detail=observed.error/> })}<EndpointGenerations client=client.clone() endpoint=endpoint.clone()/><div class="subworkflow-grid"><EndpointStage client=client.clone() endpoint=endpoint.clone()/><EndpointGrants client=client.clone() endpoint=endpoint.clone()/></div><EndpointDelete client=client endpoint=endpoint/></div></details> }
+    let owned = endpoint.owner_scope_key == consumer_scope_key;
+    view! { <details class="binding-card"><summary><div><span class="resource-kind">{if owned { endpoint.scheme.clone() } else { "granted".to_string() }}</span><h3>{identity}</h3><code>{endpoint.stable_id.clone()}</code></div><div class="binding-summary-state"><StatusBadge state=if observed.state.is_empty() { "unknown".to_string() } else { observed.state.clone() } positive=positive/></div></summary><div class="binding-details"><div class="resource-identity"><div><span>"Owner"</span><code>{endpoint.owner_scope_key.clone()}</code></div><div><span>"Boundary"</span><code>{format!("{}@{}", endpoint.network_policy_id, endpoint.desired.as_ref().map(|value| value.boundary_revision).unwrap_or_default())}</code></div><div><span>"Desired generation"</span><strong>{endpoint.desired_generation}</strong></div><div><span>"Observed generation"</span><strong>{observed.observed_generation}</strong></div><div><span>"Version"</span><code>{endpoint.resource_version.clone()}</code></div></div>{(!observed.error.is_empty()).then(|| view! { <InlineError detail=observed.error/> })}{owned.then(|| view! { <EndpointGenerations client=client.clone() endpoint=endpoint.clone()/><div class="subworkflow-grid"><EndpointStage client=client.clone() endpoint=endpoint.clone()/><EndpointGrants client=client.clone() endpoint=endpoint.clone()/></div><EndpointDelete client=client endpoint=endpoint/> })}</div></details> }
 }
 
 #[component]

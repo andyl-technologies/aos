@@ -1089,7 +1089,8 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error when the resource generation does not exist, the
-    /// current grant is already active, or the database batch fails.
+    /// current grant is already active and is not a legacy instance-default
+    /// grant being explicitly adopted, or the database batch fails.
     pub async fn grant_consumer_scope(
         &self,
         resource: GrantResource<'_>,
@@ -1120,11 +1121,83 @@ impl Database {
         let current = self
             .load_consumer_scope_grant(resource, consumer_scope_key)
             .await?;
+        let adopting_legacy = current.as_ref().is_some_and(|grant| {
+            grant.state == "active"
+                && grant.grant_kind == "instance_default"
+                && grant_kind == "explicit"
+        });
         if current
             .as_ref()
             .is_some_and(|grant| grant.state == "active")
+            && !adopting_legacy
         {
             bail!("consumer scope is already granted");
+        }
+        if adopting_legacy {
+            let grant = current.as_ref().context("legacy grant disappeared")?;
+            let now = unix_now();
+            let event_id = format!("grant-event:{}", Uuid::new_v4().simple());
+            let (mutation_sql, mutation_params) = match resource {
+                GrantResource::Binding { id, .. } => (
+                    "UPDATE binding_consumer_scopes SET grant_kind = 'explicit',
+                       granted_by = ?4, granted_at = ?5, resource_version = resource_version + 1
+                     WHERE binding_id = ?1 AND consumer_scope_key = ?2
+                       AND resource_version = ?3 AND state = 'active'
+                       AND grant_kind = 'instance_default'",
+                    vals![id, consumer_scope_key, grant.resource_version, actor, now],
+                ),
+                GrantResource::NetworkPolicy { id } => (
+                    "UPDATE network_policy_consumer_scopes SET grant_kind = 'explicit',
+                       granted_by = ?4, granted_at = ?5, resource_version = resource_version + 1
+                     WHERE boundary_id = ?1 AND consumer_scope_key = ?2
+                       AND resource_version = ?3 AND state = 'active'
+                       AND grant_kind = 'instance_default'",
+                    vals![id, consumer_scope_key, grant.resource_version, actor, now],
+                ),
+                GrantResource::Endpoint { .. } | GrantResource::Gateway { .. } => {
+                    bail!("only stable instance resources can carry legacy grants")
+                }
+            };
+            self.backend
+                .checked_batch(&[
+                    Statement::new(mutation_sql, mutation_params).expecting(1),
+                    Statement::new(
+                        "INSERT INTO consumer_scope_grant_events
+                         (event_id, resource_kind, resource_stable_id,
+                          resource_generation_key, consumer_scope_key, grant_generation,
+                          transition, previous_state, resulting_state, actor_id,
+                          occurred_at, request_id)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'regranted', 'active',
+                                 'active', ?7, ?8, ?9)",
+                        vals![
+                            event_id,
+                            resource.kind(),
+                            resource.stable_id(),
+                            resource.generation(),
+                            consumer_scope_key,
+                            grant.grant_generation,
+                            actor,
+                            now,
+                            request_id
+                        ],
+                    )
+                    .expecting(1),
+                ])
+                .await?;
+            return Ok(ConsumerScopeGrantRecord {
+                resource_kind: resource.kind().to_owned(),
+                resource_stable_id: resource.stable_id(),
+                resource_generation: resource.generation(),
+                consumer_scope_key: consumer_scope_key.to_owned(),
+                grant_generation: grant.grant_generation,
+                grant_kind: "explicit".to_owned(),
+                state: "active".to_owned(),
+                granted_by: actor.to_owned(),
+                granted_at: now,
+                revoked_by: None,
+                revoked_at: None,
+                resource_version: grant.resource_version + 1,
+            });
         }
         let grant_generation = current
             .as_ref()
@@ -3971,16 +4044,29 @@ impl Database {
             .await
     }
 
-    /// Returns a canonical Git URL only while its exact route evidence is ready.
+    /// Returns one canonical registry URL only when every consumer protocol is
+    /// advertised by the same ready route configuration.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure or malformed persisted data.
     pub async fn ready_registry_canonical_url(&self, registry_id: i64) -> Result<Option<String>> {
-        Ok(self
-            .ready_route_advertisement_identity(SurfaceTarget::Registry(registry_id), "git")
-            .await?
-            .map(|identity| identity.canonical_url))
+        let surface = SurfaceTarget::Registry(registry_id);
+        let git = self
+            .ready_route_advertisement_identity(surface, "git")
+            .await?;
+        let web = self
+            .ready_route_advertisement_identity(surface, "web")
+            .await?;
+        let nix_cache = self
+            .ready_route_advertisement_identity(surface, "nix_cache")
+            .await?;
+        match (git, web, nix_cache) {
+            (Some(git), Some(web), Some(nix_cache)) if git == web && git == nix_cache => {
+                Ok(Some(git.canonical_url))
+            }
+            _ => Ok(None),
+        }
     }
 
     async fn ready_route_advertisement_identity(
