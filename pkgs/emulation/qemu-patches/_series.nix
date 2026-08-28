@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "b3b318644ad31607a1de4ba5a5ea77180fb47d26c0f3622968942d4e965b422f";
+  patchBranchBundleSha256 = "de56110cd64e44e19305b9234842cf2d7dfbead7f2d6398a64b2915782125bf8";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "7901cc52c2a248f2d8e5e3ed1ac6f55236b8573c";
+  patchBranchHeadCommit = "18de7c2f3183eec56d9969e1404049d7a3477590";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1245,6 +1245,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "the retained native block barrier also closes block-graph writer admission, parks later main-loop writers until release, binds the exact completed-mutation generation captured at hold, and reports active or waiting writers without acknowledging immutable-snapshot proof bit 5";
+    }
+    {
+      file = "0132-crucible-bind-hot-fork-block-snapshot-roots.patch";
+      branchSubject = "crucible: bind hot-fork block snapshot roots";
+      branchCommit = "18de7c2f3183eec56d9969e1404049d7a3477590";
+      branchTree = "648aad461d79ff1a6b5f9af001deb16e8c6bfce9";
+      catalogName = "crucible-hot-fork-block-snapshot-roots";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "while the retained block graph and drain barriers are quiescent, the template coordinator binds every writable rooted backend to an exact guest-allocation-empty active overlay over an immediate read-only snapshot, with exact backend, node, content, size, backend-generation, and graph-generation identity, and acknowledges immutable writable-root proof bit 5; branch-private child overlay reconstruction remains open";
     }
   ];
   catalogOnlyCapabilities = [

@@ -872,6 +872,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     /// barrier acquisition or rollback, or strict response validation fails.
     fn prepare_hot_fork_template(
         &mut self,
+        _block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
     ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
         Err(QemuNodeChannelError::new(
             "prepare_hot_fork_template",
@@ -1916,10 +1917,11 @@ impl QemuNode {
     /// roll back the transaction or violates the closed response contract.
     pub fn prepare_hot_fork_template(
         &mut self,
+        block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
     ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
         self.channels
             .qmp_machine_control
-            .prepare_hot_fork_template()
+            .prepare_hot_fork_template(block_snapshot_bindings)
     }
 
     /// Queries QEMU's retained hot-fork template transaction.

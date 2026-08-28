@@ -916,6 +916,13 @@
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "the retained native block barrier also closes block-graph writer admission, parks later main-loop writers until release, binds the exact completed-mutation generation captured at hold, and reports active or waiting writers without acknowledging immutable-snapshot proof bit 5";
     }
+    {
+      file = "0132-crucible-bind-hot-fork-block-snapshot-roots.patch";
+      catalogName = "crucible-hot-fork-block-snapshot-roots";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "while the retained block graph and drain barriers are quiescent, the template coordinator binds every writable rooted backend to an exact guest-allocation-empty active overlay over an immediate read-only snapshot, with exact backend, node, content, size, backend-generation, and graph-generation identity, and acknowledges immutable writable-root proof bit 5; branch-private child overlay reconstruction remains open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

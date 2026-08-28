@@ -599,6 +599,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0132-crucible-bind-hot-fork-block-snapshot-roots.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

@@ -108,8 +108,10 @@ where
 
     fn prepare_hot_fork_template(
         &mut self,
+        block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
     ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
-        self.vmstate.prepare_hot_fork_template()
+        self.vmstate
+            .prepare_hot_fork_template(block_snapshot_bindings)
     }
 
     fn query_hot_fork_template(

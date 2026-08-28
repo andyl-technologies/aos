@@ -469,8 +469,27 @@ normal main-loop QMP command:
 ```text
 CrucibleHotForkBlockBarrierAction = hold | query | release
 
+CrucibleHotForkBlockSnapshotBinding {
+    backend-id: u64,
+    backend-name: string,
+    overlay-node-name: string,
+    snapshot-node-name: string,
+    snapshot-content-id: string,
+}
+
+CrucibleHotForkBlockSnapshotRoot {
+    backend-id: u64,
+    backend-name: string,
+    overlay-node-name: string,
+    snapshot-node-name: string,
+    snapshot-content-id: string,
+    virtual-size: u64,
+    overlay-empty: bool,
+    snapshot-read-only: bool,
+}
+
 CrucibleHotForkBlockBarrierState {
-    schema-version: u32 = 2,
+    schema-version: u32 = 3,
     generation: u64,
     owner-thread-id: i64,
     graph-barrier-generation: u64,
@@ -482,11 +501,19 @@ CrucibleHotForkBlockBarrierState {
     graph-writer-active: bool,
     graph-waiting-writers: u32,
     graph-stable: bool,
+    snapshot-generation: u64,
+    snapshot-backend-generation: u64,
+    snapshot-graph-mutation-generation: u64,
+    snapshot-owner-thread-id: i64,
+    snapshot-bound: bool,
+    snapshot-complete: bool,
+    snapshot-roots: [CrucibleHotForkBlockSnapshotRoot],
     complete: bool,
-    backend-count: u32,
-    rooted-backends: u32,
-    writable-backends: u32,
-    quiesced-rooted-backends: u32,
+    backend-count: u64,
+    rooted-backends: u64,
+    writable-backends: u64,
+    writable-rooted-backends: u64,
+    quiesced-rooted-backends: u64,
     in-flight: u64,
     quiescent: bool,
 }
@@ -527,15 +554,38 @@ and `held-graph-mutation-generation` zero and is not quiescent. Waiting writers
 may be nonzero during a released observation immediately after admission
 reopens; they are not inside a graph critical section.
 
-This retained drain and graph-writer barrier are still not proof bit 5. They do
-not authenticate an immutable external-snapshot root, rotate or bind writable
-overlays, retain child root identity, or define child reconstruction. The
-future coordinator MUST establish those remaining invariants while the drain
-and graph barrier are held.
+While this barrier is held and quiescent, schema version 7 of the template
+coordinator additionally requires one complete
+`CrucibleHotForkBlockSnapshotBinding` list in increasing `backend-id` order.
+The list MUST name every writable rooted backend exactly once. Backend names
+are QEMU identifiers of at most 255 bytes; overlay and snapshot node names are
+QEMU identifiers of at most 31 bytes; and `snapshot-content-id` is exactly 64
+lowercase hexadecimal characters containing the BLAKE3 identity already
+authenticated by the Apache host. QEMU does not infer or trust the content ID:
+it binds that supplied identity to the exact live backend and graph edge.
+
+Binding succeeds only while the native drain and graph-writer barriers remain
+owned by the same coordinator and their captured graph generation is stable.
+Each named active root MUST be writable, MUST contain no allocated
+guest-visible range above its immediate backing node, and MUST have that
+immediate backing node open read-only at the same virtual size. QEMU records
+the exact backend generation, graph generation, owner, root identities, size,
+empty-overlay result, and read-only result. `snapshot-complete` is true exactly
+while those values still match the retained barrier and the root list count
+equals `writable-rooted-backends`. Release clears the binding before graph or
+native-drain admission reopens.
+
+An active transaction acknowledges proof bit 5 exactly while this complete
+immutable writable-root binding is retained. The binding does not create the
+snapshot bytes, rotate a preexisting writable root, reconstruct a child block
+graph, or create a branch-private child overlay. The host MUST authenticate and
+open the immutable snapshot plus empty active overlay before preparation;
+child-side descriptor, graph, and overlay reconstruction remain proof bits 7
+and 8.
 It MUST acquire the block drain before the asynchronous-source barrier, because
 draining may require AIO progress, and release the asynchronous-source barrier
-before releasing the block drain. Until that composition exists, the standalone
-barrier cannot change the template schema, acknowledge bit 5, or authorize
+before releasing the block drain. The standalone barrier command cannot bind a
+root or acknowledge bit 5 by itself, and the remaining proof bits still prevent
 `fork(2)`.
 
 Patched QEMU and the loaded Crucible plugin additionally establish one sealed,
@@ -702,7 +752,7 @@ races and is sufficient for proof bit 3 while retained and quiescent. It does
 not choose child-side descriptor, context, coroutine, or clock disposition;
 those obligations remain separately represented by proof bits 7 and 8.
 
-The retained `PrepareForkTemplate` checkpoint is the version-6 OOB
+The retained `PrepareForkTemplate` checkpoint is the version-7 OOB
 `crucible-hot-fork-template` coordinator:
 
 ```text
@@ -712,7 +762,7 @@ CrucibleHotForkTemplateOutcome =
     idle | draining | blocked | prepared | aborted
 
 CrucibleHotForkTemplateState {
-    schema-version: u32 = 6,
+    schema-version: u32 = 7,
     generation: u64,
     outcome: CrucibleHotForkTemplateOutcome,
     transaction-active: bool,
@@ -726,13 +776,18 @@ CrucibleHotForkTemplateState {
     rollback-complete: bool,
     ready: bool,
 }
+
+prepare(action, block-snapshot-bindings: [CrucibleHotForkBlockSnapshotBinding])
 ```
 
 `prepare` starts only at the authenticated exact paused/device-flush boundary.
 QEMU serializes the transaction and schedules block-graph writer exclusion and
 native all-block drain acquisition on the main AioContext. OOB calls observe
 `draining` while that transition is pending. Once the graph generation is
-stable and block roots are quiesced, the coordinator acquires the RCU
+stable and block roots are quiesced, the coordinator schedules immutable-root
+binding on the main AioContext. Every repeated `prepare` MUST carry the exact
+same complete binding list; omission or mismatch fails closed. Once the binding
+is complete, the coordinator acquires the RCU
 admission barrier, the bottom-half/timer source barrier, and the plugin callback
 barrier, and retains all four while previously admitted work drains. A repeated
 `prepare` reevaluates the retained transaction. Once all four barriers are
@@ -759,22 +814,20 @@ quiescent and whose missing bitmap is zero.
 Proof bit 4 is present exactly while the transaction remains active and its
 complete RCU barrier is quiescent. Proof bit 3 is present exactly while the
 transaction remains active and its complete asynchronous-source barrier is
-quiescent. Native block and graph quiescence are prerequisites, not proof of an
-immutable block snapshot: version 6 MUST keep proof bit 5 clear until the
-coordinator also authenticates an immutable external-snapshot root and child
-root identity.
-Version 6 still does not compose that snapshot proof or the remaining
+quiescent. Proof bit 5 is present exactly while the transaction remains active
+and its complete immutable writable-root binding remains retained by the
+quiescent block barrier. Version 7 still does not compose the remaining
 plugin-ring, descriptor/mapping, or child-reinitialization barriers; therefore
-it rolls a drained transaction back as `blocked` and cannot advertise a usable
-hot-fork template.
+it rolls a fully drained transaction back as `blocked` and cannot advertise a
+usable hot-fork template.
 
 The standalone AioContext, AIO-handler, and block-backend responses remain
 observational. The retained asynchronous-source barrier composes the context,
 handler, coroutine, bottom-half, and timer admission classes and derives proof
 bit 3 only while they are complete and quiescent. The coordinator now composes
-the retained native block drain and graph-writer barrier only as QEMU-native
-I/O and graph quiescence; it must still compose immutable block write-root
-identity, descriptor/mapping, and
+the retained native block drain, graph-writer barrier, and exact immutable
+writable-root binding to derive proof bit 5. It must still compose
+descriptor/mapping, child graph/overlay reconstruction, and the remaining
 child-reinitialization proofs before a retained template can authorize
 `fork(2)`.
 
