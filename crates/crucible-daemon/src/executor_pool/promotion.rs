@@ -585,10 +585,16 @@ fn reconcile_published<L, V>(
                 return;
             }
         };
+        let source = published.source();
+        let promoted = published.promoted();
         match reconcile_published_paused_checkpoint_promotion(executor.supervisor_mut(), published)
         {
             Ok(CheckpointPromotionCompletionOutcome::Promoted)
             | Ok(CheckpointPromotionCompletionOutcome::AlreadyPromoted) => {
+                drop(executor);
+                if !super::observe_promoted_checkpoint(shared, source, promoted) {
+                    return;
+                }
                 increment(&shared.counters.promotions_reconciled);
                 return;
             }

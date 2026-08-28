@@ -39,7 +39,8 @@ pub(crate) struct PreparedPackagedExactPinMaterializer {
     checkpoints: Arc<ExactCheckpointStore>,
     campaigns: BTreeSet<CampaignName>,
     selections: DirectoryExactPinMaterializationStore,
-    catalog: BTreeMap<ConfigurationId, ExactCheckpointId>,
+    catalog: BTreeMap<ConfigurationId, BTreeSet<ExactCheckpointId>>,
+    catalog_roots: BTreeMap<ExactCheckpointId, ConfigurationId>,
     sender: SyncSender<MaterializerCommand>,
     receiver: Receiver<MaterializerCommand>,
 }
@@ -56,6 +57,10 @@ struct PackagedExactPinObserver {
 
 enum MaterializerCommand {
     Checkpoint(ExactCheckpointId),
+    Replacement {
+        source: ExactCheckpointId,
+        promoted: ExactCheckpointId,
+    },
     Reconcile(SyncSender<()>),
     Shutdown,
 }
@@ -64,6 +69,16 @@ impl PausedCheckpointObserver for PackagedExactPinObserver {
     fn checkpoint_paused(&self, checkpoint: ExactCheckpointId) -> Result<(), ()> {
         self.sender
             .send(MaterializerCommand::Checkpoint(checkpoint))
+            .map_err(|_| ())
+    }
+
+    fn checkpoint_promoted(
+        &self,
+        source: ExactCheckpointId,
+        promoted: ExactCheckpointId,
+    ) -> Result<(), ()> {
+        self.sender
+            .send(MaterializerCommand::Replacement { source, promoted })
             .map_err(|_| ())
     }
 }
@@ -95,8 +110,9 @@ pub(crate) fn prepare_packaged_exact_pin_materializer(
     }
 
     let mut catalog = BTreeMap::new();
+    let mut catalog_roots = BTreeMap::new();
     for checkpoint in roots {
-        insert_checkpoint(&checkpoints, &mut catalog, checkpoint)?;
+        insert_checkpoint(&checkpoints, &mut catalog, &mut catalog_roots, checkpoint)?;
     }
     let mut selections = DirectoryExactPinMaterializationStore::open(selection_root)?;
     reconcile_exact_pins(
@@ -115,6 +131,7 @@ pub(crate) fn prepare_packaged_exact_pin_materializer(
             campaigns,
             selections,
             catalog,
+            catalog_roots,
             sender: sender.clone(),
             receiver,
         },
@@ -158,7 +175,21 @@ impl PreparedPackagedExactPinMaterializer {
         loop {
             match self.receiver.recv_timeout(RECONCILE_INTERVAL) {
                 Ok(MaterializerCommand::Checkpoint(checkpoint)) => {
-                    insert_checkpoint(&self.checkpoints, &mut self.catalog, checkpoint)?;
+                    insert_checkpoint(
+                        &self.checkpoints,
+                        &mut self.catalog,
+                        &mut self.catalog_roots,
+                        checkpoint,
+                    )?;
+                }
+                Ok(MaterializerCommand::Replacement { source, promoted }) => {
+                    replace_checkpoint(
+                        &self.checkpoints,
+                        &mut self.catalog,
+                        &mut self.catalog_roots,
+                        source,
+                        promoted,
+                    )?;
                 }
                 Ok(MaterializerCommand::Reconcile(acknowledged)) => {
                     reconcile_exact_pins(
@@ -240,29 +271,84 @@ impl Drop for PackagedExactPinMaterializerOwner {
 
 fn insert_checkpoint(
     checkpoints: &ExactCheckpointStore,
-    catalog: &mut BTreeMap<ConfigurationId, ExactCheckpointId>,
+    catalog: &mut BTreeMap<ConfigurationId, BTreeSet<ExactCheckpointId>>,
+    catalog_roots: &mut BTreeMap<ExactCheckpointId, ConfigurationId>,
     checkpoint: ExactCheckpointId,
 ) -> Result<(), PackagedExactPinMaterializerError> {
-    let loaded = checkpoints.load(checkpoint)?;
-    let configuration = ConfigurationId::from_hash(CampaignHash::from_bytes(
-        loaded.snapshot().checkpoint().configuration.bytes,
-    ));
-    if !catalog.contains_key(&configuration) && catalog.len() >= MAX_PACKAGED_EXACT_PIN_CHECKPOINTS
-    {
+    let loaded = checkpoints.load_attempt_checkpoint(checkpoint)?;
+    let configuration =
+        ConfigurationId::from_hash(CampaignHash::from_bytes(loaded.configuration().bytes));
+    insert_authenticated_checkpoint(catalog, catalog_roots, configuration, checkpoint)
+}
+
+fn insert_authenticated_checkpoint(
+    catalog: &mut BTreeMap<ConfigurationId, BTreeSet<ExactCheckpointId>>,
+    catalog_roots: &mut BTreeMap<ExactCheckpointId, ConfigurationId>,
+    configuration: ConfigurationId,
+    checkpoint: ExactCheckpointId,
+) -> Result<(), PackagedExactPinMaterializerError> {
+    if let Some(current) = catalog_roots.get(&checkpoint) {
+        return if *current == configuration {
+            Ok(())
+        } else {
+            Err(PackagedExactPinMaterializerError::CatalogInvariant)
+        };
+    }
+    if catalog_roots.len() >= MAX_PACKAGED_EXACT_PIN_CHECKPOINTS {
         return Err(PackagedExactPinMaterializerError::CheckpointLimit);
     }
-    catalog
-        .entry(configuration)
-        .and_modify(|current| *current = (*current).min(checkpoint))
-        .or_insert(checkpoint);
+    let roots = catalog.entry(configuration).or_default();
+    if !roots.insert(checkpoint) {
+        return Err(PackagedExactPinMaterializerError::CatalogInvariant);
+    }
+    catalog_roots.insert(checkpoint, configuration);
     Ok(())
+}
+
+fn replace_checkpoint(
+    checkpoints: &ExactCheckpointStore,
+    catalog: &mut BTreeMap<ConfigurationId, BTreeSet<ExactCheckpointId>>,
+    catalog_roots: &mut BTreeMap<ExactCheckpointId, ConfigurationId>,
+    source: ExactCheckpointId,
+    promoted: ExactCheckpointId,
+) -> Result<(), PackagedExactPinMaterializerError> {
+    let loaded = checkpoints.load_attempt_checkpoint(promoted)?;
+    let configuration =
+        ConfigurationId::from_hash(CampaignHash::from_bytes(loaded.configuration().bytes));
+    if source == promoted {
+        return Err(PackagedExactPinMaterializerError::CatalogInvariant);
+    }
+    let source_configuration = catalog_roots
+        .get(&source)
+        .copied()
+        .ok_or(PackagedExactPinMaterializerError::UnknownPromotionSource { checkpoint: source })?;
+    if source_configuration != configuration {
+        return Err(
+            PackagedExactPinMaterializerError::PromotionConfigurationMismatch {
+                source_configuration,
+                promoted: configuration,
+            },
+        );
+    }
+    let roots = catalog
+        .get_mut(&configuration)
+        .ok_or(PackagedExactPinMaterializerError::CatalogInvariant)?;
+    if !roots.remove(&source) {
+        return Err(PackagedExactPinMaterializerError::CatalogInvariant);
+    }
+    let remove_configuration = roots.is_empty();
+    if remove_configuration {
+        catalog.remove(&configuration);
+    }
+    catalog_roots.remove(&source);
+    insert_authenticated_checkpoint(catalog, catalog_roots, configuration, promoted)
 }
 
 fn reconcile_exact_pins(
     repository: &CampaignRepository,
     checkpoints: &ExactCheckpointStore,
     campaigns: &BTreeSet<CampaignName>,
-    catalog: &BTreeMap<ConfigurationId, ExactCheckpointId>,
+    catalog: &BTreeMap<ConfigurationId, BTreeSet<ExactCheckpointId>>,
     selections: &mut DirectoryExactPinMaterializationStore,
 ) -> Result<(), PackagedExactPinMaterializerError> {
     let mut pending = Vec::new();
@@ -279,7 +365,10 @@ fn reconcile_exact_pins(
             }
             exact_pin_count += 1;
             let configuration = pin.request().change.configuration();
-            let Some(checkpoint) = catalog.get(&configuration).copied() else {
+            let Some(checkpoint) = catalog
+                .get(&configuration)
+                .and_then(|roots| roots.first().copied())
+            else {
                 return;
             };
             pending.push((campaign.clone(), configuration, checkpoint));
@@ -316,6 +405,27 @@ pub enum PackagedExactPinMaterializerError {
     /// One current semantic projection contained too many exact pins.
     #[error("packaged exact-pin projection exceeds 65,536 selections")]
     PinLimit,
+    /// A promotion completion named a source absent from the authenticated catalog.
+    #[error(
+        "packaged exact-pin promotion source {checkpoint} is absent from the checkpoint catalog"
+    )]
+    UnknownPromotionSource {
+        /// Raw source root reported by the promotion owner.
+        checkpoint: ExactCheckpointId,
+    },
+    /// A promotion replacement materialized a different configuration.
+    #[error(
+        "packaged exact-pin promotion changed configuration from {source_configuration} to {promoted}"
+    )]
+    PromotionConfigurationMismatch {
+        /// Configuration authenticated from the raw source catalog entry.
+        source_configuration: ConfigurationId,
+        /// Configuration authenticated from the promoted replacement root.
+        promoted: ConfigurationId,
+    },
+    /// The two bounded catalog indexes disagreed.
+    #[error("packaged exact-pin checkpoint catalog invariant failed")]
+    CatalogInvariant,
     /// Assignment-ledger inventory failed.
     #[error(transparent)]
     Assignment(#[from] crate::AssignmentLedgerError),

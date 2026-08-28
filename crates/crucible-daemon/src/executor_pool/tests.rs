@@ -291,6 +291,7 @@ struct CheckpointWorker {
 #[derive(Default)]
 struct RecordingPausedCheckpointObserver {
     checkpoints: Mutex<Vec<ExactCheckpointId>>,
+    promotions: Mutex<Vec<(ExactCheckpointId, ExactCheckpointId)>>,
 }
 
 impl PausedCheckpointObserver for RecordingPausedCheckpointObserver {
@@ -299,6 +300,18 @@ impl PausedCheckpointObserver for RecordingPausedCheckpointObserver {
             .lock()
             .expect("paused-checkpoint observer lock")
             .push(checkpoint);
+        Ok(())
+    }
+
+    fn checkpoint_promoted(
+        &self,
+        source: ExactCheckpointId,
+        promoted: ExactCheckpointId,
+    ) -> Result<(), ()> {
+        self.promotions
+            .lock()
+            .expect("promoted-checkpoint observer lock")
+            .push((source, promoted));
         Ok(())
     }
 }
@@ -654,8 +667,10 @@ fn newly_paused_checkpoint_is_enqueued_and_promoted_without_rerunning_attempt() 
     let epoch = DaemonEpoch::from_bytes([0x3a; 16]).expect("epoch");
     let entered = Arc::new(AtomicUsize::new(0));
     let promotion_calls = Arc::new(AtomicUsize::new(0));
+    let observer = Arc::new(RecordingPausedCheckpointObserver::default());
+    let checkpoint_observer: Arc<dyn PausedCheckpointObserver> = observer.clone();
     let checkpoints = checkpoint_store();
-    let pool = LocalExecutorWorkerPool::start_with_checkpoint_promotions(
+    let pool = LocalExecutorWorkerPool::start_with_checkpoint_promotions_and_observer(
         capability(epoch),
         store(),
         Arc::clone(&checkpoints),
@@ -666,6 +681,7 @@ fn newly_paused_checkpoint_is_enqueued_and_promoted_without_rerunning_attempt() 
             checkpoints,
             calls: Arc::clone(&promotion_calls),
         }],
+        checkpoint_observer,
     )
     .expect("promotion-enabled checkpoint pool");
     let assignment = request(epoch, 0x4c);
@@ -709,6 +725,24 @@ fn newly_paused_checkpoint_is_enqueued_and_promoted_without_rerunning_attempt() 
         loaded.snapshot().replay_oracle_validation(),
         QemuReplayOracleValidation::Match { .. }
     ));
+    let promotions = observer
+        .promotions
+        .lock()
+        .expect("promoted-checkpoint observer lock");
+    let [(source, promoted)] = promotions.as_slice() else {
+        panic!("promotion must notify the paused-root owner exactly once")
+    };
+    assert_eq!(*promoted, checkpoint);
+    assert_ne!(source, promoted);
+    assert_eq!(
+        observer
+            .checkpoints
+            .lock()
+            .expect("paused-checkpoint observer lock")
+            .as_slice(),
+        &[*source]
+    );
+    drop(promotions);
     assert_eq!(promotion_calls.load(Ordering::Acquire), 1);
     let report = service.report().expect("promoted checkpoint report");
     assert_eq!(report.executions(), 1);

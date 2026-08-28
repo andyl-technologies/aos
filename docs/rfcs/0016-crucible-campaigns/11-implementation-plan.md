@@ -1541,9 +1541,12 @@ the non-substitutable `STATE/executor-ledger`, persists or exactly reopens the
 non-substitutable `STATE/exact-pin-materializations` owner, persists or exactly
 reopens the bounded external GC journal during non-destructive plan, and
 revalidates every generation before apply. The packaged executor rebuilds a
-65,536-root checkpoint catalog from its ledger, receives later paused roots
-through bounded backpressure, and reprojects up to 65,536 current exact pins on
-a fixed cadence outside the supervisor actor. A missing current-fact selection
+65,536-root checkpoint catalog from its ledger, authenticating both
+compatibility schema-v2/v3 roots and schema-v4 production closures. It receives
+later paused roots through bounded backpressure and, after the authoritative
+promotion CAS, replaces each raw source with its replay-validated promoted root
+without waiting for restart. It reprojects up to 65,536 current exact pins on a
+fixed cadence outside the supervisor actor. A missing current-fact selection
 fails GC closed. Adjacent read-only porcelain
 reports the exact admitted graph and streams one requested content ID through
 deferred EOF authentication without borrowing ref or delete authority. It also

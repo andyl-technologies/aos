@@ -37,8 +37,8 @@ use rustix::fs::{FlockOperation, flock};
 use thiserror::Error;
 
 use crate::{
-    ExactCheckpointStore, ExactCheckpointStoreError, LoadedExactCheckpoint,
-    QemuAttemptProcessResourceGuard, QemuGuardedReplayOracleSession,
+    ExactCheckpointStore, ExactCheckpointStoreError, LoadedAttemptCheckpoint,
+    LoadedExactCheckpoint, QemuAttemptProcessResourceGuard, QemuGuardedReplayOracleSession,
 };
 
 /// Registered schema for one durable exact-pin materialization selection.
@@ -101,10 +101,11 @@ impl ExactPinMaterializationSelection {
 
     /// Reauthenticates this durable selection against the current exact pin.
     ///
-    /// The returned checkpoint has a fully authenticated root, metadata child,
-    /// and bounded reopenable VMState stream. A restore owner must still retain
+    /// The returned checkpoint has a fully authenticated single-node child set
+    /// or production manifest/index closure. A restore owner must still retain
     /// its campaign resume precondition while turning the immutable selection
-    /// into a live execution.
+    /// into a live execution, and must explicitly select the matching root
+    /// representation.
     ///
     /// # Errors
     ///
@@ -115,7 +116,7 @@ impl ExactPinMaterializationSelection {
         &self,
         repository: &CampaignRepository,
         checkpoints: &ExactCheckpointStore,
-    ) -> Result<LoadedExactCheckpoint, ExactPinRetentionError> {
+    ) -> Result<LoadedAttemptCheckpoint, ExactPinRetentionError> {
         let current = current_exact_pin_fact(repository, &self.campaign, self.configuration)?;
         if current != self.pin_fact {
             return Err(ExactPinRetentionError::StaleSelection {
@@ -132,7 +133,7 @@ impl ExactPinMaterializationSelection {
         campaign: &CampaignName,
         configuration: ConfigurationId,
         checkpoint: ExactCheckpointId,
-    ) -> Result<(Self, LoadedExactCheckpoint), ExactPinRetentionError> {
+    ) -> Result<(Self, LoadedAttemptCheckpoint), ExactPinRetentionError> {
         let pin_fact = current_exact_pin_fact(repository, campaign, configuration)?;
         let loaded = load_checkpoint_for_configuration(checkpoints, checkpoint, configuration)?;
         Ok((
@@ -239,7 +240,10 @@ pub fn select_finding_exact_pins(
     let mut measurement_boundary = None;
     let mut post_failure = None;
     for candidate in candidates {
-        let loaded = load_checkpoint_for_configuration(checkpoints, *candidate, configuration)?;
+        let loaded = require_single_node_checkpoint(
+            load_checkpoint_for_configuration(checkpoints, *candidate, configuration)?,
+            "select-finding-exact-pins",
+        )?;
         let scheduler =
             loaded
                 .scheduler()
@@ -323,11 +327,10 @@ fn load_checkpoint_for_configuration(
     checkpoints: &ExactCheckpointStore,
     checkpoint: ExactCheckpointId,
     configuration: ConfigurationId,
-) -> Result<LoadedExactCheckpoint, ExactPinRetentionError> {
-    let loaded = checkpoints.load(checkpoint)?;
-    let checkpoint_configuration = ConfigurationId::from_hash(CampaignHash::from_bytes(
-        loaded.snapshot().checkpoint().configuration.bytes,
-    ));
+) -> Result<LoadedAttemptCheckpoint, ExactPinRetentionError> {
+    let loaded = checkpoints.load_attempt_checkpoint(checkpoint)?;
+    let checkpoint_configuration =
+        ConfigurationId::from_hash(CampaignHash::from_bytes(loaded.configuration().bytes));
     if checkpoint_configuration != configuration {
         return Err(ExactPinRetentionError::CheckpointConfigurationMismatch {
             expected: configuration,
@@ -335,6 +338,15 @@ fn load_checkpoint_for_configuration(
         });
     }
     Ok(loaded)
+}
+
+fn require_single_node_checkpoint(
+    loaded: LoadedAttemptCheckpoint,
+    operation: &'static str,
+) -> Result<LoadedExactCheckpoint, ExactPinRetentionError> {
+    loaded
+        .into_single_node()
+        .ok_or(ExactPinRetentionError::ProductionOperationUnsupported { operation })
 }
 
 /// Result of one idempotent exact-pin materialization selection.
@@ -504,7 +516,10 @@ where
                     configuration: target.configuration_id,
                 })?
         };
-        let loaded = selected.authenticate_current(repository, checkpoints)?;
+        let loaded = require_single_node_checkpoint(
+            selected.authenticate_current(repository, checkpoints)?,
+            "validate-and-promote-replay",
+        )?;
         let check = check_qemu_snapshot_replay_oracle_bound(
             target.world,
             target.configuration,
@@ -649,7 +664,10 @@ impl DirectoryExactPinMaterializationStore {
                     configuration: target.configuration_id,
                 })?
         };
-        let loaded = selected.authenticate_current(repository, checkpoints)?;
+        let loaded = require_single_node_checkpoint(
+            selected.authenticate_current(repository, checkpoints)?,
+            "validate-and-promote-replay-guarded",
+        )?;
         let mut session = QemuGuardedReplayOracleSession::new(executor, guard);
         let comparison = check_qemu_snapshot_replay_oracle_bound(
             target.world,
@@ -707,7 +725,10 @@ impl DirectoryExactPinMaterializationStore {
                 }
             })?
         };
-        let loaded = source.authenticate_current(repository, checkpoints)?;
+        let loaded = require_single_node_checkpoint(
+            source.authenticate_current(repository, checkpoints)?,
+            "promote-replay-oracle-match",
+        )?;
         let capture = loaded.promote_replay_oracle_match(check)?;
         let prepared = checkpoints.prepare_capture(capture)?;
         let publication = checkpoints.publish(&prepared)?;
@@ -823,6 +844,14 @@ pub enum ExactPinRetentionError {
     CheckpointHasNoScheduler {
         /// Exact root that cannot be ordered at an event boundary.
         checkpoint: ExactCheckpointId,
+    },
+    /// A compatibility-only operation received a production multi-node root.
+    #[error(
+        "production exact checkpoints do not support `{operation}` through the compatibility path"
+    )]
+    ProductionOperationUnsupported {
+        /// Stable compatibility-only operation name.
+        operation: &'static str,
     },
     /// A durable materialization selection names an earlier exact-pin fact.
     #[error("exact-pin materialization selection is stale: recorded {recorded}, current {current}")]

@@ -508,7 +508,7 @@ fn apply_exact_pin(fixture: &ExactPinMaterializerFixture) {
 }
 
 #[test]
-fn packaged_materializer_selects_a_checkpoint_when_the_pin_arrives_later() {
+fn packaged_materializer_tracks_a_late_pin_and_promoted_replacement() {
     let directory = tempfile::tempdir().expect("packaged exact-pin directory");
     let fixture = exact_pin_materializer_fixture(&directory);
     let ledger = DirectoryAssignmentLedger::open(directory.path().join("ledger"))
@@ -534,6 +534,24 @@ fn packaged_materializer_selects_a_checkpoint_when_the_pin_arrives_later() {
     owner.reconcile_now().expect("reconcile checkpoint catalog");
     apply_exact_pin(&fixture);
     owner.reconcile_now().expect("reconcile later exact pin");
+
+    let source = fixture
+        .checkpoints
+        .load(fixture.checkpoint)
+        .expect("load raw checkpoint");
+    let replacement = fixture
+        .checkpoints
+        .prepare(source.snapshot(), BlobHandle::from_bytes(vec![0xa5; 4096]))
+        .and_then(|prepared| fixture.checkpoints.publish(&prepared))
+        .expect("publish replacement checkpoint")
+        .root();
+    assert_ne!(replacement, fixture.checkpoint);
+    observer
+        .checkpoint_promoted(fixture.checkpoint, replacement)
+        .expect("publish promoted checkpoint notification");
+    owner
+        .reconcile_now()
+        .expect("reconcile promoted checkpoint catalog");
     owner.join().expect("join exact-pin materializer");
     assert!(!terminal.load(Ordering::Acquire));
 
@@ -546,7 +564,7 @@ fn packaged_materializer_selects_a_checkpoint_when_the_pin_arrives_later() {
         .selection(&fixture.campaign, fixture.configuration)
         .expect("read exact-pin selection")
         .expect("selected exact checkpoint");
-    assert_eq!(selected.checkpoint(), fixture.checkpoint);
+    assert_eq!(selected.checkpoint(), replacement);
 }
 
 #[test]
