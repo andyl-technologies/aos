@@ -342,6 +342,53 @@ fn mmap_setup_region_exposes_node_slot_and_distinct_directed_rings() {
 
 #[test]
 #[cfg(unix)]
+fn mapped_hot_fork_barrier_holds_and_releases_every_ring_producer() {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+        Ok(allocation) => allocation,
+        Err(error) => panic!("valid region allocation should build: {error}"),
+    };
+    let mut mapped = mapped_region_from_allocation(&allocation);
+
+    let held = mapped
+        .hold_hot_fork_ring_producers()
+        .unwrap_or_else(|error| panic!("complete mapped ring geometry should hold: {error}"));
+    assert!(held.ring_count() > 0);
+    assert_eq!(held.held_rings(), held.ring_count());
+    assert_eq!(held.producers_in_flight(), 0);
+    assert!(held.quiescent());
+    assert_eq!(mapped.hot_fork_ring_producer_snapshot(), Ok(held));
+
+    let frame = FrameEntry::new(11, 0, 1, b"packet")
+        .unwrap_or_else(|error| panic!("valid frame should build: {error}"));
+    {
+        let view = mapped
+            .node_directed_ring_pair_mut(0, SLOT_NET_ROUTER as u32, 0, 0, SLOT_NET_ROUTER as u32)
+            .unwrap_or_else(|error| panic!("mapped node/ring view should bind: {error}"));
+        assert_eq!(
+            view.second.header.enqueue(view.second.entries, &frame),
+            Err(SpscRingError::ProducerBarrierHeld)
+        );
+    }
+
+    let released = mapped
+        .release_hot_fork_ring_producers()
+        .unwrap_or_else(|error| panic!("complete mapped ring geometry should release: {error}"));
+    assert_eq!(released.ring_count(), held.ring_count());
+    assert_eq!(released.held_rings(), 0);
+    assert_eq!(released.producers_in_flight(), 0);
+    assert!(!released.quiescent());
+
+    let view = mapped
+        .node_directed_ring_pair_mut(0, SLOT_NET_ROUTER as u32, 0, 0, SLOT_NET_ROUTER as u32)
+        .unwrap_or_else(|error| panic!("mapped node/ring view should rebind: {error}"));
+    assert_eq!(
+        view.second.header.enqueue(view.second.entries, &frame),
+        Ok(())
+    );
+}
+
+#[test]
+#[cfg(unix)]
 fn mmap_setup_region_rejects_duplicate_mutable_directed_ring_view() {
     let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
         Ok(allocation) => allocation,

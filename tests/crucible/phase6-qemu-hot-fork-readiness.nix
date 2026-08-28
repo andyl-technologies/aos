@@ -734,13 +734,16 @@ in
              select(has("in-flight"))] as $reports |
             ($reports | length) == 2 and $reports[0] == $reports[1] and
             $reports[0] == {
-              "schema-version": 1,
+              "schema-version": 2,
               "generation": 0,
               "registered": false,
               "manifest-consistent": false,
               "held": false,
               "teardown-closed": false,
               "in-flight": 0,
+              "ring-count": 0,
+              "rings-held": 0,
+              "ring-producers-in-flight": 0,
               "quiescent": false
             }
           ' "$out/plugin-barrier-query.json" >/dev/null \
@@ -928,7 +931,7 @@ in
               "schema-version",
               "transaction-active"
             ] and
-            $report."schema-version" == 7 and
+            $report."schema-version" == 8 and
             $report.generation == 0 and
             $report.outcome == "idle" and
             $report."transaction-active" == false and
@@ -936,13 +939,16 @@ in
             $report."acknowledged-proofs" == 3 and
             $report."missing-proofs" == 508 and
             $report."plugin-barrier" == {
-              "schema-version": 1,
+              "schema-version": 2,
               "generation": 0,
               "registered": false,
               "manifest-consistent": false,
               "held": false,
               "teardown-closed": false,
               "in-flight": 0,
+              "ring-count": 0,
+              "rings-held": 0,
+              "ring-producers-in-flight": 0,
               "quiescent": false
             } and
             $report."rcu-barrier"."schema-version" == 1 and
@@ -1214,7 +1220,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0132-crucible-bind-hot-fork-block-snapshot-roots.patch
+          patch=0135-crucible-freeze-hot-fork-rings.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -1264,12 +1270,12 @@ in
           plugin_resource_inventory_schema_version=1
           plugin_resource_inventory_stable=true
           plugin_resource_inventory_unregistered_shape=true
-          plugin_barrier_schema_version=1
+          plugin_barrier_schema_version=2
           plugin_barrier_stable=true
           plugin_barrier_unregistered_shape=true
           plugin_barrier_release_unregistered_rejected=true
           plugin_ring_proof_acknowledged=false
-          template_coordinator_schema_version=7
+          template_coordinator_schema_version=8
           template_coordinator_idle_stable=true
           template_coordinator_unregistered_shape=true
           template_prepare_without_exact_boundary_rejected=true

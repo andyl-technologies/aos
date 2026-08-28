@@ -312,6 +312,11 @@ pub(super) fn write_ring_header_bytes(bytes: &mut [u8], ring_header: &RingHeader
         RING_HEADER_WRITE_IDX_OFFSET,
         ring_header.write_index(),
     );
+    write_u64_at(
+        bytes,
+        RING_HEADER_PRODUCER_STATE_OFFSET,
+        ring_header.producer_state_raw(),
+    );
 }
 
 pub(super) fn write_frame_entry_bytes(bytes: &mut [u8], frame: &FrameEntry) {

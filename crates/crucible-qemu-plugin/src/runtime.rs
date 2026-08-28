@@ -1030,10 +1030,36 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
     // SAFETY: registration passes the stable pinned runtime-owner address, and
     // production retains that allocation for the QEMU process lifetime.
     let state = unsafe { &*userdata.cast::<OwnedCallbackRuntimeState>() };
-    let snapshot = match action {
-        crate::QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD => state.quiescence.hold_hot_fork(),
-        crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY => state.quiescence.snapshot(),
-        crate::QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE => state.quiescence.release_hot_fork(),
+    let (snapshot, rings) = match action {
+        crate::QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD => {
+            let snapshot = state.quiescence.hold_hot_fork();
+            let Ok(rings) = state.setup.mapped_region().hold_hot_fork_ring_producers() else {
+                return -libc::EPROTO;
+            };
+            (snapshot, rings)
+        }
+        crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY => {
+            let snapshot = state.quiescence.snapshot();
+            let Ok(rings) = state
+                .setup
+                .mapped_region()
+                .hot_fork_ring_producer_snapshot()
+            else {
+                return -libc::EPROTO;
+            };
+            (snapshot, rings)
+        }
+        crate::QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE => {
+            let Ok(rings) = state
+                .setup
+                .mapped_region()
+                .release_hot_fork_ring_producers()
+            else {
+                return -libc::EPROTO;
+            };
+            let snapshot = state.quiescence.release_hot_fork();
+            (snapshot, rings)
+        }
         _ => return -libc::EINVAL,
     };
     let Ok(struct_size) =
@@ -1052,6 +1078,9 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
             flags,
             reserved: 0,
             in_flight: snapshot.in_flight,
+            ring_count: rings.ring_count(),
+            rings_held: rings.held_rings(),
+            ring_producers_in_flight: rings.producers_in_flight(),
         });
     }
     0

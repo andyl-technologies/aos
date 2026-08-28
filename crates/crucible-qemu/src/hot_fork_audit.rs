@@ -1597,12 +1597,12 @@ mod tests {
             QmpHotForkMutexInventory::one_owned(1, 10),
             QmpHotForkTimerInventory::empty(),
         );
-        missing_handler_descriptor.aio_handlers = QmpHotForkAioHandlerInventory::one_read(9, 1, 4);
+        missing_handler_descriptor.aio_handlers = QmpHotForkAioHandlerInventory::one_read(9, 1, 5);
         assert!(matches!(
             QemuHotForkAudit::new(missing_handler_descriptor, process.clone()),
             Err(QemuHotForkAuditError::AioHandlerDescriptorMissing {
                 handler_id: 9,
-                descriptor: 4,
+                descriptor: 5,
             })
         ));
 

@@ -114,8 +114,12 @@
         needle = "const _: () = assert!(RING_HEADER_WRITE_IDX_OFFSET == 64);";
       }
       {
+        label = "ring header producer-state Rust static assertion";
+        needle = "const _: () = assert!(RING_HEADER_PRODUCER_STATE_OFFSET == 72);";
+      }
+      {
         label = "ring header write padding Rust static assertion";
-        needle = "const _: () = assert!(RING_HEADER_PAD_WRITE_OFFSET == 72);";
+        needle = "const _: () = assert!(RING_HEADER_PAD_WRITE_OFFSET == 80);";
       }
       {
         label = "ring header size Rust static assertion";
@@ -413,7 +417,7 @@
     ++ failuresFor "crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
-        needle = "abi_version=18";
+        needle = "abi_version=19";
       }
       {
         label = "total serialized length";
@@ -455,7 +459,7 @@
     ++ failuresFor "crates/crucible-shmem/interface/crucible-shmem-abi.toml" interfaceManifest [
       {
         label = "machine-readable ABI version";
-        needle = "abi_version = 18";
+        needle = "abi_version = 19";
       }
       {
         label = "selectable reply direction";
@@ -638,6 +642,10 @@
       {
         label = "ring header write index offset static assert";
         needle = "offsetof(crucible_shmem_ring_header, write_idx) == CRUCIBLE_SHMEM_RING_HEADER_WRITE_IDX_OFFSET";
+      }
+      {
+        label = "ring header producer-state offset static assert";
+        needle = "offsetof(crucible_shmem_ring_header, producer_state) == CRUCIBLE_SHMEM_RING_HEADER_PRODUCER_STATE_OFFSET";
       }
       {
         label = "ring header write padding offset static assert";
@@ -1007,6 +1015,10 @@ in
                 memset(&ring, 0, sizeof(ring));
                 atomic_init(&ring.read_idx, 5u);
                 atomic_init(&ring.write_idx, 9u);
+                atomic_init(
+                    &ring.producer_state,
+                    (UINT64_C(1) << 63) | UINT64_C(3)
+                );
 
                 crucible_shmem_frame_entry frame;
                 memset(&frame, 0, sizeof(frame));

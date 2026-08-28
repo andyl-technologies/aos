@@ -884,6 +884,9 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     assert_eq!(held.reserved, 0);
     assert_eq!(held.in_flight, 0);
     assert_eq!(held.flags, crate::QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_HELD);
+    assert!(held.ring_count > 0);
+    assert_eq!(held.rings_held, held.ring_count);
+    assert_eq!(held.ring_producers_in_flight, 0);
     let queried = invoke_hot_fork_barrier(crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY)
         .unwrap_or_else(|status| panic!("hot-fork barrier query should succeed: {status}"));
     assert_eq!(queried, held);
@@ -891,6 +894,9 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
         .unwrap_or_else(|status| panic!("hot-fork barrier release should succeed: {status}"));
     assert_eq!(released.flags, 0);
     assert_eq!(released.in_flight, 0);
+    assert_eq!(released.ring_count, held.ring_count);
+    assert_eq!(released.rings_held, 0);
+    assert_eq!(released.ring_producers_in_flight, 0);
     let teardown_handle = runtime
         ._callbacks
         .control_teardown_handle(0)

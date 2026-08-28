@@ -388,8 +388,8 @@ pub const QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD: u32 = 1;
 pub const QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY: u32 = 2;
 /// Hot-fork barrier callback action that releases the reversible hold.
 pub const QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE: u32 = 3;
-/// Current fixed-layout callback-barrier status schema.
-pub const QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION: u32 = 1;
+/// Current fixed-layout callback-and-ring barrier status schema.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION: u32 = 2;
 /// Callback-barrier status flag indicating that the reversible hold is active.
 pub const QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_HELD: u32 = 1_u32 << 0;
 /// Callback-barrier status flag indicating permanent teardown closure.
@@ -399,7 +399,7 @@ pub const QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_TEARDOWN: u32 = 1_u32 << 1;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct QemuPluginHotForkBarrierStatus {
-    /// Status schema version, currently one.
+    /// Status schema version, currently two.
     pub schema_version: u32,
     /// Exact C ABI structure size.
     pub struct_size: u32,
@@ -409,6 +409,12 @@ pub struct QemuPluginHotForkBarrierStatus {
     pub reserved: u32,
     /// Exact callbacks admitted but not yet returned at the snapshot instant.
     pub in_flight: u64,
+    /// Exact number of SPSC rings in the validated shared-memory layout.
+    pub ring_count: u64,
+    /// Number of rings whose reversible producer barrier is held.
+    pub rings_held: u64,
+    /// Checked aggregate of admitted producer publications still in flight.
+    pub ring_producers_in_flight: u64,
 }
 
 /// Plugin callback that changes or observes the callback-admission barrier.

@@ -200,7 +200,7 @@ impl QmpHotForkPluginResourceInventory {
     }
 }
 
-/// Exact plugin-owned callback-admission barrier state.
+/// Exact plugin-owned callback and shared-ring producer barrier state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QmpHotForkPluginBarrierState {
     generation: u64,
@@ -209,6 +209,9 @@ pub struct QmpHotForkPluginBarrierState {
     held: bool,
     teardown_closed: bool,
     in_flight: u64,
+    ring_count: u64,
+    rings_held: u64,
+    ring_producers_in_flight: u64,
     quiescent: bool,
 }
 
@@ -249,10 +252,28 @@ impl QmpHotForkPluginBarrierState {
         self.in_flight
     }
 
+    /// Returns the exact ring count from the validated shared-memory layout.
+    #[must_use]
+    pub const fn ring_count(self) -> u64 {
+        self.ring_count
+    }
+
+    /// Returns the number of rings whose producer barrier is held.
+    #[must_use]
+    pub const fn rings_held(self) -> u64 {
+        self.rings_held
+    }
+
+    /// Returns producer publications admitted before the ring hold.
+    #[must_use]
+    pub const fn ring_producers_in_flight(self) -> u64 {
+        self.ring_producers_in_flight
+    }
+
     /// Returns whether the registered, manifest-consistent hold has drained.
     ///
-    /// This proves only plugin callback parking. Host-side ring producers,
-    /// plugin worker threads, and child reconstruction remain outside it.
+    /// This proves callback and ring-producer parking. Plugin worker threads,
+    /// ring cloning, and child reconstruction remain outside it.
     #[must_use]
     pub const fn quiescent(self) -> bool {
         self.quiescent
@@ -494,6 +515,9 @@ pub(super) fn parse_hot_fork_plugin_barrier_state_for(
         "held",
         "teardown-closed",
         "in-flight",
+        "ring-count",
+        "rings-held",
+        "ring-producers-in-flight",
         "quiescent",
     ];
     if object.len() != fields.len() || !fields.iter().all(|field| object.contains_key(*field)) {
@@ -528,24 +552,55 @@ pub(super) fn parse_hot_fork_plugin_barrier_state_for(
         .get("in-flight")
         .and_then(Value::as_u64)
         .ok_or_else(&malformed)?;
+    let ring_count = object
+        .get("ring-count")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let rings_held = object
+        .get("rings-held")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let ring_producers_in_flight = object
+        .get("ring-producers-in-flight")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
     let quiescent = object
         .get("quiescent")
         .and_then(Value::as_bool)
         .ok_or_else(&malformed)?;
-    let expected_quiescent =
-        registered && manifest_consistent && held && !teardown_closed && in_flight == 0;
+    let ring_shape = ring_count != 0
+        && rings_held <= ring_count
+        && (rings_held == 0 || rings_held == ring_count)
+        && held == (rings_held == ring_count);
+    let expected_quiescent = registered
+        && manifest_consistent
+        && held
+        && !teardown_closed
+        && in_flight == 0
+        && ring_shape
+        && ring_producers_in_flight == 0;
     let unregistered_shape = generation == 0
         && !manifest_consistent
         && !held
         && !teardown_closed
         && in_flight == 0
+        && ring_count == 0
+        && rings_held == 0
+        && ring_producers_in_flight == 0
         && !quiescent;
     if schema_version != u64::from(QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION)
         || quiescent != expected_quiescent
         || (registered && generation == 0)
         || (!registered && !unregistered_shape)
         || (manifest_consistent && !registered)
-        || ((held || teardown_closed || in_flight != 0) && !registered)
+        || (registered && !ring_shape)
+        || ((held
+            || teardown_closed
+            || in_flight != 0
+            || ring_count != 0
+            || rings_held != 0
+            || ring_producers_in_flight != 0)
+            && !registered)
     {
         return Err(malformed());
     }
@@ -557,6 +612,9 @@ pub(super) fn parse_hot_fork_plugin_barrier_state_for(
         held,
         teardown_closed,
         in_flight,
+        ring_count,
+        rings_held,
+        ring_producers_in_flight,
         quiescent,
     })
 }

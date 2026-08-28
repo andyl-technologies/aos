@@ -2,13 +2,57 @@
 
 use super::*;
 
+const RING_PRODUCER_HELD: u64 = 1_u64 << 63;
+const RING_PRODUCER_COUNT_MASK: u64 = !RING_PRODUCER_HELD;
+
+/// One exact view of a ring's reversible producer-admission barrier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RingProducerBarrierSnapshot {
+    held: bool,
+    in_flight: u64,
+}
+
+impl RingProducerBarrierSnapshot {
+    /// Returns whether later producer publications are rejected.
+    #[must_use]
+    pub const fn held(self) -> bool {
+        self.held
+    }
+
+    /// Returns the number of producer publications admitted before the hold.
+    #[must_use]
+    pub const fn in_flight(self) -> u64 {
+        self.in_flight
+    }
+
+    /// Returns whether this ring is held with no admitted producer remaining.
+    #[must_use]
+    pub const fn quiescent(self) -> bool {
+        self.held && self.in_flight == 0
+    }
+}
+
+pub(crate) struct RingProducerAdmission<'a> {
+    ring: &'a RingHeader,
+}
+
+impl Drop for RingProducerAdmission<'_> {
+    fn drop(&mut self) {
+        let previous = self.ring.producer_state.fetch_sub(1, Ordering::SeqCst);
+        if previous & RING_PRODUCER_COUNT_MASK == 0 {
+            std::process::abort();
+        }
+    }
+}
+
 /// A Lamport SPSC ring header shared by exactly one producer and one consumer.
 #[repr(C, align(128))]
 pub struct RingHeader {
     pub(super) read_idx: AtomicU64,
     _pad_read: [u8; 56],
     pub(super) write_idx: AtomicU64,
-    _pad_write: [u8; 56],
+    producer_state: AtomicU64,
+    _pad_write: [u8; 48],
 }
 
 impl Clone for RingHeader {
@@ -17,7 +61,11 @@ impl Clone for RingHeader {
             read_idx: AtomicU64::new(self.read_idx.load(Ordering::Acquire)),
             _pad_read: [0; 56],
             write_idx: AtomicU64::new(self.write_idx.load(Ordering::Acquire)),
-            _pad_write: [0; 56],
+            // Admission counts are process-local coordination, not logical
+            // ring content. A future hot-fork clone must install its own
+            // explicit child disposition rather than inherit live guards.
+            producer_state: AtomicU64::new(0),
+            _pad_write: [0; 48],
         }
     }
 }
@@ -28,6 +76,9 @@ pub const RING_HEADER_READ_IDX_OFFSET: usize = core::mem::offset_of!(RingHeader,
 pub const RING_HEADER_PAD_READ_OFFSET: usize = core::mem::offset_of!(RingHeader, _pad_read);
 /// Byte offset of [`RingHeader`]'s producer-owned write index.
 pub const RING_HEADER_WRITE_IDX_OFFSET: usize = core::mem::offset_of!(RingHeader, write_idx);
+/// Byte offset of [`RingHeader`]'s producer-admission state.
+pub const RING_HEADER_PRODUCER_STATE_OFFSET: usize =
+    core::mem::offset_of!(RingHeader, producer_state);
 /// Byte offset of [`RingHeader`]'s producer cache-line padding.
 pub const RING_HEADER_PAD_WRITE_OFFSET: usize = core::mem::offset_of!(RingHeader, _pad_write);
 /// Wire size of one [`RingHeader`].
@@ -38,7 +89,8 @@ pub const RING_HEADER_ALIGN: usize = core::mem::align_of::<RingHeader>();
 const _: () = assert!(RING_HEADER_READ_IDX_OFFSET == 0);
 const _: () = assert!(RING_HEADER_PAD_READ_OFFSET == 8);
 const _: () = assert!(RING_HEADER_WRITE_IDX_OFFSET == 64);
-const _: () = assert!(RING_HEADER_PAD_WRITE_OFFSET == 72);
+const _: () = assert!(RING_HEADER_PRODUCER_STATE_OFFSET == 72);
+const _: () = assert!(RING_HEADER_PAD_WRITE_OFFSET == 80);
 const _: () = assert!(RING_HEADER_SIZE == 128);
 const _: () = assert!(RING_HEADER_ALIGN == 128);
 
@@ -50,7 +102,38 @@ impl RingHeader {
             read_idx: AtomicU64::new(0),
             _pad_read: [0; 56],
             write_idx: AtomicU64::new(0),
-            _pad_write: [0; 56],
+            producer_state: AtomicU64::new(0),
+            _pad_write: [0; 48],
+        }
+    }
+
+    /// Holds the reversible hot-fork producer barrier for this ring.
+    ///
+    /// Producers admitted before the hold remain counted until their
+    /// publication attempt returns. Producers racing the hold cannot enter
+    /// after the held bit becomes visible.
+    #[must_use]
+    pub fn hold_hot_fork_producers(&self) -> RingProducerBarrierSnapshot {
+        self.producer_state
+            .fetch_or(RING_PRODUCER_HELD, Ordering::SeqCst);
+        self.producer_barrier_snapshot()
+    }
+
+    /// Releases the reversible hot-fork producer barrier for this ring.
+    #[must_use]
+    pub fn release_hot_fork_producers(&self) -> RingProducerBarrierSnapshot {
+        self.producer_state
+            .fetch_and(!RING_PRODUCER_HELD, Ordering::SeqCst);
+        self.producer_barrier_snapshot()
+    }
+
+    /// Returns one exact producer-admission snapshot for this ring.
+    #[must_use]
+    pub fn producer_barrier_snapshot(&self) -> RingProducerBarrierSnapshot {
+        let state = self.producer_state.load(Ordering::SeqCst);
+        RingProducerBarrierSnapshot {
+            held: state & RING_PRODUCER_HELD != 0,
+            in_flight: state & RING_PRODUCER_COUNT_MASK,
         }
     }
 
@@ -99,6 +182,9 @@ impl RingHeader {
         entries: &mut [FrameEntry],
         frame: &FrameEntry,
     ) -> Result<(), SpscRingError> {
+        let _producer = self
+            .enter_producer()
+            .ok_or(SpscRingError::ProducerBarrierHeld)?;
         let capacity = validated_capacity(entries)?;
         let tail = self.write_idx.load(Ordering::Relaxed);
         let head = self.read_idx.load(Ordering::Acquire);
@@ -128,6 +214,9 @@ impl RingHeader {
         entries: &mut [CoverageEntry],
         entry: CoverageEntry,
     ) -> Result<(), SpscRingError> {
+        let _producer = self
+            .enter_producer()
+            .ok_or(SpscRingError::ProducerBarrierHeld)?;
         let capacity = validated_capacity(entries)?;
         let tail = self.write_idx.load(Ordering::Relaxed);
         let head = self.read_idx.load(Ordering::Acquire);
@@ -158,6 +247,9 @@ impl RingHeader {
         entries: &mut [WhiteboxMarkerEntry],
         entry: WhiteboxMarkerEntry,
     ) -> Result<(), SpscRingError> {
+        let _producer = self
+            .enter_producer()
+            .ok_or(SpscRingError::ProducerBarrierHeld)?;
         let capacity = validated_capacity(entries)?;
         let tail = self.write_idx.load(Ordering::Relaxed);
         let head = self.read_idx.load(Ordering::Acquire);
@@ -184,6 +276,9 @@ impl RingHeader {
         entries: &mut [GuestIntrospectionEntry],
         entry: GuestIntrospectionEntry,
     ) -> Result<(), SpscRingError> {
+        let _producer = self
+            .enter_producer()
+            .ok_or(SpscRingError::ProducerBarrierHeld)?;
         let capacity = validated_capacity(entries)?;
         let tail = self.write_idx.load(Ordering::Relaxed);
         let head = self.read_idx.load(Ordering::Acquire);
@@ -209,6 +304,9 @@ impl RingHeader {
         entries: &mut [AcceleratorEntry],
         entry: AcceleratorEntry,
     ) -> Result<(), SpscRingError> {
+        let _producer = self
+            .enter_producer()
+            .ok_or(SpscRingError::ProducerBarrierHeld)?;
         let capacity = validated_capacity(entries)?;
         let tail = self.write_idx.load(Ordering::Relaxed);
         let head = self.read_idx.load(Ordering::Acquire);
@@ -220,6 +318,39 @@ impl RingHeader {
         self.write_idx
             .store(tail.wrapping_add(1), Ordering::Release);
         Ok(())
+    }
+
+    pub(crate) fn enter_producer(&self) -> Option<RingProducerAdmission<'_>> {
+        self.enter_producer_with_hook(|| {})
+    }
+
+    fn enter_producer_with_hook(
+        &self,
+        after_initial_load: impl FnOnce(),
+    ) -> Option<RingProducerAdmission<'_>> {
+        let mut observed = self.producer_state.load(Ordering::SeqCst);
+        after_initial_load();
+        loop {
+            if observed & RING_PRODUCER_HELD != 0 {
+                return None;
+            }
+            let count = observed & RING_PRODUCER_COUNT_MASK;
+            let Some(next_count) = count.checked_add(1) else {
+                std::process::abort();
+            };
+            if next_count > RING_PRODUCER_COUNT_MASK {
+                std::process::abort();
+            }
+            match self.producer_state.compare_exchange(
+                observed,
+                next_count,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_previous) => return Some(RingProducerAdmission { ring: self }),
+                Err(actual) => observed = actual,
+            }
+        }
     }
 
     /// Returns the next frame's delivery icount without consuming it.
@@ -525,6 +656,10 @@ impl RingHeader {
         self.write_idx.load(Ordering::Acquire)
     }
 
+    pub(crate) fn producer_state_raw(&self) -> u64 {
+        self.producer_state.load(Ordering::SeqCst)
+    }
+
     /// Returns `true` when the cache-line padding bytes are zero.
     #[must_use]
     pub fn padding_bytes_are_zero(&self) -> bool {
@@ -546,3 +681,58 @@ mod snapshot;
 
 pub use coverage_entry::*;
 pub use snapshot::{SnapshotFrameEntry, SpscRingSnapshot};
+
+#[cfg(test)]
+mod producer_barrier_tests {
+    use std::sync::{Arc, Barrier};
+
+    use super::*;
+
+    #[test]
+    fn hold_rejects_late_producers_and_waits_for_admitted_publication() {
+        let ring = RingHeader::new();
+        let admitted = ring
+            .enter_producer()
+            .unwrap_or_else(|| panic!("open producer gate should admit"));
+
+        let held = ring.hold_hot_fork_producers();
+        assert!(held.held());
+        assert_eq!(held.in_flight(), 1);
+        assert!(!held.quiescent());
+        assert!(ring.enter_producer().is_none());
+
+        drop(admitted);
+        assert!(ring.producer_barrier_snapshot().quiescent());
+        let released = ring.release_hot_fork_producers();
+        assert!(!released.held());
+        assert_eq!(released.in_flight(), 0);
+        assert!(ring.enter_producer().is_some());
+    }
+
+    #[test]
+    fn hold_between_load_and_admission_cas_rejects_racing_producer() {
+        let ring = Arc::new(RingHeader::new());
+        let loaded = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let racing_ring = Arc::clone(&ring);
+        let racing_loaded = Arc::clone(&loaded);
+        let racing_resume = Arc::clone(&resume);
+        let producer = std::thread::spawn(move || {
+            racing_ring
+                .enter_producer_with_hook(|| {
+                    racing_loaded.wait();
+                    racing_resume.wait();
+                })
+                .is_some()
+        });
+
+        loaded.wait();
+        assert!(ring.hold_hot_fork_producers().quiescent());
+        resume.wait();
+        let admitted = producer
+            .join()
+            .unwrap_or_else(|_panic| panic!("producer thread should finish"));
+        assert!(!admitted);
+        assert!(ring.producer_barrier_snapshot().quiescent());
+    }
+}

@@ -322,6 +322,9 @@ pub fn enqueue_fault_event(
     mut header: FaultEventHeaderV1,
     payload: &[u8],
 ) -> Result<(), FaultTransportError> {
+    let _producer = ring
+        .enter_producer()
+        .ok_or(FaultTransportError::ProducerBarrierHeld)?;
     let (write, index) = producer_ring_slot(ring, slots.len())?;
     let reservation = reserve_arena(arena_header, arena.len(), payload.len())?;
     copy_payload(arena, reservation.payload_start, payload)?;

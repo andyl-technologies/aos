@@ -1571,7 +1571,7 @@ QEMU now additionally owns a process-lifetime reversible RCU admission/drain
 barrier. Holding at the exact paused/device-flush boundary gates every new
 outer reader and callback submission through a race-closed
 two-phase admission, retains the exact reader/admission/callback/drain state,
-and parks rejected entrants until release. The version-7 template coordinator
+and parks rejected entrants until release. The version-8 template coordinator
 holds this barrier with the plugin callback barrier and acknowledges readiness
 bit 4 only while the complete retained RCU state is quiescent. The RCU worker
 still needs an exact child disposition/reinitializer, so bit 8 remains clear.
@@ -1646,7 +1646,7 @@ typed Rust control surface rejects contradictory schemas, bounds, generations,
 owners, and action postconditions. The QEMU unit regression parks a real graph
 writer until a scheduled release, while the live gate proves stable released
 state and no state retention after an invalid hold. This is a concrete
-block-side graph and I/O quiescence prerequisite. The version-7 template
+block-side graph and I/O quiescence prerequisite. The version-8 template
 coordinator schedules acquisition and release on the main AioContext, holds the
 graph and native drain barriers before parking asynchronous sources, and
 releases asynchronous sources before graph and block I/O admission reopen.
@@ -1673,16 +1673,17 @@ plugin-resource inventory prerequisite, not an executing-callback count, ring
 freeze, callback barrier, process-lifetime heap disposition, or child
 reinitializer; readiness bit 6 remains clear and the GPL/Apache process
 boundary is unchanged.
-The GPL plugin now also registers one process-lifetime reversible callback
-barrier backed by its existing teardown admission counter. A version-1 OOB QMP
-operation holds, observes, and releases that barrier. Holding is accepted only
-at the exact paused/device-flush boundary, rejects later live device and
-coverage callbacks without blocking QMP, and exposes the exact already-admitted
-in-flight count until it reaches zero. Release cannot reopen permanent teardown
-closure. This is the first retained T-CAM-6.2 subsystem barrier, but it still
-does not freeze host ring producers, drain plugin workers, retain a complete
-template transaction, or reconstruct child resources. Readiness bit 6 therefore
-remains clear and T-CAM-6.2 remains unchecked.
+The GPL plugin now also registers one process-lifetime reversible callback and
+shared-ring producer barrier. A version-2 OOB QMP operation holds, observes,
+and releases that barrier. Holding is accepted only at the exact paused/device-
+flush boundary, rejects later live device and coverage callbacks, then holds
+producer admission in every ABI-v19 shared-memory ring without blocking QMP.
+The response exposes exact callback and aggregate ring producer counts until
+both drain to zero. Release reopens rings before callbacks and cannot reopen
+permanent teardown closure. This is a retained T-CAM-6.2 subsystem barrier, but
+it still does not park plugin workers or control threads, clone ring bytes,
+retain a complete child disposition, or reconstruct child resources. Readiness
+bit 6 therefore remains clear and T-CAM-6.2 remains unchecked.
 Patched QEMU now also owns the versioned `PrepareForkTemplate`
 transaction. Its serialized OOB coordinator starts only at the exact
 paused/device-flush boundary, asynchronously closes graph-writer admission and

@@ -237,6 +237,7 @@ pub(super) fn emit_constants(out: &mut String) {
             ("READ_IDX", RING_HEADER_READ_IDX_OFFSET),
             ("PAD_READ", RING_HEADER_PAD_READ_OFFSET),
             ("WRITE_IDX", RING_HEADER_WRITE_IDX_OFFSET),
+            ("PRODUCER_STATE", RING_HEADER_PRODUCER_STATE_OFFSET),
             ("PAD_WRITE", RING_HEADER_PAD_WRITE_OFFSET),
         ],
     );

@@ -83,7 +83,8 @@
 //! 0       8     read_idx
 //! 8       56    read-cacheline padding
 //! 64      8     write_idx
-//! 72      56    write-cacheline padding
+//! 72      8     producer_state
+//! 80      48    write-cacheline padding
 //! ```
 //!
 //! Plugin-to-host coverage entry wire layout:
@@ -161,9 +162,9 @@ pub use mapped_setup_region::{
     MappedFaultResultTransportMut, MappedGuestIntrospectionConsumerRingMut,
     MappedGuestIntrospectionProducerRingMut, MappedHostAcceleratorRingsMut,
     MappedHostGuestIntrospectionRingsMut, MappedNodeRingPairMut, MappedPluginAcceleratorRingsMut,
-    MappedPluginGuestIntrospectionRingsMut, MappedSelectableReplyRingMut, MappedSetupRegion,
-    MappedSetupRegionAccessError, MappedWhiteboxMarkerRingMut, SetupRegionMapError,
-    mmap_setup_region,
+    MappedPluginGuestIntrospectionRingsMut, MappedRingProducerBarrierSnapshot,
+    MappedSelectableReplyRingMut, MappedSetupRegion, MappedSetupRegionAccessError,
+    MappedWhiteboxMarkerRingMut, SetupRegionMapError, mmap_setup_region,
 };
 
 use thiserror::Error;
@@ -196,7 +197,7 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// canonical backpressure-retention state.
 /// Version 18 appends one single-entry host-to-plugin selectable-reply ring per
 /// logical VM without changing any prior section offset.
-pub const ABI_VERSION: u32 = 18;
+pub const ABI_VERSION: u32 = 19;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///
