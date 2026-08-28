@@ -322,6 +322,15 @@ fn exposed_packages_from_expose_dir(
         let artifact_hash = store_path_hash(&artifact.store_path).to_string();
         let artifact_root = expose_dir.join(&artifact_hash).join("units");
         let mut units = expose.units.iter().cloned().collect::<BTreeSet<_>>();
+        for unit in &units {
+            if is_synthesized_package_target(unit) && unit != &expose.target {
+                bail!(
+                    "package '{}' declares foreign synthesized package target unit '{}'",
+                    apm.name,
+                    unit
+                );
+            }
+        }
         units.insert(expose.target.clone());
         for unit in &units {
             if let Some(target) = unit_diff::service_root_target(unit)
@@ -440,7 +449,23 @@ fn validate_package_target_ownership(
             .with_context(|| format!("reading exposed unit {}", path.display()))?;
         let parsed = Parsed::parse(&text);
         for (section, key) in [
+            ("Unit", "After"),
+            ("Unit", "Before"),
+            ("Unit", "BindsTo"),
+            ("Unit", "Conflicts"),
+            ("Unit", "JoinsNamespaceOf"),
+            ("Unit", "OnFailure"),
+            ("Unit", "OnSuccess"),
             ("Unit", "PartOf"),
+            ("Unit", "PropagatesReloadTo"),
+            ("Unit", "PropagatesStopTo"),
+            ("Unit", "ReloadPropagatedFrom"),
+            ("Unit", "Requires"),
+            ("Unit", "Requisite"),
+            ("Unit", "StopPropagatedFrom"),
+            ("Unit", "Upholds"),
+            ("Unit", "Wants"),
+            ("Install", "Alias"),
             ("Install", "WantedBy"),
             ("Install", "RequiredBy"),
             ("Install", "UpheldBy"),
@@ -3991,7 +4016,12 @@ mod tests {
 
     #[test]
     fn exposed_packages_rejects_foreign_package_target_ownership() {
-        for (section, key) in [("Unit", "PartOf"), ("Install", "WantedBy")] {
+        for (section, key) in [
+            ("Unit", "PartOf"),
+            ("Unit", "Conflicts"),
+            ("Unit", "PropagatesStopTo"),
+            ("Install", "WantedBy"),
+        ] {
             let tmp = TempDir::new().unwrap();
             let installed = installed_with_expose(&tmp, "web", "pkgwebhash11", "artifactweb11");
             let apm = installed.apm.as_ref().unwrap();
@@ -4015,6 +4045,34 @@ mod tests {
                 "{err:#}"
             );
         }
+    }
+
+    #[test]
+    fn exposed_packages_rejects_authored_synthesized_package_target_name() {
+        let tmp = TempDir::new().unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkgwebhash11", "artifactweb11");
+        installed
+            .apm
+            .as_mut()
+            .unwrap()
+            .expose
+            .as_mut()
+            .unwrap()
+            .units
+            .push("aos-pkg-victim.target".into());
+        let profile = Profile {
+            path: tmp.path().join("profile-foreign-target-unit"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("foreign synthesized package target unit"),
+            "{err:#}"
+        );
     }
 
     #[test]
