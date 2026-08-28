@@ -90,6 +90,8 @@
               '  UInt8 pathBuffer[32];' \
               '  Boolean represented = pathURL != NULL && CFURLGetFileSystemRepresentation(pathURL, true, pathBuffer, sizeof(pathBuffer));' \
               '  CFURLRef url = CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault, (const UInt8 *)".", 1, false);' \
+              '  Boolean (*copyResource)(CFAllocatorRef, CFURLRef, CFDataRef *, CFDictionaryRef *, CFArrayRef, SInt32 *) = CFURLCreateDataAndPropertiesFromResource;' \
+              '  const CFDictionaryKeyCallBacks *copyStringCallbacks = &kCFCopyStringDictionaryKeyCallBacks;' \
               '  CFBundleRef bundle = url == NULL ? NULL : CFBundleCreate(kCFAllocatorDefault, url);' \
               '  CFURLRef executable = bundle == NULL ? NULL : CFBundleCopyExecutableURL(bundle);' \
               '  CFStringRef identifier = bundle == NULL ? NULL : CFBundleGetIdentifier(bundle);' \
@@ -121,7 +123,7 @@
               '  if (canonicalLanguage != NULL) CFRelease(canonicalLanguage);' \
               '  struct ether_addr address = { { 0 } };' \
               '  struct bpf_hdr bpfHeader = { 0 };' \
-              '  return ptraceFunction == NULL || label == NULL || canonicalLanguage == NULL || maximum < 0 || convertedCharacters < 0 || usedStringBytes < 0 || zoneName == NULL || systemZone == NULL || pathComparison != kCFCompareEqualTo || !pathHasPrefix || mutablePath == NULL || noCopyString == NULL || collectable == NULL || numberIsFloat || identifier == value || !represented || launchStatus == -1 || attributeSize < -1 || attributeListSize < -1 || attributeSetStatus < -1 || attributeRemoveStatus < -1 || address.octet[0] != 0 || bpfHeader.bh_hdrlen != 0 || ETHER_ADDR_LEN != 6 || XATTR_CREATE != 0x0002 || XATTR_REPLACE != 0x0004;' \
+              '  return ptraceFunction == NULL || label == NULL || canonicalLanguage == NULL || maximum < 0 || convertedCharacters < 0 || usedStringBytes < 0 || zoneName == NULL || systemZone == NULL || pathComparison != kCFCompareEqualTo || !pathHasPrefix || mutablePath == NULL || noCopyString == NULL || collectable == NULL || numberIsFloat || copyResource == NULL || copyStringCallbacks == NULL || identifier == value || !represented || launchStatus == -1 || attributeSize < -1 || attributeListSize < -1 || attributeSetStatus < -1 || attributeRemoveStatus < -1 || address.octet[0] != 0 || bpfHeader.bh_hdrlen != 0 || ETHER_ADDR_LEN != 6 || XATTR_CREATE != 0x0002 || XATTR_REPLACE != 0x0004;' \
               '}' \
               > framework-smoke.c
             "$CC" framework-smoke.c \
@@ -869,6 +871,11 @@
               '#include <Security/AuthSession.h>' \
               '#include <Security/SecImportExport.h>' \
               '#include <Security/Security.h>' \
+              '#if defined(__arm64__)' \
+              '_Static_assert(sizeof(SSLCipherSuite) == 2, "arm64 SecureTransport cipher ABI");' \
+              '#else' \
+              '_Static_assert(sizeof(SSLCipherSuite) == 4, "x86_64 SecureTransport cipher ABI");' \
+              '#endif' \
               'static OSStatus aos_ssl_read(SSLConnectionRef connection, void *data, size_t *length) { (void)connection; (void)data; (void)length; return errSSLClosedGraceful; }' \
               'static OSStatus aos_ssl_write(SSLConnectionRef connection, const void *data, size_t *length) { (void)connection; (void)data; (void)length; return errSSLClosedGraceful; }' \
               'int main(void) {' \
@@ -894,6 +901,21 @@
               '  SSLSetProtocolVersionMin(context, kTLSProtocol1);' \
               '  SSLSetProtocolVersionMax(context, kTLSProtocol12);' \
               '  SSLSetPeerDomainName(context, "localhost", 9);' \
+              '  SSLCipherSuite ciphers[1] = { TLS_RSA_WITH_AES_128_CBC_SHA };' \
+              '  size_t cipherCount = 1;' \
+              '  OSStatus countedCiphers = SSLGetNumberSupportedCiphers(context, &cipherCount);' \
+              '  OSStatus copiedCiphers = SSLGetSupportedCiphers(context, ciphers, &cipherCount);' \
+              '  OSStatus enabledCiphers = SSLSetEnabledCiphers(context, ciphers, cipherCount);' \
+              '  OSStatus setCertificate = SSLSetCertificate(context, NULL);' \
+              '  OSStatus setPeer = SSLSetPeerID(context, "aos", 3);' \
+              '  OSStatus gotCipher = SSLGetNegotiatedCipher(context, ciphers);' \
+              '  SSLProtocol negotiatedProtocol = kSSLProtocolUnknown;' \
+              '  OSStatus gotProtocol = SSLGetNegotiatedProtocolVersion(context, &negotiatedProtocol);' \
+              '  OSStatus setAlpn = SSLSetALPNProtocols(context, NULL);' \
+              '  CFArrayRef alpn = NULL;' \
+              '  OSStatus copiedAlpn = SSLCopyALPNProtocols(context, &alpn);' \
+              '  size_t buffered = 0;' \
+              '  OSStatus gotBuffered = SSLGetBufferedReadSize(context, &buffered);' \
               '  OSStatus handshake = SSLHandshake(context);' \
               '  SecTrustRef trust = NULL;' \
               '  SSLCopyPeerTrust(context, &trust);' \
@@ -901,6 +923,11 @@
               '  if (trust != NULL) SecTrustEvaluate(trust, &trustResult);' \
               '  SecCertificateRef certificate = trust == NULL ? NULL : SecTrustGetCertificateAtIndex(trust, 0);' \
               '  CFDataRef certificateData = certificate == NULL ? NULL : SecCertificateCopyData(certificate);' \
+              '  SecCertificateRef createdCertificate = SecCertificateCreateWithData(kCFAllocatorDefault, certificateData);' \
+              '  CFStringRef subjectSummary = SecCertificateCopySubjectSummary(certificate);' \
+              '  CFStringRef commonName = NULL;' \
+              '  OSStatus copiedCommonName = SecCertificateCopyCommonName(certificate, &commonName);' \
+              '  CFStringRef longDescription = SecCertificateCopyLongDescription(kCFAllocatorDefault, certificate, NULL);' \
               '  SecPolicyRef policy = SecPolicyCreateSSL(false, NULL);' \
               '  CFDictionaryRef policyProperties = policy == NULL ? NULL : SecPolicyCopyProperties(policy);' \
               '  bool policyScoped = policyProperties != NULL && CFDictionaryContainsKey(policyProperties, kSecPolicyOid);' \
@@ -916,10 +943,20 @@
               '  OSStatus copiedTrustSettings = SecTrustSettingsCopyTrustSettings(certificate, kSecTrustSettingsDomainUser, &trustSettings);' \
               '  CFArrayRef trustCertificates = NULL;' \
               '  OSStatus copiedTrustCertificates = SecTrustSettingsCopyCertificates(kSecTrustSettingsDomainUser, &trustCertificates);' \
+              '  OSStatus anchorsOnly = SecTrustSetAnchorCertificatesOnly(certificateTrust, true);' \
+              '  SecKeyRef publicKey = SecTrustCopyPublicKey(certificateTrust);' \
+              '  CFIndex trustCertificateCount = SecTrustGetCertificateCount(certificateTrust);' \
+              '  CFDataRef publicKeyData = SecKeyCopyExternalRepresentation(publicKey, NULL);' \
+              '  SecIdentityRef identity = NULL;' \
+              '  OSStatus createdIdentity = SecIdentityCreateWithCertificate(NULL, certificate, &identity);' \
+              '  SecItemImportExportKeyParameters itemImportParameters = { .version = SEC_KEY_IMPORT_EXPORT_PARAMS_VERSION, .flags = 0 };' \
+              '  CFArrayRef itemImports = NULL;' \
+              '  OSStatus importedItem = SecItemImport(NULL, NULL, &externalFormat, &externalType, 0, &itemImportParameters, NULL, &itemImports);' \
               '  const void *policyConstants[] = { kSecPolicyAppleSSL, kSecPolicyOid };' \
               '  const void *trustSettingKeys[] = { kSecTrustSettingsApplication, kSecTrustSettingsPolicy, kSecTrustSettingsPolicyString, kSecTrustSettingsResult };' \
               '  const void *queryKeys[] = { kSecClass, kSecMatchLimit, kSecReturnRef };' \
               '  const void *queryValues[] = { kSecClassCertificate, kSecMatchLimitAll, kCFBooleanTrue };' \
+              '  const void *curlSecurityData[] = { kSecClassIdentity, kSecAttrLabel, kSecMatchPolicy, kSecImportItemIdentity };' \
               '  CFDictionaryRef query = CFDictionaryCreate(kCFAllocatorDefault, queryKeys, queryValues, 3, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);' \
               '  CFTypeRef queryResult = NULL;' \
               '  OSStatus copiedItems = SecItemCopyMatching(query, &queryResult);' \
@@ -938,6 +975,15 @@
               '  SSLWrite(context, "aos", 3, &processed);' \
               '  SSLRead(context, NULL, 0, &processed);' \
               '  SSLClose(context);' \
+              '  if (itemImports != NULL) CFRelease(itemImports);' \
+              '  if (identity != NULL) CFRelease(identity);' \
+              '  if (publicKeyData != NULL) CFRelease(publicKeyData);' \
+              '  if (publicKey != NULL) CFRelease(publicKey);' \
+              '  if (longDescription != NULL) CFRelease(longDescription);' \
+              '  if (commonName != NULL) CFRelease(commonName);' \
+              '  if (subjectSummary != NULL) CFRelease(subjectSummary);' \
+              '  if (createdCertificate != NULL) CFRelease(createdCertificate);' \
+              '  if (alpn != NULL) CFRelease(alpn);' \
               '  if (queryResult != NULL) CFRelease(queryResult);' \
               '  if (query != NULL) CFRelease(query);' \
               '  if (trustCertificates != NULL) CFRelease(trustCertificates);' \
@@ -951,7 +997,7 @@
               '  if (certificateData != NULL) CFRelease(certificateData);' \
               '  if (trust != NULL) CFRelease(trust);' \
               '  if (context != NULL) CFRelease(context);' \
-              '  return trustResult == kSecTrustResultOtherError && processed == (size_t)-1 && sessionStatus == errSecItemNotFound && exportStatus == errSecItemNotFound && importStatus == errSecItemNotFound && externalFormat == kSecFormatX509Cert && externalType == kSecItemTypeCertificate && exportedData == NULL && importedItems == NULL && session == callerSecuritySession && attributes == sessionHasGraphicAccess && createdTrust == copiedTrustSettings && copiedTrustCertificates == errSecItemNotFound && noCopyText == NULL && copiedItems == errSecItemNotFound && policyConstants[0] == NULL && trustSettingKeys[0] == NULL && policyScoped && sslPolicy && trusted && kSecTrustSettingsResultTrustRoot != 1 && kSecTrustSettingsResultTrustAsRoot != 2 && kSecTrustSettingsResultDeny != 3 && kSecTrustSettingsDomainAdmin != 1 && copiedKeychain == addedPassword && foundPassword == modifiedPassword && freedPassword == deletedPassword;' \
+              '  return trustResult == kSecTrustResultOtherError && processed == (size_t)-1 && sessionStatus == errSecItemNotFound && exportStatus == errSecItemNotFound && importStatus == errSecItemNotFound && externalFormat == kSecFormatX509Cert && externalType == kSecItemTypeCertificate && exportedData == NULL && importedItems == NULL && session == callerSecuritySession && attributes == sessionHasGraphicAccess && createdTrust == copiedTrustSettings && copiedTrustCertificates == errSecItemNotFound && noCopyText == NULL && copiedItems == errSecItemNotFound && policyConstants[0] == NULL && trustSettingKeys[0] == NULL && curlSecurityData[0] == NULL && policyScoped && sslPolicy && trusted && kSecTrustSettingsResultTrustRoot != 1 && kSecTrustSettingsResultTrustAsRoot != 2 && kSecTrustSettingsResultDeny != 3 && kSecTrustSettingsDomainAdmin != 1 && copiedKeychain == addedPassword && foundPassword == modifiedPassword && freedPassword == deletedPassword && countedCiphers == copiedCiphers && enabledCiphers == setCertificate && setPeer == gotCipher && gotProtocol == setAlpn && copiedAlpn == gotBuffered && copiedCommonName == anchorsOnly && createdIdentity == importedItem && trustCertificateCount == -1 && errSecAllocate == errSecAuthFailed && errSSLProtocol == errSSLClientHelloReceived;' \
               '}' \
               > security-smoke.c
             "$CC" security-smoke.c \

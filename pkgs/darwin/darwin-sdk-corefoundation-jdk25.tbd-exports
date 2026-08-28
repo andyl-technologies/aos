@@ -48,6 +48,7 @@
       - _CFStringHasSuffix
       - _CFTimeZoneCopyLocalizedName
       - _CFTimeZoneCreateWithName
+      - _CFURLCreateDataAndPropertiesFromResource
       - _CFURLCreateWithBytes
       - _NSGenericException
       - _NSInternalInconsistencyException
@@ -60,6 +61,7 @@
       - _kCFDateFormatterShortWeekdaySymbols
       - _kCFDateFormatterWeekdaySymbols
       - _kCFJapaneseCalendar
+      - _kCFCopyStringDictionaryKeyCallBacks
       - _kCFLocaleCalendarIdentifier
       - _kCFLocaleCountryCode
       - _kCFLocaleCurrencyCode
