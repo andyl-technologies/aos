@@ -274,6 +274,12 @@ pub(super) fn load_campaign_repository_store(
     load_campaign_repository_graph(deployment_path)?.into_store()
 }
 
+pub(super) fn load_campaign_store_graph(
+    deployment_path: &Path,
+) -> Result<Arc<StoreGraph>, CliError> {
+    Ok(load_campaign_repository_graph(deployment_path)?.graph)
+}
+
 fn load_campaign_repository_graph(
     deployment_path: &Path,
 ) -> Result<LoadedCampaignRepositoryStore, CliError> {

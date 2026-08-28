@@ -1532,9 +1532,11 @@ one lifetime-borrowed GC boundary only before endpoint bind. The shipped
 the non-substitutable `STATE/executor-ledger`, persists or exactly reopens the
 bounded external journal during non-destructive plan, and revalidates every
 generation before apply. It fails closed on live exact semantic pins until the
-packaged exact-pin materialization owner is wired. A hermetic live-service
-fixture and the realistic operator flight remain open under Phase 5 and
-T-CAM-5.8.
+packaged exact-pin materialization owner is wired. Adjacent read-only porcelain
+reports the exact admitted graph and streams one requested content ID through
+deferred EOF authentication without borrowing ref or delete authority. Store
+discovery, whole-inventory verification, a hermetic live-service fixture, and
+the realistic operator flight remain open under Phase 5 and T-CAM-5.8.
 Broader layered transforms remain open;
 therefore T-CAM-5.5 is not checked by this checkpoint.
 
