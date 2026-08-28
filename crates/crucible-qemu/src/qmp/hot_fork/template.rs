@@ -3,15 +3,18 @@
 use serde_json::Value;
 
 use super::{
-    QMP_HOT_FORK_REQUIRED_PROOFS, QmpHotForkPluginBarrierState,
-    plugin::parse_hot_fork_plugin_barrier_state_for,
+    QMP_HOT_FORK_REQUIRED_PROOFS, QmpHotForkPluginBarrierState, QmpHotForkProof,
+    QmpHotForkRcuBarrierState, plugin::parse_hot_fork_plugin_barrier_state_for,
+    rcu_barrier::parse_hot_fork_rcu_barrier_state_for,
 };
 use crate::qmp::{QmpCommandKind, QmpError};
 
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 1;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 2;
+
+const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
 
 /// Exact outcome of one hot-fork template coordinator operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +40,7 @@ pub struct QmpHotForkTemplateState {
     acknowledged_proofs: u64,
     missing_proofs: u64,
     plugin_barrier: QmpHotForkPluginBarrierState,
+    rcu_barrier: QmpHotForkRcuBarrierState,
     rollback_complete: bool,
     ready: bool,
 }
@@ -66,6 +70,12 @@ impl QmpHotForkTemplateState {
         self.acknowledged_proofs
     }
 
+    /// Returns whether this retained transaction acknowledges one proof.
+    #[must_use]
+    pub const fn acknowledges(self, proof: QmpHotForkProof) -> bool {
+        self.acknowledged_proofs & proof.mask() != 0
+    }
+
     /// Returns the exact required proof bits QEMU could not acknowledge.
     #[must_use]
     pub const fn missing_proofs(self) -> u64 {
@@ -76,6 +86,12 @@ impl QmpHotForkTemplateState {
     #[must_use]
     pub const fn plugin_barrier(self) -> QmpHotForkPluginBarrierState {
         self.plugin_barrier
+    }
+
+    /// Returns the retained RCU admission/drain barrier state.
+    #[must_use]
+    pub const fn rcu_barrier(self) -> QmpHotForkRcuBarrierState {
+        self.rcu_barrier
     }
 
     /// Returns whether QEMU attests that no transaction barrier remains acquired.
@@ -108,6 +124,7 @@ pub(crate) fn parse_hot_fork_template_state(
         "acknowledged-proofs",
         "missing-proofs",
         "plugin-barrier",
+        "rcu-barrier",
         "rollback-complete",
         "ready",
     ];
@@ -151,6 +168,10 @@ pub(crate) fn parse_hot_fork_template_state(
         QmpCommandKind::HotForkTemplate,
         object.get("plugin-barrier").ok_or_else(&malformed)?,
     )?;
+    let rcu_barrier = parse_hot_fork_rcu_barrier_state_for(
+        QmpCommandKind::HotForkTemplate,
+        object.get("rcu-barrier").ok_or_else(&malformed)?,
+    )?;
     let rollback_complete = object
         .get("rollback-complete")
         .and_then(Value::as_bool)
@@ -167,11 +188,18 @@ pub(crate) fn parse_hot_fork_template_state(
     let expected_ready = outcome == QmpHotForkTemplateOutcome::Prepared
         && transaction_active
         && plugin_barrier.quiescent()
+        && rcu_barrier.quiescent()
         && missing_proofs == 0;
-    let expected_rollback = !transaction_active && !plugin_barrier.held();
+    let expected_rollback = !transaction_active && !plugin_barrier.held() && !rcu_barrier.held();
+    let rcu_proof_valid = (acknowledged_proofs & QMP_HOT_FORK_RCU_PROOF != 0)
+        == (transaction_active && rcu_barrier.quiescent());
     let shape_valid = match outcome {
         QmpHotForkTemplateOutcome::Idle => {
-            !transaction_active && rollback_complete && !plugin_barrier.held() && !ready
+            !transaction_active
+                && rollback_complete
+                && !plugin_barrier.held()
+                && !rcu_barrier.held()
+                && !ready
         }
         QmpHotForkTemplateOutcome::Draining => {
             generation != 0
@@ -179,6 +207,7 @@ pub(crate) fn parse_hot_fork_template_state(
                 && !rollback_complete
                 && plugin_barrier.held()
                 && !plugin_barrier.teardown_closed()
+                && rcu_barrier.held()
                 && !ready
         }
         QmpHotForkTemplateOutcome::Blocked => {
@@ -186,6 +215,7 @@ pub(crate) fn parse_hot_fork_template_state(
                 && !transaction_active
                 && rollback_complete
                 && !plugin_barrier.held()
+                && !rcu_barrier.held()
                 && missing_proofs != 0
                 && !ready
         }
@@ -194,6 +224,7 @@ pub(crate) fn parse_hot_fork_template_state(
                 && transaction_active
                 && !rollback_complete
                 && plugin_barrier.quiescent()
+                && rcu_barrier.quiescent()
                 && ready
         }
         QmpHotForkTemplateOutcome::Aborted => {
@@ -201,12 +232,14 @@ pub(crate) fn parse_hot_fork_template_state(
                 && !transaction_active
                 && rollback_complete
                 && !plugin_barrier.held()
+                && !rcu_barrier.held()
                 && !ready
         }
     };
     if !proofs_valid
         || ready != expected_ready
         || rollback_complete != expected_rollback
+        || !rcu_proof_valid
         || !shape_valid
     {
         return Err(malformed());
@@ -219,6 +252,7 @@ pub(crate) fn parse_hot_fork_template_state(
         acknowledged_proofs,
         missing_proofs,
         plugin_barrier,
+        rcu_barrier,
         rollback_complete,
         ready,
     })

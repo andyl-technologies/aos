@@ -277,6 +277,17 @@ in
           '';
         }
         {
+          name = "check";
+          script =
+            if applyCruciblePatches
+            then ''
+              build/tests/unit/test-rcu-list --tap -p /rcu/hot-fork/barrier
+            ''
+            else ''
+              true
+            '';
+        }
+        {
           name = "install";
           script = ''
             make install

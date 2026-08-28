@@ -233,11 +233,44 @@ publication and decremented only after callback return, so it conservatively
 covers the callback worker's dequeue, grace-period, and execution interval.
 Every retained reader MUST also appear in the matching QEMU thread inventory.
 
-The RCU response is still only one lock-bounded observation. Reader activity,
-callback submission, and drain state may change immediately after it returns;
-the query neither drives nor holds quiescence and therefore MUST NOT
-acknowledge proof bit 4 or authorize a fork. The future coordinator must
-establish and retain an RCU barrier across the actual process-fork operation.
+The inventory response remains only one lock-bounded observation. It does not
+itself drive or hold quiescence and therefore MUST NOT acknowledge proof bit 4
+or authorize a fork. Patched QEMU separately exposes the version-1 reversible
+RCU admission barrier:
+
+```text
+CrucibleHotForkRcuBarrierAction = hold | query | release
+
+CrucibleHotForkRcuBarrierState {
+    schema-version: u32 = 1,
+    generation: u64,
+    owner-thread-id: i64,
+    held: bool,
+    complete: bool,
+    registered-readers: u64,
+    active-readers: u64,
+    admissions-in-flight: u64,
+    pending-callbacks: u64,
+    drain-active: bool,
+    quiescent: bool,
+}
+```
+
+`hold` is accepted only at the authenticated exact paused/device-flush
+boundary. It resets a process-lifetime release event, records the coordinator
+thread, and publishes the held gate. Every new outer
+`rcu_read_lock()` and `call_rcu()` submission must pass a two-phase admission:
+an entry racing the hold either publishes its reader/callback state before
+leaving `admissions-in-flight`, or backs out and parks on the release event.
+Nested read locks remain part of their already-admitted outer section. The OOB
+coordinator queries and releases the retained state without entering RCU.
+
+`quiescent` MUST equal `held && complete && active-readers == 0 &&
+admissions-in-flight == 0 && pending-callbacks == 0 && !drain-active`.
+While released, `owner-thread-id` is zero and `quiescent` is false. Release
+first reopens admission and then wakes every parked submitter. The held barrier
+is proof for the parent RCU state only; the callback worker remains an omitted
+thread requiring an exact child reinitializer before proof bit 8 can be set.
 
 Patched QEMU also exposes the bounded observational AioContext activity used
 to define the AIO/BH side of the next subsystem barrier:
@@ -533,7 +566,7 @@ new shared-memory commands, drain or park the fingerprint digest worker, freeze
 the control-reader/teardown threads, clone ring bytes, or provide child-side
 resource reconstruction. QEMU therefore keeps readiness bit 6 clear.
 
-The first `PrepareForkTemplate` checkpoint is the version-1 OOB
+The retained `PrepareForkTemplate` checkpoint is the version-2 OOB
 `crucible-hot-fork-template` coordinator:
 
 ```text
@@ -543,7 +576,7 @@ CrucibleHotForkTemplateOutcome =
     idle | draining | blocked | prepared | aborted
 
 CrucibleHotForkTemplateState {
-    schema-version: u32 = 1,
+    schema-version: u32 = 2,
     generation: u64,
     outcome: CrucibleHotForkTemplateOutcome,
     transaction-active: bool,
@@ -551,15 +584,17 @@ CrucibleHotForkTemplateState {
     acknowledged-proofs: u64,
     missing-proofs: u64,
     plugin-barrier: CrucibleHotForkPluginBarrierState,
+    rcu-barrier: CrucibleHotForkRcuBarrierState,
     rollback-complete: bool,
     ready: bool,
 }
 ```
 
 `prepare` starts only at the authenticated exact paused/device-flush boundary.
-QEMU serializes the transaction, acquires the plugin callback barrier, and
-retains it while previously admitted callbacks drain. A repeated `prepare`
-reevaluates the retained transaction. Once that barrier is quiescent, QEMU
+QEMU serializes the transaction, acquires both the RCU admission barrier and
+the plugin callback barrier, and retains them while previously admitted work
+drains. A repeated `prepare` reevaluates the retained transaction. Once both
+barriers are quiescent, QEMU
 either reports `prepared` only when all nine required bits are present in the
 same transaction, or releases every acquired barrier and reports `blocked`.
 `query` is observational. `abort` releases an active transaction and reports
@@ -569,13 +604,14 @@ does not discard coordinator ownership: the command fails and the caller must
 retry query/abort while QEMU continues to own the retained state.
 
 `missing-proofs` MUST equal `required-proofs & ~acknowledged-proofs`.
-`rollback-complete` is true exactly when no transaction is active and the
-plugin barrier is not held. `ready` is true exactly for an active `prepared`
-transaction whose plugin barrier is quiescent and whose missing bitmap is zero.
-Version 1 intentionally owns only the plugin callback barrier. It does not yet
-compose the remaining ring, AIO, RCU, block, descriptor/mapping, or child
-reinitialization barriers; therefore it rolls a drained transaction back as
-`blocked` and cannot advertise a usable hot-fork template.
+`rollback-complete` is true exactly when no transaction is active and neither
+barrier is held. `ready` is true exactly for an active `prepared` transaction
+whose plugin and RCU barriers are quiescent and whose missing bitmap is zero.
+Proof bit 4 is present exactly while the transaction remains active and its
+complete RCU barrier is quiescent. Version 2 still does not compose the
+remaining plugin-ring, AIO, block, descriptor/mapping, or child-reinitialization
+barriers; therefore it rolls a drained transaction back as `blocked` and cannot
+advertise a usable hot-fork template.
 
 The AioContext, bottom-half, AIO-handler, and block-backend responses are still
 observational. They do not drain or park a context, prevent a producer from
@@ -719,11 +755,11 @@ and notification activity, the bottom-half inventory exposes every allocated
 instance and its exact AioContext and lifecycle state, the mutex inventory
 exposes instantaneous owner, recursion, waiter, and unlock-transition state,
 and the timer inventory exposes every pending timer and active callback, while
-any other non-coordinator remains plain `unclassified`. None is a child
-disposition or a
-held barrier.
-Those proofs must be produced while a later version of the QEMU coordinator
-holds the corresponding subsystem barriers.
+any other non-coordinator remains plain `unclassified`. These observational
+inventory values are not child dispositions or held barriers. The version-2
+coordinator now separately retains the RCU admission/drain barrier; the other
+proofs must be produced while later coordinator versions hold their
+corresponding subsystem barriers.
 
 Later template realization adds the remaining operations:
 

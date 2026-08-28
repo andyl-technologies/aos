@@ -1565,7 +1565,16 @@ submitted-but-incomplete callbacks, active drain operations, and a
 register/unregister generation. The host brackets procfs capture with identical
 RCU reports and requires every reader to be present in the matching thread
 registry. This closes the authoritative RCU-state inventory prerequisite but
-does not hold quiescence across `fork(2)`; readiness bit 4 remains clear.
+the inventory alone does not hold quiescence across `fork(2)` or acknowledge
+readiness bit 4.
+QEMU now additionally owns a process-lifetime reversible RCU admission/drain
+barrier. Holding at the exact paused/device-flush boundary gates every new
+outer reader and callback submission through a race-closed
+two-phase admission, retains the exact reader/admission/callback/drain state,
+and parks rejected entrants until release. The version-2 template coordinator
+holds this barrier with the plugin callback barrier and acknowledges readiness
+bit 4 only while the complete retained RCU state is quiescent. The RCU worker
+still needs an exact child disposition/reinitializer, so bit 8 remains clear.
 QEMU now also exposes a version-1, 65,536-context AioContext inventory with
 stable process-local identities, exact home-thread ownership, active poll and
 GLib dispatch counts, queued and active bottom halves, queued coroutines, and
@@ -1636,17 +1645,18 @@ closure. This is the first retained T-CAM-6.2 subsystem barrier, but it still
 does not freeze host ring producers, drain plugin workers, retain a complete
 template transaction, or reconstruct child resources. Readiness bit 6 therefore
 remains clear and T-CAM-6.2 remains unchecked.
-Patched QEMU now also owns the first versioned `PrepareForkTemplate`
+Patched QEMU now also owns the versioned `PrepareForkTemplate`
 transaction. Its serialized OOB coordinator starts only at the exact
-paused/device-flush boundary, retains the plugin callback barrier while admitted
-callbacks drain, and lets the Apache client query or abort that retained state
-without blocking QMP. A quiescent transaction is reported as `prepared` only
-when all nine readiness bits are present in the same generation; otherwise QEMU
-releases every acquired barrier and reports exact rollback as `blocked`.
-Standalone plugin hold/release cannot steal coordinator-owned state, and a
-release failure leaves ownership retained for a later query/abort retry. The
-current coordinator composes only the plugin callback barrier, so readiness bit
-6 and the other unresolved bits remain clear, every drained preparation rolls
+paused/device-flush boundary, retains the plugin callback and RCU barriers while
+admitted work drains, and lets the Apache client query or abort that retained
+state without blocking QMP. A quiescent transaction is reported as `prepared`
+only when all nine readiness bits are present in the same generation; otherwise
+QEMU releases every acquired barrier and reports exact rollback as `blocked`.
+Standalone plugin or RCU hold/release cannot steal coordinator-owned state, and
+a plugin release failure leaves both barriers retained for a later query/abort
+retry. The current coordinator acknowledges RCU bit 4 only while its retained
+barrier is quiescent. Plugin-ring bit 6, AIO, block, mapping/descriptor, and child
+reinitialization proofs remain clear, every fully drained preparation rolls
 back, no fork operation exists, and T-CAM-6.2 remains unchecked.
 QEMU now also exposes a version-1, 65,536-entry POSIX `QemuMutex` and
 `QemuRecMutex` inventory. It reports sorted lifecycle identities, owner thread,
