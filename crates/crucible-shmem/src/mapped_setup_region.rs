@@ -35,6 +35,9 @@ mod basic_access;
 mod device_rings;
 #[path = "mapped_setup_region/fault_transports.rs"]
 mod fault_transports;
+#[path = "mapped_setup_region/hot_fork.rs"]
+mod hot_fork;
+pub use hot_fork::MappedRingProducerBarrierSnapshot;
 
 impl Drop for MappedSetupRegion {
     fn drop(&mut self) {

@@ -217,7 +217,7 @@ process-local pointer or host-layout fact crosses the ABI.
 The region header carries the identity and shape of the region: a magic number,
 the ABI version, the configured node count and queue capacity, the computed
 frame sub-region offsets, the global control flags, and the per-direction fault
-payload-arena size. ABI v18 mappers derive the coverage, fingerprint-sample,
+payload-arena size. ABI v19 mappers derive the coverage, fingerprint-sample,
 white-box marker, device-I/O, guest-introspection, and fault transport tail
 sections from that validated frame extent, the VM count, and fixed ABI
 constants. The header is the first thing a mapper reads and the thing
@@ -230,7 +230,7 @@ touches a slot.
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 
 /// Current ABI version. Bumped on any layout or semantics change (§13.6).
-pub const ABI_VERSION: u32 = 18;
+pub const ABI_VERSION: u32 = 19;
 
 /// Compile-time maximum number of node slots in the region.
 /// An ABI detail (§13.5); the engine's topology model MUST NOT depend on it.
@@ -494,7 +494,10 @@ pub struct RingHeader {
     /// Producer-owned write index, monotonically increasing. On its own cache
     /// line so the producer's store never invalidates the consumer's line.
     pub write_idx: AtomicU64, // @ 64
-    pub(crate) _pad_write: [u8; 56], // @ 72..128 (fill the producer cache line)
+    /// High bit: reversible hot-fork producer hold. Low bits: producers that
+    /// passed admission and have not yet returned.
+    pub(crate) producer_state: AtomicU64, // @ 72
+    pub(crate) _pad_write: [u8; 48], // @ 80..128 (fill the producer cache line)
 }
 
 const _: () = assert!(core::mem::size_of::<RingHeader>() == 128);
@@ -846,7 +849,8 @@ RingHeader    (size 128, align 128)
   @  0  read_idx           u64
   @  8  _pad_read[56]
   @ 64  write_idx          u64
-  @ 72  _pad_write[56]
+  @ 72  producer_state     u64
+  @ 80  _pad_write[48]
 
 FrameEntry    (size 24 + MAX_FRAME_DATA, align 8)
   @  0  delivery_icount    u64
@@ -1230,10 +1234,14 @@ alter the clamped guest coordinate or deadline.
 
 ## 13.8 Versioning and conformance
 
-The region carries an ABI version in its header. ABI v18 appends the VM-local
-single-entry selectable-reply rings after the complete v17 region; v17 peers are
-rejected rather than inferred or supported through a compatibility path. The
-handshake
+The region carries an ABI version in its header. ABI v18 appended the VM-local
+single-entry selectable-reply rings after the complete v17 region. ABI v19
+replaces eight bytes of the producer cache-line padding in every `RingHeader`
+with an atomic reversible producer-admission state. Its high bit rejects later
+producer publications while its low bits count publications admitted before
+the hold. A hot-fork barrier holds every ring and waits for every count to drain
+before reporting the ring transport quiescent. Older peers are rejected rather
+than inferred or supported through a compatibility path. The handshake
 ([`14-protocol.md`](14-protocol.md)) validates it before any node trusts a byte of
 the region. ABI v2 is intentionally incompatible with v1 because v2 adds the
 coverage tail: a v2 host rejects a v1 plugin/region, and a v2 plugin rejects a

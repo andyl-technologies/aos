@@ -1663,7 +1663,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-plugin-callback-barrier";
         liveEvidence = ''
-          grep -Fxq 'plugin_barrier_schema_version=1' "$live_result"
+          grep -Fxq 'plugin_barrier_schema_version=2' "$live_result"
           grep -Fxq 'plugin_barrier_stable=true' "$live_result"
           grep -Fxq 'plugin_barrier_unregistered_shape=true' "$live_result"
           grep -Fxq 'plugin_barrier_release_unregistered_rejected=true' "$live_result"
@@ -1679,7 +1679,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-template-coordinator";
         liveEvidence = ''
-          grep -Fxq 'template_coordinator_schema_version=7' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=8' "$live_result"
           grep -Fxq 'template_coordinator_idle_stable=true' "$live_result"
           grep -Fxq 'template_coordinator_unregistered_shape=true' "$live_result"
           grep -Fxq 'template_prepare_without_exact_boundary_rejected=true' "$live_result"
@@ -1700,7 +1700,7 @@
           grep -Fxq 'rcu_barrier_released_stable=true' "$live_result"
           grep -Fxq 'rcu_barrier_hold_without_exact_boundary_rejected=true' "$live_result"
           grep -Fxq 'rcu_barrier_quiescence_proof_bound=true' "$live_result"
-          grep -Fxq 'template_coordinator_schema_version=7' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=8' "$live_result"
           grep -Fxq 'rcu_proof_acknowledged=false' "$live_result"
           grep -Fxq 'template_ready=false' "$live_result"
         '';
@@ -1717,7 +1717,7 @@
           grep -Fxq 'bh_timer_barrier_released_stable=true' "$live_result"
           grep -Fxq 'bh_timer_barrier_hold_without_exact_boundary_rejected=true' "$live_result"
           grep -Fxq 'bh_timer_barrier_template_bound=true' "$live_result"
-          grep -Fxq 'template_coordinator_schema_version=7' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=8' "$live_result"
           grep -Fxq 'aio_proof_acknowledged=false' "$live_result"
           grep -Fxq 'template_ready=false' "$live_result"
         '';
@@ -1734,7 +1734,7 @@
           grep -Fxq 'bh_timer_barrier_released_stable=true' "$live_result"
           grep -Fxq 'bh_timer_barrier_hold_without_exact_boundary_rejected=true' "$live_result"
           grep -Fxq 'bh_timer_barrier_template_bound=true' "$live_result"
-          grep -Fxq 'template_coordinator_schema_version=7' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=8' "$live_result"
           grep -Fxq 'aio_proof_acknowledged=false' "$live_result"
           grep -Fxq 'template_ready=false' "$live_result"
         '';
@@ -1762,7 +1762,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-block-template-coordinator";
         liveEvidence = ''
-          grep -Fxq 'template_coordinator_schema_version=7' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=8' "$live_result"
           grep -Fxq 'block_barrier_template_bound=true' "$live_result"
           grep -Fxq 'block_snapshot_proof_acknowledged=false' "$live_result"
           grep -Fxq 'template_ready=false' "$live_result"
@@ -1776,12 +1776,12 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-block-graph-barrier";
         liveEvidence = ''
-          grep -Fxq 'patch=0132-crucible-bind-hot-fork-block-snapshot-roots.patch' "$live_result"
+          grep -Fxq 'patch=0135-crucible-freeze-hot-fork-rings.patch' "$live_result"
           grep -Fxq 'block_barrier_schema_version=3' "$live_result"
           grep -Fxq 'block_graph_writer_admission_retained=true' "$live_result"
           grep -Fxq 'block_graph_generation_bound=true' "$live_result"
           grep -Fxq 'block_snapshot_proof_acknowledged=false' "$live_result"
-          grep -Fxq 'template_coordinator_schema_version=7' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=8' "$live_result"
           grep -Fxq 'template_ready=false' "$live_result"
         '';
       };
@@ -1793,11 +1793,11 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-block-snapshot-roots";
         liveEvidence = ''
-          grep -Fxq 'patch=0132-crucible-bind-hot-fork-block-snapshot-roots.patch' "$live_result"
+          grep -Fxq 'patch=0135-crucible-freeze-hot-fork-rings.patch' "$live_result"
           grep -Fxq 'block_barrier_schema_version=3' "$live_result"
           grep -Fxq 'block_snapshot_binding_argument_bound=true' "$live_result"
           grep -Fxq 'block_snapshot_proof_acknowledged=false' "$live_result"
-          grep -Fxq 'template_coordinator_schema_version=7' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=8' "$live_result"
           grep -Fxq 'template_prepare_without_exact_boundary_rejected=true' "$live_result"
           grep -Fxq 'template_ready=false' "$live_result"
         '';
@@ -1836,6 +1836,25 @@
             ${patchDir}/0134-crucible-clock-impulse-read-error-policies.patch
           grep -Fq 'raise_exception_ra(env, EXCP0D_GPF, GETPC());' \
             ${patchDir}/0134-crucible-clock-impulse-read-error-policies.patch
+        '';
+      };
+    }
+    {
+      patch = "0135-crucible-freeze-hot-fork-rings.patch";
+      check = certifyExactPatch {
+        patchName = "0135-crucible-freeze-hot-fork-rings.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-ring-producer-barrier";
+        liveEvidence = ''
+          grep -Fxq 'patch=0135-crucible-freeze-hot-fork-rings.patch' "$live_result"
+          grep -Fxq 'plugin_barrier_schema_version=2' "$live_result"
+          grep -Fxq 'plugin_barrier_unregistered_shape=true' "$live_result"
+          grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=8' "$live_result"
+          grep -Fq 'ring_producers_in_flight' \
+            ${patchDir}/0135-crucible-freeze-hot-fork-rings.patch
+          grep -Fq 'report->rings_held == report->ring_count' \
+            ${patchDir}/0135-crucible-freeze-hot-fork-rings.patch
         '';
       };
     }

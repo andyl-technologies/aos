@@ -372,7 +372,8 @@ pub struct RingHeader {
     read_idx: AtomicU64,
     _pad_read: [u8; 56],
     write_idx: AtomicU64,
-    _pad_write: [u8; 56],
+    producer_state: AtomicU64,
+    _pad_write: [u8; 48],
 }
 const _: () = assert!(core::mem::size_of::<RingHeader>() == 128);
 

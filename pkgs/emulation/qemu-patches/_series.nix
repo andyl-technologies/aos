@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "86b723b401e8101423bf7106d51f025311d2dd42b693c99c9832b49cdea8f3ac";
+  patchBranchBundleSha256 = "a6559d791911adcea0978ea8a46c1ed891a3fd29331f3f1a04e82f00ddd15b9a";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "68a21ce058346c61d2332f214efa2a66ace0222d";
+  patchBranchHeadCommit = "2fc133444c3b0d0d2084410731de07811efbd049";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1275,6 +1275,16 @@ let
       class = "F";
       enforces = "QFP-CLOCK-TRANSFORM,QFP-CLOCK-SOURCE,FAULT-ORDER";
       capability = "impulse clock transforms retain their effective monotonicity and overdue-timer policies in versioned clock VMState, while an x86 TSC read-error transition raises a deterministic guest #GP and internal projections retain the last source value";
+    }
+    {
+      file = "0135-crucible-freeze-hot-fork-rings.patch";
+      branchSubject = "crucible: freeze shared rings for hot fork";
+      branchCommit = "2fc133444c3b0d0d2084410731de07811efbd049";
+      branchTree = "d43d255714c58a593ca2ab9f48422da71f2ba69d";
+      catalogName = "crucible-hot-fork-ring-producer-barrier";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "the retained plugin barrier also holds every ABI-v19 shared-memory ring producer, reports exact ring and already-admitted producer counts, and requires both callback and ring admission to drain before quiescence; worker parking, ring cloning, and child reconstruction remain open under proof bit 6";
     }
   ];
   catalogOnlyCapabilities = [

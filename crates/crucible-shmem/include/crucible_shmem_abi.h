@@ -16,7 +16,7 @@
 #define CRUCIBLE_SHMEM_STATIC_ASSERT(COND, MSG) _Static_assert((COND), MSG)
 
 #define CRUCIBLE_SHMEM_REGION_MAGIC UINT64_C(0x314d485343555243)
-#define CRUCIBLE_SHMEM_ABI_VERSION 18u
+#define CRUCIBLE_SHMEM_ABI_VERSION 19u
 #define CRUCIBLE_SHMEM_MAX_FRAME_DATA 4608u
 #define CRUCIBLE_SHMEM_DEFAULT_QUEUE_CAPACITY 64u
 #define CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY 65536u
@@ -106,9 +106,10 @@
 #define CRUCIBLE_SHMEM_RING_HEADER_READ_IDX_OFFSET 0u
 #define CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_OFFSET 8u
 #define CRUCIBLE_SHMEM_RING_HEADER_WRITE_IDX_OFFSET 64u
-#define CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_OFFSET 72u
+#define CRUCIBLE_SHMEM_RING_HEADER_PRODUCER_STATE_OFFSET 72u
+#define CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_OFFSET 80u
 #define CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_LEN 56u
-#define CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_LEN 56u
+#define CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_LEN 48u
 
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE 4640u
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_ALIGN 8u
@@ -260,6 +261,7 @@ typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_ring_header {
     _Atomic uint64_t read_idx;
     uint8_t pad_read[CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_LEN];
     _Atomic uint64_t write_idx;
+    _Atomic uint64_t producer_state;
     uint8_t pad_write[CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_LEN];
 } crucible_shmem_ring_header;
 
@@ -268,6 +270,7 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_ring_header) == CRUCIBLE_SH
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, read_idx) == CRUCIBLE_SHMEM_RING_HEADER_READ_IDX_OFFSET, "crucible_shmem_ring_header.read_idx offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, pad_read) == CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_OFFSET, "crucible_shmem_ring_header.pad_read offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, write_idx) == CRUCIBLE_SHMEM_RING_HEADER_WRITE_IDX_OFFSET, "crucible_shmem_ring_header.write_idx offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, producer_state) == CRUCIBLE_SHMEM_RING_HEADER_PRODUCER_STATE_OFFSET, "crucible_shmem_ring_header.producer_state offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, pad_write) == CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_OFFSET, "crucible_shmem_ring_header.pad_write offset");
 
 typedef struct crucible_shmem_frame_entry {

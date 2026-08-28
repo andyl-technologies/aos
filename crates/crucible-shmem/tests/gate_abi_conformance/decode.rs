@@ -137,6 +137,10 @@ pub(super) fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
                 bytes,
                 GOLDEN_RING_HEADER_BASE + RING_HEADER_WRITE_IDX_OFFSET,
             ),
+            producer_state: read_u64(
+                bytes,
+                GOLDEN_RING_HEADER_BASE + RING_HEADER_PRODUCER_STATE_OFFSET,
+            ),
         },
         frame: FrameEntryState {
             delivery_icount: read_u64(

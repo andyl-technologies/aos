@@ -611,6 +611,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0135-crucible-freeze-hot-fork-rings.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

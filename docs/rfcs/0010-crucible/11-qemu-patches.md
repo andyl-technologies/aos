@@ -2182,6 +2182,22 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   policy, and sources outside read-error state follow their prior read path.
 - **Risk:** F.
 
+### crucible-hot-fork-ring-producer-barrier — freeze shared rings
+
+- **Patch:** `0135-crucible-freeze-hot-fork-rings.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the version-2 plugin barrier reports and validates the exact
+  ABI-v19 shared-ring count, number of held rings, and aggregate producer
+  publications admitted before the hold. Template quiescence requires every
+  ring and callback barrier to be held with both in-flight counts at zero.
+- **Micro-test:** strict Rust/QMP fixtures reject partial ring holds and false
+  quiescence; the shared-memory suite races producer admission with the hold
+  and proves one mapped operation holds and releases every ring.
+- **Inertness:** the barrier is reachable only through the existing authorized
+  hot-fork command. It does not park plugin workers, clone ring content, define
+  child dispositions, or acknowledge proof bit 6.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
