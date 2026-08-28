@@ -2216,6 +2216,24 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   reconstruct workers in a child, or acknowledge proof bit 6.
 - **Risk:** F.
 
+### crucible-hot-fork-plugin-worker-barrier — park sealed workers
+
+- **Patch:** `0137-crucible-park-hot-fork-plugin-workers.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the version-3 plugin barrier joins the sealed worker mask to
+  exact parked-worker and admitted-operation state. The RUN-control, teardown,
+  and optional fingerprint workers mark blocking receive boundaries as safe
+  points; a returned receive parks before its operation can mutate state while
+  the hold remains active.
+- **Micro-test:** the worker state-machine fixtures prove idle parking,
+  admitted-operation drain, release wakeup, and optional-worker mask closure;
+  strict QMP fixtures reject unknown, partial, or falsely quiescent worker
+  shapes.
+- **Inertness:** the barrier remains reachable only through the authorized
+  hot-fork command. It does not clone retained queue/ring bytes, reconstruct
+  child workers, or acknowledge proof bit 6.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

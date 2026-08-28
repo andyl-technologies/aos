@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "452cc72dd43d7b305d12af29060e999689224082b1e0a4b215d67f3e75c5e527";
+  patchBranchBundleSha256 = "f268092e17c55698d7f7b2aacb73d38f8d7b5505b2e17ba009cfea616c5d41cf";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "170469474567397bb09807e542e31cc85aa2ef1e";
+  patchBranchHeadCommit = "351bfffb69e5d37102f79da02e021af121adaf75";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1295,6 +1295,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "the version-2 plugin resource manifest seals the mandatory run-control and teardown workers plus the fingerprint digest worker exactly when fingerprinting is enabled, giving future parking and child reconstruction a closed worker set without yet acknowledging proof bit 6";
+    }
+    {
+      file = "0137-crucible-park-hot-fork-plugin-workers.patch";
+      branchSubject = "crucible: park sealed plugin workers";
+      branchCommit = "351bfffb69e5d37102f79da02e021af121adaf75";
+      branchTree = "b662eafebb29dd3673bf632f5f88bc499646ea69";
+      catalogName = "crucible-hot-fork-plugin-worker-barrier";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "the version-3 plugin barrier reports the sealed worker mask, exact parked worker classes, and bounded operations admitted before the hold, and requires every worker to park before subsystem quiescence without yet cloning queued work or acknowledging proof bit 6";
     }
   ];
   catalogOnlyCapabilities = [

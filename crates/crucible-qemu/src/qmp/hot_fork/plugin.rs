@@ -246,6 +246,9 @@ pub struct QmpHotForkPluginBarrierState {
     ring_count: u64,
     rings_held: u64,
     ring_producers_in_flight: u64,
+    worker_mask: u64,
+    parked_worker_mask: u64,
+    worker_operations_in_flight: u64,
     quiescent: bool,
 }
 
@@ -304,10 +307,28 @@ impl QmpHotForkPluginBarrierState {
         self.ring_producers_in_flight
     }
 
+    /// Returns the exact sealed process-lifetime worker-class mask.
+    #[must_use]
+    pub const fn worker_mask(self) -> u64 {
+        self.worker_mask
+    }
+
+    /// Returns worker classes parked at a process-safe operation boundary.
+    #[must_use]
+    pub const fn parked_worker_mask(self) -> u64 {
+        self.parked_worker_mask
+    }
+
+    /// Returns worker operations admitted before the hold and still running.
+    #[must_use]
+    pub const fn worker_operations_in_flight(self) -> u64 {
+        self.worker_operations_in_flight
+    }
+
     /// Returns whether the registered, manifest-consistent hold has drained.
     ///
-    /// This proves callback and ring-producer parking. Plugin worker threads,
-    /// ring cloning, and child reconstruction remain outside it.
+    /// This proves callback, ring-producer, and sealed-worker parking. Queued
+    /// ring/worker cloning and child reconstruction remain outside it.
     #[must_use]
     pub const fn quiescent(self) -> bool {
         self.quiescent
@@ -589,6 +610,9 @@ pub(super) fn parse_hot_fork_plugin_barrier_state_for(
         "ring-count",
         "rings-held",
         "ring-producers-in-flight",
+        "worker-mask",
+        "parked-worker-mask",
+        "worker-operations-in-flight",
         "quiescent",
     ];
     if object.len() != fields.len() || !fields.iter().all(|field| object.contains_key(*field)) {
@@ -635,6 +659,18 @@ pub(super) fn parse_hot_fork_plugin_barrier_state_for(
         .get("ring-producers-in-flight")
         .and_then(Value::as_u64)
         .ok_or_else(&malformed)?;
+    let worker_mask = object
+        .get("worker-mask")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let parked_worker_mask = object
+        .get("parked-worker-mask")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let worker_operations_in_flight = object
+        .get("worker-operations-in-flight")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
     let quiescent = object
         .get("quiescent")
         .and_then(Value::as_bool)
@@ -649,7 +685,14 @@ pub(super) fn parse_hot_fork_plugin_barrier_state_for(
         && !teardown_closed
         && in_flight == 0
         && ring_shape
-        && ring_producers_in_flight == 0;
+        && ring_producers_in_flight == 0
+        && parked_worker_mask == worker_mask
+        && worker_operations_in_flight == 0;
+    let worker_shape = worker_mask & !QMP_HOT_FORK_PLUGIN_WORKER_ALL == 0
+        && worker_mask & QMP_HOT_FORK_PLUGIN_WORKER_REQUIRED == QMP_HOT_FORK_PLUGIN_WORKER_REQUIRED
+        && parked_worker_mask & !worker_mask == 0
+        && u64::from(parked_worker_mask.count_ones()) + worker_operations_in_flight
+            <= u64::from(worker_mask.count_ones());
     let unregistered_shape = generation == 0
         && !manifest_consistent
         && !held
@@ -658,6 +701,9 @@ pub(super) fn parse_hot_fork_plugin_barrier_state_for(
         && ring_count == 0
         && rings_held == 0
         && ring_producers_in_flight == 0
+        && worker_mask == 0
+        && parked_worker_mask == 0
+        && worker_operations_in_flight == 0
         && !quiescent;
     if schema_version != u64::from(QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION)
         || quiescent != expected_quiescent
@@ -665,12 +711,16 @@ pub(super) fn parse_hot_fork_plugin_barrier_state_for(
         || (!registered && !unregistered_shape)
         || (manifest_consistent && !registered)
         || (registered && !ring_shape)
+        || (registered && !worker_shape)
         || ((held
             || teardown_closed
             || in_flight != 0
             || ring_count != 0
             || rings_held != 0
-            || ring_producers_in_flight != 0)
+            || ring_producers_in_flight != 0
+            || worker_mask != 0
+            || parked_worker_mask != 0
+            || worker_operations_in_flight != 0)
             && !registered)
     {
         return Err(malformed());
@@ -686,6 +736,9 @@ pub(super) fn parse_hot_fork_plugin_barrier_state_for(
         ring_count,
         rings_held,
         ring_producers_in_flight,
+        worker_mask,
+        parked_worker_mask,
+        worker_operations_in_flight,
         quiescent,
     })
 }

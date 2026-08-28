@@ -1663,7 +1663,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-plugin-callback-barrier";
         liveEvidence = ''
-          grep -Fxq 'plugin_barrier_schema_version=2' "$live_result"
+          grep -Fxq 'plugin_barrier_schema_version=3' "$live_result"
           grep -Fxq 'plugin_barrier_stable=true' "$live_result"
           grep -Fxq 'plugin_barrier_unregistered_shape=true' "$live_result"
           grep -Fxq 'plugin_barrier_release_unregistered_rejected=true' "$live_result"
@@ -1846,8 +1846,8 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-ring-producer-barrier";
         liveEvidence = ''
-          grep -Fxq 'patch=0136-crucible-seal-hot-fork-plugin-workers.patch' "$live_result"
-          grep -Fxq 'plugin_barrier_schema_version=2' "$live_result"
+          grep -Fxq 'patch=0137-crucible-park-hot-fork-plugin-workers.patch' "$live_result"
+          grep -Fxq 'plugin_barrier_schema_version=3' "$live_result"
           grep -Fxq 'plugin_barrier_unregistered_shape=true' "$live_result"
           grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
           grep -Fxq 'template_coordinator_schema_version=8' "$live_result"
@@ -1865,7 +1865,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-plugin-worker-manifest";
         liveEvidence = ''
-          grep -Fxq 'patch=0136-crucible-seal-hot-fork-plugin-workers.patch' "$live_result"
+          grep -Fxq 'patch=0137-crucible-park-hot-fork-plugin-workers.patch' "$live_result"
           grep -Fxq 'plugin_resource_inventory_schema_version=2' "$live_result"
           grep -Fxq 'plugin_resource_inventory_unregistered_shape=true' "$live_result"
           grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
@@ -1873,6 +1873,28 @@
             ${patchDir}/0136-crucible-seal-hot-fork-plugin-workers.patch
           grep -Fq 'QEMU_PLUGIN_CRUCIBLE_WORKER_FINGERPRINT' \
             ${patchDir}/0136-crucible-seal-hot-fork-plugin-workers.patch
+        '';
+      };
+    }
+    {
+      patch = "0137-crucible-park-hot-fork-plugin-workers.patch";
+      check = certifyExactPatch {
+        patchName = "0137-crucible-park-hot-fork-plugin-workers.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-plugin-worker-barrier";
+        liveEvidence = ''
+          grep -Fxq 'patch=0137-crucible-park-hot-fork-plugin-workers.patch' "$live_result"
+          grep -Fxq 'plugin_barrier_schema_version=3' "$live_result"
+          grep -Fxq 'plugin_worker_mask_bound=true' "$live_result"
+          grep -Fxq 'plugin_worker_parking_bound=true' "$live_result"
+          grep -Fxq 'plugin_worker_queue_cloning=false' "$live_result"
+          grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
+          grep -Fq 'status.parked_worker_mask' \
+            ${patchDir}/0137-crucible-park-hot-fork-plugin-workers.patch
+          grep -Fq 'status.worker_operations_in_flight' \
+            ${patchDir}/0137-crucible-park-hot-fork-plugin-workers.patch
+          grep -Fq 'manifest.worker_mask ==' \
+            ${patchDir}/0137-crucible-park-hot-fork-plugin-workers.patch
         '';
       };
     }

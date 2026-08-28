@@ -11,8 +11,12 @@
 pub(crate) mod callback_quiescence;
 mod live_callbacks;
 mod live_whitebox;
+mod worker_quiescence;
 
 use callback_quiescence::LiveCallbackQuiescence;
+use worker_quiescence::{
+    LiveWorkerQuiescence, WORKER_FINGERPRINT, WORKER_REQUIRED, WORKER_RUN_CONTROL, WORKER_TEARDOWN,
+};
 
 #[cfg(test)]
 use live_callbacks::clear_live_vcpu_time_state_for_test;
@@ -182,6 +186,7 @@ impl OwnedCallbackRegistrationMask {
 /// proof is live, so moving the proof never moves callback-addressable state.
 pub(crate) struct OwnedCallbackRuntimeState {
     quiescence: Arc<LiveCallbackQuiescence>,
+    workers: Arc<LiveWorkerQuiescence>,
     teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
     live_vcpu_time: Option<Pin<Box<live_callbacks::LiveVcpuTimeCallbackState>>>,
     live_whitebox: Option<Pin<Box<live_whitebox::LiveWhiteboxState>>>,
@@ -194,11 +199,13 @@ pub(crate) struct OwnedCallbackRuntimeState {
 
 impl OwnedCallbackRuntimeState {
     fn pin(
+        worker_mask: u64,
         setup: PluginSetupCompletion,
         teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
     ) -> Pin<Box<Self>> {
         Box::pin(Self {
             quiescence: Arc::new(LiveCallbackQuiescence::new()),
+            workers: LiveWorkerQuiescence::new(worker_mask),
             teardown_sender,
             live_vcpu_time: None,
             live_whitebox: None,
@@ -364,7 +371,12 @@ impl OwnedCallbackRuntimeState {
                     .map_err(|source| LiveVcpuTimeCallbackError::MappedFingerprintSlot {
                         source,
                     })?;
-                callback_state.attach_fingerprint(sampling, slot, fingerprint_oracle)?
+                callback_state.attach_fingerprint(
+                    sampling,
+                    slot,
+                    fingerprint_oracle,
+                    Arc::clone(&state.workers),
+                )?
             }
             None => callback_state,
         };
@@ -655,8 +667,10 @@ impl RequiredOwnedCallbacksRegistered {
     pub(crate) fn for_test(args: &PluginArgs, setup: PluginSetupCompletion) -> Self {
         let mask = OwnedCallbackRegistrationMask::required_for(args);
         let (teardown_sender, teardown_receiver) = mpsc::channel();
-        let mut registered =
-            Self::from_registered(OwnedCallbackRuntimeState::pin(setup, teardown_sender), mask);
+        let mut registered = Self::from_registered(
+            OwnedCallbackRuntimeState::pin(plugin_worker_mask(args), setup, teardown_sender),
+            mask,
+        );
         registered._teardown_receiver = Some(teardown_receiver);
         registered
     }
@@ -688,6 +702,11 @@ impl RequiredOwnedCallbacksRegistered {
             slot_address: std::ptr::from_ref(slot) as usize,
             wake_fd: state.setup.wake_fd().as_raw_fd(),
         })
+    }
+
+    #[cfg(not(test))]
+    fn worker_quiescence(&self) -> Arc<LiveWorkerQuiescence> {
+        Arc::clone(&self.state.as_ref().get_ref().workers)
     }
 }
 
@@ -768,8 +787,12 @@ fn read_run_control_trigger(
 fn run_control_reader(
     control: ControlLifecycleStream<UnixStream>,
     teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
+    workers: Arc<LiveWorkerQuiescence>,
 ) -> bool {
+    let idle = workers.idle(WORKER_RUN_CONTROL);
     let trigger = read_run_control_trigger(control);
+    drop(idle);
+    let _operation = workers.enter(WORKER_RUN_CONTROL);
     // A send failure means the sole teardown worker already selected another
     // concurrently delivered proof and returned. No second shutdown may run.
     teardown_sender.send(trigger).is_ok()
@@ -780,7 +803,9 @@ fn run_teardown_worker(
     teardown_receiver: mpsc::Receiver<LiveRuntimeTeardownTrigger>,
     teardown_handle: LiveControlTeardownHandle,
     request_shutdown: QemuRequestShutdownFn,
+    workers: Arc<LiveWorkerQuiescence>,
 ) {
+    let idle = workers.idle(WORKER_TEARDOWN);
     let trigger = match teardown_receiver.recv() {
         Ok(trigger) => trigger,
         Err(error) => {
@@ -790,6 +815,8 @@ fn run_teardown_worker(
             std::process::abort();
         }
     };
+    drop(idle);
+    let _operation = workers.enter(WORKER_TEARDOWN);
     complete_live_teardown(trigger, teardown_handle, request_shutdown);
 }
 
@@ -913,10 +940,9 @@ const PLUGIN_RESOURCE_APP_RANDOM: u64 = 1_u64 << 14;
 const PLUGIN_CALLBACK_REQUIRED: u64 = ((1_u64 << 12) - 1) & !(1_u64 << 1);
 const PLUGIN_CALLBACK_TB_TRANSLATION: u64 = 1_u64 << 12;
 const PLUGIN_CALLBACK_FLUSH: u64 = 1_u64 << 13;
-const PLUGIN_WORKER_RUN_CONTROL: u64 = 1_u64 << 0;
-const PLUGIN_WORKER_TEARDOWN: u64 = 1_u64 << 1;
-const PLUGIN_WORKER_FINGERPRINT: u64 = 1_u64 << 2;
-const PLUGIN_WORKER_REQUIRED: u64 = PLUGIN_WORKER_RUN_CONTROL | PLUGIN_WORKER_TEARDOWN;
+fn plugin_worker_mask(args: &PluginArgs) -> u64 {
+    WORKER_REQUIRED | (u64::from(args.fingerprint().is_on()) * WORKER_FINGERPRINT)
+}
 
 fn plugin_resource_manifest(
     plugin_id: QemuPluginId,
@@ -934,7 +960,7 @@ fn plugin_resource_manifest(
 
     let mut resource_mask = PLUGIN_RESOURCE_REQUIRED;
     let mut callback_mask = PLUGIN_CALLBACK_REQUIRED;
-    let mut worker_mask = PLUGIN_WORKER_REQUIRED;
+    let worker_mask = callbacks.state.as_ref().get_ref().workers.worker_mask();
     if args.coverage().is_on() {
         resource_mask |= PLUGIN_RESOURCE_COVERAGE;
         callback_mask |= PLUGIN_CALLBACK_TB_TRANSLATION | PLUGIN_CALLBACK_FLUSH;
@@ -945,7 +971,6 @@ fn plugin_resource_manifest(
     }
     if args.fingerprint().is_on() {
         resource_mask |= PLUGIN_RESOURCE_FINGERPRINT;
-        worker_mask |= PLUGIN_WORKER_FINGERPRINT;
     }
     if args.state_dump().is_some() {
         resource_mask |= PLUGIN_RESOURCE_STATE_DUMP;
@@ -1037,13 +1062,14 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
     // SAFETY: registration passes the stable pinned runtime-owner address, and
     // production retains that allocation for the QEMU process lifetime.
     let state = unsafe { &*userdata.cast::<OwnedCallbackRuntimeState>() };
-    let (snapshot, rings) = match action {
+    let (snapshot, rings, workers) = match action {
         crate::QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD => {
             let snapshot = state.quiescence.hold_hot_fork();
             let Ok(rings) = state.setup.mapped_region().hold_hot_fork_ring_producers() else {
                 return -libc::EPROTO;
             };
-            (snapshot, rings)
+            let workers = state.workers.hold();
+            (snapshot, rings, workers)
         }
         crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY => {
             let snapshot = state.quiescence.snapshot();
@@ -1054,7 +1080,8 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
             else {
                 return -libc::EPROTO;
             };
-            (snapshot, rings)
+            let workers = state.workers.snapshot();
+            (snapshot, rings, workers)
         }
         crate::QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE => {
             let Ok(rings) = state
@@ -1065,10 +1092,14 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
                 return -libc::EPROTO;
             };
             let snapshot = state.quiescence.release_hot_fork();
-            (snapshot, rings)
+            let workers = state.workers.release();
+            (snapshot, rings, workers)
         }
         _ => return -libc::EINVAL,
     };
+    if snapshot.hot_fork_held != workers.held {
+        return -libc::EPROTO;
+    }
     let Ok(struct_size) =
         u32::try_from(std::mem::size_of::<crate::QemuPluginHotForkBarrierStatus>())
     else {
@@ -1088,6 +1119,9 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
             ring_count: rings.ring_count(),
             rings_held: rings.held_rings(),
             ring_producers_in_flight: rings.producers_in_flight(),
+            worker_mask: workers.worker_mask,
+            parked_worker_mask: workers.parked_mask,
+            worker_operations_in_flight: workers.operations_in_flight,
         });
     }
     0
@@ -1489,7 +1523,8 @@ where
     };
 
     let (teardown_sender, teardown_receiver) = mpsc::channel();
-    let callback_state = OwnedCallbackRuntimeState::pin(setup, teardown_sender.clone());
+    let callback_state =
+        OwnedCallbackRuntimeState::pin(plugin_worker_mask(&args), setup, teardown_sender.clone());
     let mut post_registration_stage = PostRegistrationStage::RegisterCallbacks;
     let mut acknowledgement_state = PostRegistrationAckState::Pending;
     let post_registration = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1657,6 +1692,7 @@ where
                         Err(error) => fatal_policy.terminate(error),
                     };
                 let request_shutdown = capabilities.request_shutdown;
+                let teardown_workers = callbacks_registered.worker_quiescence();
                 let teardown_worker = match std::thread::Builder::new()
                     .name(String::from("crucible-teardown"))
                     .spawn(move || {
@@ -1665,6 +1701,7 @@ where
                                 teardown_receiver,
                                 teardown_handle,
                                 request_shutdown,
+                                teardown_workers,
                             );
                         });
                     }) {
@@ -1673,11 +1710,13 @@ where
                         .terminate(PluginRuntimeInstallError::TeardownWorkerSpawn { source }),
                 };
                 let reader_sender = teardown_sender.clone();
+                let control_workers = callbacks_registered.worker_quiescence();
                 let control_reader = match std::thread::Builder::new()
                     .name(String::from("crucible-run-control"))
                     .spawn(move || {
                         run_runtime_thread_fail_loud("RUN control reader", || {
-                            let _delivered = run_control_reader(control_stream, reader_sender);
+                            let _delivered =
+                                run_control_reader(control_stream, reader_sender, control_workers);
                         });
                     }) {
                     Ok(reader) => reader,
