@@ -307,6 +307,8 @@ pub struct ServiceRootBarrier {
     pub live_members: BTreeSet<String>,
     /// Live generated package side effects stopped after overlay cleanup.
     pub live_side_effects: BTreeSet<String>,
+    /// Other live package-owned `PartOf=` members stopped before the target.
+    pub live_remaining_members: BTreeSet<String>,
     /// Signed external capability sockets retained by the candidate.
     pub candidate_external_activation_sources: BTreeSet<String>,
     /// Candidate `PartOf=` members started with the owning target.
@@ -384,6 +386,12 @@ impl UnitDiff {
                 .intersection(&barrier.candidate_external_activation_sources)
                 .cloned()
                 .collect::<BTreeSet<_>>();
+            let candidate_suppressed_members = barrier
+                .candidate_members
+                .iter()
+                .filter(|name| !name.ends_with(".slice"))
+                .cloned()
+                .collect::<BTreeSet<_>>();
             let members = barrier
                 .live_external_activation_sources
                 .union(&barrier.live_activation_sources)
@@ -395,7 +403,10 @@ impl UnitDiff {
                 .union(&barrier.live_side_effects)
                 .cloned()
                 .collect::<BTreeSet<_>>()
-                .union(&barrier.candidate_members)
+                .union(&barrier.live_remaining_members)
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .union(&candidate_suppressed_members)
                 .cloned()
                 .collect::<BTreeSet<_>>()
                 .union(&retained_external_sources)
@@ -451,6 +462,11 @@ impl UnitDiff {
             for side_effect in &barrier.live_side_effects {
                 self.to_stop.push(side_effect.clone());
                 self.required_stops.insert(side_effect.clone());
+            }
+
+            for member in &barrier.live_remaining_members {
+                self.to_stop.push(member.clone());
+                self.required_stops.insert(member.clone());
             }
 
             self.to_stop.push(barrier.target.clone());
@@ -907,6 +923,7 @@ fn build_service_root_barriers(
                 live_external_activation_sources: BTreeSet::new(),
                 live_activation_sources: BTreeSet::new(),
                 live_side_effects: generated_side_effects(live, &target, &helper),
+                live_remaining_members: BTreeSet::new(),
                 candidate_external_activation_sources: BTreeSet::new(),
                 candidate_members: target_part_of_members(candidate, &target),
                 candidate_target_present: candidate
@@ -918,8 +935,7 @@ fn build_service_root_barriers(
             Some((helper, barrier))
         })
         .map(|(helper, mut barrier)| {
-            barrier.live_activation_sources =
-                activation_sources(live, &barrier.target, &barrier.live_members);
+            barrier.live_activation_sources = activation_sources(live, &barrier.target);
             barrier.live_external_activation_sources =
                 routed_activation_sources(live, &barrier.target, &barrier.live_members);
             barrier.candidate_external_activation_sources = barrier
@@ -933,6 +949,14 @@ fn build_service_root_barriers(
                 })
                 .cloned()
                 .collect();
+            barrier.live_remaining_members = remaining_part_of_members(
+                live,
+                &barrier.target,
+                &helper,
+                &barrier.live_activation_sources,
+                &barrier.live_members,
+                &barrier.live_side_effects,
+            );
             (helper, barrier)
         })
         .collect()
@@ -973,21 +997,36 @@ fn service_root_workloads(units: &UnitMap, target: &str, helper: &str) -> BTreeS
         .collect()
 }
 
-fn activation_sources(
-    units: &UnitMap,
-    target: &str,
-    workloads: &BTreeSet<String>,
-) -> BTreeSet<String> {
+fn activation_sources(units: &UnitMap, target: &str) -> BTreeSet<String> {
     units
         .units
         .iter()
         .filter(|(_, unit)| unit.is_present())
         .filter(|(_, unit)| unit_section_words(unit, "PartOf").contains(target))
-        .filter_map(|(name, unit)| {
-            activated_service(name, unit)
-                .filter(|service| workloads.contains(service))
-                .map(|_| name.clone())
+        .filter(|(name, _)| {
+            name.ends_with(".socket")
+                || name.ends_with(".timer")
+                || name.ends_with(".path")
+                || name.ends_with(".automount")
         })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+fn remaining_part_of_members(
+    units: &UnitMap,
+    target: &str,
+    helper: &str,
+    activation_sources: &BTreeSet<String>,
+    workloads: &BTreeSet<String>,
+    side_effects: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    target_part_of_members(units, target)
+        .into_iter()
+        .filter(|name| name != helper && !name.ends_with(".slice"))
+        .filter(|name| !activation_sources.contains(name))
+        .filter(|name| !workloads.contains(name))
+        .filter(|name| !side_effects.contains(name))
         .collect()
 }
 
@@ -1454,6 +1493,21 @@ mod tests {
         write(&live_units, "aos-pkg-web.slice", "[Slice]\nCPUWeight=100\n");
         write(
             &live_units,
+            "data.automount",
+            "[Unit]\nPartOf=aos-pkg-web.target\n[Automount]\nWhere=/data\n",
+        );
+        write(
+            &live_units,
+            "data.mount",
+            "[Unit]\nPartOf=aos-pkg-web.target\n[Mount]\nWhere=/data\nWhat=/dev/null\n",
+        );
+        write(
+            &live_units,
+            "cache.swap",
+            "[Unit]\nPartOf=aos-pkg-web.target\n[Swap]\nWhat=/dev/null\n",
+        );
+        write(
+            &live_units,
             "provider.socket",
             "[Socket]\nListenStream=9090\n",
         );
@@ -1495,7 +1549,7 @@ mod tests {
         assert!(barrier.live_members.contains("web.service"));
         assert_eq!(
             barrier.live_activation_sources,
-            BTreeSet::from(["web.socket".to_string()])
+            BTreeSet::from(["data.automount".to_string(), "web.socket".to_string()])
         );
         assert_eq!(
             barrier.live_external_activation_sources,
@@ -1509,6 +1563,10 @@ mod tests {
             barrier.live_side_effects,
             BTreeSet::from(["aos-pkg-web-mac.service".to_string()])
         );
+        assert_eq!(
+            barrier.live_remaining_members,
+            BTreeSet::from(["cache.swap".to_string(), "data.mount".to_string()])
+        );
         assert!(!barrier.live_members.contains("provider.socket"));
         assert!(!barrier.live_members.contains("aos-pkg-web.slice"));
         assert!(barrier.candidate_members.contains("web.socket"));
@@ -1520,10 +1578,13 @@ mod tests {
             diff.to_stop,
             vec![
                 "provider.socket",
+                "data.automount",
                 "web.socket",
                 "web.service",
                 "aos-pkg-web-service-roots.service",
                 "aos-pkg-web-mac.service",
+                "cache.swap",
+                "data.mount",
                 "aos-pkg-web.target",
             ]
         );

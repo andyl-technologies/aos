@@ -7694,6 +7694,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn required_remaining_part_of_failure_aborts_before_target() {
+        use std::sync::{Arc, Mutex};
+
+        let ordered = vec![
+            "data.automount".to_string(),
+            "data.mount".to_string(),
+            "aos-pkg-web.target".to_string(),
+        ];
+        let required = ordered.iter().cloned().collect::<BTreeSet<_>>();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let stop_calls = Arc::clone(&calls);
+
+        let error = await_required_barrier_actions(
+            &ordered,
+            &required,
+            &BTreeSet::new(),
+            |_| async { Ok::<_, &str>(JobResult::Done) },
+            move |unit| {
+                let calls = Arc::clone(&stop_calls);
+                async move {
+                    calls.lock().unwrap().push(unit.clone());
+                    Ok::<_, &str>(if unit == "data.mount" {
+                        JobResult::Dependency
+                    } else {
+                        JobResult::Done
+                    })
+                }
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("data.mount"));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec!["data.automount".to_string(), "data.mount".to_string()]
+        );
+    }
+
+    #[tokio::test]
     async fn failed_barrier_restores_quiesced_provider_before_returning_error() {
         use std::sync::{Arc, Mutex};
 
