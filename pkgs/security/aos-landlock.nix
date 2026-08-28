@@ -60,6 +60,18 @@ mkDerivation {
           --fs-rw /dev/null \
           -- /bin/sh -c 'printf quiet > /dev/null'
 
+        aos-landlock --require-abi 4 \
+          --network-unrestricted \
+          --fs-ro / \
+          --fs-rw /dev/null \
+          -- /bin/sh -c 'printf unrestricted > /dev/null'
+
+        if aos-landlock --network-unrestricted --tcp-bind 8080 \
+          -- ${pkgs.coreutils}/bin/true; then
+          echo "FAIL: aos-landlock accepted unrestricted networking with TCP rules" >&2
+          exit 1
+        fi
+
         if aos-landlock --require-abi 4 \
           --fs-ro / \
           --fs-rw /tmp/aos-landlock-allow \

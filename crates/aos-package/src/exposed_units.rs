@@ -1304,10 +1304,11 @@ fn validate_ebpf_policy_service(
         .context("normalized permissions have no confinement summary")?
         .class
         == ConfinementClass::Unconfined;
-    if unconfined {
+    let network_unrestricted = permissions.network == Some(NetworkPermission::Host);
+    if unconfined || network_unrestricted {
         if units.contains(&ebpf_unit) {
             bail!(
-                "unconfined package '{}' must not declare eBPF network policy service {}",
+                "package '{}' without eBPF network confinement must not declare network policy service {}",
                 package_name,
                 ebpf_unit
             );
@@ -1749,6 +1750,10 @@ fn requires_landlock_wrapper(package_name: &str, permissions: &PermissionsMeta) 
 
 fn expected_landlock_args(permissions: &PermissionsMeta, service_paths: &[String]) -> Vec<String> {
     let mut args = vec!["--require-abi".to_string(), "4".to_string()];
+    let network_unrestricted = permissions.network == Some(NetworkPermission::Host);
+    if network_unrestricted {
+        args.push("--network-unrestricted".to_string());
+    }
     let fs = expected_landlock_fs(permissions, service_paths);
     for path in fs.read_only {
         args.push("--fs-ro".to_string());
@@ -1758,13 +1763,15 @@ fn expected_landlock_args(permissions: &PermissionsMeta, service_paths: &[String
         args.push("--fs-rw".to_string());
         args.push(path);
     }
-    for port in &permissions.tcp_bind {
-        args.push("--tcp-bind".to_string());
-        args.push(port.to_string());
-    }
-    for port in &permissions.tcp_connect {
-        args.push("--tcp-connect".to_string());
-        args.push(port.to_string());
+    if !network_unrestricted {
+        for port in &permissions.tcp_bind {
+            args.push("--tcp-bind".to_string());
+            args.push(port.to_string());
+        }
+        for port in &permissions.tcp_connect {
+            args.push("--tcp-connect".to_string());
+            args.push(port.to_string());
+        }
     }
     args.push("--".to_string());
     args
@@ -6444,6 +6451,38 @@ mod tests {
         assert_eq!(
             landlock_service_paths_for_service("web", &BTreeMap::new()),
             vec!["/var/lib/aos-pkg-web"]
+        );
+    }
+
+    #[test]
+    fn host_network_keeps_filesystem_landlock_only() {
+        let permissions = PermissionsMeta {
+            network: Some(NetworkPermission::Host),
+            tcp_bind: vec![8080],
+            tcp_connect: vec![443],
+            ..PermissionsMeta::default()
+        };
+
+        let args = expected_landlock_args(&permissions, &["/var/lib/example".to_string()]);
+
+        assert_eq!(
+            args,
+            vec![
+                "--require-abi",
+                "4",
+                "--network-unrestricted",
+                "--fs-ro",
+                "/",
+                "--fs-rw",
+                "/tmp",
+                "--fs-rw",
+                "/var/tmp",
+                "--fs-rw",
+                "/dev/null",
+                "--fs-rw",
+                "/var/lib/example",
+                "--",
+            ]
         );
     }
 }
