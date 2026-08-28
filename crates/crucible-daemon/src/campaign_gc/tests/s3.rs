@@ -25,6 +25,9 @@ const BUCKET: &str = "campaign-gc-integration";
 const PREFIX: &str = "tests/s3-gc";
 const MAXIMUM_OBJECT_BYTES: u64 = 8 * 1024 * 1024;
 const MULTIPART_PART_BYTES: u64 = 5 * 1024 * 1024;
+type S3Location = (String, String);
+type MemoryObjectMap = BTreeMap<S3Location, Arc<[u8]>>;
+type MemoryVersionedStateMap = BTreeMap<S3Location, (Arc<[u8]>, u64)>;
 
 #[derive(Default)]
 struct UploadState {
@@ -35,9 +38,9 @@ struct UploadState {
 
 struct MemoryS3Service {
     endpoint: StoreS3EndpointId,
-    objects: Mutex<BTreeMap<(String, String), Arc<[u8]>>>,
+    objects: Mutex<MemoryObjectMap>,
     uploads: Mutex<BTreeMap<String, UploadState>>,
-    state: Mutex<BTreeMap<(String, String), (Arc<[u8]>, u64)>>,
+    state: Mutex<MemoryVersionedStateMap>,
     next_upload: AtomicU64,
     next_version: AtomicU64,
 }

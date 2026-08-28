@@ -15,7 +15,7 @@ use std::sync::Arc;
 use crucible_campaign::{CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignObjectProfiler};
 use crucible_cas::content_store::{
     ContentId, DirectoryRefBackend, DurabilityRequirement, ObjectKind, StoreEncryptionKey,
-    StoreEncryptionKeyId, StoreGraph, StoreGraphConfig, StoreGraphKeyring,
+    StoreEncryptionKeyId, StoreGraph, StoreGraphAdmin, StoreGraphConfig, StoreGraphKeyring,
     StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders,
     StoreGraphS3Clients, StoreNamespaceAuthorizer, StoreNamespaceId, StoreNamespaceOperation,
     StoreNodeId, StoreNodeSpec, StoreObjectProfilePolicyId, StorePhysicalQuotaPolicyId,
@@ -208,15 +208,16 @@ impl StoreNamespaceAuthorizer for StaticNamespaceAuthorizer {
 pub(super) fn load_campaign_repository_store(
     deployment_path: &Path,
 ) -> Result<crucible_daemon::CampaignLocalRepositoryStore, CliError> {
-    let (graph, refs) = load_campaign_repository_graph(deployment_path)?;
-    crucible_daemon::CampaignLocalRepositoryStore::new(Arc::new(graph), Arc::new(refs)).map_err(
-        |error| campaign_store_error(format!("repository-store admission failed: {error}")),
-    )
+    let (graph, refs, maintenance) = load_campaign_repository_graph(deployment_path)?;
+    crucible_daemon::CampaignLocalRepositoryStore::new_with_maintenance(graph, refs, maintenance)
+        .map_err(|error| {
+            campaign_store_error(format!("repository-store admission failed: {error}"))
+        })
 }
 
 fn load_campaign_repository_graph(
     deployment_path: &Path,
-) -> Result<(StoreGraph, DirectoryRefBackend), CliError> {
+) -> Result<(Arc<StoreGraph>, Arc<DirectoryRefBackend>, StoreGraphAdmin), CliError> {
     let bytes = read_secure_file(
         deployment_path,
         MAX_CAMPAIGN_STORE_DEPLOYMENT_BYTES,
@@ -398,7 +399,7 @@ fn load_campaign_repository_graph(
 
     let root = StoreNodeId::new(deployment.root)
         .map_err(|error| campaign_store_error(format!("invalid root node ID: {error}")))?;
-    let graph = StoreGraph::build_with_all_capabilities(
+    let (graph, maintenance) = StoreGraph::build_with_admin_and_all_capabilities(
         StoreGraphConfig {
             root,
             admitted_kinds,
@@ -411,8 +412,8 @@ fn load_campaign_repository_graph(
         &StoreGraphS3Clients::new(),
     )
     .map_err(|error| campaign_store_error(format!("graph admission failed: {error}")))?;
-    let refs = DirectoryRefBackend::new(deployment.ref_directory);
-    Ok((graph, refs))
+    let refs = Arc::new(DirectoryRefBackend::new(deployment.ref_directory));
+    Ok((Arc::new(graph), refs, maintenance))
 }
 
 impl AuthoredStoreNodeSpec {
@@ -775,7 +776,7 @@ mod tests {
         let fixture = StoreDeploymentFixture::new();
         let deployment = fixture.write_deployment("");
 
-        let (graph, refs) =
+        let (graph, refs, _maintenance) =
             load_campaign_repository_graph(&deployment).expect("load composed campaign store");
         let bytes = b"initialize encrypted campaign storage";
         let id = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
@@ -787,7 +788,7 @@ mod tests {
         load_campaign_repository_store(&deployment).expect("restart composed campaign store");
 
         fs::write(&fixture.key, [0x52; 32]).expect("replace key generation");
-        let (wrong_key, _refs) =
+        let (wrong_key, _refs, _maintenance) =
             load_campaign_repository_graph(&deployment).expect("construct wrong-key graph");
         let _error = wrong_key
             .contains(id)

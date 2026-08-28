@@ -1507,9 +1507,13 @@ strict version-one repository-store deployment now exposes the complete local
 graph vocabulary, protected encryption-key files, static namespace policy,
 campaign object profiling, Linux physical-quota binding, and a separate durable
 ref directory. Its exact-kind, unknown-field, permission, no-default-leaf, and
-wrong-key restart regressions are executable. S3/remote-ref client ownership,
-retained graph-maintenance authority, a hermetic service fixture, and the
-realistic operator flight remain open under Phase 5 and T-CAM-5.8.
+wrong-key restart regressions are executable. The managed service now retains
+the graph's exact separately returned physical/multipart administration and a
+second ref-inventory view through shutdown, rejects foreign graph authority,
+and exposes neither to ordinary service/runtime components. S3/remote-ref
+client ownership, bounded maintenance scheduling and porcelain, a hermetic
+service fixture, and the realistic operator flight remain open under Phase 5
+and T-CAM-5.8.
 Broader layered transforms remain open;
 therefore T-CAM-5.5 is not checked by this checkpoint.
 

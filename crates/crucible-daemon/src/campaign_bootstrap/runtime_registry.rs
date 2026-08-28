@@ -244,6 +244,7 @@ impl CampaignRuntimeRegistryOwner {
         mode: CampaignLocalServiceMode,
         shutdown: CampaignLoopbackServerShutdown,
         repository_owner: CampaignStateOwner,
+        repository_maintenance: Option<super::CampaignLocalRepositoryMaintenance>,
         packaged_scope: Option<(PathBuf, BTreeSet<ScenarioArtifactId>)>,
     ) -> Self {
         Self {
@@ -255,6 +256,7 @@ impl CampaignRuntimeRegistryOwner {
                 packaged_scope,
                 state: Mutex::new(RegistryState::open()),
                 changed: Condvar::new(),
+                _repository_maintenance: repository_maintenance,
                 _repository_owner: repository_owner,
             }),
         }
@@ -292,6 +294,7 @@ struct CampaignRuntimeRegistry {
     packaged_scope: Option<(PathBuf, BTreeSet<ScenarioArtifactId>)>,
     state: Mutex<RegistryState>,
     changed: Condvar,
+    _repository_maintenance: Option<super::CampaignLocalRepositoryMaintenance>,
     _repository_owner: CampaignStateOwner,
 }
 
