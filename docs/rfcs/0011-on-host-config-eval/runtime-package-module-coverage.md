@@ -25,7 +25,7 @@ upstream distribution includes a daemon.
 - [x] OpenLDAP server role
 - [ ] KubeEdge CloudCore
 - [ ] KubeEdge EdgeCore
-- [ ] Kerberos KDC role
+- [x] Kerberos KDC role
 - [x] conntrackd role
 - [x] rsync daemon role
 
