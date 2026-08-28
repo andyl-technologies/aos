@@ -130,7 +130,9 @@ in
           export PATH="${self}/bin:${self}/sbin:$PATH"
 
           echo "==> Testing sshd config parsing"
-          mkdir -p /tmp/sshd_test /run/sshd
+          mkdir -p /tmp/sshd_test /run/sshd /var/empty
+          echo 'sshd:x:198:198:OpenSSH Privilege Separation:/var/empty:/sbin/nologin' >> /etc/passwd
+          echo 'sshd:x:198:' >> /etc/group
           cat > /tmp/sshd_test/sshd_config << 'SSHCFG'
           Port 2222
           PermitRootLogin no

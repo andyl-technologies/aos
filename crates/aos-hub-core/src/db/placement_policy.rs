@@ -358,9 +358,9 @@ impl Database {
                  WHERE p.id = ?14 AND h.resource_version = ?15
                    AND ((p.registry_id IS NOT NULL AND EXISTS (
                      SELECT 1 FROM registries r WHERE r.id = p.registry_id
-                       AND r.scope_key = ?2)) OR (p.cache_id IS NOT NULL AND EXISTS (
+                       AND r.owner_scope_key = ?2)) OR (p.cache_id IS NOT NULL AND EXISTS (
                      SELECT 1 FROM binary_caches c WHERE c.id = p.cache_id
-                       AND c.scope_key = ?2)))",
+                       AND c.owner_scope_key = ?2)))",
                 &vals![
                     id,
                     consumer_scope_key,

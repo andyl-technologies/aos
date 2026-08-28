@@ -52,7 +52,7 @@ use crate::git::{ObjectReader, CHANGE_ID_TRAILER};
 use crate::surface_write::SurfaceWrite;
 
 use aos_registry_surface::object::{
-    encode_loose, encode_tree, hash_object, tree_map, ObjectKind, Oid, TreeEntry,
+    decode_loose, encode_loose, encode_tree, hash_object, tree_map, ObjectKind, Oid, TreeEntry,
 };
 
 /// The author/committer identity stamped on hub-authored draft commits.
@@ -251,7 +251,8 @@ pub async fn propose_config_change_with_id(
 
     let (signing_key, _public) = db.get_or_create_draft_signing_key(sealer).await?;
     // Write the new blob and replace it in the root tree.
-    let new_blob_oid = write_loose(writer, ObjectKind::Blob, new_contents.as_bytes()).await?;
+    let new_blob_oid =
+        write_loose(fetch, writer, ObjectKind::Blob, new_contents.as_bytes()).await?;
     entries.insert(
         file_path.to_string(),
         TreeEntry {
@@ -263,7 +264,7 @@ pub async fn propose_config_change_with_id(
     // Canonical git trees are sorted by name; the BTreeMap iteration already is.
     let tree_entries: Vec<TreeEntry> = entries.into_values().collect();
     let new_tree_content = encode_tree(&tree_entries);
-    let new_tree_oid = write_loose(writer, ObjectKind::Tree, &new_tree_content).await?;
+    let new_tree_oid = write_loose(fetch, writer, ObjectKind::Tree, &new_tree_content).await?;
 
     let summary = format!("config: edit {file_path} in {}", registry.slug);
     let (commit_content, commit_oid) = build_signed_commit(
@@ -274,7 +275,7 @@ pub async fn propose_config_change_with_id(
         &change_id,
         when,
     );
-    let written_oid = write_loose(writer, ObjectKind::Commit, &commit_content).await?;
+    let written_oid = write_loose(fetch, writer, ObjectKind::Commit, &commit_content).await?;
     debug_assert_eq!(written_oid, commit_oid);
 
     // Write the draft ref (a ref, not a branch consumers follow).
@@ -335,11 +336,27 @@ pub async fn propose_config_change_with_id(
 ///
 /// # Errors
 ///
-/// Returns an error when the object cannot be encoded or the write fails.
-async fn write_loose(writer: &dyn SurfaceWrite, kind: ObjectKind, content: &[u8]) -> Result<Oid> {
+/// Returns an error when the object cannot be encoded, an existing object is
+/// invalid, the existing object cannot be read safely, or the write fails.
+async fn write_loose(
+    fetch: &dyn SurfaceFetch,
+    writer: &dyn SurfaceWrite,
+    kind: ObjectKind,
+    content: &[u8],
+) -> Result<Oid> {
     let oid = hash_object(kind, content);
     let loose = encode_loose(kind, content)?;
     let path = oid.loose_path();
+    let maximum_existing_bytes = loose.len().max(content.len().saturating_add(64 * 1024));
+    if let Some(existing) = fetch.fetch_bounded(&path, maximum_existing_bytes).await? {
+        let (existing_kind, existing_content) = decode_loose(&existing, Some(oid))
+            .with_context(|| format!("validating existing loose object {oid}"))?;
+        anyhow::ensure!(
+            existing_kind == kind && existing_content == content,
+            "existing loose object {oid} does not match its requested content"
+        );
+        return Ok(oid);
+    }
     writer
         .write(&path, &loose)
         .await
@@ -351,6 +368,37 @@ async fn write_loose(writer: &dyn SurfaceWrite, kind: ObjectKind, content: &[u8]
 mod tests {
     use super::*;
     use aos_registry_surface::object::{decode_loose, parse_commit};
+    use std::sync::{Arc, Mutex};
+
+    struct ExistingObjectFetch(Option<Vec<u8>>);
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for ExistingObjectFetch {
+        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+            Ok(self.0.clone())
+        }
+
+        fn describe(&self) -> String {
+            "gitwrite-test".to_string()
+        }
+    }
+
+    struct RecordingWriter(Arc<Mutex<Vec<(String, Vec<u8>)>>>);
+
+    #[async_trait::async_trait]
+    impl SurfaceWrite for RecordingWriter {
+        async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
+            self.0
+                .lock()
+                .map_err(|_| anyhow::anyhow!("recording writer lock poisoned"))?
+                .push((path.to_string(), bytes.to_vec()));
+            Ok(())
+        }
+
+        async fn delete(&self, _path: &str) -> Result<()> {
+            Ok(())
+        }
+    }
 
     fn key(seed: u8) -> ed25519_dalek::SigningKey {
         ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
@@ -411,5 +459,46 @@ mod tests {
             &other
         )
         .is_err());
+    }
+
+    #[tokio::test]
+    async fn loose_objects_preserve_existing_physical_bytes() {
+        let content = b"unchanged git content";
+        let oid = hash_object(ObjectKind::Blob, content);
+        // Valid zlib level-0 encoding of `blob 21\0unchanged git content`.
+        let existing = vec![
+            120, 1, 1, 29, 0, 226, 255, 98, 108, 111, 98, 32, 50, 49, 0, 117, 110, 99, 104, 97,
+            110, 103, 101, 100, 32, 103, 105, 116, 32, 99, 111, 110, 116, 101, 110, 116, 146, 148,
+            10, 79,
+        ];
+        assert_ne!(existing, encode_loose(ObjectKind::Blob, content).unwrap());
+        let writes = Arc::new(Mutex::new(Vec::new()));
+
+        let written = write_loose(
+            &ExistingObjectFetch(Some(existing)),
+            &RecordingWriter(Arc::clone(&writes)),
+            ObjectKind::Blob,
+            content,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(written, oid);
+        assert!(writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn loose_objects_reject_corrupt_existing_bytes() {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let result = write_loose(
+            &ExistingObjectFetch(Some(b"not a loose object".to_vec())),
+            &RecordingWriter(Arc::clone(&writes)),
+            ObjectKind::Tree,
+            b"tree content",
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(writes.lock().unwrap().is_empty());
     }
 }

@@ -1,5 +1,6 @@
 ##! aos-hub-dialect-tests — Required live SQL dialect parity gate
 {
+  lib,
   mkCargoPackage,
   fetchCargoDeps,
   openssl,
@@ -8,13 +9,26 @@
   protobuf,
 }: let
   version = "0.1.0";
+  repoRoot = ../..;
+  repoRootString = toString repoRoot;
   src = builtins.path {
-    path = ../../crates;
+    path = repoRoot;
     name = "aos-hub-dialect-test-src";
-    filter = path: type: let
+    filter = path: _type: let
+      pathString = toString path;
       base = baseNameOf path;
     in
-      base != "target" && base != ".git";
+      base
+      != "target"
+      && base != ".git"
+      && (
+        pathString
+        == repoRootString
+        || lib.hasPrefix "${repoRootString}/crates" pathString
+        || pathString == "${repoRootString}/docs"
+        || pathString == "${repoRootString}/docs/rfcs"
+        || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
+      );
   };
 in
   mkCargoPackage {
@@ -22,9 +36,11 @@ in
     inherit version src;
 
     cargoFlags = "-p aos-hub --features postgres,mysql,required-live-dialects --test dialect";
+    cargoRoot = "crates";
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+      sourceRoot = "source/crates";
+      hash = "sha256-D5x7xhF0PFm3ZmixZQhqAasHvSJ54MQRE4UpMHR2aiM=";
     };
 
     buildDeps = [

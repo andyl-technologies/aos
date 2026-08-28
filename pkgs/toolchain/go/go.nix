@@ -567,8 +567,11 @@ in
           mkdir -p "$GOPATH" "$GOCACHE" /tmp/cgo-integration
 
           BT="${builtins.toString pkgs.bootstrapTools}"
-          DL=$(ls "$BT"/lib/ld-linux-*.so.* | head -1)
-          GCC_VER=$(ls "$BT"/lib/gcc/x86_64-unknown-linux-gnu)
+          CC_ROOT=$(cat "$BT/nix-support/orig-cc")
+          LIBC=$(cat "$BT/nix-support/orig-libc")
+          LIBC_DEV=$(cat "$BT/nix-support/orig-libc-dev")
+          DL=$(cat "$BT/nix-support/dynamic-linker")
+          GCC_LIB=$(ls -d "$CC_ROOT"/lib/gcc/*/* | head -1)
 
           # --sysroot=/ points at the Firecracker guest rootfs assembled for
           # this VM test, not at the host filesystem or Nix build sandbox root.
@@ -576,14 +579,15 @@ in
           #!/bin/sh
           exec ${pkgs.llvm}/bin/clang \\
             --sysroot=/ \\
-            -isystem "$BT/include-glibc" \\
-            -B"$BT/lib" \\
-            -B"$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER" \\
-            -L"$BT/lib" \\
-            -L"$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER" \\
+            -Wno-unused-command-line-argument \\
+            -isystem "$LIBC_DEV/include" \\
+            -B"$LIBC/lib" \\
+            -B"$GCC_LIB" \\
+            -L"$LIBC/lib" \\
+            -L"$GCC_LIB" \\
             -Wl,-dynamic-linker="$DL" \\
-            -Wl,-rpath,"$BT/lib" \\
-            -Wl,-rpath,"$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER" \\
+            -Wl,-rpath,"$LIBC/lib" \\
+            -Wl,-rpath,"$GCC_LIB" \\
             "\$@"
           EOF
           chmod +x /tmp/clang-cgo

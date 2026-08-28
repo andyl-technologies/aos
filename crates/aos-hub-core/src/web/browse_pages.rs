@@ -111,6 +111,93 @@ fn key_name_and_blob(key: &str) -> (&str, &str) {
     (name, blob)
 }
 
+/// Copy-pasteable consumer configuration shared by registry browse pages.
+///
+/// The canonical Git URL, signed client identity, trust anchors, and committed
+/// cache stack are resolved once by the request handler so overview and package
+/// pages cannot advertise different installation instructions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistrySetup {
+    registry_url: Option<String>,
+    client_name: String,
+    trust_keys: Vec<String>,
+    substituters: Vec<String>,
+}
+
+impl RegistrySetup {
+    /// Builds setup instructions from one resolved registry URL and cache stack.
+    #[must_use]
+    pub fn new(
+        registry: &RegistryRecord,
+        status: Option<&IndexStatus>,
+        registry_url: Option<&str>,
+        caches: &[(String, u32)],
+    ) -> Self {
+        let display_name = status
+            .and_then(|value| value.name.as_deref())
+            .unwrap_or(&registry.slug);
+        let client_name = registry
+            .trust_keys
+            .first()
+            .map(|key| key_name_and_blob(key).0)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(display_name)
+            .to_string();
+        let registry_url = registry_url.map(|url| format!("{}/", url.trim_end_matches('/')));
+        let substituters = if caches.is_empty() {
+            registry_url.iter().cloned().collect()
+        } else {
+            let mut ordered: Vec<&(String, u32)> = caches.iter().collect();
+            ordered.sort_by_key(|(_, priority)| *priority);
+            ordered
+                .into_iter()
+                .map(|(url, _)| url.trim_end_matches('/').to_string())
+                .collect()
+        };
+
+        Self {
+            registry_url,
+            client_name,
+            trust_keys: registry.trust_keys.clone(),
+            substituters,
+        }
+    }
+
+    fn add_command(&self) -> Option<String> {
+        let url = self.registry_url.as_deref()?;
+        let mut command = format!("apr add {url} --name {}", self.client_name);
+        for key in &self.trust_keys {
+            let _ = write!(command, " --trust-key {key}");
+        }
+        Some(command)
+    }
+
+    fn module_stanza(&self) -> Option<String> {
+        let url = self.registry_url.as_deref()?;
+        let mut stanza = format!(
+            "aos.apm.registries.\"{}\" = {{\n  url = \"{url}\";\n  trustKeys = [\n",
+            self.client_name,
+        );
+        for key in &self.trust_keys {
+            let _ = writeln!(stanza, "    \"{key}\"");
+        }
+        stanza.push_str("  ];\n};");
+        Some(stanza)
+    }
+
+    fn plain_nix(&self) -> String {
+        let mut plain = format!("substituters = {}", self.substituters.join(" "));
+        if !self.trust_keys.is_empty() {
+            let _ = write!(
+                plain,
+                "\ntrusted-public-keys = {}",
+                self.trust_keys.join(" ")
+            );
+        }
+        plain
+    }
+}
+
 /// The store hash of a store path: the basename text before the first `-`.
 fn store_hash(store_path: &str) -> Option<&str> {
     let basename = store_path.rsplit('/').next().unwrap_or(store_path);
@@ -308,11 +395,11 @@ pub fn registry_home(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     channels: &[ChannelSummary],
-    packages: &[PackageRow],
+    package_count: usize,
     caches: &[(String, u32)],
     roster: &[(String, String, String)],
     validations: &[ValidationRunRow],
-    external_url: Option<&str>,
+    setup: &RegistrySetup,
     manage_link: bool,
     started: Instant,
     session: &SessionIndicator,
@@ -452,7 +539,7 @@ pub fn registry_home(
     let _ = write!(
         body,
         "<h2>Packages ({count})</h2>\n<p><a href=\"/{slug}/-/packages\">Browse the package index →</a></p>\n",
-        count = packages.len(),
+        count = package_count,
         slug = escape(slug),
     );
 
@@ -491,7 +578,7 @@ pub fn registry_home(
     );
 
     body.push_str("<h2>Setup</h2>\n");
-    let Some(external_url) = external_url else {
+    let Some(add_command) = setup.add_command() else {
         body.push_str(
             "<p class=\"dim\">No canonical Git route is ready. Configure delivery before adding this registry to a client.</p>\n",
         );
@@ -503,50 +590,19 @@ pub fn registry_home(
             session,
         );
     };
-    let url = external_url.trim_end_matches('/');
     let _ = write!(
         body,
-        "<p class=\"dim\">apm:</p>\n<pre>apr add {url}/ --name {slug}</pre>\n",
-        url = escape(url),
-        slug = escape(slug),
+        "<p class=\"dim\">apm:</p>\n<pre>{}</pre>\n",
+        escape(&add_command),
     );
-    let mut stanza =
-        format!("aos.apm.registries.{slug} = {{\n  url = \"{url}/\";\n  trustKeys = [\n");
-    for key in &registry.trust_keys {
-        let _ = writeln!(stanza, "    \"{key}\"");
-    }
-    stanza.push_str("  ];\n};");
-    let _ = write!(
-        body,
-        "<p class=\"dim\">AOS module:</p>\n<pre>{}</pre>\n",
-        escape(&stanza),
-    );
-    // `substituters` are the registry's advertised *binary caches*, not the
-    // registry URL: the registry serves the index/git surface, while nar/narinfo
-    // — the heavy traffic — come from the caches, which front their own
-    // exact routes materialize those committed URLs, keeping
-    // substitution off the registry's critical path. Highest priority (lowest
-    // number) first. A registry that
-    // advertises no cache falls back to serving as its own cache.
-    let substituters = if caches.is_empty() {
-        format!("{url}/")
-    } else {
-        let mut ordered: Vec<&(String, u32)> = caches.iter().collect();
-        ordered.sort_by_key(|(_, priority)| *priority);
-        ordered
-            .iter()
-            .map(|(u, _)| u.trim_end_matches('/'))
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    let mut plain = format!("substituters = {substituters}");
-    if !registry.trust_keys.is_empty() {
+    if let Some(stanza) = setup.module_stanza() {
         let _ = write!(
-            plain,
-            "\ntrusted-public-keys = {}",
-            registry.trust_keys.join(" ")
+            body,
+            "<p class=\"dim\">AOS module:</p>\n<pre>{}</pre>\n",
+            escape(&stanza),
         );
     }
+    let plain = setup.plain_nix();
     let _ = write!(
         body,
         "<p class=\"dim\">plain Nix (substitute from the advertised cache):</p>\n<pre>{}</pre>\n",
@@ -989,14 +1045,14 @@ pub struct PackageClosure {
 /// derivation links; sysroot images; and a `<details>` raw-metadata dump.
 ///
 /// `closure` carries the resolved forward and reverse dependencies the handler
-/// computed; `external_url` is the instance's externally reachable base URL,
-/// used to build the copy-pasteable install snippet.
+/// computed; `setup` is the same canonical consumer configuration rendered on
+/// the registry overview.
 pub fn package_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     detail: &PackageDetail,
     closure: &PackageClosure,
-    external_url: &str,
+    setup: &RegistrySetup,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -1073,23 +1129,22 @@ pub fn package_page(
     // Install snippet: apm is the consumer CLI; the registry-add and
     // substituter lines mirror the registry home setup, package-focused.
     body.push_str("<h2>Install</h2>\n");
-    let url = external_url.trim_end_matches('/');
-    let mut snippet = format!(
-        "apr add {url}/ --name {slug}\napm install {name}",
-        name = detail.name
-    );
-    if !registry.trust_keys.is_empty() {
+    if let Some(add_command) = setup.add_command() {
+        let snippet = format!(
+            "{add_command}\napm install {name}\n\n# or as a plain Nix substituter:\n{plain}",
+            name = detail.name,
+            plain = setup.plain_nix(),
+        );
         let _ = write!(
-            snippet,
-            "\n\n# or as a plain Nix substituter:\nsubstituters = {url}/\ntrusted-public-keys = {}",
-            registry.trust_keys.join(" "),
+            body,
+            "<p class=\"dim\">apm is the consumer CLI; add the registry, then install:</p>\n<pre>{}</pre>\n",
+            escape(&snippet),
+        );
+    } else {
+        body.push_str(
+            "<p class=\"dim\">No canonical Git route is ready. Configure delivery before adding this registry to a client.</p>\n",
         );
     }
-    let _ = write!(
-        body,
-        "<p class=\"dim\">apm is the consumer CLI; add the registry, then install:</p>\n<pre>{}</pre>\n",
-        escape(&snippet),
-    );
 
     // Dependencies: the closure edges of the latest primary platform, made
     // legible — resolvable hashes link to their package page, the rest fall
@@ -2511,6 +2566,10 @@ mod tests {
         }
     }
 
+    fn setup(registry: &RegistryRecord, url: &str, caches: &[(String, u32)]) -> RegistrySetup {
+        RegistrySetup::new(registry, None, Some(url), caches)
+    }
+
     fn indexed_image(format: &str, release: &str) -> IndexedSystemImage {
         use aos_registry_surface::manifest::{
             immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
@@ -2773,25 +2832,30 @@ mod tests {
 
     #[tokio::test]
     async fn registry_home_escapes_and_links() {
+        let registry = registry();
+        let caches = [("https://cache.example".into(), 40)];
+        let setup = setup(&registry, "http://127.0.0.1:8420/demo", &caches);
         let html = registry_home(
-            &registry(),
+            &registry,
             None,
             &[],
-            &[],
-            &[("https://cache.example".into(), 40)],
+            0,
+            &caches,
             &[("alice".into(), "demo:Ed25519:<k>".into(), "active".into())],
             &[],
-            Some("http://127.0.0.1:8420/demo"),
+            &setup,
             false,
             Instant::now(),
             &anon(),
         );
         assert!(html.contains("&lt;k&gt;"));
-        assert!(html.contains("apr add http://127.0.0.1:8420/demo/"));
+        assert!(html.contains(
+            "apr add http://127.0.0.1:8420/demo/ --name demo --trust-key demo:Ed25519:AAAA"
+        ));
         assert!(!html.contains("<k>"));
         // Fingerprints, the module stanza, and the plain-Nix snippet.
         assert!(html.contains("SHA256:"));
-        assert!(html.contains("aos.apm.registries.demo"));
+        assert!(html.contains("aos.apm.registries.&quot;demo&quot;"));
         assert!(html.contains("trustKeys"));
         // substituters point at the cache's committed delivery URL,
         // not the registry URL — the registry serves the index, the cache serves
@@ -2801,6 +2865,39 @@ mod tests {
         // Unvalidated caches say so; the health page is linked.
         assert!(html.contains("not yet validated"));
         assert!(html.contains("/demo/-/health"));
+    }
+
+    #[tokio::test]
+    async fn registry_home_uses_signed_identity_and_all_bootstrap_keys() {
+        let mut registry = registry();
+        registry.slug = "andyl/main".into();
+        registry.trust_keys = vec![
+            "andyl-main:Ed25519:AAAA".into(),
+            "andyl-main:Ed25519:BBBB".into(),
+        ];
+
+        let setup = setup(&registry, "https://cdn.example/andyl/main", &[]);
+        let html = registry_home(
+            &registry,
+            None,
+            &[],
+            0,
+            &[],
+            &[],
+            &[],
+            &setup,
+            false,
+            Instant::now(),
+            &anon(),
+        );
+
+        assert!(html.contains(
+            "apr add https://cdn.example/andyl/main/ --name andyl-main \
+             --trust-key andyl-main:Ed25519:AAAA"
+        ));
+        assert!(html.contains("--trust-key andyl-main:Ed25519:BBBB"));
+        assert!(html.contains("aos.apm.registries.&quot;andyl-main&quot;"));
+        assert!(html.contains("andyl-main:Ed25519:BBBB"));
     }
 
     /// A platform artifact fixture with the given refs.
@@ -2829,12 +2926,14 @@ mod tests {
             versions: Vec::new(),
         };
         let closure = PackageClosure::default();
+        let registry = registry();
+        let setup = setup(&registry, "http://hub.example/demo", &[]);
         let html = package_page(
-            &registry(),
+            &registry,
             None,
             &detail,
             &closure,
-            "http://hub.example",
+            &setup,
             Instant::now(),
             &anon(),
         );
@@ -2846,11 +2945,11 @@ mod tests {
 
         detail.homepage = Some("https://curl.se".into());
         let html = package_page(
-            &registry(),
+            &registry,
             None,
             &detail,
             &closure,
-            "http://hub.example",
+            &setup,
             Instant::now(),
             &anon(),
         );
@@ -2893,12 +2992,15 @@ mod tests {
             reverse: vec![("git".into(), "2.43.0".into())],
             reverse_total: 1,
         };
+        let registry = registry();
+        let caches = [("https://cache.example/demo".into(), 40)];
+        let setup = setup(&registry, "http://hub.example/demo", &caches);
         let html = package_page(
-            &registry(),
+            &registry,
             None,
             &detail,
             &closure,
-            "http://hub.example",
+            &setup,
             Instant::now(),
             &anon(),
         );
@@ -2909,7 +3011,8 @@ mod tests {
         assert!(html.contains("class=\"chip\">x86_64-linux"));
         // Install snippet: apm is the consumer CLI.
         assert!(html.contains("apm install curl"));
-        assert!(html.contains("apr add http://hub.example/ --name demo"));
+        assert!(html.contains("apr add http://hub.example/demo/ --name demo"));
+        assert!(html.contains("substituters = https://cache.example/demo"));
         assert!(html.contains("trusted-public-keys = demo:Ed25519:AAAA"));
         // A resolved dependency links to its package page; an unresolved one
         // falls back to its narinfo permalink.
@@ -2932,6 +3035,51 @@ mod tests {
         assert!(html.contains("<summary>Raw metadata</summary>"));
     }
 
+    #[test]
+    fn package_page_uses_the_registry_setup_identity_and_cache_stack() {
+        let mut registry = registry();
+        registry.slug = "andyl/main".into();
+        registry.trust_keys = vec![
+            "andyl-main:Ed25519:AAAA".into(),
+            "andyl-main:Ed25519:BBBB".into(),
+        ];
+        let caches = [
+            ("https://cache.example/secondary/".into(), 100),
+            ("https://cache.example/primary/".into(), 50),
+        ];
+        let setup = setup(&registry, "https://cdn.example/andyl/main/", &caches);
+        let detail = PackageDetail {
+            name: "minisign".into(),
+            description: "sign files".into(),
+            homepage: None,
+            license: "ISC".into(),
+            maintainer: "Andyl, Inc.".into(),
+            sysroot: false,
+            versions: Vec::new(),
+        };
+
+        let html = package_page(
+            &registry,
+            None,
+            &detail,
+            &PackageClosure::default(),
+            &setup,
+            Instant::now(),
+            &anon(),
+        );
+
+        assert!(html.contains(
+            "apr add https://cdn.example/andyl/main/ --name andyl-main \
+             --trust-key andyl-main:Ed25519:AAAA"
+        ));
+        assert!(html.contains("--trust-key andyl-main:Ed25519:BBBB"));
+        assert!(html.contains("apm install minisign"));
+        assert!(html.contains(
+            "substituters = https://cache.example/primary https://cache.example/secondary"
+        ));
+        assert!(!html.contains("apr add https://hub.example"));
+    }
+
     #[tokio::test]
     async fn package_page_escapes_html_in_name_and_description() {
         let detail = PackageDetail {
@@ -2943,12 +3091,14 @@ mod tests {
             sysroot: false,
             versions: Vec::new(),
         };
+        let registry = registry();
+        let setup = setup(&registry, "http://hub.example/demo", &[]);
         let html = package_page(
-            &registry(),
+            &registry,
             None,
             &detail,
             &PackageClosure::default(),
-            "http://hub.example",
+            &setup,
             Instant::now(),
             &anon(),
         );

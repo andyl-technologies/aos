@@ -16,19 +16,30 @@ use tower::ServiceExt;
 use aos_hub_core::service::RpcService;
 use aos_hub_core::web::console::{dispatch_nested, ConsoleDeps};
 
-/// Classifies a potentially streaming machine-surface write without reading its body.
+/// Classifies a potentially streaming upload without reading its body.
 ///
-/// Connect RPC paths are static under `/aos.hub.v1.` and console paths contain
-/// the reserved `/-/` marker. Every remaining `PUT` or `POST` may be the
-/// machine delivery surface. The Worker bridge uses this structural classification to
-/// preserve its request stream and let the delivery handler's 20 MiB/multipart boundary
-/// own buffering, instead of imposing a different pre-router limit based on
-/// query spelling or parameter order.
+/// Publication and binary-cache upload RPCs deliberately carry raw bytes rather
+/// than Connect JSON. Machine delivery paths are the other streaming write
+/// surface; console paths contain the reserved `/-/` marker. The Worker bridge
+/// preserves these request streams so the owning handler's 20 MiB/multipart
+/// boundary controls buffering instead of duplicating each body in the nested
+/// console dispatcher.
 #[must_use]
-pub(crate) fn is_streaming_machine_request(method: &Method, uri: &Uri) -> bool {
-    matches!(*method, Method::PUT | Method::POST)
-        && !uri.path().starts_with("/aos.hub.v1.")
-        && !uri.path().contains("/-/")
+pub(crate) fn is_streaming_upload_request(method: &Method, uri: &Uri) -> bool {
+    if !matches!(*method, Method::PUT | Method::POST) {
+        return false;
+    }
+
+    let path = uri.path();
+    let typed_upload = [
+        "/aos.hub.v1.PublishService/UploadObject/",
+        "/aos.hub.v1.PublishService/UploadPart/",
+        "/aos.hub.v1.BinaryCacheService/UploadObject/",
+        "/aos.hub.v1.BinaryCacheService/UploadPart/",
+    ]
+    .iter()
+    .any(|prefix| path.starts_with(prefix));
+    typed_upload || (!path.starts_with("/aos.hub.v1.") && !path.contains("/-/"))
 }
 
 /// The result of offering one buffered Worker request to the nested console.
@@ -99,7 +110,7 @@ pub(crate) async fn dispatch_converted_request(
         Err(response) => return ConvertedDispatch::Response(response),
     };
 
-    let request = if is_streaming_machine_request(request.method(), request.uri()) {
+    let request = if is_streaming_upload_request(request.method(), request.uri()) {
         request
     } else {
         let nested = dispatch_nested_first(
@@ -327,29 +338,44 @@ mod tests {
 
     #[test]
     fn machine_put_is_classified_without_body_inspection() {
-        assert!(is_streaming_machine_request(
+        assert!(is_streaming_upload_request(
             &Method::PUT,
             &"/andyl/main/nar/object.nar".parse().unwrap()
         ));
-        assert!(!is_streaming_machine_request(
+        assert!(!is_streaming_upload_request(
             &Method::PUT,
             &"/andyl/main/-/settings/placements".parse().unwrap()
         ));
-        assert!(!is_streaming_machine_request(
+        assert!(!is_streaming_upload_request(
             &Method::PUT,
             &"/aos.hub.v1.RegistryService/UpdateRegistry"
                 .parse()
                 .unwrap()
         ));
-        assert!(is_streaming_machine_request(
+        assert!(is_streaming_upload_request(
             &Method::POST,
             &"/andyl/main/nar/object.nar?uploadId=abc".parse().unwrap()
         ));
-        assert!(is_streaming_machine_request(
+        assert!(is_streaming_upload_request(
             &Method::POST,
             &"/andyl/main/nar/object.nar?size=99&uploads"
                 .parse()
                 .unwrap()
         ));
+    }
+
+    #[test]
+    fn typed_raw_uploads_keep_their_request_streams() {
+        for path in [
+            "/aos.hub.v1.PublishService/UploadObject/publication-1/42",
+            "/aos.hub.v1.PublishService/UploadPart/upload-1/1",
+            "/aos.hub.v1.BinaryCacheService/UploadObject/cache-1/ticket-1/object",
+            "/aos.hub.v1.BinaryCacheService/UploadPart/upload-1/1",
+        ] {
+            assert!(is_streaming_upload_request(
+                &Method::PUT,
+                &path.parse().unwrap()
+            ));
+        }
     }
 }

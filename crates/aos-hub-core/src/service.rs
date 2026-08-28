@@ -28,6 +28,8 @@
 //!   -> 404 { "code": "not_found", "message": "registry not found" }
 //! ```
 
+mod publication_manifest;
+
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
@@ -36,7 +38,7 @@ use aos_proto_types as pb;
 use aos_registry_surface::manifest::{ImageCompression, ImageTarget, ImageVerificationState};
 use aos_registry_surface::object::Oid;
 use base64::Engine as _;
-use futures_util::StreamExt as _;
+use futures_util::{StreamExt as _, TryStreamExt as _};
 use sha2::{Digest as _, Sha256};
 
 use crate::auth::jwt::{Claims, JwtKeys};
@@ -1243,6 +1245,12 @@ fn insert_retention_reason(
         });
 }
 
+fn retention_refresh_reason_id(refresh_id: &str, reason_key: &str) -> String {
+    hex::encode(Sha256::digest(
+        format!("{refresh_id}\0{reason_key}").as_bytes(),
+    ))
+}
+
 fn bounded_retention_source_ref(value: &str, digest: &str) -> String {
     if value.len() <= 255 {
         return value.to_string();
@@ -2091,6 +2099,14 @@ pub const MAX_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
 /// Maximum number of objects admitted by one registry publication manifest.
 pub const MAX_REGISTRY_PUBLICATION_OBJECTS: usize = 20_000;
 
+/// Maximum narinfos accepted by one cache-upload completion request.
+pub const MAX_CACHE_NARINFO_REGISTRATION_BATCH: usize = 256;
+/// Maximum independent narinfo registrations in flight within one bulk RPC.
+const CACHE_NARINFO_REGISTRATION_CONCURRENCY: usize = 8;
+/// Maximum object-upload admissions accepted by one bulk cache request.
+pub const MAX_CACHE_UPLOAD_ADMISSION_BATCH: usize =
+    crate::db::MAX_CACHE_WRITE_TICKET_ADMISSION_BATCH;
+
 /// Maximum encoded length of one registry publication object key.
 pub const MAX_REGISTRY_PUBLICATION_PATH_BYTES: usize = 512;
 
@@ -2406,6 +2422,14 @@ pub struct RpcService {
     pub jwt_keys: JwtKeys,
     /// Externally reachable base URL, used to build the canonical upload URL.
     pub external_url: String,
+    /// Public base URL exposing canonical-slug placements on the
+    /// instance-default storage binding directly.
+    ///
+    /// When configured, public registries on a reconciled complete placement
+    /// inherit a canonical Git URL from this origin unless an explicit Git
+    /// route advertisement exists. This is the common object-store CDN path;
+    /// explicit topology remains authoritative for custom deployments.
+    pub default_public_delivery_url: Option<String>,
     /// The abuse-bound rate limiter (the [`RateLimiter`] port), metering
     /// `CreateOrg` per principal.
     pub ratelimit: Arc<dyn RateLimiter>,
@@ -6146,11 +6170,8 @@ impl RpcService {
         let generation = endpoint.desired_generation.ok_or_else(|| {
             RpcError::FailedPrecondition("endpoint has no desired generation".to_string())
         })?;
-        if req.resource_generation != generation {
-            return Err(RpcError::FailedPrecondition(
-                "endpoint generation is stale".to_string(),
-            ));
-        }
+        req.resource_generation =
+            resolve_endpoint_grant_generation(req.resource_generation, generation)?;
         let resource = crate::db::GrantResource::Endpoint {
             id: &endpoint.id,
             generation,
@@ -6678,7 +6699,9 @@ impl RpcService {
                 "gateway",
             )
             .await?;
-            if req.owner_scope_key != current.owner_scope_key {
+            if req.owner_scope_key.is_empty() {
+                req.owner_scope_key = current.owner_scope_key.clone();
+            } else if req.owner_scope_key != current.owner_scope_key {
                 return Err(RpcError::invalid("gateway owner scope is immutable"));
             }
             let expected = parse_resource_version(&req.expected_resource_version, 0)?;
@@ -8761,6 +8784,11 @@ impl RpcService {
                 "predecessor route resource version is stale".to_string(),
             ));
         }
+        if !predecessor.enabled {
+            return Err(RpcError::FailedPrecondition(
+                "predecessor route must be enabled before replacement".to_string(),
+            ));
+        }
         if req.spec.as_ref().is_some_and(|spec| spec.enabled) {
             return Err(RpcError::invalid(
                 "replacement routes must be created disabled",
@@ -9926,6 +9954,7 @@ impl RpcService {
             db,
             jwt_keys,
             external_url,
+            default_public_delivery_url: None,
             ratelimit,
             surface,
             surface_write,
@@ -9941,6 +9970,16 @@ impl RpcService {
             route_reservation_keyring: None,
             pack_validation: pack_validation_gate(),
         }
+    }
+
+    /// Attaches the public origin for the instance-default storage binding.
+    ///
+    /// Explicit canonical route advertisements always take precedence over
+    /// this derived delivery policy.
+    #[must_use]
+    pub fn with_default_public_delivery_url(mut self, url: String) -> Self {
+        self.default_public_delivery_url = Some(url);
+        self
     }
 
     /// Attaches the runtime DNS verifier for organization-domain challenges.
@@ -11375,10 +11414,8 @@ impl RpcService {
         self.require_read(auth, &registry).await?;
         let control_base = self.control_image_download_base(registry.id)?;
         let download_base = if registry.visibility == "public" {
-            self.db
-                .ready_registry_canonical_url(registry.id)
+            self.registry_consumer_url(&registry)
                 .await
-                .map_err(RpcError::internal)?
                 .unwrap_or(control_base)
         } else {
             control_base
@@ -13053,12 +13090,18 @@ impl RpcService {
             .ok_or_else(|| RpcError::not_found("binding"))?;
         self.writable_storage_owner(auth, &binding.owner_scope_key)
             .await?;
-        let current = self
-            .db
-            .binding_credential_revision(binding.id, &req.purpose, req.generation)
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("binding credential"))?;
+        let current = if req.generation == 0 {
+            self.db
+                .current_binding_credential(binding.id, &req.purpose)
+                .await
+                .map_err(RpcError::internal)?
+        } else {
+            self.db
+                .binding_credential_revision(binding.id, &req.purpose, req.generation)
+                .await
+                .map_err(RpcError::internal)?
+        }
+        .ok_or_else(|| RpcError::not_found("binding credential"))?;
         let expected = parse_resource_version(
             &req.expected_resource_version,
             current.head_resource_version,
@@ -13074,7 +13117,7 @@ impl RpcService {
         let operation_id = hex::encode(Sha256::digest(
             format!(
                 "storage-credential-probe-v1\0{}\0{}\0{}\0{}\0{}",
-                binding.stable_id, req.purpose, req.generation, expected, req.idempotency_key
+                binding.stable_id, req.purpose, current.generation, expected, req.idempotency_key
             )
             .as_bytes(),
         ));
@@ -13087,7 +13130,7 @@ impl RpcService {
                     binding_id: binding.id,
                     binding_resource_version: binding.resource_version,
                     purpose: req.purpose,
-                    generation: req.generation,
+                    generation: current.generation,
                     credential_head_resource_version: expected,
                 },
             )
@@ -13156,10 +13199,11 @@ impl RpcService {
             .ok_or_else(|| RpcError::not_found("binding"))?;
         let owner_scope_key = binding.owner_scope_key.clone();
         self.writable_storage_owner(auth, &owner_scope_key).await?;
-        if req.resource_generation != binding.resource_version {
-            return Err(RpcError::FailedPrecondition(
-                "binding generation is stale".to_string(),
-            ));
+        // Bindings are stable, non-generational grant targets. Their mutable
+        // resource version is carried separately by grant update requests and
+        // must not be confused with the generation field used by gateways.
+        if req.resource_generation != 0 {
+            return Err(RpcError::invalid("binding resourceGeneration must be zero"));
         }
         let grants = self
             .db
@@ -14265,6 +14309,7 @@ impl RpcService {
     /// Returns the first stable metadata-deletion precondition.
     fn placement_delete_blocker_error(
         blockers: crate::db::SurfacePlacementBlockers,
+        registry_placement: bool,
     ) -> Option<RpcError> {
         if blockers.direct_route {
             Some(RpcError::FailedPrecondition(
@@ -14274,11 +14319,15 @@ impl RpcService {
             Some(RpcError::FailedPrecondition(
                 "placement is referenced by a placement policy".to_string(),
             ))
-        } else if blockers.object_presence {
+        } else if blockers.object_presence && !registry_placement {
             Some(RpcError::FailedPrecondition(
                 "placement has object-presence inventory".to_string(),
             ))
-        } else if blockers.publication {
+        } else if blockers.active_publication {
+            Some(RpcError::FailedPrecondition(
+                "placement has active registry-publication state".to_string(),
+            ))
+        } else if blockers.publication && !registry_placement {
             Some(RpcError::FailedPrecondition(
                 "placement has registry-publication state".to_string(),
             ))
@@ -15337,8 +15386,15 @@ impl RpcService {
         ),
         RpcError,
     > {
-        self.require_control_plan_permission(auth, &req.plan_id, Permission::PlacementManage)
+        let (plan, input): (_, PlacementPolicyMutationPlanInput) = self
+            .load_control_plan(auth, &req.plan_id, plan_kind, Some(&req.confirmation_hash))
             .await?;
+        self.require_delivery_scope(
+            auth,
+            &input.owner_scope_key,
+            Permission::PlacementPolicyManage,
+        )
+        .await?;
         self.begin_control_plan_apply(
             auth,
             &req.plan_id,
@@ -15347,9 +15403,6 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, PlacementPolicyMutationPlanInput) = self
-            .load_control_plan(auth, &req.plan_id, plan_kind, Some(&req.confirmation_hash))
-            .await?;
         let (surface, _) = self
             .writable_topology_surface(auth, input.request.surface.clone())
             .await?;
@@ -16261,6 +16314,42 @@ impl RpcService {
             req.hash_range.as_ref(),
         )?;
         let binding_id = self.topology_binding_id(org_id, &req.binding_id).await?;
+        let mut warnings = Vec::new();
+        if let SurfaceTarget::Registry(registry_id) = surface {
+            let binding = self
+                .db
+                .binding(binding_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("binding"))?;
+            let registry = self
+                .db
+                .registry_by_id(registry_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("registry"))?;
+            if binding.is_instance_default
+                && registry.visibility == "public"
+                && req.kind == "complete"
+                && req.desired_read_enabled.unwrap_or(false)
+                && (binding
+                    .object_prefix
+                    .as_deref()
+                    .is_some_and(|prefix| !prefix.is_empty())
+                    || req.prefix.trim_matches('/') != registry.slug)
+            {
+                warnings.push(format!(
+                    "default public delivery remains unavailable because the binding-root-relative prefix '{}' does not equal canonical slug '{}'",
+                    [binding.object_prefix.as_deref().unwrap_or(""), &req.prefix]
+                        .into_iter()
+                        .map(|part| part.trim_matches('/'))
+                        .filter(|part| !part.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                    registry.slug
+                ));
+            }
+        }
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
         let (registry_id, cache_id) = Self::topology_surface_ids(surface);
         let input = PlacementCreatePlanInput {
@@ -16283,7 +16372,7 @@ impl RpcService {
                 "create placement '{}' without write authority",
                 input.request.name
             )],
-            Vec::new(),
+            warnings,
             Some(confirmation_hash),
         )
         .await
@@ -16954,6 +17043,9 @@ impl RpcService {
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
+        if let Err(error) = self.topology_probes.wake_controller().await {
+            tracing::warn!(error = %format!("{error:#}"), "waking write-authority controller");
+        }
         Ok(response)
     }
 
@@ -17114,6 +17206,9 @@ impl RpcService {
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
+        if let Err(error) = self.topology_probes.wake_controller().await {
+            tracing::warn!(error = %format!("{error:#}"), "waking write-authority controller");
+        }
         Ok(response)
     }
 
@@ -17887,6 +17982,93 @@ impl RpcService {
         .await
     }
 
+    /// Pins the destination's current validated binding revision for physical copies.
+    async fn bind_placement_copy_capability(
+        &self,
+        placement: &crate::db::SurfacePlacementRecord,
+    ) -> Result<(), RpcError> {
+        if self
+            .db
+            .placement_publication_write_revision(placement.id)
+            .await
+            .map_err(RpcError::internal)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        if placement.kind != "complete" || placement.desired_state != "active" {
+            return Err(RpcError::FailedPrecondition(
+                "a physical copy destination must be an active complete placement".to_string(),
+            ));
+        }
+
+        let state = self
+            .db
+            .binding_write_state(placement.binding_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "the destination binding has no write-revision state".to_string(),
+                )
+            })?;
+        let revision_number = state.current_write_revision.ok_or_else(|| {
+            RpcError::FailedPrecondition(
+                "the destination binding has no current write revision".to_string(),
+            )
+        })?;
+        let observation = self
+            .db
+            .binding_write_observation(placement.binding_id, revision_number)
+            .await
+            .map_err(RpcError::internal)?;
+        if !observation.is_some_and(|observation| observation.state == "valid") {
+            return Err(RpcError::FailedPrecondition(
+                "the destination binding's current write revision is not valid".to_string(),
+            ));
+        }
+        let revision = self
+            .db
+            .binding_write_revision(placement.binding_id, revision_number)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "the destination binding's current write revision is missing".to_string(),
+                )
+            })?;
+        if !revision.writes_supported {
+            return Err(RpcError::FailedPrecondition(
+                "the destination binding's current revision does not support writes".to_string(),
+            ));
+        }
+        if placement.requires_conditional_writes && !revision.conditional_writes_supported {
+            return Err(RpcError::FailedPrecondition(
+                "the destination requires conditional writes but its binding revision does not support them"
+                    .to_string(),
+            ));
+        }
+        let credential = self
+            .db
+            .binding_credential_revision(
+                placement.binding_id,
+                &revision.write_credential_purpose,
+                revision.write_credential_generation,
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        if !credential.is_some_and(|credential| credential.validation_state == "valid") {
+            return Err(RpcError::FailedPrecondition(
+                "the destination binding's write credential is not valid".to_string(),
+            ));
+        }
+
+        self.db
+            .bind_surface_placement_write_capability(placement.id, revision_number)
+            .await
+            .map_err(Self::authority_mutation_error)
+    }
+
     /// Schedules replication from one placement to another on the same surface.
     async fn execute_replicate_placement(
         &self,
@@ -17917,6 +18099,12 @@ impl RpcService {
                 "an offline placement cannot receive replication".to_string(),
             ));
         }
+        if source.state != "ready" || source.completeness != "complete" {
+            return Err(RpcError::FailedPrecondition(
+                "replication requires a ready, complete source placement".to_string(),
+            ));
+        }
+        self.bind_placement_copy_capability(&destination).await?;
         self.schedule_placement_operation(
             "replicate_placement",
             &req.idempotency_key,
@@ -17951,14 +18139,34 @@ impl RpcService {
                 "placement resource version is stale".to_string(),
             ));
         }
-        let mut targets = Vec::new();
-        if !req.source_placement_name.is_empty() {
-            targets.push((
-                "source".to_string(),
-                self.topology_placement(surface, &req.source_placement_name)
-                    .await?,
+        let source = if req.source_placement_name.is_empty() {
+            self.db
+                .list_surface_placements(surface)
+                .await
+                .map_err(RpcError::internal)?
+                .into_iter()
+                .find(|placement| {
+                    placement.id != destination.id
+                        && placement.desired_state == "active"
+                        && placement.state == "ready"
+                        && placement.completeness == "complete"
+                })
+                .ok_or_else(|| {
+                    RpcError::FailedPrecondition(
+                        "repair requires another ready, complete source placement".to_string(),
+                    )
+                })?
+        } else {
+            self.topology_placement(surface, &req.source_placement_name)
+                .await?
+        };
+        if source.state != "ready" || source.completeness != "complete" {
+            return Err(RpcError::FailedPrecondition(
+                "repair requires a ready, complete source placement".to_string(),
             ));
         }
+        self.bind_placement_copy_capability(&destination).await?;
+        let mut targets = vec![("source".to_string(), source)];
         targets.push(("primary".to_string(), destination));
         self.schedule_placement_operation("repair_placement", &req.idempotency_key, targets)
             .await
@@ -18038,7 +18246,10 @@ impl RpcService {
             .surface_placement_blockers(current.id)
             .await
             .map_err(RpcError::internal)?;
-        if let Some(error) = Self::placement_delete_blocker_error(blockers) {
+        if let Some(error) = Self::placement_delete_blocker_error(
+            blockers,
+            matches!(surface, SurfaceTarget::Registry(_)),
+        ) {
             return Err(error);
         }
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
@@ -18144,15 +18355,23 @@ impl RpcService {
             .surface_placement_blockers(current.id)
             .await
             .map_err(RpcError::internal)?;
-        if let Some(error) = Self::placement_delete_blocker_error(blockers) {
+        if let Some(error) = Self::placement_delete_blocker_error(
+            blockers,
+            matches!(surface, SurfaceTarget::Registry(_)),
+        ) {
             return Err(error);
         }
-        if !self
-            .db
-            .delete_surface_placement(current.id, input.baseline_resource_version)
-            .await
-            .map_err(RpcError::internal)?
-        {
+        let deleted = if matches!(surface, SurfaceTarget::Registry(_)) {
+            self.db
+                .delete_registry_surface_placement(current.id, input.baseline_resource_version)
+                .await
+        } else {
+            self.db
+                .delete_surface_placement(current.id, input.baseline_resource_version)
+                .await
+        }
+        .map_err(RpcError::internal)?;
+        if !deleted {
             return Err(RpcError::FailedPrecondition(
                 "placement changed while deletion was applied".to_string(),
             ));
@@ -20738,7 +20957,14 @@ impl RpcService {
         if !verifier
             .challenge_is_published(&current.domain, &current.txt_challenge)
             .await
-            .map_err(RpcError::internal)?
+            .map_err(|error| {
+                tracing::warn!(
+                    domain = %current.domain,
+                    error = %format!("{error:#}"),
+                    "organization-domain DNS verification unavailable"
+                );
+                RpcError::Unavailable("DNS TXT verification is temporarily unavailable".to_string())
+            })?
         {
             return Err(RpcError::FailedPrecondition(
                 "the exact DNS TXT challenge is not published".into(),
@@ -22229,9 +22455,10 @@ impl RpcService {
 
     /// The consumer-facing base URL for a registry's git surface.
     ///
-    /// This is the URL rendered by the registry's explicit canonical Git
-    /// route. Direct, CDN, and Hub-proxied delivery are all modeled as
-    /// routes; implicit URL inheritance is not consulted.
+    /// An explicit canonical Git route is authoritative. Without one, a public
+    /// registry on a complete reconciled instance-default placement whose
+    /// prefix equals its canonical slug derives its URL from the configured
+    /// public storage origin.
     ///
     /// # Errors
     ///
@@ -22240,13 +22467,59 @@ impl RpcService {
         &self,
         registry: &RegistryRecord,
     ) -> Result<String, RpcError> {
-        self.db
+        if let Some(url) = self
+            .db
             .ready_registry_canonical_url(registry.id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| {
-                RpcError::FailedPrecondition("registry canonical Git route is not ready".to_owned())
-            })
+        {
+            return Ok(url);
+        }
+
+        // An explicit selection is an operator-owned override. Never bypass
+        // its failed readiness evidence with the convenient default path.
+        if self
+            .db
+            .route_advertisement(SurfaceTarget::Registry(registry.id), "git")
+            .await
+            .map_err(RpcError::internal)?
+            .is_some()
+        {
+            return Err(RpcError::FailedPrecondition(
+                "registry canonical Git route is not ready".to_owned(),
+            ));
+        }
+
+        let Some(base) = self.default_public_delivery_url.as_deref() else {
+            return Err(RpcError::FailedPrecondition(
+                "registry canonical Git route is not ready".to_owned(),
+            ));
+        };
+        if registry.visibility != "public" {
+            return Err(RpcError::FailedPrecondition(
+                "non-public registry requires an explicit canonical Git route".to_owned(),
+            ));
+        }
+        let Some(path) = self
+            .db
+            .default_public_slug_delivery_path(SurfaceTarget::Registry(registry.id), &registry.slug)
+            .await
+            .map_err(RpcError::internal)?
+        else {
+            return Err(RpcError::FailedPrecondition(
+                "registry has no published complete canonical-slug placement on default storage"
+                    .to_owned(),
+            ));
+        };
+
+        let mut url = url::Url::parse(base).map_err(RpcError::internal)?;
+        let joined = [url.path().trim_matches('/'), path.trim_matches('/')]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("/");
+        url.set_path(&format!("/{joined}/"));
+        Ok(url.to_string())
     }
 
     /// Resolves the canonical Nix-cache delivery URL for a binary cache.
@@ -22324,8 +22597,7 @@ impl RpcService {
         Ok(pb::GetCacheObjectResponse { object })
     }
 
-    /// `BinaryCacheService.CreateCacheObjectUploads` — a presigned `PUT` URL for
-    /// uploading one object directly to a cache's private external origin.
+    /// Admits one or a bounded batch of exact cache-object uploads.
     ///
     /// Requires cache-write authority. A presign-capable placement returns a
     /// direct-origin URL; every other placement returns a typed Hub-proxy URL.
@@ -22333,8 +22605,10 @@ impl RpcService {
     ///
     /// # Errors
     ///
-    /// [`RpcError::NotFound`] for an unknown cache, auth errors, and
-    /// [`RpcError::Internal`] on a signing or database failure.
+    /// Returns not found for an unknown cache, authentication or authorization
+    /// errors, invalid argument or resource exhausted for malformed or
+    /// oversized batches, failed precondition for conflicting durable state,
+    /// and internal error on signing or persistence failure.
     pub async fn create_cache_object_uploads(
         &self,
         auth: Option<&str>,
@@ -22359,12 +22633,92 @@ impl RpcService {
         let expires_at = now + i64::from(PRESIGN_EXPIRES_SECS);
         let proxy_limit = self.effective_complete_upload_bytes().await as u64;
         // Batch form: one round-trip mints a URL per path (the single-path
-        // `upload_url` is unused). A non-machine path or a non-presignable cache
-        // yields an empty URL for that entry, so the client falls back per-NAR.
+        // `upload_url` is unused). A non-machine path, or an object too large
+        // for both the selected direct-origin mode and the typed proxy, yields
+        // an empty URL so the client falls back to multipart.
         if !req.paths.is_empty() {
             if req.paths.len() != req.sizes.len() {
                 return Err(RpcError::invalid("paths and sizes must have equal length"));
             }
+            if req.paths.len() > MAX_CACHE_UPLOAD_ADMISSION_BATCH {
+                return Err(RpcError::ResourceExhausted(format!(
+                    "at most {MAX_CACHE_UPLOAD_ADMISSION_BATCH} cache uploads may be admitted at once"
+                )));
+            }
+            if req.paths.iter().collect::<BTreeSet<_>>().len() != req.paths.len() {
+                return Err(RpcError::invalid("cache upload paths must be unique"));
+            }
+
+            // Resolve the physical authority and presign capability once. The
+            // bound-R2 Worker path is not presign-configured; it admits every
+            // eligible proxy ticket below with one active-slot query and one
+            // atomic database batch instead of repeating the topology and
+            // ticket workflow for every path.
+            let first_machine = req
+                .paths
+                .iter()
+                .zip(&req.sizes)
+                .find(|(path, _)| keymap::is_machine_path(path));
+            let mut batch_placement = None;
+            let presignable = if let Some((path, size)) = first_machine {
+                let placement = self
+                    .effective_surface_writer(SurfaceTarget::BinaryCache(cache.id))
+                    .await?;
+                let presignable = self
+                    .presign_placement(&placement, path, now, Some(*size), None)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .is_some();
+                batch_placement = Some(placement);
+                presignable
+            } else {
+                false
+            };
+            if !presignable {
+                let tickets = match batch_placement.as_ref() {
+                    Some(placement) => {
+                        self.admit_cache_proxy_writes(
+                            &cache,
+                            placement,
+                            &req.paths,
+                            &req.sizes,
+                            proxy_limit,
+                            now,
+                        )
+                        .await?
+                    }
+                    None => vec![None; req.paths.len()],
+                };
+                let uploads = req
+                    .paths
+                    .into_iter()
+                    .zip(tickets)
+                    .map(|(path, ticket)| {
+                        let (upload_url, upload_ticket_id) = ticket.map_or_else(
+                            || (String::new(), String::new()),
+                            |ticket_id| {
+                                (
+                                    self.cache_proxy_upload_url(&cache, &ticket_id, &path),
+                                    ticket_id,
+                                )
+                            },
+                        );
+                        pb::CacheObjectUpload {
+                            path,
+                            upload_url,
+                            expires_at: 0,
+                            upload_ticket_id,
+                        }
+                    })
+                    .collect();
+                return Ok(pb::CreateCacheObjectUploadsResponse {
+                    upload_url: String::new(),
+                    expires_at,
+                    uploads,
+                    upload_ticket_id: String::new(),
+                });
+            }
+
             let mut uploads = Vec::with_capacity(req.paths.len());
             for (path, size) in req.paths.iter().zip(&req.sizes) {
                 let (upload_url, upload_ticket_id) = if keymap::is_machine_path(path) {
@@ -22446,6 +22800,113 @@ impl RpcService {
             uploads: Vec::new(),
             upload_ticket_id,
         })
+    }
+
+    async fn admit_cache_proxy_writes(
+        &self,
+        cache: &crate::db::BinaryCache,
+        placement: &crate::db::SurfacePlacementRecord,
+        paths: &[String],
+        sizes: &[u64],
+        proxy_limit: u64,
+        now: i64,
+    ) -> Result<Vec<Option<String>>, RpcError> {
+        let (binding_revision, credential_generation) =
+            self.placement_write_snapshot(placement).await?;
+        let mut candidates = Vec::new();
+        let mut results = vec![None; paths.len()];
+        for (index, (path, size)) in paths.iter().zip(sizes).enumerate() {
+            if !keymap::is_machine_path(path) || *size > proxy_limit {
+                continue;
+            }
+            let declared_size = i64::try_from(*size)
+                .map_err(|_| RpcError::invalid("declared upload size is too large"))?;
+            candidates.push((
+                index,
+                crate::db::CacheProxyWriteAdmission {
+                    ticket_id: uuid::Uuid::new_v4().simple().to_string(),
+                    object_key: path.clone(),
+                    declared_size,
+                },
+            ));
+        }
+        if candidates.is_empty() {
+            return Ok(results);
+        }
+
+        let object_keys = candidates
+            .iter()
+            .map(|(_, candidate)| candidate.object_key.clone())
+            .collect::<Vec<_>>();
+        let expires_at = now.saturating_add(INTERNAL_UPLOAD_AUTH_TTL_SECS);
+        let mut last_conflict = None;
+        for _ in 0..3 {
+            let occupied = self
+                .db
+                .cache_write_ticket_slots(
+                    cache.id,
+                    &object_keys,
+                    placement.id,
+                    placement.resource_version,
+                    binding_revision,
+                    credential_generation,
+                    now,
+                )
+                .await
+                .map_err(RpcError::internal)?
+                .into_iter()
+                .map(|slot| (slot.ticket.object_key.clone(), slot))
+                .collect::<BTreeMap<_, _>>();
+            let mut missing = Vec::new();
+            for (index, candidate) in &candidates {
+                if let Some(slot) = occupied.get(&candidate.object_key) {
+                    if slot.topology_current
+                        && slot.ticket.declared_size == candidate.declared_size
+                        && slot.ticket.upload_kind == "single"
+                        && matches!(slot.ticket.state.as_str(), "observing" | "active")
+                    {
+                        results[*index] = Some(slot.ticket.ticket_id.clone());
+                    }
+                    continue;
+                }
+                missing.push(candidate.clone());
+            }
+            if missing.is_empty() {
+                return Ok(results);
+            }
+            match self
+                .db
+                .begin_cache_proxy_write_tickets(
+                    cache.id,
+                    placement.id,
+                    placement.resource_version,
+                    binding_revision,
+                    credential_generation,
+                    cache.org_id,
+                    expires_at,
+                    now,
+                    &missing,
+                )
+                .await
+            {
+                Ok(()) => {
+                    let ticket_ids = missing
+                        .into_iter()
+                        .map(|ticket| (ticket.object_key, ticket.ticket_id))
+                        .collect::<BTreeMap<_, _>>();
+                    for (index, candidate) in &candidates {
+                        if let Some(ticket_id) = ticket_ids.get(&candidate.object_key) {
+                            results[*index] = Some(ticket_id.clone());
+                        }
+                    }
+                    return Ok(results);
+                }
+                Err(error) => last_conflict = Some(error),
+            }
+        }
+        Err(RpcError::internal(last_conflict.unwrap_or_else(|| {
+            anyhow::anyhow!("cache proxy upload admission conflicted repeatedly")
+        })))
     }
 
     async fn admit_cache_proxy_write(
@@ -22805,10 +23266,21 @@ impl RpcService {
         )?;
         let cache = self.binary_cache_or_not_found(&req.cache_id).await?;
         self.require_cache_admin(auth, &cache).await?;
+        self.observe_presigned_cache_upload(&cache, &req.path, &req.upload_ticket_id)
+            .await
+    }
+
+    /// Byte-verifies and records one direct-origin cache upload.
+    async fn observe_presigned_cache_upload(
+        &self,
+        cache: &crate::db::BinaryCache,
+        path: &str,
+        upload_ticket_id: &str,
+    ) -> Result<pb::CacheUploadObservationResponse, RpcError> {
         let now = clock::now_unix_secs();
         let ticket = self
             .db
-            .validate_cache_write_ticket(&req.upload_ticket_id, cache.id, &req.path, now, false)
+            .validate_cache_write_ticket(upload_ticket_id, cache.id, path, now, false)
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         if ticket.upload_kind != "presigned" {
@@ -22826,7 +23298,7 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?;
         let observed = fetch
-            .inventory_evidence(&req.path)
+            .inventory_evidence(path)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("uploaded object"))?;
@@ -22853,6 +23325,94 @@ impl RpcService {
                 .expires_at
                 .saturating_sub(PRESIGN_WRITE_FENCE_GRACE_SECS),
         })
+    }
+
+    /// `BinaryCacheService.RegisterCacheNarinfos` — observes completed direct
+    /// NAR uploads and publishes their narinfos in one bounded control request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid cache selector, an oversized batch,
+    /// insufficient cache-write authority, failed upload evidence, malformed
+    /// narinfo, quota exhaustion, or persistence failure.
+    pub async fn register_cache_narinfos(
+        &self,
+        auth: Option<&str>,
+        req: pb::RegisterCacheNarinfosRequest,
+    ) -> Result<pb::CacheNarinfoRegistrationResponse, RpcError> {
+        if req.narinfos.len() > MAX_CACHE_NARINFO_REGISTRATION_BATCH {
+            return Err(RpcError::ResourceExhausted(format!(
+                "at most {MAX_CACHE_NARINFO_REGISTRATION_BATCH} narinfos may be registered at once"
+            )));
+        }
+        let cache = self
+            .cache_upload_target(&req.cache_id, &req.delivery_url)
+            .await?;
+        self.require_cache_admin(auth, &cache).await?;
+        self.register_cache_narinfos_authorized(&cache, &req.narinfos)
+            .await
+    }
+
+    async fn register_cache_narinfos_authorized(
+        &self,
+        cache: &crate::db::BinaryCache,
+        narinfos: &[pb::CacheNarinfo],
+    ) -> Result<pb::CacheNarinfoRegistrationResponse, RpcError> {
+        if narinfos.len() > MAX_CACHE_NARINFO_REGISTRATION_BATCH {
+            return Err(RpcError::ResourceExhausted(format!(
+                "at most {MAX_CACHE_NARINFO_REGISTRATION_BATCH} narinfos may be registered at once"
+            )));
+        }
+        if narinfos
+            .iter()
+            .map(|narinfo| narinfo.store_hash.as_str())
+            .collect::<BTreeSet<_>>()
+            .len()
+            != narinfos.len()
+        {
+            return Err(RpcError::invalid(
+                "cache narinfo store hashes must be unique",
+            ));
+        }
+        let now = clock::now_unix_secs();
+        let registered = futures_util::stream::iter(narinfos.iter().cloned())
+            .map(|narinfo| async move {
+                let path = format!("{}.narinfo", narinfo.store_hash);
+                if !narinfo.nar_upload_ticket_id.is_empty() {
+                    let parsed =
+                        parse_cache_narinfo(cache.id, &narinfo.store_hash, &narinfo.narinfo, now)
+                            .ok_or_else(|| RpcError::invalid("narinfo has no valid NAR URL"))?;
+                    self.observe_presigned_cache_upload(
+                        cache,
+                        &parsed.nar_url,
+                        &narinfo.nar_upload_ticket_id,
+                    )
+                    .await?;
+                }
+                match self
+                    .write_cache_object_authorized(cache, &path, narinfo.narinfo.as_bytes(), None)
+                    .await
+                {
+                    SurfaceWriteOutcome::Created | SurfaceWriteOutcome::Overwritten => Ok(1_i64),
+                    SurfaceWriteOutcome::BadPath(reason) => Err(RpcError::invalid(reason)),
+                    SurfaceWriteOutcome::TooLarge => Err(RpcError::invalid("narinfo too large")),
+                    SurfaceWriteOutcome::QuotaExceeded => {
+                        Err(RpcError::invalid("org storage quota exceeded"))
+                    }
+                    SurfaceWriteOutcome::NotFound => Err(RpcError::not_found("cache")),
+                    SurfaceWriteOutcome::Unauthorized(reason)
+                    | SurfaceWriteOutcome::NotWritable(reason) => Err(RpcError::invalid(reason)),
+                    other => Err(RpcError::internal(anyhow::anyhow!(
+                        "narinfo register failed: {other:?}"
+                    ))),
+                }
+            })
+            .buffer_unordered(CACHE_NARINFO_REGISTRATION_CONCURRENCY)
+            .try_fold(0_i64, |registered, count| async move {
+                Ok(registered.saturating_add(count))
+            })
+            .await?;
+        Ok(pb::CacheNarinfoRegistrationResponse { registered })
     }
 
     /// Reports and indexes a fenced batch of cache narinfos.
@@ -22882,53 +23442,9 @@ impl RpcService {
             &req.expected_observation_version,
         )?;
         let cache = self.binary_cache_or_not_found(&req.cache_id).await?;
-        // Fail fast on auth; `write_cache_object` re-checks per write (cheap).
         self.require_cache_admin(auth, &cache).await?;
-        let now = clock::now_unix_secs();
-        let mut registered = 0i64;
-        for n in &req.narinfos {
-            let path = format!("{}.narinfo", n.store_hash);
-            if !n.nar_upload_ticket_id.is_empty() {
-                let parsed = parse_cache_narinfo(cache.id, &n.store_hash, &n.narinfo, now)
-                    .ok_or_else(|| RpcError::invalid("narinfo has no valid NAR URL"))?;
-                self.report_cache_upload(
-                    auth,
-                    pb::ReportCacheUploadRequest {
-                        cache_id: req.cache_id.clone(),
-                        path: parsed.nar_url,
-                        upload_ticket_id: n.nar_upload_ticket_id.clone(),
-                        controller_lease_id: req.controller_lease_id.clone(),
-                        controller_generation: req.controller_generation,
-                        expected_observation_version: req.expected_observation_version.clone(),
-                    },
-                )
-                .await?;
-            }
-            match self
-                .write_cache_object(auth, &cache, &path, n.narinfo.as_bytes(), None)
-                .await
-            {
-                SurfaceWriteOutcome::Created | SurfaceWriteOutcome::Overwritten => registered += 1,
-                SurfaceWriteOutcome::BadPath(reason) => return Err(RpcError::invalid(reason)),
-                SurfaceWriteOutcome::TooLarge => {
-                    return Err(RpcError::invalid("narinfo too large"));
-                }
-                SurfaceWriteOutcome::QuotaExceeded => {
-                    return Err(RpcError::invalid("org storage quota exceeded"));
-                }
-                SurfaceWriteOutcome::NotFound => return Err(RpcError::not_found("cache")),
-                SurfaceWriteOutcome::Unauthorized(reason)
-                | SurfaceWriteOutcome::NotWritable(reason) => {
-                    return Err(RpcError::invalid(reason));
-                }
-                other => {
-                    return Err(RpcError::internal(anyhow::anyhow!(
-                        "narinfo register failed: {other:?}"
-                    )));
-                }
-            }
-        }
-        Ok(pb::CacheNarinfoRegistrationResponse { registered })
+        self.register_cache_narinfos_authorized(&cache, &req.narinfos)
+            .await
     }
 
     /// `BinaryCacheService.CacheClosure` — the transitive closure of a store path.
@@ -23846,12 +24362,14 @@ impl RpcService {
             }
         }
         canonical.sort();
-        if !canonical.iter().any(|object| object.3 == "immutable")
-            || !canonical.iter().any(|object| object.3 == "mutable_pointer")
-        {
-            return Err(RpcError::invalid(
-                "publication requires immutable objects and mutable pointers",
-            ));
+        // A freshly-created APR registry can consist entirely of replaceable
+        // loose Git encodings plus HEAD/info/refs. Requiring a pack, NAR, or
+        // other immutable payload here would make that valid initial signed
+        // surface impossible to publish. The immutable upload class may be
+        // empty; the pointer class is still mandatory because committing it is
+        // what makes a publication observable to readers.
+        if !canonical.iter().any(|object| object.3 == "mutable_pointer") {
+            return Err(RpcError::invalid("publication requires mutable pointers"));
         }
         let placements = self
             .db
@@ -23860,7 +24378,7 @@ impl RpcService {
             .map_err(RpcError::internal)?;
         if placements.is_empty() {
             return Err(RpcError::FailedPrecondition(
-                "registry has no complete validated publication placement".into(),
+                "registry has no validated writable publication placement".into(),
             ));
         }
         let manifest_digest = hex::encode(Sha256::digest(
@@ -23921,73 +24439,26 @@ impl RpcService {
         };
 
         let admission: Result<(), RpcError> = async {
-            for object in req.objects {
-                let existing = self
-                    .db
-                    .surface_object_named(SurfaceTarget::Registry(registry.id), &object.path)
-                    .await
-                    .map_err(RpcError::internal)?;
-                let existing = match existing {
-                    Some(existing)
-                        if existing.object_kind == "immutable"
-                            && object.kind == "mutable_pointer"
-                            && keymap::is_mutable_path(&object.path) =>
-                    {
-                        Some(
-                            self.db
-                                .convert_registry_object_to_mutable(
-                                    registry.id,
-                                    existing.id,
-                                    &object.path,
-                                    &publication_id,
-                                )
-                                .await
-                                .map_err(|error| {
-                                    RpcError::FailedPrecondition(format!("{error:#}"))
-                                })?,
-                        )
-                    }
-                    existing => existing,
-                };
-                let surface_object = match existing {
-                    Some(existing)
-                        if existing.object_kind == object.kind
-                            && (object.kind == "mutable_pointer"
-                                || (existing.content_hash.as_deref() == Some(&object.sha256)
-                                    && existing.size == Some(object.byte_size))) =>
-                    {
-                        existing
-                    }
-                    Some(_) => {
-                        return Err(RpcError::FailedPrecondition(format!(
-                            "publication path '{}' conflicts with its existing object identity",
-                            object.path
-                        )));
-                    }
-                    None => self
-                        .db
-                        .create_surface_object(&crate::db::SetSurfaceObject {
-                            surface: SurfaceTarget::Registry(registry.id),
-                            object_key: object.path,
-                            content_hash: Some(object.sha256.clone()),
-                            size: Some(object.byte_size),
-                            object_kind: object.kind.clone(),
-                            mutable_publication_id: (object.kind == "mutable_pointer")
-                                .then(|| publication_id.clone()),
-                        })
-                        .await
-                        .map_err(RpcError::internal)?,
-                };
+            let manifest_objects = req
+                .objects
+                .into_iter()
+                .map(|object| crate::db::RegistryPublicationManifestObject {
+                    object_key: object.path,
+                    expected_hash: object.sha256,
+                    expected_size: object.byte_size,
+                    object_kind: object.kind,
+                })
+                .collect::<Vec<_>>();
+            for objects in manifest_objects.chunks(crate::db::MAX_REGISTRY_MANIFEST_ADMISSION_BATCH)
+            {
                 self.db
-                    .set_registry_publication_object(&crate::db::SetRegistryPublicationObject {
-                        publication_id: publication_id.clone(),
-                        surface_object_id: surface_object.id,
-                        object_kind: object.kind,
-                        expected_hash: object.sha256,
-                        expected_size: object.byte_size,
-                    })
+                    .admit_registry_publication_manifest_objects(
+                        registry.id,
+                        &publication_id,
+                        objects,
+                    )
                     .await
-                    .map_err(RpcError::internal)?;
+                    .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
             }
             for placement in placements {
                 self.db
@@ -26844,11 +27315,23 @@ impl RpcService {
         body: &[u8],
         admission: Option<crate::db::CacheWriteTicketRecord>,
     ) -> SurfaceWriteOutcome {
-        if cache.deleted_at.is_some() {
-            return SurfaceWriteOutcome::NotFound;
-        }
         if let Err(deny) = self.require_cache_admin(auth, &cache).await {
             return auth_denial_to_write_outcome(deny);
+        }
+        self.write_cache_object_authorized(cache, path, body, admission)
+            .await
+    }
+
+    /// Writes one cache object after the caller has checked cache authority.
+    async fn write_cache_object_authorized(
+        &self,
+        cache: &crate::db::BinaryCache,
+        path: &str,
+        body: &[u8],
+        admission: Option<crate::db::CacheWriteTicketRecord>,
+    ) -> SurfaceWriteOutcome {
+        if cache.deleted_at.is_some() {
+            return SurfaceWriteOutcome::NotFound;
         }
         if !keymap::is_machine_path(path) {
             return SurfaceWriteOutcome::BadPath("not a machine path");
@@ -30178,13 +30661,16 @@ impl RpcService {
             .desired
             .ok_or_else(|| RpcError::invalid("plan desired state is missing"))?;
         Self::canonicalize_retention_spec(&mut desired)?;
-        let selector_json = serde_json::to_string(
-            desired
-                .selector
-                .as_ref()
-                .ok_or_else(|| RpcError::invalid("selector is required"))?,
-        )
-        .map_err(RpcError::internal)?;
+        let selector = desired
+            .selector
+            .as_ref()
+            .ok_or_else(|| RpcError::invalid("selector is required"))?;
+        // The database binds the digest to the canonical JSON object form.
+        // Protobuf structs serialize in declaration order, which is not
+        // necessarily the map-key order produced when that document is read
+        // back as JSON. Normalize through `Value` before hashing and storing.
+        let selector_value = serde_json::to_value(selector).map_err(RpcError::internal)?;
+        let selector_json = serde_json::to_string(&selector_value).map_err(RpcError::internal)?;
         let state = self
             .db
             .cache_gc_topology_state(cache.id)
@@ -30689,6 +31175,10 @@ impl RpcService {
             .await?;
         for reason in reasons.values() {
             let mut reason = reason.clone();
+            // Superseded refreshes remain immutable during their removal-grace
+            // window, so the same logical reason must have a generation-local
+            // row identity while retaining its stable reason key.
+            reason.reason_id = retention_refresh_reason_id(&refresh_id, &reason.reason_key);
             reason.refreshed_at = now;
             if let Err(error) = self
                 .db
@@ -31719,6 +32209,15 @@ impl RpcService {
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        if matches!(
+            updated.operation_kind.as_str(),
+            "scan_placement" | "replicate_placement" | "repair_placement"
+        ) {
+            self.topology_probes
+                .wake_controller()
+                .await
+                .map_err(RpcError::internal)?;
+        }
         Ok(pb::OperationDetailResponse {
             operation: Some(self.operation_detail(&updated).await?),
         })
@@ -31897,6 +32396,7 @@ impl RpcService {
                 .unwrap_or(operation.created_at),
             finished_at: operation.finished_at,
             resource_version: operation.resource_version.to_string(),
+            detail_json: operation.detail_json.clone(),
         })
     }
 }
@@ -33148,6 +33648,11 @@ impl RpcService {
             return Err(RpcError::invalid("idempotency_key is required"));
         }
         let version = parse_resource_version(&req.expected_resource_version, 0)?;
+        self.db
+            .object_deletion_job(cache.id, &req.job_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("cache GC deletion job"))?;
         let job = self
             .db
             .retry_cache_gc_deletion_job(
@@ -35166,6 +35671,35 @@ fn write_outcome_result(outcome: SurfaceWriteOutcome) -> Result<(), RpcError> {
     }
 }
 
+/// Resolves the CLI's zero-generation sentinel to the endpoint's current target.
+fn resolve_endpoint_grant_generation(
+    requested_generation: i64,
+    desired_generation: i64,
+) -> Result<i64, RpcError> {
+    if requested_generation == 0 || requested_generation == desired_generation {
+        Ok(desired_generation)
+    } else {
+        Err(RpcError::FailedPrecondition(
+            "endpoint generation is stale".to_string(),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod endpoint_grant_generation_tests {
+    use super::{resolve_endpoint_grant_generation, RpcError};
+
+    #[test]
+    fn resolves_cli_sentinel_and_preserves_stale_generation_fence() {
+        assert_eq!(resolve_endpoint_grant_generation(0, 2).unwrap(), 2);
+        assert_eq!(resolve_endpoint_grant_generation(2, 2).unwrap(), 2);
+        assert!(matches!(
+            resolve_endpoint_grant_generation(1, 2),
+            Err(RpcError::FailedPrecondition(message)) if message == "endpoint generation is stale"
+        ));
+    }
+}
+
 /// Maps a cache-write authorization denial onto the internal write outcome.
 fn auth_denial_to_write_outcome(err: RpcError) -> SurfaceWriteOutcome {
     match err {
@@ -35642,6 +36176,15 @@ mod cache_upload_tests {
         }
     }
 
+    struct UnavailableIdentityDomain;
+
+    #[async_trait::async_trait]
+    impl crate::topology_probe::IdentityDomainVerifier for UnavailableIdentityDomain {
+        async fn challenge_is_published(&self, _domain: &str, _challenge: &str) -> Result<bool> {
+            bail!("injected DNS transport failure")
+        }
+    }
+
     async fn injected_service(
         fetch_behaviors: Vec<FetchBehavior>,
         write_behaviors: Vec<WriteBehavior>,
@@ -35726,6 +36269,129 @@ mod cache_upload_tests {
         )
         .with_identity_domain_verifier(Arc::new(PublishedIdentityDomain));
         (service, db, lease, format!("Bearer {token}"))
+    }
+
+    #[tokio::test]
+    async fn public_registry_derives_git_url_from_default_storage_placement() {
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let binding_id = db
+            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .await
+            .unwrap()
+            .id;
+        let org_id = db.create_org("automatic", "Automatic").await.unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "main", "public", &[], false)
+            .await
+            .unwrap();
+        let placement = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface: SurfaceTarget::Registry(registry_id),
+                name: "primary".into(),
+                binding_id,
+                prefix: "automatic/main".into(),
+                kind: "complete".into(),
+                desired_state: "active".into(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+        db.observe_surface_placement(placement.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+
+        let service = service
+            .with_default_public_delivery_url("https://cdn.example.test/storage-root".into());
+        assert_eq!(
+            service.registry_consumer_url(&registry).await.unwrap(),
+            "https://cdn.example.test/storage-root/automatic/main/"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_registry_does_not_advertise_an_opaque_default_placement() {
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let binding_id = db
+            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .await
+            .unwrap()
+            .id;
+        let org_id = db.create_org("automatic", "Automatic").await.unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "main", "public", &[], false)
+            .await
+            .unwrap();
+        let placement = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface: SurfaceTarget::Registry(registry_id),
+                name: "primary".into(),
+                binding_id,
+                prefix: "registries/100960088f5b423a93e73b1bcc4082fc".into(),
+                kind: "complete".into(),
+                desired_state: "active".into(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+        db.observe_surface_placement(placement.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+
+        let service = service.with_default_public_delivery_url("https://cdn.example.test".into());
+        assert!(matches!(
+            service.registry_consumer_url(&registry).await,
+            Err(RpcError::FailedPrecondition(message))
+                if message.contains("canonical-slug placement")
+        ));
+    }
+
+    #[tokio::test]
+    async fn private_registry_does_not_inherit_public_storage_delivery() {
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let binding_id = db
+            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .await
+            .unwrap()
+            .id;
+        let org_id = db.create_org("private-auto", "Private auto").await.unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "main", "private", &[], false)
+            .await
+            .unwrap();
+        let placement = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface: SurfaceTarget::Registry(registry_id),
+                name: "primary".into(),
+                binding_id,
+                prefix: "registries/private".into(),
+                kind: "complete".into(),
+                desired_state: "active".into(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+        db.observe_surface_placement(placement.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+
+        let service = service.with_default_public_delivery_url("https://cdn.example.test".into());
+        assert!(matches!(
+            service.registry_consumer_url(&registry).await,
+            Err(RpcError::FailedPrecondition(message))
+                if message.contains("explicit canonical Git route")
+        ));
     }
 
     #[tokio::test]
@@ -35951,6 +36617,73 @@ mod cache_upload_tests {
 
         assert_eq!(by_slug.stable_id, stored.stable_id);
         assert_eq!(by_stable_id.stable_id, stored.stable_id);
+    }
+
+    #[tokio::test]
+    async fn cache_upload_batch_returns_replayable_proxy_tickets_in_input_order() {
+        let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+        let cache = db
+            .binary_cache_by_slug("failure/cache")
+            .await
+            .unwrap()
+            .unwrap();
+        let request = pb::CreateCacheObjectUploadsRequest {
+            cache_id: cache.stable_id,
+            paths: vec!["nar/bulk-one.nar".into(), "nar/bulk-two.nar".into()],
+            sizes: vec![11, 22],
+            ..Default::default()
+        };
+
+        let first = service
+            .create_cache_object_uploads(Some(&auth), request.clone())
+            .await
+            .unwrap();
+        let replay = service
+            .create_cache_object_uploads(Some(&auth), request)
+            .await
+            .unwrap();
+
+        assert_eq!(first.uploads.len(), 2);
+        assert_eq!(first.uploads[0].path, "nar/bulk-one.nar");
+        assert_eq!(first.uploads[1].path, "nar/bulk-two.nar");
+        assert!(first
+            .uploads
+            .iter()
+            .all(|upload| upload.expires_at == 0 && !upload.upload_url.is_empty()));
+        assert_eq!(
+            first
+                .uploads
+                .iter()
+                .map(|upload| upload.upload_ticket_id.as_str())
+                .collect::<Vec<_>>(),
+            replay
+                .uploads
+                .iter()
+                .map(|upload| upload.upload_ticket_id.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn narinfo_batch_rejects_duplicate_identities_before_writing() {
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let cache = db
+            .binary_cache_by_slug("failure/cache")
+            .await
+            .unwrap()
+            .unwrap();
+        let duplicate = pb::CacheNarinfo {
+            store_hash: "duplicate".into(),
+            narinfo: "invalid but never parsed".into(),
+            nar_upload_ticket_id: String::new(),
+        };
+
+        let error = service
+            .register_cache_narinfos_authorized(&cache, &[duplicate.clone(), duplicate])
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RpcError::InvalidArgument(_)));
     }
 
     #[tokio::test]
@@ -36643,6 +37376,74 @@ mod cache_upload_tests {
             .await
             .unwrap_err();
         assert!(matches!(error, RpcError::FailedPrecondition(_)));
+    }
+
+    #[tokio::test]
+    async fn identity_domain_dns_transport_failure_is_publicly_retryable() {
+        let (mut service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+        service.identity_domain_verifier = Some(Arc::new(UnavailableIdentityDomain));
+        db.create_org("dns-unavailable", "DNS unavailable")
+            .await
+            .unwrap();
+
+        let claim_plan = service
+            .plan_claim_organization_domain(
+                Some(&auth),
+                pb::PlanClaimOrganizationDomainRequest {
+                    org_slug: "dns-unavailable".into(),
+                    domain: "login.example.test".into(),
+                    expected_resource_version: "absent".into(),
+                    idempotency_key: "plan-domain-claim-unavailable".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let claimed = service
+            .apply_claim_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: claim_plan.plan_id,
+                    confirmation_hash: claim_plan.confirmation_hash,
+                    idempotency_key: "apply-domain-claim-unavailable".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .domain
+            .unwrap();
+        let verify_plan = service
+            .plan_verify_organization_domain(
+                Some(&auth),
+                pb::PlanVerifyOrganizationDomainRequest {
+                    org_slug: "dns-unavailable".into(),
+                    domain: claimed.domain,
+                    expected_resource_version: claimed.resource_version,
+                    idempotency_key: "plan-domain-verify-unavailable".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+
+        let error = service
+            .apply_verify_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: verify_plan.plan_id,
+                    confirmation_hash: verify_plan.confirmation_hash,
+                    idempotency_key: "apply-domain-verify-unavailable".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RpcError::Unavailable(message)
+                if message == "DNS TXT verification is temporarily unavailable"
+        ));
     }
 
     #[tokio::test]
@@ -37371,6 +38172,13 @@ mod cache_upload_tests {
             ),
             (
                 SurfacePlacementBlockers {
+                    active_publication: true,
+                    ..Default::default()
+                },
+                "placement has active registry-publication state",
+            ),
+            (
+                SurfacePlacementBlockers {
                     deletion_job: true,
                     ..Default::default()
                 },
@@ -37385,11 +38193,33 @@ mod cache_upload_tests {
             ),
         ];
         for (blockers, expected) in cases {
-            let error = RpcService::placement_delete_blocker_error(blockers).unwrap();
+            let error = RpcService::placement_delete_blocker_error(blockers, false).unwrap();
             assert_eq!(error.code(), "failed_precondition");
             assert_eq!(error.message(), expected);
             assert!(!error.message().contains("FOREIGN KEY"));
         }
+
+        assert!(RpcService::placement_delete_blocker_error(
+            SurfacePlacementBlockers {
+                object_presence: true,
+                publication: true,
+                ..Default::default()
+            },
+            true,
+        )
+        .is_none());
+        assert_eq!(
+            RpcService::placement_delete_blocker_error(
+                SurfacePlacementBlockers {
+                    active_publication: true,
+                    ..Default::default()
+                },
+                true,
+            )
+            .unwrap()
+            .message(),
+            "placement has active registry-publication state"
+        );
     }
 
     #[test]
@@ -37433,6 +38263,42 @@ mod cache_upload_tests {
             selector.semver.unwrap().requirement,
             "<3.0.0,>=2.0.0||=1.0.0"
         );
+    }
+
+    #[test]
+    fn retention_selector_storage_json_is_canonical_object_order() {
+        let selector = pb::RetentionSelector {
+            current_catalog: true,
+            channel_targets: Some(pb::ChannelTargetSelector {
+                all: false,
+                names: vec!["stable".into()],
+            }),
+            recent_releases: None,
+            release_tags: vec!["1.0.0".into()],
+            semver: None,
+            all_releases: false,
+        };
+
+        let value = serde_json::to_value(&selector).unwrap();
+        let stored = serde_json::to_string(&value).unwrap();
+        let reparsed: serde_json::Value = serde_json::from_str(&stored).unwrap();
+
+        assert!(reparsed.is_object());
+        assert_eq!(serde_json::to_string(&reparsed).unwrap(), stored);
+    }
+
+    #[test]
+    fn retention_reason_row_identity_is_refresh_local() {
+        let reason_key = "registry_catalog:logical-reason";
+
+        let first = super::retention_refresh_reason_id("refresh-one", reason_key);
+        let repeated = super::retention_refresh_reason_id("refresh-one", reason_key);
+        let successor = super::retention_refresh_reason_id("refresh-two", reason_key);
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, successor);
+        assert_eq!(first.len(), 64);
+        assert_eq!(successor.len(), 64);
     }
 
     #[test]

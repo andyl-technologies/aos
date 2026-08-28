@@ -1,7 +1,7 @@
 # tests/vm/apm/default.nix — APM/APR VM test suite
 #
-# Exposes all registry, tracking, package management, sysroot-lock,
-# system update, kernel upgrade, image download, binary cache,
+# Exposes all registry, tracking, package management, system update,
+# kernel upgrade, image download, binary cache,
 # multi-registry, ConnectRPC, and end-to-end lifecycle tests as a flat
 # attribute set of derivations.  Each test is a headless Firecracker microVM
 # derivation that exits 0 on PASS.
@@ -11,9 +11,10 @@
 #   nix-build -A checks.vm.apm.tracking-branch
 #   nix-build -A checks.vm.apm.install-basic
 #   nix-build -A checks.vm.apm.command-surface
-#   nix-build -A checks.vm.apm.sysroot-lock-blocked
+# Sysroot-lock acceptance uses the authenticated production image state:
+#   nix-build -A checks.fleet.apm-sysroot-lock
 #   nix-build -A checks.vm.apm.system-install
-#   nix-build -A checks.vm.apm.kernel-advisory
+#   nix-build -A checks.vm.apm.system-transition-options
 #   nix-build -A checks.vm.apm.image-pull-raw
 #   nix-build -A checks.vm.apm.cache-push-pull
 #   nix-build -A checks.vm.apm.rpc-cache-query-missing
@@ -29,10 +30,6 @@
   registryValidationTests = import ./registry_validation.nix {inherit testing pkgs aosPkg;};
   trackingTests = import ./tracking.nix {inherit testing pkgs aosPkg;};
   packageTests = import ./packages.nix {inherit testing pkgs aosPkg;};
-  sysrootLockTests = import ./sysroot_lock.nix {
-    inherit testing pkgs;
-    apm = aosPkg;
-  };
   systemTests = import ./system.nix {
     inherit testing pkgs;
     apm = aosPkg;
@@ -69,7 +66,6 @@ in
   // registryValidationTests
   // trackingTests
   // packageTests
-  // sysrootLockTests
   // systemTests
   // kernelTests
   // imageTests

@@ -1,16 +1,19 @@
-//! Durable physical-placement inventory execution.
+//! Durable physical-placement copy and inventory execution.
 //!
 //! A placement is selectable only after the controller has enumerated its
 //! backend and reconciled every active logical object with byte evidence from
 //! that exact placement. Registry and binary-cache scans compare the physical
-//! keyset with the existing logical catalog. Cache discovery and normalization
-//! remain owned by the independently fenced cache-inventory controller.
+//! keyset with the existing logical catalog. Replication and repair first make
+//! an additive physical copy, then run that same exact inventory before the
+//! destination becomes selectable. Cache discovery and normalization remain
+//! owned by the independently fenced cache-inventory controller.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use anyhow::{bail, Context as _, Result};
 use base64::Engine as _;
+use futures_util::TryStreamExt as _;
 
 use crate::clock;
 use crate::db::{
@@ -19,33 +22,50 @@ use crate::db::{
     MAX_PLACEMENT_SCAN_PRESENCE_BATCH,
 };
 use crate::fetch::{
-    SurfaceListedEvidence, SurfaceListingBudget, SurfaceProvider, MAX_SURFACE_LIST_PAGES,
-    MAX_SURFACE_LIST_PAGE_OBJECTS, WORKER_MAX_SURFACE_LIST_PAGES,
+    SurfaceFetch, SurfaceListedEvidence, SurfaceListingBudget, SurfaceProvider,
+    MAX_SURFACE_LIST_PAGES, MAX_SURFACE_LIST_PAGE_OBJECTS, WORKER_MAX_SURFACE_LIST_PAGES,
     WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS,
 };
+use crate::surface_write::{PartTag, SurfaceWrite, SurfaceWriteProvider};
 
 const CLAIM_LEASE_SECONDS: i64 = 600;
 const CLAIM_HEARTBEAT_SECONDS: u64 = 60;
+const COPY_PART_BYTES: usize = 8 * 1024 * 1024;
+const COPY_PART_UPLOAD_ATTEMPTS: u32 = 3;
+const COPY_PART_RETRY_DELAY_MILLIS: u64 = 250;
+const PLACEMENT_SCAN_ISSUE_SAMPLE_LIMIT: usize = 20;
 
-/// Executes reviewed physical-placement scan operations.
+/// Executes reviewed physical-placement copy and scan operations.
 pub struct PlacementScanController {
     db: Arc<Database>,
     surfaces: Arc<dyn SurfaceProvider>,
+    writes: Option<Arc<dyn SurfaceWriteProvider>>,
 }
 
 impl PlacementScanController {
-    /// Creates a placement scan controller over one database and surface provider.
+    /// Creates a placement operation controller over one database and surface provider.
     #[must_use]
     pub fn new(db: Arc<Database>, surfaces: Arc<dyn SurfaceProvider>) -> Self {
-        Self { db, surfaces }
+        Self {
+            db,
+            surfaces,
+            writes: None,
+        }
     }
 
-    /// Claims and executes at most the requested number of due placement scans.
+    /// Adds the physical write port required by replication and repair operations.
+    #[must_use]
+    pub fn with_writes(mut self, writes: Arc<dyn SurfaceWriteProvider>) -> Self {
+        self.writes = Some(writes);
+        self
+    }
+
+    /// Claims and executes at most the requested number of due placement operations.
     ///
     /// # Errors
     ///
-    /// Returns an error when operation inventory, claiming, scan execution, or
-    /// terminal-state persistence fails.
+    /// Returns an error when operation inventory, claiming, copy or scan
+    /// execution, or terminal-state persistence fails.
     pub async fn run_due(&self, limit: usize) -> Result<usize> {
         let due = self
             .db
@@ -114,12 +134,19 @@ impl PlacementScanController {
             .db
             .surface_placement_by_operation_target(&operation.primary_target_stable_id)
             .await?
-            .context("placement scan target no longer exists")?;
+            .context("placement operation target no longer exists")?;
         if placement.resource_version != operation.primary_target_generation_key {
-            bail!("placement scan target topology changed after scheduling");
+            bail!("placement operation target topology changed after scheduling");
         }
 
-        let detail = if let Some(registry_id) = placement.registry_id {
+        let copy_detail = match operation.operation_kind.as_str() {
+            "scan_placement" => None,
+            "replicate_placement" | "repair_placement" => {
+                Some(self.copy_to_placement(operation, &placement).await?)
+            }
+            kind => bail!("unsupported physical placement operation '{kind}'"),
+        };
+        let mut detail = if let Some(registry_id) = placement.registry_id {
             self.scan_catalog_placement(
                 &placement,
                 SurfaceTarget::Registry(registry_id),
@@ -136,8 +163,11 @@ impl PlacementScanController {
             )
             .await?
         } else {
-            bail!("placement scan target has no surface");
+            bail!("placement operation target has no surface");
         };
+        if let Some(copy_detail) = copy_detail {
+            detail["copy"] = copy_detail;
+        }
         let now = clock::now_unix_secs();
         let total = detail
             .get("catalogObjects")
@@ -161,6 +191,104 @@ impl PlacementScanController {
             bail!("placement scan claim expired or was replaced before completion");
         }
         Ok(())
+    }
+
+    async fn copy_to_placement(
+        &self,
+        operation: &TopologyOperationRecord,
+        destination: &SurfacePlacementRecord,
+    ) -> Result<serde_json::Value> {
+        let source_target = self
+            .db
+            .topology_operation_targets(&operation.operation_id)
+            .await?
+            .into_iter()
+            .find(|target| target.role == "source")
+            .context("physical placement copy has no sealed source target")?;
+        let source = self
+            .db
+            .surface_placement_by_operation_target(&source_target.stable_id)
+            .await?
+            .context("physical placement copy source no longer exists")?;
+        if source.resource_version != source_target.generation_key {
+            bail!("physical placement copy source topology changed after scheduling");
+        }
+        let writes = self
+            .writes
+            .as_ref()
+            .context("physical placement copy has no configured write provider")?;
+        let fetch = self.surfaces.placement_fetcher(&source).await?;
+        let destination_fetch = self.surfaces.placement_fetcher(destination).await?;
+        let page_limit = if cfg!(target_arch = "wasm32") {
+            WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS
+        } else {
+            MAX_SURFACE_LIST_PAGE_OBJECTS
+        };
+        let max_pages = if cfg!(target_arch = "wasm32") {
+            WORKER_MAX_SURFACE_LIST_PAGES
+        } else {
+            MAX_SURFACE_LIST_PAGES
+        };
+        let destination_evidence = collect_listing_evidence(
+            destination_fetch.as_ref(),
+            page_limit,
+            max_pages,
+            "destination",
+        )
+        .await?;
+        let writer = writes.placement_writer(destination).await?;
+        let mut cursor = None;
+        let mut prior_path: Option<String> = None;
+        let mut budget = SurfaceListingBudget::default();
+        let mut pages = 0_usize;
+        let mut copied_objects = 0_i64;
+        let mut copied_bytes = 0_u64;
+        let mut reused_objects = 0_i64;
+        loop {
+            pages = pages
+                .checked_add(1)
+                .context("placement copy page overflow")?;
+            if pages > max_pages {
+                bail!("placement copy exceeded the page limit");
+            }
+            let page = fetch.list_page(cursor.as_deref(), page_limit).await?;
+            page.validate(page_limit, cursor.as_deref())?;
+            let source_evidence = page.evidence;
+            for path in page.paths {
+                if prior_path.as_ref().is_some_and(|prior| prior >= &path) {
+                    bail!("placement copy source returned keys out of global order");
+                }
+                budget.record(&path)?;
+                prior_path = Some(path.clone());
+                if matching_listing_evidence(
+                    source_evidence.get(&path),
+                    destination_evidence.get(&path),
+                )? {
+                    reused_objects = reused_objects
+                        .checked_add(1)
+                        .context("placement copy reuse count overflow")?;
+                    continue;
+                }
+                let size = copy_surface_object(fetch.as_ref(), writer.as_ref(), &path).await?;
+                copied_objects = copied_objects
+                    .checked_add(1)
+                    .context("placement copy object count overflow")?;
+                copied_bytes = copied_bytes
+                    .checked_add(size)
+                    .context("placement copy byte count overflow")?;
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(serde_json::json!({
+            "source": source.name,
+            "destination": destination.name,
+            "copiedObjects": copied_objects,
+            "copiedBytes": copied_bytes,
+            "reusedObjects": reused_objects,
+        }))
     }
 
     async fn scan_catalog_placement(
@@ -223,6 +351,7 @@ impl PlacementScanController {
         let mut pages = 0_usize;
         let mut unknown = 0_i64;
         let mut corrupt = 0_i64;
+        let mut corrupt_samples = Vec::new();
         let mut reused = 0_i64;
         let observed_at = clock::now_unix_secs();
 
@@ -274,6 +403,9 @@ impl PlacementScanController {
                 let valid = object_matches_evidence(&object, &evidence.sha256, evidence.size);
                 if !valid {
                     corrupt += 1;
+                    if corrupt_samples.len() < PLACEMENT_SCAN_ISSUE_SAMPLE_LIMIT {
+                        corrupt_samples.push(path.clone());
+                    }
                 }
                 page_presences.push((
                     object.resource_version,
@@ -314,6 +446,11 @@ impl PlacementScanController {
         }
 
         let missing = i64::try_from(catalog.len()).context("missing object count overflowed")?;
+        let missing_samples = catalog
+            .keys()
+            .take(PLACEMENT_SCAN_ISSUE_SAMPLE_LIMIT)
+            .cloned()
+            .collect::<Vec<_>>();
         for objects in catalog
             .values()
             .collect::<Vec<_>>()
@@ -348,7 +485,12 @@ impl PlacementScanController {
                 .await?;
         }
 
-        let complete = unknown == 0 && corrupt == 0 && missing == 0;
+        // Completeness is defined against the logical catalog. Providers may
+        // contain control-plane objects such as draft refs that deliberately
+        // are not part of a published surface catalog. Keep reporting those
+        // objects for audit and cleanup, but do not make a byte-complete
+        // placement permanently ineligible for reads.
+        let complete = corrupt == 0 && missing == 0;
         self.db
             .finish_surface_placement_scan(
                 placement.id,
@@ -368,7 +510,9 @@ impl PlacementScanController {
             "listedObjects": listed.len(),
             "unknownObjects": unknown,
             "missingObjects": missing,
+            "missingObjectSamples": missing_samples,
             "corruptObjects": corrupt,
+            "corruptObjectSamples": corrupt_samples,
             "strongVersionObjects": reused,
         }))
     }
@@ -406,6 +550,176 @@ impl PlacementScanController {
             )
             .await?;
         Ok(())
+    }
+}
+
+async fn collect_listing_evidence(
+    fetch: &dyn SurfaceFetch,
+    page_limit: usize,
+    max_pages: usize,
+    role: &str,
+) -> Result<BTreeMap<String, SurfaceListedEvidence>> {
+    let mut cursor = None;
+    let mut prior_path: Option<String> = None;
+    let mut budget = SurfaceListingBudget::default();
+    let mut evidence = BTreeMap::new();
+    let mut pages = 0_usize;
+    loop {
+        pages = pages
+            .checked_add(1)
+            .with_context(|| format!("placement copy {role} page overflow"))?;
+        if pages > max_pages {
+            bail!("placement copy {role} exceeded the page limit");
+        }
+        let page = fetch.list_page(cursor.as_deref(), page_limit).await?;
+        page.validate(page_limit, cursor.as_deref())?;
+        for path in &page.paths {
+            if prior_path.as_ref().is_some_and(|prior| prior >= path) {
+                bail!("placement copy {role} returned keys out of global order");
+            }
+            budget.record(path)?;
+            prior_path = Some(path.clone());
+        }
+        evidence.extend(page.evidence);
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Ok(evidence)
+}
+
+fn matching_listing_evidence(
+    source: Option<&SurfaceListedEvidence>,
+    destination: Option<&SurfaceListedEvidence>,
+) -> Result<bool> {
+    let Some((source, destination)) = source.zip(destination) else {
+        return Ok(false);
+    };
+    if source.size != destination.size {
+        return Ok(false);
+    }
+    let source_etag = crate::surface_write::strong_if_match_etag(&source.strong_etag)?;
+    let destination_etag = crate::surface_write::strong_if_match_etag(&destination.strong_etag)?;
+    Ok(source_etag == destination_etag)
+}
+
+async fn copy_surface_object(
+    fetch: &dyn SurfaceFetch,
+    writer: &dyn SurfaceWrite,
+    path: &str,
+) -> Result<u64> {
+    let read = fetch
+        .fetch_stream(path, None)
+        .await?
+        .with_context(|| format!("placement copy source object '{path}' disappeared"))?;
+    let expected = read.total;
+    let mut stream = read.body.into_data_stream();
+    if expected <= COPY_PART_BYTES as u64 {
+        let capacity = usize::try_from(expected).context("placement copy object is too large")?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(capacity)
+            .context("allocating bounded placement copy object")?;
+        while let Some(chunk) = stream.try_next().await? {
+            let next = bytes
+                .len()
+                .checked_add(chunk.len())
+                .context("placement copy object size overflowed")?;
+            if next > capacity {
+                bail!("placement copy source object '{path}' exceeded its declared size");
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        if bytes.len() != capacity {
+            bail!("placement copy source object '{path}' did not match its declared size");
+        }
+        writer.write(path, &bytes).await?;
+        return Ok(expected);
+    }
+    if writer.multipart_protocol_version() != Some(1) {
+        bail!("placement copy destination does not support multipart protocol v1");
+    }
+
+    let upload_id = writer.create_multipart(path).await?;
+    let result: Result<(Vec<PartTag>, u64)> = async {
+        let mut parts = Vec::new();
+        let mut pending = Vec::with_capacity(COPY_PART_BYTES);
+        let mut received = 0_u64;
+        while let Some(chunk) = stream.try_next().await? {
+            received = received
+                .checked_add(u64::try_from(chunk.len())?)
+                .context("placement copy object size overflowed")?;
+            if received > expected {
+                bail!("placement copy source object '{path}' exceeded its declared size");
+            }
+            let mut offset = 0;
+            while offset < chunk.len() {
+                let take = (COPY_PART_BYTES - pending.len()).min(chunk.len() - offset);
+                pending.extend_from_slice(&chunk[offset..offset + take]);
+                offset += take;
+                if pending.len() == COPY_PART_BYTES {
+                    let part_number = u32::try_from(parts.len() + 1)?;
+                    parts.push(
+                        upload_copy_part(writer, path, &upload_id, part_number, &pending).await?,
+                    );
+                    pending.clear();
+                }
+            }
+        }
+        if received != expected {
+            bail!("placement copy source object '{path}' did not match its declared size");
+        }
+        if !pending.is_empty() {
+            let part_number = u32::try_from(parts.len() + 1)?;
+            parts.push(upload_copy_part(writer, path, &upload_id, part_number, &pending).await?);
+        }
+        Ok((parts, received))
+    }
+    .await;
+    match result {
+        Ok((parts, received)) => {
+            if let Err(error) = writer.complete_multipart(path, &upload_id, &parts).await {
+                let _ = writer.abort_multipart(path, &upload_id).await;
+                return Err(error);
+            }
+            writer.settle_multipart(path, &upload_id).await?;
+            Ok(received)
+        }
+        Err(error) => {
+            let _ = writer.abort_multipart(path, &upload_id).await;
+            Err(error)
+        }
+    }
+}
+
+async fn upload_copy_part(
+    writer: &dyn SurfaceWrite,
+    path: &str,
+    upload_id: &str,
+    part_number: u32,
+    bytes: &[u8],
+) -> Result<PartTag> {
+    let mut attempt = 1_u32;
+    loop {
+        match writer
+            .upload_part(path, upload_id, part_number, bytes)
+            .await
+        {
+            Ok(tag) => return Ok(tag),
+            Err(error) if attempt >= COPY_PART_UPLOAD_ATTEMPTS => {
+                return Err(error).with_context(|| {
+                    format!("uploading placement copy part {part_number} after {attempt} attempts")
+                });
+            }
+            Err(_) => {
+                clock::sleep(std::time::Duration::from_millis(
+                    COPY_PART_RETRY_DELAY_MILLIS * u64::from(attempt),
+                ))
+                .await;
+                attempt += 1;
+            }
+        }
     }
 }
 
@@ -467,7 +781,9 @@ fn sha256_hash_matches(expected: &str, digest: &[u8; 32]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     use super::*;
     use crate::db::{
@@ -476,6 +792,7 @@ mod tests {
     };
     use crate::domain::Permission;
     use crate::fetch::{SurfaceFetch, SurfaceListPage};
+    use crate::surface_write::SurfaceWrite;
     use sha2::{Digest as _, Sha256};
 
     struct EmptySurfaceProvider;
@@ -496,6 +813,25 @@ mod tests {
 
     struct LargeSurface {
         paths: Arc<Vec<String>>,
+    }
+
+    #[derive(Clone, Default)]
+    struct CopySurfaceProvider {
+        objects: Arc<Mutex<HashMap<String, BTreeMap<String, Vec<u8>>>>>,
+    }
+
+    struct CopySurface {
+        placement: String,
+        objects: Arc<Mutex<HashMap<String, BTreeMap<String, Vec<u8>>>>>,
+    }
+
+    struct CopySurfaceWriter {
+        placement: String,
+        objects: Arc<Mutex<HashMap<String, BTreeMap<String, Vec<u8>>>>>,
+    }
+
+    struct RetryingMultipartWriter {
+        attempts: Arc<AtomicUsize>,
     }
 
     #[async_trait::async_trait]
@@ -616,6 +952,155 @@ mod tests {
         fn describe(&self) -> String {
             "large test surface".into()
         }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceProvider for CopySurfaceProvider {
+        async fn placement_fetcher(
+            &self,
+            placement: &SurfacePlacementRecord,
+        ) -> Result<Box<dyn SurfaceFetch>> {
+            Ok(Box::new(CopySurface {
+                placement: placement.name.clone(),
+                objects: Arc::clone(&self.objects),
+            }))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceWriteProvider for CopySurfaceProvider {
+        async fn placement_writer(
+            &self,
+            placement: &SurfacePlacementRecord,
+        ) -> Result<Box<dyn SurfaceWrite>> {
+            Ok(Box::new(CopySurfaceWriter {
+                placement: placement.name.clone(),
+                objects: Arc::clone(&self.objects),
+            }))
+        }
+
+        async fn placement_deleter(
+            &self,
+            placement: &SurfacePlacementRecord,
+            _expected_binding_resource_version: i64,
+            _delete_credential_generation: i64,
+        ) -> Result<Box<dyn SurfaceWrite>> {
+            self.placement_writer(placement).await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for CopySurface {
+        async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            Ok(self
+                .objects
+                .lock()
+                .map_err(|_| anyhow::anyhow!("copy surface lock is poisoned"))?
+                .get(&self.placement)
+                .and_then(|objects| objects.get(path))
+                .cloned())
+        }
+
+        async fn list_page(&self, _cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
+            let entries = self
+                .objects
+                .lock()
+                .map_err(|_| anyhow::anyhow!("copy surface lock is poisoned"))?
+                .get(&self.placement)
+                .map(|objects| {
+                    objects
+                        .iter()
+                        .map(|(path, bytes)| {
+                            (
+                                path.clone(),
+                                SurfaceListedEvidence {
+                                    size: i64::try_from(bytes.len()).unwrap(),
+                                    strong_etag: hex::encode(Sha256::digest(bytes)),
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            anyhow::ensure!(entries.len() <= limit, "test surface exceeded one page");
+            Ok(SurfaceListPage {
+                paths: entries.iter().map(|(path, _)| path.clone()).collect(),
+                evidence: entries.into_iter().collect(),
+                next_cursor: None,
+            })
+        }
+
+        fn describe(&self) -> String {
+            format!("copy test surface {}", self.placement)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceWrite for CopySurfaceWriter {
+        async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
+            self.objects
+                .lock()
+                .map_err(|_| anyhow::anyhow!("copy surface lock is poisoned"))?
+                .entry(self.placement.clone())
+                .or_default()
+                .insert(path.to_string(), bytes.to_vec());
+            Ok(())
+        }
+
+        async fn delete(&self, path: &str) -> Result<()> {
+            if let Some(objects) = self
+                .objects
+                .lock()
+                .map_err(|_| anyhow::anyhow!("copy surface lock is poisoned"))?
+                .get_mut(&self.placement)
+            {
+                objects.remove(path);
+            }
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceWrite for RetryingMultipartWriter {
+        async fn write(&self, _path: &str, _bytes: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete(&self, _path: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn upload_part(
+            &self,
+            _path: &str,
+            _upload_id: &str,
+            part_number: u32,
+            _bytes: &[u8],
+        ) -> Result<PartTag> {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            if attempt < COPY_PART_UPLOAD_ATTEMPTS as usize {
+                anyhow::bail!("transient upload failure");
+            }
+            Ok(PartTag {
+                part_number,
+                etag: "part-etag".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn multipart_copy_retries_transient_part_uploads() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let writer = RetryingMultipartWriter {
+            attempts: Arc::clone(&attempts),
+        };
+
+        let tag = upload_copy_part(&writer, "nar/object", "upload-1", 7, b"bytes")
+            .await
+            .unwrap();
+
+        assert_eq!(tag.part_number, 7);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
 
     async fn scan_fixture(
@@ -854,6 +1339,124 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn replication_copies_then_verifies_the_destination() {
+        let (db, source, _) = scan_fixture("placement-copy", "scan-copy-source").await;
+        let registry_id = source.registry_id.unwrap();
+        let body = b"ref: refs/heads/main\n".to_vec();
+        db.create_surface_object(&SetSurfaceObject {
+            surface: SurfaceTarget::Registry(registry_id),
+            object_key: "HEAD".into(),
+            content_hash: Some(hex::encode(Sha256::digest(&body))),
+            size: Some(i64::try_from(body.len()).unwrap()),
+            object_kind: "immutable".into(),
+            mutable_publication_id: None,
+        })
+        .await
+        .unwrap();
+        let destination = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface: SurfaceTarget::Registry(registry_id),
+                name: "canonical".into(),
+                binding_id: source.binding_id,
+                prefix: "placement-copy/system".into(),
+                kind: "complete".into(),
+                desired_state: "active".into(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+        let operation = db
+            .create_topology_operation(&NewTopologyOperation {
+                operation_id: "replicate-copy-destination".into(),
+                operation_kind: "replicate_placement".into(),
+                control_permission: Permission::StorageManage,
+                targets: vec![
+                    NewTopologyOperationTarget {
+                        role: "source".into(),
+                        target: NewTopologyOperationTargetRef::Placement(source.id),
+                        generation_key: source.resource_version,
+                        configuration_digest: String::new(),
+                    },
+                    NewTopologyOperationTarget {
+                        role: "primary".into(),
+                        target: NewTopologyOperationTargetRef::Placement(destination.id),
+                        generation_key: destination.resource_version,
+                        configuration_digest: String::new(),
+                    },
+                ],
+                detail_json: serde_json::json!({"phase":"pending"}).to_string(),
+                progress_total: None,
+            })
+            .await
+            .unwrap();
+        let provider = CopySurfaceProvider::default();
+        provider
+            .objects
+            .lock()
+            .unwrap()
+            .entry(source.name.clone())
+            .or_default()
+            .insert("HEAD".into(), body.clone());
+
+        let controller = PlacementScanController::new(Arc::clone(&db), Arc::new(provider.clone()))
+            .with_writes(Arc::new(provider.clone()));
+        assert_eq!(controller.run_due(2).await.unwrap(), 2);
+
+        let operation = db
+            .topology_operation(&operation.operation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(operation.state, "succeeded", "{:?}", operation.error);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&operation.detail_json).unwrap()["copy"]
+                ["copiedObjects"],
+            1
+        );
+        let destination = db.surface_placement(destination.id).await.unwrap().unwrap();
+        assert_eq!(destination.state, "ready");
+        assert_eq!(destination.completeness, "complete");
+        assert_eq!(provider.objects.lock().unwrap()["canonical"]["HEAD"], body);
+
+        let retry = db
+            .create_topology_operation(&NewTopologyOperation {
+                operation_id: "replicate-copy-destination-retry".into(),
+                operation_kind: "replicate_placement".into(),
+                control_permission: Permission::StorageManage,
+                targets: vec![
+                    NewTopologyOperationTarget {
+                        role: "source".into(),
+                        target: NewTopologyOperationTargetRef::Placement(source.id),
+                        generation_key: source.resource_version,
+                        configuration_digest: String::new(),
+                    },
+                    NewTopologyOperationTarget {
+                        role: "primary".into(),
+                        target: NewTopologyOperationTargetRef::Placement(destination.id),
+                        generation_key: destination.resource_version,
+                        configuration_digest: String::new(),
+                    },
+                ],
+                detail_json: serde_json::json!({"phase":"pending"}).to_string(),
+                progress_total: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(controller.run_due(1).await.unwrap(), 1);
+        let retry = db
+            .topology_operation(&retry.operation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let retry_detail = serde_json::from_str::<serde_json::Value>(&retry.detail_json).unwrap();
+        assert_eq!(retry_detail["copy"]["copiedObjects"], 0);
+        assert_eq!(retry_detail["copy"]["reusedObjects"], 1);
+    }
+
+    #[tokio::test]
     async fn native_listing_pages_larger_than_a_presence_batch_complete() {
         let (db, placement, operation) =
             scan_fixture("placement-scan-large-page", "scan-large-page").await;
@@ -889,6 +1492,44 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(operation.state, "succeeded", "{:?}", operation.error);
+        let placement = db.surface_placement(placement.id).await.unwrap().unwrap();
+        assert_eq!(placement.state, "ready");
+        assert_eq!(placement.completeness, "complete");
+    }
+
+    #[tokio::test]
+    async fn uncataloged_control_objects_do_not_degrade_a_complete_placement() {
+        let (db, placement, operation) =
+            scan_fixture("placement-scan-control-object", "scan-control-object").await;
+        let registry_id = placement.registry_id.unwrap();
+        let catalog_path = "objects/aa/cataloged";
+        db.create_surface_object(&SetSurfaceObject {
+            surface: SurfaceTarget::Registry(registry_id),
+            object_key: catalog_path.into(),
+            content_hash: Some(hex::encode(Sha256::digest(b"x"))),
+            size: Some(1),
+            object_kind: "immutable".into(),
+            mutable_publication_id: None,
+        })
+        .await
+        .unwrap();
+
+        let controller = PlacementScanController::new(
+            Arc::clone(&db),
+            Arc::new(LargeSurfaceProvider {
+                paths: Arc::new(vec![catalog_path.into(), "refs/hub/changes/draft".into()]),
+            }),
+        );
+        assert_eq!(controller.run_due(1).await.unwrap(), 1);
+
+        let operation = db
+            .topology_operation(&operation.operation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(operation.state, "succeeded", "{:?}", operation.error);
+        let detail: serde_json::Value = serde_json::from_str(&operation.detail_json).unwrap();
+        assert_eq!(detail["unknownObjects"], 1);
         let placement = db.surface_placement(placement.id).await.unwrap().unwrap();
         assert_eq!(placement.state, "ready");
         assert_eq!(placement.completeness, "complete");

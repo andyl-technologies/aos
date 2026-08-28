@@ -15,6 +15,8 @@
 //! Phase 5).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
 use aos_registry_surface::manifest::{
@@ -56,17 +58,49 @@ pub const MAX_STORE_ENTRIES: usize = 1_000_000;
 /// fanout keeps both native and Worker transports below their request limits.
 const OBJECT_FETCH_CONCURRENCY: usize = 32;
 
+/// Maximum bundle shards hydrated concurrently before an index walk.
+const BUNDLE_FETCH_CONCURRENCY: usize = 32;
+
 /// Reads loose objects through a [`SurfaceFetch`], verifying each object's
 /// content hash against the oid it was requested by.
 pub struct ObjectReader<'a> {
     fetch: &'a dyn SurfaceFetch,
+    // Release generations normally share most tree and blob objects. Keep the
+    // verified decoded form for this index pass so concurrent retained-release
+    // walks do not repeatedly pay object-store and inflate latency.
+    cache: Mutex<BTreeMap<Oid, (ObjectKind, Vec<u8>)>>,
+    // Parsing large package manifests and store records dominates retained
+    // release walks after object I/O is bundled. Their Git OIDs are immutable,
+    // and successive release commits normally share nearly every blob, so the
+    // verified head parse can safely serve historical walks in this index pass.
+    package_cache: Mutex<BTreeMap<Oid, PackageToml>>,
+    store_entry_cache: Mutex<BTreeMap<Oid, StoreEntry>>,
+    // Bundle framing is cheap to validate, but inflating and hash-checking every
+    // entry eagerly makes preload CPU scale with all published objects rather
+    // than the objects reached by this generation. Retain canonical loose bytes
+    // and verify them only when the dependency walk selects their OID.
+    bundled_loose: Mutex<BTreeMap<Oid, Arc<[u8]>>>,
+    attempted_bundles: Mutex<BTreeSet<String>>,
+    bundle_gates: Mutex<BTreeMap<String, Arc<futures_util::lock::Mutex<()>>>>,
+    bundle_fetches: AtomicUsize,
+    loose_fetches: AtomicUsize,
 }
 
 impl<'a> ObjectReader<'a> {
     /// Create a reader over a surface transport.
     #[must_use]
     pub fn new(fetch: &'a dyn SurfaceFetch) -> Self {
-        Self { fetch }
+        Self {
+            fetch,
+            cache: Mutex::new(BTreeMap::new()),
+            package_cache: Mutex::new(BTreeMap::new()),
+            store_entry_cache: Mutex::new(BTreeMap::new()),
+            bundled_loose: Mutex::new(BTreeMap::new()),
+            attempted_bundles: Mutex::new(BTreeSet::new()),
+            bundle_gates: Mutex::new(BTreeMap::new()),
+            bundle_fetches: AtomicUsize::new(0),
+            loose_fetches: AtomicUsize::new(0),
+        }
     }
 
     /// Read and verify one loose object.
@@ -77,13 +111,238 @@ impl<'a> ObjectReader<'a> {
     /// guarantees loose presence, so absence is surface corruption), fails
     /// to inflate, or hashes to a different oid.
     pub async fn read(&self, oid: Oid) -> Result<(ObjectKind, Vec<u8>)> {
+        if let Some(decoded) = self.cached(oid)? {
+            return Ok(decoded);
+        }
+
+        self.load_bundle(oid).await?;
+        if let Some(decoded) = self.cached(oid)? {
+            return Ok(decoded);
+        }
+        if let Some(loose) = self.bundled(oid)? {
+            match object::decode_loose(&loose, Some(oid)) {
+                Ok(decoded) => {
+                    self.cache
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
+                        .insert(oid, decoded.clone());
+                    return Ok(decoded);
+                }
+                Err(error) => {
+                    tracing::warn!(%oid, error = %format!("{error:#}"), "ignoring invalid bundled object");
+                }
+            }
+        }
+
         let path = oid.loose_path();
+        self.loose_fetches.fetch_add(1, Ordering::Relaxed);
         let bytes = self
             .fetch
             .fetch(&path)
             .await?
             .with_context(|| format!("loose object {path} is missing from the surface"))?;
-        object::decode_loose(&bytes, Some(oid))
+        let decoded = object::decode_loose(&bytes, Some(oid))?;
+        self.cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
+            .insert(oid, decoded.clone());
+        Ok(decoded)
+    }
+
+    fn cached(&self, oid: Oid) -> Result<Option<(ObjectKind, Vec<u8>)>> {
+        Ok(self
+            .cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
+            .get(&oid)
+            .cloned())
+    }
+
+    fn bundled(&self, oid: Oid) -> Result<Option<Arc<[u8]>>> {
+        Ok(self
+            .bundled_loose
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry bundled-object lock is poisoned"))?
+            .get(&oid)
+            .cloned())
+    }
+
+    async fn read_package(&self, oid: Oid, name: &str) -> Result<PackageToml> {
+        if let Some(package) = self
+            .package_cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry package cache lock is poisoned"))?
+            .get(&oid)
+            .cloned()
+        {
+            return Ok(package);
+        }
+
+        let content = read_utf8_blob(self, oid, name).await?;
+        let package = parse_committed_package(name, &content)?;
+        self.package_cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry package cache lock is poisoned"))?
+            .insert(oid, package.clone());
+        Ok(package)
+    }
+
+    async fn read_store_entry(&self, oid: Oid, name: &str) -> Result<StoreEntry> {
+        if let Some(entry) = self
+            .store_entry_cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry store-entry cache lock is poisoned"))?
+            .get(&oid)
+            .cloned()
+        {
+            return Ok(entry);
+        }
+
+        let content = read_utf8_blob(self, oid, name).await?;
+        let entry = store::parse_entry(&content)
+            .with_context(|| format!("parsing committed store record '{name}'"))?;
+        self.store_entry_cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry store-entry cache lock is poisoned"))?
+            .insert(oid, entry.clone());
+        Ok(entry)
+    }
+
+    /// Hydrates every bounded bundle shard before dependency-ordered walking.
+    ///
+    /// Producers publish all 256 fixed shard names, including empty shards.
+    /// Fetching them in bounded parallel batches avoids turning tree discovery
+    /// into a sequential object-store round trip per newly encountered shard.
+    /// A legacy surface without bundles remains valid and falls back to loose
+    /// paths when objects are requested.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a shard transport fails. Missing or invalid
+    /// optional bundles retain canonical loose-object fallback.
+    pub(crate) async fn preload_bundles(&self) -> Result<()> {
+        if self.load_aggregate_bundle().await? {
+            return Ok(());
+        }
+
+        let shards = (0_u16..=255)
+            .map(|value| format!("{value:02x}"))
+            .collect::<Vec<_>>();
+        for batch in shards.chunks(BUNDLE_FETCH_CONCURRENCY) {
+            try_join_all(
+                batch
+                    .iter()
+                    .map(|shard| self.load_bundle_shard(shard.as_str())),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn load_aggregate_bundle(&self) -> Result<bool> {
+        self.bundle_fetches.fetch_add(1, Ordering::Relaxed);
+        let Some(bytes) = self
+            .fetch
+            .fetch_bounded(
+                aos_registry_surface::object_bundle::AGGREGATE_PATH,
+                aos_registry_surface::object_bundle::MAX_AGGREGATE_BUNDLE_BYTES,
+            )
+            .await?
+        else {
+            return Ok(false);
+        };
+        let entries = match aos_registry_surface::object_bundle::decode_aggregate(&bytes) {
+            Ok(entries) => entries,
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "ignoring invalid aggregate object bundle");
+                return Ok(false);
+            }
+        };
+
+        self.bundled_loose
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry bundled-object lock is poisoned"))?
+            .extend(
+                entries
+                    .into_iter()
+                    .map(|(oid, loose)| (oid, Arc::from(loose))),
+            );
+        self.attempted_bundles
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry bundle-attempt lock is poisoned"))?
+            .extend((0_u16..=255).map(|value| format!("{value:02x}")));
+        Ok(true)
+    }
+
+    async fn load_bundle(&self, oid: Oid) -> Result<()> {
+        let oid_hex = oid.to_hex();
+        self.load_bundle_shard(&oid_hex[..2]).await
+    }
+
+    async fn load_bundle_shard(&self, shard: &str) -> Result<()> {
+        let shard = shard.to_string();
+
+        // Retained release trees load concurrently and often reach the same
+        // shard together. A per-shard async gate makes that fetch single-flight:
+        // unrelated shards remain parallel, while followers wait for the cache
+        // population instead of falling through to thousands of loose reads.
+        let gate = self
+            .bundle_gates
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry bundle-gate lock is poisoned"))?
+            .entry(shard.clone())
+            .or_default()
+            .clone();
+        let _guard = gate.lock().await;
+        let should_fetch = self
+            .attempted_bundles
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry bundle-attempt lock is poisoned"))?
+            .insert(shard.clone());
+        if !should_fetch {
+            return Ok(());
+        }
+
+        let path = aos_registry_surface::object_bundle::shard_path(&shard)?;
+        self.bundle_fetches.fetch_add(1, Ordering::Relaxed);
+        let Some(bytes) = self
+            .fetch
+            .fetch_bounded(&path, aos_registry_surface::object_bundle::MAX_BUNDLE_BYTES)
+            .await?
+        else {
+            return Ok(());
+        };
+        let entries = match aos_registry_surface::object_bundle::decode(&shard, &bytes) {
+            Ok(entries) => entries,
+            Err(error) => {
+                tracing::warn!(%path, error = %format!("{error:#}"), "ignoring invalid object bundle");
+                return Ok(());
+            }
+        };
+
+        self.bundled_loose
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry bundled-object lock is poisoned"))?
+            .extend(
+                entries
+                    .into_iter()
+                    .map(|(oid, loose)| (oid, Arc::from(loose))),
+            );
+        Ok(())
+    }
+
+    /// Returns bundle reads, loose fallbacks, and verified cached objects.
+    pub(crate) fn stats(&self) -> Result<(usize, usize, usize)> {
+        let cached = self
+            .cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
+            .len();
+        Ok((
+            self.bundle_fetches.load(Ordering::Relaxed),
+            self.loose_fetches.load(Ordering::Relaxed),
+            cached,
+        ))
     }
 
     /// Read one loose object, requiring a specific kind.
@@ -136,6 +395,47 @@ pub struct LoadedTree {
 /// fails its format parser.
 pub async fn load_registry_tree(fetch: &dyn SurfaceFetch, commit_oid: Oid) -> Result<LoadedTree> {
     let reader = ObjectReader::new(fetch);
+    load_registry_tree_with_reader(&reader, commit_oid).await
+}
+
+/// Loads a committed registry tree through a reader shared by one index pass.
+///
+/// Sharing the reader lets retained release generations reuse verified Git
+/// objects while preserving the same hash and kind checks as an isolated load.
+///
+/// # Errors
+///
+/// Returns the same validation and transport errors as [`load_registry_tree`].
+pub(crate) async fn load_registry_tree_with_reader(
+    reader: &ObjectReader<'_>,
+    commit_oid: Oid,
+) -> Result<LoadedTree> {
+    load_registry_tree_inner(reader, commit_oid, true).await
+}
+
+/// Loads the package-bearing subset needed for one retained release snapshot.
+///
+/// Retained release indexing consumes registry identity, packages, and signed
+/// store records. It does not consume the historical key roster or closure
+/// adjacency map, both of which can be large and otherwise get reparsed once
+/// per retained tag.
+///
+/// # Errors
+///
+/// Returns the same package, store, and object validation errors as
+/// [`load_registry_tree_with_reader`].
+pub(crate) async fn load_release_tree_with_reader(
+    reader: &ObjectReader<'_>,
+    commit_oid: Oid,
+) -> Result<LoadedTree> {
+    load_registry_tree_inner(reader, commit_oid, false).await
+}
+
+async fn load_registry_tree_inner(
+    reader: &ObjectReader<'_>,
+    commit_oid: Oid,
+    include_governance: bool,
+) -> Result<LoadedTree> {
     let commit = reader.read_commit(commit_oid).await?;
     let root_tree = object::tree_map(&reader.read_kind(commit.tree, ObjectKind::Tree).await?)?;
 
@@ -146,7 +446,7 @@ pub async fn load_registry_tree(fetch: &dyn SurfaceFetch, commit_oid: Oid) -> Re
     let root: RegistryRootConfig =
         toml::from_str(&root_toml).context("parsing committed registry.toml")?;
 
-    let keys = match root_tree.get("keys.toml") {
+    let keys = match root_tree.get("keys.toml").filter(|_| include_governance) {
         Some(entry) => {
             let content = read_utf8_blob(&reader, entry.oid, "keys.toml").await?;
             Some(toml::from_str::<KeysToml>(&content).context("parsing committed keys.toml")?)
@@ -186,17 +486,18 @@ pub async fn load_registry_tree(fetch: &dyn SurfaceFetch, commit_oid: Oid) -> Re
         packages.reserve(files.len());
         for batch in files.chunks(OBJECT_FETCH_CONCURRENCY) {
             packages.extend(
-                try_join_all(batch.iter().map(|file| async {
-                    let content = read_utf8_blob(&reader, file.oid, &file.name).await?;
-                    parse_committed_package(&file.name, &content)
-                }))
+                try_join_all(
+                    batch
+                        .iter()
+                        .map(|file| async { reader.read_package(file.oid, &file.name).await }),
+                )
                 .await?,
             );
         }
     }
 
     let mut closures = BTreeMap::new();
-    if let Some(closures_entry) = root_tree.get("closures") {
+    if let Some(closures_entry) = root_tree.get("closures").filter(|_| include_governance) {
         let files = object::tree_map(
             &reader
                 .read_kind(closures_entry.oid, ObjectKind::Tree)
@@ -308,9 +609,7 @@ async fn load_package_store_records(
                     "committed store record '{}' is unexpectedly a tree",
                     file.name
                 );
-                let content = read_utf8_blob(reader, file.oid, &file.name).await?;
-                let parsed = store::parse_entry(&content)
-                    .with_context(|| format!("parsing committed store record '{}'", file.name))?;
+                let parsed = reader.read_store_entry(file.oid, &file.name).await?;
                 Ok::<_, anyhow::Error>((hash.clone(), parsed))
             }))
             .await?,
@@ -485,5 +784,189 @@ source_nar_hash = "sha256:source"
         let error =
             enrich_packages_from_store(&mut [modern_package()], &BTreeMap::new()).unwrap_err();
         assert!(format!("{error:#}").contains("has no signed store record"));
+    }
+}
+
+#[cfg(test)]
+mod bundle_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    struct BundleFetch {
+        bytes: Vec<u8>,
+        reads: AtomicUsize,
+    }
+
+    struct MissingBundleFetch {
+        reads: AtomicUsize,
+    }
+
+    struct InvalidBundleFetch {
+        bundle: Vec<u8>,
+        loose: Vec<u8>,
+        loose_reads: AtomicUsize,
+    }
+
+    struct AggregateBundleFetch {
+        bytes: Vec<u8>,
+        reads: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for MissingBundleFetch {
+        async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("unexpected loose-object fetch for {path}")
+        }
+
+        async fn fetch_bounded(&self, _path: &str, _max_bytes: usize) -> Result<Option<Vec<u8>>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+
+        fn describe(&self) -> String {
+            "missing-bundle-preload".into()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for BundleFetch {
+        async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("unexpected loose-object fallback for {path}")
+        }
+
+        async fn fetch_bounded(&self, _path: &str, _max_bytes: usize) -> Result<Option<Vec<u8>>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            tokio::task::yield_now().await;
+            Ok(Some(self.bytes.clone()))
+        }
+
+        fn describe(&self) -> String {
+            "bundle-single-flight".into()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for InvalidBundleFetch {
+        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+            self.loose_reads.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(self.loose.clone()))
+        }
+
+        async fn fetch_bounded(&self, _path: &str, _max_bytes: usize) -> Result<Option<Vec<u8>>> {
+            Ok(Some(self.bundle.clone()))
+        }
+
+        fn describe(&self) -> String {
+            "invalid-bundle-fallback".into()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for AggregateBundleFetch {
+        async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("unexpected loose-object fetch for {path}")
+        }
+
+        async fn fetch_bounded(&self, path: &str, _max_bytes: usize) -> Result<Option<Vec<u8>>> {
+            assert_eq!(path, aos_registry_surface::object_bundle::AGGREGATE_PATH);
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(self.bytes.clone()))
+        }
+
+        fn describe(&self) -> String {
+            "aggregate-bundle".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_same_shard_reads_share_one_bundle_fetch() {
+        let mut by_shard = BTreeMap::<String, Vec<(Oid, Vec<u8>)>>::new();
+        for value in 0..10_000 {
+            let content = format!("bundle value {value}").into_bytes();
+            let oid = object::hash_object(ObjectKind::Blob, &content);
+            let shard = oid.to_hex()[..2].to_string();
+            let entries = by_shard.entry(shard.clone()).or_default();
+            entries.push((
+                oid,
+                object::encode_loose(ObjectKind::Blob, &content).unwrap(),
+            ));
+            if entries.len() == 2 {
+                entries.sort_by_key(|(oid, _)| *oid);
+                let bytes = aos_registry_surface::object_bundle::encode(&shard, entries).unwrap();
+                let fetch = BundleFetch {
+                    bytes,
+                    reads: AtomicUsize::new(0),
+                };
+                let reader = ObjectReader::new(&fetch);
+
+                let (first, second) =
+                    tokio::join!(reader.read(entries[0].0), reader.read(entries[1].0),);
+                assert_eq!(first.unwrap().0, ObjectKind::Blob);
+                assert_eq!(second.unwrap().0, ObjectKind::Blob);
+                assert_eq!(fetch.reads.load(Ordering::SeqCst), 1);
+                assert_eq!(reader.stats().unwrap(), (1, 0, 2));
+                return;
+            }
+        }
+        panic!("test could not find two objects in one shard");
+    }
+
+    #[tokio::test]
+    async fn preload_attempts_every_fixed_shard_once() {
+        let fetch = MissingBundleFetch {
+            reads: AtomicUsize::new(0),
+        };
+        let reader = ObjectReader::new(&fetch);
+
+        reader.preload_bundles().await.unwrap();
+
+        assert_eq!(fetch.reads.load(Ordering::SeqCst), 257);
+        assert_eq!(reader.stats().unwrap(), (257, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn aggregate_preload_replaces_all_shard_fetches() {
+        let content = b"aggregate selected object";
+        let oid = object::hash_object(ObjectKind::Blob, content);
+        let loose = object::encode_loose(ObjectKind::Blob, content).unwrap();
+        let fetch = AggregateBundleFetch {
+            bytes: aos_registry_surface::object_bundle::encode_aggregate(&[(oid, loose)]).unwrap(),
+            reads: AtomicUsize::new(0),
+        };
+        let reader = ObjectReader::new(&fetch);
+
+        reader.preload_bundles().await.unwrap();
+        let (kind, decoded) = reader.read(oid).await.unwrap();
+
+        assert_eq!(kind, ObjectKind::Blob);
+        assert_eq!(decoded, content);
+        assert_eq!(fetch.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(reader.stats().unwrap(), (1, 0, 1));
+    }
+
+    #[tokio::test]
+    async fn invalid_selected_bundle_entry_falls_back_to_loose_object() {
+        let content = b"canonical loose fallback";
+        let oid = object::hash_object(ObjectKind::Blob, content);
+        let shard = &oid.to_hex()[..2];
+        let bundle = aos_registry_surface::object_bundle::encode(
+            shard,
+            &[(oid, b"not a zlib stream".to_vec())],
+        )
+        .unwrap();
+        let fetch = InvalidBundleFetch {
+            bundle,
+            loose: object::encode_loose(ObjectKind::Blob, content).unwrap(),
+            loose_reads: AtomicUsize::new(0),
+        };
+        let reader = ObjectReader::new(&fetch);
+
+        let (kind, decoded) = reader.read(oid).await.unwrap();
+
+        assert_eq!(kind, ObjectKind::Blob);
+        assert_eq!(decoded, content);
+        assert_eq!(fetch.loose_reads.load(Ordering::SeqCst), 1);
+        assert_eq!(reader.stats().unwrap(), (1, 1, 1));
     }
 }
