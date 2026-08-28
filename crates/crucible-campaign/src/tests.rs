@@ -5,7 +5,10 @@
 
 use super::codec::{Canonical, Decoder, Encoder, decode, encode};
 use super::*;
-use crucible_cas::content_store::{ContentId, ObjectKind};
+use crucible_cas::content_store::{
+    BlobHandle, ContentId, ObjectKind, Reconstructibility, RetentionRole, SensitivityClass,
+    StoreError, StoreObjectProfiler,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 macro_rules! stored_id {
@@ -611,7 +614,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             .get(schema)
             .unwrap_or_else(|| panic!("missing lower schema {schema}"));
         let expected_version = if schema == "crucible.content-store.graph-configuration" {
-            "7"
+            "8"
         } else {
             "1"
         };
@@ -678,6 +681,43 @@ fn campaign_policy_identity_is_order_independent_and_strictly_decoded() {
         envelope.children().first().expect("generator child").id(),
         generator.content_id()
     );
+    let envelope_bytes = envelope.canonical_bytes();
+    let profile = CampaignObjectProfiler
+        .derive_profile(
+            envelope.content_id(),
+            &BlobHandle::from_bytes(envelope_bytes),
+        )
+        .expect("campaign object profile");
+    assert_eq!(profile.kind(), ObjectKind::Policy);
+    assert_eq!(profile.sensitivity(), SensitivityClass::Metadata);
+    assert_eq!(profile.reconstructibility(), Reconstructibility::Canonical);
+    assert_eq!(profile.retention_role(), RetentionRole::CampaignMetadata);
+
+    let mut malformed = envelope.canonical_bytes();
+    malformed.push(0);
+    let malformed_id = ContentId::for_bytes(ObjectKind::Policy, 1, &malformed);
+    assert!(matches!(
+        CampaignObjectProfiler.derive_profile(
+            malformed_id,
+            &BlobHandle::from_bytes(malformed),
+        ),
+        Err(StoreError::Corrupt { id }) if id == malformed_id
+    ));
+}
+
+#[test]
+fn campaign_object_profile_classifies_opaque_state_without_reading_a_caller_hint() {
+    let bytes = b"opaque exact guest state";
+    let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, bytes);
+    let profile = CampaignObjectProfiler
+        .derive_profile(id, &BlobHandle::from_bytes(bytes))
+        .expect("opaque object profile");
+
+    assert_eq!(profile.kind(), ObjectKind::RamExtent);
+    assert_eq!(profile.logical_length(), bytes.len() as u64);
+    assert_eq!(profile.sensitivity(), SensitivityClass::GuestState);
+    assert_eq!(profile.reconstructibility(), Reconstructibility::Canonical);
+    assert_eq!(profile.retention_role(), RetentionRole::ExactState);
 }
 
 #[test]

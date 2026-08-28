@@ -685,12 +685,14 @@ impl ImmutableBlobBackend for WriteBackStore {
 pub(crate) struct StoreGraphWriteBackFence {
     journals: Vec<(String, Arc<WriteBackJournal>, File)>,
     namespace_authorizer: Option<Arc<dyn StoreNamespaceAuthorizer>>,
+    profile_validation_root: Option<Arc<dyn ImmutableBlobBackend>>,
 }
 
 impl StoreGraphWriteBackFence {
     pub(crate) fn acquire(
         journals: &BTreeMap<String, Arc<WriteBackJournal>>,
         namespace_authorizer: Option<Arc<dyn StoreNamespaceAuthorizer>>,
+        profile_validation_root: Option<Arc<dyn ImmutableBlobBackend>>,
     ) -> Result<Self, StoreError> {
         let mut held = Vec::with_capacity(journals.len());
         for (node, journal) in journals {
@@ -700,6 +702,7 @@ impl StoreGraphWriteBackFence {
         Ok(Self {
             journals: held,
             namespace_authorizer,
+            profile_validation_root,
         })
     }
 }
@@ -717,6 +720,9 @@ impl WriteBackRetentionFence for StoreGraphWriteBackFence {
             let (node_roots, node_bytes) = journal.inventory(&mut |root| {
                 if let Some(authorizer) = &self.namespace_authorizer {
                     authorizer.authorize(StoreNamespaceOperation::Read, root.id())?;
+                }
+                if let Some(profile_root) = &self.profile_validation_root {
+                    profile_root.read(root.id(), None)?;
                 }
                 hasher.update(&(node.len() as u64).to_be_bytes());
                 hasher.update(node.as_bytes());

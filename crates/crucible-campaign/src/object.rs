@@ -575,6 +575,16 @@ impl ObjectEnvelope {
         Ok(decoded)
     }
 
+    pub(crate) fn from_canonical_bytes_for_profile(
+        bytes: &[u8],
+    ) -> Result<Self, CampaignCodecError> {
+        let decoded = Self::decode_structural(bytes)?;
+        if decoded.record_kind != CampaignRecordKind::MerkleNode {
+            decoded.validate_record_body()?;
+        }
+        Ok(decoded)
+    }
+
     fn decode_structural(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
         let envelope = ContentEnvelope::from_canonical_bytes(bytes)?;
         let record_kind = CampaignRecordKind::parse_schema_name(envelope.schema_name()).ok_or(

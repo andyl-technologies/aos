@@ -30,6 +30,7 @@ mod graph;
 mod memory;
 mod namespace;
 mod packed;
+mod profile;
 mod quota;
 mod write_back;
 
@@ -56,6 +57,10 @@ pub use namespace::{
 pub use packed::{
     PackedBlobBackend, PackedRepackPlan, PackedRepackPlanId, PackedRepackReport,
     PackedStorageAccounting,
+};
+pub use profile::{
+    ObjectProfile, Reconstructibility, RetentionRole, SensitivityClass, StoreGraphObjectProfilers,
+    StoreObjectProfilePolicyId, StoreObjectProfiler,
 };
 pub use write_back::{
     WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackRetentionGeneration,
@@ -934,6 +939,8 @@ pub enum GraphViolation {
     DurabilityCoverage,
     /// A graph declares namespace authorization below an unprotected root.
     InvalidNamespaceBoundary,
+    /// A graph declares profile validation below an unvalidated root.
+    InvalidProfileBoundary,
     /// A tiered node names an invalid write tier.
     InvalidWriteTier,
     /// A child lacks a capability required by its parent layer.
@@ -972,6 +979,9 @@ impl fmt::Display for GraphViolation {
             Self::DurabilityCoverage => "incomplete or extraneous durability-policy coverage",
             Self::InvalidNamespaceBoundary => {
                 "namespace authorization must dominate the graph root"
+            }
+            Self::InvalidProfileBoundary => {
+                "object-profile validation must dominate the graph root"
             }
             Self::InvalidWriteTier => "invalid write tier",
             Self::UnsupportedChild => "unsupported child capability",

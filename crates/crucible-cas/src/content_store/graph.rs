@@ -21,6 +21,9 @@ use super::namespace::{
     StoreNamespaceOperation,
 };
 use super::packed::PackedBlobBackend;
+use super::profile::{
+    ProfileValidatedStore, StoreGraphObjectProfilers, StoreObjectProfilePolicyId,
+};
 use super::quota::{LogicalQuotaStore, MAXIMUM_LOGICAL_QUOTA_OBJECTS};
 use super::write_back::{
     StoreGraphWriteBackFence, WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackStore,
@@ -209,6 +212,13 @@ pub enum StoreNodeSpec {
         /// Non-secret namespace resolved through an external capability.
         namespace: StoreNamespaceId,
     },
+    /// Derives and validates one canonical operational object profile.
+    ProfileValidated {
+        /// Child node hidden behind the profile-validation boundary.
+        child: StoreNodeId,
+        /// Non-secret policy identifier resolved through an external capability.
+        policy: StoreObjectProfilePolicyId,
+    },
 }
 
 impl StoreNodeSpec {
@@ -234,6 +244,7 @@ impl StoreNodeSpec {
             Self::LogicalQuota { child, .. } => vec![child],
             Self::Metrics { child } => vec![child],
             Self::Namespaced { child, .. } => vec![child],
+            Self::ProfileValidated { child, .. } => vec![child],
         }
     }
 
@@ -257,6 +268,7 @@ impl StoreNodeSpec {
             Self::LogicalQuota { .. } => StoreNodeKind::LogicalQuota,
             Self::Metrics { .. } => StoreNodeKind::Metrics,
             Self::Namespaced { .. } => StoreNodeKind::Namespaced,
+            Self::ProfileValidated { .. } => StoreNodeKind::ProfileValidated,
         }
     }
 }
@@ -307,6 +319,8 @@ pub enum StoreNodeKind {
     Metrics,
     /// Deployment-namespace authorization facade.
     Namespaced,
+    /// Authenticated object-profile validation facade.
+    ProfileValidated,
 }
 
 /// Non-sensitive operational description of one admitted graph node.
@@ -453,6 +467,7 @@ pub struct StoreGraph {
     metrics: BTreeMap<StoreNodeId, Arc<MetricsState>>,
     write_back: BTreeMap<StoreNodeId, Arc<WriteBackStore>>,
     namespace_authorizer: Option<Arc<dyn StoreNamespaceAuthorizer>>,
+    profile_validation: bool,
 }
 
 impl StoreGraph {
@@ -469,7 +484,9 @@ impl StoreGraph {
     pub fn build(config: StoreGraphConfig) -> Result<Self, StoreError> {
         let keys = StoreGraphKeyring::new();
         let authorizers = StoreGraphNamespaceAuthorizers::new();
-        let (graph, _admin) = Self::build_with_admin_and_capabilities(config, &keys, &authorizers)?;
+        let profilers = StoreGraphObjectProfilers::new();
+        let (graph, _admin) =
+            Self::build_with_admin_and_all_capabilities(config, &keys, &authorizers, &profilers)?;
         Ok(graph)
     }
 
@@ -487,7 +504,9 @@ impl StoreGraph {
         keys: &StoreGraphKeyring,
     ) -> Result<Self, StoreError> {
         let authorizers = StoreGraphNamespaceAuthorizers::new();
-        let (graph, _admin) = Self::build_with_admin_and_capabilities(config, keys, &authorizers)?;
+        let profilers = StoreGraphObjectProfilers::new();
+        let (graph, _admin) =
+            Self::build_with_admin_and_all_capabilities(config, keys, &authorizers, &profilers)?;
         Ok(graph)
     }
 
@@ -506,15 +525,18 @@ impl StoreGraph {
         authorizers: &StoreGraphNamespaceAuthorizers,
     ) -> Result<Self, StoreError> {
         let keys = StoreGraphKeyring::new();
-        let (graph, _admin) = Self::build_with_admin_and_capabilities(config, &keys, authorizers)?;
+        let profilers = StoreGraphObjectProfilers::new();
+        let (graph, _admin) =
+            Self::build_with_admin_and_all_capabilities(config, &keys, authorizers, &profilers)?;
         Ok(graph)
     }
 
-    /// Validates and constructs a graph with every external capability class.
+    /// Validates and constructs a graph with keys and namespace capabilities.
     ///
     /// Encryption keys and namespace authorizers are consulted only by nodes
-    /// that name them. Neither capability's secret or mutable policy state
-    /// enters the canonical graph configuration.
+    /// that name them. Object-profile nodes require
+    /// [`Self::build_with_all_capabilities`]. Neither supplied capability's
+    /// secret or mutable policy state enters the canonical graph configuration.
     ///
     /// # Errors
     ///
@@ -526,7 +548,29 @@ impl StoreGraph {
         keys: &StoreGraphKeyring,
         authorizers: &StoreGraphNamespaceAuthorizers,
     ) -> Result<Self, StoreError> {
-        let (graph, _admin) = Self::build_with_admin_and_capabilities(config, keys, authorizers)?;
+        let profilers = StoreGraphObjectProfilers::new();
+        let (graph, _admin) =
+            Self::build_with_admin_and_all_capabilities(config, keys, authorizers, &profilers)?;
+        Ok(graph)
+    }
+
+    /// Validates and constructs a graph with every external capability class.
+    ///
+    /// Object profilers derive classes from authenticated canonical bytes;
+    /// namespace policy and encryption key material remain operational.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Unauthorized`] when a required capability is
+    /// unavailable, or a graph/composition error when admission fails.
+    pub fn build_with_all_capabilities(
+        config: StoreGraphConfig,
+        keys: &StoreGraphKeyring,
+        authorizers: &StoreGraphNamespaceAuthorizers,
+        profilers: &StoreGraphObjectProfilers,
+    ) -> Result<Self, StoreError> {
+        let (graph, _admin) =
+            Self::build_with_admin_and_all_capabilities(config, keys, authorizers, profilers)?;
         Ok(graph)
     }
 
@@ -547,7 +591,8 @@ impl StoreGraph {
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         let keys = StoreGraphKeyring::new();
         let authorizers = StoreGraphNamespaceAuthorizers::new();
-        Self::build_with_admin_and_capabilities(config, &keys, &authorizers)
+        let profilers = StoreGraphObjectProfilers::new();
+        Self::build_with_admin_and_all_capabilities(config, &keys, &authorizers, &profilers)
     }
 
     /// Validates a keyed graph and returns physical maintenance authority.
@@ -564,15 +609,18 @@ impl StoreGraph {
         keys: &StoreGraphKeyring,
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         let authorizers = StoreGraphNamespaceAuthorizers::new();
-        Self::build_with_admin_and_capabilities(config, keys, &authorizers)
+        let profilers = StoreGraphObjectProfilers::new();
+        Self::build_with_admin_and_all_capabilities(config, keys, &authorizers, &profilers)
     }
 
-    /// Validates a graph with all external capabilities and returns physical
-    /// maintenance authority separately.
+    /// Validates a graph with keys and namespace capabilities and returns
+    /// physical maintenance authority separately.
     ///
     /// Namespace authorizers remain reachable only through namespaced logical
-    /// nodes. The returned administration value carries physical inventory and
-    /// deletion authority but no authorization credential or policy escape.
+    /// nodes. Object-profile nodes require
+    /// [`Self::build_with_admin_and_all_capabilities`]. The returned
+    /// administration value carries physical inventory and deletion authority
+    /// but no authorization credential or policy escape.
     ///
     /// # Errors
     ///
@@ -584,15 +632,39 @@ impl StoreGraph {
         keys: &StoreGraphKeyring,
         authorizers: &StoreGraphNamespaceAuthorizers,
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
+        let profilers = StoreGraphObjectProfilers::new();
+        Self::build_with_admin_and_all_capabilities(config, keys, authorizers, &profilers)
+    }
+
+    /// Validates a graph with all external capabilities and returns physical
+    /// maintenance authority separately.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Unauthorized`] when a required capability is
+    /// unavailable, or a graph/composition error when admission fails.
+    pub fn build_with_admin_and_all_capabilities(
+        config: StoreGraphConfig,
+        keys: &StoreGraphKeyring,
+        authorizers: &StoreGraphNamespaceAuthorizers,
+        profilers: &StoreGraphObjectProfilers,
+    ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         validate_structure(&config)?;
         validate_demands(&config)?;
         let configuration = StoreGraphConfigurationId::for_config(&config)?;
-        let namespace_authorizer = match config.nodes.get(&config.root) {
-            Some(StoreNodeSpec::Namespaced { namespace, .. }) => {
-                Some(authorizers.resolve(namespace)?)
-            }
-            _ => None,
-        };
+        let namespace_authorizer = config
+            .nodes
+            .values()
+            .find_map(|node| match node {
+                StoreNodeSpec::Namespaced { namespace, .. } => Some(namespace),
+                _ => None,
+            })
+            .map(|namespace| authorizers.resolve(namespace))
+            .transpose()?;
+        let profile_validation = config
+            .nodes
+            .values()
+            .any(|node| matches!(node, StoreNodeSpec::ProfileValidated { .. }));
 
         let mut state = GraphBuildState::default();
         let root = instantiate(
@@ -601,6 +673,7 @@ impl StoreGraph {
             &config.nodes,
             keys,
             authorizers,
+            profilers,
             &mut state,
         )?;
         validate_capability_edges(&config.nodes, &state.built)?;
@@ -626,6 +699,7 @@ impl StoreGraph {
                 metrics: state.metrics,
                 write_back: state.write_back,
                 namespace_authorizer,
+                profile_validation,
             },
             StoreGraphAdmin {
                 configuration,
@@ -722,6 +796,9 @@ impl StoreGraph {
         'nodes: for store in self.write_back.values() {
             while completed < maximum_transfers {
                 if !store.flush_one(&mut |id| {
+                    if self.profile_validation {
+                        self.root.read(id, None)?;
+                    }
                     self.authorize_namespace(StoreNamespaceOperation::Read, id)?;
                     self.authorize_namespace(StoreNamespaceOperation::Put, id)
                 })? {
@@ -753,6 +830,7 @@ impl WriteBackRetentionAdmin for StoreGraph {
         Ok(Box::new(StoreGraphWriteBackFence::acquire(
             &journals,
             self.namespace_authorizer.clone(),
+            self.profile_validation.then(|| self.root.clone()),
         )?))
     }
 }
@@ -826,16 +904,37 @@ fn validate_structure(config: &StoreGraphConfig) -> Result<(), StoreError> {
         .values()
         .filter(|node| matches!(node, StoreNodeSpec::Namespaced { .. }))
         .count();
-    if namespace_nodes != 0
-        && (namespace_nodes != 1
-            || !matches!(
-                config.nodes.get(&config.root),
-                Some(StoreNodeSpec::Namespaced { .. })
-            ))
-    {
+    let profile_nodes = config
+        .nodes
+        .values()
+        .filter(|node| matches!(node, StoreNodeSpec::ProfileValidated { .. }))
+        .count();
+    let mut boundary = &config.root;
+    let mut boundary_namespaces = 0_usize;
+    let mut boundary_profiles = 0_usize;
+    while let Some(node) = config.nodes.get(boundary) {
+        boundary = match node {
+            StoreNodeSpec::Namespaced { child, .. } => {
+                boundary_namespaces += 1;
+                child
+            }
+            StoreNodeSpec::ProfileValidated { child, .. } => {
+                boundary_profiles += 1;
+                child
+            }
+            _ => break,
+        };
+    }
+    if namespace_nodes > 1 || boundary_namespaces != namespace_nodes {
         return Err(invalid_graph(
             config.root.as_str(),
             GraphViolation::InvalidNamespaceBoundary,
+        ));
+    }
+    if profile_nodes > 1 || boundary_profiles != profile_nodes {
+        return Err(invalid_graph(
+            config.root.as_str(),
+            GraphViolation::InvalidProfileBoundary,
         ));
     }
     validate_administrative_paths(config)?;
@@ -1098,6 +1197,9 @@ fn validate_demands(config: &StoreGraphConfig) -> Result<(), StoreError> {
             StoreNodeSpec::Namespaced { child, .. } => {
                 extend_demand(child, &kinds, &mut demands, &mut queue);
             }
+            StoreNodeSpec::ProfileValidated { child, .. } => {
+                extend_demand(child, &kinds, &mut demands, &mut queue);
+            }
         }
     }
     for (id, node) in &config.nodes {
@@ -1148,6 +1250,7 @@ fn instantiate(
     nodes: &BTreeMap<StoreNodeId, StoreNodeSpec>,
     keys: &StoreGraphKeyring,
     authorizers: &StoreGraphNamespaceAuthorizers,
+    profilers: &StoreGraphObjectProfilers,
     state: &mut GraphBuildState,
 ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
     if let Some(backend) = state.built.get(id) {
@@ -1225,7 +1328,15 @@ fn instantiate(
         }
         StoreNodeSpec::Verified { child } => Arc::new(VerifiedStore::new(
             id.as_str(),
-            instantiate(configuration, child, nodes, keys, authorizers, state)?,
+            instantiate(
+                configuration,
+                child,
+                nodes,
+                keys,
+                authorizers,
+                profilers,
+                state,
+            )?,
         )),
         StoreNodeSpec::Routed { routes } => {
             let routes = routes
@@ -1233,7 +1344,15 @@ fn instantiate(
                 .map(|(kind, child)| {
                     Ok((
                         *kind,
-                        instantiate(configuration, child, nodes, keys, authorizers, state)?,
+                        instantiate(
+                            configuration,
+                            child,
+                            nodes,
+                            keys,
+                            authorizers,
+                            profilers,
+                            state,
+                        )?,
                     ))
                 })
                 .collect::<Result<BTreeMap<_, _>, StoreError>>()?;
@@ -1246,7 +1365,17 @@ fn instantiate(
         } => {
             let tiers = tiers
                 .iter()
-                .map(|child| instantiate(configuration, child, nodes, keys, authorizers, state))
+                .map(|child| {
+                    instantiate(
+                        configuration,
+                        child,
+                        nodes,
+                        keys,
+                        authorizers,
+                        profilers,
+                        state,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(TieredStore::new(
                 id.as_str(),
@@ -1257,13 +1386,39 @@ fn instantiate(
         }
         StoreNodeSpec::ReadThrough { cache, source } => Arc::new(ReadThroughStore::new(
             id.as_str(),
-            instantiate(configuration, cache, nodes, keys, authorizers, state)?,
-            instantiate(configuration, source, nodes, keys, authorizers, state)?,
+            instantiate(
+                configuration,
+                cache,
+                nodes,
+                keys,
+                authorizers,
+                profilers,
+                state,
+            )?,
+            instantiate(
+                configuration,
+                source,
+                nodes,
+                keys,
+                authorizers,
+                profilers,
+                state,
+            )?,
         )),
         StoreNodeSpec::WriteThrough { children } => {
             let children = children
                 .iter()
-                .map(|child| instantiate(configuration, child, nodes, keys, authorizers, state))
+                .map(|child| {
+                    instantiate(
+                        configuration,
+                        child,
+                        nodes,
+                        keys,
+                        authorizers,
+                        profilers,
+                        state,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(WriteThroughStore::new(id.as_str(), children)?)
         }
@@ -1276,8 +1431,24 @@ fn instantiate(
         } => {
             let store = Arc::new(WriteBackStore::new(
                 id.as_str(),
-                instantiate(configuration, staging, nodes, keys, authorizers, state)?,
-                instantiate(configuration, destination, nodes, keys, authorizers, state)?,
+                instantiate(
+                    configuration,
+                    staging,
+                    nodes,
+                    keys,
+                    authorizers,
+                    profilers,
+                    state,
+                )?,
+                instantiate(
+                    configuration,
+                    destination,
+                    nodes,
+                    keys,
+                    authorizers,
+                    profilers,
+                    state,
+                )?,
                 journal_root.clone(),
                 *maximum_pending_objects,
                 *maximum_pending_bytes,
@@ -1290,11 +1461,27 @@ fn instantiate(
             requirements,
         } => Arc::new(DurabilityPolicyStore::new(
             id.as_str(),
-            instantiate(configuration, child, nodes, keys, authorizers, state)?,
+            instantiate(
+                configuration,
+                child,
+                nodes,
+                keys,
+                authorizers,
+                profilers,
+                state,
+            )?,
             requirements.clone(),
         )),
         StoreNodeSpec::Metrics { child } => {
-            let child = instantiate(configuration, child, nodes, keys, authorizers, state)?;
+            let child = instantiate(
+                configuration,
+                child,
+                nodes,
+                keys,
+                authorizers,
+                profilers,
+                state,
+            )?;
             let (backend, metrics_state) = MetricsStore::new(id.as_str(), child);
             state.metrics.insert(id.clone(), metrics_state);
             Arc::new(backend)
@@ -1305,7 +1492,15 @@ fn instantiate(
             maximum_objects,
             maximum_logical_bytes,
         } => {
-            let child_backend = instantiate(configuration, child, nodes, keys, authorizers, state)?;
+            let child_backend = instantiate(
+                configuration,
+                child,
+                nodes,
+                keys,
+                authorizers,
+                profilers,
+                state,
+            )?;
             let child_admin = state.physical.remove(child).ok_or_else(|| {
                 invalid_graph(id.as_str(), GraphViolation::InvalidLogicalQuotaChild)
             })?;
@@ -1323,8 +1518,29 @@ fn instantiate(
         }
         StoreNodeSpec::Namespaced { child, namespace } => Arc::new(NamespacedStore::new(
             id.as_str(),
-            instantiate(configuration, child, nodes, keys, authorizers, state)?,
+            instantiate(
+                configuration,
+                child,
+                nodes,
+                keys,
+                authorizers,
+                profilers,
+                state,
+            )?,
             authorizers.resolve(namespace)?,
+        )),
+        StoreNodeSpec::ProfileValidated { child, policy } => Arc::new(ProfileValidatedStore::new(
+            id.as_str(),
+            instantiate(
+                configuration,
+                child,
+                nodes,
+                keys,
+                authorizers,
+                profilers,
+                state,
+            )?,
+            profilers.resolve(policy)?,
         )),
     };
     state.built.insert(id.clone(), backend.clone());

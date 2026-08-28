@@ -31,6 +31,7 @@ mod identity;
 mod merkle;
 mod model;
 mod object;
+mod object_profile;
 mod objective;
 mod observation;
 mod planner_service;
@@ -142,6 +143,7 @@ pub use model::{
     PolicyArtifact,
 };
 pub use object::{CampaignRecordKind, ChildReference, ObjectEnvelope};
+pub use object_profile::{CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignObjectProfiler};
 pub use objective::{
     FixedReward, MAX_LEXICOGRAPHIC_COMPONENT_VISITS, MAX_PARETO_COMPONENT_VISITS,
     MAX_SURVIVOR_CANDIDATES, MAX_SURVIVOR_EVIDENCE_BYTES, MAX_WEIGHTED_RANKING_BYTE_VISITS,

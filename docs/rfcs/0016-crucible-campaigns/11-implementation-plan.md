@@ -1425,9 +1425,20 @@ absent from identity and introspection, and the separate physical
 administration capability does not expose the authorizer. Tests cover namespace
 grammar, capability mismatch and duplication, denial before child access, all
 three operation classes, identity sensitivity, and path-free introspection.
-Canonical object-profile sensitivity and retention validation, broader layered
-transforms, physical-filesystem quota, and S3 remain open; therefore T-CAM-5.5
-is not checked by this checkpoint.
+The graph now also admits a version-eight authenticated object-profile boundary.
+It binds a non-secret policy ID into graph identity and resolves a separate
+profiler capability that derives exact kind, length, sensitivity,
+reconstructibility, and retention role from authenticated bytes or an opaque
+content-ID kind. The concrete campaign profiler validates record-specific
+envelopes and applies the closed v1 mapping without caller hints. Full-object
+profile derivation precedes child puts and returned reads, `contains` proves
+authenticated presence, and deferred transfer plus pending-root inventory
+repeat the same validation. Profile and namespace boundaries compose only as
+the unary root prefix. Tests cover policy grammar/capability binding, identity
+sensitivity, buried-boundary rejection, wrong-kind profiler output, range
+reads, denied puts, and combined namespace/profile operation.
+Broader layered transforms, physical-filesystem quota, and S3 remain open;
+therefore T-CAM-5.5 is not checked by this checkpoint.
 
 The packed leaf now provides immutable bounded multi-object pack files, a
 checksummed persistent logical index with monotonic generations, full logical
@@ -1981,7 +1992,7 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `LAZY-1..51` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
-| `CSTORE-1..26` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
+| `CSTORE-1..27` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
 | `CAPI-1..14` | 8 | CLI/API contracts, continuity, campaign replay |
 | `CMEAS-1..14` | 3, 8 | campaign model, replay, ABI conformance |
 | `CSEC-1..12` | 1–9 | license boundary, ABI conformance, isolation, store equivalence |
