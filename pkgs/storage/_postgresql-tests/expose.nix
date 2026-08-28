@@ -32,6 +32,8 @@ in
         ${self.expose}/units/postgresql.service
       ${pkgs.grep}/bin/grep -q '^ExecStart=.*-- /bin/postgresql-control prepare$' \
         ${self.expose}/units/postgresql-init.service
+      ${pkgs.grep}/bin/grep -qx 'RuntimeDirectory=postgresql' \
+        ${self.expose}/units/postgresql-init.service
       if ${pkgs.grep}/bin/grep -Fq 'postgresql-control prepare' \
         ${self.expose}/units/postgresql.service; then
         echo "bootstrap preparation must not run inside the long-lived PostgreSQL unit" >&2

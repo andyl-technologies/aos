@@ -298,6 +298,11 @@ in
           DynamicUser = true;
           StateDirectory = "aos-pkg-postgresql";
           StateDirectoryMode = "0700";
+          # The package-wide Landlock policy includes the server socket path;
+          # create it for the init unit as well so policy setup is fail-closed
+          # rather than depending on the later server unit to create it.
+          RuntimeDirectory = "postgresql";
+          RuntimeDirectoryMode = "0755";
           UMask = "0077";
           EnvironmentFile = "/etc/aos/packages/postgresql/service.env";
           ExecCondition = "/bin/postgresql-control enabled";
