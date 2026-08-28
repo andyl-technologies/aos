@@ -2150,6 +2150,36 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   reconstructs child descriptors, block graphs, or branch-private overlays;
   proof bits 7 and 8 remain clear, the coordinator rolls back as blocked, and
   no process fork is authorized.
+
+### crucible-authenticate-fault-result-payloads — bind results to payloads
+
+- **Patch:** `0133-crucible-authenticate-fault-result-payloads.patch`.
+- **Enforces:** [QFP-RESULT], [FAULT-ORDER].
+- **Mechanism:** every queued fault result hashes the exact payload retained
+  beside it, including prepare-time rejection evidence. The host authenticates
+  that evidence before classifying an unsupported typed request as a rejection.
+- **Micro-test:** the production live hardware gate submits an unsupported APIC
+  read-error request, requires an authenticated typed rejection payload, and
+  proves the adapter preserves transaction ownership rather than reporting a
+  fatal malformed result.
+- **Inertness:** successful result payloads retain their existing bytes and
+  semantics; this patch only makes their already-present evidence hash cover
+  the retained payload uniformly.
+- **Risk:** F.
+
+### crucible-clock-impulse-read-error-policies — retain clock policy
+
+- **Patch:** `0134-crucible-clock-impulse-read-error-policies.patch`.
+- **Enforces:** [QFP-CLOCK-TRANSFORM], [QFP-CLOCK-SOURCE], [FAULT-ORDER].
+- **Mechanism:** clock VMState version 4 persists effective impulse
+  monotonicity and overdue-timer policy, and x86 TSC reads raise deterministic
+  `#GP` while the selected source is in read-error state. Internal clock
+  projections continue from the last valid source value.
+- **Micro-test:** the production live hardware matrix exercises drift and jump
+  impulse policy, an x86 TSC read-error transition, recovery, and fresh-process
+  restore while the VMState gate pins `CRUCCVS4` encode/decode symmetry.
+- **Inertness:** clocks without an active impulse retain the existing default
+  policy, and sources outside read-error state follow their prior read path.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

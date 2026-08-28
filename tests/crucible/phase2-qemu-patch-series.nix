@@ -923,6 +923,20 @@
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "while the retained block graph and drain barriers are quiescent, the template coordinator binds every writable rooted backend to an exact guest-allocation-empty active overlay over an immediate read-only snapshot, with exact backend, node, content, size, backend-generation, and graph-generation identity, and acknowledges immutable writable-root proof bit 5; branch-private child overlay reconstruction remains open";
     }
+    {
+      file = "0133-crucible-authenticate-fault-result-payloads.patch";
+      catalogName = "crucible-authenticate-fault-result-payloads";
+      class = "F";
+      enforces = "QFP-RESULT,FAULT-ORDER";
+      capability = "every queued fault result authenticates the exact payload retained beside it, including prepare-time rejection evidence, so the host can classify a typed rejection without losing transaction ownership";
+    }
+    {
+      file = "0134-crucible-clock-impulse-read-error-policies.patch";
+      catalogName = "crucible-clock-impulse-read-error-policies";
+      class = "F";
+      enforces = "QFP-CLOCK-TRANSFORM,QFP-CLOCK-SOURCE,FAULT-ORDER";
+      capability = "impulse clock transforms retain their effective monotonicity and overdue-timer policies in versioned clock VMState, while an x86 TSC read-error transition raises a deterministic guest #GP and internal projections retain the last source value";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

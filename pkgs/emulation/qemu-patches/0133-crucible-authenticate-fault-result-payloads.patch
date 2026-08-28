@@ -1,0 +1,46 @@
+diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
+index 58db41c19..6b0ff2443 100644
+--- a/plugins/crucible-fault.c
++++ b/plugins/crucible-fault.c
+@@ -425,6 +425,17 @@ static void crucible_fault_result_rejected(
+     result->capability_version = 1;
+ }
+ 
++static void crucible_fault_payload_sha256(const GByteArray *payload,
++                                          uint8_t digest[32])
++{
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    gsize digest_len = 32;
++
++    g_checksum_update(checksum, payload->data, payload->len);
++    g_checksum_get_digest(checksum, digest, &digest_len);
++    g_assert(digest_len == 32);
++}
++
+ static void crucible_fault_queue_result(
+     const struct qemu_plugin_crucible_fault_result *result,
+     GByteArray *payload)
+@@ -435,21 +446,12 @@ static void crucible_fault_queue_result(
+     completed = g_new0(CrucibleCompletedFault, 1);
+     completed->result = *result;
+     completed->payload = payload ? payload : g_byte_array_new();
++    crucible_fault_payload_sha256(
++        completed->payload, completed->result.evidence_hash);
+     QTAILQ_INSERT_TAIL(&crucible_completed_faults, completed, link);
+     crucible_completed_count++;
+ }
+ 
+-static void crucible_fault_payload_sha256(const GByteArray *payload,
+-                                          uint8_t digest[32])
+-{
+-    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
+-    gsize digest_len = 32;
+-
+-    g_checksum_update(checksum, payload->data, payload->len);
+-    g_checksum_get_digest(checksum, digest, &digest_len);
+-    g_assert(digest_len == 32);
+-}
+-
+ void qemu_crucible_fault_complete_deferred(
+     const QemuCrucibleFaultRule *rule, uint64_t observed_icount,
+     uint64_t applied_icount, const uint8_t before_hash[32],

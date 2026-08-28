@@ -38,6 +38,14 @@ mod plan;
 #[cfg(target_os = "linux")]
 use plan::{accelerator_target, fault_hardware_plan};
 #[cfg(target_os = "linux")]
+#[path = "crucible_qemu_live_fault_hardware/matrix.rs"]
+mod matrix;
+#[cfg(target_os = "linux")]
+#[path = "crucible_qemu_live_fault_hardware/matrix_plan.rs"]
+mod matrix_plan;
+#[cfg(target_os = "linux")]
+use matrix::run_hardware_variant_matrix;
+#[cfg(target_os = "linux")]
 #[path = "crucible_qemu_live_fault_hardware/support.rs"]
 mod support;
 #[cfg(target_os = "linux")]
@@ -75,6 +83,7 @@ fn run() -> Result<(), String> {
     }
 
     let capture_directory = run_directory.join("capture");
+    let matrix_directory = run_directory.join("matrix");
     let restore_directory = run_directory.join("restore");
     fs::create_dir_all(&capture_directory)
         .map_err(|error| format!("create capture directory: {error}"))?;
@@ -89,6 +98,8 @@ fn run() -> Result<(), String> {
             .with_accelerator()
             .with_console_capture()
             .with_second_run_scheduler_preemption(false);
+    let hardware_variant_cases = run_hardware_variant_matrix(&config, &matrix_directory)?;
+    println!("typed_rejection_payload_authenticated=true");
     let mut node = launch_qemu_live_node(
         &config,
         &capture_directory,
@@ -578,6 +589,9 @@ fn run() -> Result<(), String> {
     println!("accelerator_service_occurrences={accelerator_service_occurrences}");
     println!("fresh_plugin_restore=true");
     println!("orderly_child_exit=true");
+    for case in hardware_variant_cases {
+        println!("hardware_variant_case={case}");
+    }
     println!(
         "production_effect_row=clock.transform|offset-monotonic-overdue|gate:live-fault-hardware|production-qemu-signal-runtime|raw+transformed+timer-state"
     );
