@@ -3478,12 +3478,31 @@ impl Database {
             .transpose()?
             .unwrap_or(0);
         let target = MIGRATIONS.len() as i64;
-        if current != 0 {
-            self.require_schema_identity_for_upgrade((current as usize) < MIGRATIONS.len())
-                .await?;
-        }
+        let legacy_identity = if current == 0 {
+            false
+        } else {
+            self.require_schema_identity_for_upgrade(true).await?
+        };
         if current > target {
             bail!("hub database schema {current} is newer than this build supports ({target})");
+        }
+        if current == target && legacy_identity {
+            let migration = MIGRATIONS
+                .last()
+                .context("current schema has no identity-adoption migration")?;
+            for sql in crate::backend::split_statements(migration) {
+                let sql = if mysql {
+                    mysql_replay_safe_migration_sql(&sql)
+                } else {
+                    sql
+                };
+                self.backend
+                    .execute(&sql, &[])
+                    .await
+                    .context("applying schema identity-adoption migration")?;
+            }
+            self.require_schema_identity().await?;
+            return Ok(());
         }
         // Apply every pending migration *and* advance the version marker in one
         // portable transaction. Keeping the marker in the same batch matters
@@ -3592,12 +3611,14 @@ impl Database {
     /// Refuses a database that was not produced by the topology hard-cutover
     /// schema or its offline transformer.
     async fn require_schema_identity(&self) -> Result<()> {
-        self.require_schema_identity_for_upgrade(false).await
+        self.require_schema_identity_for_upgrade(false)
+            .await
+            .map(|_| ())
     }
 
     /// Accepts the immediately preceding schema identity only when a pending
     /// migration will atomically replace it with the current identity.
-    async fn require_schema_identity_for_upgrade(&self, allow_legacy: bool) -> Result<()> {
+    async fn require_schema_identity_for_upgrade(&self, allow_legacy: bool) -> Result<bool> {
         let row = self
             .backend
             .query_opt("SELECT identity FROM hub_schema_identity", &[])
@@ -3611,7 +3632,7 @@ impl Database {
         if identity != SCHEMA_IDENTITY && !(allow_legacy && identity == LEGACY_SCHEMA_IDENTITY) {
             bail!("unsupported Hub schema identity '{identity}'; expected '{SCHEMA_IDENTITY}'");
         }
-        Ok(())
+        Ok(identity == LEGACY_SCHEMA_IDENTITY)
     }
 
     // -- system of record ---------------------------------------------------
@@ -25963,6 +25984,36 @@ source_nar_hash = ""
             })
             .unwrap();
         assert_eq!(identity, SCHEMA_IDENTITY);
+    }
+
+    #[tokio::test]
+    async fn migrate_repairs_the_known_schema_version_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("topology-v1.db");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE schema_version(version INTEGER NOT NULL);")
+            .unwrap();
+        for migration in MIGRATIONS {
+            connection.execute_batch(migration).unwrap();
+        }
+        connection
+            .execute(
+                "UPDATE hub_schema_identity SET identity = ?1",
+                [LEGACY_SCHEMA_IDENTITY],
+            )
+            .unwrap();
+        connection
+            .execute_batch(&format!(
+                "DELETE FROM schema_version;
+                 INSERT INTO schema_version(version) VALUES ({});",
+                MIGRATIONS.len()
+            ))
+            .unwrap();
+        drop(connection);
+
+        let db = Database::open(&path).await.unwrap();
+        db.require_schema_identity().await.unwrap();
     }
 
     #[test]
