@@ -316,7 +316,6 @@ pub use packaged_qemu_executor::{
     AttachedPackagedQemuExecutor, MAX_PACKAGED_SCENARIO_CATALOG_BYTES, PackagedQemuExecutor,
     PackagedQemuExecutorCompletion, PackagedQemuExecutorConfig, PackagedQemuExecutorConfigError,
     PackagedQemuExecutorError, PackagedQemuExecutorJoinError, PackagedQemuExecutorStartError,
-    prepare_packaged_qemu_executor,
 };
 #[cfg(target_os = "linux")]
 pub use paused_checkpoint_promotion::{

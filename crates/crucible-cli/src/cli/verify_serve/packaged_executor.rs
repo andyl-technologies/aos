@@ -117,7 +117,6 @@ pub(super) fn prepare_cli_packaged_executor(
         endpoint,
         crucible_daemon::ExecutorLoopbackServerConfig::default(),
         state.join("executor-ledger"),
-        state.join("executor-checkpoints"),
         deployment.maximum_checkpoint_bytes,
         daemon_epoch,
         capacity,

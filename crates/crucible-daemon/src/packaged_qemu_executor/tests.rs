@@ -151,7 +151,6 @@ fn config(directory: &tempfile::TempDir, worker_count: usize) -> PackagedQemuExe
         endpoint,
         ExecutorLoopbackServerConfig::default(),
         directory.path().join("ledger"),
-        directory.path().join("checkpoints"),
         1024 * 1024,
         DaemonEpoch::from_bytes([0x61; 16]).expect("daemon epoch"),
         ExecutorCapacity::new(2, 2, 512 * 1024 * 1024, 1024 * 1024 * 1024, 50_000)
@@ -180,6 +179,10 @@ fn packaged_executor_serves_the_exact_composed_description_and_joins() {
     ));
     let service = compose_packaged_qemu_executor(
         repository,
+        Arc::new(crucible_cas::content_store::DirectoryBlobBackend::new(
+            "packaged-executor-checkpoints",
+            directory.path().join("shared-store"),
+        )),
         profile(),
         scenario_artifact(),
         config,
@@ -222,6 +225,10 @@ fn packaged_executor_advertises_exact_restore_with_one_owner_per_worker() {
     ));
     let service = compose_packaged_qemu_executor_with_checkpoint_promotions(
         repository,
+        Arc::new(crucible_cas::content_store::DirectoryBlobBackend::new(
+            "packaged-executor-promoted-checkpoints",
+            directory.path().join("shared-store"),
+        )),
         PackagedCampaignBasis {
             profile: profile(),
             scenarios: BTreeSet::from([scenario_artifact()]),
@@ -262,7 +269,6 @@ fn packaged_executor_config_rejects_workers_beyond_slots() {
         config(&directory, 1).endpoint.clone(),
         ExecutorLoopbackServerConfig::default(),
         directory.path().join("ledger-overflow"),
-        directory.path().join("checkpoints-overflow"),
         1,
         DaemonEpoch::from_bytes([0x62; 16]).expect("daemon epoch"),
         ExecutorCapacity::new(1, 1, 1, 0, 1).expect("capacity"),
@@ -286,7 +292,6 @@ fn packaged_executor_config_rejects_an_empty_campaign_set() {
         fixture.endpoint.clone(),
         ExecutorLoopbackServerConfig::default(),
         directory.path().join("ledger-empty"),
-        directory.path().join("checkpoints-empty"),
         1,
         DaemonEpoch::from_bytes([0x63; 16]).expect("daemon epoch"),
         ExecutorCapacity::new(1, 1, 1, 0, 1).expect("capacity"),
@@ -435,7 +440,6 @@ fn invalid_campaign_fails_before_operational_owner_mutation() {
     let directory = tempfile::tempdir().expect("packaged executor directory");
     let config = config(&directory, 1);
     let ledger = config.ledger_root().to_owned();
-    let checkpoints = config.checkpoint_root().to_owned();
     let socket = config.endpoint().path().to_owned();
     let repository = Arc::new(CampaignRepository::new(
         Arc::new(crucible_cas::content_store::MemoryBlobBackend::new(
@@ -445,13 +449,16 @@ fn invalid_campaign_fails_before_operational_owner_mutation() {
         Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
     ));
 
-    let error = match prepare_packaged_qemu_executor(repository, config) {
+    let checkpoint_backend = Arc::new(crucible_cas::content_store::MemoryBlobBackend::new(
+        "invalid-campaign-checkpoints",
+        1024 * 1024,
+    ));
+    let error = match prepare_packaged_qemu_executor(repository, checkpoint_backend, config) {
         Ok(_) => panic!("missing campaign must fail before executor preparation"),
         Err(error) => error,
     };
     assert!(matches!(error, PackagedQemuExecutorError::Repository(_)));
     assert!(!ledger.exists());
-    assert!(!checkpoints.exists());
     assert!(!socket.exists());
 }
 
@@ -461,17 +468,19 @@ fn invalid_scenario_fails_before_operational_owner_mutation() {
     let mut config = config(&directory, 1);
     config.campaigns = BTreeSet::from([CampaignName::new("invalid").expect("campaign name")]);
     let ledger = config.ledger_root().to_owned();
-    let checkpoints = config.checkpoint_root().to_owned();
     let socket = config.endpoint().path().to_owned();
     let repository = repository_with_campaigns(&[("invalid", b"not-crucible", "qemu-test")]);
 
-    let error = match prepare_packaged_qemu_executor(repository, config) {
+    let checkpoint_backend = Arc::new(crucible_cas::content_store::MemoryBlobBackend::new(
+        "invalid-scenario-checkpoints",
+        1024 * 1024,
+    ));
+    let error = match prepare_packaged_qemu_executor(repository, checkpoint_backend, config) {
         Ok(_) => panic!("invalid scenario must fail before executor preparation"),
         Err(error) => error,
     };
     assert!(matches!(error, PackagedQemuExecutorError::Artifact(_)));
     assert!(!ledger.exists());
-    assert!(!checkpoints.exists());
     assert!(!socket.exists());
 }
 
