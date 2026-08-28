@@ -1377,11 +1377,12 @@ impl DomainProbeController {
     /// Claims and executes at most `limit` due domain probes.
     pub async fn run_due(&self, limit: usize) -> Result<usize> {
         const LEASE_SECONDS: i64 = 120;
+        let mut completed = reconcile_colocated_write_authorities(&self.db, limit).await?;
+        let remaining = limit.saturating_sub(completed);
         let due = self
             .db
-            .due_domain_probe_operations(clock::now_unix_secs() - LEASE_SECONDS, limit)
+            .due_domain_probe_operations(clock::now_unix_secs() - LEASE_SECONDS, remaining)
             .await?;
-        let mut completed = 0;
         for operation in due {
             let Some(claimed) = self
                 .db
@@ -2470,6 +2471,61 @@ impl DomainProbeController {
         }
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("domain probe did not run")))
     }
+}
+
+/// Confirms pending authority moves that remain on one physical binding.
+///
+/// A same-binding move changes only the Hub-selected placement prefix. The
+/// guarded authority CAS is therefore the physical fencing operation: no
+/// external provider has a writer lease or policy to update. Cross-binding
+/// moves remain pending for an authenticated external controller report.
+pub(crate) async fn reconcile_colocated_write_authorities(
+    db: &Database,
+    limit: usize,
+) -> Result<usize> {
+    let pending = db.pending_surface_write_authorities(limit).await?;
+    let mut reconciled = 0;
+    for authority in pending {
+        let Some(observed_id) = authority.observed_placement_id else {
+            continue;
+        };
+        let desired = db
+            .surface_placement(authority.desired_placement_id)
+            .await?
+            .context("pending write-authority desired placement disappeared")?;
+        let observed = db
+            .surface_placement(observed_id)
+            .await?
+            .context("pending write-authority observed placement disappeared")?;
+        if desired.binding_id != observed.binding_id {
+            continue;
+        }
+        match db
+            .confirm_surface_write_authority(
+                authority.id,
+                authority.resource_version,
+                authority.desired_generation,
+            )
+            .await
+        {
+            Ok(_) => reconciled += 1,
+            Err(error) => {
+                let current = db.surface_write_authority_by_id(authority.id).await?;
+                if current.as_ref().is_some_and(|current| {
+                    current.resource_version != authority.resource_version
+                        || current.reconciliation_state != "pending"
+                }) {
+                    tracing::info!(
+                        authority_id = authority.id,
+                        "write-authority generation was superseded during reconciliation"
+                    );
+                } else {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    Ok(reconciled)
 }
 
 async fn measure_domain_once(

@@ -711,6 +711,22 @@ pub struct CacheObjectPresenceObservation {
     pub observed_at: i64,
 }
 
+/// One provider listing identity staged without retaining object bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheInventoryListedObject {
+    /// Surface-relative object key.
+    pub object_key: String,
+    /// Lowercase hexadecimal SHA-256 derived or safely reused for the bytes.
+    pub observed_sha256: String,
+    /// Observed representation size.
+    pub observed_size: i64,
+    /// Provider-issued strong version identifier, when available.
+    pub etag: Option<String>,
+}
+
+/// Maximum listing identities persisted by one inventory transaction.
+pub const MAX_CACHE_INVENTORY_LISTED_OBJECT_BATCH: usize = 256;
+
 /// Normalized narinfo metadata staged under one unpublished inventory generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheInventoryNarinfoCandidate {
@@ -2856,6 +2872,29 @@ impl Database {
             .context("first-sweep acknowledgement is stale, expired, or mismatched")?;
         let cache_id: i64 = row.get(0)?;
         let expected_epoch: i64 = row.get(1)?;
+        if self
+            .backend
+            .query_opt(
+                "SELECT placement.name
+                 FROM surface_placement_effective placement
+                 LEFT JOIN bindings binding ON binding.id = placement.binding_id
+                 LEFT JOIN binding_write_revisions revision
+                   ON revision.binding_id = placement.binding_id
+                  AND revision.revision = placement.authority_observed_binding_write_revision
+                 WHERE placement.cache_id = ?1
+                   AND (COALESCE(binding.kind, '') = 'r2'
+                     OR placement.requires_conditional_writes <> 1
+                     OR COALESCE(revision.conditional_writes_supported, 0) <> 1)
+                 LIMIT 1",
+                &vals![cache_id],
+            )
+            .await?
+            .is_some()
+        {
+            bail!(
+                "cache has a placement that cannot enforce identity-checked deletion; migrate it to a validated S3 binding before enabling destructive GC"
+            );
+        }
         let statements = [
             Statement::new(
                 "UPDATE cache_gc_first_sweep_acknowledgements
@@ -5130,46 +5169,90 @@ impl Database {
         observed_size: i64,
         etag: Option<&str>,
     ) -> Result<()> {
+        self.stage_cache_inventory_listed_objects(
+            cache_id,
+            generation,
+            placement_id,
+            owner_token,
+            &[CacheInventoryListedObject {
+                object_key: object_key.to_string(),
+                observed_sha256: observed_sha256.to_string(),
+                observed_size,
+                etag: etag.map(str::to_string),
+            }],
+        )
+        .await
+    }
+
+    /// Stages one bounded page of listed byte identities atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an oversized or malformed page, duplicate keys, a
+    /// missing placement scan, a non-building generation, or persistence
+    /// failure.
+    pub async fn stage_cache_inventory_listed_objects(
+        &self,
+        cache_id: i64,
+        generation: i64,
+        placement_id: i64,
+        owner_token: &str,
+        objects: &[CacheInventoryListedObject],
+    ) -> Result<()> {
         validate_stable_key(owner_token, "cache inventory owner token")?;
-        if cache_id <= 0
-            || generation <= 0
-            || placement_id <= 0
-            || object_key.is_empty()
-            || object_key.len() > 512
-            || observed_sha256.len() != 64
-            || observed_size < 0
-        {
+        if cache_id <= 0 || generation <= 0 || placement_id <= 0 {
             bail!("cache inventory listed-object evidence is invalid");
         }
-        self.backend
-            .checked_batch(&[Statement::new(
+        if objects.len() > MAX_CACHE_INVENTORY_LISTED_OBJECT_BATCH {
+            bail!("cache inventory listed-object page exceeds its bound");
+        }
+        let mut keys = BTreeSet::new();
+        for object in objects {
+            if object.object_key.is_empty()
+                || object.object_key.len() > 512
+                || object.observed_sha256.len() != 64
+                || !object
+                    .observed_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                || object.observed_size < 0
+                || !keys.insert(object.object_key.as_str())
+            {
+                bail!("cache inventory listed-object evidence is invalid");
+            }
+        }
+
+        let mut statements = Vec::with_capacity(objects.len() + 1);
+        statements.push(CheckedStatement::exact(
+            "UPDATE cache_inventory_placement_scans
+                SET selected_at = selected_at
+              WHERE cache_id = ?1 AND generation = ?2 AND placement_id = ?3
+                AND completed_at IS NULL
+                AND EXISTS (SELECT 1 FROM cache_inventory_generations inventory
+                    WHERE inventory.cache_id = ?1 AND inventory.generation = ?2
+                      AND inventory.state = 'building' AND inventory.owner_token = ?4)",
+            vals![cache_id, generation, placement_id, owner_token].to_vec(),
+            1,
+        ));
+        statements.extend(objects.iter().map(|object| {
+            CheckedStatement::unchecked(
                 "INSERT INTO cache_inventory_listed_objects
-                   (cache_id, generation, placement_id, object_key,
-                    observed_sha256, observed_size, etag)
-                 SELECT ?1, ?2, placement.id, ?4, ?5, ?6, ?7
-                 FROM surface_placements placement
-                 JOIN cache_inventory_generations inventory
-                   ON inventory.cache_id = ?1 AND inventory.generation = ?2
-                 JOIN cache_inventory_placement_scans scan
-                   ON scan.cache_id = inventory.cache_id
-                  AND scan.generation = inventory.generation
-                  AND scan.placement_id = placement.id
-                 WHERE placement.id = ?3 AND placement.cache_id = ?1
-                   AND inventory.state = 'building' AND inventory.owner_token = ?8
-                   AND scan.completed_at IS NULL",
+                    (cache_id, generation, placement_id, object_key,
+                     observed_sha256, observed_size, etag)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 vals![
                     cache_id,
                     generation,
                     placement_id,
-                    object_key,
-                    observed_sha256,
-                    observed_size,
-                    etag,
-                    owner_token
-                ],
+                    object.object_key.as_str(),
+                    object.observed_sha256.as_str(),
+                    object.observed_size,
+                    object.etag.as_deref()
+                ]
+                .to_vec(),
             )
-            .expecting(1)])
-            .await
+        }));
+        self.backend.checked_batch(&statements).await
     }
 
     /// Reads previously staged listing evidence without loading an object body.
@@ -7700,7 +7783,7 @@ impl Database {
         let subscription_id: i64 = refresh.get(3)?;
         let mut statements = vec![
             Statement::new(
-                "UPDATE cache_retention_refreshes
+                "UPDATE cache_retention_refreshes AS refresh
                  SET state = 'complete', actual_reason_count = (
                        SELECT COUNT(*) FROM cache_root_reasons
                        WHERE refresh_id = ?1),
@@ -7709,24 +7792,25 @@ impl Database {
                        FROM cache_retention_subscriptions
                        WHERE id = subscription_id),
                      finished_at = ?2
-                 WHERE refresh_id = ?1 AND state = 'building'
-                   AND expected_reason_count = (SELECT COUNT(*)
+                 WHERE refresh.refresh_id = ?1 AND refresh.state = 'building'
+                   AND refresh.expected_reason_count = (SELECT COUNT(*)
                      FROM cache_root_reasons WHERE refresh_id = ?1)
                    AND EXISTS (SELECT 1 FROM cache_retention_subscriptions sub
                      LEFT JOIN cache_retention_refresh_heads head
                        ON head.subscription_id = sub.id
                      JOIN registry_index idx ON idx.registry_id = sub.registry_id
-                     WHERE sub.id = subscription_id
-                       AND sub.cache_id = cache_id AND sub.registry_id = registry_id
-                       AND sub.resource_version = expected_subscription_version
-                       AND sub.selector_digest = selector_digest
-                       AND idx.last_indexed_commit = registry_source_revision
-                       AND idx.generation = registry_index_generation
-                       AND idx.content_digest = registry_index_digest
+                     WHERE sub.id = refresh.subscription_id
+                       AND sub.cache_id = refresh.cache_id
+                       AND sub.registry_id = refresh.registry_id
+                       AND sub.resource_version = refresh.expected_subscription_version
+                       AND sub.selector_digest = refresh.selector_digest
+                       AND idx.last_indexed_commit = refresh.registry_source_revision
+                       AND idx.generation = refresh.registry_index_generation
+                       AND idx.content_digest = refresh.registry_index_digest
                        AND sub.enabled = 1 AND sub.retired_at IS NULL
-                       AND (head.current_refresh_id = expected_parent_refresh_id
+                       AND (head.current_refresh_id = refresh.expected_parent_refresh_id
                          OR (head.current_refresh_id IS NULL
-                           AND expected_parent_refresh_id IS NULL)))",
+                           AND refresh.expected_parent_refresh_id IS NULL)))",
                 vals![refresh_id, activated_at],
             )
             .expecting(1),
@@ -9438,6 +9522,31 @@ impl Database {
             )
             .unchecked();
             self.backend.checked_batch(&[closure]).await?;
+            if let Some(missing_root) = self
+                .backend
+                .query_opt(
+                    "SELECT root.store_hash
+                     FROM cache_gc_generation_roots root
+                     LEFT JOIN cache_objects object
+                       ON object.cache_id = root.cache_id
+                      AND object.store_hash = root.store_hash
+                      AND object.lifecycle_state = 'active'
+                     WHERE root.cache_id = ?1 AND root.generation_id = ?2
+                       AND object.id IS NULL
+                     ORDER BY root.store_hash LIMIT 1",
+                    &vals![cache_id, generation_id],
+                )
+                .await?
+            {
+                let store_hash: String = missing_root.get(0)?;
+                let detail = format!(
+                    "cache GC closure is incomplete: retained root '{store_hash}' is absent from the active cache inventory"
+                );
+                let _ = self
+                    .fail_cache_gc_generation(cache_id, &generation_id, &detail, now)
+                    .await;
+                bail!(detail);
+            }
             if let Err(error) = self
                 .complete_cache_gc_generation(cache_id, &generation_id, now)
                 .await
@@ -9944,7 +10053,7 @@ fn quota_reservation_statements(
     .expecting(1)]
 }
 
-fn row_to_cache_write_ticket(row: &Row) -> Result<CacheWriteTicketRecord> {
+pub(super) fn row_to_cache_write_ticket(row: &Row) -> Result<CacheWriteTicketRecord> {
     Ok(CacheWriteTicketRecord {
         ticket_id: row.get(0)?,
         cache_id: row.get(1)?,
@@ -12106,6 +12215,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gc_plan_reports_a_retained_root_missing_from_inventory() {
+        let db = gc_fixture().await;
+        db.create_manual_retention_root_topology(&CreateManualRetentionRoot {
+            root_id: "missing-plan-root".into(),
+            reason_id: "missing-plan-reason".into(),
+            cache_id: 1,
+            store_hash: "missing123".into(),
+            reason: "prove planner diagnostic".into(),
+            actor: "user:1".into(),
+            actor_kind: "user".into(),
+            actor_id: 1,
+            lease_id: None,
+            lease_expires_at: None,
+            expected_epoch: 0,
+            mutation_id: "root-mutation".into(),
+            now: 100,
+        })
+        .await
+        .unwrap();
+
+        let error = db
+            .build_cache_gc_plan_topology(
+                1,
+                "actor-scope",
+                "user:1",
+                "missing-root-plan",
+                "request-digest",
+                110,
+                1_010,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("retained root 'missing123' is absent from the active cache inventory"));
+    }
+
+    #[tokio::test]
     async fn placement_change_cannot_cross_a_mark_generation() {
         let db = gc_fixture().await;
         db.backend
@@ -12174,6 +12322,101 @@ mod tests {
             .get(0)
             .unwrap();
         assert_eq!(state, "building");
+    }
+
+    #[tokio::test]
+    async fn completing_retention_refresh_uses_captured_subscription_and_index() {
+        let db = gc_fixture().await;
+        db.backend
+            .batch(&[
+                Statement::new(
+                    "INSERT INTO authorization_scopes
+                     (scope_key, kind, org_id, parent_scope_key, resource_stable_id, created_at)
+                     VALUES ('registry:00000000000000000000000000000007', 'registry',
+                             NULL, 'instance',
+                             'registry:00000000000000000000000000000007', 1)",
+                    vec![],
+                ),
+                Statement::new(
+                    "INSERT INTO authorization_scope_ancestors
+                     (descendant_scope_key, ancestor_scope_key, depth)
+                     VALUES
+                       ('registry:00000000000000000000000000000007',
+                        'registry:00000000000000000000000000000007', 0),
+                       ('registry:00000000000000000000000000000007', 'instance', 1)",
+                    vec![],
+                ),
+                Statement::new(
+                    "INSERT INTO registries
+                     (id, stable_id, slug, created_at, scope_key, owner_scope_key)
+                     VALUES (7, 'registry:00000000000000000000000000000007',
+                             'source', 1,
+                             'registry:00000000000000000000000000000007', 'instance')",
+                    vec![],
+                ),
+                Statement::new(
+                    "INSERT INTO registry_index
+                     (registry_id, state, last_indexed_commit, indexed_at,
+                      generation, content_digest)
+                     VALUES (7, 'fresh', 'commit-1', 2, 1, 'index-digest-1')",
+                    vec![],
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let selector_json = "{}".to_string();
+        let selector_digest = digest_text(&selector_json);
+        let subscription = db
+            .set_cache_retention_subscription_topology(&SetCacheRetentionSubscriptionTopology {
+                cache_id: 1,
+                registry_id: 7,
+                selector_json,
+                selector_digest: selector_digest.clone(),
+                removal_grace_secs: 100,
+                exposure_acknowledged_at: None,
+                enabled: true,
+                expected_resource_version: None,
+                expected_cache_epoch: 0,
+                mutation_id: "subscription-create".into(),
+                now: 10,
+            })
+            .await
+            .unwrap();
+        db.begin_retention_refresh_topology(&BeginRetentionRefresh {
+            refresh_id: "refresh-1".into(),
+            subscription_id: subscription.id,
+            expected_subscription_version: subscription.resource_version,
+            expected_cache_epoch: 1,
+            selector_digest,
+            registry_source_revision: "commit-1".into(),
+            registry_index_generation: 1,
+            registry_index_digest: "index-digest-1".into(),
+            expected_reason_count: 0,
+            started_at: 20,
+        })
+        .await
+        .unwrap();
+
+        db.complete_retention_refresh_topology("refresh-1", "refresh-complete", 30)
+            .await
+            .unwrap();
+
+        let refresh = db
+            .backend
+            .query_opt(
+                "SELECT refresh.state, head.current_refresh_id
+                 FROM cache_retention_refreshes refresh
+                 JOIN cache_retention_refresh_heads head
+                   ON head.subscription_id = refresh.subscription_id
+                 WHERE refresh.refresh_id = 'refresh-1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(refresh.get::<String>(0).unwrap(), "complete");
+        assert_eq!(refresh.get::<String>(1).unwrap(), "refresh-1");
     }
 
     #[tokio::test]

@@ -40,25 +40,25 @@ impl PreviewSignals {
         cache_id: &str,
     ) -> Result<aos_proto_types::PreviewCacheIntegrationRequest, String> {
         let registry_id = required(self.registry_id.get_untracked(), "Registry stable ID")?;
-        let publication =
-            self.use_for_clients
-                .get_untracked()
-                .then(|| aos_proto_types::ConsumerCacheChange {
-                    operation: "add".to_string(),
-                    entry_id: String::new(),
-                    desired: Some(aos_proto_types::ConsumerCacheStackEntry {
-                        entry_id: String::new(),
-                        source: Some(
-                            aos_proto_types::consumer_cache_stack_entry::Source::BinaryCacheId(
-                                cache_id.to_string(),
-                            ),
+        let publication = self.use_for_clients.get_untracked().then(|| {
+            let entry_id = crate::mutation::idempotency_key("cache-stack-entry");
+            aos_proto_types::ConsumerCacheChange {
+                operation: "add".to_string(),
+                entry_id: String::new(),
+                desired: Some(aos_proto_types::ConsumerCacheStackEntry {
+                    entry_id,
+                    source: Some(
+                        aos_proto_types::consumer_cache_stack_entry::Source::BinaryCacheId(
+                            cache_id.to_string(),
                         ),
-                        priority: 0,
-                        mirror_group_id: String::new(),
-                    }),
-                    before_entry_id: String::new(),
-                    mirror_with_entry_id: String::new(),
-                });
+                    ),
+                    priority: 0,
+                    mirror_group_id: String::new(),
+                }),
+                before_entry_id: String::new(),
+                mirror_with_entry_id: String::new(),
+            }
+        });
         let retention = self.retention()?;
         let population = self.population();
         if publication.is_none() && retention.is_none() && population.is_none() {

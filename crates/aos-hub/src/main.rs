@@ -244,6 +244,13 @@ struct WorkerArgs {
     /// Canonical HTTPS control-plane origin (for example `https://aos.example.com`).
     #[arg(long, env = "HUB_EXTERNAL_URL")]
     external_url: Option<String>,
+    /// Public HTTPS origin that exposes the instance-default storage binding.
+    ///
+    /// Public registries with a canonical-slug placement on that binding use
+    /// `<origin>/<slug>/` as the canonical Git URL. Explicit delivery-route
+    /// advertisements override this default.
+    #[arg(long, env = "HUB_DEFAULT_PUBLIC_DELIVERY_URL")]
+    default_public_delivery_url: Option<String>,
     /// Immutable source/build identity exposed for deployment verification.
     #[arg(long, env = "HUB_DEPLOYMENT_ID")]
     deployment_id: Option<String>,
@@ -679,7 +686,14 @@ async fn main() -> Result<()> {
                     )
                     .with_credentials(Arc::clone(&app_state.secret_versions)),
                 ),
-            );
+            )
+            .with_writes(Arc::new(
+                aos_hub::coreports::HubSurfaceWriteProvider::new(
+                    Arc::clone(&app_state.db),
+                    app_state.http.clone(),
+                )
+                .with_credentials(Arc::clone(&app_state.secret_versions)),
+            ));
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
                 loop {
@@ -1109,6 +1123,18 @@ async fn provision_worker(
     assets: &aos_hub::cloudflare::Assets,
     args: &WorkerArgs,
 ) -> Result<aos_hub::cloudflare::DeployConfig> {
+    if let Some(delivery_url) = &args.default_public_delivery_url {
+        let parsed =
+            url::Url::parse(delivery_url).context("default public delivery URL is invalid")?;
+        anyhow::ensure!(
+            parsed.scheme() == "https"
+                && parsed.username().is_empty()
+                && parsed.password().is_none()
+                && parsed.query().is_none()
+                && parsed.fragment().is_none(),
+            "default public delivery URL must be an HTTPS URL without credentials, query, or fragment"
+        );
+    }
     let external_url = args
         .external_url
         .clone()
@@ -1138,6 +1164,7 @@ async fn provision_worker(
     cfg.observability = !args.no_observability;
     cfg.head_sampling_rate = args.head_sampling_rate;
     cfg.logpush = args.logpush;
+    cfg.default_public_delivery_url = args.default_public_delivery_url.clone();
     // Email Service binding: emitted only when a verified sender is supplied.
     cfg.email_from = args.email_from.clone();
     Ok(cfg)
@@ -1501,4 +1528,66 @@ fn tracing_subscriber_init() {
         fn exit(&self, _: &tracing::span::Id) {}
     }
     let _ = tracing::subscriber::set_global_default(StderrLogger);
+}
+
+#[cfg(test)]
+mod production_vm_coverage {
+    use std::fs;
+    use std::path::Path;
+
+    use clap::{Command as ClapCommand, CommandFactory as _};
+
+    use super::Cli;
+
+    fn collect_native_leaves(
+        command: &ClapCommand,
+        prefix: &mut Vec<String>,
+        leaves: &mut Vec<String>,
+    ) {
+        let visible = command
+            .get_subcommands()
+            .filter(|subcommand| {
+                !subcommand.is_hide_set()
+                    && !(prefix.is_empty() && subcommand.get_name() == "worker")
+            })
+            .collect::<Vec<_>>();
+        if visible.is_empty() {
+            leaves.push(prefix.join(" "));
+            return;
+        }
+
+        for subcommand in visible {
+            prefix.push(subcommand.get_name().to_string());
+            collect_native_leaves(subcommand, prefix, leaves);
+            prefix.pop();
+        }
+    }
+
+    #[test]
+    fn every_native_command_leaf_is_owned_by_the_native_vm_test() {
+        let mut leaves = Vec::new();
+        collect_native_leaves(&Cli::command(), &mut Vec::new(), &mut leaves);
+        leaves.sort();
+
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let source = fs::read_to_string(repository.join("tests/vm/hub-native-operations.nix"))
+            .expect("native Hub operation test must be readable")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let missing = leaves
+            .into_iter()
+            .filter(|leaf| !source.contains(leaf))
+            .collect::<Vec<_>>();
+
+        assert!(
+            missing.is_empty(),
+            "native aos-hub commands without executable VM ownership:\n{}",
+            missing.join("\n")
+        );
+    }
 }

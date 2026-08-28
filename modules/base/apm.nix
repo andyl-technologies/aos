@@ -140,6 +140,16 @@
     )
   );
 in {
+  options.aos.apm.drainScript = lib.mkOption {
+    type = lib.types.nullOr lib.types.path;
+    default = null;
+    description = ''
+      Executable hook invoked before an A/B system transition requested with
+      `--drain --reboot`. The hook is linked into the immutable system
+      toplevel and must return successfully before the reboot is queued.
+    '';
+  };
+
   options.aos.apm.installAtBoot = {
     enable = lib.mkEnableOption "apm desired-package reconciliation at first boot";
 

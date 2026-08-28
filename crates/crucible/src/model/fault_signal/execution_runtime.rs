@@ -521,6 +521,9 @@ fn terminal_execution_error(error: &FaultExecutionError) -> bool {
 }
 
 #[cfg(test)]
+#[path = "cross_domain_campaign_test.rs"]
+mod cross_domain_campaign_tests;
+#[cfg(test)]
 #[path = "execution_runtime_replay_test.rs"]
 mod replay_tests;
 #[cfg(test)]

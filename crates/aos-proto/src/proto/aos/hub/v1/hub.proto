@@ -338,6 +338,14 @@ service ImageService {
 service PublishService {
   rpc BeginRegistryPublication(BeginRegistryPublicationRequest)
       returns (RegistryPublication);
+  rpc BeginRegistryPublicationManifest(
+      BeginRegistryPublicationManifestRequest)
+      returns (RegistryPublicationManifestSession);
+  rpc AppendRegistryPublicationManifest(
+      AppendRegistryPublicationManifestRequest)
+      returns (RegistryPublicationManifestSession);
+  rpc SealRegistryPublicationManifest(SealRegistryPublicationManifestRequest)
+      returns (RegistryPublication);
   rpc BeginRegistryPublicationMultipartUpload(
       BeginRegistryPublicationMultipartUploadRequest)
       returns (BeginRegistryPublicationMultipartUploadResponse);
@@ -1551,6 +1559,47 @@ message BeginRegistryPublicationRequest {
   repeated RegistryPublicationObjectInput objects = 6;
 }
 
+// Starts or resumes bounded admission of one exact publication manifest.
+// `manifest_digest` is the SHA-256 of the canonical sorted object tuples used
+// by BeginRegistryPublication, and `object_count` is fixed for the session.
+message BeginRegistryPublicationManifestRequest {
+  string registry = 1;
+  string generation = 2;
+  string refs_digest = 3;
+  string default_commit = 4;
+  string parent_publication_id = 5;
+  string manifest_digest = 6;
+  uint32 object_count = 7;
+}
+
+// Durable progress returned after begin and every exact append retry.
+message RegistryPublicationManifestSession {
+  string publication_id = 1;
+  string lease_token = 2;
+  string manifest_digest = 3;
+  uint32 object_count = 4;
+  uint32 admitted_object_count = 5;
+  uint32 next_chunk_index = 6;
+  string state = 7;
+  int64 lease_expires_at = 8;
+}
+
+// Appends one page of at most 256 objects. Pages are zero-based and strictly
+// ordered. `chunk_digest` makes retry after a lost response content-exact.
+message AppendRegistryPublicationManifestRequest {
+  string publication_id = 1;
+  string lease_token = 2;
+  uint32 chunk_index = 3;
+  string chunk_digest = 4;
+  repeated RegistryPublicationObjectInput objects = 5;
+}
+
+// Seals a complete admitted manifest and returns its upload inventory.
+message SealRegistryPublicationManifestRequest {
+  string publication_id = 1;
+  string lease_token = 2;
+}
+
 message ListRegistryPublicationsRequest {
   string registry = 1;
   // Optional exact lifecycle state.
@@ -1857,6 +1906,8 @@ service BinaryCacheService {
   rpc CacheClosure(CacheClosureRequest) returns (CacheClosureResponse);
   rpc CreateCacheObjectUploads(CreateCacheObjectUploadsRequest)
       returns (CreateCacheObjectUploadsResponse);
+  rpc RegisterCacheNarinfos(RegisterCacheNarinfosRequest)
+      returns (CacheNarinfoRegistrationResponse);
   rpc BeginCacheMultipartUpload(BeginCacheMultipartUploadRequest)
       returns (BeginCacheMultipartUploadResponse);
   rpc CompleteCacheMultipartUpload(CompleteCacheMultipartUploadRequest)
@@ -2016,6 +2067,7 @@ message OperationDetail {
   int64 updated_at = 7;
   optional int64 finished_at = 8;
   string resource_version = 9;
+  string detail_json = 10;
 }
 message GetOperationRequest { string operation_id = 1; }
 message OperationDetailResponse { OperationDetail operation = 1; }
@@ -2560,9 +2612,9 @@ message CreateCacheObjectUploadsRequest {
   // Single object path under the cache (e.g. `<hash>.narinfo` or `nar/<file>`).
   // Used for one upload; for bulk admission use `paths` instead.
   string path = 2;
-  // Batch of object paths to admit in one round-trip. When non-empty,
-  // the response's `uploads` is populated (parallel to this list) and the
-  // single-path `upload_url` is unused.
+  // Batch of at most 256 unique object paths to admit in one round-trip. When
+  // non-empty, the response's `uploads` is populated (parallel to this list)
+  // and the single-path `upload_url` is unused.
   repeated string paths = 3;
   // Declared byte size for `path`.
   uint64 size = 4;
@@ -2670,6 +2722,15 @@ message CacheNarinfo {
 message CacheNarinfoRegistrationResponse {
   // Number of narinfos successfully registered.
   int64 registered = 1;
+}
+
+message RegisterCacheNarinfosRequest {
+  // Immutable cache identity. Exactly one of this or delivery_url is required.
+  string cache_id = 1;
+  // Exact configured delivery URL when cache_id is not known by the client.
+  string delivery_url = 2;
+  // Bounded batch to observe and publish after its NAR uploads complete.
+  repeated CacheNarinfo narinfos = 3;
 }
 
 // IAM management: service accounts, scoped role grants, and access tokens

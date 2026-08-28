@@ -370,7 +370,7 @@ pub enum HubAuditCmd {
     List {
         #[command(flatten)]
         access: HubAccessArgs,
-        #[arg(long, default_value = "")]
+        #[arg(long, default_value = "instance")]
         scope: String,
         #[command(flatten)]
         pagination: HubPaginationArgs,
@@ -1867,6 +1867,21 @@ pub enum HubCacheRetentionCmd {
 
 #[derive(Subcommand)]
 pub enum HubCacheRootCmd {
+    /// List manual retention roots
+    List {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        cache: String,
+        #[command(flatten)]
+        pagination: HubPaginationArgs,
+    },
+    /// Show one manual retention root
+    Show {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        cache: String,
+        root_id: String,
+    },
     /// Create an indefinite or leased manual root
     Create {
         #[command(flatten)]

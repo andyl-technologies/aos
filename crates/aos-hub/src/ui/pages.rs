@@ -21,8 +21,8 @@
 use std::time::Instant;
 
 pub use aos_hub_core::web::browse_pages::{
-    channel_grid_pre, ImageBrowse, PackageBrowse, PackageClosure, ResolvedDependency,
-    RouteHealthRow, SortColumn, SortDir, LIST_PER_PAGE, PACKAGES_PER_PAGE,
+    channel_grid_pre, ImageBrowse, PackageBrowse, PackageClosure, RegistrySetup,
+    ResolvedDependency, RouteHealthRow, SortColumn, SortDir, LIST_PER_PAGE, PACKAGES_PER_PAGE,
 };
 
 use aos_hub_core::db::{
@@ -72,15 +72,16 @@ pub fn registry_home(
     manage_link: bool,
     started: Instant,
 ) -> String {
+    let setup = RegistrySetup::new(registry, status, Some(external_url), caches);
     aos_hub_core::web::browse_pages::registry_home(
         registry,
         status,
         channels,
-        packages,
+        packages.len(),
         caches,
         roster,
         validations,
-        Some(external_url),
+        &setup,
         manage_link,
         started,
         &current_session_indicator(),
@@ -119,15 +120,17 @@ pub fn package_page(
     status: Option<&IndexStatus>,
     detail: &PackageDetail,
     closure: &PackageClosure,
+    caches: &[(String, u32)],
     external_url: &str,
     started: Instant,
 ) -> String {
+    let setup = RegistrySetup::new(registry, status, Some(external_url), caches);
     aos_hub_core::web::browse_pages::package_page(
         registry,
         status,
         detail,
         closure,
-        external_url,
+        &setup,
         started,
         &current_session_indicator(),
     )
