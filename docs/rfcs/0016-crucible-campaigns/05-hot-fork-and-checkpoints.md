@@ -463,6 +463,53 @@ overlay reconstruction. It therefore MUST NOT acknowledge proof bit 5. The
 future QEMU-owned coordinator must combine the complete backend registry with a
 drained, retained block-graph/write-root barrier and exact child disposition.
 
+Patched QEMU also exposes the first retained block-side prerequisite through a
+normal main-loop QMP command:
+
+```text
+CrucibleHotForkBlockBarrierAction = hold | query | release
+
+CrucibleHotForkBlockBarrierState {
+    schema-version: u32 = 1,
+    generation: u64,
+    owner-thread-id: i64,
+    held: bool,
+    complete: bool,
+    backend-count: u32,
+    rooted-backends: u32,
+    writable-backends: u32,
+    quiesced-rooted-backends: u32,
+    in-flight: u64,
+    quiescent: bool,
+}
+```
+
+`crucible-hot-fork-block-barrier` retains QEMU's native all-block drain
+section. `hold` MUST start only at the authenticated exact paused/device-flush
+boundary, on the main AioContext, and outside replay-events mode. It quiesces
+new external block clients and permits already-issued I/O to complete while a
+later `query` observes the retained section. `release` ends the native drain.
+The command uses normal `execute`, not negotiated `exec-oob`, because native
+drain acquire/release requires the BQL and main AioContext.
+
+All counts MUST be bounded by 65,536 and match the block-backend registry:
+`rooted-backends` and `writable-backends` are at most `backend-count`, and
+`quiesced-rooted-backends` is at most `rooted-backends`. `quiescent` is true
+exactly when the barrier is held, the registry is complete, aggregate
+`in-flight` is zero, and every rooted backend is quiesced. A held state has a
+positive generation and owner; a released state has owner zero and is not
+quiescent.
+
+This retained drain is still not proof bit 5. It does not freeze block-graph
+mutation, authenticate the immutable external-snapshot root, rotate or bind
+writable overlays, retain child root identity, or define child reconstruction.
+The future coordinator MUST establish those invariants while the drain is held.
+It MUST acquire the block drain before the asynchronous-source barrier, because
+draining may require AIO progress, and release the asynchronous-source barrier
+before releasing the block drain. Until that composition exists, the standalone
+barrier cannot change the template schema, acknowledge bit 5, or authorize
+`fork(2)`.
+
 Patched QEMU and the loaded Crucible plugin additionally establish one sealed,
 scalar plugin-resource inventory. The plugin registers this manifest only after
 all callback families, the wake descriptor, and fault admission are installed,
@@ -681,9 +728,11 @@ template.
 The standalone AioContext, AIO-handler, and block-backend responses remain
 observational. The retained asynchronous-source barrier composes the context,
 handler, coroutine, bottom-half, and timer admission classes and derives proof
-bit 3 only while they are complete and quiescent. The future coordinator must
-still compose block write-root, descriptor/mapping, and child-reinitialization
-proofs before a retained template can authorize `fork(2)`.
+bit 3 only while they are complete and quiescent. The standalone retained block
+drain supplies only QEMU-native I/O quiescence; the future coordinator must
+still compose immutable block write-root identity, descriptor/mapping, and
+child-reinitialization proofs before a retained template can authorize
+`fork(2)`.
 
 Patched POSIX QEMU also exposes the bounded observational mutex inventory used
 to define the process-private lock side of the child-reinitialization proof:

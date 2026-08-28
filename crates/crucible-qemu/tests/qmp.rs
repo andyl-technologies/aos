@@ -12,10 +12,11 @@ use std::time::Duration;
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT,
-    QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND, QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
-    QMP_HOT_FORK_RCU_BARRIER_COMMAND, QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_COMMAND,
-    QMP_QUERY_CPUS_FAST_COMMAND, QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
+    QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND, QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
+    QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
+    QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_COMMAND, QMP_QUERY_CPUS_FAST_COMMAND,
+    QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
@@ -908,6 +909,98 @@ fn hot_fork_bh_timer_barrier_rejects_malformed_states() -> Result<(), Box<dyn Er
             })
         ));
     }
+    Ok(())
+}
+
+#[test]
+fn hot_fork_block_barrier_holds_drains_and_releases_on_main_qmp() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":44,"held":true,"complete":true,"backend-count":3,"rooted-backends":2,"writable-backends":2,"quiesced-rooted-backends":2,"in-flight":1,"quiescent":false}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":44,"held":true,"complete":true,"backend-count":3,"rooted-backends":2,"writable-backends":2,"quiesced-rooted-backends":2,"in-flight":0,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":3,"owner-thread-id":0,"held":false,"complete":true,"backend-count":3,"rooted-backends":2,"writable-backends":2,"quiesced-rooted-backends":0,"in-flight":0,"quiescent":false}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let held = client.hold_hot_fork_block_barrier()?;
+    assert!(held.held());
+    assert_eq!(held.owner_thread_id(), 44);
+    assert_eq!(held.backend_count(), 3);
+    assert_eq!(held.rooted_backends(), 2);
+    assert_eq!(held.writable_backends(), 2);
+    assert_eq!(held.quiesced_rooted_backends(), 2);
+    assert_eq!(held.in_flight(), 1);
+    assert!(!held.quiescent());
+
+    let drained = client.query_hot_fork_block_barrier()?;
+    assert_eq!(drained.generation(), 2);
+    assert!(drained.complete());
+    assert!(drained.quiescent());
+
+    let released = client.release_hot_fork_block_barrier()?;
+    assert!(!released.held());
+    assert_eq!(released.owner_thread_id(), 0);
+    assert_eq!(released.quiesced_rooted_backends(), 0);
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    for (index, action) in [(1, "hold"), (2, "query"), (3, "release")] {
+        assert_eq!(
+            execute_name(json_line(&lines, index)),
+            Some(QMP_HOT_FORK_BLOCK_BARRIER_COMMAND)
+        );
+        assert!(json_line(&lines, index).get("exec-oob").is_none());
+        assert_eq!(
+            json_line(&lines, index)
+                .pointer("/arguments/action")
+                .and_then(Value::as_str),
+            Some(action)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn hot_fork_block_barrier_rejects_malformed_or_wrong_action_state() -> Result<(), Box<dyn Error>> {
+    for response in [
+        r#"{"return":{"schema-version":2,"generation":2,"owner-thread-id":44,"held":true,"complete":true,"backend-count":3,"rooted-backends":2,"writable-backends":2,"quiesced-rooted-backends":2,"in-flight":0,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":0,"held":true,"complete":true,"backend-count":3,"rooted-backends":2,"writable-backends":2,"quiesced-rooted-backends":2,"in-flight":0,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":44,"held":true,"complete":true,"backend-count":1,"rooted-backends":2,"writable-backends":1,"quiesced-rooted-backends":2,"in-flight":0,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":44,"held":true,"complete":true,"backend-count":3,"rooted-backends":2,"writable-backends":4,"quiesced-rooted-backends":2,"in-flight":0,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":44,"held":true,"complete":true,"backend-count":65537,"rooted-backends":2,"writable-backends":2,"quiesced-rooted-backends":2,"in-flight":0,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":44,"held":true,"complete":false,"backend-count":3,"rooted-backends":2,"writable-backends":2,"quiesced-rooted-backends":2,"in-flight":0,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":44,"held":true,"complete":true,"backend-count":3,"rooted-backends":2,"writable-backends":2,"quiesced-rooted-backends":1,"in-flight":0,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":44,"held":true,"complete":true,"backend-count":3,"rooted-backends":2,"writable-backends":2,"quiesced-rooted-backends":2,"in-flight":1,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":44,"held":false,"complete":true,"backend-count":3,"rooted-backends":2,"writable-backends":2,"quiesced-rooted-backends":0,"in-flight":0,"quiescent":false}}"#,
+    ] {
+        let mut client = QmpClient::connect(scripted_qmp([
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            response,
+        ]))?;
+        assert!(matches!(
+            client.hold_hot_fork_block_barrier(),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkBlockBarrier,
+                ..
+            })
+        ));
+    }
+
+    let mut client = QmpClient::connect(scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":44,"held":true,"complete":true,"backend-count":3,"rooted-backends":2,"writable-backends":2,"quiesced-rooted-backends":2,"in-flight":0,"quiescent":true}}"#,
+    ]))?;
+    assert!(matches!(
+        client.release_hot_fork_block_barrier(),
+        Err(QmpError::MalformedTypedResponse {
+            command: QmpCommandKind::HotForkBlockBarrier,
+            ..
+        })
+    ));
     Ok(())
 }
 

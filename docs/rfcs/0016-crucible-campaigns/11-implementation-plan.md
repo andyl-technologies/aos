@@ -1633,6 +1633,18 @@ timer reports.
 These standalone inventories remain observational and cannot promote a proof
 bit by themselves. The retained asynchronous-source barrier supplies bit 3;
 block, descriptor/mapping, and child-reinitialization proofs remain open.
+QEMU now also retains its native all-block drain through a version-1 main-loop
+hold/query/release command. Hold is fail-closed outside the exact paused/device-
+flush boundary, replay-events mode, or the main AioContext; a retained report
+binds the bounded backend totals and derives quiescence from complete inventory,
+zero in-flight I/O, and every rooted backend remaining drained. The typed Rust
+control surface rejects contradictory schemas, bounds, and action
+postconditions, while the live gate proves stable released state and no state
+retention after an invalid hold. This is a concrete block-side quiescence
+prerequisite only. Immutable external-snapshot root authentication, overlay
+rotation, graph-mutation exclusion, child reconstruction, and ordered template
+composition remain open; readiness bit 5 stays clear and T-CAM-6.2 remains
+unchecked.
 The GPL plugin now also seals a version-1 fixed resource manifest after callback,
 wake-descriptor, and fault-admission setup but before successful readiness. It
 binds the exact process/plugin generation, closed required/optional resource and

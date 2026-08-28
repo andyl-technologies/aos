@@ -116,6 +116,11 @@ in
           jq -e -s 'any(.[]; has("error"))' "$out/stock-block-backend-inventory.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible block-backend inventory command"
           qmp "$stock_socket" \
+            '{"execute":"crucible-hot-fork-block-barrier","arguments":{"action":"query"}}' \
+            "$out/stock-block-barrier.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-block-barrier.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible block drain-barrier command"
+          qmp "$stock_socket" \
             '{"exec-oob":"query-crucible-hot-fork-plugin-resource-inventory"}' \
             "$out/stock-plugin-resource-inventory.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-plugin-resource-inventory.json" >/dev/null \
@@ -574,6 +579,59 @@ in
             ($reports | length) == 2 and $reports[0] == $reports[1]
           ' "$out/block-backend-inventory.json" >/dev/null \
             || { cat "$out/block-backend-inventory.json" >&2; fail "QEMU block-backend inventory changed without a lifecycle or structural transition"; }
+
+          qmp_pair "$patched_socket" \
+            '{"execute":"crucible-hot-fork-block-barrier","arguments":{"action":"query"}}' \
+            "$out/block-barrier-query.json"
+          jq -e -s --slurpfile inventory "$out/block-backend-inventory.json" '
+            [.[] | select(has("return")) | .return |
+             select(has("quiesced-rooted-backends"))] as $reports |
+            ($inventory | map(select(has("return"))) | .[-1].return) as $inventory_report |
+            ($reports | length) == 2 and $reports[0] == $reports[1] and
+            ($reports[0] as $report |
+            ($report | keys | sort) == [
+              "backend-count",
+              "complete",
+              "generation",
+              "held",
+              "in-flight",
+              "owner-thread-id",
+              "quiesced-rooted-backends",
+              "quiescent",
+              "rooted-backends",
+              "schema-version",
+              "writable-backends"
+            ] and
+            $report."schema-version" == 1 and
+            $report.generation == 0 and
+            $report."owner-thread-id" == 0 and
+            $report.held == false and
+            $report.complete == true and
+            $report."backend-count" == $inventory_report."backend-count" and
+            $report."rooted-backends" == $inventory_report."rooted-backends" and
+            $report."writable-backends" == $inventory_report."writable-backends" and
+            $report."quiesced-rooted-backends" >= 0 and
+            $report."quiesced-rooted-backends" <= $report."rooted-backends" and
+            $report."in-flight" == $inventory_report."in-flight" and
+            $report.quiescent == false)
+          ' "$out/block-barrier-query.json" >/dev/null \
+            || { cat "$out/block-barrier-query.json" >&2; fail "QEMU released block barrier state was not exact and stable"; }
+          qmp "$patched_socket" \
+            '{"execute":"crucible-hot-fork-block-barrier","arguments":{"action":"hold"}}' \
+            "$out/block-barrier-hold.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/block-barrier-hold.json" >/dev/null \
+            || { cat "$out/block-barrier-hold.json" >&2; fail "QEMU held the block barrier outside the exact boundary"; }
+          qmp "$patched_socket" \
+            '{"execute":"crucible-hot-fork-block-barrier","arguments":{"action":"query"}}' \
+            "$out/block-barrier-after-rejection.json"
+          jq -e -s '
+            [.[] | select(has("return"))][-1].return as $report |
+            $report.generation == 0 and
+            $report."owner-thread-id" == 0 and
+            $report.held == false and
+            $report.quiescent == false
+          ' "$out/block-barrier-after-rejection.json" >/dev/null \
+            || { cat "$out/block-barrier-after-rejection.json" >&2; fail "QEMU retained block barrier state after a rejected hold"; }
 
           qmp_pair "$patched_socket" \
             '{"exec-oob":"query-crucible-hot-fork-plugin-resource-inventory"}' \
@@ -1119,7 +1177,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0128-crucible-hot-fork-aio-barrier.patch
+          patch=0129-crucible-hot-fork-block-drain-barrier.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -1158,6 +1216,9 @@ in
           block_backend_inventory_stable=true
           block_backends_context_bound=true
           block_backends_vmstate_observed=true
+          block_barrier_schema_version=1
+          block_barrier_released_stable=true
+          block_barrier_hold_without_exact_boundary_rejected=true
           block_snapshot_proof_acknowledged=false
           plugin_resource_inventory_schema_version=1
           plugin_resource_inventory_stable=true

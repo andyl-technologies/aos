@@ -587,6 +587,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0129-crucible-hot-fork-block-drain-barrier.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

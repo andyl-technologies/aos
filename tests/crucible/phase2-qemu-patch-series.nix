@@ -895,6 +895,13 @@
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "the retained asynchronous-source barrier additionally race-closes AioContext polling and GLib dispatch, POSIX AioHandler mutation and callbacks, and coroutine scheduling; reports bounded complete inventories and exact active counts; and lets the retained template coordinator derive AIO proof bit 3 only while the complete held barrier is quiescent";
     }
+    {
+      file = "0129-crucible-hot-fork-block-drain-barrier.patch";
+      catalogName = "crucible-hot-fork-block-drain-barrier";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "a process-lifetime QEMU-native all-block drain section quiesces every rooted BlockBackend without synchronously waiting for already-issued I/O, retains the drain until explicit release, reports bounded exact backend and in-flight aggregates, and deliberately leaves block proof bit 5 clear until an immutable external-snapshot root is authenticated";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
