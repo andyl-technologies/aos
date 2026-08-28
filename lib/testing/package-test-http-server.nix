@@ -76,9 +76,9 @@ in
       assert "yes" in vm.succeed(
           "systemctl show -p PrivateNetwork --value test-http-server.service"
       )
-      assert "${pkgs.test-http-server}" in vm.succeed(
+      assert vm.succeed(
           "systemctl show -p RootDirectory --value test-http-server.service"
-      )
+      ).strip() == "/run/aos/service-roots/test-http-server/test-http-server.service/merged"
 
       vm.succeed("systemctl stop ${target}")
       vm.fail("curl -sf --max-time 2 http://127.0.0.1:8000/")

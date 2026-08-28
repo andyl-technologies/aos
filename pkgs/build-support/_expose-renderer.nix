@@ -36,6 +36,9 @@
   capabilityType = "^CAP_[A-Z0-9_]+$";
   capabilityRouteNameType = "^[A-Za-z0-9_.-]+$";
   packageNameType = "^[A-Za-z0-9][A-Za-z0-9+._=-]*$";
+  overlayTokenType = "^[A-Za-z0-9][A-Za-z0-9+._=@-]*$";
+  synthesizedServiceRootUnitType = "^aos-pkg-.*-service-roots[.]service$";
+  synthesizedPackageTargetType = "^aos-pkg-.*[.]target$";
   credentialNameType = "^[A-Za-z0-9_.-]+$";
   hostPathType = "^[A-Za-z0-9_./+=@-]+$";
   kernelModuleType = "^[A-Za-z0-9_-]+$";
@@ -66,8 +69,9 @@
     (
       builtins.isString unit
       && unit != ""
-      && builtins.match ".*/.*" unit == null
-      && builtins.match ".*[[:space:]].*" unit == null
+      && builtins.match overlayTokenType unit != null
+      && builtins.match synthesizedServiceRootUnitType unit == null
+      && builtins.match synthesizedPackageTargetType unit == null
       && hasKnownSuffix unit
     )
     "expose.units contains invalid systemd unit name '${builtins.toString unit}'"
@@ -86,8 +90,8 @@
   in
     throwIfNot
     (
-      validateUnitName target
-      == target
+      builtins.isString target
+      && builtins.match overlayTokenType target != null
       && lib.hasPrefix "aos-pkg-" target
       && lib.hasSuffix ".target" target
       && target == expected
@@ -564,7 +568,7 @@
     "expose.config.credentials entries must be attrsets"
     (
       let
-        allowedKeys = ["name" "source" "ciphertext" "units" "encrypted" "encryptedFile"];
+        allowedKeys = ["name" "source" "ciphertext" "units" "encrypted" "encryptedFile" "optional"];
         extraKeys = builtins.filter (key: !(builtins.elem key allowedKeys)) (builtins.attrNames credential);
         name =
           throwIfNot
@@ -609,10 +613,12 @@
           builtins.map
           (validateServiceUnitName "expose.config.credentials.units")
           (validateList "expose.config.credentials.units" (credential.units or []));
+        optional = validateBool "expose.config.credentials.optional" (credential.optional or false);
         manifestCredential =
           {
             inherit name units encrypted;
           }
+          // lib.optionalAttrs optional {inherit optional;}
           // lib.optionalAttrs (source != null) {inherit source;}
           // lib.optionalAttrs (ciphertext != null) {inherit ciphertext;};
       in
@@ -1120,7 +1126,82 @@ in rec {
       validateTargetName
       packageName
       (checkedExpose.target or "aos-pkg-${packageName}.target");
+    authoredRelationFields = [
+      "aliases"
+      "after"
+      "before"
+      "bindsTo"
+      "conflicts"
+      "onFailure"
+      "onSuccess"
+      "partOf"
+      "requiredBy"
+      "requires"
+      "requisite"
+      "upheldBy"
+      "wantedBy"
+      "wants"
+    ];
+    authoredRawUnitRelationFields = [
+      "After"
+      "Before"
+      "BindsTo"
+      "Conflicts"
+      "JoinsNamespaceOf"
+      "OnFailure"
+      "OnSuccess"
+      "PartOf"
+      "PropagatesReloadTo"
+      "PropagatesStopTo"
+      "ReloadPropagatedFrom"
+      "Requires"
+      "Requisite"
+      "StopPropagatedFrom"
+      "Upholds"
+      "Wants"
+    ];
+    relationWords = value:
+      lib.concatMap (
+        entry:
+          if builtins.isString entry
+          then
+            builtins.filter
+            (word: word != "")
+            (lib.splitString " " (builtins.replaceStrings ["\t" "\n" "\r"] [" " " " " "] entry))
+          else []
+      ) (asList value);
+    authoredForeignOwnershipTargets =
+      lib.concatMap (
+        unitName: let
+          unit = units.${unitName};
+          typedReferences =
+            lib.concatMap (
+              field:
+                relationWords (unit.${field} or [])
+            )
+            authoredRelationFields;
+          rawReferences =
+            lib.concatMap (
+              field:
+                relationWords ((unit.unitConfig or {}).${field} or [])
+            )
+            authoredRawUnitRelationFields;
+        in
+          builtins.filter (
+            reference:
+              builtins.match synthesizedPackageTargetType reference
+              != null
+              && reference != target
+          ) (typedReferences ++ rawReferences)
+      )
+      authoredUnitNames;
+    authoredOwnershipTargetsValid =
+      throwIfNot
+      (authoredForeignOwnershipTargets == [])
+      "mkDerivation expose.units for package '${packageName}' must not claim membership in foreign synthesized package targets: ${builtins.concatStringsSep ", " authoredForeignOwnershipTargets}"
+      true;
     hostPathsUnit = "aos-pkg-${packageName}-host-paths.service";
+    serviceRootsUnit = "aos-pkg-${packageName}-service-roots.service";
     modulesUnit = "aos-pkg-${packageName}-modules.service";
     sysctlUnit = "aos-pkg-${packageName}-sysctl.service";
     firewallUnit = "aos-pkg-${packageName}-firewall.service";
@@ -1214,11 +1295,12 @@ in rec {
         permissionKernelModules;
     sideEffectUnitNames =
       lib.optional (prepareHostPathDirectories != []) hostPathsUnit
+      ++ lib.optional (overlayRootServiceNames != []) serviceRootsUnit
       ++ [modulesUnit sysctlUnit firewallUnit]
       ++ lib.optional (network == "private-outbound") netnsUnit
       ++ lib.optional (confinementClass != "unconfined") macUnit
-      ++ lib.optional (confinementClass != "unconfined") ebpfUnit;
-    reservedUnitNames = [target hostPathsUnit modulesUnit sysctlUnit firewallUnit netnsUnit macUnit ebpfUnit packageSlice];
+      ++ lib.optional ebpfEnabled ebpfUnit;
+    reservedUnitNames = [target hostPathsUnit serviceRootsUnit modulesUnit sysctlUnit firewallUnit netnsUnit macUnit ebpfUnit packageSlice];
     capabilities = permissions.capabilities or [];
     tcpBind = permissions.tcp-bind or [];
     tcpConnect = permissions.tcp-connect or [];
@@ -1277,6 +1359,11 @@ in rec {
       label = confinementLabel;
       holes = confinementHoles;
     };
+    overlayRootServiceNames =
+      if confinementClass == "unconfined" || verityImage != null
+      then []
+      else builtins.filter (unitName: lib.hasSuffix ".service" unitName) authoredUnitNames;
+    serviceOverlayRoot = unitName: "/run/aos/service-roots/${packageName}/${unitName}/merged";
     manifestKernel = kernel // {modules = kernelModules;};
     manifestPermissions =
       permissions
@@ -1284,28 +1371,37 @@ in rec {
         security-label = permissions.security-label or "aos-pkg-${packageName}";
         inherit confinement;
       };
-    landlockTcpEnabled = !rootEquivalent && (tcpBind != [] || tcpConnect != []);
+    networkUnrestricted = network == "host";
+    landlockTcpEnabled = !rootEquivalent && !networkUnrestricted && (tcpBind != [] || tcpConnect != []);
     landlockFsEnabled = !rootEquivalent;
     landlockEnabled = landlockTcpEnabled || landlockFsEnabled;
     landlockDefaultReadOnlyPaths = ["/"];
-    landlockDefaultReadWritePaths = ["/tmp" "/var/tmp"];
+    # Service helpers and payloads conventionally use /dev/null for quiet
+    # probes and detached standard streams. Grant that device node itself,
+    # never its parent directory.
+    landlockDefaultReadWritePaths = ["/tmp" "/var/tmp" "/dev/null"];
     readOnlyHostPaths = builtins.map (hostPath: hostPath.path) (
       builtins.filter (hostPath: hostPath.mode == "read-only") hostPaths
     );
     readWriteHostPaths =
       builtins.map (hostPath: hostPath.path) rwHostPaths;
-    stateDirectoryNamesForUnit = unit: let
+    serviceDirectoryNamesForUnit = option: fallback: unit: let
       authoredServiceConfig = unit.serviceConfig or {};
-      values = asList (authoredServiceConfig.StateDirectory or "aos-pkg-${packageName}");
+      values = asList (authoredServiceConfig.${option} or fallback);
     in
       builtins.filter (name: name != "") (
         lib.concatMap (value: lib.splitString " " value) values
       );
-    stateDirectoryPaths = uniqueUnits (
+    serviceDirectoryPathsForUnit = unit:
+      builtins.map (name: "/var/lib/${name}") (serviceDirectoryNamesForUnit "StateDirectory" "aos-pkg-${packageName}" unit)
+      ++ builtins.map (name: "/run/${name}") (serviceDirectoryNamesForUnit "RuntimeDirectory" [] unit)
+      ++ builtins.map (name: "/var/cache/${name}") (serviceDirectoryNamesForUnit "CacheDirectory" [] unit)
+      ++ builtins.map (name: "/var/log/${name}") (serviceDirectoryNamesForUnit "LogsDirectory" [] unit);
+    serviceDirectoryPaths = uniqueUnits (
       lib.concatMap (
         unitName:
           if lib.hasSuffix ".service" unitName
-          then builtins.map (name: "/var/lib/${name}") (stateDirectoryNamesForUnit units.${unitName})
+          then serviceDirectoryPathsForUnit units.${unitName}
           else []
       )
       (builtins.attrNames units)
@@ -1314,7 +1410,7 @@ in rec {
       if landlockFsEnabled
       then
         uniqueUnits (
-          landlockDefaultReadWritePaths ++ stateDirectoryPaths ++ readWriteHostPaths
+          landlockDefaultReadWritePaths ++ serviceDirectoryPaths ++ readWriteHostPaths
         )
       else [];
     landlockReadOnlyPaths =
@@ -1327,12 +1423,15 @@ in rec {
       else [];
     landlockArgs =
       ["--require-abi" "4"]
+      ++ lib.optional networkUnrestricted "--network-unrestricted"
       ++ lib.optionals landlockFsEnabled (
         lib.concatMap (path: ["--fs-ro" path]) landlockReadOnlyPaths
         ++ lib.concatMap (path: ["--fs-rw" path]) landlockReadWritePaths
       )
-      ++ lib.concatMap (port: ["--tcp-bind" (builtins.toString port)]) tcpBind
-      ++ lib.concatMap (port: ["--tcp-connect" (builtins.toString port)]) tcpConnect;
+      ++ lib.optionals (!networkUnrestricted) (
+        lib.concatMap (port: ["--tcp-bind" (builtins.toString port)]) tcpBind
+        ++ lib.concatMap (port: ["--tcp-connect" (builtins.toString port)]) tcpConnect
+      );
     landlockPrefix = "${pkgs.aos-landlock}/bin/aos-landlock ${builtins.concatStringsSep " " landlockArgs} --";
     undeclaredPreparedHostPathDirectories =
       builtins.filter (
@@ -1350,6 +1449,12 @@ in rec {
       (drv != null)
       "mkDerivation expose for package '${packageName}' needs the payload derivation to render RootDirectory"
       drv;
+    serviceRootsPrepareCommand =
+      "${pkgs.aos-service-root}/bin/aos-service-root prepare "
+      + builtins.concatStringsSep " " ([packageName (builtins.toString payloadRoot)] ++ overlayRootServiceNames);
+    serviceRootsCleanupCommand =
+      "${pkgs.aos-service-root}/bin/aos-service-root cleanup "
+      + builtins.concatStringsSep " " ([packageName (builtins.toString payloadRoot)] ++ overlayRootServiceNames);
     addressFamilies = uniqueUnits (
       ["AF_UNIX" "AF_INET" "AF_INET6"]
       ++ lib.optional (network == "host" || builtins.elem "CAP_NET_ADMIN" capabilities) "AF_NETLINK"
@@ -1364,7 +1469,7 @@ in rec {
       ) (builtins.length parts);
     in
       builtins.concatStringsSep "/" (builtins.map (prefix: "${prefix}.slice") prefixes);
-    ebpfEnabled = confinementClass != "unconfined";
+    ebpfEnabled = confinementClass != "unconfined" && !networkUnrestricted;
     ebpfPolicyPathPlaceholder = "@AOS_EXPOSE_ARTIFACT@/network-policy.json";
     ebpfCgroupPath = "/sys/fs/cgroup/${systemdSliceCgroupPath packageSlice}";
     ebpfCommand = "${pkgs.aos-ebpf-net-policy}/bin/aos-ebpf-net-policy run --policy ${ebpfPolicyPathPlaceholder} --cgroup ${ebpfCgroupPath} --object ${pkgs.aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o";
@@ -1423,7 +1528,9 @@ in rec {
 
     credentialsForUnit = unitName:
       builtins.filter (
-        credential: credential.units == [] || builtins.elem unitName credential.units
+        credential:
+          !(credential.optional or false)
+          && (credential.units == [] || builtins.elem unitName credential.units)
       )
       config.credentials;
 
@@ -1638,9 +1745,9 @@ in rec {
                   RestrictSUIDSGID = true;
                 }
                 // (
-                  if verityRootConfig == null
-                  then {RootDirectory = "${payloadRoot}";}
-                  else verityRootConfig
+                  if verityRootConfig != null
+                  then verityRootConfig
+                  else {RootDirectory = serviceOverlayRoot unitName;}
                 )
               )
               // lib.optionalAttrs (unconfined && checkedAuthoredServiceConfig ? StateDirectory) {
@@ -2064,6 +2171,30 @@ in rec {
           };
         };
       }
+      // lib.optionalAttrs (overlayRootServiceNames != []) {
+        "${serviceRootsUnit}" = {
+          description = "Prepare volatile service roots for ${packageName}";
+          wantedBy = [target];
+          partOf = [target];
+          before = overlayRootServiceNames;
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = serviceRootsPrepareCommand;
+            ExecStop = serviceRootsCleanupCommand;
+            ExecStopPost = serviceRootsCleanupCommand;
+            NoNewPrivileges = false;
+            PrivateMounts = false;
+            # OverlayFS creates a mode-000 private work directory and probes
+            # whiteout creation while mounting. Keep the helper narrowly
+            # bounded to the three capabilities those kernel paths require.
+            CapabilityBoundingSet = "CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN";
+            AmbientCapabilities = "CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN";
+            RestrictAddressFamilies = ["AF_UNIX"];
+            UMask = "0077";
+          };
+        };
+      }
       // {
         "${modulesUnit}" = {
           description = "Apply kernel modules for ${packageName}";
@@ -2202,7 +2333,7 @@ in rec {
           };
         };
       };
-    synthesizedUnits = builtins.seq reservedUnitsAvailable (
+    synthesizedUnits = builtins.seq authoredOwnershipTargetsValid (builtins.seq reservedUnitsAvailable (
       builtins.seq preparedHostPathDirectoriesAvailable (
         builtins.mapAttrs addTargetMembership units
         // sideEffectUnits
@@ -2218,7 +2349,7 @@ in rec {
           };
         }
       )
-    );
+    ));
     typedSystemdUnchecked = builtins.seq unitReferencesValid (validateTypedUnits synthesizedUnits);
     typedSystemd = builtins.seq socketTcpBindValid typedSystemdUnchecked;
     renderedUnitNames = unitNamesFromTypedSystemd typedSystemd;

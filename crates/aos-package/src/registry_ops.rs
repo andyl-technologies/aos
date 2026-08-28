@@ -94,12 +94,12 @@ use crate::types::{
     ConfigOutputMeta, ConfinementClass, ExposeArtifactMeta, ExposeMeta, FEATURE_ATTESTATION_V1,
     FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1,
     FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1,
-    FEATURE_RECOVERY_UKIS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1,
-    ModuleAbiCompat, OwnedRoot, PACKAGE_META_FORMAT, PermissionsMeta, RecoveryBundleComponent,
-    RecoveryBundleComponentId, RecoveryBundleManifest, RecoveryUkiEntry, RegistryConfig,
-    RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig, RootContribution, SbatEntry,
-    SigningKeySource, SigningKeySpec, SysrootUkiEntry, UkiSlot, package_name_bucket,
+    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_OPTIONAL_CREDENTIALS_V1,
+    FEATURE_PERMISSIONS_V1, FEATURE_RECOVERY_UKIS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1,
+    FEATURE_UKI_SLOTS_V1, ModuleAbiCompat, OwnedRoot, PACKAGE_META_FORMAT, PermissionsMeta,
+    RecoveryBundleComponent, RecoveryBundleComponentId, RecoveryBundleManifest, RecoveryUkiEntry,
+    RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig, RootContribution,
+    SbatEntry, SigningKeySource, SigningKeySpec, SysrootUkiEntry, UkiSlot, package_name_bucket,
     rfc0001_metadata_requires_provenance, validate_attestation_meta, validate_branch_name,
     validate_channel_name, validate_config_module_meta, validate_config_output_meta,
     validate_expose_artifact_meta, validate_expose_meta_for_package, validate_git_ref_name,
@@ -164,6 +164,8 @@ struct PublishConfigModuleManifest {
     owns_roots: Vec<OwnedRoot>,
     #[serde(default)]
     contributes: Vec<RootContribution>,
+    #[serde(default)]
+    artifacts: crate::types::ConfigModuleArtifacts,
     #[serde(default)]
     provides_capabilities: Vec<String>,
     #[serde(default)]
@@ -2593,14 +2595,8 @@ fn read_publish_config_module(
         .iter()
         .map(|owned| (owned.root.as_str(), owned))
         .collect::<BTreeMap<_, _>>();
-    let mut derived_owned_roots = declares
-        .iter()
-        .filter_map(|path| path.split('.').next())
-        .filter(|root| *root != package_name)
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    derived_owned_roots.sort();
-    derived_owned_roots.dedup();
+    let derived_owned_roots =
+        derive_owned_root_names(&declares, package_name, &authored.owns_roots);
     let mut owns_roots = Vec::with_capacity(derived_owned_roots.len());
     for root in &derived_owned_roots {
         let authored_root = owned_by_name.remove(root.as_str()).with_context(|| {
@@ -2681,11 +2677,34 @@ fn read_publish_config_module(
         requires,
         owns_roots,
         contributes,
+        artifacts: authored.artifacts,
         provides_capabilities,
     };
     validate_config_output_meta(&module.config_output)?;
     validate_config_module_meta(package_name, &module)?;
     Ok(module)
+}
+
+fn derive_owned_root_names(
+    declares: &[String],
+    package_name: &str,
+    authored_roots: &[OwnedRoot],
+) -> Vec<String> {
+    let mut roots = declares
+        .iter()
+        .filter_map(|path| path.split('.').next())
+        .filter(|root| {
+            // Package-prefixed declarations are private by default, but an
+            // explicit ownsRoots entry promotes that same-name root into a
+            // versioned contributor interface. Publication must validate the
+            // claim just like any differently named shared root.
+            *root != package_name || authored_roots.iter().any(|owned| owned.root == *root)
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    roots.sort();
+    roots.dedup();
+    roots
 }
 
 fn reject_config_derivation_references(config_output: &str) -> Result<()> {
@@ -5998,25 +6017,7 @@ fn config_publish_binding_digest(
     module: &ConfigModuleMeta,
     expose_manifest_digest: Option<&str>,
 ) -> Result<String> {
-    let base_lib = module
-        .evaluation_base_lib
-        .as_ref()
-        .context("published config module is missing its evaluation base-lib binding")?;
-    let metadata = serde_json::to_vec(module)
-        .context("serializing derived config-module metadata for provenance binding")?;
-    Ok(format!(
-        "sha256:{}",
-        sha256_hex(
-            format!(
-                "config={}\nbase-lib={}\nmetadata=sha256:{}\nexpose={}\n",
-                module.config_output.nar_hash,
-                base_lib.nar_hash,
-                sha256_hex(&metadata),
-                expose_manifest_digest.unwrap_or("")
-            )
-            .as_bytes()
-        )
-    ))
+    crate::package_attestation::config_module_binding_digest(module, expose_manifest_digest)
 }
 
 fn package_nar_root_digest(nar_hash: &str) -> String {
@@ -8159,6 +8160,11 @@ fn package_platform_table(
         }
         if !manifest.expose.config.is_empty() {
             required_features.push(toml::Value::String(FEATURE_CONFIG_V1.to_string()));
+        }
+        if manifest.expose.config.has_optional_credentials() {
+            required_features.push(toml::Value::String(
+                FEATURE_OPTIONAL_CREDENTIALS_V1.to_string(),
+            ));
         }
         if manifest.expose.config.has_unit_reconciliation() {
             required_features.push(toml::Value::String(FEATURE_RELOAD_V1.to_string()));
@@ -15962,8 +15968,25 @@ mod tests {
                 contributable: vec!["allowedTCPPorts".to_string()],
             }],
             contributes: vec![],
+            artifacts: Default::default(),
             provides_capabilities: vec!["system.capabilities.dns-resolver".to_string()],
         }
+    }
+
+    #[test]
+    fn publication_validates_explicit_same_name_owned_root() {
+        let declarations = vec!["nginx.enable".to_string(), "nginx.virtualHosts".to_string()];
+        let owned = vec![OwnedRoot {
+            root: "nginx".to_string(),
+            interface_abi: 1,
+            contributable: vec!["virtualHosts".to_string()],
+        }];
+
+        assert_eq!(
+            derive_owned_root_names(&declarations, "nginx", &owned),
+            vec!["nginx".to_string()]
+        );
+        assert!(derive_owned_root_names(&declarations, "nginx", &[]).is_empty());
     }
 
     #[test]

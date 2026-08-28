@@ -435,19 +435,26 @@ generations use `/var/lib/profiles/system-packages/`, separate from the sysroot
 2. Both NARs are downloaded, verified, imported.
 3. A new generation `gen-(N+1)` is created; `create_gc_roots()` roots both the
    package closure and the new package-root image.
-4. The expose phase (§4) regenerates `aos-pkg-myapp.target` and the launch unit to
-   point at the **new** package-root store path.
+4. The expose phase (§4) regenerates `aos-pkg-myapp.target` and its launch
+   contract. A verity service points at the **new** package-root image; a
+   confined non-verity service retains the new authenticated payload as its
+   immutable lower layer and points `RootDirectory=` at its per-service merged
+   path below `/run/aos/service-roots/`.
 5. `switch_to(gen-(N+1))` flips `current`.
-6. *Activation of the new root:* the running service must be restarted to pick
-   up the new immutable package root. This is `systemctl restart
-   aos-pkg-myapp.target` (or the launch unit). **There is no live, in-place root
-   swap** — the package root is immutable per the substrate model, so an upgrade is a
-   stop-old-root / start-new-root cycle. For a workload this is a clean restart;
-   for k3s it drains the node (honest cost, see §6).
+6. *Activation of the new root:* for a non-verity confined service, the
+   package-level roots preparation unit creates distinct upper/work/merged
+   directories and mounts the new payload lower before the workload starts.
+   The running service must be restarted to pick up the new immutable payload
+   or verity image. This is `systemctl restart aos-pkg-myapp.target` (or the
+   launch unit). **There is no live, in-place root swap** — an upgrade is a
+   stop-old-root / prepare-new-root / start-new-root cycle. For a workload this
+   is a clean restart; for k3s it drains the node (honest cost, see §6).
 
-**Rollback** is the inverse: `switch_to(gen-(N-1))` restores the prior generation
-(both store paths are still gc-rooted there) and the prior unit text, then a
-restart brings the old root back. This reuses `copy_roots`/`copy_roots_for_upgrade`
+**Rollback** is the inverse: `switch_to(gen-(N-1))` restores the prior
+generation (both store paths are still gc-rooted there) and the prior unit
+text. The roots preparation unit reconstructs the volatile overlay when
+needed, then a restart brings the old root back. This reuses
+`copy_roots`/`copy_roots_for_upgrade`
 (`install.rs`); expose-phase artifacts are generation-rooted and re-materialized
 when the package generation switches.
 

@@ -57,6 +57,11 @@ in {
       preset = false;
     };
 
+    # Preserve the established server-role behavior when the package is
+    # selected by a fixture or operator. Outside this role, installing the
+    # package remains inert until a runtime module enables it explicitly.
+    "aos-registry-server".enable = lib.mkDefault true;
+
     # Test fixtures: not baked into the production image by default. Test
     # systems/fixtures that need them re-enable with `bundle = true`.
     aos.packages.aos-test-agent = {
