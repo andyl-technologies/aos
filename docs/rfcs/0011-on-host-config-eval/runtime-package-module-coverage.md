@@ -26,7 +26,7 @@ upstream distribution includes a daemon.
 - [ ] KubeEdge CloudCore
 - [ ] KubeEdge EdgeCore
 - [ ] Kerberos KDC role
-- [ ] conntrackd role
+- [x] conntrackd role
 - [x] rsync daemon role
 
 Each checked service must provide typed options, explicit enablement, generated
