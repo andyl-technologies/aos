@@ -757,6 +757,19 @@ fn collect_expose_artifacts(
     let mut seen = HashMap::<String, usize>::new();
 
     for closure in closures {
+        for package in &closure.closure {
+            if let Some(documentation) = &package.documentation {
+                push_secondary_artifact(
+                    &mut artifacts,
+                    &mut seen,
+                    &closure.registry_name,
+                    &documentation.store_path,
+                    &documentation.nar_hash,
+                    true,
+                    true,
+                )?;
+            }
+        }
         let Some(expose) = closure.root.expose.as_ref() else {
             continue;
         };
@@ -804,7 +817,7 @@ fn push_secondary_artifact(
         let previous = &artifacts[previous_index];
         if previous.nar_hash != nar_hash {
             anyhow::bail!(
-                "secondary expose store path '{}' has conflicting signed NAR hashes",
+                "secondary artifact store path '{}' has conflicting signed NAR hashes",
                 store_path
             );
         }
@@ -812,7 +825,7 @@ fn push_secondary_artifact(
             || previous.requires_empty_references != requires_empty_references
         {
             anyhow::bail!(
-                "secondary expose store path '{}' is declared with incompatible roles",
+                "secondary artifact store path '{}' is declared with incompatible roles",
                 store_path
             );
         }
@@ -844,7 +857,7 @@ fn verify_secondary_artifact_downloads(
         };
         if artifact.requires_empty_references && !result.references.is_empty() {
             anyhow::bail!(
-                "expose image '{}' has runtime references but signed image metadata covers only the image NAR",
+                "secondary artifact '{}' must have an empty reference set",
                 result.store_path
             );
         }
@@ -1555,11 +1568,14 @@ fn obsolete_installed_hashes(
         if !apm.source_drv.is_empty() {
             hashes.insert(store_path_hash(&apm.source_drv).to_string());
         }
+        if let Some(documentation) = &apm.documentation {
+            hashes.insert(store_path_hash(&documentation.store_path).to_string());
+        }
     }
     hashes
 }
 
-/// Copy the `usr/` and `src/` GC-root symlinks from one generation to
+/// Copy the `usr/`, `src/`, and `docs/` GC-root symlinks from one generation to
 /// another, skipping the hashes in `skip_hashes` (replaced packages) and
 /// never overwriting links already present in the destination.
 pub(crate) fn copy_roots_except_hashes(
@@ -1569,48 +1585,27 @@ pub(crate) fn copy_roots_except_hashes(
 ) -> Result<()> {
     use std::os::unix::fs::symlink;
 
-    // Copy usr/ roots.
-    let from_usr = from.path.join("usr");
-    let to_usr = to.path.join("usr");
-    std::fs::create_dir_all(&to_usr).with_context(|| format!("creating {}", to_usr.display()))?;
+    for directory in ["usr", "src", "docs"] {
+        let source = from.path.join(directory);
+        let destination = to.path.join(directory);
+        std::fs::create_dir_all(&destination)
+            .with_context(|| format!("creating {}", destination.display()))?;
 
-    if from_usr.is_dir() {
-        for entry in std::fs::read_dir(&from_usr)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if skip_hashes.contains(name_str.as_ref()) {
-                continue;
-            }
-            let target = std::fs::read_link(entry.path())?;
-            let dest = to_usr.join(&name);
-            if !dest.symlink_metadata().is_ok() {
-                symlink(&target, &dest).with_context(|| {
-                    format!("copying root {} -> {}", dest.display(), target.display())
-                })?;
-            }
-        }
-    }
-
-    // Copy src/ roots.
-    let from_src = from.path.join("src");
-    let to_src = to.path.join("src");
-    std::fs::create_dir_all(&to_src).with_context(|| format!("creating {}", to_src.display()))?;
-
-    if from_src.is_dir() {
-        for entry in std::fs::read_dir(&from_src)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if skip_hashes.contains(name_str.as_ref()) {
-                continue;
-            }
-            let target = std::fs::read_link(entry.path())?;
-            let dest = to_src.join(&name);
-            if !dest.symlink_metadata().is_ok() {
-                symlink(&target, &dest).with_context(|| {
-                    format!("copying root {} -> {}", dest.display(), target.display())
-                })?;
+        if source.is_dir() {
+            for entry in std::fs::read_dir(&source)? {
+                let entry = entry?;
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if skip_hashes.contains(name_str.as_ref()) {
+                    continue;
+                }
+                let target = std::fs::read_link(entry.path())?;
+                let dest = destination.join(&name);
+                if !dest.symlink_metadata().is_ok() {
+                    symlink(&target, &dest).with_context(|| {
+                        format!("copying root {} -> {}", dest.display(), target.display())
+                    })?;
+                }
             }
         }
     }

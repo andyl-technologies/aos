@@ -242,18 +242,24 @@ pub async fn filter_missing(store_paths: &[String]) -> Result<Vec<String>> {
 /// For packages with a non-empty `source_drv`:
 ///   `gen_dir/src/{drv_hash}` -> `{source_drv}`
 ///
+/// For packages with canonical documentation:
+///   `gen_dir/docs/{documentation_hash}` -> `{documentation_store_path}`
+///
 /// Uses `std::os::unix::fs::symlink` for atomic symlink creation.
 ///
 /// # Errors
 ///
-/// Returns an error if the `usr/`/`src/` directories cannot be created or a
+/// Returns an error if the `usr/`/`src/`/`docs/` directories cannot be created or a
 /// symlink cannot be created or renamed into place.
 pub fn create_gc_roots(gen_dir: &Path, packages: &[PackageMeta]) -> Result<()> {
     let usr_dir = gen_dir.join("usr");
     let src_dir = gen_dir.join("src");
+    let docs_dir = gen_dir.join("docs");
 
     std::fs::create_dir_all(&usr_dir).with_context(|| format!("creating {}", usr_dir.display()))?;
     std::fs::create_dir_all(&src_dir).with_context(|| format!("creating {}", src_dir.display()))?;
+    std::fs::create_dir_all(&docs_dir)
+        .with_context(|| format!("creating {}", docs_dir.display()))?;
 
     for meta in packages {
         // Create usr/{hash} -> store_path
@@ -276,6 +282,18 @@ pub fn create_gc_roots(gen_dir: &Path, packages: &[PackageMeta]) -> Result<()> {
                     "creating GC root {} -> {}",
                     src_link.display(),
                     meta.source_drv
+                )
+            })?;
+        }
+
+        if let Some(documentation) = &meta.documentation {
+            let documentation_hash = store_path_hash(&documentation.store_path);
+            let docs_link = docs_dir.join(documentation_hash);
+            atomic_symlink(&documentation.store_path, &docs_link).with_context(|| {
+                format!(
+                    "creating documentation GC root {} -> {}",
+                    docs_link.display(),
+                    documentation.store_path
                 )
             })?;
         }
