@@ -37,6 +37,30 @@
 }: let
   version = "0.1.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  buildPerl =
+    if isDarwinCross
+    then buildPackages.perl
+    else perl;
+  buildPkgConfig =
+    if isDarwinCross
+    then buildPackages.pkg-config
+    else pkg-config;
+  buildProtobuf =
+    if isDarwinCross
+    then buildPackages.protobuf
+    else protobuf;
+  buildCmake =
+    if isDarwinCross
+    then buildPackages.cmake
+    else cmake;
+  buildGitMinimal =
+    if isDarwinCross
+    then buildPackages.git-minimal
+    else git-minimal;
+  buildOpenSsh =
+    if isDarwinCross
+    then buildPackages.openssh
+    else openssh;
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
   # Every external tool the aos/apm/apr binaries shell out to by bare name
@@ -124,7 +148,7 @@
   cargoArtifactContract = {
     family = "aos-native-release-and-test";
     checkType = "debug";
-    nativeInputs = map toString [openssl protobuf cmake libssh2];
+    nativeInputs = map toString [openssl buildProtobuf buildCmake libssh2];
   };
   cargoEnv = {
     OPENSSL_DIR = "${openssl}";
@@ -132,7 +156,7 @@
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
-    PROTOC = "${protobuf}/bin/protoc";
+    PROTOC = "${buildProtobuf}/bin/protoc";
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-native-release-and-test-artifacts";
@@ -149,7 +173,7 @@
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
     ];
     inherit cargoEnv;
-    buildDeps = [perl pkg-config openssl protobuf cmake libssh2];
+    buildDeps = [buildPerl buildPkgConfig openssl buildProtobuf buildCmake libssh2];
     runtimeDeps = [openssl zlib];
   };
 in
@@ -175,7 +199,7 @@ in
     # so scrubPhase nukes their references and they never enter the runtime
     # closure — production code uses libgit2 + ssh-key, never these binaries.
     buildDeps =
-      [perl pkg-config openssl protobuf cmake libssh2 git-minimal openssh]
+      [buildPerl buildPkgConfig openssl buildProtobuf buildCmake libssh2 buildGitMinimal buildOpenSsh]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
       [openssl zlib]
@@ -194,7 +218,7 @@ in
       export OPENSSL_INCLUDE_DIR="${openssl}/include"
       export OPENSSL_NO_VENDOR=1
       export OPENSSL_STATIC=0
-      export PROTOC="${protobuf}/bin/protoc"
+      export PROTOC="${buildProtobuf}/bin/protoc"
       export AOS_MCOPY="${mtools}/bin/mcopy"
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
