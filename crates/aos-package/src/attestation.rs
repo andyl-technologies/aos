@@ -140,8 +140,30 @@ pub struct AttestationInputs {
     pub config_modules: ConfigModulesAttInput,
     /// The policy-authorized `host.nix`.
     pub host_nix: HostNixAttInput,
+    /// Separately authorized runtime operator module set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_modules: Option<RuntimeModulesAttInput>,
     /// The platform-supplied instance facts (recorded, not signed).
     pub instance_facts: InstanceFactsAttInput,
+}
+
+/// Runtime module set identity recorded independently from platform host trust.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeModulesAttInput {
+    /// Descriptor schema covered by this identity.
+    pub schema: String,
+    /// Recursive source root.
+    pub store_path: String,
+    /// NAR hash of the complete source root.
+    pub nar_hash: String,
+    /// Ordered direct entrypoints.
+    pub entrypoints: Vec<String>,
+    /// `local-root`; signed mode is reserved until signature receipts exist.
+    pub trust_mode: String,
+    /// Trusted signer fingerprint in signed mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer_key: Option<String>,
 }
 
 /// Base-lib measured-boot binding plus the F1 dm-verity roothash.
@@ -740,6 +762,16 @@ fn inputs_from_manifest(
             platform,
             signer_key,
         },
+        runtime_modules: manifest.inputs.runtime_modules.as_ref().map(|runtime| {
+            RuntimeModulesAttInput {
+                schema: runtime.schema.clone(),
+                store_path: runtime.store_path.clone(),
+                nar_hash: runtime.nar_hash.clone(),
+                entrypoints: runtime.entrypoints.clone(),
+                trust_mode: runtime.trust_mode.clone(),
+                signer_key: runtime.signer_key.clone(),
+            }
+        }),
         instance_facts: InstanceFactsAttInput {
             facts_hash: manifest.inputs.instance_facts.facts_hash.clone(),
             store_path: manifest.inputs.instance_facts.store_path.clone(),
@@ -828,6 +860,8 @@ pub struct VerifierPolicy {
     pub trusted_config_keys: Vec<String>,
     /// Deployment platform identities accepted as control-plane authorities.
     pub trusted_platforms: Vec<String>,
+    /// Whether verifier policy explicitly accepts local root as runtime-module authority.
+    pub allow_local_root_runtime_modules: bool,
     /// Registry roster fingerprints that may sign release tags.
     pub roster_fingerprints: Vec<String>,
     /// Registry roster fingerprints explicitly revoked by the authenticated
@@ -899,6 +933,10 @@ pub enum GenAttestationFailure {
     Tag,
     /// Host-input authorization evidence does not satisfy verifier policy.
     HostNixTrust,
+    /// Runtime-module authorization evidence does not satisfy verifier policy.
+    RuntimeModulesTrust,
+    /// Runtime-module identity is malformed or internally inconsistent.
+    RuntimeModulesIdentity,
     /// `eval_mode` is not `pure-eval`.
     EvalMode,
     /// Optional re-derivation produced a different `manifest_hash`.
@@ -922,6 +960,12 @@ impl std::fmt::Display for GenAttestationFailure {
             GenAttestationFailure::Facts => "instance-facts binding failed",
             GenAttestationFailure::Tag => "release tag is unsigned, revoked, or off-roster",
             GenAttestationFailure::HostNixTrust => "host.nix authorization evidence is untrusted",
+            GenAttestationFailure::RuntimeModulesTrust => {
+                "runtime module authorization evidence is untrusted"
+            }
+            GenAttestationFailure::RuntimeModulesIdentity => {
+                "runtime module identity is malformed or inconsistent"
+            }
             GenAttestationFailure::EvalMode => "eval_mode is not 'pure-eval'",
             GenAttestationFailure::Rederive => "re-derived manifest hash does not match the record",
         };
@@ -1063,6 +1107,31 @@ pub fn verify_gen_attestation(
     };
     if !host_trusted {
         return Err(GenAttestationFailure::HostNixTrust);
+    }
+    if let Some(runtime) = &record.inputs.runtime_modules {
+        let identity = crate::config_eval::materialize::RuntimeModulesInput {
+            schema: runtime.schema.clone(),
+            trust_mode: runtime.trust_mode.clone(),
+            store_path: runtime.store_path.clone(),
+            nar_hash: runtime.nar_hash.clone(),
+            entrypoints: runtime.entrypoints.clone(),
+            signer_key: runtime.signer_key.clone(),
+        };
+        if identity.validate().is_err() {
+            return Err(GenAttestationFailure::RuntimeModulesIdentity);
+        }
+
+        let trusted = match runtime.trust_mode.as_str() {
+            "local-root" => runtime.signer_key.is_none() && policy.allow_local_root_runtime_modules,
+            // Signed ingestion is reserved until the record carries a verified
+            // signature receipt binding the descriptor to this exact source.
+            // A caller-supplied signer fingerprint alone is not evidence.
+            "signed" => false,
+            _ => false,
+        };
+        if !trusted {
+            return Err(GenAttestationFailure::RuntimeModulesTrust);
+        }
     }
 
     // 9. eval_mode == "pure-eval".
@@ -1530,6 +1599,7 @@ mod tests {
                 platform: None,
                 signer_key: Some("0badf00d".to_string()),
             },
+            runtime_modules: None,
             instance_facts: InstanceFactsAttInput {
                 facts_hash: "sha256:ee".to_string(),
                 store_path: "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-facts".to_string(),
@@ -1549,6 +1619,7 @@ mod tests {
             prior_pcr15_event_digests: Vec::new(),
             trusted_config_keys: vec!["0badf00d".to_string()],
             trusted_platforms: vec!["aws".to_string()],
+            allow_local_root_runtime_modules: false,
             roster_fingerprints: vec!["deadbeef".to_string()],
             revoked_roster_fingerprints: Vec::new(),
             valid_release_tags: vec![VerifiedConfigModuleRelease {
@@ -1701,6 +1772,72 @@ mod tests {
         let res =
             verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None);
         assert!(res.is_ok(), "got {res:?}");
+    }
+
+    #[test]
+    fn local_root_runtime_modules_require_explicit_policy_and_bind_order() {
+        let mut inputs = sample_inputs();
+        inputs.runtime_modules = Some(RuntimeModulesAttInput {
+            schema: "aos.runtime-module-set/v1".to_string(),
+            store_path: "/nix/store/99999999999999999999999999999999-runtime-modules".to_string(),
+            nar_hash: format!("sha256:{}", "ab".repeat(32)),
+            entrypoints: vec!["10-packages.nix".to_string(), "20-services.nix".to_string()],
+            trust_mode: "local-root".to_string(),
+            signer_key: None,
+        });
+        let record = computed_with_inputs(inputs);
+        let mut policy = sample_policy();
+        assert_eq!(
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err(),
+            GenAttestationFailure::RuntimeModulesTrust
+        );
+
+        policy.allow_local_root_runtime_modules = true;
+        assert!(verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).is_ok());
+
+        let mut reordered = record;
+        reordered
+            .inputs
+            .runtime_modules
+            .as_mut()
+            .unwrap()
+            .entrypoints
+            .reverse();
+        assert!(
+            verify_gen_attestation(&reordered, &MockChecker, &policy, b"nonce-xyz", None).is_err()
+        );
+
+        let mut malformed_inputs = sample_inputs();
+        malformed_inputs.runtime_modules = Some(RuntimeModulesAttInput {
+            schema: "aos.runtime-module-set/v2".to_string(),
+            store_path: "/nix/store/99999999999999999999999999999999-runtime-modules".to_string(),
+            nar_hash: format!("sha256:{}", "ab".repeat(32)),
+            entrypoints: vec!["10-packages.nix".to_string()],
+            trust_mode: "local-root".to_string(),
+            signer_key: None,
+        });
+        let malformed = computed_with_inputs(malformed_inputs);
+        assert_eq!(
+            verify_gen_attestation(&malformed, &MockChecker, &policy, b"nonce-xyz", None)
+                .unwrap_err(),
+            GenAttestationFailure::RuntimeModulesIdentity
+        );
+
+        let mut unsigned_claim_inputs = sample_inputs();
+        unsigned_claim_inputs.runtime_modules = Some(RuntimeModulesAttInput {
+            schema: "aos.runtime-module-set/v1".to_string(),
+            store_path: "/nix/store/99999999999999999999999999999999-runtime-modules".to_string(),
+            nar_hash: format!("sha256:{}", "ab".repeat(32)),
+            entrypoints: vec!["10-packages.nix".to_string()],
+            trust_mode: "signed".to_string(),
+            signer_key: Some("0badf00d".to_string()),
+        });
+        let unsigned_claim = computed_with_inputs(unsigned_claim_inputs);
+        assert_eq!(
+            verify_gen_attestation(&unsigned_claim, &MockChecker, &policy, b"nonce-xyz", None)
+                .unwrap_err(),
+            GenAttestationFailure::RuntimeModulesIdentity
+        );
     }
 
     #[test]

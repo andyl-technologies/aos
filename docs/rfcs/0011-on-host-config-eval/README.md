@@ -56,6 +56,10 @@ the invariants, and the resolved decisions; the topic files hold the detail:
 - [`operability.md`](operability.md) — `apm switch --dry-run` + the off-host CI
   preflight, eval-failure observability, GC of config closures, the
   flat-merge ↔ module-eval parity gate, and the perf budget + test plan.
+- [`runtime-module-sets.md`](runtime-module-sets.md) — composing a persistent,
+  generation-pinned runtime module set over the independently authenticated
+  cloud `host.nix`, including compatibility, transaction, and package-module
+  rules.
 - [`test-plan.md`](test-plan.md) — the structural-contract and behavioral test
   strategy: focused pure-eval assertions, manifest/materializer parity, fleet
   lifecycle coverage, and red-first subsystem test specs.

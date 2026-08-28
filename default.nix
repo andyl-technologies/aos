@@ -89,6 +89,12 @@
       if builtins.isAttrs args && args ? operatorModules
       then args.operatorModules
       else [];
+    # Generation-pinned supplemental modules are a distinct resolver lane:
+    # equal operator priority, separately attributable runtime provenance.
+    runtimeModules =
+      if builtins.isAttrs args && args ? runtimeModules
+      then args.runtimeModules
+      else [];
     packageModules =
       if builtins.isAttrs args && args ? packageModules
       then args.packageModules
@@ -111,7 +117,7 @@
               };
             }
           ];
-        inherit pkgs lib specialArgs operatorModules packageModules;
+        inherit pkgs lib specialArgs operatorModules runtimeModules packageModules;
       })
       .config
       .aos
@@ -134,7 +140,7 @@
             };
           }
         ];
-      inherit pkgs lib specialArgs operatorModules packageModules;
+      inherit pkgs lib specialArgs operatorModules runtimeModules packageModules;
     };
 
   # Auto-discover system definitions from ./systems/*.nix
@@ -1092,6 +1098,18 @@ in {
       inherit pkgs mkSystem;
       serverModule = ./systems/server.nix;
     };
+    nginx-config = import ./lib/testing/nginx-config.nix {
+      inherit pkgs lib mkSystem;
+      serverModule = ./systems/server.nix;
+    };
+    registry-hub = import ./lib/testing/registry-hub.nix {
+      inherit pkgs lib mkSystem;
+      serverModule = ./systems/server.nix;
+    };
+    aos-registry-server-config = import ./lib/testing/aos-registry-server-config.nix {
+      inherit pkgs lib;
+    };
+    k3s-config = import ./lib/testing/k3s-config.nix {inherit pkgs lib;};
     config-source-gc = import ./lib/testing/config-source-gc.nix {inherit pkgs lib;};
     config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
     config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};
@@ -1112,6 +1130,23 @@ in {
           module-args
           module-enforcement
           package-expose
+          aos-registry-server-config
+          registry-hub
+          nginx-config
+          k3s-config
+          integration.envoy-config-module-contract
+          integration.cloudcore-config
+          integration.conntrack-tools-config
+          integration.containerd-config-module-contract
+          integration.edgecore-config
+          integration.etcd-config-module-contract
+          integration.garage-config-module-contract
+          integration.krb5-config
+          integration.mariadb-config-module-contract
+          integration.openldap-config
+          integration.postgresql-expose-contract
+          integration.postgresql-module-contract
+          integration.rsync-config
           config-source-gc
           config-provenance
           system-structure
@@ -1198,11 +1233,14 @@ in {
         "config-image-generation-axes"
         "config-secret-reference"
         "install-from-image"
+        "k3s-combined-worker"
+        "k3s-control-plane-worker"
         "measured-boot"
         "on-host-config-eval"
         "package-attestation-quote"
         "provisioning-boot"
         "runtime-config-role"
+        "runtime-module-composition"
         "system-image-rollback"
       ];
       runtimeConfigFleet = builtins.map (name: base.${name}) runtimeConfigNames;

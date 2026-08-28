@@ -456,6 +456,7 @@ pub fn execute_cross_abi_reeval(
         eval_root,
         out,
         verbose,
+        None,
     )
 }
 

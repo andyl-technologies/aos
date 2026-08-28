@@ -35,6 +35,15 @@
   # zstd-19 recompression on every iterative fleet-test image rebuild.
   aos.image.erofsCompressionLevel = 1;
   aos.image.allowTestArtifacts = true;
+  aos.image.testArtifactRoots = [pkgs.binutils];
+  # The test agent, debug profile, and guest-side diagnostic tools are an
+  # intentional test-image payload. Keep the production server's 512 MiB
+  # root and download ratchets unchanged while sizing this dedicated fixture
+  # for that closure.
+  aos.image.budgets = {
+    maxRootMiB = 640;
+    maxDownloadMiB = 768;
+  };
 
   # Guest agent for image machines (baked machines also get it from
   # their /var seed; the extra bundled copy is inert there). See

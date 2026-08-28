@@ -88,6 +88,13 @@ enum Command {
         /// Scoped Cloudflare API token used by authenticated CDN route probes.
         #[arg(long, env = "HUB_CLOUDFLARE_API_TOKEN")]
         cloudflare_api_token: Option<String>,
+        /// File containing the scoped Cloudflare API token.
+        #[arg(
+            long,
+            env = "HUB_CLOUDFLARE_API_TOKEN_FILE",
+            conflicts_with = "cloudflare_api_token"
+        )]
+        cloudflare_api_token_file: Option<PathBuf>,
     },
     /// Re-index one registry (or all) now.
     Index {
@@ -406,6 +413,7 @@ async fn main() -> Result<()> {
             route_reservation_keys_file,
             secret_version_manifest_file,
             cloudflare_api_token,
+            cloudflare_api_token_file,
         } => {
             let root = resolve_root(cli.root, dev)?;
             let listener = tokio::net::TcpListener::bind(&listen)
@@ -662,7 +670,25 @@ async fn main() -> Result<()> {
                     "HUB_ROUTE_PUBLICATION_MANIFEST_FILE and HUB_ROUTE_PUBLICATION_PUBLIC_KEY must be configured together"
                 ),
             }
+            let cloudflare_api_token = match (cloudflare_api_token, cloudflare_api_token_file) {
+                (Some(token), None) => Some(token),
+                (None, Some(path)) => Some(
+                    String::from_utf8(aos_hub::auth::seal::read_secret_file(&path).with_context(
+                        || format!("reading Cloudflare API token at {}", path.display()),
+                    )?)
+                    .context("Cloudflare API token is not UTF-8")?
+                    .trim_end()
+                    .to_owned(),
+                ),
+                (None, None) => None,
+                // clap rejects this combination before dispatch; retain an
+                // explicit fail-closed branch for programmatic construction.
+                (Some(_), Some(_)) => anyhow::bail!(
+                    "HUB_CLOUDFLARE_API_TOKEN and HUB_CLOUDFLARE_API_TOKEN_FILE conflict"
+                ),
+            };
             if let Some(token) = cloudflare_api_token {
+                anyhow::ensure!(!token.is_empty(), "Cloudflare API token file is empty");
                 let api =
                     Arc::new(aos_hub::coreports::CloudflareControlPlaneClient::new(token).await?);
                 route_adapters = route_adapters.with_external(Arc::new(
