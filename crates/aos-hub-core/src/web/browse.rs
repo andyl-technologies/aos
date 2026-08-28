@@ -618,6 +618,7 @@ pub async fn images(
         &channels.unwrap_or_default(),
         download_base.as_deref(),
         &pages::ImageBrowse {
+            page_number: query.page_number(),
             query: query.q.as_deref(),
             release: query.release.as_deref(),
             channel: query.channel.as_deref(),

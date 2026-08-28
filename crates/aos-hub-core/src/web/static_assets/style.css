@@ -167,6 +167,14 @@ table {
   min-width: 100%;
 }
 .table-scroll td { max-width: 36rem; }
+.trust-key,
+.cache-url {
+  display: inline-block;
+  max-width: min(28rem, 55vw);
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
+}
 .table-scroll:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -594,7 +602,8 @@ p.chips { margin: 0.2rem 0 0.8rem; }
   margin: 0 0.2rem 0.2rem 0;
   font-size: 0.85rem;
 }
-.license-pill {
+.license-pill,
+.platform-pill {
   display: inline-block;
   max-width: 16ch;
   overflow: hidden;
@@ -608,7 +617,8 @@ p.chips { margin: 0.2rem 0 0.8rem; }
   vertical-align: middle;
   white-space: nowrap;
 }
-.license-pill:hover {
+.license-pill:hover,
+.platform-pill:hover {
   border-color: var(--accent);
   color: var(--accent);
   text-decoration: none;
@@ -677,37 +687,47 @@ p.chips { margin: 0.2rem 0 0.8rem; }
   border-bottom: 0;
   white-space: nowrap;
 }
-.images-table .image-detail th,
-.images-table .image-detail td {
-  padding-block: 0.25rem 0.7rem;
+.images-table .image-detail > th,
+.images-table .image-detail > td {
+  padding-block: 0.35rem 0.75rem;
   border-bottom: 0;
   font-size: 0.84rem;
 }
-.images-table .image-detail th {
+.images-table .image-detail > th {
+  width: 5rem;
   color: var(--dim);
   font-size: 0.75rem;
   white-space: nowrap;
 }
-.image-detail-item {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.35rem;
-  margin: 0 1rem 0.3rem 0;
-  white-space: nowrap;
+.table-scroll .image-facts {
+  width: 100%;
+  min-width: 42rem;
+  margin: 0;
+  table-layout: fixed;
 }
-.checksum-item { max-width: 100%; }
-.image-checksum {
-  display: inline-block;
-  max-width: 9.5ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  vertical-align: bottom;
-  white-space: nowrap;
+.image-facts th,
+.image-facts td {
+  padding: 0.35rem 0.65rem 0.35rem 0;
+  border-bottom: 1px solid var(--rule-faint);
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: normal;
 }
-.image-copy {
-  padding: 0.05rem 0.4rem;
-  border-color: var(--rule-strong);
-  font-size: 0.75rem;
+.image-facts tr:last-child > * { border-bottom: 0; }
+.image-facts th {
+  width: 7.5rem;
+  color: var(--dim);
+  font-size: 0.72rem;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.image-facts td { padding-right: 1.25rem; }
+.image-store-path {
+  background: none;
+  border: 0;
+  padding: 0;
+  overflow-wrap: anywhere;
 }
 
 /* Account tokens follow the same stacked-object hierarchy as storage
@@ -745,7 +765,13 @@ p.chips { margin: 0.2rem 0 0.8rem; }
 @media (max-width: 40rem) {
   .artifact-table .artifact-summary td,
   .images-table .image-summary td { white-space: normal; }
-  .image-detail-item { white-space: normal; }
+  .table-scroll .image-facts { min-width: 24rem; }
+  .image-facts tbody { display: block; }
+  .image-facts tr {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+  }
+  .image-facts th { width: auto; }
   .token-head { flex-wrap: wrap; }
   .token-scope { max-width: calc(100% - 6rem); }
 }
