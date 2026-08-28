@@ -457,8 +457,13 @@ impl StoreWriteBackFlushSummary {
 /// available independently and is not itself a physical GC fence.
 pub struct StoreGraphAdmin {
     configuration: StoreGraphConfigurationId,
-    physical: BTreeMap<StoreNodeId, Arc<dyn BlobStoreAdmin>>,
+    physical: BTreeMap<StoreNodeId, StoreGraphPhysicalAuthority>,
     s3_multipart_cleanup: BTreeMap<StoreNodeId, Arc<S3MultipartCleanupAdmin>>,
+}
+
+struct StoreGraphPhysicalAuthority {
+    backend: Arc<dyn ImmutableBlobBackend>,
+    admin: Arc<dyn BlobStoreAdmin>,
 }
 
 impl StoreGraphAdmin {
@@ -473,9 +478,10 @@ impl StoreGraphAdmin {
     pub fn physical(&self) -> Vec<StoreGraphPhysicalAdmin<'_>> {
         self.physical
             .iter()
-            .map(|(node, admin)| StoreGraphPhysicalAdmin {
+            .map(|(node, authority)| StoreGraphPhysicalAdmin {
                 node,
-                admin: admin.as_ref(),
+                backend: authority.backend.as_ref(),
+                admin: authority.admin.as_ref(),
             })
             .collect()
     }
@@ -500,6 +506,7 @@ impl StoreGraphAdmin {
 #[derive(Clone, Copy)]
 pub struct StoreGraphPhysicalAdmin<'a> {
     node: &'a StoreNodeId,
+    backend: &'a dyn ImmutableBlobBackend,
     admin: &'a dyn BlobStoreAdmin,
 }
 
@@ -508,6 +515,22 @@ impl<'a> StoreGraphPhysicalAdmin<'a> {
     #[must_use]
     pub const fn node(self) -> &'a StoreNodeId {
         self.node
+    }
+
+    /// Opens one complete logical object from this exact physical boundary.
+    ///
+    /// Callers performing a whole-placement verification must inventory under
+    /// an exclusive fence, release it before streaming reads, then reacquire
+    /// and reproduce the inventory generation. This deliberately exposes no
+    /// conditional-publication or deletion operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the exact physical placement is absent,
+    /// unavailable, unauthorized, malformed, or cannot be opened for deferred
+    /// whole-object authentication.
+    pub fn read(self, id: ContentId) -> Result<BlobHandle, StoreError> {
+        self.backend.read(id, None)
     }
 
     /// Returns the separately held physical inventory/delete authority.
@@ -854,6 +877,24 @@ impl StoreGraph {
                 capabilities: backend.capabilities(),
             });
         }
+        let physical = state
+            .physical
+            .iter()
+            .map(|(id, admin)| {
+                let backend = state
+                    .built
+                    .get(id)
+                    .cloned()
+                    .ok_or_else(|| invalid_graph(id.as_str(), GraphViolation::MissingNode))?;
+                Ok((
+                    id.clone(),
+                    StoreGraphPhysicalAuthority {
+                        backend,
+                        admin: Arc::clone(admin),
+                    },
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, StoreError>>()?;
         Ok((
             Self {
                 configuration,
@@ -868,7 +909,7 @@ impl StoreGraph {
             },
             StoreGraphAdmin {
                 configuration,
-                physical: state.physical,
+                physical,
                 s3_multipart_cleanup: state.s3_multipart_cleanup,
             },
         ))

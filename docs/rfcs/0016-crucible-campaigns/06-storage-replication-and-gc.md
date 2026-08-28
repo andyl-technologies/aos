@@ -1178,6 +1178,20 @@ construct a deletion fence. Both values retain the same content-derived
 `StoreGraphConfigurationId`; GC accepts the administrative value itself and
 cannot pair independently supplied leaves with an unrelated graph hash.
 
+The same administrative boundary lends a read-only handle for each exact
+physical leaf beside its inventory fence. Whole-placement verification visits
+leaves in canonical node-ID order and uses a fixed global ceiling of 65,536
+placements and 128 GiB of summed logical bytes. For each leaf it acquires the
+exclusive fence, records the complete bounded `(ContentId, logical_length)`
+inventory and terminal summary, releases the fence, and streams every named
+placement from that exact physical leaf through authenticated EOF. It then
+reacquires the fence and MUST reproduce the backend identity, inventory
+generation, placement count, and logical-byte total. A changed generation,
+extra placement, missing or corrupt object, incomplete stream, or exceeded
+bound fails without reporting verification success. The result may disclose
+the graph configuration and aggregate per-leaf summaries but does not disclose
+the placement IDs or confer publication, ref, or deletion authority.
+
 The registered `crucible.content-store.graph-configuration` schemas v1 through
 v10 freeze that identity basis. New writers retain the byte-for-byte v1 body
 when the graph has no compressed-directory, logical-quota, encrypted,
