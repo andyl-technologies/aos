@@ -1946,6 +1946,36 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   transaction rolls back as `blocked` and no template can become usable.
 - **Risk:** F.
 
+### crucible-hot-fork-rcu-barrier — retain RCU quiescence
+
+- **Patch:** `0126-crucible-hot-fork-rcu-barrier.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** a process-lifetime reversible RCU barrier gates every new
+  outer read-side entry and callback submission before it can
+  become visible to the RCU subsystem. `hold` publishes a sticky gate and
+  returns immediately; racing admissions either publish into the exact reader
+  or callback counters or park until release. The retained state reports the
+  complete bounded reader registry, active readers, admission transitions,
+  pending callbacks, synchronous drains, owner thread, and hold generation.
+  The template coordinator acquires this barrier with the plugin callback
+  barrier and acknowledges readiness bit 4 only while the complete held RCU
+  state is quiescent. Abort and blocked preparation release both barriers.
+- **Micro-test:** strict Rust decoding rejects unknown fields, changed schemas,
+  invalid owner/hold generations, reader-count overflow, contradictory drain
+  state, and an RCU proof detached from a retained quiescent transaction. A
+  QEMU unit test, executed by the patched package build, proves a registered
+  reader cannot cross an acquired barrier until release. The live patched-QEMU
+  gate requires exact stable released state, rejection of a hold outside the
+  authenticated boundary, template-version-2 nesting, and absence of the
+  command in stock QEMU. Patch regeneration compiles the QAPI schema and C
+  barrier into the full patched emulator.
+- **Inertness:** the gate is dormant until an authorized OOB caller holds it at
+  the existing exact paused/device-flush boundary. It does not classify or
+  reconstruct the retained RCU worker thread in a child, drain AIO or block
+  owners, freeze plugin rings, close mapping/descriptor dispositions, or call
+  `fork(2)`. Those missing proofs keep template preparation blocked.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

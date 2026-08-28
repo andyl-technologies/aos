@@ -34,7 +34,8 @@ pub use hot_fork::{
     QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES,
     QMP_HOT_FORK_MUTEX_INVENTORY_MAX, QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION,
-    QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_RCU_INVENTORY_MAX,
+    QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
+    QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_RCU_INVENTORY_MAX,
     QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_READINESS_SCHEMA_VERSION,
     QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_COMMAND,
     QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION, QMP_HOT_FORK_THREAD_INVENTORY_MAX,
@@ -49,18 +50,18 @@ pub use hot_fork::{
     QmpHotForkAioHandlerInventory, QmpHotForkAioInventory, QmpHotForkBlockBackend,
     QmpHotForkBlockBackendInventory, QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory,
     QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkPluginBarrierState,
-    QmpHotForkPluginResourceInventory, QmpHotForkProof, QmpHotForkRcuInventory,
-    QmpHotForkRcuReader, QmpHotForkReadiness, QmpHotForkTemplateOutcome, QmpHotForkTemplateState,
-    QmpHotForkThread, QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer,
-    QmpHotForkTimerClock, QmpHotForkTimerInventory,
+    QmpHotForkPluginResourceInventory, QmpHotForkProof, QmpHotForkRcuBarrierState,
+    QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness, QmpHotForkTemplateOutcome,
+    QmpHotForkTemplateState, QmpHotForkThread, QmpHotForkThreadDisposition,
+    QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock, QmpHotForkTimerInventory,
 };
 use hot_fork::{
     parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,
     parse_hot_fork_block_backend_inventory, parse_hot_fork_bottom_half_inventory,
     parse_hot_fork_mutex_inventory, parse_hot_fork_plugin_barrier_state,
-    parse_hot_fork_plugin_resource_inventory, parse_hot_fork_rcu_inventory,
-    parse_hot_fork_readiness, parse_hot_fork_template_state, parse_hot_fork_thread_inventory,
-    parse_hot_fork_timer_inventory,
+    parse_hot_fork_plugin_resource_inventory, parse_hot_fork_rcu_barrier_state,
+    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_template_state,
+    parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
 };
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
@@ -634,6 +635,41 @@ where
         self.hot_fork_plugin_barrier(HotForkPluginBarrierAction::Release)
     }
 
+    /// Holds QEMU's reversible RCU admission and drain barrier.
+    ///
+    /// New outer read-side entries and callback submissions are parked
+    /// immediately. Already-admitted work drains asynchronously, so callers
+    /// query again until [`QmpHotForkRcuBarrierState::quiescent`] is true.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when QEMU is not at the exact paused boundary, the
+    /// QMP exchange fails, or the response violates the closed barrier schema
+    /// or hold postcondition.
+    pub fn hold_hot_fork_rcu_barrier(&mut self) -> Result<QmpHotForkRcuBarrierState, QmpError> {
+        self.hot_fork_rcu_barrier(HotForkRcuBarrierAction::Hold)
+    }
+
+    /// Observes QEMU's reversible RCU admission and drain barrier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the QMP exchange fails or the response
+    /// violates the closed barrier schema.
+    pub fn query_hot_fork_rcu_barrier(&mut self) -> Result<QmpHotForkRcuBarrierState, QmpError> {
+        self.hot_fork_rcu_barrier(HotForkRcuBarrierAction::Query)
+    }
+
+    /// Releases QEMU's reversible RCU admission and drain barrier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the QMP exchange fails or the response
+    /// violates the closed barrier schema or release postcondition.
+    pub fn release_hot_fork_rcu_barrier(&mut self) -> Result<QmpHotForkRcuBarrierState, QmpError> {
+        self.hot_fork_rcu_barrier(HotForkRcuBarrierAction::Release)
+    }
+
     /// Starts or advances QEMU's retained hot-fork template transaction.
     ///
     /// QEMU acquires every currently implemented subsystem barrier. A draining
@@ -719,6 +755,26 @@ where
         if !postcondition_holds {
             return Err(QmpError::MalformedTypedResponse {
                 command: QmpCommandKind::HotForkPluginBarrier,
+                response: response.value.to_string(),
+            });
+        }
+        Ok(state)
+    }
+
+    fn hot_fork_rcu_barrier(
+        &mut self,
+        action: HotForkRcuBarrierAction,
+    ) -> Result<QmpHotForkRcuBarrierState, QmpError> {
+        let response = self.send_command_return(QmpCommand::HotForkRcuBarrier { action })?;
+        let state = parse_hot_fork_rcu_barrier_state(&response.value)?;
+        let postcondition_holds = match action {
+            HotForkRcuBarrierAction::Hold => state.held(),
+            HotForkRcuBarrierAction::Query => true,
+            HotForkRcuBarrierAction::Release => !state.held(),
+        };
+        if !postcondition_holds {
+            return Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkRcuBarrier,
                 response: response.value.to_string(),
             });
         }
@@ -1271,6 +1327,8 @@ pub enum QmpCommandKind {
     QueryHotForkPluginResourceInventory,
     /// QEMU-owned reversible plugin callback-barrier operation.
     HotForkPluginBarrier,
+    /// QEMU-owned reversible RCU admission/drain-barrier operation.
+    HotForkRcuBarrier,
     /// QEMU-owned retained hot-fork template coordinator operation.
     HotForkTemplate,
     /// QEMU-owned hot-fork allocated-bottom-half inventory query.
@@ -1311,6 +1369,7 @@ impl QmpCommandKind {
                 QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND
             }
             Self::HotForkPluginBarrier => QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
+            Self::HotForkRcuBarrier => QMP_HOT_FORK_RCU_BARRIER_COMMAND,
             Self::HotForkTemplate => QMP_HOT_FORK_TEMPLATE_COMMAND,
             Self::QueryHotForkBottomHalfInventory => {
                 QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND
@@ -1348,6 +1407,13 @@ enum HotForkPluginBarrierAction {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HotForkRcuBarrierAction {
+    Hold,
+    Query,
+    Release,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HotForkTemplateAction {
     Prepare,
     Query,
@@ -1365,6 +1431,16 @@ impl HotForkTemplateAction {
 }
 
 impl HotForkPluginBarrierAction {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Hold => "hold",
+            Self::Query => "query",
+            Self::Release => "release",
+        }
+    }
+}
+
+impl HotForkRcuBarrierAction {
     const fn wire_name(self) -> &'static str {
         match self {
             Self::Hold => "hold",
@@ -1411,6 +1487,9 @@ enum QmpCommand<'a> {
     HotForkPluginBarrier {
         action: HotForkPluginBarrierAction,
     },
+    HotForkRcuBarrier {
+        action: HotForkRcuBarrierAction,
+    },
     HotForkTemplate {
         action: HotForkTemplateAction,
     },
@@ -1448,6 +1527,7 @@ impl QmpCommand<'_> {
                 QmpCommandKind::QueryHotForkPluginResourceInventory
             }
             Self::HotForkPluginBarrier { .. } => QmpCommandKind::HotForkPluginBarrier,
+            Self::HotForkRcuBarrier { .. } => QmpCommandKind::HotForkRcuBarrier,
             Self::HotForkTemplate { .. } => QmpCommandKind::HotForkTemplate,
             Self::QueryHotForkBottomHalfInventory => {
                 QmpCommandKind::QueryHotForkBottomHalfInventory
@@ -1534,6 +1614,12 @@ impl QmpCommand<'_> {
             }),
             Self::HotForkPluginBarrier { action } => json!({
                 "exec-oob": QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
+                "arguments": {
+                    "action": action.wire_name(),
+                },
+            }),
+            Self::HotForkRcuBarrier { action } => json!({
+                "exec-oob": QMP_HOT_FORK_RCU_BARRIER_COMMAND,
                 "arguments": {
                     "action": action.wire_name(),
                 },

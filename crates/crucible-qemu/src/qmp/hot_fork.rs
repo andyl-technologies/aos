@@ -10,11 +10,17 @@ use serde_json::Value;
 use super::{QmpCommandKind, QmpError};
 
 mod plugin;
+mod rcu_barrier;
 mod template;
 
 pub use plugin::{QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory};
 pub(super) use plugin::{
     parse_hot_fork_plugin_barrier_state, parse_hot_fork_plugin_resource_inventory,
+};
+pub(crate) use rcu_barrier::parse_hot_fork_rcu_barrier_state;
+pub use rcu_barrier::{
+    QMP_HOT_FORK_RCU_BARRIER_COMMAND, QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION,
+    QmpHotForkRcuBarrierState,
 };
 pub(crate) use template::parse_hot_fork_template_state;
 pub use template::{

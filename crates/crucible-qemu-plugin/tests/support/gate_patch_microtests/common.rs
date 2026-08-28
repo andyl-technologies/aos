@@ -139,6 +139,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0123-crucible-hot-fork-plugin-resource-inventory.patch",
     "0124-crucible-hot-fork-plugin-callback-barrier.patch",
     "0125-crucible-hot-fork-template-coordinator.patch",
+    "0126-crucible-hot-fork-rcu-barrier.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

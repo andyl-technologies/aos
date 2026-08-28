@@ -126,6 +126,11 @@ in
           jq -e -s 'any(.[]; has("error"))' "$out/stock-plugin-barrier.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible plugin callback-barrier command"
           qmp "$stock_socket" \
+            '{"exec-oob":"crucible-hot-fork-rcu-barrier","arguments":{"action":"query"}}' \
+            "$out/stock-rcu-barrier.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-rcu-barrier.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible RCU barrier command"
+          qmp "$stock_socket" \
             '{"exec-oob":"crucible-hot-fork-template","arguments":{"action":"query"}}' \
             "$out/stock-template-coordinator.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-template-coordinator.json" >/dev/null \
@@ -653,33 +658,106 @@ in
             || { cat "$out/plugin-barrier-release.json" >&2; fail "QEMU released an unregistered plugin barrier"; }
 
           qmp_pair "$patched_socket" \
+            '{"exec-oob":"crucible-hot-fork-rcu-barrier","arguments":{"action":"query"}}' \
+            "$out/rcu-barrier-query.json"
+          jq -e -s '
+            [.[] | select(has("return")) | .return |
+             select(has("registered-readers"))] as $reports |
+            ($reports | length) == 2 and $reports[0] == $reports[1] and
+            ($reports[0] as $report |
+            ($report | keys | sort) == [
+              "active-readers",
+              "admissions-in-flight",
+              "complete",
+              "drain-active",
+              "generation",
+              "held",
+              "owner-thread-id",
+              "pending-callbacks",
+              "quiescent",
+              "registered-readers",
+              "schema-version"
+            ] and
+            $report."schema-version" == 1 and
+            $report.generation == 0 and
+            $report."owner-thread-id" == 0 and
+            $report.held == false and
+            ($report.complete | type) == "boolean" and
+            ($report."registered-readers" | type) == "number" and
+            $report."registered-readers" > 0 and
+            $report."registered-readers" <= 65536 and
+            ($report."active-readers" | type) == "number" and
+            $report."active-readers" >= 0 and
+            $report."active-readers" <= $report."registered-readers" and
+            $report."admissions-in-flight" == 0 and
+            ($report."pending-callbacks" | type) == "number" and
+            $report."pending-callbacks" >= 0 and
+            ($report."drain-active" | type) == "boolean" and
+            $report.quiescent == false)
+          ' "$out/rcu-barrier-query.json" >/dev/null \
+            || { cat "$out/rcu-barrier-query.json" >&2; fail "QEMU released RCU barrier state was not exact and stable"; }
+          qmp "$patched_socket" \
+            '{"exec-oob":"crucible-hot-fork-rcu-barrier","arguments":{"action":"hold"}}' \
+            "$out/rcu-barrier-hold.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/rcu-barrier-hold.json" >/dev/null \
+            || { cat "$out/rcu-barrier-hold.json" >&2; fail "QEMU held the RCU barrier outside the exact boundary"; }
+          qmp "$patched_socket" \
+            '{"exec-oob":"crucible-hot-fork-rcu-barrier","arguments":{"action":"query"}}' \
+            "$out/rcu-barrier-after-rejection.json"
+          jq -e -s '
+            [.[] | select(has("return"))][-1].return as $report |
+            $report.generation == 0 and
+            $report."owner-thread-id" == 0 and
+            $report.held == false and
+            $report.quiescent == false
+          ' "$out/rcu-barrier-after-rejection.json" >/dev/null \
+            || { cat "$out/rcu-barrier-after-rejection.json" >&2; fail "QEMU retained RCU barrier state after a rejected hold"; }
+
+          qmp_pair "$patched_socket" \
             '{"exec-oob":"crucible-hot-fork-template","arguments":{"action":"query"}}' \
             "$out/template-coordinator-query.json"
           jq -e -s '
             [.[] | select(has("return")) | .return |
              select(has("transaction-active"))] as $reports |
             ($reports | length) == 2 and $reports[0] == $reports[1] and
-            $reports[0] == {
+            ($reports[0] as $report |
+            ($report | keys | sort) == [
+              "acknowledged-proofs",
+              "generation",
+              "missing-proofs",
+              "outcome",
+              "plugin-barrier",
+              "rcu-barrier",
+              "ready",
+              "required-proofs",
+              "rollback-complete",
+              "schema-version",
+              "transaction-active"
+            ] and
+            $report."schema-version" == 2 and
+            $report.generation == 0 and
+            $report.outcome == "idle" and
+            $report."transaction-active" == false and
+            $report."required-proofs" == 511 and
+            $report."acknowledged-proofs" == 3 and
+            $report."missing-proofs" == 508 and
+            $report."plugin-barrier" == {
               "schema-version": 1,
               "generation": 0,
-              "outcome": "idle",
-              "transaction-active": false,
-              "required-proofs": 511,
-              "acknowledged-proofs": 3,
-              "missing-proofs": 508,
-              "plugin-barrier": {
-                "schema-version": 1,
-                "generation": 0,
-                "registered": false,
-                "manifest-consistent": false,
-                "held": false,
-                "teardown-closed": false,
-                "in-flight": 0,
-                "quiescent": false
-              },
-              "rollback-complete": true,
-              "ready": false
-            }
+              "registered": false,
+              "manifest-consistent": false,
+              "held": false,
+              "teardown-closed": false,
+              "in-flight": 0,
+              "quiescent": false
+            } and
+            $report."rcu-barrier"."schema-version" == 1 and
+            $report."rcu-barrier".generation == 0 and
+            $report."rcu-barrier"."owner-thread-id" == 0 and
+            $report."rcu-barrier".held == false and
+            $report."rcu-barrier".quiescent == false and
+            $report."rollback-complete" == true and
+            $report.ready == false)
           ' "$out/template-coordinator-query.json" >/dev/null \
             || { cat "$out/template-coordinator-query.json" >&2; fail "QEMU template coordinator idle state was not exact and stable"; }
           qmp "$patched_socket" \
@@ -699,7 +777,8 @@ in
             $reports[0]."transaction-active" == false and
             $reports[0]."rollback-complete" == true and
             $reports[0].ready == false and
-            $reports[0]."plugin-barrier".held == false
+            $reports[0]."plugin-barrier".held == false and
+            $reports[0]."rcu-barrier".held == false
           ' "$out/template-coordinator-after-rejection.json" >/dev/null \
             || { cat "$out/template-coordinator-after-rejection.json" >&2; fail "QEMU retained state after rejecting template preparation"; }
 
@@ -937,7 +1016,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0125-crucible-hot-fork-template-coordinator.patch
+          patch=0126-crucible-hot-fork-rcu-barrier.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -953,6 +1032,10 @@ in
           rcu_inventory_stable=true
           rcu_readers_thread_bound=true
           rcu_proof_acknowledged=false
+          rcu_barrier_schema_version=1
+          rcu_barrier_released_stable=true
+          rcu_barrier_hold_without_exact_boundary_rejected=true
+          rcu_barrier_quiescence_proof_bound=true
           aio_inventory_schema_version=1
           aio_inventory_bound=65536
           aio_inventory_stable=true
@@ -977,7 +1060,7 @@ in
           plugin_barrier_unregistered_shape=true
           plugin_barrier_release_unregistered_rejected=true
           plugin_ring_proof_acknowledged=false
-          template_coordinator_schema_version=1
+          template_coordinator_schema_version=2
           template_coordinator_idle_stable=true
           template_coordinator_unregistered_shape=true
           template_prepare_without_exact_boundary_rejected=true

@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "0d8c2a4bb34a18044e88d1707977f632f6e4f759813f021a676d48caae91e29d";
+  patchBranchBundleSha256 = "690d23a1b35f8b1e9494070eae4bb3c770a76f5cedca5c6439691b72eee1e0e9";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "08f0f9f07cbaaf02370b38e072c459118af0c8c4";
+  patchBranchHeadCommit = "e7ff1dc4c3be44cdbeb4835389145089f0400336";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1185,6 +1185,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "a serialized versioned OOB QMP coordinator owns retained template preparation, acquires the plugin callback barrier only at the exact paused/device-flush boundary, reports draining without blocking QMP, rolls every acquired barrier back when complete readiness remains unavailable, and refuses to claim prepared until all nine proof bits are present in one retained transaction";
+    }
+    {
+      file = "0126-crucible-hot-fork-rcu-barrier.patch";
+      branchSubject = "crucible: retain RCU quiescence for hot fork";
+      branchCommit = "e7ff1dc4c3be44cdbeb4835389145089f0400336";
+      branchTree = "dab9e6d8470af774b0ce2287fd1c96f370d30b7c";
+      catalogName = "crucible-hot-fork-rcu-barrier";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "a process-lifetime reversible RCU barrier gates every new outer read-side entry and callback submission, retains exact admission, reader, callback, and drain state, wakes parked submitters only on release, and lets the template coordinator acknowledge proof bit 4 only while the complete held barrier is quiescent";
     }
   ];
   catalogOnlyCapabilities = [

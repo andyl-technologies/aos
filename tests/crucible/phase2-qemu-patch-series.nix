@@ -874,6 +874,13 @@
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "a serialized versioned OOB QMP coordinator owns retained template preparation, acquires the plugin callback barrier only at the exact paused/device-flush boundary, reports draining without blocking QMP, rolls every acquired barrier back when complete readiness remains unavailable, and refuses to claim prepared until all nine proof bits are present in one retained transaction";
     }
+    {
+      file = "0126-crucible-hot-fork-rcu-barrier.patch";
+      catalogName = "crucible-hot-fork-rcu-barrier";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "a process-lifetime reversible RCU barrier gates every new outer read-side entry and callback submission, retains exact admission, reader, callback, and drain state, wakes parked submitters only on release, and lets the template coordinator acknowledge proof bit 4 only while the complete held barrier is quiescent";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

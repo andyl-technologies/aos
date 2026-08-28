@@ -1,0 +1,687 @@
+diff --git a/include/qemu/rcu.h b/include/qemu/rcu.h
+index a39d62e6a..39228b1a3 100644
+--- a/include/qemu/rcu.h
++++ b/include/qemu/rcu.h
+@@ -90,8 +90,30 @@ typedef struct QemuRcuHotForkInventory {
+     QemuRcuHotForkInventoryEntry *entries;
+ } QemuRcuHotForkInventory;
+ 
++typedef enum QemuRcuHotForkBarrierOperation {
++    QEMU_RCU_HOT_FORK_BARRIER_HOLD,
++    QEMU_RCU_HOT_FORK_BARRIER_QUERY,
++    QEMU_RCU_HOT_FORK_BARRIER_RELEASE,
++} QemuRcuHotForkBarrierOperation;
++
++typedef struct QemuRcuHotForkBarrierInventory {
++    uint64_t generation;
++    int64_t owner_thread_id;
++    uint64_t registered_readers;
++    uint64_t active_readers;
++    uint64_t admissions_in_flight;
++    uint64_t pending_callbacks;
++    bool held;
++    bool drain_active;
++    bool complete;
++    bool quiescent;
++} QemuRcuHotForkBarrierInventory;
++
+ QEMU_DECLARE_CO_TLS(struct rcu_reader_data, rcu_reader)
+ 
++void qemu_rcu_hot_fork_admission_begin(void);
++void qemu_rcu_hot_fork_admission_end(void);
++
+ static inline void rcu_read_lock(void)
+ {
+     struct rcu_reader_data *p_rcu_reader = get_ptr_rcu_reader();
+@@ -101,6 +123,7 @@ static inline void rcu_read_lock(void)
+         return;
+     }
+ 
++    qemu_rcu_hot_fork_admission_begin();
+     ctr = qatomic_read(&rcu_gp_ctr);
+     qatomic_set(&p_rcu_reader->ctr, ctr);
+ 
+@@ -109,6 +132,7 @@ static inline void rcu_read_lock(void)
+      * RCU-protected pointers.
+      */
+     smp_mb_placeholder();
++    qemu_rcu_hot_fork_admission_end();
+ }
+ 
+ static inline void rcu_read_unlock(void)
+@@ -149,6 +173,8 @@ void rcu_unregister_thread(void);
+  */
+ void qemu_rcu_hot_fork_inventory(QemuRcuHotForkInventory *inventory);
+ void qemu_rcu_hot_fork_inventory_destroy(QemuRcuHotForkInventory *inventory);
++void qemu_rcu_hot_fork_barrier(QemuRcuHotForkBarrierOperation operation,
++                               QemuRcuHotForkBarrierInventory *inventory);
+ 
+ /*
+  * Support for fork().  fork() support is enabled at startup.
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index f5456c0ef..5f00ea9bf 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -176,6 +176,28 @@ crucible_hot_fork_plugin_barrier(uint32_t operation, Error **errp)
+     return report;
+ }
+ 
++static CrucibleHotForkRcuBarrierState *
++crucible_hot_fork_rcu_barrier(QemuRcuHotForkBarrierOperation operation)
++{
++    CrucibleHotForkRcuBarrierState *report =
++        g_new0(CrucibleHotForkRcuBarrierState, 1);
++    QemuRcuHotForkBarrierInventory inventory;
++
++    qemu_rcu_hot_fork_barrier(operation, &inventory);
++    report->schema_version = 1;
++    report->generation = inventory.generation;
++    report->owner_thread_id = inventory.owner_thread_id;
++    report->held = inventory.held;
++    report->complete = inventory.complete;
++    report->registered_readers = inventory.registered_readers;
++    report->active_readers = inventory.active_readers;
++    report->admissions_in_flight = inventory.admissions_in_flight;
++    report->pending_callbacks = inventory.pending_callbacks;
++    report->drain_active = inventory.drain_active;
++    report->quiescent = inventory.quiescent;
++    return report;
++}
++
+ static GMutex crucible_hot_fork_template_lock;
+ static uint64_t crucible_hot_fork_template_generation;
+ static bool crucible_hot_fork_template_active;
+@@ -224,16 +246,65 @@ out:
+     return report;
+ }
+ 
++CrucibleHotForkRcuBarrierState *
++qmp_crucible_hot_fork_rcu_barrier(
++    CrucibleHotForkRcuBarrierAction action, Error **errp)
++{
++    CrucibleHotForkRcuBarrierState *report = NULL;
++    QemuRcuHotForkBarrierOperation operation;
++
++    g_mutex_lock(&crucible_hot_fork_template_lock);
++    switch (action) {
++    case CRUCIBLE_HOT_FORK_RCU_BARRIER_ACTION_HOLD:
++        if (crucible_hot_fork_template_active) {
++            error_setg(errp, "Crucible hot-fork template transaction owns "
++                       "the RCU barrier");
++            goto out;
++        }
++        if (!crucible_hot_fork_exact_paused_boundary()) {
++            error_setg(errp, "Crucible hot-fork RCU barrier requires "
++                       "an exact paused/device-flush boundary");
++            goto out;
++        }
++        operation = QEMU_RCU_HOT_FORK_BARRIER_HOLD;
++        break;
++    case CRUCIBLE_HOT_FORK_RCU_BARRIER_ACTION_QUERY:
++        operation = QEMU_RCU_HOT_FORK_BARRIER_QUERY;
++        break;
++    case CRUCIBLE_HOT_FORK_RCU_BARRIER_ACTION_RELEASE:
++        if (crucible_hot_fork_template_active) {
++            error_setg(errp, "Crucible hot-fork template transaction owns "
++                       "the RCU barrier");
++            goto out;
++        }
++        operation = QEMU_RCU_HOT_FORK_BARRIER_RELEASE;
++        break;
++    default:
++        error_setg(errp, "Unknown Crucible hot-fork RCU barrier action");
++        goto out;
++    }
++
++    report = crucible_hot_fork_rcu_barrier(operation);
++out:
++    g_mutex_unlock(&crucible_hot_fork_template_lock);
++    return report;
++}
++
+ static CrucibleHotForkTemplateState *
+ crucible_hot_fork_template_report(
+     CrucibleHotForkTemplateOutcome outcome,
+-    CrucibleHotForkPluginBarrierState *plugin_barrier)
++    CrucibleHotForkPluginBarrierState *plugin_barrier,
++    CrucibleHotForkRcuBarrierState *rcu_barrier)
+ {
+     CrucibleHotForkTemplateState *report =
+         g_new0(CrucibleHotForkTemplateState, 1);
+     uint64_t acknowledged = crucible_hot_fork_acknowledged_proofs();
+ 
+-    report->schema_version = 1;
++    if (crucible_hot_fork_template_active && rcu_barrier->quiescent) {
++        acknowledged |= CRUCIBLE_HOT_FORK_PROOF_RCU;
++    }
++
++    report->schema_version = 2;
+     report->generation = crucible_hot_fork_template_generation;
+     report->outcome = outcome;
+     report->transaction_active = crucible_hot_fork_template_active;
+@@ -241,11 +312,12 @@ crucible_hot_fork_template_report(
+     report->acknowledged_proofs = acknowledged;
+     report->missing_proofs = CRUCIBLE_HOT_FORK_REQUIRED_PROOFS & ~acknowledged;
+     report->plugin_barrier = plugin_barrier;
++    report->rcu_barrier = rcu_barrier;
+     report->rollback_complete = !report->transaction_active &&
+-        !plugin_barrier->held;
++        !plugin_barrier->held && !rcu_barrier->held;
+     report->ready = outcome == CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_PREPARED &&
+         report->transaction_active && plugin_barrier->quiescent &&
+-        report->missing_proofs == 0;
++        rcu_barrier->quiescent && report->missing_proofs == 0;
+     return report;
+ }
+ 
+@@ -254,8 +326,10 @@ qmp_crucible_hot_fork_template(
+     CrucibleHotForkTemplateAction action, Error **errp)
+ {
+     CrucibleHotForkPluginBarrierState *plugin_barrier = NULL;
++    CrucibleHotForkRcuBarrierState *rcu_barrier = NULL;
+     CrucibleHotForkTemplateState *report = NULL;
+     CrucibleHotForkTemplateOutcome outcome;
++    uint64_t acknowledged;
+ 
+     g_mutex_lock(&crucible_hot_fork_template_lock);
+     switch (action) {
+@@ -274,14 +348,26 @@ qmp_crucible_hot_fork_template(
+             if (plugin_barrier->held) {
+                 error_setg(errp, "Crucible hot-fork plugin barrier was held "
+                            "outside the template coordinator");
+-                g_free(plugin_barrier);
+-                plugin_barrier = NULL;
+                 goto out;
+             }
+-            g_free(plugin_barrier);
++            rcu_barrier = crucible_hot_fork_rcu_barrier(
++                QEMU_RCU_HOT_FORK_BARRIER_QUERY);
++            if (rcu_barrier->held) {
++                error_setg(errp, "Crucible hot-fork RCU barrier was held "
++                           "outside the template coordinator");
++                goto out;
++            }
++
++            g_clear_pointer(&rcu_barrier, g_free);
++            rcu_barrier = crucible_hot_fork_rcu_barrier(
++                QEMU_RCU_HOT_FORK_BARRIER_HOLD);
++            g_clear_pointer(&plugin_barrier, g_free);
+             plugin_barrier = crucible_hot_fork_plugin_barrier(
+                 QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD, errp);
+             if (!plugin_barrier) {
++                g_clear_pointer(&rcu_barrier, g_free);
++                rcu_barrier = crucible_hot_fork_rcu_barrier(
++                    QEMU_RCU_HOT_FORK_BARRIER_RELEASE);
+                 goto out;
+             }
+             crucible_hot_fork_template_active = true;
+@@ -293,30 +379,39 @@ qmp_crucible_hot_fork_template(
+             if (!plugin_barrier) {
+                 goto out;
+             }
++            rcu_barrier = crucible_hot_fork_rcu_barrier(
++                QEMU_RCU_HOT_FORK_BARRIER_QUERY);
+         }
+         if (!plugin_barrier->held || plugin_barrier->teardown_closed) {
+             error_setg(errp, "Crucible hot-fork template lost its retained "
+                        "plugin barrier");
+-            g_free(plugin_barrier);
+-            plugin_barrier = NULL;
+             goto out;
+         }
+-        if (!plugin_barrier->quiescent) {
++        if (!rcu_barrier->held || rcu_barrier->owner_thread_id <= 0) {
++            error_setg(errp, "Crucible hot-fork template lost its retained "
++                       "RCU barrier");
++            goto out;
++        }
++        if (!plugin_barrier->quiescent || !rcu_barrier->quiescent) {
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
+             break;
+         }
+-        if (crucible_hot_fork_acknowledged_proofs() ==
+-            CRUCIBLE_HOT_FORK_REQUIRED_PROOFS) {
++        acknowledged = crucible_hot_fork_acknowledged_proofs() |
++            CRUCIBLE_HOT_FORK_PROOF_RCU;
++        if (acknowledged == CRUCIBLE_HOT_FORK_REQUIRED_PROOFS) {
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_PREPARED;
+             break;
+         }
+ 
+-        g_free(plugin_barrier);
++        g_clear_pointer(&plugin_barrier, g_free);
+         plugin_barrier = crucible_hot_fork_plugin_barrier(
+             QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE, errp);
+         if (!plugin_barrier) {
+             goto out;
+         }
++        g_clear_pointer(&rcu_barrier, g_free);
++        rcu_barrier = crucible_hot_fork_rcu_barrier(
++            QEMU_RCU_HOT_FORK_BARRIER_RELEASE);
+         crucible_hot_fork_template_active = false;
+         outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_BLOCKED;
+         break;
+@@ -326,26 +421,36 @@ qmp_crucible_hot_fork_template(
+         if (!plugin_barrier) {
+             goto out;
+         }
++        rcu_barrier = crucible_hot_fork_rcu_barrier(
++            QEMU_RCU_HOT_FORK_BARRIER_QUERY);
+         if (crucible_hot_fork_template_active &&
+             (!plugin_barrier->held || plugin_barrier->teardown_closed)) {
+             error_setg(errp, "Crucible hot-fork template lost its retained "
+                        "plugin barrier");
+-            g_free(plugin_barrier);
+-            plugin_barrier = NULL;
++            goto out;
++        }
++        if (crucible_hot_fork_template_active &&
++            (!rcu_barrier->held || rcu_barrier->owner_thread_id <= 0)) {
++            error_setg(errp, "Crucible hot-fork template lost its retained "
++                       "RCU barrier");
+             goto out;
+         }
+         if (!crucible_hot_fork_template_active && plugin_barrier->held) {
+             error_setg(errp, "Crucible hot-fork plugin barrier was held "
+                        "outside the template coordinator");
+-            g_free(plugin_barrier);
+-            plugin_barrier = NULL;
++            goto out;
++        }
++        if (!crucible_hot_fork_template_active && rcu_barrier->held) {
++            error_setg(errp, "Crucible hot-fork RCU barrier was held "
++                       "outside the template coordinator");
+             goto out;
+         }
+         if (!crucible_hot_fork_template_active) {
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_IDLE;
+-        } else if (plugin_barrier->quiescent &&
+-                   crucible_hot_fork_acknowledged_proofs() ==
+-                       CRUCIBLE_HOT_FORK_REQUIRED_PROOFS) {
++        } else if (plugin_barrier->quiescent && rcu_barrier->quiescent &&
++                   (crucible_hot_fork_acknowledged_proofs() |
++                    CRUCIBLE_HOT_FORK_PROOF_RCU) ==
++                   CRUCIBLE_HOT_FORK_REQUIRED_PROOFS) {
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_PREPARED;
+         } else {
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
+@@ -358,11 +463,16 @@ qmp_crucible_hot_fork_template(
+             if (!plugin_barrier) {
+                 goto out;
+             }
++            rcu_barrier = crucible_hot_fork_rcu_barrier(
++                QEMU_RCU_HOT_FORK_BARRIER_QUERY);
+             if (plugin_barrier->held) {
+                 error_setg(errp, "Crucible hot-fork plugin barrier was held "
+                            "outside the template coordinator");
+-                g_free(plugin_barrier);
+-                plugin_barrier = NULL;
++                goto out;
++            }
++            if (rcu_barrier->held) {
++                error_setg(errp, "Crucible hot-fork RCU barrier was held "
++                           "outside the template coordinator");
+                 goto out;
+             }
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_IDLE;
+@@ -373,6 +483,8 @@ qmp_crucible_hot_fork_template(
+         if (!plugin_barrier) {
+             goto out;
+         }
++        rcu_barrier = crucible_hot_fork_rcu_barrier(
++            QEMU_RCU_HOT_FORK_BARRIER_RELEASE);
+         crucible_hot_fork_template_active = false;
+         outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_ABORTED;
+         break;
+@@ -381,8 +493,13 @@ qmp_crucible_hot_fork_template(
+         goto out;
+     }
+ 
+-    report = crucible_hot_fork_template_report(outcome, plugin_barrier);
++    report = crucible_hot_fork_template_report(outcome, plugin_barrier,
++                                                rcu_barrier);
++    plugin_barrier = NULL;
++    rcu_barrier = NULL;
+ out:
++    g_free(plugin_barrier);
++    g_free(rcu_barrier);
+     g_mutex_unlock(&crucible_hot_fork_template_lock);
+     return report;
+ }
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index ea457c3cc..db188d174 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -824,6 +824,85 @@
+   'returns': 'CrucibleHotForkPluginBarrierState',
+   'allow-oob': true }
+ 
++##
++# @CrucibleHotForkRcuBarrierAction:
++#
++# Operation over QEMU's process-lifetime reversible RCU admission barrier.
++#
++# @hold: reject every new outer read-side entry and callback submission while
++#     already-admitted work drains
++#
++# @query: observe the barrier without changing it
++#
++# @release: reopen admission and wake parked submitters
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'enum': 'CrucibleHotForkRcuBarrierAction',
++  'data': [ 'hold', 'query', 'release' ] }
++
++##
++# @CrucibleHotForkRcuBarrierState:
++#
++# Exact retained state of QEMU's RCU admission and drain barrier.
++#
++# @schema-version: barrier contract version, currently 1
++#
++# @generation: process-local hold/release generation
++#
++# @owner-thread-id: coordinator thread that acquired the barrier, or zero when
++#     the barrier is released
++#
++# @held: whether new outer readers and callback submitters are parked
++#
++# @complete: whether the complete bounded reader registry was observed
++#
++# @registered-readers: exact retained registered-reader count
++#
++# @active-readers: registered readers currently inside an outer critical section
++#
++# @admissions-in-flight: entries between admission and publication into the
++#     reader/callback state counted below
++#
++# @pending-callbacks: callbacks submitted but not yet completed
++#
++# @drain-active: whether a synchronous drain operation is active
++#
++# @quiescent: whether a complete held barrier has no admitted reader, callback,
++#     admission transition, or drain operation remaining
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkRcuBarrierState',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'owner-thread-id': 'int64',
++            'held': 'bool',
++            'complete': 'bool',
++            'registered-readers': 'uint64',
++            'active-readers': 'uint64',
++            'admissions-in-flight': 'uint64',
++            'pending-callbacks': 'uint64',
++            'drain-active': 'bool',
++            'quiescent': 'bool' } }
++
++##
++# @crucible-hot-fork-rcu-barrier:
++#
++# Holds, observes, or releases the reversible RCU admission barrier. The
++# command returns without waiting for already-admitted readers or callbacks.
++#
++# @action: requested barrier operation
++#
++# Returns: @CrucibleHotForkRcuBarrierState
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'crucible-hot-fork-rcu-barrier',
++  'data': { 'action': 'CrucibleHotForkRcuBarrierAction' },
++  'returns': 'CrucibleHotForkRcuBarrierState',
++  'allow-oob': true }
++
+ ##
+ # @CrucibleHotForkTemplateAction:
+ #
+@@ -869,12 +948,12 @@
+ ##
+ # @CrucibleHotForkTemplateState:
+ #
+-# QEMU-owned state for one retained template-preparation transaction. Version 1
+-# acquires only the Crucible plugin callback barrier. Because that barrier does
+-# not freeze host ring producers or provide child reconstruction, proof bit 6
+-# remains clear and a drained transaction rolls back as @blocked.
++# QEMU-owned state for one retained template-preparation transaction. Version 2
++# acquires the Crucible plugin callback barrier and QEMU's RCU admission/drain
++# barrier. A quiescent RCU barrier acknowledges proof bit 4. Other unresolved
++# proof classes still make a drained transaction roll back as @blocked.
+ #
+-# @schema-version: transaction contract version, currently 1
++# @schema-version: transaction contract version, currently 2
+ #
+ # @generation: positive process-local transaction generation after the first
+ #     successful prepare, or zero before any transaction
+@@ -891,6 +970,8 @@
+ #
+ # @plugin-barrier: plugin barrier state after the operation and any rollback
+ #
++# @rcu-barrier: RCU barrier state after the operation and any rollback
++#
+ # @rollback-complete: whether no transaction barrier remains acquired
+ #
+ # @ready: true exactly for a retained @prepared transaction with every proof
+@@ -906,6 +987,7 @@
+             'acknowledged-proofs': 'uint64',
+             'missing-proofs': 'uint64',
+             'plugin-barrier': 'CrucibleHotForkPluginBarrierState',
++            'rcu-barrier': 'CrucibleHotForkRcuBarrierState',
+             'rollback-complete': 'bool',
+             'ready': 'bool' } }
+ 
+diff --git a/tests/unit/test-rcu-list.c b/tests/unit/test-rcu-list.c
+index 8f0adb8b0..25d351de3 100644
+--- a/tests/unit/test-rcu-list.c
++++ b/tests/unit/test-rcu-list.c
+@@ -330,6 +330,65 @@ static void usage(int argc, char *argv[])
+ 
+ static int gtest_seconds;
+ 
++static QemuEvent barrier_reader_registered;
++static QemuEvent barrier_reader_start;
++static int barrier_reader_attempting;
++static int barrier_reader_entered;
++
++static void *rcu_barrier_reader(void *opaque)
++{
++    (void)opaque;
++    rcu_register_thread();
++    qemu_event_set(&barrier_reader_registered);
++    qemu_event_wait(&barrier_reader_start);
++    qatomic_set(&barrier_reader_attempting, 1);
++    rcu_read_lock();
++    qatomic_set(&barrier_reader_entered, 1);
++    rcu_read_unlock();
++    rcu_unregister_thread();
++    return NULL;
++}
++
++static void gtest_rcu_hot_fork_barrier(void)
++{
++    QemuRcuHotForkBarrierInventory inventory;
++    QemuThread reader;
++
++    qatomic_set(&barrier_reader_attempting, 0);
++    qatomic_set(&barrier_reader_entered, 0);
++    qemu_event_init(&barrier_reader_registered, false);
++    qemu_event_init(&barrier_reader_start, false);
++    qemu_thread_create(&reader, "barrier-reader", rcu_barrier_reader, NULL,
++                       QEMU_THREAD_JOINABLE);
++    qemu_event_wait(&barrier_reader_registered);
++
++    qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_HOLD, &inventory);
++    g_assert_true(inventory.held);
++    g_assert_true(inventory.quiescent);
++    g_assert_cmpint(inventory.owner_thread_id, ==, qemu_get_thread_id());
++
++    qemu_event_set(&barrier_reader_start);
++    while (!qatomic_read(&barrier_reader_attempting)) {
++        g_thread_yield();
++    }
++    g_usleep(10000);
++    g_assert_cmpint(qatomic_read(&barrier_reader_entered), ==, 0);
++
++    qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_QUERY, &inventory);
++    g_assert_true(inventory.held);
++    g_assert_true(inventory.quiescent);
++    g_assert_cmpuint(inventory.admissions_in_flight, ==, 0);
++
++    qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_RELEASE, &inventory);
++    g_assert_false(inventory.held);
++    g_assert_false(inventory.quiescent);
++    g_assert_cmpint(inventory.owner_thread_id, ==, 0);
++    qemu_thread_join(&reader);
++    g_assert_cmpint(qatomic_read(&barrier_reader_entered), ==, 1);
++    qemu_event_destroy(&barrier_reader_registered);
++    qemu_event_destroy(&barrier_reader_start);
++}
++
+ static void gtest_rcuq_one(void)
+ {
+     rcu_qtest("rcuqtest", gtest_seconds / 4, 1);
+@@ -362,6 +421,8 @@ int main(int argc, char *argv[])
+             g_test_add_func("/rcu/"TEST_NAME"/single-threaded", gtest_rcuq_one);
+             g_test_add_func("/rcu/"TEST_NAME"/short-few", gtest_rcuq_few);
+             g_test_add_func("/rcu/"TEST_NAME"/long-many", gtest_rcuq_many);
++            g_test_add_func("/rcu/hot-fork/barrier",
++                            gtest_rcu_hot_fork_barrier);
+             g_test_in_charge = 1;
+             return g_test_run();
+         }
+diff --git a/util/rcu.c b/util/rcu.c
+index b096364e3..e7ae839d8 100644
+--- a/util/rcu.c
++++ b/util/rcu.c
+@@ -51,6 +51,40 @@ static uint64_t rcu_hot_fork_pending_callbacks;
+ static QemuMutex rcu_registry_lock;
+ static QemuMutex rcu_sync_lock;
+ static uint64_t rcu_hot_fork_generation;
++static QemuMutex rcu_hot_fork_barrier_lock;
++static QemuEvent rcu_hot_fork_barrier_release;
++static int rcu_hot_fork_barrier_held;
++static int64_t rcu_hot_fork_barrier_owner;
++static uint64_t rcu_hot_fork_barrier_generation;
++static uint64_t rcu_hot_fork_admissions;
++
++void qemu_rcu_hot_fork_admission_begin(void)
++{
++    for (;;) {
++        int held = qatomic_read(&rcu_hot_fork_barrier_held);
++
++        if (held) {
++            qemu_event_wait(&rcu_hot_fork_barrier_release);
++            continue;
++        }
++
++        qatomic_inc(&rcu_hot_fork_admissions);
++        smp_mb_global();
++        held = qatomic_read(&rcu_hot_fork_barrier_held);
++        if (!held) {
++            return;
++        }
++
++        qatomic_dec(&rcu_hot_fork_admissions);
++        qemu_event_wait(&rcu_hot_fork_barrier_release);
++    }
++}
++
++void qemu_rcu_hot_fork_admission_end(void)
++{
++    smp_mb_global();
++    qatomic_dec(&rcu_hot_fork_admissions);
++}
+ 
+ /*
+  * Check whether a quiescent state was crossed between the beginning of
+@@ -314,11 +348,13 @@ static void *call_rcu_thread(void *opaque)
+ 
+ void call_rcu1(struct rcu_head *node, void (*func)(struct rcu_head *node))
+ {
++    qemu_rcu_hot_fork_admission_begin();
+     node->func = func;
+     qatomic_inc(&rcu_hot_fork_pending_callbacks);
+     enqueue(node);
+     qatomic_inc(&rcu_call_count);
+     qemu_event_set(&rcu_call_ready_event);
++    qemu_rcu_hot_fork_admission_end();
+ }
+ 
+ 
+@@ -446,6 +482,64 @@ void qemu_rcu_hot_fork_inventory_destroy(QemuRcuHotForkInventory *inventory)
+     memset(inventory, 0, sizeof(*inventory));
+ }
+ 
++void qemu_rcu_hot_fork_barrier(QemuRcuHotForkBarrierOperation operation,
++                               QemuRcuHotForkBarrierInventory *inventory)
++{
++    QemuRcuHotForkInventory readers;
++    size_t index;
++
++    memset(inventory, 0, sizeof(*inventory));
++    qemu_mutex_lock(&rcu_hot_fork_barrier_lock);
++    switch (operation) {
++    case QEMU_RCU_HOT_FORK_BARRIER_HOLD:
++        if (!qatomic_read(&rcu_hot_fork_barrier_held)) {
++            qemu_event_reset(&rcu_hot_fork_barrier_release);
++            qatomic_set(&rcu_hot_fork_barrier_owner, qemu_get_thread_id());
++            smp_mb_global();
++            qatomic_set(&rcu_hot_fork_barrier_held, 1);
++            rcu_hot_fork_barrier_generation++;
++            assert(rcu_hot_fork_barrier_generation != 0);
++        }
++        break;
++    case QEMU_RCU_HOT_FORK_BARRIER_QUERY:
++        break;
++    case QEMU_RCU_HOT_FORK_BARRIER_RELEASE:
++        if (qatomic_read(&rcu_hot_fork_barrier_held)) {
++            qatomic_set(&rcu_hot_fork_barrier_held, 0);
++            qatomic_set(&rcu_hot_fork_barrier_owner, 0);
++            rcu_hot_fork_barrier_generation++;
++            assert(rcu_hot_fork_barrier_generation != 0);
++            qemu_event_set(&rcu_hot_fork_barrier_release);
++        }
++        break;
++    default:
++        g_assert_not_reached();
++    }
++
++    qemu_rcu_hot_fork_inventory(&readers);
++    inventory->generation = rcu_hot_fork_barrier_generation;
++    inventory->owner_thread_id =
++        qatomic_read(&rcu_hot_fork_barrier_owner);
++    inventory->registered_readers = readers.entry_count;
++    for (index = 0; index < readers.entry_count; index++) {
++        if (readers.entries[index].active) {
++            inventory->active_readers++;
++        }
++    }
++    inventory->admissions_in_flight =
++        qatomic_read(&rcu_hot_fork_admissions);
++    inventory->pending_callbacks = readers.pending_callbacks;
++    inventory->held = qatomic_read(&rcu_hot_fork_barrier_held) != 0;
++    inventory->drain_active = readers.drain_active;
++    inventory->complete = !readers.overflowed;
++    inventory->quiescent = inventory->complete && inventory->held &&
++        inventory->active_readers == 0 &&
++        inventory->admissions_in_flight == 0 &&
++        inventory->pending_callbacks == 0 && !inventory->drain_active;
++    qemu_rcu_hot_fork_inventory_destroy(&readers);
++    qemu_mutex_unlock(&rcu_hot_fork_barrier_lock);
++}
++
+ void rcu_add_force_rcu_notifier(Notifier *n)
+ {
+     qemu_mutex_lock(&rcu_registry_lock);
+@@ -466,6 +560,8 @@ static void rcu_init_complete(void)
+ 
+     qemu_mutex_init(&rcu_registry_lock);
+     qemu_mutex_init(&rcu_sync_lock);
++    qemu_mutex_init(&rcu_hot_fork_barrier_lock);
++    qemu_event_init(&rcu_hot_fork_barrier_release, true);
+     qemu_event_init(&rcu_gp_event, true);
+ 
+     qemu_event_init(&rcu_call_ready_event, false);

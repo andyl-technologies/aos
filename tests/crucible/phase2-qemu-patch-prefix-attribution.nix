@@ -575,6 +575,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0126-crucible-hot-fork-rcu-barrier.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
