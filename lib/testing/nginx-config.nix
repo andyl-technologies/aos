@@ -11,7 +11,7 @@
   serverModule,
 }: let
   artifactAuthorization = {
-    owns = [];
+    owns = ["nginx"];
     contributes = {};
     artifacts = {
       etc = ["nginx/nginx.conf"];
