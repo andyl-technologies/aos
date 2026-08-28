@@ -446,6 +446,16 @@ pub enum PackageCommand {
         #[arg(long)]
         plan: PathBuf,
     },
+    /// Hidden: idempotently restore routed sources from an activation plan.
+    #[command(name = "activate-restore-routed-sources", hide = true)]
+    ActivateRestoreRoutedSources {
+        /// Path to the pre-swap activation plan
+        #[arg(long)]
+        plan: PathBuf,
+        /// Restore candidate-eligible sources instead of the old active set
+        #[arg(long)]
+        candidate: bool,
+    },
     /// Hidden: recover an interrupted credential publication transaction.
     #[command(name = "recover-credential-transactions", hide = true)]
     RecoverCredentialTransactions,
@@ -3326,6 +3336,10 @@ pub async fn run(
         let code = sysroot::activate_post_etc_swap(plan, printer).await;
         std::process::exit(code);
     }
+    if let PackageCommand::ActivateRestoreRoutedSources { plan, candidate } = command {
+        let code = sysroot::activate_restore_routed_sources(plan, *candidate, printer).await;
+        std::process::exit(code);
+    }
     if let PackageCommand::RecoverCredentialTransactions = command {
         return credential_artifact::recover_credential_transactions(
             &credential_artifact::aos_root_path(),
@@ -3638,6 +3652,9 @@ pub async fn run(
         }
         PackageCommand::ActivatePostEtcSwap { .. } => {
             unreachable!("ActivatePostEtcSwap is handled before ApmConfig::load")
+        }
+        PackageCommand::ActivateRestoreRoutedSources { .. } => {
+            unreachable!("ActivateRestoreRoutedSources is handled before ApmConfig::load")
         }
         PackageCommand::RecoverCredentialTransactions => {
             unreachable!("RecoverCredentialTransactions is handled before ApmConfig::load")
