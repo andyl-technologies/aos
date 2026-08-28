@@ -127,6 +127,8 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0111-crucible-accelerator-service-schema.patch",
     "0112-crucible-compile-affected-clock-sources.patch",
     "0113-crucible-restore-accelerator-rule-indexes.patch",
+    "0114-crucible-authenticate-fault-result-payloads.patch",
+    "0115-crucible-clock-impulse-read-error-policies.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

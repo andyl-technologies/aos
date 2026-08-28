@@ -204,6 +204,20 @@ fn clock_impulse_result_and_event_use_the_same_typed_evidence() {
             ..
         }
     ));
+    let mut composed = raw.clone();
+    composed[264..268].copy_from_slice(&3_u32.to_le_bytes());
+    composed[268..272].copy_from_slice(&3_u32.to_le_bytes());
+    translate_clock_impulse_evidence(&composed, &manifest, &result, 5, &expectation)
+        .unwrap_or_else(|error| {
+            panic!("stricter composed clock policies should translate: {error}")
+        });
+
+    let mut invalid_policy = composed;
+    invalid_policy[264..268].copy_from_slice(&4_u32.to_le_bytes());
+    assert!(matches!(
+        translate_clock_impulse_evidence(&invalid_policy, &manifest, &result, 5, &expectation),
+        Err(FaultCommandBridgeError::ClockEvidence)
+    ));
     let mut mismatched = expectation.clone();
     mismatched.parameters = ClockCommandParameters::Transform {
         kind: 1,

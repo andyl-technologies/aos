@@ -6,6 +6,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   faultHardwareGuest = import ./phase2-qemu-fault-hardware-guest.nix {inherit pkgs;};
+  variantCaseManifest = ./phase2-qemu-live-fault-hardware-cases.txt;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase2-qemu-live-fault-hardware";
@@ -100,6 +101,17 @@ in
             runtime::live_callbacks::tests::drained_control_boundary_pumps_fault_commands_before_fingerprint_and_ack \
             -- \
             --exact --include-ignored
+          composed_clock_policy_test=fault_command::tests::clock_tests::clock_impulse_result_and_event_use_the_same_typed_evidence
+          grep -Fxq "$composed_clock_policy_test: test" "$plugin_test_list"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-fault-hardware-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu-plugin \
+            --lib "$composed_clock_policy_test" \
+            -- \
+            --exact --include-ignored
 
           shmem_test_list="$TMPDIR/live-fault-hardware-shmem.tests"
           cargo test \
@@ -134,7 +146,9 @@ in
             -- \
             --list > "$qemu_test_list"
           node_schema_test=fault_action_sink::node_payload::tests::every_typed_node_effect_translates_to_its_closed_wire_schema
+          typed_rejection_test=fault_action_sink::tests::authenticated_typed_prepare_rejection_is_not_a_fatal_commit_error
           grep -Fxq "$node_schema_test: test" "$qemu_test_list"
+          grep -Fxq "$typed_rejection_test: test" "$qemu_test_list"
           cargo test \
             --frozen \
             --offline \
@@ -142,6 +156,38 @@ in
             --manifest-path crates/Cargo.toml \
             -p crucible-qemu \
             --lib "$node_schema_test" \
+            -- \
+            --exact --include-ignored
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-fault-hardware-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib "$typed_rejection_test" \
+            -- \
+            --exact --include-ignored
+
+          matrix_plan_test=matrix_plan::tests::closed_hardware_variant_matrix_admits_every_exact_case
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-fault-hardware-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --example crucible-qemu-live-fault-hardware \
+            -- \
+            --list > "$TMPDIR/live-fault-hardware-example.tests"
+          grep -Fxq "$matrix_plan_test: test" \
+            "$TMPDIR/live-fault-hardware-example.tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-fault-hardware-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --example crucible-qemu-live-fault-hardware \
+            "$matrix_plan_test" \
             -- \
             --exact --include-ignored
 
@@ -156,7 +202,7 @@ in
           run_dir="$TMPDIR/live-fault-hardware-run"
           mkdir -p "$run_dir"
           report="$TMPDIR/live-fault-hardware.result"
-          timeout -k 15 300 \
+          timeout -k 15 590 \
             "$TMPDIR/live-fault-hardware-target/debug/examples/crucible-qemu-live-fault-hardware" \
             ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
             ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
@@ -193,6 +239,13 @@ in
           grep -Fxq 'accelerator_service_occurrences=3' "$report"
           grep -Fxq 'fresh_plugin_restore=true' "$report"
           grep -Fxq 'orderly_child_exit=true' "$report"
+          grep -Fxq 'typed_rejection_payload_authenticated=true' "$report"
+
+          grep '^hardware_variant_case=' "$report" | cut -d= -f2- \
+            > "$TMPDIR/hardware-variant-cases"
+          test "$(wc -l < "$TMPDIR/hardware-variant-cases")" -eq 23
+          test "$(sort -u "$TMPDIR/hardware-variant-cases" | wc -l)" -eq 23
+          cmp ${variantCaseManifest} "$TMPDIR/hardware-variant-cases"
           grep -Fxq 'production_effect_row=clock.transform|offset-monotonic-overdue|gate:live-fault-hardware|production-qemu-signal-runtime|raw+transformed+timer-state' "$report"
           grep -Fxq 'production_effect_row=accelerator.result_transform|tpu-result-buffer-transform|gate:live-fault-hardware|production-qemu-signal-runtime|job-id+before-after-digest+guest-result' "$report"
           grep -Fxq 'production_effect_row=clock.source_state|degraded-step-synchronization|gate:live-fault-hardware|production-qemu-signal-runtime|old-new-source-state+timer-rearm' "$report"
@@ -203,7 +256,9 @@ in
           mkdir -p "$out"
           cp "$report" "$out/result"
           printf 'attr_path=%s\n' "$ATTR_PATH" >> "$out/result"
-          printf 'proven=signal-driven-clock-mutation,signal-driven-clock-source-state,signal-driven-memory-mutation,same-icount-post-fault-fingerprint,same-icount-ram-digest-mutation,signal-driven-accelerator-lifecycle,signal-driven-accelerator-memory-event,signal-driven-accelerator-service,signal-driven-accelerator-result-mutation,authenticated-fault-occurrences,fresh-plugin-vmstate-reconstruction,real-linux-clock-observation,real-virtio-pci-discovery,guest-dma,split-virtqueue,gpu-job,tpu-job,fpga-job,fault-free-event-reservation\n' >> "$out/result"
+          printf 'hardware_variant_matrix=23-exact-live-qemu-cases\n' >> "$out/result"
+          printf 'hardware_variant_manifest=phase2-qemu-live-fault-hardware-cases.txt\n' >> "$out/result"
+          printf 'proven=signal-driven-clock-mutation,signal-driven-clock-source-state,signal-driven-memory-mutation,same-icount-post-fault-fingerprint,same-icount-ram-digest-mutation,signal-driven-accelerator-lifecycle,signal-driven-accelerator-memory-event,signal-driven-accelerator-service,signal-driven-accelerator-result-mutation,authenticated-fault-occurrences,fresh-plugin-vmstate-reconstruction,real-linux-clock-observation,real-virtio-pci-discovery,guest-dma,split-virtqueue,gpu-job,tpu-job,fpga-job,fault-free-event-reservation,closed-clock-and-accelerator-variant-matrix\n' >> "$out/result"
         '';
       }
     ];

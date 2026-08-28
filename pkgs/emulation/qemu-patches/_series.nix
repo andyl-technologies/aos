@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "bc74022e3381f6c7faf17346a992e5569e5bc8e267336ae46ad022d37a777bd4";
+  patchBranchBundleSha256 = "c9906d4546e6325a5a3e469dc7708f18997a81fc1f171aedb0df3d1781b2a428";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "9b5d22a78d42d034e248d7e8f33e8527c467cd14";
+  patchBranchHeadCommit = "7c8d69b83c5a51d5f18f54ab5596272d2c194200";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1065,6 +1065,26 @@ let
       class = "F";
       enforces = "QFP-ACCEL-SERVICE,FAULT-RESTORE";
       capability = "fresh-process VMState restore rebuilds each accelerator lifecycle, result, memory, and service rule index from the authenticated staged node-rule ledger before commit, preserving persistent accelerator behavior without duplicating rule ownership";
+    }
+    {
+      file = "0114-crucible-authenticate-fault-result-payloads.patch";
+      branchSubject = "crucible: authenticate every fault result payload";
+      branchCommit = "5f22ca7f8515f8b923c97d6c52f2fb89526aafd1";
+      branchTree = "60e62f5e96aa6645105e2c6f894adbebfe366a53";
+      catalogName = "crucible-authenticate-fault-result-payloads";
+      class = "F";
+      enforces = "QFP-RESULT,FAULT-ORDER";
+      capability = "every queued fault result authenticates the exact payload retained beside it, including prepare-time rejection evidence, so the host can classify a typed rejection without losing transaction ownership";
+    }
+    {
+      file = "0115-crucible-clock-impulse-read-error-policies.patch";
+      branchSubject = "crucible: honor clock impulse and read-error policies";
+      branchCommit = "7c8d69b83c5a51d5f18f54ab5596272d2c194200";
+      branchTree = "8c0e235f449f8a1c32e1574205823e5fe92bd781";
+      catalogName = "crucible-clock-impulse-read-error-policies";
+      class = "F";
+      enforces = "QFP-CLOCK-TRANSFORM,QFP-CLOCK-SOURCE,FAULT-ORDER";
+      capability = "impulse clock transforms retain their effective monotonicity and overdue-timer policies in versioned clock VMState, while an x86 TSC read-error transition raises a deterministic guest #GP and internal projections retain the last source value";
     }
   ];
   catalogOnlyCapabilities = [

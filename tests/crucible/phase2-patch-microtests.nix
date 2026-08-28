@@ -1490,6 +1490,42 @@
         '';
       };
     }
+    {
+      patch = "0114-crucible-authenticate-fault-result-payloads.patch";
+      check = certifyExactPatch {
+        patchName = "0114-crucible-authenticate-fault-result-payloads.patch";
+        liveCheck = qemuLiveFaultHardware;
+        evidenceName = "live-authenticated-typed-rejection-payload";
+        liveEvidence = ''
+          grep -Fxq 'typed_rejection_payload_authenticated=true' "$live_result"
+          grep -Fq 'completed->payload, completed->result.evidence_hash' \
+            ${patchDir}/0114-crucible-authenticate-fault-result-payloads.patch
+          grep -Fq 'completed->payload = payload ? payload : g_byte_array_new();' \
+            ${patchDir}/0114-crucible-authenticate-fault-result-payloads.patch
+        '';
+      };
+    }
+    {
+      patch = "0115-crucible-clock-impulse-read-error-policies.patch";
+      check = certifyExactPatch {
+        patchName = "0115-crucible-clock-impulse-read-error-policies.patch";
+        liveCheck = qemuLiveFaultHardware;
+        evidenceName = "live-clock-impulse-and-read-error-policies";
+        liveEvidence = ''
+          grep -Fxq 'hardware_variant_case=clock-drift-allow-reschedule' "$live_result"
+          grep -Fxq 'hardware_variant_case=clock-jump-fault-drop' "$live_result"
+          grep -Fxq 'hardware_variant_case=clock-source-failed-read-error' "$live_result"
+          grep -Fq 'source->impulse_monotonicity, monotonicity);' \
+            ${patchDir}/0115-crucible-clock-impulse-read-error-policies.patch
+          grep -Fq 'qemu_crucible_fault_vmstate_put_bytes(payload, "CRUCCVS4", 8);' \
+            ${patchDir}/0115-crucible-clock-impulse-read-error-policies.patch
+          grep -Fq 'QEMU_CRUCIBLE_CLOCK_SOURCE_READ_ERROR' \
+            ${patchDir}/0115-crucible-clock-impulse-read-error-policies.patch
+          grep -Fq 'raise_exception_ra(env, EXCP0D_GPF, GETPC());' \
+            ${patchDir}/0115-crucible-clock-impulse-read-error-policies.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =
