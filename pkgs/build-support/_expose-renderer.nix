@@ -71,6 +71,7 @@
       && unit != ""
       && builtins.match overlayTokenType unit != null
       && builtins.match synthesizedServiceRootUnitType unit == null
+      && builtins.match synthesizedPackageTargetType unit == null
       && hasKnownSuffix unit
     )
     "expose.units contains invalid systemd unit name '${builtins.toString unit}'"
@@ -89,8 +90,8 @@
   in
     throwIfNot
     (
-      validateUnitName target
-      == target
+      builtins.isString target
+      && builtins.match overlayTokenType target != null
       && lib.hasPrefix "aos-pkg-" target
       && lib.hasSuffix ".target" target
       && target == expected
@@ -1125,19 +1126,73 @@ in rec {
       validateTargetName
       packageName
       (checkedExpose.target or "aos-pkg-${packageName}.target");
+    authoredRelationFields = [
+      "aliases"
+      "after"
+      "before"
+      "bindsTo"
+      "conflicts"
+      "onFailure"
+      "onSuccess"
+      "partOf"
+      "requiredBy"
+      "requires"
+      "requisite"
+      "upheldBy"
+      "wantedBy"
+      "wants"
+    ];
+    authoredRawUnitRelationFields = [
+      "After"
+      "Before"
+      "BindsTo"
+      "Conflicts"
+      "JoinsNamespaceOf"
+      "OnFailure"
+      "OnSuccess"
+      "PartOf"
+      "PropagatesReloadTo"
+      "PropagatesStopTo"
+      "ReloadPropagatedFrom"
+      "Requires"
+      "Requisite"
+      "StopPropagatedFrom"
+      "Upholds"
+      "Wants"
+    ];
+    relationWords = value:
+      lib.concatMap (
+        entry:
+          if builtins.isString entry
+          then
+            builtins.filter
+            (word: word != "")
+            (lib.splitString " " (builtins.replaceStrings ["\t" "\n" "\r"] [" " " " " "] entry))
+          else []
+      ) (asList value);
     authoredForeignOwnershipTargets =
       lib.concatMap (
-        unitName:
-          lib.concatMap (
-            field:
-              builtins.filter (
-                reference:
-                  builtins.isString reference
-                  && builtins.match synthesizedPackageTargetType reference != null
-                  && reference != target
-              )
-              (units.${unitName}.${field} or [])
-          ) ["partOf" "wantedBy" "requiredBy" "upheldBy"]
+        unitName: let
+          unit = units.${unitName};
+          typedReferences =
+            lib.concatMap (
+              field:
+                relationWords (unit.${field} or [])
+            )
+            authoredRelationFields;
+          rawReferences =
+            lib.concatMap (
+              field:
+                relationWords ((unit.unitConfig or {}).${field} or [])
+            )
+            authoredRawUnitRelationFields;
+        in
+          builtins.filter (
+            reference:
+              builtins.match synthesizedPackageTargetType reference
+              != null
+              && reference != target
+          ) (typedReferences ++ rawReferences)
       )
       authoredUnitNames;
     authoredOwnershipTargetsValid =

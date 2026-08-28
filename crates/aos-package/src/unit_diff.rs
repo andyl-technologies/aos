@@ -963,20 +963,12 @@ fn build_service_root_barriers(
 }
 
 fn target_part_of_members(units: &UnitMap, target: &str) -> BTreeSet<String> {
-    let wanted = units
-        .units
-        .get(target)
-        .filter(|unit| unit.is_present())
-        .map(|unit| unit_section_words(unit, "Wants"))
-        .unwrap_or_default();
-
     units
         .units
         .iter()
         .filter(|(name, unit)| {
             unit.is_present()
                 && *name != target
-                && wanted.contains(*name)
                 && unit_section_words(unit, "PartOf").contains(target)
         })
         .map(|(name, _)| name.clone())
@@ -1477,7 +1469,7 @@ mod tests {
         write(
             &live_units,
             "aos-pkg-web.target",
-            "[Unit]\nWants=aos-pkg-web.slice web.socket web.service aos-pkg-web-mac.service data.automount data.mount cache.swap provider.socket\n",
+            "[Unit]\nWants=aos-pkg-web.slice web.socket web.service aos-pkg-web-mac.service provider.socket\n",
         );
         write(
             &live_units,
@@ -1507,8 +1499,8 @@ mod tests {
         );
         write(
             &live_units,
-            "cache.swap",
-            "[Unit]\nPartOf=aos-pkg-web.target\n[Swap]\nWhat=/dev/null\n",
+            "maintenance.timer",
+            "[Unit]\nPartOf=aos-pkg-web.target\n[Timer]\nOnActiveSec=1h\n",
         );
         write(
             &live_units,
@@ -1553,7 +1545,11 @@ mod tests {
         assert!(barrier.live_members.contains("web.service"));
         assert_eq!(
             barrier.live_activation_sources,
-            BTreeSet::from(["data.automount".to_string(), "web.socket".to_string()])
+            BTreeSet::from([
+                "data.automount".to_string(),
+                "maintenance.timer".to_string(),
+                "web.socket".to_string(),
+            ])
         );
         assert_eq!(
             barrier.live_external_activation_sources,
@@ -1569,7 +1565,7 @@ mod tests {
         );
         assert_eq!(
             barrier.live_remaining_members,
-            BTreeSet::from(["cache.swap".to_string(), "data.mount".to_string()])
+            BTreeSet::from(["data.mount".to_string()])
         );
         assert!(!barrier.live_members.contains("provider.socket"));
         assert!(!barrier.live_members.contains("aos-pkg-web.slice"));
@@ -1583,11 +1579,11 @@ mod tests {
             vec![
                 "provider.socket",
                 "data.automount",
+                "maintenance.timer",
                 "web.socket",
                 "web.service",
                 "aos-pkg-web-service-roots.service",
                 "aos-pkg-web-mac.service",
-                "cache.swap",
                 "data.mount",
                 "aos-pkg-web.target",
             ]
@@ -1707,50 +1703,6 @@ mod tests {
         let diff = compute_diff(live.path(), candidate.path());
 
         assert!(diff.service_root_barriers.is_empty());
-    }
-
-    #[test]
-    fn service_root_barrier_ignores_foreign_part_of_without_owned_wants() {
-        let live = TempDir::new().unwrap();
-        let candidate = TempDir::new().unwrap();
-        let live_units = units_dir(live.path());
-        let candidate_units = units_dir(candidate.path());
-        let helper = "aos-pkg-victim-service-roots.service";
-        let target = "aos-pkg-victim.target";
-
-        for units in [&live_units, &candidate_units] {
-            write(units, target, "[Unit]\nWants=victim.service\n");
-            write(
-                units,
-                "victim.service",
-                "[Unit]\nPartOf=aos-pkg-victim.target\nRequires=aos-pkg-victim-service-roots.service\nAfter=aos-pkg-victim-service-roots.service\n[Service]\nExecStart=/bin/victim\n",
-            );
-            write(
-                units,
-                "attacker.service",
-                "[Unit]\nPartOf=aos-pkg-victim.target\n[Service]\nExecStart=/bin/attacker\n",
-            );
-        }
-        write(
-            &live_units,
-            helper,
-            "[Unit]\nPartOf=aos-pkg-victim.target\nBefore=victim.service\n[Service]\nType=oneshot\nExecStart=/bin/old\n",
-        );
-        write(
-            &candidate_units,
-            helper,
-            "[Unit]\nPartOf=aos-pkg-victim.target\nBefore=victim.service\n[Service]\nType=oneshot\nExecStart=/bin/new\n",
-        );
-
-        let mut diff = compute_diff(live.path(), candidate.path());
-        let barrier = &diff.service_root_barriers[helper];
-        assert!(!barrier.live_members.contains("attacker.service"));
-        assert!(!barrier.live_remaining_members.contains("attacker.service"));
-        assert!(!barrier.candidate_members.contains("attacker.service"));
-
-        diff.normalize_service_root_lifecycle();
-        assert!(!diff.to_stop.contains(&"attacker.service".to_string()));
-        assert!(!diff.required_stops.contains("attacker.service"));
     }
 
     #[test]

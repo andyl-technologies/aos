@@ -1090,6 +1090,41 @@
     else "ok";
   foreignPartOfTargetRejected = foreignOwnershipTargetRejected "partOf";
   foreignWantedByTargetRejected = foreignOwnershipTargetRejected "wantedBy";
+  foreignConflictsTargetRejected = foreignOwnershipTargetRejected "conflicts";
+  foreignPropagationTarget = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-foreign-propagation.service" = {
+          unitConfig.PropagatesStopTo = "aos-pkg-victim.target";
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "${pkgs.bash}/bin/bash -c true";
+          };
+        };
+        permissions.network = "private";
+      };
+    }))
+    .expose
+    .outPath
+  );
+  foreignPropagationTargetRejected =
+    if foreignPropagationTarget.success
+    then throw "expose renderer must reject foreign synthesized package targets in PropagatesStopTo"
+    else "ok";
+  foreignTargetUnit = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."aos-pkg-victim.target" = {};
+        permissions.network = "private";
+      };
+    }))
+    .expose
+    .outPath
+  );
+  foreignTargetUnitRejected =
+    if foreignTargetUnit.success
+    then throw "expose renderer must reject authored synthesized package target unit names"
+    else "ok";
   privilegedExecPrefix = builtins.tryEval (
     (pkg.overrideAttrs (_: {
       expose = {
@@ -1651,6 +1686,9 @@ in
       targetMismatchRejected
       foreignPartOfTargetRejected
       foreignWantedByTargetRejected
+      foreignConflictsTargetRejected
+      foreignPropagationTargetRejected
+      foreignTargetUnitRejected
       verityTupleMissingRejected
       privilegedExecPrefixRejected
       landlockScriptDerivedExecRejected
@@ -2239,6 +2277,9 @@ in
           test "$targetMismatchRejected" = ok
           test "$foreignPartOfTargetRejected" = ok
           test "$foreignWantedByTargetRejected" = ok
+          test "$foreignConflictsTargetRejected" = ok
+          test "$foreignPropagationTargetRejected" = ok
+          test "$foreignTargetUnitRejected" = ok
           test "$privilegedExecPrefixRejected" = ok
           test "$landlockScriptDerivedExecRejected" = ok
           test "$landlockShellExecPrefixRejected" = ok
