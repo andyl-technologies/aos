@@ -268,36 +268,64 @@ pub fn hash_value_link(value: &str, href: &str) -> String {
 
 fn hash_value_with_link(value: &str, href: Option<&str>) -> String {
     let presentation = HashPresentation::new(value);
+    compact_value(presentation.full, &presentation.compact, "hash", href)
+}
+
+/// Renders a trust key as a compact, copyable pill that emphasizes its tail.
+///
+/// Trust-key names and algorithms are usually identical within one roster, so
+/// the trailing key material is more useful for distinguishing adjacent rows.
+#[must_use]
+pub fn trust_key_value(value: &str) -> String {
+    const VISIBLE_TAIL_CHARACTERS: usize = 12;
+
+    let character_count = value.chars().count();
+    let compact = if character_count > VISIBLE_TAIL_CHARACTERS {
+        let tail = value
+            .chars()
+            .skip(character_count - VISIBLE_TAIL_CHARACTERS)
+            .collect::<String>();
+        format!("…{tail}")
+    } else {
+        value.to_string()
+    };
+
+    compact_value(value, &compact, "trust key", None)
+}
+
+fn compact_value(full: &str, compact: &str, kind: &str, href: Option<&str>) -> String {
     let content = format!(
         "<code aria-label=\"{}\">{}</code>\
          <span class=\"hash-tooltip\" role=\"tooltip\">{}</span>",
-        escape(presentation.full),
-        escape(&presentation.compact),
-        escape(presentation.full),
+        escape(full),
+        escape(compact),
+        escape(full),
     );
     let identity = match href {
         Some(href) => format!(
             "<a class=\"hash-value\" data-hash-value=\"{}\" href=\"{}\">{content}</a>",
-            escape(presentation.full),
+            escape(full),
             escape(href),
         ),
         None => format!(
             "<span class=\"hash-value\" data-hash-value=\"{}\" tabindex=\"0\">\
              {content}</span>",
-            escape(presentation.full),
+            escape(full),
         ),
     };
     format!(
         "<span class=\"hash-control\">{}\
          <button type=\"button\" class=\"hash-copy\" data-copy-value=\"{}\" \
-         aria-label=\"Copy full hash\" title=\"Copy full hash\">\
+         aria-label=\"Copy full {}\" title=\"Copy full {}\">\
          <svg class=\"hash-copy-icon\" aria-hidden=\"true\" viewBox=\"0 0 16 16\">\
          <rect x=\"5.5\" y=\"5.5\" width=\"7\" height=\"7\" rx=\"1\"/>\
          <path d=\"M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2\"/>\
          </svg><svg class=\"hash-copy-done\" aria-hidden=\"true\" viewBox=\"0 0 16 16\">\
          <path d=\"m3 8 3 3 7-7\"/></svg></button></span>",
         identity,
-        escape(presentation.full),
+        escape(full),
+        escape(kind),
+        escape(kind),
     )
 }
 
@@ -799,6 +827,15 @@ mod tests {
         assert!(html.contains(&format!("data-copy-value=\"{hash}\"")));
         assert!(html.contains("class=\"hash-copy-icon\""));
         assert!(!html.contains(">copy</button>"));
+    }
+
+    #[test]
+    fn trust_key_value_emphasizes_the_distinguishing_tail() {
+        let key = "cache.andyl.org-1:Ed25519:ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let html = trust_key_value(key);
+        assert!(html.contains("…OPQRSTUVWXYZ</code>"));
+        assert!(html.contains(&format!("data-copy-value=\"{key}\"")));
+        assert!(html.contains("aria-label=\"Copy full trust key\""));
     }
 
     #[test]
