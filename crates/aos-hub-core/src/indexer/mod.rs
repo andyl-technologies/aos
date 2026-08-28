@@ -482,6 +482,12 @@ async fn index_registry_inner(
     } else {
         BTreeMap::new()
     };
+    tracing::info!(
+        phase = "release_reuse",
+        reusable = reusable_releases.len(),
+        advertised = refs.tags.len(),
+        "registry index phase prepared"
+    );
     let release_tags: Vec<_> = refs.tags.iter().collect();
     let mut releases = Vec::new();
     let mut release_artifact_snapshots = Vec::new();
@@ -501,6 +507,7 @@ async fn index_registry_inner(
                     reusable.release.tag_oid == tag_oid.to_hex()
                         && (reusable.image.is_none() || publication.is_some())
                 }) {
+                    tracing::debug!(release = %tag_name, "revalidating reusable release snapshot");
                     let mut release_leases = Vec::new();
                     let (release_image, release_presence, image_tag_oid) = match reusable.image {
                         Some(image) => {
@@ -519,6 +526,7 @@ async fn index_registry_inner(
                     };
                     let mut release = reusable.release;
                     release.pack_present = probe_pack_presence(fetch, tag_name).await?;
+                    tracing::debug!(release = %tag_name, "reused verified release snapshot");
                     return Ok::<_, anyhow::Error>((
                         release,
                         reusable.artifacts,
@@ -529,6 +537,7 @@ async fn index_registry_inner(
                     ));
                 }
 
+                tracing::debug!(release = %tag_name, "loading new or changed release snapshot");
                 let payload = reader.read_kind(*tag_oid, ObjectKind::Tag).await?;
                 let lenient = lenient_tag(&payload, tag_name)?;
                 if lenient.tag.target_type != TagTarget::Commit {
@@ -1133,6 +1142,11 @@ async fn revalidate_reused_release_images(
         snapshot_leases,
     )
     .await?;
+    tracing::debug!(
+        release = %catalog.release_tag,
+        images = catalog.images.len(),
+        "revalidated reusable release cache objects"
+    );
 
     let mut expected = BTreeMap::<String, ExpectedImageObject>::new();
     for image in &catalog.images {
@@ -1181,6 +1195,11 @@ async fn revalidate_reused_release_images(
             .await?,
         );
     }
+    tracing::debug!(
+        release = %catalog.release_tag,
+        objects = verified.len(),
+        "revalidated reusable release direct objects"
+    );
     Ok(verified)
 }
 
