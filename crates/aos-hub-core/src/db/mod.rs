@@ -545,7 +545,7 @@ pub const SCHEMA_IDENTITY: &str = "aos-hub/topology-hard-cutover/2";
 
 /// Immediately preceding identity accepted only while applying a pending
 /// repository-owned migration to [`SCHEMA_IDENTITY`].
-const LEGACY_SCHEMA_IDENTITY: &str = "aos-hub/topology-hard-cutover/1";
+pub const PREVIOUS_SCHEMA_IDENTITY: &str = "aos-hub/topology-hard-cutover/1";
 
 /// Returns every migration's individual SQL statements, in order.
 ///
@@ -3629,10 +3629,10 @@ impl Database {
         let identity: String = row
             .context("topology schema identity row is missing")?
             .get(0)?;
-        if identity != SCHEMA_IDENTITY && !(allow_legacy && identity == LEGACY_SCHEMA_IDENTITY) {
+        if identity != SCHEMA_IDENTITY && !(allow_legacy && identity == PREVIOUS_SCHEMA_IDENTITY) {
             bail!("unsupported Hub schema identity '{identity}'; expected '{SCHEMA_IDENTITY}'");
         }
-        Ok(identity == LEGACY_SCHEMA_IDENTITY)
+        Ok(identity == PREVIOUS_SCHEMA_IDENTITY)
     }
 
     // -- system of record ---------------------------------------------------
@@ -25970,7 +25970,7 @@ source_nar_hash = ""
         connection
             .execute(
                 "UPDATE hub_schema_identity SET identity = ?1",
-                [LEGACY_SCHEMA_IDENTITY],
+                [PREVIOUS_SCHEMA_IDENTITY],
             )
             .unwrap();
 
@@ -26000,7 +26000,7 @@ source_nar_hash = ""
         connection
             .execute(
                 "UPDATE hub_schema_identity SET identity = ?1",
-                [LEGACY_SCHEMA_IDENTITY],
+                [PREVIOUS_SCHEMA_IDENTITY],
             )
             .unwrap();
         connection
