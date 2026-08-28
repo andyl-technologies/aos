@@ -9,7 +9,7 @@
 //! for post-bind attachment without exposing repository or component-authority
 //! capabilities.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, Permissions};
 use std::io::{self, Read};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -25,7 +25,8 @@ use crucible_campaign::{
     ConfigurationArtifactId, DebuggerAuthorityKey, PlannerAuthorityKey,
 };
 use crucible_cas::content_store::{
-    DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend, MutableRefBackend,
+    DirectoryRefBackend, ImmutableBlobBackend, MutableRefBackend, ObjectKind, RefStoreAdmin,
+    StoreGraph, StoreGraphAdmin, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
 };
 use rustix::fs::{FlockOperation, Mode, OFlags, flock};
 
@@ -45,6 +46,22 @@ const STATE_LOCK_FILE: &str = ".crucible-campaign-repository.lock";
 const OBJECT_DIRECTORY: &str = "objects";
 const REF_DIRECTORY: &str = "refs";
 const MAX_DEPLOYMENT_PATH_BYTES: usize = 4_095;
+const CAMPAIGN_REPOSITORY_OBJECT_KINDS: [ObjectKind; 14] = [
+    ObjectKind::CampaignFact,
+    ObjectKind::CampaignSnapshot,
+    ObjectKind::MerkleNode,
+    ObjectKind::Scenario,
+    ObjectKind::Configuration,
+    ObjectKind::Policy,
+    ObjectKind::ExactManifest,
+    ObjectKind::RamExtent,
+    ObjectKind::DiskExtent,
+    ObjectKind::DeviceState,
+    ObjectKind::Observation,
+    ObjectKind::Finding,
+    ObjectKind::Projection,
+    ObjectKind::Trace,
+];
 const COMPONENT_AUTHORITY_MAGIC: &[u8; 8] = b"CRUCCA01";
 const COMPONENT_AUTHORITY_FILE_BYTES: usize = 8 + 32 + 32;
 type CampaignComponentAuthorities = Option<(PlannerAuthorityKey, DebuggerAuthorityKey)>;
@@ -78,17 +95,27 @@ pub enum CampaignLocalServiceMode {
 
 /// Consumed repository-store capability for one local campaign service.
 ///
-/// This value lets a deployment bind a composed immutable [`StoreGraph`](
-/// crucible_cas::content_store::StoreGraph), an S3-compatible leaf, or another
-/// durable backend to the same managed daemon lifecycle without exposing the
-/// resulting [`CampaignRepository`]. The mutable-ref implementation remains a
-/// separate exact-CAS capability. Production callers must supply a persistent
-/// ref backend with the same single-writer and publication-fence semantics as
-/// [`DirectoryRefBackend`] or
+/// This value binds a composed immutable [`StoreGraph`] and its separately
+/// returned maintenance authority to the same managed daemon lifecycle without
+/// exposing the resulting [`CampaignRepository`]. The mutable-ref
+/// implementation remains a separate exact-CAS capability. Production callers
+/// must supply a persistent ref backend with the same single-writer and
+/// publication-fence semantics as [`DirectoryRefBackend`] or
 /// [`S3RefBackend`](crucible_cas::content_store::S3RefBackend).
 pub struct CampaignLocalRepositoryStore {
     blobs: Arc<dyn ImmutableBlobBackend>,
     refs: Arc<dyn MutableRefBackend>,
+    maintenance: Option<CampaignLocalRepositoryMaintenance>,
+}
+
+/// Separately retained maintenance authority for one composed repository.
+///
+/// The authority remains private to the managed daemon lifecycle. Ordinary
+/// CampaignService, runtime, planner, and executor capabilities cannot borrow
+/// physical inventory/deletion, multipart-cleanup, or ref-inventory access.
+struct CampaignLocalRepositoryMaintenance {
+    _graph: StoreGraphAdmin,
+    _refs: Arc<dyn RefStoreAdmin>,
 }
 
 impl CampaignLocalRepositoryStore {
@@ -104,7 +131,8 @@ impl CampaignLocalRepositoryStore {
     /// immutable backend is not durable or can overwrite existing logical IDs,
     /// or when the mutable-ref backend does not retain successful comparisons
     /// across restart.
-    pub fn new(
+    #[cfg(test)]
+    fn new(
         blobs: Arc<dyn ImmutableBlobBackend>,
         refs: Arc<dyn MutableRefBackend>,
     ) -> Result<Self, CampaignLocalServiceError> {
@@ -113,11 +141,65 @@ impl CampaignLocalRepositoryStore {
         {
             return Err(CampaignLocalServiceError::InvalidRepositoryStore);
         }
-        Ok(Self { blobs, refs })
+        Ok(Self {
+            blobs,
+            refs,
+            maintenance: None,
+        })
     }
 
-    fn into_parts(self) -> (Arc<dyn ImmutableBlobBackend>, Arc<dyn MutableRefBackend>) {
-        (self.blobs, self.refs)
+    /// Binds a composed graph and its exact separately returned maintenance
+    /// authority to one managed service lifetime.
+    ///
+    /// The graph and mutable-ref backend remain the only capabilities lent to
+    /// the campaign repository. The daemon retains graph administration and a
+    /// second ref-inventory view without exposing either through its public
+    /// service, runtime, planner, or executor APIs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError::InvalidRepositoryStore`] when the
+    /// graph is not durably conditional, the ref backend is not durable, or
+    /// the maintenance authority belongs to a different graph configuration.
+    pub fn new_with_maintenance<R>(
+        graph: Arc<StoreGraph>,
+        refs: Arc<R>,
+        graph_maintenance: StoreGraphAdmin,
+    ) -> Result<Self, CampaignLocalServiceError>
+    where
+        R: MutableRefBackend + RefStoreAdmin + 'static,
+    {
+        if graph.configuration_id() != graph_maintenance.configuration_id() {
+            return Err(CampaignLocalServiceError::InvalidRepositoryStore);
+        }
+        let blobs: Arc<dyn ImmutableBlobBackend> = graph;
+        let mutable_refs: Arc<dyn MutableRefBackend> = refs.clone();
+        let maintenance_refs: Arc<dyn RefStoreAdmin> = refs;
+        let capabilities = blobs.capabilities();
+        if !capabilities.durable
+            || !capabilities.conditional_create
+            || !mutable_refs.capabilities().durable
+        {
+            return Err(CampaignLocalServiceError::InvalidRepositoryStore);
+        }
+        Ok(Self {
+            blobs,
+            refs: mutable_refs,
+            maintenance: Some(CampaignLocalRepositoryMaintenance {
+                _graph: graph_maintenance,
+                _refs: maintenance_refs,
+            }),
+        })
+    }
+
+    fn into_parts(
+        self,
+    ) -> (
+        Arc<dyn ImmutableBlobBackend>,
+        Arc<dyn MutableRefBackend>,
+        Option<CampaignLocalRepositoryMaintenance>,
+    ) {
+        (self.blobs, self.refs, self.maintenance)
     }
 }
 
@@ -268,14 +350,25 @@ impl CampaignLocalServiceConfig {
             self.endpoint.owner_group_id(),
             true,
         )?;
-        let store = CampaignLocalRepositoryStore::new(
-            Arc::new(DirectoryBlobBackend::new(
-                "campaign-primary",
-                self.state_directory.join(OBJECT_DIRECTORY),
-            )),
+        let root = StoreNodeId::new("campaign-primary")
+            .map_err(|_| CampaignLocalServiceError::InvalidRepositoryStore)?;
+        let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+            root: root.clone(),
+            admitted_kinds: BTreeSet::from(CAMPAIGN_REPOSITORY_OBJECT_KINDS),
+            nodes: BTreeMap::from([(
+                root,
+                StoreNodeSpec::Directory {
+                    root: self.state_directory.join(OBJECT_DIRECTORY),
+                },
+            )]),
+        })
+        .map_err(|_| CampaignLocalServiceError::InvalidRepositoryStore)?;
+        let store = CampaignLocalRepositoryStore::new_with_maintenance(
+            Arc::new(graph),
             Arc::new(DirectoryRefBackend::new(
                 self.state_directory.join(REF_DIRECTORY),
             )),
+            maintenance,
         )?;
         self.prepare_repository(store, state, policy, component_authorities)
     }
@@ -352,7 +445,7 @@ impl CampaignLocalServiceConfig {
         policy: Arc<UnixPeerCampaignPolicy>,
         component_authorities: CampaignComponentAuthorities,
     ) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
-        let (blobs, refs) = store.into_parts();
+        let (blobs, refs, maintenance) = store.into_parts();
         let (repository, planner_authority) = match component_authorities {
             Some((planner, debugger)) => {
                 let retained_planner = planner.clone();
@@ -376,6 +469,7 @@ impl CampaignLocalServiceConfig {
             policy,
             mode: self.mode,
             state,
+            maintenance,
             runtime_control_planner: None,
         })
     }
@@ -408,6 +502,7 @@ pub struct PreparedCampaignLocalService {
     policy: Arc<UnixPeerCampaignPolicy>,
     mode: CampaignLocalServiceMode,
     state: CampaignStateOwner,
+    maintenance: Option<CampaignLocalRepositoryMaintenance>,
     runtime_control_planner: Option<CanonicalPlannerProcessConfig>,
 }
 
@@ -675,6 +770,7 @@ impl PreparedCampaignLocalService {
             policy,
             mode,
             state,
+            maintenance,
             runtime_control_planner,
         } = self;
         let endpoint_owner_user_id = endpoint.owner_user_id();
@@ -699,6 +795,7 @@ impl PreparedCampaignLocalService {
             mode,
             server.shutdown_handle(),
             state,
+            maintenance,
             packaged_scope,
         );
         if let Some(planner_process) = runtime_control_planner {

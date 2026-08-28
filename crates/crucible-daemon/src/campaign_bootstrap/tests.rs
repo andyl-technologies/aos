@@ -26,8 +26,8 @@ use crucible_campaign::{
     SubmitAttemptRequest, SubmitAttemptResponse, WatchExecutorCapacityRequest,
 };
 use crucible_cas::content_store::{
-    ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend, ObjectKind, StoreGraph,
-    StoreGraphConfig, StoreNodeId, StoreNodeSpec,
+    DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend, ObjectKind,
+    StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
 };
 use crucible_qemu::{
     LinuxQemuAttemptHostConfig, QemuChildProcessContract, QemuLaunchResourceRequirements,
@@ -1033,28 +1033,28 @@ fn external_graph_store(
     directory: &tempfile::TempDir,
 ) -> (CampaignLocalRepositoryStore, Arc<StoreGraph>) {
     let root = StoreNodeId::new("campaign-external").expect("external graph node");
-    let graph = Arc::new(
-        StoreGraph::build(StoreGraphConfig {
-            root: root.clone(),
-            admitted_kinds: BTreeSet::from([
-                ObjectKind::Scenario,
-                ObjectKind::Configuration,
-                ObjectKind::Policy,
-            ]),
-            nodes: BTreeMap::from([(
-                root,
-                StoreNodeSpec::Directory {
-                    root: directory.path().join("external-objects"),
-                },
-            )]),
-        })
-        .expect("external directory store graph"),
-    );
+    let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([
+            ObjectKind::Scenario,
+            ObjectKind::Configuration,
+            ObjectKind::Policy,
+        ]),
+        nodes: BTreeMap::from([(
+            root,
+            StoreNodeSpec::Directory {
+                root: directory.path().join("external-objects"),
+            },
+        )]),
+    })
+    .expect("external directory store graph");
+    let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(
         directory.path().join("external-refs"),
     ));
-    let store = CampaignLocalRepositoryStore::new(graph.clone(), refs)
-        .expect("durable external repository store");
+    let store =
+        CampaignLocalRepositoryStore::new_with_maintenance(graph.clone(), refs, maintenance)
+            .expect("durable external repository store");
     (store, graph)
 }
 
@@ -1105,6 +1105,83 @@ fn external_store_uses_the_managed_lock_without_creating_default_leafs() {
             .contains(configuration.content_id())
             .expect("restarted graph contains configuration")
     );
+}
+
+#[test]
+fn external_store_rejects_foreign_graph_maintenance_authority() {
+    let directory = tempdir().expect("external store directory");
+    let first = StoreNodeId::new("campaign-first").expect("first graph node");
+    let (first_graph, _first_maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: first.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([(
+            first,
+            StoreNodeSpec::Directory {
+                root: directory.path().join("first-objects"),
+            },
+        )]),
+    })
+    .expect("first graph");
+    let second = StoreNodeId::new("campaign-second").expect("second graph node");
+    let (_second_graph, second_maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: second.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([(
+            second,
+            StoreNodeSpec::Directory {
+                root: directory.path().join("second-objects"),
+            },
+        )]),
+    })
+    .expect("second graph");
+    let refs = Arc::new(DirectoryRefBackend::new(directory.path().join("refs")));
+
+    assert!(matches!(
+        CampaignLocalRepositoryStore::new_with_maintenance(
+            Arc::new(first_graph),
+            refs,
+            second_maintenance,
+        ),
+        Err(CampaignLocalServiceError::InvalidRepositoryStore)
+    ));
+}
+
+#[test]
+fn managed_service_retains_ref_maintenance_authority_for_its_lifetime() {
+    let (directory, config) = fixture();
+    let root = StoreNodeId::new("campaign-maintained").expect("maintained graph node");
+    let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([(
+            root,
+            StoreNodeSpec::Directory {
+                root: directory.path().join("maintained-objects"),
+            },
+        )]),
+    })
+    .expect("maintained graph");
+    let refs = Arc::new(DirectoryRefBackend::new(
+        directory.path().join("maintained-refs"),
+    ));
+    let weak_refs = Arc::downgrade(&refs);
+    let store = CampaignLocalRepositoryStore::new_with_maintenance(
+        Arc::new(graph),
+        refs.clone(),
+        maintenance,
+    )
+    .expect("maintained repository store");
+    drop(refs);
+    assert!(weak_refs.upgrade().is_some());
+
+    let prepared = config
+        .prepare_with_store(store)
+        .expect("prepare maintained repository store");
+    assert!(weak_refs.upgrade().is_some());
+    let service = prepared.bind().expect("bind maintained repository store");
+    assert!(weak_refs.upgrade().is_some());
+    drop(service);
+    assert!(weak_refs.upgrade().is_none());
 }
 
 #[test]

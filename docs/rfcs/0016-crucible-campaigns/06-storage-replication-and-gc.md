@@ -650,12 +650,18 @@ outside graph identity. A
 other policy IDs fail closed. Each listed physical-quota policy resolves the
 safe Linux ext4 binder, which independently authenticates the node's project
 assignment and hard limits. The separate ref directory constructs the durable
-conditional directory backend and never enters the immutable graph.
+conditional directory backend and never enters the immutable graph. Graph
+construction returns physical and multipart-cleanup administration separately;
+the daemon retains that value plus a second ref-inventory view for the complete
+managed service lifetime. Neither is lent to CampaignService, planner, runtime,
+or executor capabilities. A maintenance operation must receive an explicit
+bounded owner-side loan rather than reconstruct or promote authority from the
+ordinary graph.
 
 Memory and S3 nodes are deliberately absent from version one: memory cannot
 satisfy durable daemon admission, while S3 requires an async credential/client
-lifecycle, strong-CAS evidence for remote refs, and retained maintenance
-authority. Adding those is a schema-versioned extension rather than an
+lifecycle and strong-CAS evidence for remote refs. Adding those is a
+schema-versioned extension rather than an
 unrecognized field or a credential embedded in canonical graph identity.
 
 The first write-back layer requires durable streaming staging and destination
