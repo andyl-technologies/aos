@@ -19,8 +19,8 @@ upstream distribution includes a daemon.
 - [ ] containerd standalone role
 - [ ] kubelet standalone role
 - [x] etcd
-- [ ] PostgreSQL
-- [ ] MariaDB
+- [x] PostgreSQL
+- [x] MariaDB
 - [ ] Garage
 - [ ] OpenLDAP server role
 - [ ] KubeEdge CloudCore

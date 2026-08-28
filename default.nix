@@ -1102,6 +1102,13 @@ in {
       inherit pkgs lib mkSystem;
       serverModule = ./systems/server.nix;
     };
+    registry-hub = import ./lib/testing/registry-hub.nix {
+      inherit pkgs lib mkSystem;
+      serverModule = ./systems/server.nix;
+    };
+    aos-registry-server-config = import ./lib/testing/aos-registry-server-config.nix {
+      inherit pkgs lib;
+    };
     k3s-config = import ./lib/testing/k3s-config.nix {inherit pkgs lib;};
     config-source-gc = import ./lib/testing/config-source-gc.nix {inherit pkgs lib;};
     config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
@@ -1123,6 +1130,8 @@ in {
           module-args
           module-enforcement
           package-expose
+          aos-registry-server-config
+          registry-hub
           nginx-config
           k3s-config
           integration.envoy-config-module-contract
