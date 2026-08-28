@@ -144,8 +144,10 @@ in
             fi
             grep -qx 'LogsDirectory=nginx' "$nginxExpose/units/nginx.service"
             grep -qx 'LogsDirectoryMode=0750' "$nginxExpose/units/nginx.service"
+            grep -q -- '--network-unrestricted' "$nginxExpose/units/nginx.service"
             grep -q -- '--fs-rw /run/nginx' "$nginxExpose/units/nginx.service"
             grep -q -- '--fs-rw /var/log/nginx' "$nginxExpose/units/nginx.service"
+            test ! -e "$nginxExpose/units/aos-pkg-nginx-ebpf.service"
             grep -q '"readWrite":\["/tmp","/var/tmp","/dev/null","/var/lib/aos-pkg-nginx","/run/nginx","/var/log/nginx"\]' \
               "$nginxExpose/network-policy.json"
 

@@ -1219,7 +1219,7 @@ in rec {
       ++ [modulesUnit sysctlUnit firewallUnit]
       ++ lib.optional (network == "private-outbound") netnsUnit
       ++ lib.optional (confinementClass != "unconfined") macUnit
-      ++ lib.optional (confinementClass != "unconfined") ebpfUnit;
+      ++ lib.optional ebpfEnabled ebpfUnit;
     reservedUnitNames = [target hostPathsUnit modulesUnit sysctlUnit firewallUnit netnsUnit macUnit ebpfUnit packageSlice];
     capabilities = permissions.capabilities or [];
     tcpBind = permissions.tcp-bind or [];
@@ -1286,7 +1286,8 @@ in rec {
         security-label = permissions.security-label or "aos-pkg-${packageName}";
         inherit confinement;
       };
-    landlockTcpEnabled = !rootEquivalent && (tcpBind != [] || tcpConnect != []);
+    networkUnrestricted = network == "host";
+    landlockTcpEnabled = !rootEquivalent && !networkUnrestricted && (tcpBind != [] || tcpConnect != []);
     landlockFsEnabled = !rootEquivalent;
     landlockEnabled = landlockTcpEnabled || landlockFsEnabled;
     landlockDefaultReadOnlyPaths = ["/"];
@@ -1337,12 +1338,15 @@ in rec {
       else [];
     landlockArgs =
       ["--require-abi" "4"]
+      ++ lib.optional networkUnrestricted "--network-unrestricted"
       ++ lib.optionals landlockFsEnabled (
         lib.concatMap (path: ["--fs-ro" path]) landlockReadOnlyPaths
         ++ lib.concatMap (path: ["--fs-rw" path]) landlockReadWritePaths
       )
-      ++ lib.concatMap (port: ["--tcp-bind" (builtins.toString port)]) tcpBind
-      ++ lib.concatMap (port: ["--tcp-connect" (builtins.toString port)]) tcpConnect;
+      ++ lib.optionals (!networkUnrestricted) (
+        lib.concatMap (port: ["--tcp-bind" (builtins.toString port)]) tcpBind
+        ++ lib.concatMap (port: ["--tcp-connect" (builtins.toString port)]) tcpConnect
+      );
     landlockPrefix = "${pkgs.aos-landlock}/bin/aos-landlock ${builtins.concatStringsSep " " landlockArgs} --";
     undeclaredPreparedHostPathDirectories =
       builtins.filter (
@@ -1374,7 +1378,7 @@ in rec {
       ) (builtins.length parts);
     in
       builtins.concatStringsSep "/" (builtins.map (prefix: "${prefix}.slice") prefixes);
-    ebpfEnabled = confinementClass != "unconfined";
+    ebpfEnabled = confinementClass != "unconfined" && !networkUnrestricted;
     ebpfPolicyPathPlaceholder = "@AOS_EXPOSE_ARTIFACT@/network-policy.json";
     ebpfCgroupPath = "/sys/fs/cgroup/${systemdSliceCgroupPath packageSlice}";
     ebpfCommand = "${pkgs.aos-ebpf-net-policy}/bin/aos-ebpf-net-policy run --policy ${ebpfPolicyPathPlaceholder} --cgroup ${ebpfCgroupPath} --object ${pkgs.aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o";
