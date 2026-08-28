@@ -505,9 +505,7 @@ crucible campaign export NAME --to STORE [--mode MODE]
 crucible campaign import BUNDLE|STORE/NAME [--name NAME]
 crucible campaign restore NAME --from STORE
 
-crucible store list
 crucible store status STORE
-crucible store verify STORE
 crucible store ensure CONTENT_ID --in STORE
 crucible store gc --state STATE --policy POLICY --store STORE --journal JOURNAL plan
 crucible store gc --state STATE --policy POLICY --store STORE --journal JOURNAL apply
@@ -520,6 +518,13 @@ display logical and physical byte counts by metadata, reproduction artifact,
 exact RAM, disk, log, and trace classes. Sensitive closure warnings occur before
 transfer. Store GC is always plan then apply; the plan names its logical roots,
 physical inventory basis, and policy version and becomes stale if they move.
+`store status` authenticates the strict deployment and reports its exact graph
+configuration ID, root, admitted kinds, node kinds, and non-secret capability
+profile without reading object bytes. `store ensure` parses one canonical
+content ID before deployment I/O, streams the complete logical object through
+the admitted root, and reports success only after deferred whole-object
+authentication reaches EOF. Store discovery and whole-inventory verification
+remain open rather than guessing a deployment registry or unbounded scan.
 The current single-host command is an offline deployment-owner operation:
 `STORE` is the strict composed-store file, it acquires the same state lock as
 `serve`, derives the only admissible ledger as `STATE/executor-ledger`, and

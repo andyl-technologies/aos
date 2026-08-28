@@ -1,9 +1,12 @@
-//! Offline, generation-bound campaign-store garbage-collection porcelain.
+//! Authenticated inspection and stopped-owner campaign-store maintenance.
 
 use super::*;
 
 use std::path::{Component, Path};
 
+use crucible_cas::content_store::{
+    BackendCapabilities, ContentId, ImmutableBlobBackend, StoreGraph, StoreNodeKind,
+};
 use crucible_daemon::{
     CampaignGcApplyStatus, CampaignGcJournalCreateDisposition, CampaignGcJournalPhase,
     CampaignLocalServiceConfig, CampaignLocalServiceMode, CampaignLoopbackEndpointConfig,
@@ -11,9 +14,11 @@ use crucible_daemon::{
 };
 use serde::Serialize;
 
-use crate::cli_campaign_store::load_campaign_repository_store;
+use crate::cli_campaign_store::{load_campaign_repository_store, load_campaign_store_graph};
 
 const CAMPAIGN_GC_REPORT_SCHEMA: &str = "crucible.cli.campaign-store-gc.v1";
+const STORE_STATUS_REPORT_SCHEMA: &str = "crucible.cli.store-status.v1";
+const STORE_ENSURE_REPORT_SCHEMA: &str = "crucible.cli.store-ensure.v1";
 const MAXIMUM_OWNER_PATH_BYTES: usize = 4_095;
 const UNUSED_GC_ENDPOINT: &str = "/tmp/crucible-campaign-gc-owner.sock";
 
@@ -36,10 +41,146 @@ pub(super) struct CampaignStoreGcReport {
 
 pub(super) fn run_store_invocation(cli: &Cli, args: &StoreArgs) -> Result<(), CliError> {
     let rendered = match &args.command {
+        StoreCommand::Status(status) => run_store_status(status, cli.output_format())?,
+        StoreCommand::Ensure(ensure) => run_store_ensure(ensure, cli.output_format())?,
         StoreCommand::Gc(gc) => run_campaign_store_gc(gc, cli.output_format())?,
     };
     println!("{rendered}");
     Ok(())
+}
+
+#[derive(Serialize)]
+struct StoreStatusReport {
+    schema: &'static str,
+    configuration: String,
+    root: String,
+    admitted_kinds: Vec<String>,
+    nodes: Vec<StoreStatusNode>,
+}
+
+#[derive(Serialize)]
+struct StoreStatusNode {
+    id: String,
+    kind: &'static str,
+    capabilities: StoreStatusCapabilities,
+}
+
+#[derive(Clone, Copy, Serialize)]
+struct StoreStatusCapabilities {
+    durable: bool,
+    deferred_write: bool,
+    range_read: bool,
+    streaming_read: bool,
+    conditional_create: bool,
+    streaming_put: bool,
+    repair_inventory: bool,
+    planned_delete: bool,
+}
+
+impl From<BackendCapabilities> for StoreStatusCapabilities {
+    fn from(capabilities: BackendCapabilities) -> Self {
+        Self {
+            durable: capabilities.durable,
+            deferred_write: capabilities.deferred_write,
+            range_read: capabilities.range_read,
+            streaming_read: capabilities.streaming_read,
+            conditional_create: capabilities.conditional_create,
+            streaming_put: capabilities.streaming_put,
+            repair_inventory: capabilities.repair_inventory,
+            planned_delete: capabilities.planned_delete,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct StoreEnsureReport {
+    schema: &'static str,
+    configuration: String,
+    content: String,
+    logical_bytes: u64,
+    authenticated: bool,
+}
+
+fn run_store_status(args: &StoreStatusArgs, format: OutputFormat) -> Result<String, CliError> {
+    let graph = load_campaign_store_graph(&args.deployment)?;
+    let report = store_status_report(&graph);
+    render_store_status(&report, format)
+}
+
+fn run_store_ensure(args: &StoreEnsureArgs, format: OutputFormat) -> Result<String, CliError> {
+    let content = ContentId::parse(&args.content)
+        .map_err(|error| usage_error(format!("invalid content ID: {error}")))?;
+    let graph = load_campaign_store_graph(&args.deployment)?;
+    let handle = graph
+        .read(content, None)
+        .map_err(|error| maintenance_error(format!("store ensure read failed: {error}")))?;
+    let logical_bytes = handle.logical_length();
+    handle.copy_to(&mut std::io::sink()).map_err(|error| {
+        maintenance_error(format!("store ensure authentication failed: {error}"))
+    })?;
+    let report = StoreEnsureReport {
+        schema: STORE_ENSURE_REPORT_SCHEMA,
+        configuration: store_configuration(&graph),
+        content: content.encode(),
+        logical_bytes,
+        authenticated: true,
+    };
+    render_store_ensure(&report, format)
+}
+
+fn store_status_report(graph: &StoreGraph) -> StoreStatusReport {
+    StoreStatusReport {
+        schema: STORE_STATUS_REPORT_SCHEMA,
+        configuration: store_configuration(graph),
+        root: graph.root_id().as_str().to_owned(),
+        admitted_kinds: graph
+            .admitted_kinds()
+            .iter()
+            .map(|kind| kind.as_str().to_owned())
+            .collect(),
+        nodes: graph
+            .describe()
+            .iter()
+            .map(|node| StoreStatusNode {
+                id: node.id.as_str().to_owned(),
+                kind: store_node_kind(node.kind),
+                capabilities: node.capabilities.into(),
+            })
+            .collect(),
+    }
+}
+
+fn store_configuration(graph: &StoreGraph) -> String {
+    graph
+        .configuration_id()
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+const fn store_node_kind(kind: StoreNodeKind) -> &'static str {
+    match kind {
+        StoreNodeKind::Memory => "memory",
+        StoreNodeKind::Directory => "directory",
+        StoreNodeKind::CompressedDirectory => "compressed-directory",
+        StoreNodeKind::EncryptedDirectory => "encrypted-directory",
+        StoreNodeKind::CompressedEncryptedDirectory => "compressed-encrypted-directory",
+        StoreNodeKind::Packed => "packed",
+        StoreNodeKind::S3 => "s3",
+        StoreNodeKind::Verified => "verified",
+        StoreNodeKind::Routed => "routed",
+        StoreNodeKind::Tiered => "tiered",
+        StoreNodeKind::ReadThrough => "read-through",
+        StoreNodeKind::WriteThrough => "write-through",
+        StoreNodeKind::WriteBack => "write-back",
+        StoreNodeKind::DurabilityPolicy => "durability-policy",
+        StoreNodeKind::LogicalQuota => "logical-quota",
+        StoreNodeKind::PhysicalQuota => "physical-quota",
+        StoreNodeKind::Metrics => "metrics",
+        StoreNodeKind::Namespaced => "namespaced",
+        StoreNodeKind::ProfileValidated => "profile-validated",
+    }
 }
 
 #[derive(Serialize)]
@@ -155,6 +296,105 @@ fn physical_report(plan: &crucible_daemon::CampaignGcPlan) -> Vec<CampaignStoreG
             logical_bytes: physical.logical_bytes(),
         })
         .collect()
+}
+
+fn render_store_status(
+    report: &StoreStatusReport,
+    format: OutputFormat,
+) -> Result<String, CliError> {
+    match format {
+        OutputFormat::Jsonl => serde_json::to_string(report).map_err(|error| {
+            maintenance_error(format!("store status JSON encoding failed: {error}"))
+        }),
+        OutputFormat::Json => serde_json::to_string_pretty(report).map_err(|error| {
+            maintenance_error(format!("store status JSON encoding failed: {error}"))
+        }),
+        OutputFormat::Table => {
+            let mut lines = vec![
+                format!("{:<20} {}", "configuration", report.configuration),
+                format!("{:<20} {}", "root", report.root),
+                format!(
+                    "{:<20} {}",
+                    "admitted-kinds",
+                    report.admitted_kinds.join(",")
+                ),
+            ];
+            lines.extend(report.nodes.iter().map(|node| {
+                let capabilities = node.capabilities;
+                format!(
+                    "{:<20} {} kind={} durable={} deferred-write={} range-read={} streaming-read={} conditional-create={} streaming-put={} repair-inventory={} planned-delete={}",
+                    "node",
+                    node.id,
+                    node.kind,
+                    capabilities.durable,
+                    capabilities.deferred_write,
+                    capabilities.range_read,
+                    capabilities.streaming_read,
+                    capabilities.conditional_create,
+                    capabilities.streaming_put,
+                    capabilities.repair_inventory,
+                    capabilities.planned_delete,
+                )
+            }));
+            Ok(lines.join("\n"))
+        }
+        OutputFormat::Markdown => {
+            let mut lines = vec![
+                String::from("| field | value |"),
+                String::from("|---|---|"),
+                format!("| configuration | `{}` |", report.configuration),
+                format!("| root | `{}` |", report.root),
+                format!("| admitted kinds | {} |", report.admitted_kinds.join(", ")),
+            ];
+            lines.extend(report.nodes.iter().map(|node| {
+                let capabilities = node.capabilities;
+                format!(
+                    "| node `{}` | kind={} durable={} deferred-write={} range-read={} streaming-read={} conditional-create={} streaming-put={} repair-inventory={} planned-delete={} |",
+                    node.id,
+                    node.kind,
+                    capabilities.durable,
+                    capabilities.deferred_write,
+                    capabilities.range_read,
+                    capabilities.streaming_read,
+                    capabilities.conditional_create,
+                    capabilities.streaming_put,
+                    capabilities.repair_inventory,
+                    capabilities.planned_delete,
+                )
+            }));
+            Ok(lines.join("\n"))
+        }
+    }
+}
+
+fn render_store_ensure(
+    report: &StoreEnsureReport,
+    format: OutputFormat,
+) -> Result<String, CliError> {
+    match format {
+        OutputFormat::Jsonl => serde_json::to_string(report).map_err(|error| {
+            maintenance_error(format!("store ensure JSON encoding failed: {error}"))
+        }),
+        OutputFormat::Json => serde_json::to_string_pretty(report).map_err(|error| {
+            maintenance_error(format!("store ensure JSON encoding failed: {error}"))
+        }),
+        OutputFormat::Table => Ok([
+            format!("{:<20} {}", "configuration", report.configuration),
+            format!("{:<20} {}", "content", report.content),
+            format!("{:<20} {}", "logical-bytes", report.logical_bytes),
+            format!("{:<20} {}", "authenticated", report.authenticated),
+        ]
+        .join("\n")),
+        OutputFormat::Markdown => Ok([
+            String::from("| field | value |"),
+            String::from("|---|---|"),
+            format!("| configuration | `{}` |", report.configuration),
+            format!("| content | `{}` |", report.content),
+            format!("| logical bytes | {} |", report.logical_bytes),
+            format!("| authenticated | {} |", report.authenticated),
+        ]
+        .join("\n")),
+    }
 }
 
 const fn journal_phase(phase: CampaignGcJournalPhase) -> &'static str {
@@ -292,9 +532,84 @@ mod tests {
     use std::fs::{self, Permissions};
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
+    use crucible_cas::content_store::{BlobHandle, ObjectKind};
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn store_status_and_ensure_report_one_authenticated_graph_and_object() {
+        let fixture = GcFixture::new();
+        let graph = load_campaign_store_graph(&fixture.store).expect("load inspection graph");
+        let bytes = b"authenticated store ensure fixture";
+        let content = ContentId::for_bytes(ObjectKind::Scenario, 1, bytes);
+        graph
+            .put_if_absent(content, &BlobHandle::from_bytes(bytes.to_vec()))
+            .expect("publish ensure fixture");
+        drop(graph);
+
+        let status = run_store_status(
+            &StoreStatusArgs {
+                deployment: fixture.store.clone(),
+            },
+            OutputFormat::Jsonl,
+        )
+        .expect("render store status");
+        let status: serde_json::Value = serde_json::from_str(&status).expect("decode status");
+        assert_eq!(status["schema"], STORE_STATUS_REPORT_SCHEMA);
+        assert_eq!(status["root"], "primary");
+        assert_eq!(status["nodes"][0]["kind"], "directory");
+        assert_eq!(status["nodes"][0]["capabilities"]["durable"], true);
+
+        let ensured = run_store_ensure(
+            &StoreEnsureArgs {
+                content: content.encode(),
+                deployment: fixture.store.clone(),
+            },
+            OutputFormat::Jsonl,
+        )
+        .expect("authenticate stored object");
+        let ensured: serde_json::Value =
+            serde_json::from_str(&ensured).expect("decode ensure report");
+        assert_eq!(ensured["schema"], STORE_ENSURE_REPORT_SCHEMA);
+        assert_eq!(ensured["content"], content.encode());
+        assert_eq!(ensured["logical_bytes"], bytes.len());
+        assert_eq!(ensured["authenticated"], true);
+
+        let encoded = content.encode();
+        let digest = encoded.rsplit('.').next().expect("content digest");
+        let object = fixture
+            .objects
+            .join("scenario")
+            .join("1")
+            .join(&digest[..2])
+            .join(digest);
+        fs::write(object, b"corrupt replacement").expect("corrupt stored object");
+        let error = run_store_ensure(
+            &StoreEnsureArgs {
+                content: content.encode(),
+                deployment: fixture.store.clone(),
+            },
+            OutputFormat::Jsonl,
+        )
+        .expect_err("corrupt object must fail at authenticated EOF");
+        assert!(error.to_string().contains("authentication failed"));
+    }
+
+    #[test]
+    fn store_ensure_rejects_a_noncanonical_id_before_deployment_io() {
+        let fixture = GcFixture::new();
+        let missing = fixture.root.join("missing-store.toml");
+        let error = run_store_ensure(
+            &StoreEnsureArgs {
+                content: String::from("not-a-content-id"),
+                deployment: missing,
+            },
+            OutputFormat::Jsonl,
+        )
+        .expect_err("invalid ID must fail before deployment read");
+        assert!(matches!(error, CliError::Usage(_)));
+    }
 
     #[test]
     fn offline_gc_plans_reopens_and_applies_one_exact_empty_store() {
@@ -378,6 +693,8 @@ mod tests {
             .filter(|id| *id != "help")
             .collect::<BTreeSet<_>>();
         assert_eq!(ids, BTreeSet::from(["state", "policy", "store", "journal"]));
+        assert!(store.find_subcommand("status").is_some());
+        assert!(store.find_subcommand("ensure").is_some());
         assert!(gc.find_subcommand("plan").is_some());
         assert!(gc.find_subcommand("apply").is_some());
     }
@@ -386,6 +703,7 @@ mod tests {
         _directory: TempDir,
         root: PathBuf,
         state: PathBuf,
+        objects: PathBuf,
         policy: PathBuf,
         store: PathBuf,
         journal: PathBuf,
@@ -449,6 +767,7 @@ root = {objects:?}
                 _directory: directory,
                 root,
                 state,
+                objects,
                 policy,
                 store,
             }

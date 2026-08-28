@@ -286,7 +286,7 @@ enum Commands {
     Serve(ServeArgs),
     /// Inspect and control a lazy campaign through the local daemon.
     Campaign(CampaignArgs),
-    /// Perform stopped-owner maintenance on a configured content store.
+    /// Inspect or maintain a configured content store.
     Store(StoreArgs),
     /// Generate shell completions.
     Completions(CompletionsArgs),
@@ -378,8 +378,29 @@ struct StoreArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum StoreCommand {
+    /// Describe one exact admitted store graph without accessing object bytes.
+    Status(StoreStatusArgs),
+    /// Authenticate one complete content-addressed object through the graph.
+    Ensure(StoreEnsureArgs),
     /// Plan or apply stopped-owner campaign-store garbage collection.
     Gc(CampaignStoreGcArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreStatusArgs {
+    /// Strict composed repository-store deployment file.
+    #[arg(value_name = "STORE")]
+    deployment: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreEnsureArgs {
+    /// Exact canonical content ID to authenticate through the logical root.
+    #[arg(value_name = "CONTENT_ID")]
+    content: String,
+    /// Strict composed repository-store deployment file.
+    #[arg(long = "in", value_name = "STORE")]
+    deployment: PathBuf,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
