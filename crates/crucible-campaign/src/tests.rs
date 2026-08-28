@@ -565,6 +565,16 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             "administrative-record",
         ),
         (
+            "crucible.content-store.s3-ref",
+            "crucible-cas::content_store",
+            "physical-record",
+        ),
+        (
+            "crucible.content-store.s3-ref-inventory-state",
+            "crucible-cas::content_store",
+            "administrative-record",
+        ),
+        (
             "crucible.content-store.write-back-transfer-journal",
             "crucible-cas::content_store",
             "administrative-record",

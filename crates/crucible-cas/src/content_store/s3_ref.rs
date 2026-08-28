@@ -5,22 +5,35 @@
 //! complete [`RefName`] language under S3's 1,024-byte key ceiling. Construction
 //! shares one process-wide lifecycle authority for each exact endpoint, bucket,
 //! and prefix so every in-daemon instance serializes scans and replacements.
+//! A small ETag-CAS state record advances a persistent inventory generation
+//! before each accepted replacement, preserving ABA detection across restart.
 //! A configured service MUST independently pass the strong conditional-write
 //! and strongly consistent listing conformance gate; ordinary S3 client
 //! capability is intentionally insufficient.
 
 use std::collections::{BTreeMap, btree_map::Entry};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, Weak};
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+use std::sync::{
+    Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
+};
 
+use super::admin::persistent_ref_inventory_generation;
 use super::s3::{StoreS3EndpointId, validate_configuration};
 use super::{
-    ContentId, MAX_REF_SCAN_VISITS, MutableRefBackend, RefCasOutcome, RefName, RefPublicationGuard,
-    RefScanEntry, RefScanPage, StoreError, encode_hex, ref_name_is_descendant,
+    ContentId, MAX_REF_SCAN_VISITS, MutableRefBackend, RefCasOutcome, RefInventoryFence,
+    RefInventoryRecord, RefInventorySummary, RefName, RefPublicationGuard, RefScanEntry,
+    RefScanPage, RefStoreAdmin, StoreError, encode_hex, ref_name_is_descendant,
     validate_ref_scan_basis,
 };
 
 const REF_RECORD_MAGIC: &[u8] = b"crucible.content-store.s3-ref.v1\0";
 const REF_KEY_DOMAIN: &[u8] = b"crucible.content-store.s3-ref-key.v1";
+const REF_INVENTORY_STATE_MAGIC: &[u8] = b"crucible.content-store.s3-ref-inventory-state.v1\0";
+const REF_INVENTORY_STATE_CHECKSUM_DOMAIN: &[u8] =
+    b"crucible.content-store.s3-ref-inventory-state-checksum.v1";
+const REF_INVENTORY_STATE_SUFFIX: &str = "ref-admin/state-v1";
 const MAX_SMALL_OBJECT_BYTES: usize = 4 * 1024;
 const MAX_OBJECT_KEY_BYTES: usize = 1_024;
 const MAX_PROVIDER_TOKEN_BYTES: usize = 4 * 1024;
@@ -380,6 +393,14 @@ impl S3RefBackend {
         }
     }
 
+    fn inventory_state_key(&self) -> String {
+        if self.capability.prefix.is_empty() {
+            REF_INVENTORY_STATE_SUFFIX.to_string()
+        } else {
+            format!("{}/{}", self.capability.prefix, REF_INVENTORY_STATE_SUFFIX)
+        }
+    }
+
     fn key(&self, name: &RefName) -> String {
         let mut hasher = blake3::Hasher::new();
         hasher.update(REF_KEY_DOMAIN);
@@ -435,6 +456,130 @@ impl S3RefBackend {
             current: Some(current),
         })
     }
+
+    fn load_inventory_state(&self) -> Result<Option<S3RefInventoryState>, StoreError> {
+        let key = self.inventory_state_key();
+        self.capability
+            .client
+            .get_small_versioned_object(
+                &self.capability.bucket,
+                &key,
+                MAX_SMALL_OBJECT_BYTES as u16,
+            )?
+            .map(|object| {
+                let (instance, generation) = decode_inventory_state(object.bytes())?;
+                Ok(S3RefInventoryState {
+                    instance,
+                    generation,
+                    version: object.version().clone(),
+                })
+            })
+            .transpose()
+    }
+
+    fn load_or_create_inventory_state(&self) -> Result<S3RefInventoryState, StoreError> {
+        if let Some(state) = self.load_inventory_state()? {
+            return Ok(state);
+        }
+        let instance = new_inventory_instance()?;
+        let generation = 1;
+        let bytes = Arc::<[u8]>::from(encode_inventory_state(instance, generation));
+        let key = self.inventory_state_key();
+        match self
+            .capability
+            .client
+            .put_small_if_absent(&self.capability.bucket, &key, bytes)?
+        {
+            StoreS3ConditionalWriteOutcome::Committed(version) => {
+                let state = self
+                    .load_inventory_state()?
+                    .ok_or(StoreError::Incompatible)?;
+                if state.instance != instance
+                    || state.generation != generation
+                    || state.version != version
+                {
+                    return Err(StoreError::Incompatible);
+                }
+                Ok(state)
+            }
+            StoreS3ConditionalWriteOutcome::PreconditionFailed => {
+                self.load_inventory_state()?.ok_or(StoreError::Incompatible)
+            }
+        }
+    }
+
+    fn advance_inventory_state(&self) -> Result<S3RefInventoryState, StoreError> {
+        let current = self.load_or_create_inventory_state()?;
+        let generation = current.generation.checked_add(1).ok_or(StoreError::Quota)?;
+        let bytes = Arc::<[u8]>::from(encode_inventory_state(current.instance, generation));
+        let key = self.inventory_state_key();
+        match self.capability.client.replace_small_if_version(
+            &self.capability.bucket,
+            &key,
+            &current.version,
+            bytes,
+        )? {
+            StoreS3ConditionalWriteOutcome::Committed(version) => {
+                let state = self
+                    .load_inventory_state()?
+                    .ok_or(StoreError::Incompatible)?;
+                if state.instance != current.instance
+                    || state.generation != generation
+                    || state.version != version
+                {
+                    return Err(StoreError::Incompatible);
+                }
+                Ok(state)
+            }
+            StoreS3ConditionalWriteOutcome::PreconditionFailed => Err(StoreError::Incompatible),
+        }
+    }
+
+    fn visit_validated_refs(
+        &self,
+        visitor: &mut dyn FnMut(&str, RefName, ContentId) -> Result<(), StoreError>,
+    ) -> Result<u64, StoreError> {
+        let object_prefix = self.object_prefix();
+        let mut visited = 0_u64;
+        let mut pages = 0_u64;
+        let mut prior_key = None;
+        let mut scan = self
+            .capability
+            .client
+            .begin_small_object_scan(&self.capability.bucket, &object_prefix)?;
+        loop {
+            pages = pages.checked_add(1).ok_or(StoreError::Quota)?;
+            if pages > MAX_REF_SCAN_VISITS.saturating_add(1) {
+                return Err(StoreError::Quota);
+            }
+            let page = scan.next_page(MAX_S3_REF_LIST_ITEMS)?;
+            let (keys, next) = page.into_parts();
+            for key in keys {
+                if prior_key.as_ref().is_some_and(|prior| &key <= prior)
+                    || !key.starts_with(&object_prefix)
+                {
+                    return Err(StoreError::Incompatible);
+                }
+                visited = visited.checked_add(1).ok_or(StoreError::Quota)?;
+                if visited > MAX_REF_SCAN_VISITS {
+                    return Err(StoreError::Quota);
+                }
+                prior_key = Some(key.clone());
+                let object = scan
+                    .get_small_versioned_object(&key, MAX_SMALL_OBJECT_BYTES as u16)?
+                    .ok_or(StoreError::Incompatible)?;
+                let (name, target) = decode_ref_record(object.bytes())?;
+                if self.key(&name) != key {
+                    return Err(StoreError::Incompatible);
+                }
+                visitor(&key, name, target)?;
+            }
+            if next.is_none() {
+                break;
+            }
+        }
+        Ok(visited)
+    }
 }
 
 impl MutableRefBackend for S3RefBackend {
@@ -463,57 +608,21 @@ impl MutableRefBackend for S3RefBackend {
     ) -> Result<RefScanPage, StoreError> {
         validate_ref_scan_basis(namespace, after, limit)?;
         let _state = self.lock_state("scan-S3-ref-state")?;
-        let object_prefix = self.object_prefix();
-        let mut visited = 0_u64;
-        let mut pages = 0_u64;
         let mut candidates = BTreeMap::new();
-        let mut prior_key = None;
-        let mut scan = self
-            .capability
-            .client
-            .begin_small_object_scan(&self.capability.bucket, &object_prefix)?;
-        loop {
-            pages = pages.checked_add(1).ok_or(StoreError::Quota)?;
-            if pages > MAX_REF_SCAN_VISITS.saturating_add(1) {
-                return Err(StoreError::Quota);
+        let visited = self.visit_validated_refs(&mut |_key, name, target| {
+            if !ref_name_is_descendant(namespace, &name)
+                || after.is_some_and(|cursor| &name <= cursor)
+            {
+                return Ok(());
             }
-            let page = scan.next_page(MAX_S3_REF_LIST_ITEMS)?;
-            let (keys, next) = page.into_parts();
-            for key in keys {
-                if prior_key.as_ref().is_some_and(|prior| &key <= prior) {
-                    return Err(StoreError::Incompatible);
-                }
-                visited = visited.checked_add(1).ok_or(StoreError::Quota)?;
-                if visited > MAX_REF_SCAN_VISITS {
-                    return Err(StoreError::Quota);
-                }
-                if !key.starts_with(&object_prefix) {
-                    return Err(StoreError::Incompatible);
-                }
-                prior_key = Some(key.clone());
-                let object = scan
-                    .get_small_versioned_object(&key, MAX_SMALL_OBJECT_BYTES as u16)?
-                    .ok_or(StoreError::Incompatible)?;
-                let (name, target) = decode_ref_record(object.bytes())?;
-                if self.key(&name) != key {
-                    return Err(StoreError::Incompatible);
-                }
-                if !ref_name_is_descendant(namespace, &name)
-                    || after.is_some_and(|cursor| &name <= cursor)
-                {
-                    continue;
-                }
-                if candidates.insert(name, target).is_some() {
-                    return Err(StoreError::Incompatible);
-                }
-                if candidates.len() > limit.saturating_add(1) {
-                    candidates.pop_last();
-                }
+            if candidates.insert(name, target).is_some() {
+                return Err(StoreError::Incompatible);
             }
-            if next.is_none() {
-                break;
+            if candidates.len() > limit.saturating_add(1) {
+                candidates.pop_last();
             }
-        }
+            Ok(())
+        })?;
 
         let has_more = candidates.len() > limit;
         if has_more {
@@ -545,6 +654,7 @@ impl MutableRefBackend for S3RefBackend {
             });
         }
         let bytes = Arc::<[u8]>::from(encode_ref_record(name, next)?);
+        self.advance_inventory_state()?;
         let outcome = match current {
             Some((_target, version)) => self.capability.client.replace_small_if_version(
                 &self.capability.bucket,
@@ -571,6 +681,58 @@ impl MutableRefBackend for S3RefBackend {
                 self.conflict_after_failed_write(name, expected)
             }
         }
+    }
+}
+
+impl RefStoreAdmin for S3RefBackend {
+    fn acquire_ref_inventory_fence(&self) -> Result<Box<dyn RefInventoryFence + '_>, StoreError> {
+        let publication =
+            self.capability
+                .lifecycle
+                .publication
+                .write()
+                .map_err(|_| StoreError::Poisoned {
+                    operation: "acquire-S3-ref-inventory-publication-fence",
+                })?;
+        let state = self.lock_state("acquire-S3-ref-inventory-state-fence")?;
+        let inventory = self.load_or_create_inventory_state()?;
+        Ok(Box::new(S3RefInventoryFence {
+            backend: self,
+            _publication: publication,
+            _state: state,
+            inventory,
+        }))
+    }
+}
+
+struct S3RefInventoryFence<'a> {
+    backend: &'a S3RefBackend,
+    _publication: RwLockWriteGuard<'a, ()>,
+    _state: MutexGuard<'a, ()>,
+    inventory: S3RefInventoryState,
+}
+
+impl RefInventoryFence for S3RefInventoryFence<'_> {
+    fn visit_refs(
+        &mut self,
+        visitor: &mut dyn FnMut(RefInventoryRecord) -> Result<(), StoreError>,
+    ) -> Result<RefInventorySummary, StoreError> {
+        let refs = self
+            .backend
+            .visit_validated_refs(&mut |_key, name, target| {
+                visitor(RefInventoryRecord::new(name, target))
+            })?;
+        let after = self
+            .backend
+            .load_inventory_state()?
+            .ok_or(StoreError::Incompatible)?;
+        if after != self.inventory {
+            return Err(StoreError::Incompatible);
+        }
+        Ok(RefInventorySummary::from_parts(
+            persistent_ref_inventory_generation(self.inventory.instance, self.inventory.generation),
+            refs,
+        ))
     }
 }
 
@@ -646,10 +808,70 @@ fn read_u16(bytes: &[u8], offset: &mut usize) -> Result<u16, StoreError> {
     Ok(u16::from_be_bytes(field))
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct S3RefInventoryState {
+    instance: [u8; 32],
+    generation: u64,
+    version: StoreS3ObjectVersion,
+}
+
+fn encode_inventory_state(instance: [u8; 32], generation: u64) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(REF_INVENTORY_STATE_MAGIC.len() + 32 + 8 + 32);
+    bytes.extend_from_slice(REF_INVENTORY_STATE_MAGIC);
+    bytes.extend_from_slice(&instance);
+    bytes.extend_from_slice(&generation.to_be_bytes());
+    let mut checksum = blake3::Hasher::new();
+    checksum.update(REF_INVENTORY_STATE_CHECKSUM_DOMAIN);
+    checksum.update(&bytes);
+    bytes.extend_from_slice(checksum.finalize().as_bytes());
+    bytes
+}
+
+fn decode_inventory_state(bytes: &[u8]) -> Result<([u8; 32], u64), StoreError> {
+    let material_length = REF_INVENTORY_STATE_MAGIC.len() + 32 + 8;
+    if bytes.len() != material_length + 32 || !bytes.starts_with(REF_INVENTORY_STATE_MAGIC) {
+        return Err(StoreError::Incompatible);
+    }
+    let instance: [u8; 32] = bytes
+        [REF_INVENTORY_STATE_MAGIC.len()..REF_INVENTORY_STATE_MAGIC.len() + 32]
+        .try_into()
+        .map_err(|_| StoreError::Incompatible)?;
+    let generation = u64::from_be_bytes(
+        bytes[REF_INVENTORY_STATE_MAGIC.len() + 32..material_length]
+            .try_into()
+            .map_err(|_| StoreError::Incompatible)?,
+    );
+    if generation == 0 {
+        return Err(StoreError::Incompatible);
+    }
+    let mut checksum = blake3::Hasher::new();
+    checksum.update(REF_INVENTORY_STATE_CHECKSUM_DOMAIN);
+    checksum.update(&bytes[..material_length]);
+    if checksum.finalize().as_bytes() != &bytes[material_length..] {
+        return Err(StoreError::Incompatible);
+    }
+    Ok((instance, generation))
+}
+
+fn new_inventory_instance() -> Result<[u8; 32], StoreError> {
+    let path = Path::new("/dev/urandom");
+    let mut instance = [0_u8; 32];
+    File::open(path)
+        .and_then(|mut source| source.read_exact(&mut instance))
+        .map_err(|source| StoreError::Io {
+            operation: "read-S3-ref-inventory-instance-randomness",
+            path: path.to_path_buf(),
+            source,
+        })?;
+    Ok(instance)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::mpsc;
     use std::thread;
+    use std::time::Duration;
 
     use super::*;
     use crate::content_store::ObjectKind;
@@ -835,6 +1057,28 @@ mod tests {
     }
 
     #[test]
+    fn inventory_state_codec_is_exact_and_checksum_bound() {
+        let instance = [0x5a; 32];
+        let bytes = encode_inventory_state(instance, u64::MAX);
+        assert_eq!(
+            decode_inventory_state(&bytes).expect("canonical state"),
+            (instance, u64::MAX)
+        );
+
+        let mut corrupt = bytes;
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 1;
+        assert!(matches!(
+            decode_inventory_state(&corrupt),
+            Err(StoreError::Incompatible)
+        ));
+        assert!(matches!(
+            decode_inventory_state(&encode_inventory_state(instance, 0)),
+            Err(StoreError::Incompatible)
+        ));
+    }
+
+    #[test]
     fn strong_cas_refs_round_trip_conflict_and_scan_in_name_order() {
         let client = Arc::new(FakeStrongCasClient::new(endpoint()));
         let refs = backend(client);
@@ -973,6 +1217,134 @@ mod tests {
         client
             .lie_about_committed_version
             .store(false, Ordering::SeqCst);
-        assert_eq!(refs.read_ref(&name).expect("committed body"), Some(target));
+        assert_eq!(refs.read_ref(&name).expect("uncommitted ref body"), None);
+    }
+
+    #[test]
+    fn inventory_generation_is_restart_stable_and_aba_safe() {
+        let client = Arc::new(FakeStrongCasClient::new(endpoint()));
+        let refs = backend(client.clone());
+        let name = RefName::new("campaigns/inventory").expect("ref name");
+        let first = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, b"first");
+        refs.compare_exchange(&name, None, first)
+            .expect("initial ref");
+
+        let mut observed = Vec::new();
+        let initial = refs
+            .acquire_ref_inventory_fence()
+            .expect("initial inventory fence")
+            .visit_refs(&mut |record| {
+                observed.push((record.name().clone(), record.target()));
+                Ok(())
+            })
+            .expect("initial inventory");
+        assert_eq!(observed, vec![(name.clone(), first)]);
+        assert_eq!(initial.refs(), 1);
+
+        let stale = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, b"stale");
+        assert!(matches!(
+            refs.compare_exchange(&name, None, stale),
+            Ok(RefCasOutcome::Conflict { .. })
+        ));
+        let after_conflict = refs
+            .acquire_ref_inventory_fence()
+            .expect("post-conflict inventory fence")
+            .visit_refs(&mut |_record| Ok(()))
+            .expect("post-conflict inventory");
+        assert_eq!(after_conflict, initial);
+
+        let restarted = backend(client);
+        let stable = restarted
+            .acquire_ref_inventory_fence()
+            .expect("restart inventory fence")
+            .visit_refs(&mut |_record| Ok(()))
+            .expect("restart inventory");
+        assert_eq!(stable, initial);
+
+        let second = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, b"second");
+        restarted
+            .compare_exchange(&name, Some(first), second)
+            .expect("replace ref");
+        let changed = restarted
+            .acquire_ref_inventory_fence()
+            .expect("changed inventory fence")
+            .visit_refs(&mut |_record| Ok(()))
+            .expect("changed inventory");
+        assert_ne!(changed.generation(), initial.generation());
+
+        restarted
+            .compare_exchange(&name, Some(second), first)
+            .expect("restore ref after ABA");
+        let restored = restarted
+            .acquire_ref_inventory_fence()
+            .expect("restored inventory fence")
+            .visit_refs(&mut |_record| Ok(()))
+            .expect("restored inventory");
+        assert_ne!(restored.generation(), initial.generation());
+    }
+
+    #[test]
+    fn inventory_fence_excludes_independent_backend_mutation() {
+        let client = Arc::new(FakeStrongCasClient::new(endpoint()));
+        let fenced = backend(client.clone());
+        let writer = backend(client);
+        let name = RefName::new("campaigns/fenced").expect("ref name");
+        let target = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, b"target");
+        let fence = fenced
+            .acquire_ref_inventory_fence()
+            .expect("inventory fence");
+        let (started_sender, started_receiver) = mpsc::sync_channel(1);
+        let (finished_sender, finished_receiver) = mpsc::sync_channel(1);
+        let writer_thread = thread::spawn(move || {
+            started_sender.send(()).expect("announce writer");
+            let result = writer.compare_exchange(&name, None, target);
+            finished_sender.send(result).expect("return writer result");
+        });
+        started_receiver.recv().expect("writer started");
+        assert!(
+            finished_receiver
+                .recv_timeout(Duration::from_millis(50))
+                .is_err()
+        );
+        drop(fence);
+        assert_eq!(
+            finished_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("writer unblocked")
+                .expect("writer result"),
+            RefCasOutcome::Advanced { next: target }
+        );
+        writer_thread.join().expect("writer thread");
+    }
+
+    #[test]
+    fn inventory_fence_waits_for_in_flight_publication() {
+        let client = Arc::new(FakeStrongCasClient::new(endpoint()));
+        let publisher = backend(client.clone());
+        let inventor = backend(client);
+        let publication = publisher
+            .acquire_publication_guard()
+            .expect("publication guard");
+        let (started_sender, started_receiver) = mpsc::sync_channel(1);
+        let (finished_sender, finished_receiver) = mpsc::sync_channel(1);
+        let inventory_thread = thread::spawn(move || {
+            started_sender.send(()).expect("announce inventory");
+            let result = inventor.acquire_ref_inventory_fence().map(|_fence| ());
+            finished_sender
+                .send(result)
+                .expect("return inventory result");
+        });
+        started_receiver.recv().expect("inventory started");
+        assert!(
+            finished_receiver
+                .recv_timeout(Duration::from_millis(50))
+                .is_err()
+        );
+        drop(publication);
+        finished_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("inventory unblocked")
+            .expect("inventory result");
+        inventory_thread.join().expect("inventory thread");
     }
 }
