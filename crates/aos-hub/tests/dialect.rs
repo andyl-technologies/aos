@@ -105,6 +105,7 @@ async fn exercise_oci_catalog_race(
                 projection: Some(OciCatalogProjection::Manifest {
                     document: manifest,
                     platform: Some(Platform::linux_amd64()),
+                    image_config: None,
                 }),
             },
             OciCatalogObject {

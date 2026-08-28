@@ -13,8 +13,8 @@ one adversarial review of the containing phase are complete.
 | 2 | The single `aos` image and runtime contract | Complete |
 | 3 | Local `aos container` CLI | Complete |
 | 4 | Hub OCI catalog, storage, and pull data plane | Complete (follow-ups open) |
-| 5 | Upload, publication, and signed release roots | Not started |
-| 6 | Connect API, administration CLI, and console | Not started |
+| 5 | Upload, publication, and signed release roots | Complete |
+| 6 | Connect API, administration CLI, and console | Complete (Phase 7 GC engine open) |
 | 7 | Retention, GC, operations, and rollout | Not started |
 | 8 | Native and VM end-to-end qualification | Not started |
 
@@ -396,42 +396,65 @@ publication.
 
 ### Connect API
 
-- [ ] Add a distinct `ContainerService`; do not extend `ImageService`.
-- [ ] Implement repository list/get/create/update/delete.
-- [ ] Implement tag list/get/resolve/tag/untag with resource versions.
-- [ ] Implement manifest, platform, layer, referrer, publication, and provenance
+- [x] Add a distinct `ContainerService`; do not extend `ImageService`.
+- [x] Implement repository list/get/create/update/delete.
+- [x] Implement tag list/get/resolve/tag/untag with resource versions.
+- [x] Implement manifest, platform, layer, referrer, publication, and provenance
   inspection.
-- [ ] Implement retention get/set and GC plan/apply/status operations.
-- [ ] Update manual method maps, proto generation, capability manifests, route
+- [x] Implement retention get/set and define fail-closed GC plan/apply/status
+  operations.
+- [ ] Enable GC plan/apply/status only with the complete Phase 7 deletion engine.
+- [x] Update manual method maps, proto generation, capability manifests, route
   coverage, and retained-control fixtures.
 
 ### Administration CLI
 
-- [ ] Add `aos hub registry container` browsing commands.
-- [ ] Add repository and tag mutations with plan/apply, idempotency,
+- [x] Add `aos hub registry container` browsing commands.
+- [x] Add repository and tag mutations with plan/apply, idempotency,
   confirmation hashes, and resource-version checks.
-- [ ] Add retention and GC plan/apply operations.
-- [ ] Preserve the versioned Hub CLI JSON envelope and secret redaction.
+- [x] Add retention and fail-closed GC plan/apply commands.
+- [x] Preserve the versioned Hub CLI JSON envelope and secret redaction.
 
 ### Console
 
-- [ ] Rename the existing navigation to "System images."
-- [ ] Add container repository, tag, digest, and platform pages.
-- [ ] Show copyable Docker/nerdctl/AOS pull commands.
-- [ ] Show config, compressed/unpacked/shared sizes, and closure layer mapping.
-- [ ] Show package/release/channel provenance, verification, SBOM, source,
+- [x] Rename the existing navigation to "System images."
+- [x] Add container repository, tag, digest, and platform pages.
+- [x] Show copyable Docker/nerdctl/AOS pull commands from the exact ready OCI
+  route rather than the control origin.
+- [x] Show config, compressed/unpacked/shared sizes, and closure layer mapping.
+- [x] Show package/release/channel provenance, verification, SBOM, source,
   licenses, signatures, and referrers.
-- [ ] Show publication health, tag history, retention, GC blockers, and planned
-  reclaimable bytes.
-- [ ] Keep multi-gigabyte uploads out of the browser.
+- [x] Show publication health, tag history, and retention.
+- [ ] Show GC blockers and planned reclaimable bytes from the Phase 7 engine.
+- [x] Keep multi-gigabyte uploads out of the browser.
 
 ### Tests and review
 
-- [ ] Cover API authorization, pagination, filtering, redaction, optimistic
+- [x] Cover API authorization, pagination, filtering, redaction, optimistic
   concurrency, and idempotency.
-- [ ] Cover native and Worker console SSR/interaction parity.
-- [ ] Cover public/private repository presentation without digest leakage.
-- [ ] Complete one Phase-6 adversarial review and resolve blocking findings.
+- [x] Cover native and Worker console SSR/interaction parity.
+- [x] Cover public/private repository presentation without digest leakage.
+- [x] Complete one Phase-6 adversarial review and resolve blocking findings.
+
+Phase 6 used one adversarial review and found no P0 issues. The review found
+that in-flight publication state was visible to ordinary registry readers,
+v22 upgrade gates and retention backfill were stale, old image projections had
+no reconciliation path, identical roots could not carry multiple release
+identities, manual untag and console permission contracts disagreed with the
+service, platform identity was incomplete, deletion versions were imprecise,
+and signed snapshot changes did not invalidate cursors.
+
+Publisher-only publication administration, explicit replay-safe v21-to-v22
+migrations, fail-closed legacy retention preservation, durable exact-byte
+projection reconciliation, release-qualified provenance, exact manual-tag CAS,
+canonical `publish` UI gating, full OCI platform selectors, terminal deletion
+versions, and atomic snapshot epoch advancement resolve those findings. Ready
+route-derived pull references also keep copyable commands independent from the
+control origin. Focused SQLite upgrade/crash/concurrency tests, complete SQL
+translation for PostgreSQL and MySQL, native Connect and Distribution tests,
+the signed APR publication E2E, console native/WASM checks, CLI contracts, and
+Worker WASM compilation passed. No live PostgreSQL or MySQL runtime result is
+claimed for this phase.
 
 ## Phase 7: Retention, GC, operations, and rollout
 

@@ -21,6 +21,7 @@ use super::operations::{OperationSurface, OperationsWorkflow};
 use super::organization_activity::OrganizationActivity;
 use super::registry_catalog::RegistryCatalog;
 use super::registry_configuration::RegistryConfiguration;
+use super::registry_containers::RegistryContainers;
 use super::registry_images::RegistryImages;
 use super::registry_mirror::RegistryMirrorWorkflow;
 use super::registry_publication::RegistryPublicationWorkflow;
@@ -91,6 +92,10 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
         .into_any(),
         (ConsoleScope::Registry { path }, "images") => view! {
             <RegistryImages client=client registry_id=path.clone()/>
+        }
+        .into_any(),
+        (ConsoleScope::Registry { path }, "containers") => view! {
+            <RegistryContainers client=client registry_id=path.clone()/>
         }
         .into_any(),
         (ConsoleScope::Registry { path }, page @ ("packages" | "channels")) => view! {

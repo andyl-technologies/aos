@@ -15,8 +15,9 @@ use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
 use super::{
-    HubAccessTokenCmd, HubIdentityProviderCmd, HubInstanceSettingsSectionCmd, HubInvitationCmd,
-    HubOrgMemberCmd, HubOrganizationDomainCmd, HubServiceAccountCmd, HubSigningKeyCmd,
+    HubAccessTokenCmd, HubContainerCmd, HubIdentityProviderCmd, HubInstanceSettingsSectionCmd,
+    HubInvitationCmd, HubOrgMemberCmd, HubOrganizationDomainCmd, HubServiceAccountCmd,
+    HubSigningKeyCmd,
 };
 
 #[derive(Args, Debug, Clone)]
@@ -2720,6 +2721,11 @@ pub enum HubRegistryCmd {
     Configuration {
         #[command(subcommand)]
         command: HubConfigCmd,
+    },
+    /// Inspect and administer OCI container repositories
+    Container {
+        #[command(subcommand)]
+        command: HubContainerCmd,
     },
 }
 

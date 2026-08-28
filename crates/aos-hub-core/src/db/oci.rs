@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use anyhow::{bail, Context, Result};
 use aos_oci_types::{
-    Annotations, Descriptor, ImageIndex, ImageManifest, ManifestReference, MediaType, Platform,
-    RepositoryName, Sha256Digest, Tag,
+    Annotations, Descriptor, ImageConfig, ImageIndex, ImageManifest, ManifestReference, MediaType,
+    Platform, RepositoryName, Sha256Digest, Tag,
 };
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
@@ -43,8 +43,9 @@ const OCI_MANIFEST_COLUMNS: &str = "manifest.registry_id, manifest.digest,
     manifest.media_type, manifest.byte_size, manifest.artifact_type,
     manifest.subject_digest, manifest.config_digest, manifest.platform_os,
     manifest.platform_architecture, manifest.platform_variant,
-    manifest.annotations_json, manifest.descriptor_count, stored_blob.surface_object_id,
-    object.object_key, manifest.created_at";
+    manifest.platform_os_version, manifest.platform_os_features_json,
+    manifest.annotations_json, manifest.descriptor_count,
+    stored_blob.surface_object_id, object.object_key, manifest.created_at";
 const OCI_MANIFEST_REFERENCE_PREDICATE: &str = "((link.digest = ?2 AND ?2 IS NOT NULL)
                          OR (tag.name = ?3 AND ?3 IS NOT NULL))";
 const OCI_UPLOAD_COLUMNS: &str = "id, registry_id, repository_id, publication_id,
@@ -114,7 +115,9 @@ pub fn oci_catalog_declaration_digest(
         );
         declaration.extend_from_slice(&descriptor);
         let projection = match &object.projection {
-            Some(OciCatalogProjection::Manifest { document, platform }) => {
+            Some(OciCatalogProjection::Manifest {
+                document, platform, ..
+            }) => {
                 document.validate()?;
                 let projection = serde_json::json!({
                     "document": document,
@@ -284,15 +287,38 @@ fn validate_catalog(input: &IndexOciRepositoryCatalog) -> Result<()> {
             bail!("OCI catalog contains a duplicate digest");
         }
         match (&object.projection, object.descriptor.media_type) {
-            (Some(OciCatalogProjection::Manifest { document, platform }), media_type)
-                if media_type.is_image_manifest() =>
-            {
+            (
+                Some(OciCatalogProjection::Manifest {
+                    document,
+                    platform,
+                    image_config,
+                }),
+                media_type,
+            ) if media_type.is_image_manifest() => {
                 document.validate()?;
                 match (document.artifact_type, platform) {
                     (None, Some(platform)) => platform.validate()?,
                     (Some(_), None) => {}
                     (None, None) => bail!("runnable OCI manifest requires its config platform"),
                     (Some(_), Some(_)) => bail!("OCI artifact manifest cannot carry a platform"),
+                }
+                if let Some(image_config) = image_config {
+                    let config = ImageConfig::from_json(image_config.config_json.as_bytes())?;
+                    let config_platform = config.platform();
+                    if Sha256Digest::digest(image_config.config_json.as_bytes())
+                        != document.config.digest
+                        || platform.as_ref() != Some(&config_platform)
+                        || config.rootfs.diff_ids.len() != document.layers.len()
+                        || image_config.layers.len() != document.layers.len()
+                        || config
+                            .rootfs
+                            .diff_ids
+                            .iter()
+                            .zip(&image_config.layers)
+                            .any(|(diff_id, layer)| diff_id != &layer.diff_id)
+                    {
+                        bail!("OCI image administration projection conflicts with its config");
+                    }
                 }
             }
             (Some(OciCatalogProjection::Index(index)), media_type)
@@ -619,7 +645,9 @@ fn extend_oci_projection_statements(
     now: i64,
 ) -> Result<i64> {
     let (artifact_type, subject, config, annotations, edges, platform) = match projection {
-        OciCatalogProjection::Manifest { document, platform } => (
+        OciCatalogProjection::Manifest {
+            document, platform, ..
+        } => (
             document.artifact_type,
             document
                 .subject
@@ -641,19 +669,27 @@ fn extend_oci_projection_statements(
     };
     let size = i64::try_from(object.size).context("OCI manifest size exceeds int64")?;
     let descriptor_count = i64::try_from(edges.len()).context("OCI edge count exceeds int64")?;
+    let platform_os_features_json = serde_json::to_string(
+        platform
+            .map(|platform| platform.os_features.as_slice())
+            .unwrap_or_default(),
+    )?;
     statements.push(
         Statement::new(
             "INSERT INTO oci_manifests
                (registry_id, digest, media_type, byte_size, schema_version,
                 artifact_type, subject_digest, config_digest, platform_os,
-                platform_architecture, platform_variant, annotations_json,
-                descriptor_count, created_at)
+                platform_architecture, platform_variant, platform_os_version,
+                platform_os_features_json, annotations_json, descriptor_count,
+                created_at)
              SELECT ?1, ?2, ?3, ?4, 2, ?5, ?6, ?7, ?8, ?9, ?10,
-                    ?11, ?12, ?13
+                    ?11, ?12, ?13, ?14, ?15
              FROM oci_blobs stored_blob
              WHERE stored_blob.registry_id = ?1 AND stored_blob.digest = ?2
                AND stored_blob.byte_size = ?4
-             ON CONFLICT(registry_id, digest) DO NOTHING",
+             ON CONFLICT(registry_id, digest) DO UPDATE SET
+               platform_os_version = excluded.platform_os_version,
+               platform_os_features_json = excluded.platform_os_features_json",
             vals![
                 registry_id,
                 object.digest.to_string(),
@@ -665,6 +701,8 @@ fn extend_oci_projection_statements(
                 platform.map(|platform| platform.os.as_str()),
                 platform.map(|platform| platform.architecture.as_str()),
                 platform.and_then(|platform| platform.variant.as_deref()),
+                platform.and_then(|platform| platform.os_version.as_deref()),
+                platform_os_features_json,
                 serde_json::to_string(annotations)?,
                 descriptor_count,
                 now
@@ -675,20 +713,32 @@ fn extend_oci_projection_statements(
     );
     for edge in &edges {
         let size = i64::try_from(edge.descriptor.size).context("OCI edge size exceeds int64")?;
+        let edge_os_features_json = serde_json::to_string(
+            edge.descriptor
+                .platform
+                .as_ref()
+                .map(|platform| platform.os_features.as_slice())
+                .unwrap_or_default(),
+        )?;
         statements.push(
             Statement::new(
                 "INSERT INTO oci_descriptor_edges
                    (registry_id, manifest_digest, edge_role, ordinal,
                     target_digest, media_type, byte_size, platform_os,
-                    platform_architecture, platform_variant, annotations_json)
-                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11
+                    platform_architecture, platform_variant,
+                    platform_os_version, platform_os_features_json,
+                    annotations_json)
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                        ?11, ?12, ?13
                  FROM oci_manifests manifest
                  JOIN oci_blobs target
                    ON target.registry_id = manifest.registry_id
                   AND target.digest = ?5 AND target.byte_size = ?7
                  WHERE manifest.registry_id = ?1 AND manifest.digest = ?2
                  ON CONFLICT(registry_id, manifest_digest, edge_role, ordinal)
-                 DO NOTHING",
+                 DO UPDATE SET
+                   platform_os_version = excluded.platform_os_version,
+                   platform_os_features_json = excluded.platform_os_features_json",
                 vals![
                     registry_id,
                     object.digest.to_string(),
@@ -709,6 +759,11 @@ fn extend_oci_projection_statements(
                         .platform
                         .as_ref()
                         .and_then(|platform| platform.variant.as_deref()),
+                    edge.descriptor
+                        .platform
+                        .as_ref()
+                        .and_then(|platform| platform.os_version.as_deref()),
+                    edge_os_features_json,
                     serde_json::to_string(&edge.descriptor.annotations)?
                 ]
                 .to_vec(),
@@ -832,7 +887,9 @@ fn extend_projection_identity_guards(
     let size = i64::try_from(object.descriptor.size)
         .context("OCI manifest identity-guard size exceeds int64")?;
     let (artifact_type, subject, config, annotations, edges, platform) = match projection {
-        OciCatalogProjection::Manifest { document, platform } => (
+        OciCatalogProjection::Manifest {
+            document, platform, ..
+        } => (
             document.artifact_type,
             document
                 .subject
@@ -853,6 +910,11 @@ fn extend_projection_identity_guards(
         ),
     };
     let descriptor_count = i64::try_from(edges.len()).context("OCI edge count exceeds int64")?;
+    let platform_os_features_json = serde_json::to_string(
+        platform
+            .map(|platform| platform.os_features.as_slice())
+            .unwrap_or_default(),
+    )?;
     statements.push(
         Statement::new(
             "UPDATE oci_repositories
@@ -873,11 +935,14 @@ fn extend_projection_identity_guards(
                      OR (manifest.platform_architecture IS NULL AND ?11 IS NULL))
                    AND (manifest.platform_variant = ?12
                      OR (manifest.platform_variant IS NULL AND ?12 IS NULL))
-                   AND manifest.annotations_json = ?13
-                   AND manifest.descriptor_count = ?14
+                   AND (manifest.platform_os_version = ?13
+                     OR (manifest.platform_os_version IS NULL AND ?13 IS NULL))
+                   AND manifest.platform_os_features_json = ?14
+                   AND manifest.annotations_json = ?15
+                   AND manifest.descriptor_count = ?16
                    AND (SELECT COUNT(*) FROM oci_descriptor_edges edge
                      WHERE edge.registry_id = manifest.registry_id
-                       AND edge.manifest_digest = manifest.digest) = ?14)",
+                       AND edge.manifest_digest = manifest.digest) = ?16)",
             vals![
                 input.observed_at,
                 input.registry_id,
@@ -891,6 +956,8 @@ fn extend_projection_identity_guards(
                 platform.map(|platform| platform.os.as_str()),
                 platform.map(|platform| platform.architecture.as_str()),
                 platform.and_then(|platform| platform.variant.as_deref()),
+                platform.and_then(|platform| platform.os_version.as_deref()),
+                platform_os_features_json,
                 serde_json::to_string(annotations)?,
                 descriptor_count
             ]
@@ -901,6 +968,13 @@ fn extend_projection_identity_guards(
     for edge in edges {
         let edge_size = i64::try_from(edge.descriptor.size)
             .context("OCI edge identity-guard size exceeds int64")?;
+        let edge_os_features_json = serde_json::to_string(
+            edge.descriptor
+                .platform
+                .as_ref()
+                .map(|platform| platform.os_features.as_slice())
+                .unwrap_or_default(),
+        )?;
         statements.push(
             Statement::new(
                 "UPDATE oci_repositories
@@ -917,7 +991,10 @@ fn extend_projection_identity_guards(
                          OR (edge.platform_architecture IS NULL AND ?11 IS NULL))
                        AND (edge.platform_variant = ?12
                          OR (edge.platform_variant IS NULL AND ?12 IS NULL))
-                       AND edge.annotations_json = ?13)",
+                       AND (edge.platform_os_version = ?13
+                         OR (edge.platform_os_version IS NULL AND ?13 IS NULL))
+                       AND edge.platform_os_features_json = ?14
+                       AND edge.annotations_json = ?15)",
                 vals![
                     input.observed_at,
                     input.registry_id,
@@ -940,6 +1017,11 @@ fn extend_projection_identity_guards(
                         .platform
                         .as_ref()
                         .and_then(|platform| platform.variant.as_deref()),
+                    edge.descriptor
+                        .platform
+                        .as_ref()
+                        .and_then(|platform| platform.os_version.as_deref()),
+                    edge_os_features_json,
                     serde_json::to_string(&edge.descriptor.annotations)?
                 ]
                 .to_vec(),
@@ -1099,6 +1181,7 @@ fn projection_from_records(
     Ok(OciCatalogProjection::Manifest {
         document: projected,
         platform: manifest.platform.clone(),
+        image_config: None,
     })
 }
 
@@ -1207,6 +1290,39 @@ pub struct OciTagRecord {
     pub updated_at: i64,
 }
 
+/// One verified layer measurement paired with an image-config DiffID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OciLayerProjection {
+    /// Independently observed uncompressed tar byte length.
+    pub unpacked_byte_size: u64,
+    /// Exact uncompressed content digest from the image configuration.
+    pub diff_id: Sha256Digest,
+    /// Signed closure grouping, empty until a release-root snapshot supplies it.
+    pub closure_group: String,
+}
+
+/// Exact runnable-image configuration projected during catalog admission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OciImageConfigProjection {
+    /// Exact bounded configuration JSON bytes as UTF-8.
+    pub config_json: String,
+    /// Canonical AOS/Nix system selector.
+    pub aos_system: String,
+    /// Layer measurements in manifest descriptor order.
+    pub layers: Vec<OciLayerProjection>,
+}
+
+/// One legacy runnable root awaiting exact-byte administration reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OciAdminProjectionReconciliationRoot {
+    /// Owning repository id.
+    pub repository_id: i64,
+    /// Registry-local repository name.
+    pub repository: RepositoryName,
+    /// Exact direct manifest or image-index root descriptor.
+    pub root: Descriptor,
+}
+
 /// Bounded parsed form of one exact manifest object.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OciCatalogProjection {
@@ -1216,6 +1332,8 @@ pub enum OciCatalogProjection {
         document: ImageManifest,
         /// Exact config-derived platform for runnable images; absent for artifacts.
         platform: Option<Platform>,
+        /// Exact image configuration and layer measurements for runnable images.
+        image_config: Option<OciImageConfigProjection>,
     },
     /// OCI image index or Docker manifest list.
     Index(ImageIndex),
@@ -1328,6 +1446,18 @@ fn build_oci_catalog_statements(
     );
     statements.push(
         Statement::new(
+            "INSERT INTO oci_repository_metadata
+               (repository_id, registry_id, description, resource_version, updated_at)
+             SELECT repository.id, repository.registry_id, '', 1, ?3
+             FROM oci_repositories repository
+             WHERE repository.registry_id = ?1 AND repository.name = ?2
+             ON CONFLICT(repository_id) DO NOTHING",
+            vals![input.registry_id, input.repository.as_str(), now],
+        )
+        .unchecked(),
+    );
+    statements.push(
+        Statement::new(
             "INSERT INTO org_usage (org_id, used_bytes, object_count, updated_at)
              SELECT registry.org_id, 0, 0, ?2 FROM registries registry
              WHERE registry.id = ?1
@@ -1355,6 +1485,42 @@ fn build_oci_catalog_statements(
             extend_projection_identity_guards(&mut statements, input, object, projection)?;
         }
     }
+    for object in &input.objects {
+        match &object.projection {
+            Some(OciCatalogProjection::Manifest {
+                document,
+                platform: Some(platform),
+                image_config: Some(image_config),
+            }) => extend_oci_admin_manifest_projection(
+                &mut statements,
+                input,
+                &object.descriptor,
+                document,
+                platform,
+                image_config,
+            )?,
+            Some(OciCatalogProjection::Manifest {
+                platform: Some(_),
+                image_config: None,
+                ..
+            }) => extend_existing_oci_admin_manifest_projection(
+                &mut statements,
+                input,
+                object.descriptor.digest,
+            ),
+            _ => {}
+        }
+    }
+    for object in &input.objects {
+        if let Some(OciCatalogProjection::Index(index)) = &object.projection {
+            extend_oci_admin_index_projection(
+                &mut statements,
+                input,
+                object.descriptor.digest,
+                index,
+            );
+        }
+    }
     if let Some(tag) = &input.tag {
         statements.push(
             Statement::new(
@@ -1379,9 +1545,13 @@ fn build_oci_catalog_statements(
             Statement::new(
                 "INSERT INTO oci_tag_history
                    (id, repository_id, registry_id, name, prior_digest,
-                    next_digest, source_kind, actor_id, changed_at)
+                    next_digest, source_kind, actor_id, changed_at,
+                    tag_resource_version)
                  SELECT ?1, repository.id, repository.registry_id, ?4,
-                        current.digest, ?5, ?6, ?7, ?8
+                        current.digest, ?5, ?6, ?7, ?8,
+                        (SELECT COUNT(*) + 1 FROM oci_tag_history prior
+                         WHERE prior.repository_id = repository.id
+                           AND prior.name = ?4)
                  FROM oci_repositories repository
                  LEFT JOIN oci_tags current
                    ON current.repository_id = repository.id AND current.name = ?4
@@ -1404,8 +1574,8 @@ fn build_oci_catalog_statements(
             Statement::new(
                 "INSERT INTO oci_tags
                    (repository_id, registry_id, name, digest, source_kind,
-                    resource_version, updated_at)
-                 SELECT repository.id, repository.registry_id, ?3, ?4, ?5, 1, ?6
+                    resource_version, updated_at, created_at)
+                 SELECT repository.id, repository.registry_id, ?3, ?4, ?5, 1, ?6, ?6
                  FROM oci_repositories repository
                  JOIN oci_repository_objects root
                    ON root.repository_id = repository.id
@@ -1431,7 +1601,409 @@ fn build_oci_catalog_statements(
     Ok(statements)
 }
 
+fn extend_oci_admin_manifest_projection(
+    statements: &mut Vec<CheckedStatement>,
+    input: &IndexOciRepositoryCatalog,
+    manifest_descriptor: &Descriptor,
+    document: &ImageManifest,
+    platform: &Platform,
+    image_config: &OciImageConfigProjection,
+) -> Result<()> {
+    if document.layers.len() != image_config.layers.len() {
+        bail!("OCI administration layer projection count conflicts with its manifest");
+    }
+    let compressed_byte_size =
+        document
+            .layers
+            .iter()
+            .try_fold(document.config.size, |sum, layer| {
+                sum.checked_add(layer.size)
+                    .context("OCI image compressed byte size exceeds u64")
+            })?;
+    let unpacked_byte_size = image_config.layers.iter().try_fold(0_u64, |sum, layer| {
+        sum.checked_add(layer.unpacked_byte_size)
+            .context("OCI image unpacked byte size exceeds u64")
+    })?;
+    let layer_count =
+        i64::try_from(document.layers.len()).context("OCI layer count exceeds int64")?;
+    let os_features_json = serde_json::to_string(&platform.os_features)
+        .context("encoding OCI platform OS features")?;
+    statements.push(
+        Statement::new(
+            "INSERT INTO oci_image_config_projections
+               (registry_id, repository_id, root_digest, manifest_digest,
+                config_digest, operating_system, architecture, variant,
+                os_version, os_features_json, aos_system,
+                compressed_byte_size, unpacked_byte_size, layer_count,
+                config_json, verified_at)
+             SELECT repository.registry_id, repository.id, ?3, ?3, ?4, ?5,
+                    ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+             FROM oci_repositories repository
+             WHERE repository.registry_id = ?1 AND repository.name = ?2
+               AND repository.lifecycle_state = 'active'
+             ON CONFLICT(repository_id, root_digest, manifest_digest) DO UPDATE SET
+               config_digest = excluded.config_digest,
+               operating_system = excluded.operating_system,
+               architecture = excluded.architecture, variant = excluded.variant,
+               os_version = excluded.os_version,
+               os_features_json = excluded.os_features_json,
+               aos_system = excluded.aos_system,
+               compressed_byte_size = excluded.compressed_byte_size,
+               unpacked_byte_size = excluded.unpacked_byte_size,
+               layer_count = excluded.layer_count,
+               config_json = excluded.config_json, verified_at = excluded.verified_at",
+            vals![
+                input.registry_id,
+                input.repository.as_str(),
+                manifest_descriptor.digest.to_string(),
+                document.config.digest.to_string(),
+                platform.os,
+                platform.architecture,
+                platform.variant.as_deref(),
+                platform.os_version.as_deref(),
+                os_features_json,
+                image_config.aos_system,
+                checked_u64(compressed_byte_size, "image compressed size")?,
+                checked_u64(unpacked_byte_size, "image unpacked size")?,
+                layer_count,
+                image_config.config_json,
+                input.observed_at
+            ],
+        )
+        .expecting(1),
+    );
+    for (ordinal, (descriptor, projection)) in
+        document.layers.iter().zip(&image_config.layers).enumerate()
+    {
+        statements.push(
+            Statement::new(
+                "INSERT INTO oci_release_layers
+                   (registry_id, repository_id, root_digest, manifest_digest,
+                    ordinal, digest, media_type, compressed_byte_size,
+                    unpacked_byte_size, diff_id, closure_group, verified_at)
+                 SELECT repository.registry_id, repository.id, ?3, ?3, ?4,
+                        ?5, ?6, ?7, ?8, ?9, ?10, ?11
+                 FROM oci_repositories repository
+                 WHERE repository.registry_id = ?1 AND repository.name = ?2
+                   AND repository.lifecycle_state = 'active'
+                 ON CONFLICT(repository_id, root_digest, manifest_digest, ordinal)
+                 DO UPDATE SET digest = excluded.digest,
+                   media_type = excluded.media_type,
+                   compressed_byte_size = excluded.compressed_byte_size,
+                   unpacked_byte_size = excluded.unpacked_byte_size,
+                   diff_id = excluded.diff_id,
+                   closure_group = excluded.closure_group,
+                   verified_at = excluded.verified_at",
+                vals![
+                    input.registry_id,
+                    input.repository.as_str(),
+                    manifest_descriptor.digest.to_string(),
+                    i64::try_from(ordinal).context("OCI layer ordinal exceeds int64")?,
+                    descriptor.digest.to_string(),
+                    descriptor.media_type.as_str(),
+                    checked_u64(descriptor.size, "layer compressed size")?,
+                    checked_u64(projection.unpacked_byte_size, "layer unpacked size")?,
+                    projection.diff_id.to_string(),
+                    projection.closure_group,
+                    input.observed_at
+                ],
+            )
+            .expecting(1),
+        );
+    }
+    statements.push(
+        Statement::new(
+            "DELETE FROM oci_admin_projection_reconciliations
+             WHERE registry_id = ?1
+               AND repository_id = (SELECT id FROM oci_repositories
+                 WHERE registry_id = ?1 AND name = ?2)
+               AND root_digest = ?3 AND manifest_digest = ?3",
+            vals![
+                input.registry_id,
+                input.repository.as_str(),
+                manifest_descriptor.digest.to_string()
+            ],
+        )
+        .unchecked(),
+    );
+    Ok(())
+}
+
+fn extend_oci_admin_index_projection(
+    statements: &mut Vec<CheckedStatement>,
+    input: &IndexOciRepositoryCatalog,
+    root_digest: Sha256Digest,
+    index: &ImageIndex,
+) {
+    for child in &index.manifests {
+        statements.push(
+            Statement::new(
+                "INSERT INTO oci_image_config_projections
+                   (registry_id, repository_id, root_digest, manifest_digest,
+                    config_digest, operating_system, architecture, variant,
+                    os_version, os_features_json, aos_system,
+                    compressed_byte_size, unpacked_byte_size, layer_count,
+                    config_json, verified_at)
+                 SELECT projection.registry_id, projection.repository_id, ?3,
+                        projection.manifest_digest, projection.config_digest,
+                        projection.operating_system, projection.architecture,
+                        projection.variant, projection.os_version,
+                        projection.os_features_json, projection.aos_system,
+                        projection.compressed_byte_size,
+                        projection.unpacked_byte_size, projection.layer_count,
+                        projection.config_json, ?5
+                 FROM oci_image_config_projections projection
+                 JOIN oci_repositories repository
+                   ON repository.id = projection.repository_id
+                  AND repository.registry_id = projection.registry_id
+                 WHERE projection.registry_id = ?1 AND repository.name = ?2
+                   AND projection.root_digest = ?4
+                   AND projection.manifest_digest = ?4
+                 ON CONFLICT(repository_id, root_digest, manifest_digest)
+                 DO UPDATE SET verified_at = excluded.verified_at",
+                vals![
+                    input.registry_id,
+                    input.repository.as_str(),
+                    root_digest.to_string(),
+                    child.digest.to_string(),
+                    input.observed_at
+                ],
+            )
+            .unchecked(),
+        );
+        statements.push(
+            Statement::new(
+                "INSERT INTO oci_release_layers
+                   (registry_id, repository_id, root_digest, manifest_digest,
+                    ordinal, digest, media_type, compressed_byte_size,
+                    unpacked_byte_size, diff_id, closure_group, verified_at)
+                 SELECT layer.registry_id, layer.repository_id, ?3,
+                        layer.manifest_digest, layer.ordinal, layer.digest,
+                        layer.media_type, layer.compressed_byte_size,
+                        layer.unpacked_byte_size, layer.diff_id,
+                        layer.closure_group, ?5
+                 FROM oci_release_layers layer JOIN oci_repositories repository
+                   ON repository.id = layer.repository_id
+                  AND repository.registry_id = layer.registry_id
+                 WHERE layer.registry_id = ?1 AND repository.name = ?2
+                   AND layer.root_digest = ?4 AND layer.manifest_digest = ?4
+                 ON CONFLICT(repository_id, root_digest, manifest_digest, ordinal)
+                 DO UPDATE SET verified_at = excluded.verified_at",
+                vals![
+                    input.registry_id,
+                    input.repository.as_str(),
+                    root_digest.to_string(),
+                    child.digest.to_string(),
+                    input.observed_at
+                ],
+            )
+            .unchecked(),
+        );
+        statements.push(
+            Statement::new(
+                "DELETE FROM oci_admin_projection_reconciliations
+                 WHERE registry_id = ?1
+                   AND repository_id = (SELECT id FROM oci_repositories
+                     WHERE registry_id = ?1 AND name = ?2)
+                   AND root_digest = ?3 AND manifest_digest = ?4",
+                vals![
+                    input.registry_id,
+                    input.repository.as_str(),
+                    root_digest.to_string(),
+                    child.digest.to_string()
+                ],
+            )
+            .unchecked(),
+        );
+    }
+}
+
+fn extend_existing_oci_admin_manifest_projection(
+    statements: &mut Vec<CheckedStatement>,
+    input: &IndexOciRepositoryCatalog,
+    manifest_digest: Sha256Digest,
+) {
+    statements.push(
+        Statement::new(
+            "INSERT INTO oci_image_config_projections
+               (registry_id, repository_id, root_digest, manifest_digest,
+                config_digest, operating_system, architecture, variant,
+                os_version, os_features_json, aos_system,
+                compressed_byte_size, unpacked_byte_size, layer_count,
+                config_json, verified_at)
+             SELECT source.registry_id, target.id, ?3, ?3,
+                    source.config_digest, source.operating_system,
+                    source.architecture, source.variant, source.os_version,
+                    source.os_features_json, source.aos_system,
+                    source.compressed_byte_size, source.unpacked_byte_size,
+                    source.layer_count, source.config_json, ?4
+             FROM oci_repositories target
+             JOIN oci_image_config_projections source
+               ON source.registry_id = target.registry_id
+              AND source.root_digest = ?3 AND source.manifest_digest = ?3
+              AND source.repository_id = (SELECT MIN(candidate.repository_id)
+                FROM oci_image_config_projections candidate
+                WHERE candidate.registry_id = target.registry_id
+                  AND candidate.root_digest = ?3 AND candidate.manifest_digest = ?3)
+             WHERE target.registry_id = ?1 AND target.name = ?2
+               AND target.lifecycle_state = 'active'
+             ON CONFLICT(repository_id, root_digest, manifest_digest)
+             DO UPDATE SET verified_at = excluded.verified_at",
+            vals![
+                input.registry_id,
+                input.repository.as_str(),
+                manifest_digest.to_string(),
+                input.observed_at
+            ],
+        )
+        .unchecked(),
+    );
+    statements.push(
+        Statement::new(
+            "INSERT INTO oci_release_layers
+               (registry_id, repository_id, root_digest, manifest_digest,
+                ordinal, digest, media_type, compressed_byte_size,
+                unpacked_byte_size, diff_id, closure_group, verified_at)
+             SELECT source.registry_id, target.id, ?3, ?3, source.ordinal,
+                    source.digest, source.media_type,
+                    source.compressed_byte_size, source.unpacked_byte_size,
+                    source.diff_id, source.closure_group, ?4
+             FROM oci_repositories target JOIN oci_release_layers source
+               ON source.registry_id = target.registry_id
+              AND source.root_digest = ?3 AND source.manifest_digest = ?3
+              AND source.repository_id = (SELECT MIN(candidate.repository_id)
+                FROM oci_release_layers candidate
+                WHERE candidate.registry_id = target.registry_id
+                  AND candidate.root_digest = ?3 AND candidate.manifest_digest = ?3)
+             WHERE target.registry_id = ?1 AND target.name = ?2
+               AND target.lifecycle_state = 'active'
+             ON CONFLICT(repository_id, root_digest, manifest_digest, ordinal)
+             DO UPDATE SET verified_at = excluded.verified_at",
+            vals![
+                input.registry_id,
+                input.repository.as_str(),
+                manifest_digest.to_string(),
+                input.observed_at
+            ],
+        )
+        .unchecked(),
+    );
+    statements.push(
+        Statement::new(
+            "DELETE FROM oci_admin_projection_reconciliations
+             WHERE registry_id = ?1
+               AND repository_id = (SELECT id FROM oci_repositories
+                 WHERE registry_id = ?1 AND name = ?2)
+               AND root_digest = ?3 AND manifest_digest = ?3",
+            vals![
+                input.registry_id,
+                input.repository.as_str(),
+                manifest_digest.to_string()
+            ],
+        )
+        .unchecked(),
+    );
+}
+
 impl Database {
+    /// Lists legacy runnable roots awaiting exact-byte projection reconciliation.
+    ///
+    /// Rows remain pending until catalog admission atomically persists the
+    /// complete config, platform, and layer projection. No partial projection
+    /// is returned through the administration read model.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid limit, malformed persisted identity, or
+    /// database failure.
+    pub async fn pending_oci_admin_projection_roots(
+        &self,
+        registry_id: i64,
+        limit: u32,
+    ) -> Result<Vec<OciAdminProjectionReconciliationRoot>> {
+        if limit == 0 || limit > 250 {
+            bail!("OCI administration reconciliation limit is outside 1..=250");
+        }
+        let rows = self
+            .backend
+            .query(
+                "SELECT reconciliation.repository_id, repository.name,
+                        reconciliation.root_digest, manifest.media_type,
+                        manifest.byte_size
+                 FROM oci_admin_projection_reconciliations reconciliation
+                 JOIN oci_repositories repository
+                   ON repository.id = reconciliation.repository_id
+                  AND repository.registry_id = reconciliation.registry_id
+                 JOIN oci_manifests manifest
+                   ON manifest.registry_id = reconciliation.registry_id
+                  AND manifest.digest = reconciliation.root_digest
+                 WHERE reconciliation.registry_id = ?1
+                   AND repository.lifecycle_state = 'active'
+                   AND reconciliation.state IN('pending', 'failed')
+                 GROUP BY reconciliation.repository_id, repository.name,
+                          reconciliation.root_digest, manifest.media_type,
+                          manifest.byte_size
+                 ORDER BY repository.name, reconciliation.root_digest LIMIT ?2",
+                &vals![registry_id, i64::from(limit)],
+            )
+            .await?;
+        rows.iter()
+            .map(|row| {
+                let root = Descriptor {
+                    digest: parse_digest(row.get::<String>(2)?)?,
+                    media_type: parse_media_type(row.get::<String>(3)?)?,
+                    size: parse_size(row.get::<i64>(4)?)?,
+                    urls: Vec::new(),
+                    annotations: Annotations::new(),
+                    data: None,
+                    artifact_type: None,
+                    platform: None,
+                };
+                root.validate()?;
+                Ok(OciAdminProjectionReconciliationRoot {
+                    repository_id: row.get(0)?,
+                    repository: RepositoryName::parse(&row.get::<String>(1)?)?,
+                    root,
+                })
+            })
+            .collect()
+    }
+
+    /// Records a failed exact-byte reconciliation attempt without hiding it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid timestamp or database failure.
+    pub async fn mark_oci_admin_projection_reconciliation_failed(
+        &self,
+        registry_id: i64,
+        repository_id: i64,
+        root_digest: Sha256Digest,
+        error: &str,
+        now: i64,
+    ) -> Result<()> {
+        if now <= 0 {
+            bail!("OCI administration reconciliation timestamp is invalid");
+        }
+        self.backend
+            .execute(
+                "UPDATE oci_admin_projection_reconciliations
+                 SET state = 'failed', attempts = attempts + 1,
+                     last_error = ?4, updated_at = ?5
+                 WHERE registry_id = ?1 AND repository_id = ?2
+                   AND root_digest = ?3",
+                &vals![
+                    registry_id,
+                    repository_id,
+                    root_digest.to_string(),
+                    error,
+                    now
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Returns whether the active repository root was admitted from the exact
     /// signed release sidecar indexed for this registry.
     ///
@@ -1518,8 +2090,9 @@ impl Database {
 
         let repository_id = portable_relational_id(Uuid::new_v4());
         self.backend
-            .checked_batch(&[Statement::new(
-                "INSERT INTO oci_repositories
+            .checked_batch(&[
+                Statement::new(
+                    "INSERT INTO oci_repositories
                    (id, registry_id, name, visibility, lifecycle_state,
                     resource_version, created_at, updated_at)
                  SELECT ?1, registry.id, ?3, 'inherit', 'active', 1, ?4, ?4
@@ -1529,9 +2102,38 @@ impl Database {
                      WHERE existing.registry_id = registry.id
                        AND existing.name = ?3)
                  ON CONFLICT(registry_id, name) DO NOTHING",
-                vals![repository_id, registry_id, name.as_str(), now],
-            )
-            .unchecked()])
+                    vals![repository_id, registry_id, name.as_str(), now],
+                )
+                .unchecked(),
+                Statement::new(
+                    "INSERT INTO oci_repository_metadata
+                       (repository_id, registry_id, description,
+                        resource_version, updated_at)
+                     SELECT repository.id, repository.registry_id, '', 1, ?3
+                     FROM oci_repositories repository
+                     WHERE repository.registry_id = ?1 AND repository.name = ?2
+                     ON CONFLICT(repository_id) DO NOTHING",
+                    vals![registry_id, name.as_str(), now],
+                )
+                .unchecked(),
+                Statement::new(
+                    "INSERT INTO oci_registry_state
+                       (registry_id, mutation_epoch, charged_bytes,
+                        charged_objects, updated_at)
+                     SELECT ?1, 0, 0, 0, ?2
+                     WHERE EXISTS (SELECT 1 FROM registries WHERE id = ?1)
+                     ON CONFLICT(registry_id) DO NOTHING",
+                    vals![registry_id, now],
+                )
+                .unchecked(),
+                Statement::new(
+                    "UPDATE oci_registry_state
+                     SET mutation_epoch = mutation_epoch + 1, updated_at = ?2
+                     WHERE registry_id = ?1",
+                    vals![registry_id, now],
+                )
+                .expecting(1),
+            ])
             .await
             .context("creating OCI repository for first push")?;
         self.oci_repository(registry_id, name)
@@ -1867,7 +2469,8 @@ impl Database {
                 "SELECT edge.edge_role, edge.ordinal, edge.target_digest,
                         edge.media_type, edge.byte_size, edge.platform_os,
                         edge.platform_architecture, edge.platform_variant,
-                        edge.annotations_json
+                        edge.platform_os_version,
+                        edge.platform_os_features_json, edge.annotations_json
                  FROM oci_descriptor_edges edge
                  JOIN oci_repository_objects link
                    ON link.registry_id = edge.registry_id
@@ -2075,23 +2678,26 @@ fn row_to_oci_manifest(row: &Row) -> Result<OciManifestRecord> {
     let os = row.get::<Option<String>>(7)?;
     let architecture = row.get::<Option<String>>(8)?;
     let variant = row.get::<Option<String>>(9)?;
+    let os_version = row.get::<Option<String>>(10)?;
+    let os_features = serde_json::from_str::<Vec<String>>(&row.get::<String>(11)?)
+        .context("decoding persisted OCI manifest OS features")?;
     let platform = match (os, architecture) {
         (Some(os), Some(architecture)) => {
             let platform = Platform {
                 architecture,
                 os,
-                os_version: None,
-                os_features: Vec::new(),
+                os_version,
+                os_features,
                 variant,
                 features: Vec::new(),
             };
             platform.validate()?;
             Some(platform)
         }
-        (None, None) if variant.is_none() => None,
+        (None, None) if variant.is_none() && os_version.is_none() && os_features.is_empty() => None,
         _ => bail!("persisted OCI platform projection is incomplete"),
     };
-    let descriptor_count = u32::try_from(row.get::<i64>(11)?)
+    let descriptor_count = u32::try_from(row.get::<i64>(13)?)
         .context("persisted OCI descriptor count is outside u32")?;
     Ok(OciManifestRecord {
         registry_id: row.get(0)?,
@@ -2111,11 +2717,11 @@ fn row_to_oci_manifest(row: &Row) -> Result<OciManifestRecord> {
             .map(parse_digest)
             .transpose()?,
         platform,
-        annotations: parse_annotations(&row.get::<String>(10)?)?,
+        annotations: parse_annotations(&row.get::<String>(12)?)?,
         descriptor_count,
-        surface_object_id: row.get(12)?,
-        object_key: row.get(13)?,
-        created_at: row.get(14)?,
+        surface_object_id: row.get(14)?,
+        object_key: row.get(15)?,
+        created_at: row.get(16)?,
     })
 }
 
@@ -2123,16 +2729,19 @@ fn row_to_oci_edge(row: &Row) -> Result<OciDescriptorEdgeRecord> {
     let os = row.get::<Option<String>>(5)?;
     let architecture = row.get::<Option<String>>(6)?;
     let variant = row.get::<Option<String>>(7)?;
+    let os_version = row.get::<Option<String>>(8)?;
+    let os_features = serde_json::from_str::<Vec<String>>(&row.get::<String>(9)?)
+        .context("decoding persisted OCI edge OS features")?;
     let platform = match (os, architecture) {
         (Some(os), Some(architecture)) => Some(Platform {
             architecture,
             os,
-            os_version: None,
-            os_features: Vec::new(),
+            os_version,
+            os_features,
             variant,
             features: Vec::new(),
         }),
-        (None, None) if variant.is_none() => None,
+        (None, None) if variant.is_none() && os_version.is_none() && os_features.is_empty() => None,
         _ => bail!("persisted OCI edge platform is incomplete"),
     };
     let descriptor = Descriptor {
@@ -2140,7 +2749,7 @@ fn row_to_oci_edge(row: &Row) -> Result<OciDescriptorEdgeRecord> {
         digest: parse_digest(row.get(2)?)?,
         size: parse_size(row.get(4)?)?,
         urls: Vec::new(),
-        annotations: parse_annotations(&row.get::<String>(8)?)?,
+        annotations: parse_annotations(&row.get::<String>(10)?)?,
         data: None,
         artifact_type: None,
         platform,
@@ -2186,6 +2795,9 @@ fn parse_annotations(value: &str) -> Result<Annotations> {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::db::{
+        ApplyOciAdminMutation, OciManualTagMutationOperation, PlanOciManualTagMutation,
+    };
 
     fn descriptor(media_type: MediaType, bytes: &[u8]) -> Descriptor {
         Descriptor {
@@ -2201,11 +2813,15 @@ mod tests {
     }
 
     fn catalog_fixture(registry_id: i64, placement_id: i64) -> IndexOciRepositoryCatalog {
-        let config = descriptor(
-            MediaType::OciImageConfig,
-            br#"{"architecture":"amd64","os":"linux"}"#,
-        );
         let layer = descriptor(MediaType::OciLayerGzip, b"fixture-layer");
+        let diff_id = Sha256Digest::digest(b"fixture-unpacked-layer");
+        let config_json = format!(
+            "{{\"architecture\":\"amd64\",\"os\":\"linux\",\"os.version\":\"6.8\",\"os.features\":[\"seccomp\",\"cgroupsv2\"],\"rootfs\":{{\"type\":\"layers\",\"diff_ids\":[\"{diff_id}\"]}}}}"
+        );
+        let platform = ImageConfig::from_json(config_json.as_bytes())
+            .unwrap()
+            .platform();
+        let config = descriptor(MediaType::OciImageConfig, config_json.as_bytes());
         let manifest = ImageManifest {
             schema_version: 2,
             media_type: Some(MediaType::OciImageManifest),
@@ -2228,7 +2844,16 @@ mod tests {
                     descriptor: manifest_descriptor.clone(),
                     projection: Some(OciCatalogProjection::Manifest {
                         document: manifest,
-                        platform: Some(Platform::linux_amd64()),
+                        platform: Some(platform),
+                        image_config: Some(OciImageConfigProjection {
+                            config_json,
+                            aos_system: "x86_64-linux".to_string(),
+                            layers: vec![OciLayerProjection {
+                                unpacked_byte_size: b"fixture-unpacked-layer".len() as u64,
+                                diff_id,
+                                closure_group: String::new(),
+                            }],
+                        }),
                     }),
                 },
                 OciCatalogObject {
@@ -2282,6 +2907,16 @@ mod tests {
             source_kind: "manual".to_string(),
             actor_id: "test:index".to_string(),
             observed_at,
+        }
+    }
+
+    fn catalog_platform(catalog: &IndexOciRepositoryCatalog) -> Platform {
+        match &catalog.objects[0].projection {
+            Some(OciCatalogProjection::Manifest {
+                platform: Some(platform),
+                ..
+            }) => platform.clone(),
+            _ => panic!("catalog fixture root must carry an exact platform"),
         }
     }
 
@@ -2439,12 +3074,12 @@ mod tests {
                 .projection
                 .as_ref()
                 .map(|projection| match projection {
-                    OciCatalogProjection::Manifest { document, platform } => {
-                        serde_json::to_string(&serde_json::json!({
-                            "document": document,
-                            "platform": platform,
-                        }))
-                    }
+                    OciCatalogProjection::Manifest {
+                        document, platform, ..
+                    } => serde_json::to_string(&serde_json::json!({
+                        "document": document,
+                        "platform": platform,
+                    })),
                     OciCatalogProjection::Index(index) => serde_json::to_string(index),
                 })
                 .transpose()
@@ -2510,12 +3145,8 @@ mod tests {
     #[test]
     fn catalog_sql_translates_reserved_aliases_and_nullable_projection_identity() {
         let child = catalog_fixture(7, 11);
-        let catalog = platform_index_catalog(
-            &child,
-            Platform::linux_amd64(),
-            "portable-sql",
-            1_700_000_001,
-        );
+        let platform = catalog_platform(&child);
+        let catalog = platform_index_catalog(&child, platform, "portable-sql", 1_700_000_001);
         let statements = build_oci_catalog_statements(&catalog).unwrap();
 
         for statement in &statements {
@@ -2634,6 +3265,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(created, repeated);
+        let admin = db
+            .oci_admin_repository(registry_id, &name)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(admin.name, name);
+        assert_eq!(admin.description, "");
+        assert_eq!(admin.manifest_count, 0);
 
         db.backend
             .execute(
@@ -2695,6 +3334,7 @@ mod tests {
                 projection: Some(OciCatalogProjection::Manifest {
                     document: artifact,
                     platform: None,
+                    image_config: None,
                 }),
             },
             OciCatalogObject {
@@ -2858,7 +3498,147 @@ mod tests {
             .unwrap();
         assert_eq!(manifest.digest, catalog.root_digest);
         assert_eq!(manifest.descriptor_count, 2);
-        assert_eq!(manifest.platform, Some(Platform::linux_amd64()));
+        assert_eq!(
+            manifest.platform.as_ref().unwrap().os_version.as_deref(),
+            Some("6.8")
+        );
+        assert_eq!(
+            manifest.platform.as_ref().unwrap().os_features,
+            vec!["seccomp".to_string(), "cgroupsv2".to_string()]
+        );
+        let admin_repository = db
+            .oci_admin_repository(registry_id, &catalog.repository)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(admin_repository.manifest_count, 1);
+        assert_eq!(
+            admin_repository.compressed_byte_size,
+            u64::try_from(catalog_bytes).unwrap()
+        );
+        assert_eq!(
+            admin_repository.unique_byte_size,
+            admin_repository.compressed_byte_size
+        );
+        let platforms = db
+            .list_oci_admin_platforms(
+                registry_id,
+                &catalog.repository,
+                catalog.root_digest,
+                10,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(platforms.items.len(), 1);
+        let platform = &platforms.items[0];
+        assert_eq!(platform.aos_system, "x86_64-linux");
+        assert_eq!(platform.platform.os_version.as_deref(), Some("6.8"));
+        assert_eq!(
+            platform.platform.os_features,
+            vec!["seccomp".to_string(), "cgroupsv2".to_string()]
+        );
+        assert_eq!(platform.layer_count, 1);
+        assert!(platform.config_json.contains("diff_ids"));
+        assert!(db
+            .oci_admin_platform(
+                registry_id,
+                &catalog.repository,
+                catalog.root_digest,
+                &platform.platform,
+            )
+            .await
+            .unwrap()
+            .is_some());
+        assert!(db
+            .oci_admin_platform(
+                registry_id,
+                &catalog.repository,
+                catalog.root_digest,
+                &Platform::linux_amd64(),
+            )
+            .await
+            .unwrap()
+            .is_none());
+        let layers = db
+            .list_oci_admin_layers(
+                registry_id,
+                &catalog.repository,
+                catalog.root_digest,
+                manifest.digest,
+                10,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(layers.items.len(), 1);
+        assert_eq!(layers.items[0].shared_repository_count, 1);
+        assert_eq!(
+            layers.items[0].diff_id,
+            Sha256Digest::digest(b"fixture-unpacked-layer")
+        );
+        assert_eq!(
+            layers.items[0].unpacked_byte_size,
+            b"fixture-unpacked-layer".len() as u64
+        );
+        let manual_tag = Tag::parse("manual").unwrap();
+        let set_plan = db
+            .plan_oci_manual_tag_mutation(&PlanOciManualTagMutation {
+                registry_id,
+                repository: catalog.repository.clone(),
+                tag: manual_tag.clone(),
+                operation: OciManualTagMutationOperation::Set,
+                target_digest: Some(manifest.digest),
+                expected_digest: None,
+                expected_resource_version: None,
+                actor_id: "test:admin-tag".to_string(),
+                idempotency_key: "plan-set-manual".to_string(),
+                now: catalog.observed_at + 1,
+            })
+            .await
+            .unwrap();
+        let set = db
+            .apply_oci_admin_mutation(&ApplyOciAdminMutation {
+                mutation_id: set_plan.id,
+                actor_id: "test:admin-tag".to_string(),
+                idempotency_key: "apply-set-manual".to_string(),
+                confirmation_hash: set_plan.confirmation_hash,
+                now: catalog.observed_at + 2,
+            })
+            .await
+            .unwrap()
+            .tag
+            .unwrap();
+        assert_eq!(set.digest, manifest.digest);
+        let unset_plan = db
+            .plan_oci_manual_tag_mutation(&PlanOciManualTagMutation {
+                registry_id,
+                repository: catalog.repository.clone(),
+                tag: manual_tag.clone(),
+                operation: OciManualTagMutationOperation::Unset,
+                target_digest: None,
+                expected_digest: Some(set.digest),
+                expected_resource_version: Some(set.resource_version),
+                actor_id: "test:admin-tag".to_string(),
+                idempotency_key: "plan-unset-manual".to_string(),
+                now: catalog.observed_at + 3,
+            })
+            .await
+            .unwrap();
+        let deletion = db
+            .apply_oci_admin_mutation(&ApplyOciAdminMutation {
+                mutation_id: unset_plan.id,
+                actor_id: "test:admin-tag".to_string(),
+                idempotency_key: "apply-unset-manual".to_string(),
+                confirmation_hash: unset_plan.confirmation_hash,
+                now: catalog.observed_at + 4,
+            })
+            .await
+            .unwrap()
+            .deletion
+            .unwrap();
+        assert_eq!(deletion.tag, Some(manual_tag));
+        assert_eq!(deletion.resource_version, 2);
         assert!(db
             .oci_repository_object_has_placement(
                 repository.id,
@@ -2898,16 +3678,46 @@ mod tests {
             db.oci_tags(repository.id, 100, None).await.unwrap().len(),
             1
         );
+        db.backend
+            .execute(
+                "INSERT INTO oci_admin_projection_reconciliations(
+                   registry_id, repository_id, root_digest, manifest_digest,
+                   config_digest, state, attempts, updated_at)
+                 VALUES(?1, ?2, ?3, ?3, ?4, 'pending', 0, ?5)",
+                &vals![
+                    registry_id,
+                    repository.id,
+                    manifest.digest.to_string(),
+                    manifest.config_digest.unwrap().to_string(),
+                    catalog.observed_at
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            db.pending_oci_admin_projection_roots(registry_id, 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
 
         // Replaying the same signed catalog creates no duplicate immutable
         // objects, links, projections, or tag-history event.
         db.index_oci_repository_catalog(&catalog).await.unwrap();
+        assert!(db
+            .pending_oci_admin_projection_roots(registry_id, 10)
+            .await
+            .unwrap()
+            .is_empty());
         assert_eq!(db.org_usage(org_id).await.unwrap(), charged);
         for table in [
             "oci_blobs",
             "oci_repository_objects",
             "oci_manifests",
             "oci_descriptor_edges",
+            "oci_image_config_projections",
+            "oci_release_layers",
             "oci_tags",
             "oci_tag_history",
         ] {
@@ -2922,6 +3732,7 @@ mod tests {
             let expected = match table {
                 "oci_blobs" | "oci_repository_objects" => 3,
                 "oci_descriptor_edges" => 2,
+                "oci_tag_history" => 3,
                 _ => 1,
             };
             assert_eq!(count, expected, "unexpected rows in {table}");
@@ -2976,6 +3787,7 @@ mod tests {
         record_catalog_bytes(&db, &child).await;
         let repository = db.index_oci_repository_catalog(&child).await.unwrap();
         let child_digest = child.root_digest;
+        let exact_platform = catalog_platform(&child);
         assert_eq!(
             db.oci_manifest_for_repository(
                 repository.id,
@@ -2985,12 +3797,12 @@ mod tests {
             .unwrap()
             .unwrap()
             .platform,
-            Some(Platform::linux_amd64())
+            Some(exact_platform.clone())
         );
 
         let amd64 = platform_index_catalog(
             &child,
-            Platform::linux_amd64(),
+            exact_platform.clone(),
             "amd64",
             child.observed_at + 1,
         );
@@ -3005,20 +3817,26 @@ mod tests {
         assert_eq!(amd64_edges[0].descriptor.digest, child_digest);
         assert_eq!(
             amd64_edges[0].descriptor.platform,
-            Some(Platform::linux_amd64())
+            Some(exact_platform.clone())
         );
 
-        let mut wrong_os = Platform::linux_amd64();
+        let mut wrong_os = exact_platform.clone();
         wrong_os.os = "windows".to_string();
-        let mut wrong_architecture = Platform::linux_amd64();
+        let mut wrong_architecture = exact_platform.clone();
         wrong_architecture.architecture = "arm64".to_string();
-        let mut wrong_variant = Platform::linux_amd64();
+        let mut wrong_variant = exact_platform.clone();
         wrong_variant.variant = Some("v8".to_string());
+        let mut wrong_os_version = exact_platform.clone();
+        wrong_os_version.os_version = Some("6.9".to_string());
+        let mut wrong_os_features = exact_platform;
+        wrong_os_features.os_features.reverse();
 
         for (platform, tag) in [
             (wrong_os, "wrong-os"),
             (wrong_architecture, "wrong-architecture"),
             (wrong_variant, "wrong-variant"),
+            (wrong_os_version, "wrong-os-version"),
+            (wrong_os_features, "wrong-os-features"),
         ] {
             let mismatched = platform_index_catalog(&child, platform, tag, child.observed_at + 2);
             assert!(validate_catalog(&mismatched).is_err());
@@ -3267,8 +4085,9 @@ mod tests {
             .get(0)
             .unwrap();
         let baseline = db.org_usage(org_id).await.unwrap();
-        let OciCatalogProjection::Manifest { document, platform } =
-            catalog.objects[0].projection.as_ref().unwrap()
+        let OciCatalogProjection::Manifest {
+            document, platform, ..
+        } = catalog.objects[0].projection.as_ref().unwrap()
         else {
             panic!("catalog root must be a manifest projection");
         };
@@ -3289,6 +4108,7 @@ mod tests {
             projection: Some(OciCatalogProjection::Manifest {
                 document,
                 platform: platform.clone(),
+                image_config: None,
             }),
         };
         admitted_catalog.root_digest = digest;
@@ -3879,15 +4699,40 @@ mod tests {
             .is_err(),
             "a tag created after Begin must win the compare-and-swap race"
         );
+        let moved = db
+            .compare_and_swap_oci_manual_tag(&CasOciManualTag {
+                repository_id: repository.id,
+                tag: Tag::parse("stable").unwrap(),
+                digest: catalog.root_digest,
+                expected_resource_version: Some(raced.resource_version),
+                actor_id: "test:tag-race-move".to_string(),
+                now: now + 6,
+            })
+            .await
+            .unwrap();
         db.delete_oci_manual_tag(
             repository.id,
             &Tag::parse("stable").unwrap(),
-            raced.resource_version,
+            moved.resource_version,
             "test:tag-race-cleanup",
-            now + 5,
+            now + 7,
         )
         .await
         .unwrap();
+        let transition_versions = db
+            .backend
+            .query(
+                "SELECT tag_resource_version FROM oci_tag_history
+                 WHERE repository_id = ?1 AND name = 'stable'
+                 ORDER BY tag_resource_version",
+                &vals![repository.id],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get::<i64>(0).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(transition_versions, [1, 2, 3]);
         assert!(
             db.commit_oci_publication(
                 &channel.id,

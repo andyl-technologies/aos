@@ -2421,7 +2421,162 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     r = rpc_route!(r, "/aos.hub.v1.ImageService/ListImages", list_images);
     r = rpc_route!(r, "/aos.hub.v1.ImageService/GetImage", get_image);
     r = rpc_route!(r, "/aos.hub.v1.ImageService/ResolveImage", resolve_image);
-    // ContainerService - verified OCI container publication control plane.
+    // ContainerService - OCI administration and verified publication.
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerRepositories",
+        list_container_repositories
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerRepository",
+        get_container_repository
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanCreateContainerRepository",
+        plan_create_container_repository
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/CreateContainerRepository",
+        create_container_repository
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanUpdateContainerRepository",
+        plan_update_container_repository
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/UpdateContainerRepository",
+        update_container_repository
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanDeleteContainerRepository",
+        plan_delete_container_repository
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/DeleteContainerRepository",
+        delete_container_repository
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerTags",
+        list_container_tags
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerTag",
+        get_container_tag
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ResolveContainerTag",
+        resolve_container_tag
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerTagHistory",
+        list_container_tag_history
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanSetContainerTag",
+        plan_set_container_tag
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/SetContainerTag",
+        set_container_tag
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanUnsetContainerTag",
+        plan_unset_container_tag
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/UnsetContainerTag",
+        unset_container_tag
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerManifest",
+        get_container_manifest
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerPlatforms",
+        list_container_platforms
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerPlatform",
+        get_container_platform
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerLayers",
+        list_container_layers
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerLayer",
+        get_container_layer
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerReferrers",
+        list_container_referrers
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerPublications",
+        list_container_publications
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerProvenance",
+        get_container_provenance
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerRetentionPolicy",
+        get_container_retention_policy
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanSetContainerRetentionPolicy",
+        plan_set_container_retention_policy
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/SetContainerRetentionPolicy",
+        set_container_retention_policy
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanRunContainerGc",
+        plan_run_container_gc
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/RunContainerGc",
+        run_container_gc
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerGcRun",
+        get_container_gc_run
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerGcRuns",
+        list_container_gc_runs
+    );
     r = rpc_route!(
         r,
         "/aos.hub.v1.ContainerService/BeginContainerPublication",

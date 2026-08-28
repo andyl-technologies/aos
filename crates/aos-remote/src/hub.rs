@@ -678,6 +678,38 @@ enum HubTopologyMethod {
     RetireAccessToken,
     /// Selects the normalized `ListAccessTokens` Connect operation.
     ListAccessTokens,
+    /// Selects normalized container-repository enumeration.
+    ListContainerRepositories,
+    GetContainerRepository,
+    PlanCreateContainerRepository,
+    CreateContainerRepository,
+    PlanUpdateContainerRepository,
+    UpdateContainerRepository,
+    PlanDeleteContainerRepository,
+    DeleteContainerRepository,
+    ListContainerTags,
+    GetContainerTag,
+    ResolveContainerTag,
+    ListContainerTagHistory,
+    PlanSetContainerTag,
+    SetContainerTag,
+    PlanUnsetContainerTag,
+    UnsetContainerTag,
+    GetContainerManifest,
+    ListContainerPlatforms,
+    GetContainerPlatform,
+    ListContainerLayers,
+    GetContainerLayer,
+    ListContainerReferrers,
+    ListContainerPublications,
+    GetContainerProvenance,
+    GetContainerRetentionPolicy,
+    PlanSetContainerRetentionPolicy,
+    SetContainerRetentionPolicy,
+    PlanRunContainerGc,
+    RunContainerGc,
+    GetContainerGcRun,
+    ListContainerGcRuns,
     /// Selects verified container-publication admission.
     BeginContainerPublication,
     /// Selects verified container-publication recovery.
@@ -1143,6 +1175,49 @@ impl HubTopologyMethod {
             PlanRetireAccessToken => "aos.hub.v1.IdentityService/PlanRetireAccessToken",
             RetireAccessToken => "aos.hub.v1.IdentityService/RetireAccessToken",
             ListAccessTokens => "aos.hub.v1.IdentityService/ListAccessTokens",
+            ListContainerRepositories => "aos.hub.v1.ContainerService/ListContainerRepositories",
+            GetContainerRepository => "aos.hub.v1.ContainerService/GetContainerRepository",
+            PlanCreateContainerRepository => {
+                "aos.hub.v1.ContainerService/PlanCreateContainerRepository"
+            }
+            CreateContainerRepository => "aos.hub.v1.ContainerService/CreateContainerRepository",
+            PlanUpdateContainerRepository => {
+                "aos.hub.v1.ContainerService/PlanUpdateContainerRepository"
+            }
+            UpdateContainerRepository => "aos.hub.v1.ContainerService/UpdateContainerRepository",
+            PlanDeleteContainerRepository => {
+                "aos.hub.v1.ContainerService/PlanDeleteContainerRepository"
+            }
+            DeleteContainerRepository => "aos.hub.v1.ContainerService/DeleteContainerRepository",
+            ListContainerTags => "aos.hub.v1.ContainerService/ListContainerTags",
+            GetContainerTag => "aos.hub.v1.ContainerService/GetContainerTag",
+            ResolveContainerTag => "aos.hub.v1.ContainerService/ResolveContainerTag",
+            ListContainerTagHistory => "aos.hub.v1.ContainerService/ListContainerTagHistory",
+            PlanSetContainerTag => "aos.hub.v1.ContainerService/PlanSetContainerTag",
+            SetContainerTag => "aos.hub.v1.ContainerService/SetContainerTag",
+            PlanUnsetContainerTag => "aos.hub.v1.ContainerService/PlanUnsetContainerTag",
+            UnsetContainerTag => "aos.hub.v1.ContainerService/UnsetContainerTag",
+            GetContainerManifest => "aos.hub.v1.ContainerService/GetContainerManifest",
+            ListContainerPlatforms => "aos.hub.v1.ContainerService/ListContainerPlatforms",
+            GetContainerPlatform => "aos.hub.v1.ContainerService/GetContainerPlatform",
+            ListContainerLayers => "aos.hub.v1.ContainerService/ListContainerLayers",
+            GetContainerLayer => "aos.hub.v1.ContainerService/GetContainerLayer",
+            ListContainerReferrers => "aos.hub.v1.ContainerService/ListContainerReferrers",
+            ListContainerPublications => "aos.hub.v1.ContainerService/ListContainerPublications",
+            GetContainerProvenance => "aos.hub.v1.ContainerService/GetContainerProvenance",
+            GetContainerRetentionPolicy => {
+                "aos.hub.v1.ContainerService/GetContainerRetentionPolicy"
+            }
+            PlanSetContainerRetentionPolicy => {
+                "aos.hub.v1.ContainerService/PlanSetContainerRetentionPolicy"
+            }
+            SetContainerRetentionPolicy => {
+                "aos.hub.v1.ContainerService/SetContainerRetentionPolicy"
+            }
+            PlanRunContainerGc => "aos.hub.v1.ContainerService/PlanRunContainerGc",
+            RunContainerGc => "aos.hub.v1.ContainerService/RunContainerGc",
+            GetContainerGcRun => "aos.hub.v1.ContainerService/GetContainerGcRun",
+            ListContainerGcRuns => "aos.hub.v1.ContainerService/ListContainerGcRuns",
             BeginContainerPublication => "aos.hub.v1.ContainerService/BeginContainerPublication",
             GetContainerPublication => "aos.hub.v1.ContainerService/GetContainerPublication",
             CommitContainerPublication => "aos.hub.v1.ContainerService/CommitContainerPublication",
@@ -1539,6 +1614,37 @@ pub mod hub_rpc {
         PlanRetireAccessToken: PlanRetireAccessTokenRequest => TopologyPlanResponse;
         RetireAccessToken: ApplyTopologyPlanRequest => AccessTokenRetirementResponse;
         ListAccessTokens: ListAccessTokensRequest => ListAccessTokensResponse;
+        ListContainerRepositories: ListContainerRepositoriesRequest => ListContainerRepositoriesResponse;
+        GetContainerRepository: GetContainerRepositoryRequest => ContainerRepositoryResponse;
+        PlanCreateContainerRepository: PlanCreateContainerRepositoryRequest => TopologyPlanResponse;
+        CreateContainerRepository: ApplyContainerMutationRequest => ContainerRepositoryResponse;
+        PlanUpdateContainerRepository: PlanUpdateContainerRepositoryRequest => TopologyPlanResponse;
+        UpdateContainerRepository: ApplyContainerMutationRequest => ContainerRepositoryResponse;
+        PlanDeleteContainerRepository: PlanDeleteContainerRepositoryRequest => TopologyPlanResponse;
+        DeleteContainerRepository: ApplyContainerMutationRequest => ContainerDeletionResponse;
+        ListContainerTags: ListContainerTagsRequest => ListContainerTagsResponse;
+        GetContainerTag: GetContainerTagRequest => ContainerTagResponse;
+        ResolveContainerTag: ResolveContainerTagRequest => ContainerTagResolutionResponse;
+        ListContainerTagHistory: ListContainerTagHistoryRequest => ListContainerTagHistoryResponse;
+        PlanSetContainerTag: PlanSetContainerTagRequest => TopologyPlanResponse;
+        SetContainerTag: ApplyContainerMutationRequest => ContainerTagResponse;
+        PlanUnsetContainerTag: PlanUnsetContainerTagRequest => TopologyPlanResponse;
+        UnsetContainerTag: ApplyContainerMutationRequest => ContainerDeletionResponse;
+        GetContainerManifest: GetContainerManifestRequest => ContainerManifestResponse;
+        ListContainerPlatforms: ListContainerPlatformsRequest => ListContainerPlatformsResponse;
+        GetContainerPlatform: GetContainerPlatformRequest => ContainerPlatformResponse;
+        ListContainerLayers: ListContainerLayersRequest => ListContainerLayersResponse;
+        GetContainerLayer: GetContainerLayerRequest => ContainerLayerResponse;
+        ListContainerReferrers: ListContainerReferrersRequest => ListContainerReferrersResponse;
+        ListContainerPublications: ListContainerPublicationsRequest => ListContainerPublicationsResponse;
+        GetContainerProvenance: GetContainerProvenanceRequest => ContainerProvenanceResponse;
+        GetContainerRetentionPolicy: GetContainerRetentionPolicyRequest => ContainerRetentionPolicyResponse;
+        PlanSetContainerRetentionPolicy: PlanSetContainerRetentionPolicyRequest => TopologyPlanResponse;
+        SetContainerRetentionPolicy: ApplyContainerMutationRequest => ContainerRetentionPolicyResponse;
+        PlanRunContainerGc: PlanRunContainerGcRequest => TopologyPlanResponse;
+        RunContainerGc: ApplyContainerMutationRequest => OperationResponse;
+        GetContainerGcRun: GetContainerGcRunRequest => ContainerGcRunResponse;
+        ListContainerGcRuns: ListContainerGcRunsRequest => ListContainerGcRunsResponse;
         BeginContainerPublication: BeginContainerPublicationRequest => ContainerPublication;
         GetContainerPublication: GetContainerPublicationRequest => ContainerPublication;
         CommitContainerPublication: CommitContainerPublicationRequest => ContainerPublication;
@@ -1984,23 +2090,127 @@ mod tests {
     }
 
     #[test]
-    fn container_publication_methods_use_the_distinct_service() {
-        assert_eq!(
-            HubTopologyMethod::BeginContainerPublication.path(),
-            "aos.hub.v1.ContainerService/BeginContainerPublication"
-        );
-        assert_eq!(
-            HubTopologyMethod::GetContainerPublication.path(),
-            "aos.hub.v1.ContainerService/GetContainerPublication"
-        );
-        assert_eq!(
-            HubTopologyMethod::CommitContainerPublication.path(),
-            "aos.hub.v1.ContainerService/CommitContainerPublication"
-        );
-        assert_eq!(
-            HubTopologyMethod::AbortContainerPublication.path(),
-            "aos.hub.v1.ContainerService/AbortContainerPublication"
-        );
+    fn container_methods_use_the_distinct_service() {
+        for (method, name) in [
+            (
+                HubTopologyMethod::ListContainerRepositories,
+                "ListContainerRepositories",
+            ),
+            (
+                HubTopologyMethod::GetContainerRepository,
+                "GetContainerRepository",
+            ),
+            (
+                HubTopologyMethod::PlanCreateContainerRepository,
+                "PlanCreateContainerRepository",
+            ),
+            (
+                HubTopologyMethod::CreateContainerRepository,
+                "CreateContainerRepository",
+            ),
+            (
+                HubTopologyMethod::PlanUpdateContainerRepository,
+                "PlanUpdateContainerRepository",
+            ),
+            (
+                HubTopologyMethod::UpdateContainerRepository,
+                "UpdateContainerRepository",
+            ),
+            (
+                HubTopologyMethod::PlanDeleteContainerRepository,
+                "PlanDeleteContainerRepository",
+            ),
+            (
+                HubTopologyMethod::DeleteContainerRepository,
+                "DeleteContainerRepository",
+            ),
+            (HubTopologyMethod::ListContainerTags, "ListContainerTags"),
+            (HubTopologyMethod::GetContainerTag, "GetContainerTag"),
+            (
+                HubTopologyMethod::ResolveContainerTag,
+                "ResolveContainerTag",
+            ),
+            (
+                HubTopologyMethod::ListContainerTagHistory,
+                "ListContainerTagHistory",
+            ),
+            (
+                HubTopologyMethod::PlanSetContainerTag,
+                "PlanSetContainerTag",
+            ),
+            (HubTopologyMethod::SetContainerTag, "SetContainerTag"),
+            (
+                HubTopologyMethod::PlanUnsetContainerTag,
+                "PlanUnsetContainerTag",
+            ),
+            (HubTopologyMethod::UnsetContainerTag, "UnsetContainerTag"),
+            (
+                HubTopologyMethod::GetContainerManifest,
+                "GetContainerManifest",
+            ),
+            (
+                HubTopologyMethod::ListContainerPlatforms,
+                "ListContainerPlatforms",
+            ),
+            (
+                HubTopologyMethod::GetContainerPlatform,
+                "GetContainerPlatform",
+            ),
+            (
+                HubTopologyMethod::ListContainerLayers,
+                "ListContainerLayers",
+            ),
+            (HubTopologyMethod::GetContainerLayer, "GetContainerLayer"),
+            (
+                HubTopologyMethod::ListContainerReferrers,
+                "ListContainerReferrers",
+            ),
+            (
+                HubTopologyMethod::ListContainerPublications,
+                "ListContainerPublications",
+            ),
+            (
+                HubTopologyMethod::GetContainerProvenance,
+                "GetContainerProvenance",
+            ),
+            (
+                HubTopologyMethod::GetContainerRetentionPolicy,
+                "GetContainerRetentionPolicy",
+            ),
+            (
+                HubTopologyMethod::PlanSetContainerRetentionPolicy,
+                "PlanSetContainerRetentionPolicy",
+            ),
+            (
+                HubTopologyMethod::SetContainerRetentionPolicy,
+                "SetContainerRetentionPolicy",
+            ),
+            (HubTopologyMethod::PlanRunContainerGc, "PlanRunContainerGc"),
+            (HubTopologyMethod::RunContainerGc, "RunContainerGc"),
+            (HubTopologyMethod::GetContainerGcRun, "GetContainerGcRun"),
+            (
+                HubTopologyMethod::ListContainerGcRuns,
+                "ListContainerGcRuns",
+            ),
+            (
+                HubTopologyMethod::BeginContainerPublication,
+                "BeginContainerPublication",
+            ),
+            (
+                HubTopologyMethod::GetContainerPublication,
+                "GetContainerPublication",
+            ),
+            (
+                HubTopologyMethod::CommitContainerPublication,
+                "CommitContainerPublication",
+            ),
+            (
+                HubTopologyMethod::AbortContainerPublication,
+                "AbortContainerPublication",
+            ),
+        ] {
+            assert_eq!(method.path(), format!("aos.hub.v1.ContainerService/{name}"));
+        }
     }
 
     #[test]

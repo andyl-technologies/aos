@@ -247,15 +247,26 @@
     {
       "service": "ContainerService",
       "audience": "end-user",
-      "cli_families": ["container publish"],
+      "cli_families": ["container publish", "registry container"],
       "web_workflows": ["registry-containers"],
       "web_method_exceptions": [
+        {"method": "PlanCreateContainerRepository", "reason": "Repository creation remains reviewed CLI administration; Distribution push can also create a repository without a browser upload flow."},
+        {"method": "CreateContainerRepository", "reason": "Repository creation remains reviewed CLI administration; Distribution push can also create a repository without a browser upload flow."},
+        {"method": "PlanDeleteContainerRepository", "reason": "Empty-repository deletion remains a reviewed CLI-only administration action in the first console release."},
+        {"method": "DeleteContainerRepository", "reason": "Empty-repository deletion remains a reviewed CLI-only administration action in the first console release."},
+        {"method": "GetContainerTag", "reason": "ListContainerTags and ResolveContainerTag return the complete tag models used by the browser workflow."},
+        {"method": "GetContainerPlatform", "reason": "ListContainerPlatforms returns the complete platform records rendered by the browser workflow."},
+        {"method": "GetContainerLayer", "reason": "ListContainerLayers returns the complete root-specific layer records rendered by the browser workflow."},
+        {"method": "PlanRunContainerGc", "reason": "The browser must not expose a GC plan until the Phase-7 engine can produce a complete inventory-bound review resource."},
+        {"method": "RunContainerGc", "reason": "The browser must not expose GC apply until the Phase-7 engine can revalidate an inventory-bound plan before deletion."},
+        {"method": "GetContainerGcRun", "reason": "The Phase-7 GC engine owns durable run status; Phase 6 freezes only the checked wire contract."},
+        {"method": "ListContainerGcRuns", "reason": "The Phase-7 GC engine owns durable run history; Phase 6 freezes only the checked wire contract."},
         {"method": "BeginContainerPublication", "reason": "Verified container publication is currently initiated by the CLI; the browser workflow does not yet admit a signed release declaration."},
         {"method": "GetContainerPublication", "reason": "Verified container publication state is currently resumed by the CLI; the browser workflow is not yet implemented."},
         {"method": "CommitContainerPublication", "reason": "Verified container publication is currently committed by the CLI; the browser workflow does not yet expose the confirmation step."},
         {"method": "AbortContainerPublication", "reason": "Verified container publication is currently aborted by the CLI; the browser workflow does not yet expose publication recovery controls."}
       ],
-      "methods": ["BeginContainerPublication", "GetContainerPublication", "CommitContainerPublication", "AbortContainerPublication"]
+      "methods": ["ListContainerRepositories", "GetContainerRepository", "PlanCreateContainerRepository", "CreateContainerRepository", "PlanUpdateContainerRepository", "UpdateContainerRepository", "PlanDeleteContainerRepository", "DeleteContainerRepository", "ListContainerTags", "GetContainerTag", "ResolveContainerTag", "ListContainerTagHistory", "PlanSetContainerTag", "SetContainerTag", "PlanUnsetContainerTag", "UnsetContainerTag", "GetContainerManifest", "ListContainerPlatforms", "GetContainerPlatform", "ListContainerLayers", "GetContainerLayer", "ListContainerReferrers", "ListContainerPublications", "GetContainerProvenance", "GetContainerRetentionPolicy", "PlanSetContainerRetentionPolicy", "SetContainerRetentionPolicy", "PlanRunContainerGc", "RunContainerGc", "GetContainerGcRun", "ListContainerGcRuns", "BeginContainerPublication", "GetContainerPublication", "CommitContainerPublication", "AbortContainerPublication"]
     },
     {
       "service": "PublishService",

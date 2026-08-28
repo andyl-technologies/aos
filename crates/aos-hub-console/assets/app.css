@@ -111,6 +111,26 @@
   text-decoration: none;
 }
 
+.container-repository-card {
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.container-workspace {
+  padding-top: 0.4rem;
+  border-top: 3px solid var(--rule-strong);
+}
+
+.json-view {
+  max-height: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .resource-card h3 {
   margin: 0.35rem 0;
   overflow-wrap: anywhere;

@@ -141,8 +141,34 @@ pub fn add_signed_release_graph(fixture: &Fixture) -> ContainerRelease {
         platform: None,
     };
     let artifact = |role: &str, artifact_type: MediaType| {
-        let payload = to_canonical_json(&serde_json::json!({"role": role}))
-            .expect("canonical evidence payload");
+        let payload_value = if artifact_type == MediaType::AosNixClosure {
+            let uncompressed = layer_tar();
+            let diff_id = Sha256Digest::digest(&uncompressed);
+            let store_path = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container";
+            serde_json::json!({
+                "schema": "aos.container.nix-closure/v1",
+                "subject": index,
+                "roots": [store_path],
+                "layers": [fixture.layer_descriptor],
+                "paths": [{
+                    "path": store_path,
+                    "narHash": diff_id,
+                    "narSize": uncompressed.len(),
+                    "references": [],
+                    "layer": {
+                        "name": "runtime",
+                        "digest": fixture.layer_descriptor.digest,
+                        "diffID": diff_id,
+                        "compressedSize": fixture.layer_descriptor.size,
+                        "uncompressedSize": uncompressed.len(),
+                    },
+                    "package": {"name": "aos"},
+                }],
+            })
+        } else {
+            serde_json::json!({"role": role})
+        };
+        let payload = to_canonical_json(&payload_value).expect("canonical evidence payload");
         let payload_descriptor = content_descriptor(artifact_type, &payload);
         let empty = b"{}".to_vec();
         let empty_descriptor = content_descriptor(MediaType::OciEmptyJson, &empty);

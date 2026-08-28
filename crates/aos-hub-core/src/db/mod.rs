@@ -470,6 +470,8 @@ mod gc_topology;
 pub use gc_topology::*;
 mod oci;
 pub use oci::*;
+mod oci_admin;
+pub use oci_admin::*;
 mod placement_policy;
 mod publication_admission;
 mod registry_delete;
@@ -538,6 +540,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("placement_policy_publication_history.sql"),
     include_str!("oci_catalog.sql"),
     include_str!("oci_upload_publication.sql"),
+    include_str!("oci_admin.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -1542,9 +1545,60 @@ pub struct ContainerReleaseRootSnapshot {
     pub index_size: u64,
     /// SHA-256 of the exact committed `containers/v1/index.json` bytes.
     pub catalog_digest: String,
+    /// AOS package identity carried by the signed release sidecar.
+    pub package_name: String,
+    /// Complete signed Nix closure projection.
+    pub closure_members: Vec<ContainerReleaseClosureMemberSnapshot>,
+    /// Independently verified closure-layer measurements.
+    pub layers: Vec<ContainerReleaseLayerSnapshot>,
+    /// Complete signed evidence-role projection.
+    pub evidence: Vec<ContainerReleaseEvidenceSnapshot>,
     /// Exact placement observations for the index, every platform manifest,
     /// and every signed evidence referrer required by the release sidecar.
     pub required_descriptors: Vec<VerifiedContainerReleaseDescriptor>,
+}
+
+/// One Nix closure member verified from signed OCI evidence.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ContainerReleaseClosureMemberSnapshot {
+    /// Full Nix store path.
+    pub store_path: String,
+    /// Exact NAR hash.
+    pub nar_hash: String,
+    /// Uncompressed NAR byte length.
+    pub nar_size: u64,
+    /// Image layer containing this path.
+    pub layer_digest: String,
+    /// Whether the path is one of the release closure's direct roots.
+    pub direct: bool,
+}
+
+/// One signed closure-layer identity and exact size projection.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ContainerReleaseLayerSnapshot {
+    /// Signed closure group name.
+    pub name: String,
+    /// Compressed layer digest.
+    pub digest: String,
+    /// Uncompressed layer DiffID.
+    pub diff_id: String,
+    /// Exact compressed byte length.
+    pub compressed_size: u64,
+    /// Exact uncompressed byte length.
+    pub uncompressed_size: u64,
+}
+
+/// One evidence role carried by a verified OCI referrer.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ContainerReleaseEvidenceSnapshot {
+    /// Stable evidence role.
+    pub kind: String,
+    /// Exact evidence payload digest.
+    pub digest: String,
+    /// Exact evidence payload media type.
+    pub media_type: String,
+    /// OCI referrer manifest digest carrying the payload.
+    pub referrer_digest: String,
 }
 
 /// Signed role of one OCI descriptor required by a container release root.
@@ -3692,7 +3746,7 @@ impl Database {
                     .map(|sql| Statement::new(sql, Vec::new()))
                     .collect::<Vec<_>>();
                 self.backend
-                    .batch(&statements)
+                    .migration_batch(current, target, &statements)
                     .await
                     .with_context(|| format!("applying migrations v{}..=v{target}", current + 1))?;
             }
@@ -4066,6 +4120,19 @@ impl Database {
         };
         let indexed_at = unix_now();
         let index_digest = index_snapshot_digest(snapshot)?;
+        let had_container_admin_projections = self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM oci_release_provenance
+                 WHERE registry_id = ?1 LIMIT 1",
+                &vals![registry_id],
+            )
+            .await?
+            .is_some();
+        let has_container_admin_projections = snapshot
+            .release_artifact_snapshots
+            .iter()
+            .any(|release| release.container_release.is_some());
         // Assign surrogate ids client-side so the whole snapshot is one
         // self-contained batch (HubDb has no mid-batch `last_insert_rowid`). The
         // bases are read once before the batch; the indexer runs sequentially
@@ -4092,6 +4159,10 @@ impl Database {
         ));
         stmts.push(Statement::new(
             "DELETE FROM registry_system_images WHERE registry_id = ?1",
+            vals![registry_id].to_vec(),
+        ));
+        stmts.push(Statement::new(
+            "DELETE FROM oci_release_provenance WHERE registry_id = ?1",
             vals![registry_id].to_vec(),
         ));
         stmts.push(Statement::new(
@@ -4766,6 +4837,27 @@ impl Database {
             indexed_placement_id,
         )];
         checked_stmts.extend(stmts.into_iter().map(Statement::unchecked));
+        if had_container_admin_projections || has_container_admin_projections {
+            checked_stmts.extend([
+                Statement::new(
+                    "INSERT INTO oci_registry_state
+                       (registry_id, mutation_epoch, charged_bytes,
+                        charged_objects, updated_at)
+                     SELECT ?1, 0, 0, 0, ?2
+                     WHERE EXISTS (SELECT 1 FROM registries WHERE id = ?1)
+                     ON CONFLICT(registry_id) DO NOTHING",
+                    vals![registry_id, indexed_at],
+                )
+                .unchecked(),
+                Statement::new(
+                    "UPDATE oci_registry_state
+                     SET mutation_epoch = mutation_epoch + 1, updated_at = ?2
+                     WHERE registry_id = ?1",
+                    vals![registry_id, indexed_at],
+                )
+                .expecting(1),
+            ]);
+        }
         for release in &snapshot.release_artifact_snapshots {
             if let Some(root) = &release.container_release {
                 let placement_id = indexed_placement_id
@@ -25125,6 +25217,191 @@ fn oci_release_root_statements(
         )
         .expecting(1),
     );
+    statements.push(
+        Statement::new(
+            "INSERT INTO oci_release_provenance
+               (registry_id, repository_id, root_digest, package_name,
+                release_tag, channel_name, signed_release_root,
+                catalog_digest, verification, verified_at)
+             SELECT ?1, repository.id, ?3, ?4, ?5, NULL, ?6, ?7,
+                    'verified', ?8
+             FROM oci_repositories repository
+             WHERE repository.registry_id = ?1 AND repository.name = ?2
+               AND repository.lifecycle_state = 'active'",
+            vals![
+                registry_id,
+                repository.as_str(),
+                index_digest.to_string(),
+                root.package_name,
+                release.release_tag,
+                release.verified_tag_oid,
+                format!("sha256:{}", root.catalog_digest),
+                created_at
+            ]
+            .to_vec(),
+        )
+        .expecting(1),
+    );
+    for member in &root.closure_members {
+        let layer_digest = aos_oci_types::Sha256Digest::parse(&member.layer_digest)
+            .context("signed closure member layer digest is malformed")?;
+        let nar_size = i64::try_from(member.nar_size)
+            .context("signed closure member NAR size exceeds int64")?;
+        statements.push(
+            Statement::new(
+                "INSERT INTO oci_release_closure_members
+                   (registry_id, repository_id, root_digest, release_tag,
+                    store_path, nar_hash, nar_size, layer_digest, is_direct)
+                 SELECT ?1, repository.id, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+                 FROM oci_repositories repository
+                 WHERE repository.registry_id = ?1 AND repository.name = ?2
+                   AND repository.lifecycle_state = 'active'",
+                vals![
+                    registry_id,
+                    repository.as_str(),
+                    index_digest.to_string(),
+                    release.release_tag,
+                    member.store_path,
+                    member.nar_hash,
+                    nar_size,
+                    layer_digest.to_string(),
+                    member.direct
+                ]
+                .to_vec(),
+            )
+            .expecting(1),
+        );
+    }
+    for evidence in &root.evidence {
+        anyhow::ensure!(
+            matches!(
+                evidence.kind.as_str(),
+                "closure" | "sbom" | "source" | "license" | "provenance" | "signature"
+            ),
+            "signed container evidence kind is invalid"
+        );
+        let digest = aos_oci_types::Sha256Digest::parse(&evidence.digest)
+            .context("signed container evidence digest is malformed")?;
+        let media_type = aos_oci_types::MediaType::parse(&evidence.media_type)
+            .context("signed container evidence media type is malformed")?;
+        let referrer_digest = aos_oci_types::Sha256Digest::parse(&evidence.referrer_digest)
+            .context("signed container evidence referrer digest is malformed")?;
+        statements.push(
+            Statement::new(
+                "INSERT INTO oci_release_evidence
+                   (registry_id, repository_id, root_digest, release_tag,
+                    evidence_kind, digest, media_type, verification,
+                    referrer_digest)
+                 SELECT ?1, repository.id, ?3, ?4, ?5, ?6, ?7, 'verified', ?8
+                 FROM oci_repositories repository
+                 WHERE repository.registry_id = ?1 AND repository.name = ?2
+                   AND repository.lifecycle_state = 'active'",
+                vals![
+                    registry_id,
+                    repository.as_str(),
+                    index_digest.to_string(),
+                    release.release_tag,
+                    evidence.kind,
+                    digest.to_string(),
+                    media_type.as_str(),
+                    referrer_digest.to_string()
+                ]
+                .to_vec(),
+            )
+            .expecting(1),
+        );
+    }
+    for layer in &root.layers {
+        let digest = aos_oci_types::Sha256Digest::parse(&layer.digest)
+            .context("signed closure layer digest is malformed")?;
+        let diff_id = aos_oci_types::Sha256Digest::parse(&layer.diff_id)
+            .context("signed closure layer DiffID is malformed")?;
+        let compressed_size = i64::try_from(layer.compressed_size)
+            .context("signed closure layer compressed size exceeds int64")?;
+        let uncompressed_size = i64::try_from(layer.uncompressed_size)
+            .context("signed closure layer uncompressed size exceeds int64")?;
+        statements.push(
+            Statement::new(
+                "UPDATE oci_release_layers
+                 SET unpacked_byte_size = ?5, diff_id = ?6,
+                     closure_group = ?7, verified_at = ?8
+                 WHERE registry_id = ?1 AND root_digest = ?3 AND digest = ?4
+                   AND compressed_byte_size = ?9
+                   AND repository_id = (SELECT id FROM oci_repositories
+                     WHERE registry_id = ?1 AND name = ?2
+                       AND lifecycle_state = 'active')",
+                vals![
+                    registry_id,
+                    repository.as_str(),
+                    index_digest.to_string(),
+                    digest.to_string(),
+                    uncompressed_size,
+                    diff_id.to_string(),
+                    layer.name,
+                    created_at,
+                    compressed_size
+                ]
+                .to_vec(),
+            )
+            .unchecked(),
+        );
+        statements.push(
+            Statement::new(
+                "UPDATE oci_repositories SET updated_at = updated_at
+                 WHERE registry_id = ?1 AND name = ?2
+                   AND lifecycle_state = 'active'
+                   AND EXISTS (SELECT 1 FROM oci_release_layers projected
+                     WHERE projected.repository_id = oci_repositories.id
+                       AND projected.root_digest = ?3 AND projected.digest = ?4
+                       AND projected.compressed_byte_size = ?5
+                       AND projected.unpacked_byte_size = ?6
+                       AND projected.diff_id = ?7
+                       AND projected.closure_group = ?8)",
+                vals![
+                    registry_id,
+                    repository.as_str(),
+                    index_digest.to_string(),
+                    digest.to_string(),
+                    compressed_size,
+                    uncompressed_size,
+                    diff_id.to_string(),
+                    layer.name
+                ]
+                .to_vec(),
+            )
+            .expecting(1),
+        );
+    }
+    statements.push(
+        Statement::new(
+            "UPDATE oci_image_config_projections
+             SET compressed_byte_size = (SELECT COALESCE(SUM(compressed_byte_size), 0)
+                   FROM oci_release_layers layer
+                   WHERE layer.repository_id = oci_image_config_projections.repository_id
+                     AND layer.root_digest = oci_image_config_projections.root_digest
+                     AND layer.manifest_digest = oci_image_config_projections.manifest_digest)
+                   + (SELECT byte_size FROM oci_blobs config
+                       WHERE config.registry_id = oci_image_config_projections.registry_id
+                         AND config.digest = oci_image_config_projections.config_digest),
+                 unpacked_byte_size = (SELECT COALESCE(SUM(unpacked_byte_size), 0)
+                   FROM oci_release_layers layer
+                   WHERE layer.repository_id = oci_image_config_projections.repository_id
+                     AND layer.root_digest = oci_image_config_projections.root_digest
+                     AND layer.manifest_digest = oci_image_config_projections.manifest_digest),
+                 verified_at = ?4
+             WHERE registry_id = ?1 AND root_digest = ?3
+               AND repository_id = (SELECT id FROM oci_repositories
+                 WHERE registry_id = ?1 AND name = ?2 AND lifecycle_state = 'active')",
+            vals![
+                registry_id,
+                repository.as_str(),
+                index_digest.to_string(),
+                created_at
+            ]
+            .to_vec(),
+        )
+        .unchecked(),
+    );
     for descriptor in &root.required_descriptors {
         statements.push(oci_release_descriptor_placement_guard(
             registry_id,
@@ -25366,6 +25643,10 @@ fn index_snapshot_digest(snapshot: &IndexSnapshot) -> Result<String> {
                     "index_media_type": root.index_media_type,
                     "index_size": root.index_size,
                     "catalog_digest": root.catalog_digest,
+                    "package_name": root.package_name,
+                    "closure_members": root.closure_members,
+                    "layers": root.layers,
+                    "evidence": root.evidence,
                     "required_descriptors": root.required_descriptors.iter().map(|descriptor| serde_json::json!({
                         "role": descriptor.role.as_str(),
                         "digest": descriptor.digest,
@@ -26109,12 +26390,12 @@ source_nar_hash = ""
     }
 
     #[test]
-    fn oci_phase5_migration_upgrades_v20_and_backfills_contextual_media() {
-        const OCI_CATALOG_VERSION: usize = 20;
+    fn oci_phase5_v21_migration_upgrades_v20_and_backfills_contextual_media() {
+        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 20;
 
-        assert_eq!(MIGRATIONS.len(), OCI_CATALOG_VERSION + 1);
+        assert_eq!(MIGRATIONS.len(), 22, "reviewed schema version changed");
         let connection = Connection::open_in_memory().unwrap();
-        for migration in &MIGRATIONS[..OCI_CATALOG_VERSION] {
+        for migration in &MIGRATIONS[..OCI_UPLOAD_PUBLICATION_INDEX] {
             connection.execute_batch(migration).unwrap();
         }
         seed_oci_migration_registry(&connection);
@@ -26150,7 +26431,7 @@ source_nar_hash = ""
             .unwrap();
 
         connection
-            .execute_batch(MIGRATIONS[OCI_CATALOG_VERSION])
+            .execute_batch(MIGRATIONS[OCI_UPLOAD_PUBLICATION_INDEX])
             .unwrap();
 
         let media_type: String = connection
@@ -26196,11 +26477,11 @@ source_nar_hash = ""
     }
 
     #[test]
-    fn oci_phase5_migration_refuses_unknown_placeholder_state() {
-        const OCI_CATALOG_VERSION: usize = 20;
+    fn oci_phase5_v21_migration_refuses_unknown_placeholder_state() {
+        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 20;
 
         let connection = Connection::open_in_memory().unwrap();
-        for migration in &MIGRATIONS[..OCI_CATALOG_VERSION] {
+        for migration in &MIGRATIONS[..OCI_UPLOAD_PUBLICATION_INDEX] {
             connection.execute_batch(migration).unwrap();
         }
         seed_oci_migration_registry(&connection);
@@ -26216,7 +26497,7 @@ source_nar_hash = ""
             .unwrap();
 
         let error = connection
-            .execute_batch(MIGRATIONS[OCI_CATALOG_VERSION])
+            .execute_batch(MIGRATIONS[OCI_UPLOAD_PUBLICATION_INDEX])
             .unwrap_err();
         assert!(
             error.to_string().contains("CHECK constraint failed"),
@@ -26231,6 +26512,217 @@ source_nar_hash = ""
             publications, 1,
             "failed upgrade discarded placeholder state"
         );
+    }
+
+    fn seed_v21_oci_admin_upgrade_state(connection: &Connection, tag_history_limit: i64) {
+        seed_oci_migration_registry(connection);
+        let config = format!("sha256:{}", "c".repeat(64));
+        let layer = format!("sha256:{}", "d".repeat(64));
+        let manifest = format!("sha256:{}", "e".repeat(64));
+        for (id, digest, size, media_type) in [
+            (
+                10_i64,
+                config.as_str(),
+                64_i64,
+                "application/vnd.oci.image.config.v1+json",
+            ),
+            (
+                11,
+                layer.as_str(),
+                128,
+                "application/vnd.oci.image.layer.v1.tar",
+            ),
+            (
+                12,
+                manifest.as_str(),
+                256,
+                "application/vnd.oci.image.manifest.v1+json",
+            ),
+        ] {
+            let encoded = digest.strip_prefix("sha256:").unwrap();
+            connection
+                .execute(
+                    "INSERT INTO surface_objects(
+                       id, registry_id, object_key, object_kind, partition_key,
+                       content_hash, size, created_at, updated_at)
+                     VALUES(?1, 1, ?2, 'immutable', zeroblob(32), ?3, ?4, 2, 2)",
+                    rusqlite::params![id, format!("oci/blobs/sha256/{encoded}"), encoded, size],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO oci_blobs(
+                       registry_id, digest, byte_size, media_type,
+                       surface_object_id, quota_bytes, lifecycle_state,
+                       created_at, updated_at)
+                     VALUES(1, ?1, ?2, ?3, ?4, ?2, 'active', 2, 2)",
+                    rusqlite::params![digest, size, media_type, id],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO oci_repository_objects(
+                       repository_id, registry_id, digest, object_kind,
+                       media_type, linked_at)
+                     VALUES(4, 1, ?1, ?2, ?3, 2)",
+                    rusqlite::params![
+                        digest,
+                        if id == 12 { "manifest" } else { "blob" },
+                        media_type
+                    ],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO oci_manifests(
+                   registry_id, digest, media_type, byte_size, schema_version,
+                   artifact_type, subject_digest, config_digest, platform_os,
+                   platform_architecture, platform_variant, annotations_json,
+                   descriptor_count, created_at)
+                 VALUES(1, ?1, 'application/vnd.oci.image.manifest.v1+json',
+                        256, 2, NULL, NULL, ?2, 'linux', 'amd64', NULL,
+                        '{}', 2, 2)",
+                rusqlite::params![manifest, config],
+            )
+            .unwrap();
+        for (role, digest, media_type, size) in [
+            (
+                "config",
+                config.as_str(),
+                "application/vnd.oci.image.config.v1+json",
+                64_i64,
+            ),
+            (
+                "layer",
+                layer.as_str(),
+                "application/vnd.oci.image.layer.v1.tar",
+                128_i64,
+            ),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO oci_descriptor_edges(
+                       registry_id, manifest_digest, edge_role, ordinal,
+                       target_digest, media_type, byte_size, annotations_json)
+                     VALUES(1, ?1, ?2, 0, ?3, ?4, ?5, '{}')",
+                    rusqlite::params![manifest, role, digest, media_type, size],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO oci_retention_policies(
+                   registry_id, untagged_grace_seconds, tag_history_limit,
+                   retain_referrers, resource_version, updated_at)
+                 VALUES(1, 86400, ?1, 1, 1, 2)",
+                [tag_history_limit],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn oci_admin_v22_upgrade_backfills_policy_and_queues_exact_byte_reconciliation() {
+        const OCI_ADMIN_INDEX: usize = 21;
+
+        let connection = Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..OCI_ADMIN_INDEX] {
+            connection.execute_batch(migration).unwrap();
+        }
+        seed_v21_oci_admin_upgrade_state(&connection, 37);
+        connection
+            .execute_batch(MIGRATIONS[OCI_ADMIN_INDEX])
+            .unwrap();
+
+        let recent: i64 = connection
+            .query_row(
+                "SELECT recent_manual_tag_revisions FROM oci_retention_policies
+                 WHERE registry_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(recent, 37);
+        let pending: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM oci_admin_projection_reconciliations
+                 WHERE registry_id = 1 AND repository_id = 4 AND state = 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 1, "legacy runnable manifest was not queued");
+        let projected: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM oci_image_config_projections",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(projected, 0, "upgrade fabricated an exact-byte projection");
+    }
+
+    #[test]
+    fn oci_admin_v22_upgrade_fails_closed_and_rolls_back_out_of_range_history() {
+        const OCI_ADMIN_INDEX: usize = 21;
+
+        let connection = Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..OCI_ADMIN_INDEX] {
+            connection.execute_batch(migration).unwrap();
+        }
+        seed_v21_oci_admin_upgrade_state(&connection, 1_000_001);
+        connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let error = connection
+            .execute_batch(MIGRATIONS[OCI_ADMIN_INDEX])
+            .unwrap_err();
+        connection.execute_batch("ROLLBACK").unwrap();
+        assert!(
+            error.to_string().contains("CHECK constraint failed"),
+            "{error}"
+        );
+        let v22_tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'oci_repository_metadata'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(v22_tables, 0, "failed v22 migration committed partial DDL");
+    }
+
+    #[tokio::test]
+    async fn oci_admin_v22_concurrent_start_and_reopen_apply_once() {
+        const OCI_ADMIN_INDEX: usize = 21;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("v21-concurrent.db");
+        let connection = Connection::open(&path).unwrap();
+        for migration in &MIGRATIONS[..OCI_ADMIN_INDEX] {
+            connection.execute_batch(migration).unwrap();
+        }
+        seed_v21_oci_admin_upgrade_state(&connection, 9);
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_version(version INTEGER NOT NULL);
+                 INSERT INTO schema_version(version) VALUES(21);",
+            )
+            .unwrap();
+        drop(connection);
+
+        let (left, right) = tokio::join!(Database::open(&path), Database::open(&path));
+        drop(left.unwrap());
+        drop(right.unwrap());
+        let reopened = Database::open(&path).await.unwrap();
+        let version: i64 = reopened
+            .backend
+            .query_opt("SELECT version FROM schema_version", &[])
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(version, 22);
     }
 
     #[test]
@@ -26533,10 +27025,20 @@ source_nar_hash = ""
     }
 
     #[test]
+    fn migration_statements_translate_for_postgres_and_mysql() {
+        for sql in migration_statements() {
+            for dialect in [Dialect::Postgres, Dialect::Mysql] {
+                dialect.translate(&sql).unwrap_or_else(|error| {
+                    panic!("{dialect:?} migration SQL failed: {error}\n{sql}")
+                });
+            }
+        }
+    }
+
+    #[test]
     fn mysql_phase5_multiline_add_columns_are_replay_safe() {
-        let phase5 = MIGRATIONS
-            .last()
-            .expect("Phase 5 OCI upload and publication migration");
+        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 20;
+        let phase5 = MIGRATIONS[OCI_UPLOAD_PUBLICATION_INDEX];
         let add_columns: Vec<_> = crate::backend::split_statements(phase5)
             .into_iter()
             .filter(|statement| statement.contains("ALTER TABLE "))
@@ -27145,6 +27647,25 @@ source_nar_hash = ""
             });
         }
 
+        let closure_layer_digest = required_descriptors[1].digest.clone();
+        let evidence_kinds = [
+            "closure",
+            "sbom",
+            "source",
+            "license",
+            "provenance",
+            "signature",
+        ];
+        let evidence = evidence_kinds
+            .iter()
+            .zip(&required_descriptors[2..])
+            .map(|(kind, descriptor)| ContainerReleaseEvidenceSnapshot {
+                kind: (*kind).to_string(),
+                digest: descriptor.digest.clone(),
+                media_type: "application/vnd.aos.nix-closure.v1+json".to_string(),
+                referrer_digest: descriptor.digest.clone(),
+            })
+            .collect::<Vec<_>>();
         let artifacts = Vec::<ReleaseSnapshotArtifact>::new();
         let snapshot = IndexSnapshot {
             commit: "c".repeat(64),
@@ -27172,6 +27693,16 @@ source_nar_hash = ""
                     index_media_type: "application/vnd.oci.image.index.v1+json".to_string(),
                     index_size: 512,
                     catalog_digest: "d".repeat(64),
+                    package_name: "aos".to_string(),
+                    closure_members: vec![ContainerReleaseClosureMemberSnapshot {
+                        store_path: "/nix/store/fixture-aos".to_string(),
+                        nar_hash: "sha256:fixture".to_string(),
+                        nar_size: 123,
+                        layer_digest: closure_layer_digest,
+                        direct: true,
+                    }],
+                    layers: Vec::new(),
+                    evidence,
                     required_descriptors,
                 }),
             }],
@@ -27225,6 +27756,86 @@ source_nar_hash = ""
         assert_eq!(root.get::<String>(5).unwrap(), "c".repeat(64));
         assert_eq!(root.get::<String>(6).unwrap(), "b".repeat(64));
         assert_eq!(root.get::<String>(7).unwrap(), "d".repeat(64));
+        let provenance = db
+            .oci_admin_release_provenance(
+                registry_id,
+                &aos_oci_types::RepositoryName::parse("aos").unwrap(),
+                aos_oci_types::Sha256Digest::parse(&digest).unwrap(),
+                "1.0.0",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(provenance.package, "aos");
+        assert_eq!(provenance.closure_members.len(), 1);
+        assert_eq!(provenance.evidence.len(), 6);
+        assert!(provenance
+            .evidence
+            .iter()
+            .all(|evidence| evidence.verification == "verified"));
+
+        let epoch_before_shared_root: i64 = db
+            .backend
+            .query_opt(
+                "SELECT mutation_epoch FROM oci_registry_state WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        let mut shared_root = snapshot.clone();
+        shared_root.releases.push(ReleaseRow {
+            semver: "2.0.0".to_string(),
+            tag_oid: "f".repeat(64),
+            commit_oid: "c".repeat(64),
+            signer: Some("fixture-key".to_string()),
+            tagged_at: Some(2),
+            pack_present: true,
+        });
+        let mut second_release = shared_root.release_artifact_snapshots[0].clone();
+        second_release.release_tag = "2.0.0".to_string();
+        second_release.verified_tag_oid = "f".repeat(64);
+        shared_root.release_artifact_snapshots.push(second_release);
+        db.apply_snapshot_from_placement(registry_id, &shared_root, Some(placement.id))
+            .await
+            .unwrap();
+        let all_provenance = db
+            .list_oci_admin_release_provenance(
+                registry_id,
+                &aos_oci_types::RepositoryName::parse("aos").unwrap(),
+                aos_oci_types::Sha256Digest::parse(&digest).unwrap(),
+                10,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            all_provenance
+                .items
+                .iter()
+                .map(|record| record.release.as_str())
+                .collect::<Vec<_>>(),
+            vec!["1.0.0", "2.0.0"]
+        );
+        assert_eq!(all_provenance.items[1].closure_members.len(), 1);
+        assert_eq!(all_provenance.items[1].evidence.len(), 6);
+        let epoch_after_shared_root: i64 = db
+            .backend
+            .query_opt(
+                "SELECT mutation_epoch FROM oci_registry_state WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(epoch_after_shared_root, epoch_before_shared_root + 1);
+        db.apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
+            .await
+            .unwrap();
 
         db.backend
             .execute(

@@ -238,6 +238,12 @@ fn is_connect_path(path: &str) -> bool {
 }
 
 fn request_kind(path: &str, body: Option<&[u8]>) -> RequestShardKind {
+    // ContainerService remains on the control shard for Phase 6. Moving its
+    // reviewed administration surface requires an explicit migration because
+    // publication transactions already use this authority.
+    if path.contains(".ContainerService/") {
+        return RequestShardKind::Control;
+    }
     if path.contains(".BinaryCacheService/")
         || path.contains(".CacheIntegrationService/")
         || path.contains(".BinaryCacheUploadControllerService/")
@@ -675,6 +681,7 @@ mod tests {
             ("ImageService", RequestShardKind::Registry),
             ("PublishService", RequestShardKind::Registry),
             ("GitService", RequestShardKind::Registry),
+            ("ContainerService", RequestShardKind::Control),
             ("BinaryCacheService", RequestShardKind::Cache),
             ("CacheIntegrationService", RequestShardKind::Cache),
             (
@@ -707,6 +714,26 @@ mod tests {
                 expected,
                 "{service}"
             );
+        }
+    }
+
+    #[test]
+    fn phase_six_container_service_remains_on_the_control_shard() {
+        for method in [
+            "ListContainerRepositories",
+            "PlanSetContainerTag",
+            "BeginContainerPublication",
+            "PlanRunContainerGc",
+        ] {
+            let path = format!("/aos.hub.v1.ContainerService/{method}");
+            let classified = classify_request(
+                "POST",
+                &path,
+                "hub.example",
+                Some(br#"{"registry":"andyl/main","repository":"aos"}"#),
+            );
+            assert_eq!(classified.kind, RequestShardKind::Control, "{method}");
+            assert!(!classified.resource_specific, "{method}");
         }
     }
 }

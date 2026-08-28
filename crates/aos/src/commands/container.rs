@@ -837,6 +837,7 @@ impl VerifiedPublicationHook for HubPublicationAdapter {
                 hub_rpc::GetContainerPublication,
                 &hub_types::GetContainerPublicationRequest {
                     publication_id: publication_id.to_string(),
+                    registry: String::new(),
                 },
             )
             .await?;

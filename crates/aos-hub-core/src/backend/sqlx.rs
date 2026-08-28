@@ -225,6 +225,25 @@ impl super::Backend for SqlxBackend {
         }
     }
 
+    async fn migration_batch(
+        &self,
+        expected_current: i64,
+        target: i64,
+        stmts: &[Statement],
+    ) -> Result<()> {
+        match self {
+            Self::Sqlite(pool) => {
+                sqlite::migration_batch(pool, expected_current, target, stmts).await
+            }
+            #[cfg(feature = "postgres")]
+            Self::Postgres(pool) => {
+                postgres::migration_batch(pool, expected_current, target, stmts).await
+            }
+            #[cfg(feature = "mysql")]
+            Self::Mysql(pool) => mysql::batch(pool, stmts).await,
+        }
+    }
+
     async fn checked_batch(&self, stmts: &[CheckedStatement]) -> Result<()> {
         match self {
             Self::Sqlite(pool) => sqlite::checked_batch(pool, stmts).await,
@@ -335,6 +354,47 @@ mod sqlite {
                 .with_context(|| format!("executing {sql}"))?;
         }
         tx.commit().await.context("committing sqlite transaction")?;
+        Ok(())
+    }
+
+    pub(super) async fn migration_batch(
+        pool: &SqlitePool,
+        expected_current: i64,
+        target: i64,
+        stmts: &[Statement],
+    ) -> Result<()> {
+        let mut tx = pool.begin().await.context("beginning sqlite migration")?;
+        sqlx::query("UPDATE schema_version SET version = version")
+            .execute(&mut *tx)
+            .await
+            .context("locking sqlite schema version")?;
+        let versions = sqlx::query_scalar::<_, i64>("SELECT version FROM schema_version")
+            .fetch_all(&mut *tx)
+            .await
+            .context("reading locked sqlite schema version")?;
+        if versions.len() == 1 && versions[0] == target {
+            tx.commit()
+                .await
+                .context("committing sqlite migration lock")?;
+            return Ok(());
+        }
+        let observed = match versions.as_slice() {
+            [] => 0,
+            [version] => *version,
+            _ => anyhow::bail!("sqlite schema version marker is not a singleton"),
+        };
+        anyhow::ensure!(
+            observed == expected_current,
+            "sqlite schema version changed while migration was waiting"
+        );
+        for stmt in stmts {
+            let (sql, params) = prepare(Dialect::Sqlite, &stmt.sql, &stmt.params)?;
+            bind(sqlx::query(&sql), &params)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("executing {sql}"))?;
+        }
+        tx.commit().await.context("committing sqlite migration")?;
         Ok(())
     }
 
@@ -576,6 +636,44 @@ mod postgres {
         tx.commit()
             .await
             .context("committing postgres transaction")?;
+        Ok(())
+    }
+
+    pub(super) async fn migration_batch(
+        pool: &PgPool,
+        expected_current: i64,
+        target: i64,
+        stmts: &[Statement],
+    ) -> Result<()> {
+        let mut tx = pool.begin().await.context("beginning postgres migration")?;
+        let versions =
+            sqlx::query_scalar::<_, i64>("SELECT version FROM schema_version FOR UPDATE")
+                .fetch_all(&mut *tx)
+                .await
+                .context("locking postgres schema version")?;
+        if versions.len() == 1 && versions[0] == target {
+            tx.commit()
+                .await
+                .context("committing postgres migration lock")?;
+            return Ok(());
+        }
+        let observed = match versions.as_slice() {
+            [] => 0,
+            [version] => *version,
+            _ => anyhow::bail!("postgres schema version marker is not a singleton"),
+        };
+        anyhow::ensure!(
+            observed == expected_current,
+            "postgres schema version changed while migration was waiting"
+        );
+        for stmt in stmts {
+            let (sql, params) = prepare(Dialect::Postgres, &stmt.sql, &stmt.params)?;
+            bind(sqlx::query(&sql), &params)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("executing {sql}"))?;
+        }
+        tx.commit().await.context("committing postgres migration")?;
         Ok(())
     }
 
