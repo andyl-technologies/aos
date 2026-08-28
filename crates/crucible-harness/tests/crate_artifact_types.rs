@@ -46,6 +46,14 @@ const ARTIFACT_SPECS: &[ArtifactSpec] = &[
         expected: ExpectedArtifact::FleetStoreBinary,
     },
     ArtifactSpec {
+        package: "crucible-linux-resource",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-s3-store",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
         package: "crucible-campaign",
         expected: ExpectedArtifact::Library,
     },

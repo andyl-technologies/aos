@@ -15,6 +15,7 @@ const GRAPH_CONFIGURATION_V6_MAGIC: &[u8] = b"crucible.content-store.graph-confi
 const GRAPH_CONFIGURATION_V7_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v7\0";
 const GRAPH_CONFIGURATION_V8_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v8\0";
 const GRAPH_CONFIGURATION_V9_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v9\0";
+const GRAPH_CONFIGURATION_V10_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v10\0";
 
 pub(super) fn canonical_graph_configuration(
     config: &StoreGraphConfig,
@@ -52,7 +53,13 @@ pub(super) fn canonical_graph_configuration(
         .nodes
         .values()
         .any(|node| matches!(node, StoreNodeSpec::PhysicalQuota { .. }));
-    bytes.extend_from_slice(if has_physical_quota {
+    let has_s3 = config
+        .nodes
+        .values()
+        .any(|node| matches!(node, StoreNodeSpec::S3 { .. }));
+    bytes.extend_from_slice(if has_s3 {
+        GRAPH_CONFIGURATION_V10_MAGIC
+    } else if has_physical_quota {
         GRAPH_CONFIGURATION_V9_MAGIC
     } else if has_profile_validation {
         GRAPH_CONFIGURATION_V8_MAGIC
@@ -129,6 +136,20 @@ pub(super) fn canonical_graph_configuration(
                 bytes.push(3);
                 encode_path(&mut bytes, root)?;
                 bytes.extend_from_slice(&target_pack_bytes.to_be_bytes());
+            }
+            StoreNodeSpec::S3 {
+                endpoint,
+                bucket,
+                prefix,
+                maximum_logical_object_bytes,
+                multipart_part_bytes,
+            } => {
+                bytes.push(19);
+                encode_string(&mut bytes, endpoint.as_str())?;
+                encode_string(&mut bytes, bucket)?;
+                encode_string(&mut bytes, prefix)?;
+                bytes.extend_from_slice(&maximum_logical_object_bytes.to_be_bytes());
+                bytes.extend_from_slice(&multipart_part_bytes.to_be_bytes());
             }
             StoreNodeSpec::Verified { child } => {
                 bytes.push(4);

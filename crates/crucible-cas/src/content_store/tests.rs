@@ -2624,6 +2624,7 @@ fn profile_graph_derives_authenticated_classes_without_caller_hints() {
         &authorizers,
         &profilers,
         &StoreGraphPhysicalQuotaBinders::new(),
+        &StoreGraphS3Clients::new(),
     )
     .expect("profile graph");
     assert_eq!(graph.describe()[1].kind, StoreNodeKind::ProfileValidated);
@@ -2666,6 +2667,7 @@ fn profile_graph_derives_authenticated_classes_without_caller_hints() {
         &authorizers,
         &other_profilers,
         &StoreGraphPhysicalQuotaBinders::new(),
+        &StoreGraphS3Clients::new(),
     )
     .expect("other profile graph");
     assert_ne!(graph.configuration_id(), other.configuration_id());
@@ -2758,6 +2760,7 @@ fn profile_and_namespace_boundaries_compose_at_the_graph_root() {
         &authorizers,
         &profilers,
         &StoreGraphPhysicalQuotaBinders::new(),
+        &StoreGraphS3Clients::new(),
     )
     .expect("composed boundaries");
     let bytes = b"composed operational boundaries";
@@ -2820,6 +2823,7 @@ fn profile_graph_validates_deferred_transfer_and_root_inventory() {
         &StoreGraphNamespaceAuthorizers::new(),
         &profilers,
         &StoreGraphPhysicalQuotaBinders::new(),
+        &StoreGraphS3Clients::new(),
     )
     .expect("profiled write-back graph");
     let bytes = b"profiled deferred finding";
@@ -3313,6 +3317,7 @@ fn physical_quota_binds_exact_leaf_limits_and_survives_restart_and_admin() {
             &StoreGraphNamespaceAuthorizers::new(),
             &StoreGraphObjectProfilers::new(),
             &binders,
+            &StoreGraphS3Clients::new(),
         )
     };
     let (graph, admin) =
@@ -3543,6 +3548,7 @@ fn physical_quota_binding_precedes_allocating_leaf_construction() {
         &StoreGraphNamespaceAuthorizers::new(),
         &StoreGraphObjectProfilers::new(),
         &binders,
+        &StoreGraphS3Clients::new(),
     );
     assert!(matches!(result, Err(StoreError::Quota)));
     assert!(!pack_root.exists());
@@ -3597,6 +3603,7 @@ fn logical_and_physical_quotas_compose_without_an_admin_bypass() {
         &StoreGraphNamespaceAuthorizers::new(),
         &StoreGraphObjectProfilers::new(),
         &binders,
+        &StoreGraphS3Clients::new(),
     )
     .expect("composed quota graph");
     assert_eq!(admin.physical().len(), 1);

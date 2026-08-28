@@ -106,6 +106,20 @@ pub const CRATE_SPEC_INDEX: &[CrateSpecIndexEntry] = &[
         section_6_row: false,
     },
     CrateSpecIndexEntry {
+        package: "crucible-linux-resource",
+        root: "src/lib.rs",
+        spec_files: &[],
+        supplemental_spec: Some("RFC-0016 files 04a, 06"),
+        section_6_row: false,
+    },
+    CrateSpecIndexEntry {
+        package: "crucible-s3-store",
+        root: "src/lib.rs",
+        spec_files: &[],
+        supplemental_spec: Some("RFC-0016 file 06"),
+        section_6_row: false,
+    },
+    CrateSpecIndexEntry {
         package: "crucible-session",
         root: "src/lib.rs",
         spec_files: &["20"],

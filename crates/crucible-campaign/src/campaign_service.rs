@@ -2272,6 +2272,7 @@ fn store_service_failure(error: &StoreError) -> CampaignServiceFailure {
         | StoreError::DurabilityUnsatisfied { .. }
         | StoreError::Incompatible
         | StoreError::InvalidSourceLength { .. }
+        | StoreError::MultipartCleanupRequired
         | StoreError::Poisoned { .. }
         | StoreError::Unsupported { .. } => CampaignServiceFailure::IntegrityFailure,
     }

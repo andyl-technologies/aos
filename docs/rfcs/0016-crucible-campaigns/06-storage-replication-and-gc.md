@@ -325,12 +325,48 @@ simple and bounded in memory. Packed or Merkle-authenticated layouts may later
 provide sub-object proofs without scanning unrelated bytes while preserving the
 same logical read contract.
 
+The initial S3 immutable leaf binds canonical graph configuration to a
+non-secret endpoint-policy identifier. The daemon supplies the separately
+configured client capability with exact matching identity; credentials,
+regions, retry policy, HTTP details, and secrets never enter graph bytes. The
+canonical bucket is 3 through 63 ASCII alphanumeric, `.` or `-` bytes. The
+optional key prefix is at most 1,024 bytes, has slash-separated 1 through 255
+byte segments, excludes leading/trailing slash and `.`/`..`, and otherwise uses
+ASCII alphanumeric, `.`, `_`, or `-`. Objects live below
+`<prefix>/objects/<ContentId>` (or `objects/<ContentId>` for an empty prefix).
+
+Multipart parts are 5 MiB through 64 MiB inclusive, at most 10,000 parts are
+admitted, and `maximum_logical_object_bytes` is nonzero and no larger than the
+part-size product. Every source is authenticated before the first remote
+effect and again while parts stream. Completion uses `If-None-Match: *`; a
+concurrent winner is read and authenticated before replay succeeds. Every
+complete and range read authenticates the entire logical body before its final
+success boundary. Failed multipart operations are synchronously aborted;
+failure to confirm abort returns `MultipartCleanupRequired` rather than
+silently losing cleanup responsibility.
+
+The concrete `crucible-s3-store` AWS SDK adapter owns a command queue of 1
+through 1,024 entries, an active-operation ceiling of 1 through 64, an
+aggregate queued-plus-active command budget of 128 MiB through 1 GiB, and a
+dedicated runtime. Each admitted command has one absolute 100 ms through one
+hour deadline spanning queue admission, the SDK operation, and response
+streaming. Downloads cross a two-chunk, fixed 64-KiB handoff. A full queue or
+exhausted byte budget fails promptly. Endpoint credentials or service denial
+map to `Unauthorized`, transient transport/service failures to `Unavailable`,
+and malformed or unsupported provider behavior to `Incompatible`. This
+checkpoint does not yet grant S3 listing/deletion authority, durable orphaned
+multipart cleanup, or mutable-ref authority; those remain required before the
+S3 leaf participates in global GC or is selected as the authoritative ref
+backend.
+
 - **[CSTORE-7]** The directory backend MUST leave either no object or a complete
   authenticated object after interruption; same-filesystem staging debris is
   unreachable and reclaimable.
 - **[CSTORE-8]** The S3-compatible backend MUST tolerate interrupted multipart
-  upload, authenticate downloaded logical bytes, and use conditional ref
-  operations only after the concrete service passes the ref conformance suite.
+  upload without losing cleanup responsibility, enforce bounded transfer work
+  and absolute operation deadlines, authenticate downloaded logical bytes, and
+  use conditional ref operations only after the concrete service passes the
+  ref conformance suite.
 
 ## 06.5 Store composition graph
 
@@ -715,7 +751,7 @@ construct a deletion fence. Both values retain the same content-derived
 cannot pair independently supplied leaves with an unrelated graph hash.
 
 The registered `crucible.content-store.graph-configuration` schemas v1 through
-v9 freeze that identity basis. New writers retain the byte-for-byte v1 body
+v10 freeze that identity basis. New writers retain the byte-for-byte v1 body
 when the graph has no compressed-directory, logical-quota, encrypted,
 compressed-encrypted, durability-policy, or namespaced nodes,
 emit v2 when it has a compressed-directory node but no logical quota or
@@ -725,7 +761,8 @@ node. A graph with any compressed-encrypted-directory node but no durability
 policy emits v5. A graph with any durability-policy node but no namespaced node
 emits v6. A graph with any namespaced node but no profile-validation node emits
 v7. A graph with any profile-validation node but no physical-quota node emits
-v8. A graph with any physical-quota node emits v9. V2 uses
+v8. A graph with any physical-quota node but no S3 node emits v9. A graph with
+any S3 node emits v10. V2 uses
 the same grammar and existing tags as v1, changes the magic suffix from `v1`
 to `v2`, and adds tag 11. V3 changes the suffix to `v3`, retains tags 1 through
 11, and adds tag 12. V4 changes the suffix to `v4`, retains tags 1 through 12,
@@ -735,6 +772,7 @@ V6 changes the suffix to `v6`, retains tags 1 through 14, and adds tag 15.
 V7 changes the suffix to `v7`, retains tags 1 through 15, and adds tag 16.
 V8 changes the suffix to `v8`, retains tags 1 through 16, and adds tag 17.
 V9 changes the suffix to `v9`, retains tags 1 through 17, and adds tag 18.
+V10 changes the suffix to `v10`, retains tags 1 through 18, and adds tag 19.
 Every persistent
 path is an absolute host-local Unix path; its opaque bytes, rather than a lossy
 Unicode rendering, enter the identity.
@@ -794,6 +832,10 @@ node tag 18 PhysicalQuota:
                          || project_id:u32be
                          || maximum_physical_bytes:u64be
                          || maximum_inodes:u64be
+node tag 19 S3:          endpoint_id:string_u16 || bucket:string_u16
+                         || prefix:string_u16
+                         || maximum_logical_object_bytes:u64be
+                         || multipart_part_bytes:u64be
 ```
 
 Let `D` be `crucible.content-store.graph-configuration-id.v1` and `B` the
