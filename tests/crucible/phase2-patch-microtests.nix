@@ -1740,6 +1740,21 @@
         '';
       };
     }
+    {
+      patch = "0129-crucible-hot-fork-block-drain-barrier.patch";
+      check = certifyExactPatch {
+        patchName = "0129-crucible-hot-fork-block-drain-barrier.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-block-drain-barrier";
+        liveEvidence = ''
+          grep -Fxq 'block_barrier_schema_version=1' "$live_result"
+          grep -Fxq 'block_barrier_released_stable=true' "$live_result"
+          grep -Fxq 'block_barrier_hold_without_exact_boundary_rejected=true' "$live_result"
+          grep -Fxq 'block_snapshot_proof_acknowledged=false' "$live_result"
+          grep -Fxq 'template_ready=false' "$live_result"
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

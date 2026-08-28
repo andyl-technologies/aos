@@ -10,6 +10,7 @@ use serde_json::Value;
 use super::{QmpCommandKind, QmpError};
 
 mod bh_timer_barrier;
+mod block_barrier;
 mod plugin;
 mod rcu_barrier;
 mod template;
@@ -18,6 +19,11 @@ pub(crate) use bh_timer_barrier::parse_hot_fork_bh_timer_barrier_state;
 pub use bh_timer_barrier::{
     QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND, QMP_HOT_FORK_BH_TIMER_BARRIER_SCHEMA_VERSION,
     QmpHotForkBhTimerBarrierState,
+};
+pub(crate) use block_barrier::parse_hot_fork_block_barrier_state;
+pub use block_barrier::{
+    QMP_HOT_FORK_BLOCK_BARRIER_COMMAND, QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION,
+    QmpHotForkBlockBarrierState,
 };
 pub use plugin::{QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory};
 pub(super) use plugin::{

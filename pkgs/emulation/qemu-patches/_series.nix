@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "bf2bde0b80f00c01d84ccb52241a7a6a9145192ba9a85b25b63d5a21e3b90a0e";
+  patchBranchBundleSha256 = "9923d27f70de4e6eb62b91c28a6bce00b86988225ef4e4d8fdbe72a097c5dea6";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "475f05c3bf531ec8739ddb1d84ca959684697b16";
+  patchBranchHeadCommit = "b46c7cd35f6e46ac5265fa8221f185dc45b3ec78";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1215,6 +1215,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "the retained asynchronous-source barrier additionally race-closes AioContext polling and GLib dispatch, POSIX AioHandler mutation and callbacks, and coroutine scheduling; reports bounded complete inventories and exact active counts; and lets the retained template coordinator derive AIO proof bit 3 only while the complete held barrier is quiescent";
+    }
+    {
+      file = "0129-crucible-hot-fork-block-drain-barrier.patch";
+      branchSubject = "crucible: retain block drain for hot fork";
+      branchCommit = "b46c7cd35f6e46ac5265fa8221f185dc45b3ec78";
+      branchTree = "8404f0032a0912dfbb4df15fff54a9d1acfbc316";
+      catalogName = "crucible-hot-fork-block-drain-barrier";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "a process-lifetime QEMU-native all-block drain section quiesces every rooted BlockBackend without synchronously waiting for already-issued I/O, retains the drain until explicit release, reports bounded exact backend and in-flight aggregates, and deliberately leaves block proof bit 5 clear until an immutable external-snapshot root is authenticated";
     }
   ];
   catalogOnlyCapabilities = [

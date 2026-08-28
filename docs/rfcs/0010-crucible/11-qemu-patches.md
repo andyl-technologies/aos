@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **120 patches**. This count is checked against
+The carried series contains **121 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -2033,6 +2033,36 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   descriptor disposition, run child reinitializers, or call `fork(2)`. Proof
   bits 5 through 8 remain clear, so template preparation still rolls back as
   blocked and cannot yield a usable child.
+- **Risk:** F.
+
+### crucible-hot-fork-block-drain-barrier — retain native block quiescence
+
+- **Patch:** `0129-crucible-hot-fork-block-drain-barrier.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** a process-lifetime version-1 main-loop QMP operation holds,
+  queries, or releases QEMU's native all-block drain section. Hold is accepted
+  only at the exact paused/device-flush boundary, rejects replay-events and a
+  non-main AioContext, immediately quiesces new external block clients, and
+  retains the drain while already-issued I/O completes. The exact bounded
+  response binds the owner/generation to the block-backend registry and derives
+  quiescence from complete inventory, zero aggregate in-flight I/O, and every
+  rooted backend remaining inside the native drain section. The command is
+  deliberately in-band because native drain acquire/release requires the BQL
+  and main AioContext.
+- **Micro-test:** strict Rust decoding rejects changed schemas, unknown fields,
+  impossible owner/generation state, count overflow, inconsistent backend
+  relationships, hidden in-flight I/O, forged quiescence, and wrong-action
+  responses. The QEMU block unit test holds, observes, and releases the retained
+  native drain. The live patched-QEMU gate requires stable exact released state,
+  rejects hold outside the authenticated boundary without retaining state, and
+  requires stock QEMU not to expose the command.
+- **Inertness:** the barrier is dormant until an authorized main-loop caller
+  holds it at the exact boundary. It does not freeze block-graph mutation,
+  create or authenticate an immutable external-snapshot root, rotate writable
+  overlays, retain child root identity, reconstruct a child graph, coordinate
+  `fork(2)`, or acknowledge proof bit 5. The future coordinator must acquire
+  this drain before parking the AIO sources and release AIO before releasing
+  the block drain.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

@@ -31,7 +31,8 @@ pub use hot_fork::{
     QMP_HOT_FORK_AIO_INVENTORY_MAX, QMP_HOT_FORK_AIO_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND, QMP_HOT_FORK_BH_TIMER_BARRIER_SCHEMA_VERSION,
     QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_MAX, QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_BLOCK_BACKEND_NAME_MAX_BYTES, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX,
+    QMP_HOT_FORK_BLOCK_BACKEND_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
+    QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX,
     QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES,
     QMP_HOT_FORK_MUTEX_INVENTORY_MAX, QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION,
@@ -49,8 +50,8 @@ pub use hot_fork::{
     QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QmpHotForkAioContext, QmpHotForkAioHandler,
     QmpHotForkAioHandlerInventory, QmpHotForkAioInventory, QmpHotForkBhTimerBarrierState,
-    QmpHotForkBlockBackend, QmpHotForkBlockBackendInventory, QmpHotForkBottomHalf,
-    QmpHotForkBottomHalfInventory, QmpHotForkMutex, QmpHotForkMutexInventory,
+    QmpHotForkBlockBackend, QmpHotForkBlockBackendInventory, QmpHotForkBlockBarrierState,
+    QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory, QmpHotForkMutex, QmpHotForkMutexInventory,
     QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory, QmpHotForkProof,
     QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
     QmpHotForkTemplateOutcome, QmpHotForkTemplateState, QmpHotForkThread,
@@ -60,10 +61,11 @@ pub use hot_fork::{
 use hot_fork::{
     parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,
     parse_hot_fork_bh_timer_barrier_state, parse_hot_fork_block_backend_inventory,
-    parse_hot_fork_bottom_half_inventory, parse_hot_fork_mutex_inventory,
-    parse_hot_fork_plugin_barrier_state, parse_hot_fork_plugin_resource_inventory,
-    parse_hot_fork_rcu_barrier_state, parse_hot_fork_rcu_inventory, parse_hot_fork_readiness,
-    parse_hot_fork_template_state, parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
+    parse_hot_fork_block_barrier_state, parse_hot_fork_bottom_half_inventory,
+    parse_hot_fork_mutex_inventory, parse_hot_fork_plugin_barrier_state,
+    parse_hot_fork_plugin_resource_inventory, parse_hot_fork_rcu_barrier_state,
+    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_template_state,
+    parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
 };
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
@@ -717,6 +719,46 @@ where
         self.hot_fork_bh_timer_barrier(HotForkBhTimerBarrierAction::Release)
     }
 
+    /// Holds QEMU's native all-block drain section.
+    ///
+    /// New external block clients are quiesced immediately while already-issued
+    /// I/O finishes asynchronously. This barrier does not create or authenticate
+    /// an immutable external snapshot and therefore cannot acknowledge hot-fork
+    /// proof bit 5 by itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when QEMU is not at the exact paused boundary, the
+    /// current replay/AioContext mode cannot retain the native drain section,
+    /// or the response violates the closed barrier schema or hold postcondition.
+    pub fn hold_hot_fork_block_barrier(&mut self) -> Result<QmpHotForkBlockBarrierState, QmpError> {
+        self.hot_fork_block_barrier(HotForkBlockBarrierAction::Hold)
+    }
+
+    /// Observes QEMU's retained all-block drain section.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails or the response violates
+    /// the closed barrier schema.
+    pub fn query_hot_fork_block_barrier(
+        &mut self,
+    ) -> Result<QmpHotForkBlockBarrierState, QmpError> {
+        self.hot_fork_block_barrier(HotForkBlockBarrierAction::Query)
+    }
+
+    /// Releases QEMU's retained all-block drain section.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails or the response violates
+    /// the closed barrier schema or release postcondition.
+    pub fn release_hot_fork_block_barrier(
+        &mut self,
+    ) -> Result<QmpHotForkBlockBarrierState, QmpError> {
+        self.hot_fork_block_barrier(HotForkBlockBarrierAction::Release)
+    }
+
     /// Starts or advances QEMU's retained hot-fork template transaction.
     ///
     /// QEMU acquires every currently implemented subsystem barrier. A draining
@@ -842,6 +884,26 @@ where
         if !postcondition_holds {
             return Err(QmpError::MalformedTypedResponse {
                 command: QmpCommandKind::HotForkBhTimerBarrier,
+                response: response.value.to_string(),
+            });
+        }
+        Ok(state)
+    }
+
+    fn hot_fork_block_barrier(
+        &mut self,
+        action: HotForkBlockBarrierAction,
+    ) -> Result<QmpHotForkBlockBarrierState, QmpError> {
+        let response = self.send_command_return(QmpCommand::HotForkBlockBarrier { action })?;
+        let state = parse_hot_fork_block_barrier_state(&response.value)?;
+        let postcondition_holds = match action {
+            HotForkBlockBarrierAction::Hold => state.held(),
+            HotForkBlockBarrierAction::Query => true,
+            HotForkBlockBarrierAction::Release => !state.held(),
+        };
+        if !postcondition_holds {
+            return Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkBlockBarrier,
                 response: response.value.to_string(),
             });
         }
@@ -1398,6 +1460,8 @@ pub enum QmpCommandKind {
     HotForkRcuBarrier,
     /// QEMU-owned reversible asynchronous-source barrier operation.
     HotForkBhTimerBarrier,
+    /// QEMU-owned reversible all-block drain-barrier operation.
+    HotForkBlockBarrier,
     /// QEMU-owned retained hot-fork template coordinator operation.
     HotForkTemplate,
     /// QEMU-owned hot-fork allocated-bottom-half inventory query.
@@ -1440,6 +1504,7 @@ impl QmpCommandKind {
             Self::HotForkPluginBarrier => QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
             Self::HotForkRcuBarrier => QMP_HOT_FORK_RCU_BARRIER_COMMAND,
             Self::HotForkBhTimerBarrier => QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND,
+            Self::HotForkBlockBarrier => QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
             Self::HotForkTemplate => QMP_HOT_FORK_TEMPLATE_COMMAND,
             Self::QueryHotForkBottomHalfInventory => {
                 QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND
@@ -1485,6 +1550,13 @@ enum HotForkRcuBarrierAction {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HotForkBhTimerBarrierAction {
+    Hold,
+    Query,
+    Release,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HotForkBlockBarrierAction {
     Hold,
     Query,
     Release,
@@ -1537,6 +1609,16 @@ impl HotForkBhTimerBarrierAction {
     }
 }
 
+impl HotForkBlockBarrierAction {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Hold => "hold",
+            Self::Query => "query",
+            Self::Release => "release",
+        }
+    }
+}
+
 enum QmpCommand<'a> {
     Capabilities,
     SaveVm {
@@ -1580,6 +1662,9 @@ enum QmpCommand<'a> {
     HotForkBhTimerBarrier {
         action: HotForkBhTimerBarrierAction,
     },
+    HotForkBlockBarrier {
+        action: HotForkBlockBarrierAction,
+    },
     HotForkTemplate {
         action: HotForkTemplateAction,
     },
@@ -1619,6 +1704,7 @@ impl QmpCommand<'_> {
             Self::HotForkPluginBarrier { .. } => QmpCommandKind::HotForkPluginBarrier,
             Self::HotForkRcuBarrier { .. } => QmpCommandKind::HotForkRcuBarrier,
             Self::HotForkBhTimerBarrier { .. } => QmpCommandKind::HotForkBhTimerBarrier,
+            Self::HotForkBlockBarrier { .. } => QmpCommandKind::HotForkBlockBarrier,
             Self::HotForkTemplate { .. } => QmpCommandKind::HotForkTemplate,
             Self::QueryHotForkBottomHalfInventory => {
                 QmpCommandKind::QueryHotForkBottomHalfInventory
@@ -1717,6 +1803,12 @@ impl QmpCommand<'_> {
             }),
             Self::HotForkBhTimerBarrier { action } => json!({
                 "exec-oob": QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND,
+                "arguments": {
+                    "action": action.wire_name(),
+                },
+            }),
+            Self::HotForkBlockBarrier { action } => json!({
+                "execute": QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
                 "arguments": {
                     "action": action.wire_name(),
                 },

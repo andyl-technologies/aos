@@ -7,11 +7,12 @@ use crucible::Checkpoint;
 
 use super::{
     QmpClient, QmpCommandComplete, QmpError, QmpHotForkAioHandlerInventory, QmpHotForkAioInventory,
-    QmpHotForkBhTimerBarrierState, QmpHotForkBlockBackendInventory, QmpHotForkBottomHalfInventory,
-    QmpHotForkMutexInventory, QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory,
-    QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkReadiness,
-    QmpHotForkTemplateState, QmpHotForkThreadInventory, QmpHotForkTimerInventory,
-    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QmpHotForkBhTimerBarrierState, QmpHotForkBlockBackendInventory, QmpHotForkBlockBarrierState,
+    QmpHotForkBottomHalfInventory, QmpHotForkMutexInventory, QmpHotForkPluginBarrierState,
+    QmpHotForkPluginResourceInventory, QmpHotForkRcuBarrierState, QmpHotForkRcuInventory,
+    QmpHotForkReadiness, QmpHotForkTemplateState, QmpHotForkThreadInventory,
+    QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind,
+    QmpSnapshotTag, QmpTimeoutStream,
 };
 use crate::{
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
@@ -344,6 +345,51 @@ where
     ) -> Result<QmpHotForkBhTimerBarrierState, QemuNodeChannelError> {
         self.client
             .release_hot_fork_bh_timer_barrier()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Holds QEMU's native all-block drain section.
+    ///
+    /// This is a reversible I/O-quiescence prerequisite. It does not create or
+    /// authenticate an immutable external-snapshot root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU is not at the exact paused
+    /// boundary or the barrier exchange/postcondition fails.
+    pub fn hold_hot_fork_block_barrier(
+        &mut self,
+    ) -> Result<QmpHotForkBlockBarrierState, QemuNodeChannelError> {
+        self.client
+            .hold_hot_fork_block_barrier()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Queries QEMU's retained all-block drain section.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response does
+    /// not satisfy the closed barrier schema.
+    pub fn query_hot_fork_block_barrier(
+        &mut self,
+    ) -> Result<QmpHotForkBlockBarrierState, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_block_barrier()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Releases QEMU's retained all-block drain section.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or QEMU does not
+    /// report the required released postcondition.
+    pub fn release_hot_fork_block_barrier(
+        &mut self,
+    ) -> Result<QmpHotForkBlockBarrierState, QemuNodeChannelError> {
+        self.client
+            .release_hot_fork_block_barrier()
             .map_err(QemuNodeChannelError::from)
     }
 
