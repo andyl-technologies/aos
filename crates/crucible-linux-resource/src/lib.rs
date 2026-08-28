@@ -8,6 +8,10 @@
 //!
 //! The crate is Apache-licensed host code. It neither links QEMU nor crosses
 //! the Crucible Unix-socket/shared-memory process protocol boundary.
+//!
+//! Unsafe boundary discipline:
+//! - public callers use safe quota capability types;
+//! - wrappers validate pinned filesystem and syscall invariants.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]

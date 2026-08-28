@@ -123,6 +123,22 @@ const FENCE_SPECS: &[FenceSpec] = &[
         safe_wrapper_contract: &[],
     },
     FenceSpec {
+        package: "crucible-linux-resource",
+        root: "src/lib.rs",
+        unsafe_boundary: true,
+        safe_wrapper_contract: &[
+            "Unsafe boundary discipline:",
+            "public callers use safe quota capability types",
+            "wrappers validate pinned filesystem and syscall invariants",
+        ],
+    },
+    FenceSpec {
+        package: "crucible-s3-store",
+        root: "src/lib.rs",
+        unsafe_boundary: false,
+        safe_wrapper_contract: &[],
+    },
+    FenceSpec {
         package: "crucible-session",
         root: "src/lib.rs",
         unsafe_boundary: false,

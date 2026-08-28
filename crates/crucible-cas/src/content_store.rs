@@ -33,6 +33,7 @@ mod packed;
 mod physical_quota;
 mod profile;
 mod quota;
+mod s3;
 mod write_back;
 
 pub use admin::{
@@ -66,6 +67,10 @@ pub use physical_quota::{
 pub use profile::{
     ObjectProfile, Reconstructibility, RetentionRole, SensitivityClass, StoreGraphObjectProfilers,
     StoreObjectProfilePolicyId, StoreObjectProfiler,
+};
+pub use s3::{
+    S3BlobBackend, StoreGraphS3Clients, StoreS3Client, StoreS3ConditionalPutOutcome,
+    StoreS3EndpointId, StoreS3MultipartUpload, StoreS3ObjectDownload, StoreS3UploadedPart,
 };
 pub use write_back::{
     WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackRetentionGeneration,
@@ -915,6 +920,9 @@ pub enum StoreError {
         #[source]
         source: io::Error,
     },
+    /// An interrupted multipart upload could not be durably aborted.
+    #[error("store multipart upload cleanup remains pending")]
+    MultipartCleanupRequired,
 }
 
 /// Stable reason that a closed store graph failed admission.
@@ -964,6 +972,8 @@ pub enum GraphViolation {
     InvalidPhysicalQuotaBounds,
     /// A physical quota does not exclusively own one persistent physical leaf.
     InvalidPhysicalQuotaChild,
+    /// An S3 leaf has an invalid bucket, prefix, object bound, or part geometry.
+    InvalidS3Configuration,
     /// A journal and another persistent graph path overlap lexically.
     OverlappingAdministrativePath,
     /// A persistent graph path is relative to ambient process state.
@@ -1003,6 +1013,7 @@ impl fmt::Display for GraphViolation {
             Self::InvalidPhysicalQuotaChild => {
                 "physical quota must exclusively own a persistent physical leaf"
             }
+            Self::InvalidS3Configuration => "invalid S3 leaf configuration",
             Self::OverlappingAdministrativePath => "overlapping administrative path",
             Self::RelativeAdministrativePath => "relative administrative path",
             Self::AdministrativePathTooLong => "administrative path is too long",

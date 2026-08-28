@@ -271,7 +271,12 @@ pub(super) fn package_layer(package: &str) -> Option<Layer> {
         "crucible-shmem" | "crucible-protocol" | "crucible-device" => Some(Layer::L1),
         "crucible-qemu" | "crucible-qemu-plugin" | "crucible-guest" => Some(Layer::L2),
         "crucible" | "crucible-cas" => Some(Layer::L3),
-        "crucible-session" | "crucible-api" | "crucible-daemon" | "crucible-cli" => Some(Layer::L4),
+        "crucible-linux-resource"
+        | "crucible-s3-store"
+        | "crucible-session"
+        | "crucible-api"
+        | "crucible-daemon"
+        | "crucible-cli" => Some(Layer::L4),
         "crucible-harness" => Some(Layer::CrossCutting),
         _ => None,
     }

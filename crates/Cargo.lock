@@ -2308,6 +2308,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-s3-store"
+version = "0.1.0"
+dependencies = [
+ "aws-sdk-s3",
+ "crucible-cas",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "crucible-session"
 version = "0.1.0"
 dependencies = [

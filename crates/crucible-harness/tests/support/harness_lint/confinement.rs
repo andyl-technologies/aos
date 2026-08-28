@@ -221,6 +221,7 @@ fn boundary_source_allows_host_nondeterminism(
                 || relative_is_under(&relative, "src/process")
                 || relative_is_under(&relative, "src/supervision")
         }
+        "crucible-s3-store" => relative_is_under(&relative, "src/deadline"),
         _ => false,
     }
 }

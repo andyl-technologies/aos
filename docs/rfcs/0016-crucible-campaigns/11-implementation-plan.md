@@ -1449,7 +1449,22 @@ same raw project-quota primitive remains shared with QEMU attempt storage.
 Tests cover capability mismatch/duplication, exact binding, restart, exhaustion
 before child access, deletion, identity sensitivity, exclusive ownership, and
 logical-plus-physical composition.
-Broader layered transforms and S3 remain open;
+The graph now also admits a version-ten S3 immutable leaf. Its canonical node
+commits an exact non-secret endpoint-policy identity, bucket, prefix, maximum
+logical-object length, and multipart geometry. The separately supplied client
+capability must match that endpoint identity. The leaf authenticates sources
+before and during multipart upload, conditionally completes without replacing
+an existing content-addressed key, authenticates full and range reads, and
+fails closed when multipart cleanup cannot be confirmed. The concrete
+`crucible-s3-store` AWS SDK adapter adds bounded queue, active-operation, and
+retained-command-byte admission, one absolute deadline over each SDK/stream operation, explicit
+credential/availability/protocol error classes, and conditional completion. Tests cover multipart
+round trip, range authentication, exact replay, corruption, interruption,
+cleanup failure, credential expiry, capability mismatch, graph identity, queue
+bounds, command deadline, and stream interruption. S3 inventory/deletion,
+durable orphaned-upload sweeping, conditional refs, service conformance, and
+the realistic operator flight remain open under T-CAM-5.7 and T-CAM-5.8.
+Broader layered transforms remain open;
 therefore T-CAM-5.5 is not checked by this checkpoint.
 
 The packed leaf now provides immutable bounded multi-object pack files, a
@@ -2004,7 +2019,7 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `LAZY-1..51` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
-| `CSTORE-1..27` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
+| `CSTORE-1..28` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
 | `CAPI-1..14` | 8 | CLI/API contracts, continuity, campaign replay |
 | `CMEAS-1..14` | 3, 8 | campaign model, replay, ABI conformance |
 | `CSEC-1..12` | 1–9 | license boundary, ABI conformance, isolation, store equivalence |

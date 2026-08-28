@@ -28,6 +28,10 @@ use super::profile::{
     ProfileValidatedStore, StoreGraphObjectProfilers, StoreObjectProfilePolicyId,
 };
 use super::quota::{LogicalQuotaStore, MAXIMUM_LOGICAL_QUOTA_OBJECTS};
+use super::s3::{
+    S3BlobBackend, StoreGraphS3Clients, StoreS3EndpointId,
+    validate_configuration as validate_s3_configuration,
+};
 use super::write_back::{
     StoreGraphWriteBackFence, WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackStore,
 };
@@ -141,6 +145,19 @@ pub enum StoreNodeSpec {
         /// Target physical bytes per deterministic replacement pack.
         target_pack_bytes: u64,
     },
+    /// Durable S3-compatible immutable-object leaf.
+    S3 {
+        /// Non-secret endpoint and credential policy identifier.
+        endpoint: StoreS3EndpointId,
+        /// Exact remote bucket.
+        bucket: String,
+        /// Canonical key prefix, excluding the generated `objects/` suffix.
+        prefix: String,
+        /// Hard cap on one authenticated logical object's bytes.
+        maximum_logical_object_bytes: u64,
+        /// Fixed bounded multipart part size.
+        multipart_part_bytes: u64,
+    },
     /// Logical verification facade.
     Verified {
         /// Child node.
@@ -245,7 +262,8 @@ impl StoreNodeSpec {
             | Self::CompressedDirectory { .. }
             | Self::EncryptedDirectory { .. }
             | Self::CompressedEncryptedDirectory { .. }
-            | Self::Packed { .. } => Vec::new(),
+            | Self::Packed { .. }
+            | Self::S3 { .. } => Vec::new(),
             Self::Verified { child } => vec![child],
             Self::Routed { routes } => routes.values().collect(),
             Self::Tiered { tiers, .. } => tiers.iter().collect(),
@@ -275,6 +293,7 @@ impl StoreNodeSpec {
                 StoreNodeKind::CompressedEncryptedDirectory
             }
             Self::Packed { .. } => StoreNodeKind::Packed,
+            Self::S3 { .. } => StoreNodeKind::S3,
             Self::Verified { .. } => StoreNodeKind::Verified,
             Self::Routed { .. } => StoreNodeKind::Routed,
             Self::Tiered { .. } => StoreNodeKind::Tiered,
@@ -317,6 +336,8 @@ pub enum StoreNodeKind {
     CompressedEncryptedDirectory,
     /// Durable immutable-pack leaf.
     Packed,
+    /// Durable S3-compatible object leaf.
+    S3,
     /// Verification facade.
     Verified,
     /// Kind router.
@@ -506,12 +527,14 @@ impl StoreGraph {
         let authorizers = StoreGraphNamespaceAuthorizers::new();
         let profilers = StoreGraphObjectProfilers::new();
         let physical_quotas = StoreGraphPhysicalQuotaBinders::new();
+        let s3_clients = StoreGraphS3Clients::new();
         let (graph, _admin) = Self::build_with_admin_and_all_capabilities(
             config,
             &keys,
             &authorizers,
             &profilers,
             &physical_quotas,
+            &s3_clients,
         )?;
         Ok(graph)
     }
@@ -532,12 +555,14 @@ impl StoreGraph {
         let authorizers = StoreGraphNamespaceAuthorizers::new();
         let profilers = StoreGraphObjectProfilers::new();
         let physical_quotas = StoreGraphPhysicalQuotaBinders::new();
+        let s3_clients = StoreGraphS3Clients::new();
         let (graph, _admin) = Self::build_with_admin_and_all_capabilities(
             config,
             keys,
             &authorizers,
             &profilers,
             &physical_quotas,
+            &s3_clients,
         )?;
         Ok(graph)
     }
@@ -559,12 +584,14 @@ impl StoreGraph {
         let keys = StoreGraphKeyring::new();
         let profilers = StoreGraphObjectProfilers::new();
         let physical_quotas = StoreGraphPhysicalQuotaBinders::new();
+        let s3_clients = StoreGraphS3Clients::new();
         let (graph, _admin) = Self::build_with_admin_and_all_capabilities(
             config,
             &keys,
             authorizers,
             &profilers,
             &physical_quotas,
+            &s3_clients,
         )?;
         Ok(graph)
     }
@@ -588,12 +615,14 @@ impl StoreGraph {
     ) -> Result<Self, StoreError> {
         let profilers = StoreGraphObjectProfilers::new();
         let physical_quotas = StoreGraphPhysicalQuotaBinders::new();
+        let s3_clients = StoreGraphS3Clients::new();
         let (graph, _admin) = Self::build_with_admin_and_all_capabilities(
             config,
             keys,
             authorizers,
             &profilers,
             &physical_quotas,
+            &s3_clients,
         )?;
         Ok(graph)
     }
@@ -602,7 +631,9 @@ impl StoreGraph {
     ///
     /// Object profilers derive classes from authenticated canonical bytes;
     /// physical-quota binders authenticate kernel-enforced leaf allocation;
-    /// namespace policy and encryption key material remain operational.
+    /// S3 clients bind separately configured transport and credentials to one
+    /// non-secret endpoint-policy identity; namespace policy and encryption key
+    /// material remain operational.
     ///
     /// # Errors
     ///
@@ -614,6 +645,7 @@ impl StoreGraph {
         authorizers: &StoreGraphNamespaceAuthorizers,
         profilers: &StoreGraphObjectProfilers,
         physical_quotas: &StoreGraphPhysicalQuotaBinders,
+        s3_clients: &StoreGraphS3Clients,
     ) -> Result<Self, StoreError> {
         let (graph, _admin) = Self::build_with_admin_and_all_capabilities(
             config,
@@ -621,6 +653,7 @@ impl StoreGraph {
             authorizers,
             profilers,
             physical_quotas,
+            s3_clients,
         )?;
         Ok(graph)
     }
@@ -644,12 +677,14 @@ impl StoreGraph {
         let authorizers = StoreGraphNamespaceAuthorizers::new();
         let profilers = StoreGraphObjectProfilers::new();
         let physical_quotas = StoreGraphPhysicalQuotaBinders::new();
+        let s3_clients = StoreGraphS3Clients::new();
         Self::build_with_admin_and_all_capabilities(
             config,
             &keys,
             &authorizers,
             &profilers,
             &physical_quotas,
+            &s3_clients,
         )
     }
 
@@ -669,12 +704,14 @@ impl StoreGraph {
         let authorizers = StoreGraphNamespaceAuthorizers::new();
         let profilers = StoreGraphObjectProfilers::new();
         let physical_quotas = StoreGraphPhysicalQuotaBinders::new();
+        let s3_clients = StoreGraphS3Clients::new();
         Self::build_with_admin_and_all_capabilities(
             config,
             keys,
             &authorizers,
             &profilers,
             &physical_quotas,
+            &s3_clients,
         )
     }
 
@@ -699,12 +736,14 @@ impl StoreGraph {
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         let profilers = StoreGraphObjectProfilers::new();
         let physical_quotas = StoreGraphPhysicalQuotaBinders::new();
+        let s3_clients = StoreGraphS3Clients::new();
         Self::build_with_admin_and_all_capabilities(
             config,
             keys,
             authorizers,
             &profilers,
             &physical_quotas,
+            &s3_clients,
         )
     }
 
@@ -712,7 +751,9 @@ impl StoreGraph {
     /// maintenance authority separately.
     ///
     /// Physical-quota binders return guards rather than quota mutation
-    /// authority. The latter remains solely operator-owned.
+    /// authority. The latter remains solely operator-owned. S3 client
+    /// capabilities provide ordinary immutable transport only and do not add
+    /// S3 inventory/delete authority to the returned administration value.
     ///
     /// # Errors
     ///
@@ -724,6 +765,7 @@ impl StoreGraph {
         authorizers: &StoreGraphNamespaceAuthorizers,
         profilers: &StoreGraphObjectProfilers,
         physical_quotas: &StoreGraphPhysicalQuotaBinders,
+        s3_clients: &StoreGraphS3Clients,
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         validate_structure(&config)?;
         validate_demands(&config)?;
@@ -748,6 +790,7 @@ impl StoreGraph {
             authorizers,
             profilers,
             physical_quotas,
+            s3_clients,
         };
         let root = instantiate(
             configuration,
@@ -1244,6 +1287,20 @@ fn validate_local_shape(id: &StoreNodeId, node: &StoreNodeSpec) -> Result<(), St
         } if *project_id == 0 || *maximum_physical_bytes == 0 || *maximum_inodes == 0 => Err(
             invalid_graph(id.as_str(), GraphViolation::InvalidPhysicalQuotaBounds),
         ),
+        StoreNodeSpec::S3 {
+            endpoint,
+            bucket,
+            prefix,
+            maximum_logical_object_bytes,
+            multipart_part_bytes,
+        } => validate_s3_configuration(
+            endpoint,
+            bucket,
+            prefix,
+            *maximum_logical_object_bytes,
+            *multipart_part_bytes,
+        )
+        .map_err(|_| invalid_graph(id.as_str(), GraphViolation::InvalidS3Configuration)),
         _ => Ok(()),
     }
 }
@@ -1267,7 +1324,8 @@ fn validate_demands(config: &StoreGraphConfig) -> Result<(), StoreError> {
             | StoreNodeSpec::CompressedDirectory { .. }
             | StoreNodeSpec::EncryptedDirectory { .. }
             | StoreNodeSpec::CompressedEncryptedDirectory { .. }
-            | StoreNodeSpec::Packed { .. } => {}
+            | StoreNodeSpec::Packed { .. }
+            | StoreNodeSpec::S3 { .. } => {}
             StoreNodeSpec::Verified { child } => {
                 extend_demand(child, &kinds, &mut demands, &mut queue);
             }
@@ -1368,6 +1426,7 @@ struct GraphBuildCapabilities<'a> {
     authorizers: &'a StoreGraphNamespaceAuthorizers,
     profilers: &'a StoreGraphObjectProfilers,
     physical_quotas: &'a StoreGraphPhysicalQuotaBinders,
+    s3_clients: &'a StoreGraphS3Clients,
 }
 
 fn instantiate(
@@ -1450,6 +1509,21 @@ fn instantiate(
             state.physical.insert(id.clone(), leaf.clone());
             leaf
         }
+        StoreNodeSpec::S3 {
+            endpoint,
+            bucket,
+            prefix,
+            maximum_logical_object_bytes,
+            multipart_part_bytes,
+        } => Arc::new(S3BlobBackend::new(
+            id.as_str(),
+            endpoint.clone(),
+            bucket.clone(),
+            prefix.clone(),
+            *maximum_logical_object_bytes,
+            *multipart_part_bytes,
+            capabilities.s3_clients.resolve(endpoint)?,
+        )?),
         StoreNodeSpec::Verified { child } => Arc::new(VerifiedStore::new(
             id.as_str(),
             instantiate(configuration, child, nodes, capabilities, state)?,

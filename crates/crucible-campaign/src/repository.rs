@@ -838,6 +838,7 @@ fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
         | StoreError::DurabilityUnsatisfied { .. }
         | StoreError::Incompatible
         | StoreError::InvalidSourceLength { .. }
+        | StoreError::MultipartCleanupRequired
         | StoreError::Unsupported { .. } => ExecutorRejection::Incompatible,
     }
 }
