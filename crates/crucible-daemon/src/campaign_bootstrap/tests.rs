@@ -1296,6 +1296,55 @@ fn external_store_uses_the_managed_lock_without_creating_default_leafs() {
 }
 
 #[test]
+fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
+    let (directory, config) = fixture();
+    let (store, graph) = external_graph_store(&directory);
+    let orphan_bytes = b"unreachable imported scenario bytes";
+    let orphan = ContentId::for_bytes(ObjectKind::Scenario, 1, orphan_bytes);
+    graph
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes.to_vec()))
+        .expect("publish unreachable physical object");
+    let prepared = config
+        .prepare_with_store(store)
+        .expect("prepare GC repository owner");
+    let authority = prepared
+        .store_gc_authority()
+        .expect("borrow exact GC authority");
+    let mut ledger = MemoryAssignmentLedger::default();
+
+    let planned = authority
+        .plan(&mut ledger, None)
+        .expect("plan stopped-owner GC");
+    assert_eq!(planned.roots().len(), 0);
+    assert_eq!(planned.candidates().len(), 1);
+    assert_eq!(
+        planned
+            .candidates()
+            .iter()
+            .next()
+            .expect("planned orphan")
+            .id(),
+        orphan
+    );
+    let (mut journal, disposition) = crate::DirectoryCampaignGcJournal::create(
+        directory.path().join("owner-gc-journal"),
+        &planned,
+    )
+    .expect("persist owner GC journal");
+    assert_eq!(
+        disposition,
+        crate::CampaignGcJournalCreateDisposition::Created
+    );
+
+    let report = authority
+        .apply(&mut journal, &mut ledger, None)
+        .expect("apply exact owner GC journal");
+    assert_eq!(report.status(), crate::CampaignGcApplyStatus::Applied);
+    assert_eq!(journal.phase(), crate::CampaignGcJournalPhase::Complete);
+    assert!(!graph.contains(orphan).expect("check deleted orphan"));
+}
+
+#[test]
 fn external_store_rejects_foreign_graph_maintenance_authority() {
     let directory = tempdir().expect("external store directory");
     let first = StoreNodeId::new("campaign-first").expect("first graph node");

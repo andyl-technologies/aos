@@ -130,9 +130,9 @@ pub use campaign_attachment::{
 };
 pub use campaign_bootstrap::{
     CampaignLocalRepositoryStore, CampaignLocalService, CampaignLocalServiceConfig,
-    CampaignLocalServiceError, CampaignLocalServiceMode, CampaignRuntimeAttachmentHandle,
-    CampaignStoreMaintenanceConfig, CampaignStoreMaintenanceConfigError,
-    PreparedCampaignLocalService,
+    CampaignLocalServiceError, CampaignLocalServiceMode, CampaignLocalStoreGcAuthority,
+    CampaignRuntimeAttachmentHandle, CampaignStoreMaintenanceConfig,
+    CampaignStoreMaintenanceConfigError, PreparedCampaignLocalService,
 };
 pub use campaign_endpoint::{
     CampaignLoopbackEndpointConfig, CampaignLoopbackEndpointError, ExecutorLoopbackEndpointConfig,

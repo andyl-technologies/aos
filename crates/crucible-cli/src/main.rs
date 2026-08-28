@@ -286,6 +286,8 @@ enum Commands {
     Serve(ServeArgs),
     /// Inspect and control a lazy campaign through the local daemon.
     Campaign(CampaignArgs),
+    /// Perform stopped-owner maintenance on a configured content store.
+    Store(StoreArgs),
     /// Generate shell completions.
     Completions(CompletionsArgs),
 }
@@ -366,6 +368,44 @@ enum CampaignCommand {
     Pin(CampaignPinArgs),
     /// Remove one semantic configuration pin.
     Unpin(CampaignUnpinArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreArgs {
+    #[command(subcommand)]
+    command: StoreCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum StoreCommand {
+    /// Plan or apply stopped-owner campaign-store garbage collection.
+    Gc(CampaignStoreGcArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignStoreGcArgs {
+    /// Exact durable campaign state directory whose owner lock must be free.
+    #[arg(long, value_name = "path")]
+    state: PathBuf,
+    /// Strict owner-only campaign peer policy used by this deployment.
+    #[arg(long, value_name = "path")]
+    policy: PathBuf,
+    /// Strict composed repository-store deployment file.
+    #[arg(long, value_name = "path")]
+    store: PathBuf,
+    /// Durable external plan and recovery journal directory.
+    #[arg(long, value_name = "path")]
+    journal: PathBuf,
+    #[command(subcommand)]
+    operation: CampaignStoreGcCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignStoreGcCommand {
+    /// Inventory exact roots and persist a non-destructive deletion plan.
+    Plan,
+    /// Revalidate every generation and apply one persisted deletion plan.
+    Apply,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
@@ -1541,6 +1581,7 @@ enum CliSubcommand {
     Debug,
     Serve,
     Campaign,
+    Store,
     Completions,
 }
 
@@ -1560,6 +1601,7 @@ impl CliSubcommand {
             Commands::Debug(_) => Self::Debug,
             Commands::Serve(_) => Self::Serve,
             Commands::Campaign(_) => Self::Campaign,
+            Commands::Store(_) => Self::Store,
             Commands::Completions(_) => Self::Completions,
         }
     }
@@ -1579,6 +1621,7 @@ impl CliSubcommand {
             Self::Debug => "debug",
             Self::Serve => "serve",
             Self::Campaign => "campaign",
+            Self::Store => "store",
             Self::Completions => "completions",
         }
     }
@@ -1639,6 +1682,7 @@ enum CliDelegatedDriver {
     TimeTravelDebugger,
     DaemonHost,
     CampaignService,
+    StoreMaintenance,
     ShellCompletionGenerator,
 }
 
@@ -1712,7 +1756,10 @@ impl CliThinWrapperPlan {
             || !self.api_calls.is_empty()
             || matches!(
                 self.subcommand,
-                CliSubcommand::Triage | CliSubcommand::Campaign | CliSubcommand::Completions
+                CliSubcommand::Triage
+                    | CliSubcommand::Campaign
+                    | CliSubcommand::Store
+                    | CliSubcommand::Completions
             )
     }
 }
@@ -2000,6 +2047,19 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             implements_fork_logic: false,
             extra_control_capabilities: Vec::new(),
         },
+        Commands::Store(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: Vec::new(),
+            api_calls: Vec::new(),
+            delegated_drivers: vec![CliDelegatedDriver::StoreMaintenance],
+            state_references: vec![CliStateReferenceKind::ContentAddressedStore],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            implements_fork_logic: false,
+            extra_control_capabilities: Vec::new(),
+        },
         Commands::Completions(_) => CliThinWrapperPlan {
             subcommand,
             session_commands: Vec::new(),
@@ -2060,6 +2120,8 @@ mod cli_report;
 mod cli_resume_fork;
 #[path = "cli/run_save.rs"]
 mod cli_run_save;
+#[path = "cli/campaign/gc.rs"]
+mod cli_store;
 #[path = "cli/triage_debug.rs"]
 mod cli_triage_debug;
 #[path = "cli/verify_serve.rs"]
@@ -2076,6 +2138,7 @@ use cli_replay::*;
 use cli_report::*;
 use cli_resume_fork::*;
 use cli_run_save::*;
+use cli_store::*;
 use cli_triage_debug::*;
 use cli_verify_serve::*;
 

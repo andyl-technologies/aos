@@ -509,8 +509,8 @@ crucible store list
 crucible store status STORE
 crucible store verify STORE
 crucible store ensure CONTENT_ID --in STORE
-crucible store gc STORE --plan
-crucible store gc STORE --apply PLAN_ID
+crucible store gc --state STATE --policy POLICY --store STORE --journal JOURNAL plan
+crucible store gc --state STATE --policy POLICY --store STORE --journal JOURNAL apply
 ```
 
 Campaign commands name configured logical stores and durability policies, never
@@ -520,6 +520,13 @@ display logical and physical byte counts by metadata, reproduction artifact,
 exact RAM, disk, log, and trace classes. Sensitive closure warnings occur before
 transfer. Store GC is always plan then apply; the plan names its logical roots,
 physical inventory basis, and policy version and becomes stale if they move.
+The current single-host command is an offline deployment-owner operation:
+`STORE` is the strict composed-store file, it acquires the same state lock as
+`serve`, derives the only admissible ledger as `STATE/executor-ledger`, and
+persists the complete plan/manifests/phase in `JOURNAL`. It accepts no caller-
+selected ledger or exact-pin path. Until the packaged exact-pin materialization
+owner is wired, a live exact semantic pin makes planning fail closed before
+journal creation.
 
 ## 07.7 Existing commands as campaign sugar
 
@@ -704,8 +711,10 @@ automatic service discovery. The optional fixed-cadence maintenance flags lend
 only bounded write-back and unfinished-upload capabilities to one joined
 worker; exact bounds fail before deployment-file I/O, backend failures stop the
 service visibly, and committed-object/ref deletion authority remains withheld.
-Destructive GC porcelain, a hermetic live-service fixture, and the realistic
-operator flight remain open.
+The separate `crucible store gc ... plan|apply` owner takes the same state lock,
+uses the canonical packaged-executor ledger, and reports exact durable journal
+and generation-bound apply outcomes. A hermetic live-service fixture and the
+realistic operator flight remain open.
 
 The separately hosted or daemon-packaged executor endpoint has one coupled
 lifecycle owner: a shutdown closes assignment admission, signals active

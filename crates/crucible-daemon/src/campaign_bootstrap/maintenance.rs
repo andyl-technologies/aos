@@ -469,7 +469,7 @@ mod tests {
         let authority = CampaignLocalRepositoryMaintenance {
             store: Arc::clone(&graph),
             graph: admin,
-            _refs: refs,
+            refs,
         };
         let first_bytes = b"first pending maintenance object";
         let second_bytes = b"second pending maintenance object";

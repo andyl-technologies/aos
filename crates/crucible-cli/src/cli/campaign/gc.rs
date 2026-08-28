@@ -1,0 +1,475 @@
+//! Offline, generation-bound campaign-store garbage-collection porcelain.
+
+use super::*;
+
+use std::path::{Component, Path};
+
+use crucible_daemon::{
+    CampaignGcApplyStatus, CampaignGcJournalCreateDisposition, CampaignGcJournalPhase,
+    CampaignLocalServiceConfig, CampaignLocalServiceMode, CampaignLoopbackEndpointConfig,
+    CampaignLoopbackServerConfig, DirectoryAssignmentLedger, DirectoryCampaignGcJournal,
+};
+use serde::Serialize;
+
+use crate::cli_campaign_store::load_campaign_repository_store;
+
+const CAMPAIGN_GC_REPORT_SCHEMA: &str = "crucible.cli.campaign-store-gc.v1";
+const MAXIMUM_OWNER_PATH_BYTES: usize = 4_095;
+const UNUSED_GC_ENDPOINT: &str = "/tmp/crucible-campaign-gc-owner.sock";
+
+#[derive(Serialize)]
+pub(super) struct CampaignStoreGcReport {
+    schema: &'static str,
+    operation: &'static str,
+    plan: String,
+    journal: String,
+    journal_disposition: &'static str,
+    phase: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    apply_status: Option<&'static str>,
+    roots: usize,
+    reachable_objects: Option<u64>,
+    candidates: u64,
+    candidate_logical_bytes: u64,
+    physical: Vec<CampaignStoreGcPhysicalReport>,
+}
+
+pub(super) fn run_store_invocation(cli: &Cli, args: &StoreArgs) -> Result<(), CliError> {
+    let rendered = match &args.command {
+        StoreCommand::Gc(gc) => run_campaign_store_gc(gc, cli.output_format())?,
+    };
+    println!("{rendered}");
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct CampaignStoreGcPhysicalReport {
+    backend: String,
+    objects: u64,
+    logical_bytes: u64,
+}
+
+pub(super) fn run_campaign_store_gc(
+    args: &CampaignStoreGcArgs,
+    format: OutputFormat,
+) -> Result<String, CliError> {
+    validate_gc_paths(args)?;
+
+    let endpoint = CampaignLoopbackEndpointConfig::new(
+        UNUSED_GC_ENDPOINT,
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+        0o600,
+    )
+    .map_err(|error| maintenance_error(format!("invalid internal owner endpoint: {error}")))?;
+    let config = CampaignLocalServiceConfig::new(
+        endpoint,
+        &args.state,
+        &args.policy,
+        CampaignLocalServiceMode::ReadWrite,
+        CampaignLoopbackServerConfig::default(),
+    )
+    .map_err(|error| maintenance_error(format!("invalid campaign owner profile: {error}")))?;
+    let store = load_campaign_repository_store(&args.store)?;
+    let prepared = config.prepare_with_store(store).map_err(|error| {
+        maintenance_error(format!("campaign owner acquisition failed: {error}"))
+    })?;
+    let authority = prepared.store_gc_authority().map_err(|error| {
+        maintenance_error(format!("campaign GC authority unavailable: {error}"))
+    })?;
+    let ledger_path = args.state.join("executor-ledger");
+    let mut ledger = DirectoryAssignmentLedger::open(&ledger_path)
+        .map_err(|error| maintenance_error(format!("assignment ledger open failed: {error}")))?;
+
+    let report = match args.operation {
+        CampaignStoreGcCommand::Plan => {
+            let planned = authority.plan(&mut ledger, None).map_err(|error| {
+                maintenance_error(format!("campaign GC planning failed: {error}"))
+            })?;
+            let plan_id = planned.plan().id().map_err(|error| {
+                maintenance_error(format!("campaign GC plan identity failed: {error}"))
+            })?;
+            let (journal, disposition) =
+                DirectoryCampaignGcJournal::create(&args.journal, &planned).map_err(|error| {
+                    maintenance_error(format!("campaign GC journal creation failed: {error}"))
+                })?;
+            CampaignStoreGcReport {
+                schema: CAMPAIGN_GC_REPORT_SCHEMA,
+                operation: "plan",
+                plan: plan_id.to_hex(),
+                journal: journal.root().display().to_string(),
+                journal_disposition: match disposition {
+                    CampaignGcJournalCreateDisposition::Created => "created",
+                    CampaignGcJournalCreateDisposition::Existing => "existing",
+                },
+                phase: journal_phase(journal.phase()),
+                apply_status: None,
+                roots: planned.roots().len(),
+                reachable_objects: Some(planned.reachable_objects()),
+                candidates: planned.candidates().summary().candidates(),
+                candidate_logical_bytes: planned.candidates().logical_bytes(),
+                physical: physical_report(planned.plan()),
+            }
+        }
+        CampaignStoreGcCommand::Apply => {
+            let mut journal = DirectoryCampaignGcJournal::open(&args.journal).map_err(|error| {
+                maintenance_error(format!("campaign GC journal open failed: {error}"))
+            })?;
+            let plan_id = journal.plan().id().map_err(|error| {
+                maintenance_error(format!("campaign GC plan identity failed: {error}"))
+            })?;
+            let roots = journal.roots().len();
+            let physical = physical_report(journal.plan());
+            let result = authority
+                .apply(&mut journal, &mut ledger, None)
+                .map_err(|error| maintenance_error(format!("campaign GC apply failed: {error}")))?;
+            CampaignStoreGcReport {
+                schema: CAMPAIGN_GC_REPORT_SCHEMA,
+                operation: "apply",
+                plan: plan_id.to_hex(),
+                journal: journal.root().display().to_string(),
+                journal_disposition: "opened",
+                phase: journal_phase(journal.phase()),
+                apply_status: Some(match result.status() {
+                    CampaignGcApplyStatus::Applied => "applied",
+                    CampaignGcApplyStatus::AlreadyComplete => "already-complete",
+                }),
+                roots,
+                reachable_objects: None,
+                candidates: result.candidates(),
+                candidate_logical_bytes: result.logical_bytes(),
+                physical,
+            }
+        }
+    };
+
+    render_campaign_store_gc(&report, format)
+}
+
+fn physical_report(plan: &crucible_daemon::CampaignGcPlan) -> Vec<CampaignStoreGcPhysicalReport> {
+    plan.physical()
+        .iter()
+        .map(|physical| CampaignStoreGcPhysicalReport {
+            backend: physical.backend().to_owned(),
+            objects: physical.objects(),
+            logical_bytes: physical.logical_bytes(),
+        })
+        .collect()
+}
+
+const fn journal_phase(phase: CampaignGcJournalPhase) -> &'static str {
+    match phase {
+        CampaignGcJournalPhase::Planned => "planned",
+        CampaignGcJournalPhase::Applying => "applying",
+        CampaignGcJournalPhase::Complete => "complete",
+    }
+}
+
+fn render_campaign_store_gc(
+    report: &CampaignStoreGcReport,
+    format: OutputFormat,
+) -> Result<String, CliError> {
+    match format {
+        OutputFormat::Jsonl => serde_json::to_string(report).map_err(|error| {
+            maintenance_error(format!("campaign GC JSON encoding failed: {error}"))
+        }),
+        OutputFormat::Json => serde_json::to_string_pretty(report).map_err(|error| {
+            maintenance_error(format!("campaign GC JSON encoding failed: {error}"))
+        }),
+        OutputFormat::Table => {
+            let mut lines = vec![
+                format!("{:<24} {}", "operation", report.operation),
+                format!("{:<24} {}", "plan", report.plan),
+                format!("{:<24} {}", "journal", report.journal),
+                format!(
+                    "{:<24} {}",
+                    "journal-disposition", report.journal_disposition
+                ),
+                format!("{:<24} {}", "phase", report.phase),
+                format!("{:<24} {}", "roots", report.roots),
+                format!("{:<24} {}", "candidates", report.candidates),
+                format!(
+                    "{:<24} {}",
+                    "candidate-logical-bytes", report.candidate_logical_bytes
+                ),
+            ];
+            if let Some(status) = report.apply_status {
+                lines.push(format!("{:<24} {status}", "apply-status"));
+            }
+            if let Some(reachable) = report.reachable_objects {
+                lines.push(format!("{:<24} {reachable}", "reachable-objects"));
+            }
+            lines.extend(report.physical.iter().map(|physical| {
+                format!(
+                    "{:<24} {} objects={} logical-bytes={}",
+                    "physical", physical.backend, physical.objects, physical.logical_bytes
+                )
+            }));
+            Ok(lines.join("\n"))
+        }
+        OutputFormat::Markdown => {
+            let mut lines = vec![
+                String::from("| field | value |"),
+                String::from("|---|---|"),
+                format!("| operation | {} |", report.operation),
+                format!("| plan | `{}` |", report.plan),
+                format!("| journal | `{}` |", report.journal),
+                format!("| journal disposition | {} |", report.journal_disposition),
+                format!("| phase | {} |", report.phase),
+                format!("| roots | {} |", report.roots),
+                format!("| candidates | {} |", report.candidates),
+                format!(
+                    "| candidate logical bytes | {} |",
+                    report.candidate_logical_bytes
+                ),
+            ];
+            if let Some(status) = report.apply_status {
+                lines.push(format!("| apply status | {status} |"));
+            }
+            if let Some(reachable) = report.reachable_objects {
+                lines.push(format!("| reachable objects | {reachable} |"));
+            }
+            lines.extend(report.physical.iter().map(|physical| {
+                format!(
+                    "| physical `{}` | {} objects / {} logical bytes |",
+                    physical.backend, physical.objects, physical.logical_bytes
+                )
+            }));
+            Ok(lines.join("\n"))
+        }
+    }
+}
+
+fn validate_gc_paths(args: &CampaignStoreGcArgs) -> Result<(), CliError> {
+    let ledger = args.state.join("executor-ledger");
+    let paths = vec![
+        ("state", args.state.as_path()),
+        ("policy", args.policy.as_path()),
+        ("store", args.store.as_path()),
+        ("journal", args.journal.as_path()),
+        ("derived-ledger", ledger.as_path()),
+    ];
+    for (label, path) in &paths {
+        validate_owner_path(label, path)?;
+    }
+    for (index, (left_label, left)) in paths.iter().enumerate() {
+        for (right_label, right) in paths.iter().skip(index + 1) {
+            if left == right {
+                return Err(usage_error(format!(
+                    "campaign GC {left_label} and {right_label} paths must be distinct"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_owner_path(label: &str, path: &Path) -> Result<(), CliError> {
+    let canonical = path
+        .components()
+        .all(|component| matches!(component, Component::RootDir | Component::Normal(_)));
+    if !path.is_absolute()
+        || !canonical
+        || path.as_os_str().as_encoded_bytes().contains(&0)
+        || path.as_os_str().as_encoded_bytes().len() > MAXIMUM_OWNER_PATH_BYTES
+    {
+        return Err(usage_error(format!(
+            "campaign GC {label} path must be absolute, canonical, and at most 4095 bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn maintenance_error(message: impl Into<String>) -> CliError {
+    backend_error(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use std::collections::BTreeSet;
+    use std::fs::{self, Permissions};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn offline_gc_plans_reopens_and_applies_one_exact_empty_store() {
+        let fixture = GcFixture::new();
+        let mut args = fixture.args(CampaignStoreGcCommand::Plan);
+        let planned =
+            run_campaign_store_gc(&args, OutputFormat::Jsonl).expect("plan empty repository GC");
+        let planned: serde_json::Value =
+            serde_json::from_str(&planned).expect("decode planning report");
+        assert_eq!(planned["operation"], "plan");
+        assert_eq!(planned["journal_disposition"], "created");
+        assert_eq!(planned["phase"], "planned");
+        assert_eq!(planned["candidates"], 0);
+
+        let replay = run_campaign_store_gc(&args, OutputFormat::Jsonl)
+            .expect("reopen exact planning journal");
+        let replay: serde_json::Value =
+            serde_json::from_str(&replay).expect("decode replay report");
+        assert_eq!(replay["plan"], planned["plan"]);
+        assert_eq!(replay["journal_disposition"], "existing");
+
+        args.operation = CampaignStoreGcCommand::Apply;
+        let applied =
+            run_campaign_store_gc(&args, OutputFormat::Jsonl).expect("apply empty repository GC");
+        let applied: serde_json::Value =
+            serde_json::from_str(&applied).expect("decode apply report");
+        assert_eq!(applied["plan"], planned["plan"]);
+        assert_eq!(applied["phase"], "complete");
+        assert_eq!(applied["apply_status"], "applied");
+
+        let replayed =
+            run_campaign_store_gc(&args, OutputFormat::Jsonl).expect("replay completed GC apply");
+        let replayed: serde_json::Value =
+            serde_json::from_str(&replayed).expect("decode apply replay report");
+        assert_eq!(replayed["apply_status"], "already-complete");
+    }
+
+    #[test]
+    fn offline_gc_rejects_every_path_before_deployment_io() {
+        let fixture = GcFixture::new();
+        let mut args = fixture.args(CampaignStoreGcCommand::Plan);
+        args.state = PathBuf::from("relative-state");
+        args.store = fixture.root.join("missing-store.toml");
+        assert!(matches!(
+            run_campaign_store_gc(&args, OutputFormat::Jsonl),
+            Err(CliError::Usage(_))
+        ));
+
+        let mut args = fixture.args(CampaignStoreGcCommand::Plan);
+        args.journal = args.state.join("executor-ledger");
+        assert!(matches!(
+            run_campaign_store_gc(&args, OutputFormat::Jsonl),
+            Err(CliError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn offline_gc_rejects_a_live_packaged_executor_before_journaling() {
+        let fixture = GcFixture::new();
+        let ledger_path = fixture.state.join("executor-ledger");
+        let _live_ledger = DirectoryAssignmentLedger::open(&ledger_path)
+            .expect("retain live packaged-executor ledger");
+        let args = fixture.args(CampaignStoreGcCommand::Plan);
+
+        let error = run_campaign_store_gc(&args, OutputFormat::Jsonl)
+            .expect_err("live executor ledger must exclude GC");
+        assert!(error.to_string().contains("assignment ledger open failed"));
+        assert!(!fixture.journal.exists());
+    }
+
+    #[test]
+    fn offline_gc_surface_has_no_substitutable_ledger_or_pin_path() {
+        let mut command = Cli::command();
+        command.build();
+        let store = command.find_subcommand("store").expect("store command");
+        let gc = store.find_subcommand("gc").expect("store GC command");
+        let ids = gc
+            .get_arguments()
+            .filter(|argument| !argument.is_global_set())
+            .map(|argument| argument.get_id().as_str())
+            .filter(|id| *id != "help")
+            .collect::<BTreeSet<_>>();
+        assert_eq!(ids, BTreeSet::from(["state", "policy", "store", "journal"]));
+        assert!(gc.find_subcommand("plan").is_some());
+        assert!(gc.find_subcommand("apply").is_some());
+    }
+
+    struct GcFixture {
+        _directory: TempDir,
+        root: PathBuf,
+        state: PathBuf,
+        policy: PathBuf,
+        store: PathBuf,
+        journal: PathBuf,
+    }
+
+    impl GcFixture {
+        fn new() -> Self {
+            let directory = tempfile::tempdir().expect("GC fixture");
+            let root = directory.path().to_owned();
+            fs::set_permissions(&root, Permissions::from_mode(0o700)).expect("secure GC fixture");
+            let state = secure_directory(&root, "state");
+            let objects = secure_directory(&root, "objects");
+            let refs = secure_directory(&root, "refs");
+            let metadata = fs::metadata(&root).expect("GC fixture metadata");
+            let policy = root.join("policy.toml");
+            fs::write(
+                &policy,
+                format!(
+                    r#"schema = "crucible.campaign-local-policy"
+version = 1
+
+[[bindings]]
+user_id = {}
+group_id = {}
+principal = "operator"
+
+[[grants]]
+principal = "operator"
+operation = "get-campaign"
+campaign = "*"
+"#,
+                    metadata.uid(),
+                    metadata.gid()
+                ),
+            )
+            .expect("write GC policy");
+            fs::set_permissions(&policy, Permissions::from_mode(0o600)).expect("secure GC policy");
+            let store = root.join("store.toml");
+            fs::write(
+                &store,
+                format!(
+                    r#"schema = "crucible.campaign-repository-store"
+version = 1
+root = "primary"
+admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
+ref_directory = {refs:?}
+
+[[nodes]]
+id = "primary"
+[nodes.spec]
+kind = "directory"
+root = {objects:?}
+"#
+                ),
+            )
+            .expect("write GC store deployment");
+            fs::set_permissions(&store, Permissions::from_mode(0o600))
+                .expect("secure GC store deployment");
+            Self {
+                journal: root.join("journal"),
+                _directory: directory,
+                root,
+                state,
+                policy,
+                store,
+            }
+        }
+
+        fn args(&self, operation: CampaignStoreGcCommand) -> CampaignStoreGcArgs {
+            CampaignStoreGcArgs {
+                state: self.state.clone(),
+                policy: self.policy.clone(),
+                store: self.store.clone(),
+                journal: self.journal.clone(),
+                operation,
+            }
+        }
+    }
+
+    fn secure_directory(root: &Path, name: &str) -> PathBuf {
+        let path = root.join(name);
+        fs::create_dir(&path).expect("create secure GC directory");
+        fs::set_permissions(&path, Permissions::from_mode(0o700))
+            .expect("set secure GC directory mode");
+        path
+    }
+}
