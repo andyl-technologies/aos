@@ -1551,9 +1551,15 @@ fails GC closed. Adjacent read-only porcelain
 reports the exact admitted graph and streams one requested content ID through
 deferred EOF authentication without borrowing ref or delete authority. It also
 authenticates a fixed-bound physical inventory under an opening/closing
-generation sandwich and reports only aggregate placement evidence. Store
-discovery, a hermetic live-service fixture, and the realistic operator flight
-remain open under Phase 5 and T-CAM-5.8.
+generation sandwich and reports only aggregate placement evidence. A hermetic
+public-process flight now generates and validates the worked-network fixture,
+imports it before endpoint bind, creates and starts the campaign through the
+checked Unix service, authenticates live logical and physical store views,
+stops the owner, plans and applies deletion of authenticated orphan/import
+debris, and proves the retained scenario and exact running head survive service
+restart. Automatic deployment discovery and the representative-product outage,
+credential, transfer, repack, and operator flights remain open under Phase 5
+and T-CAM-5.8.
 Broader layered transforms remain open;
 therefore T-CAM-5.5 is not checked by this checkpoint.
 

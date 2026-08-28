@@ -400,6 +400,16 @@ Starting from the completed dogfood campaign, the operator:
 10. replays every retained finding and inspects both derived campaigns and
     metadata-only history afterward.
 
+The hermetic public-process regression is the automated precursor to this
+flight. It generates and validates the worked-network fixture, imports it before
+endpoint bind, creates and starts the campaign, authenticates live store status,
+one retained object, and the complete physical inventory, then stops the owner
+and runs public GC plan/apply over an authenticated orphan. It finally
+reauthenticates the retained scenario and exact running head after restart. This
+proves the porcelain and ownership sequence, but it does not substitute for the
+multi-ref, active-transfer, stale-plan, repack, finding-replay, or independent-
+operator evidence required below.
+
 - **[CMAN-19]** Manual GC acceptance MUST prove plan/apply separation, stale-plan
   rejection, protection of in-flight roots, explicit loss-of-acceleration
   warnings, and successful replay of all retained findings after collection.
