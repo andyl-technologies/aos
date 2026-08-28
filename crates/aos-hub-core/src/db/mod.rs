@@ -3286,46 +3286,6 @@ impl Database {
             .context("surface has no reconciled read placement")
     }
 
-    /// Returns the object path of the canonical-slug placement on the
-    /// instance-default binding that may use derived public delivery.
-    ///
-    /// Derived delivery never exposes an arbitrary physical placement prefix.
-    /// The placement itself must use the registry's globally unique canonical
-    /// slug; other complete placements remain available through explicit
-    /// delivery topology.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure or malformed persisted data.
-    pub async fn default_public_slug_delivery_path(
-        &self,
-        surface: SurfaceTarget,
-        canonical_slug: &str,
-    ) -> Result<Option<String>> {
-        let (registry_id, cache_id) = surface.ids();
-        self.backend
-            .query_opt(
-                "SELECT placement.prefix
-                 FROM surface_placement_effective placement
-                 JOIN bindings binding ON binding.id = placement.binding_id
-                 WHERE (placement.registry_id = ?1 OR placement.cache_id = ?2)
-                   AND placement.kind = 'complete'
-                   AND placement.effective_read_enabled = 1
-                   AND binding.is_instance_default = 1
-                   AND (binding.object_prefix IS NULL OR binding.object_prefix = '')
-                   AND placement.prefix = ?3
-                 ORDER BY placement.read_order, placement.name, placement.id
-                 LIMIT 1",
-                &vals![registry_id, cache_id, canonical_slug.trim_matches('/')],
-            )
-            .await?
-            .map(|row| {
-                let placement_prefix: String = row.get(0)?;
-                Ok(placement_prefix.trim_matches('/').to_string())
-            })
-            .transpose()
-    }
-
     /// Resolves the sole fully reconciled write-authority placement.
     ///
     /// # Errors
@@ -17963,7 +17923,10 @@ impl Database {
     /// object-store credentials. Their deployment attachment is nevertheless
     /// an immutable authorization input, so it receives the same validated
     /// credential and write-revision history used by external providers.
-    async fn ensure_deployment_owned_write_revision(&self, binding: &BindingRecord) -> Result<()> {
+    pub async fn ensure_deployment_owned_write_revision(
+        &self,
+        binding: &BindingRecord,
+    ) -> Result<()> {
         let version_ref = match binding.kind.as_str() {
             "local_fs" => "native://aos-hub/default-storage/v1",
             "deployment_r2" => "worker://aos-hub/default-storage/v1",
