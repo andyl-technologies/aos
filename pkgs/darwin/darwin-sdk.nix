@@ -1368,10 +1368,62 @@ in
           CFStringRef SecCopyErrorMessageString(OSStatus status, void *reserved);
           enum {
             errSecSuccess = 0,
+            errSecAllocate = -108,
+            errSecAuthFailed = -25293,
             errSecItemNotFound = -25300,
+            errSSLProtocol = -9800,
+            errSSLNegotiation = -9801,
+            errSSLFatalAlert = -9802,
+            errSSLWouldBlock = -9803,
+            errSSLSessionNotFound = -9804,
             errSSLClosedGraceful = -9805,
+            errSSLClosedAbort = -9806,
+            errSSLXCertChainInvalid = -9807,
+            errSSLBadCert = -9808,
+            errSSLCrypto = -9809,
+            errSSLInternal = -9810,
+            errSSLModuleAttach = -9811,
+            errSSLUnknownRootCert = -9812,
+            errSSLNoRootCert = -9813,
+            errSSLCertExpired = -9814,
+            errSSLCertNotYetValid = -9815,
+            errSSLClosedNoNotify = -9816,
+            errSSLBufferOverflow = -9817,
+            errSSLBadCipherSuite = -9818,
+            errSSLPeerUnexpectedMsg = -9819,
+            errSSLPeerBadRecordMac = -9820,
+            errSSLPeerDecryptionFail = -9821,
+            errSSLPeerRecordOverflow = -9822,
+            errSSLPeerDecompressFail = -9823,
+            errSSLPeerHandshakeFail = -9824,
+            errSSLPeerBadCert = -9825,
+            errSSLPeerUnsupportedCert = -9826,
+            errSSLPeerCertRevoked = -9827,
+            errSSLPeerCertExpired = -9828,
+            errSSLPeerCertUnknown = -9829,
+            errSSLIllegalParam = -9830,
+            errSSLPeerUnknownCA = -9831,
+            errSSLPeerAccessDenied = -9832,
+            errSSLPeerDecodeError = -9833,
+            errSSLPeerDecryptError = -9834,
+            errSSLPeerExportRestriction = -9835,
+            errSSLPeerProtocolVersion = -9836,
+            errSSLPeerInsufficientSecurity = -9837,
+            errSSLPeerInternalError = -9838,
+            errSSLPeerUserCancelled = -9839,
+            errSSLPeerNoRenegotiation = -9840,
             errSSLPeerAuthCompleted = -9841,
-            errSSLServerAuthCompleted = errSSLPeerAuthCompleted
+            errSSLServerAuthCompleted = errSSLPeerAuthCompleted,
+            errSSLClientCertRequested = -9842,
+            errSSLHostNameMismatch = -9843,
+            errSSLConnectionRefused = -9844,
+            errSSLDecryptionFail = -9845,
+            errSSLBadRecordMac = -9846,
+            errSSLRecordOverflow = -9847,
+            errSSLBadConfiguration = -9848,
+            errSSLUnexpectedRecord = -9849,
+            errSSLWeakPeerEphemeralDHKey = -9850,
+            errSSLClientHelloReceived = -9851
           };
           __END_DECLS
           #endif
@@ -1388,7 +1440,15 @@ in
           #include <Security/SecBase.h>
           #include <Security/cssmtype.h>
           __BEGIN_DECLS
+          SecCertificateRef SecCertificateCreateWithData(CFAllocatorRef allocator, CFDataRef data);
           CFDataRef SecCertificateCopyData(SecCertificateRef certificate);
+          CFStringRef SecCertificateCopySubjectSummary(SecCertificateRef certificate);
+          OSStatus SecCertificateCopyCommonName(SecCertificateRef certificate, CFStringRef *commonName);
+          CFStringRef SecCertificateCopyLongDescription(
+            CFAllocatorRef allocator,
+            SecCertificateRef certificate,
+            CFErrorRef *error
+          );
           OSStatus SecCertificateGetData(SecCertificateRef certificate, CSSM_DATA *data);
           CFTypeID SecCertificateGetTypeID(void);
           __END_DECLS
@@ -1402,9 +1462,12 @@ in
           __BEGIN_DECLS
           extern const CFStringRef kSecClass;
           extern const CFStringRef kSecClassCertificate;
+          extern const CFStringRef kSecClassIdentity;
+          extern const CFStringRef kSecAttrLabel;
           extern const CFStringRef kSecMatchLimit;
           extern const CFStringRef kSecMatchLimitAll;
           extern const CFStringRef kSecMatchSearchList;
+          extern const CFStringRef kSecMatchPolicy;
           extern const CFStringRef kSecReturnRef;
           OSStatus SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result);
           __END_DECLS
@@ -1448,6 +1511,9 @@ in
           OSStatus SecTrustEvaluate(SecTrustRef trust, SecTrustResultType *result);
           OSStatus SecTrustCopyAnchorCertificates(CFArrayRef *anchors);
           OSStatus SecTrustSetAnchorCertificates(SecTrustRef trust, CFArrayRef anchors);
+          OSStatus SecTrustSetAnchorCertificatesOnly(SecTrustRef trust, Boolean anchorCertificatesOnly);
+          SecKeyRef SecTrustCopyPublicKey(SecTrustRef trust);
+          CFIndex SecTrustGetCertificateCount(SecTrustRef trust);
           OSStatus SecTrustGetResult(
             SecTrustRef trust,
             SecTrustResultType *result,
@@ -1502,11 +1568,15 @@ in
 
           cp ${./darwin-sdk-secure-transport.h} \
             "$out/System/Library/Frameworks/Security.framework/Headers/SecureTransport.h"
+          cp "$securityRoot/header_symlinks/Security/CipherSuite.h" \
+            "$out/System/Library/Frameworks/Security.framework/Headers/CipherSuite.h"
 
           cp ${./darwin-sdk-sec-keychain.h} \
             "$out/System/Library/Frameworks/Security.framework/Headers/SecKeychain.h"
           cp ${./darwin-sdk-sec-identity.h} \
             "$out/System/Library/Frameworks/Security.framework/Headers/SecIdentity.h"
+          cp ${./darwin-sdk-sec-key.h} \
+            "$out/System/Library/Frameworks/Security.framework/Headers/SecKey.h"
           cp ${./darwin-sdk-sec-identity-search.h} \
             "$out/System/Library/Frameworks/Security.framework/Headers/SecIdentitySearch.h"
           cp ${./darwin-sdk-sec-policy-search.h} \
@@ -1535,6 +1605,7 @@ in
           #include <Security/SecIdentity.h>
           #include <Security/SecIdentitySearch.h>
           #include <Security/SecItem.h>
+          #include <Security/SecKey.h>
           #include <Security/SecKeychain.h>
           #include <Security/SecPolicy.h>
           #include <Security/SecPolicySearch.h>

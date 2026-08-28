@@ -57,6 +57,19 @@ typedef struct {
   CSSM_KEYATTR_FLAGS keyAttributes;
 } SecKeyImportExportParameters;
 
+typedef struct {
+  uint32_t version;
+  SecKeyImportExportFlags flags;
+  CFTypeRef __nullable passphrase;
+  CFStringRef __nullable alertTitle;
+  CFStringRef __nullable alertPrompt;
+  SecAccessRef __nullable accessRef;
+  CFArrayRef __nullable keyUsage;
+  CFArrayRef __nullable keyAttributes;
+} SecItemImportExportKeyParameters;
+
+extern const CFStringRef kSecImportItemIdentity;
+
 OSStatus SecKeychainItemExport(
   CFTypeRef keychainItemOrArray,
   SecExternalFormat outputFormat,
@@ -72,6 +85,17 @@ OSStatus SecKeychainItemImport(
   SecExternalItemType * __nullable itemType,
   SecItemImportExportFlags flags,
   const SecKeyImportExportParameters * __nullable keyParams,
+  SecKeychainRef __nullable importKeychain,
+  CFArrayRef * __nullable outItems
+);
+
+OSStatus SecItemImport(
+  CFDataRef importedData,
+  CFStringRef __nullable fileNameOrExtension,
+  SecExternalFormat * __nullable inputFormat,
+  SecExternalItemType * __nullable itemType,
+  SecItemImportExportFlags flags,
+  const SecItemImportExportKeyParameters * __nullable keyParams,
   SecKeychainRef __nullable importKeychain,
   CFArrayRef * __nullable outItems
 );
