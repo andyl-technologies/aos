@@ -41,7 +41,7 @@ use crate::web::console_render::{
     SessionIndicator, StateLine,
 };
 use crate::web::render::{escape, hash_value, hash_value_link, human_size, key_fingerprint, table};
-use aos_registry_surface::manifest::{ImageTarget, ImageVerificationState};
+use aos_registry_surface::manifest::{ImageCompression, ImageTarget, ImageVerificationState};
 
 /// Glyph palette for the partition grid: one glyph per release, assigned
 /// in frontier-first order, so the encoding survives without color.
@@ -49,6 +49,9 @@ const GRID_GLYPHS: [char; 6] = ['■', '▣', '▥', '▤', '▧', '▢'];
 
 /// Rows per page on the HTML package index.
 pub const PACKAGES_PER_PAGE: usize = 100;
+
+/// Rows per page in the richer system-image catalog.
+pub const IMAGES_PER_PAGE: usize = 25;
 
 /// Rows per page on the general management lists (registries, organizations,
 /// members, audit) — smaller than the package index, since these are scanned
@@ -196,6 +199,14 @@ impl RegistrySetup {
         }
         plain
     }
+
+    /// Resolves one binary-cache object against the highest-priority
+    /// configured substituter.
+    fn cache_object_url(&self, object: &str) -> Option<String> {
+        self.substituters
+            .first()
+            .map(|base| format!("{}/{}", base.trim_end_matches('/'), object))
+    }
 }
 
 /// The store hash of a store path: the basename text before the first `-`.
@@ -216,17 +227,20 @@ fn parse_bucket(text: &str) -> Option<u8> {
         .or_else(|| u8::from_str_radix(text, 16).ok())
 }
 
-/// A narinfo permalink for one store hash on this registry's facade.
-fn narinfo_link(slug: &str, hash: &str) -> String {
-    hash_value_link(hash, &format!("/{slug}/{hash}.narinfo"))
+/// A narinfo permalink for one store hash on the configured cache delivery
+/// endpoint.
+fn narinfo_link(setup: &RegistrySetup, hash: &str) -> String {
+    match setup.cache_object_url(&format!("{hash}.narinfo")) {
+        Some(href) => hash_value_link(hash, &href),
+        None => hash_value(hash),
+    }
 }
 
-fn store_path_link(slug: &str, path: &str) -> String {
-    match store_hash(path) {
-        Some(hash) => format!(
-            "<a href=\"/{}/{}.narinfo\"><code>{}</code></a>",
-            escape(slug),
-            escape(hash),
+fn store_path_link(setup: &RegistrySetup, path: &str) -> String {
+    match store_hash(path).and_then(|hash| setup.cache_object_url(&format!("{hash}.narinfo"))) {
+        Some(href) => format!(
+            "<a href=\"{}\"><code>{}</code></a>",
+            escape(&href),
             escape(path),
         ),
         None => format!("<code>{}</code>", escape(path)),
@@ -473,7 +487,7 @@ pub fn registry_home(
                 vec![
                     format!("pinned {}", escape(name)),
                     hash_value(&key_fingerprint(blob)),
-                    format!("<code>{}</code>", escape(key)),
+                    format!("<code class=\"trust-key\">{}</code>", escape(key)),
                 ]
             })
             .chain(roster.iter().map(|(id, key, status)| {
@@ -483,7 +497,7 @@ pub fn registry_home(
                     let (_, blob) = key_name_and_blob(key);
                     (
                         hash_value(&key_fingerprint(blob)),
-                        format!("<code>{}</code>", escape(key)),
+                        format!("<code class=\"trust-key\">{}</code>", escape(key)),
                     )
                 };
                 vec![
@@ -557,7 +571,7 @@ pub fn registry_home(
                 let [status, coverage, checked, probed] =
                     validation_cells(runs_by_url.get(url.as_str()).copied());
                 vec![
-                    format!("<code>{}</code>", escape(url)),
+                    format!("<code class=\"cache-url\">{}</code>", escape(url)),
                     priority.to_string(),
                     status,
                     coverage,
@@ -902,7 +916,19 @@ pub fn package_index(
             let platforms = if p.platforms.is_empty() {
                 "—".to_string()
             } else {
-                escape(&p.platforms.join(", "))
+                p.platforms
+                    .iter()
+                    .map(|platform| {
+                        format!(
+                            "<a class=\"platform-pill\" title=\"Filter by platform: {}\" href=\"/{}/-/packages?filter={}\">{}</a>",
+                            escape(platform),
+                            escape(slug),
+                            urlencode(&format!("platform == \"{platform}\"")),
+                            escape(platform),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
             };
             // The license cell links to a `license == "…"` filter, so a click
             // narrows the index to that license — a no-JS facet.
@@ -1229,7 +1255,7 @@ pub fn package_page(
                     body.push_str("</li>\n");
                 }
                 (None, _) => {
-                    let _ = writeln!(body, "<li>{}</li>", narinfo_link(slug, &dep.hash));
+                    let _ = writeln!(body, "<li>{}</li>", narinfo_link(setup, &dep.hash));
                 }
             }
         }
@@ -1288,12 +1314,12 @@ pub fn package_page(
             let _ = writeln!(
                 body,
                 "<tr class=\"artifact-detail\"><th scope=\"row\">store path</th><td colspan=\"3\">{}</td></tr>",
-                store_path_link(slug, &platform.store_path),
+                store_path_link(setup, &platform.store_path),
             );
             let source = if platform.source_drv.is_empty() {
                 "—".to_string()
             } else {
-                store_path_link(slug, &platform.source_drv)
+                store_path_link(setup, &platform.source_drv)
             };
             let _ = writeln!(
                 body,
@@ -1312,7 +1338,7 @@ pub fn package_page(
                     if index > 0 {
                         body.push(' ');
                     }
-                    body.push_str(&narinfo_link(slug, reference));
+                    body.push_str(&narinfo_link(setup, reference));
                 }
                 body.push_str("</td></tr>\n");
             }
@@ -1954,9 +1980,18 @@ fn image_verification_label(state: ImageVerificationState) -> (&'static str, &'s
     }
 }
 
+fn image_compression_label(compression: ImageCompression) -> &'static str {
+    match compression {
+        ImageCompression::None => "none",
+        ImageCompression::Zstd => "zstd",
+    }
+}
+
 /// Simultaneous structured and free-text image-catalog filters.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ImageBrowse<'a> {
+    /// Requested 1-based result page.
+    pub page_number: usize,
     /// Search fallback across package, release, channel, architecture, format, and target.
     pub query: Option<&'a str>,
     /// Exact release identity.
@@ -2019,7 +2054,8 @@ pub fn images_page(
     fn normalize(value: Option<&str>) -> Option<&str> {
         value.map(str::trim).filter(|value| !value.is_empty())
     }
-    let needle = normalize(browse.query).map(str::to_lowercase);
+    let query = normalize(browse.query);
+    let needle = query.map(str::to_lowercase);
     let release = normalize(browse.release);
     let channel = normalize(browse.channel);
     let architecture = normalize(browse.architecture);
@@ -2130,30 +2166,57 @@ pub fn images_page(
         } else {
             "<span class=\"ok\" title=\"Delivered from the registry cache with aos image download\">CDN / CLI</span>".to_string()
         };
-        let store_identity = if image.store_path.is_empty() {
-            String::new()
+        let (store_path, nar_identity) = if image.store_path.is_empty() {
+            (
+                "<span class=\"dim\">not store-backed</span>".to_string(),
+                "—".to_string(),
+            )
         } else {
-            format!(
-                "<span class=\"image-detail-item\"><span class=\"dim\">store</span> <code title=\"{}\">{}</code></span>\
-                 <span class=\"image-detail-item\"><span class=\"dim\">NAR</span> {} ({})</span>",
-                escape(&image.store_path),
-                escape(image.store_path.rsplit('/').next().unwrap_or(&image.store_path)),
-                hash_value(&image.nar_hash),
-                human_size(image.nar_size),
+            (
+                format!(
+                    "<code class=\"image-store-path\">{}</code>",
+                    escape(&image.store_path),
+                ),
+                format!(
+                    "{} <span class=\"dim\">{}</span>",
+                    hash_value(&image.nar_hash),
+                    human_size(image.nar_size),
+                ),
             )
         };
+        let verification = format!(
+            "<span class=\"ok\">release verified</span> · \
+             <span class=\"{boot_class}\">boot {boot_verification}</span>"
+        );
+        let encoding = format!(
+            "{} · {}",
+            escape(&image.delivery.media_type),
+            image_compression_label(image.delivery.compression),
+        );
+        let uki = format!(
+            "{} · <code>{}</code> · {}",
+            escape(&image.delivery.uki.filename),
+            escape(&image.delivery.uki.esp_path),
+            human_size(image.delivery.uki.byte_size),
+        );
+        let image_info = format!(
+            "{} · {}",
+            escape(&image.delivery.image_info.filename),
+            hash_value(&image.delivery.image_info.sha256),
+        );
         rows.push(format!(
             "<tbody class=\"image-artifact\">\
              <tr class=\"image-summary\"><td>{release}<div class=\"subline\">{package}</div></td>\
              <td>{channel}</td><td>{architecture}</td><td>{format}</td><td>{size}</td><td>{download}</td></tr>\
              <tr class=\"image-detail\"><th scope=\"row\">details</th><td colspan=\"5\">\
-             <span class=\"image-detail-item\"><span class=\"dim\">targets</span> {targets}</span>\
-             <span class=\"image-detail-item\"><span class=\"dim\">release</span> <span class=\"ok\">verified</span></span>\
-             <span class=\"image-detail-item\"><span class=\"dim\">boot</span> <span class=\"{boot_class}\">{boot_verification}</span></span>\
-             <span class=\"image-detail-item\"><span class=\"dim\">file</span> {filename}</span>\
-             {store_identity}\
-             <span class=\"image-detail-item checksum-item\"><span class=\"dim\">SHA-256</span> \
-             {checksum}</span></td></tr></tbody>\n",
+             <table class=\"image-facts\" aria-label=\"Details for {filename}\"><tbody>\
+             <tr><th scope=\"row\">targets</th><td>{targets}</td><th scope=\"row\">verification</th><td>{verification}</td></tr>\
+             <tr><th scope=\"row\">file</th><td>{filename}</td><th scope=\"row\">encoding</th><td>{encoding}</td></tr>\
+             <tr><th scope=\"row\">file SHA-256</th><td>{checksum}</td><th scope=\"row\">logical disk</th><td>{logical_checksum}</td></tr>\
+             <tr><th scope=\"row\">rootfs SHA-256</th><td>{rootfs_checksum}</td><th scope=\"row\">UKI SHA-256</th><td>{uki_checksum}</td></tr>\
+             <tr><th scope=\"row\">store path</th><td>{store_path}</td><th scope=\"row\">NAR</th><td>{nar_identity}</td></tr>\
+             <tr><th scope=\"row\">UKI</th><td>{uki}</td><th scope=\"row\">image info</th><td>{image_info}</td></tr>\
+             </tbody></table></td></tr></tbody>\n",
             release = escape(&image.release),
             package = escape(&image.package),
             channel = channel_cell,
@@ -2162,9 +2225,27 @@ pub fn images_page(
             size = human_size(image.delivery.byte_size),
             targets = escape(&targets),
             checksum = hash_value(&image.delivery.sha256),
+            logical_checksum = hash_value(&image.delivery.logical_disk_sha256),
+            rootfs_checksum = hash_value(&image.delivery.rootfs_sha256),
+            uki_checksum = hash_value(&image.delivery.uki.sha256),
             filename = escape(&image.delivery.filename),
         ));
     }
+
+    let total_matches = rows.len();
+    let pager = Pager::new(browse.page_number, IMAGES_PER_PAGE, total_matches);
+    let pager_query = [
+        ("q", query),
+        ("release", release),
+        ("channel", channel),
+        ("architecture", architecture),
+        ("format", format),
+        ("target", target),
+    ]
+    .into_iter()
+    .filter_map(|(name, value)| value.map(|value| format!("{name}={}", urlencode(value))))
+    .collect::<Vec<_>>()
+    .join("&");
 
     let mut body = registry_nav(slug, "images");
     body.push_str("<h1>Images</h1>\n");
@@ -2211,18 +2292,20 @@ pub fn images_page(
         escape(browse.query.unwrap_or("")),
         escape(slug),
     );
-    if rows.is_empty() {
+    if total_matches == 0 {
         body.push_str("<p class=\"dim\">No matching signed disk images are published.</p>\n");
     } else {
+        let _ = writeln!(body, "<p class=\"dim\">{total_matches} images</p>");
         body.push_str(
             "<div class=\"table-scroll\" role=\"region\" aria-label=\"System images\" tabindex=\"0\">\n\
              <table class=\"images-table\"><thead><tr><th>release</th><th>channel</th>\
              <th>architecture</th><th>format</th><th>size</th><th>download</th></tr></thead>\n",
         );
-        for row in rows {
-            body.push_str(&row);
+        for row in pager.slice(&rows) {
+            body.push_str(row);
         }
         body.push_str("</table></div>\n");
+        body.push_str(&pager.nav(&format!("/{slug}/-/images"), &pager_query));
     }
     page_with_session(
         &format!("{slug} images"),
@@ -2738,6 +2821,9 @@ mod tests {
         assert!(default.contains("class=\"image-filter-fields\""));
         assert!(default.contains("class=\"image-filter-actions\""));
         assert!(default.contains("class=\"image-summary\""));
+        assert!(default.contains("class=\"image-facts\""));
+        assert!(default.contains("<th scope=\"row\">file SHA-256</th>"));
+        assert!(default.contains("<th scope=\"row\">UKI SHA-256</th>"));
         assert!(default.contains("class=\"hash-control\""));
         assert!(default.contains(&format!("data-copy-value=\"{}\"", "a".repeat(64))));
         assert!(default.contains("aos-2026.08.img.zst"));
@@ -2750,6 +2836,7 @@ mod tests {
             &channels,
             Some("https://download.example/demo"),
             &ImageBrowse {
+                page_number: 1,
                 release: Some("2026.08"),
                 channel: Some("stable"),
                 architecture: Some("x86_64"),
@@ -2763,6 +2850,33 @@ mod tests {
         assert!(filtered.contains("aos-2026.08.img.zst"));
         assert!(!filtered.contains("aos-2026.09.qcow2"));
         assert!(filtered.contains("value=\"bare-metal\" selected"));
+    }
+
+    #[test]
+    fn images_page_paginates_and_preserves_filters() {
+        let images = (0..26)
+            .map(|index| indexed_image("raw", &format!("release-{index:02}")))
+            .collect::<Vec<_>>();
+        let html = images_page(
+            &registry(),
+            None,
+            &images,
+            &image_channels(),
+            Some("https://download.example/demo"),
+            &ImageBrowse {
+                page_number: 2,
+                query: Some("aos-system"),
+                ..ImageBrowse::default()
+            },
+            Instant::now(),
+            &anon(),
+        );
+
+        assert!(html.contains("26 images"));
+        assert!(html.contains("page 2 of 2"));
+        assert!(html.contains("q=aos-system&amp;page=1"));
+        assert!(html.contains("aos-release-00.img.zst"));
+        assert!(!html.contains("aos-release-25.img.zst"));
     }
 
     #[test]
@@ -2913,6 +3027,8 @@ mod tests {
         // Unvalidated caches say so; the health page is linked.
         assert!(html.contains("not yet validated"));
         assert!(html.contains("/demo/-/health"));
+        assert!(html.contains("class=\"trust-key\""));
+        assert!(html.contains("class=\"cache-url\""));
     }
 
     #[tokio::test]
@@ -3066,7 +3182,7 @@ mod tests {
         // falls back to its narinfo permalink.
         assert!(html.contains("Dependencies (2)"));
         assert!(html.contains("<a href=\"/demo/-/packages/zlib\">zlib</a>"));
-        assert!(html.contains("href=\"/demo/cccc.narinfo\""));
+        assert!(html.contains("href=\"https://cache.example/demo/cccc.narinfo\""));
         // Reverse dependency.
         assert!(html.contains("Required by (1)"));
         assert!(html.contains("<a href=\"/demo/-/packages/git\">git</a>"));
@@ -3076,7 +3192,7 @@ mod tests {
         assert!(html.contains("<th scope=\"row\">store path</th>"));
         assert!(html.contains("<th scope=\"row\">source drv</th>"));
         assert!(html.contains("<th scope=\"row\">NAR hash</th>"));
-        assert!(html.contains("href=\"/demo/aaaa.narinfo\""));
+        assert!(html.contains("href=\"https://cache.example/demo/aaaa.narinfo\""));
         assert!(html.contains("colspan=\"3\""));
         // Raw-metadata disclosure block.
         assert!(html.contains("<details class=\"raw-metadata\">"));
@@ -3309,6 +3425,8 @@ mod tests {
         assert!(html.contains("filter=license+%3D%3D+%22MIT%22"));
         assert!(html.contains("class=\"license-pill\""));
         assert!(html.contains("title=\"Filter by license: MIT\""));
+        assert!(html.contains("class=\"platform-pill\""));
+        assert!(html.contains("filter=platform+%3D%3D+%22x86_64-linux%22"));
 
         // An active filter is named in the result line and is clearable; a
         // parse error is surfaced and does not name a count.
