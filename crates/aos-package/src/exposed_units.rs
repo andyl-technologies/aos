@@ -3812,6 +3812,7 @@ mod tests {
                     nar_size: 1,
                 }),
                 config_module: None,
+                documentation: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),

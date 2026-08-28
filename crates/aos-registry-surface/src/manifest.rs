@@ -174,6 +174,9 @@ pub struct PlatformEntry {
     /// Configuration-only module output and its declared interface.
     #[serde(default)]
     pub config_module: Option<ConfigModuleMeta>,
+    /// Canonical RFC-0015 package documentation store object.
+    #[serde(default)]
+    pub documentation: Option<DocumentationArtifactMeta>,
 }
 
 impl PlatformEntry {
@@ -2343,6 +2346,33 @@ mod root_config_tests {
 // ---------------------------------------------------------------------------
 // Configuration-module schema represented as pure manifest data.
 // ---------------------------------------------------------------------------
+
+/// Signed identity of a canonical package-documentation Nix store object.
+///
+/// The object is one non-executable regular-file NAR with no references. Its
+/// JSON bytes describe this exact package version/platform, but deliberately do
+/// not repeat the store path so prose never creates a retention edge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentationArtifactMeta {
+    /// Closed canonical document format identifier.
+    pub format: String,
+    /// Store path of the single-file documentation object.
+    pub store_path: String,
+    /// Hash of the uncompressed NAR.
+    pub nar_hash: String,
+    /// Uncompressed NAR size in bytes.
+    pub nar_size: u64,
+    /// SHA-256 digest of the exact canonical JSON file bytes.
+    pub document_sha256: String,
+    /// Exact canonical JSON file size in bytes.
+    pub document_size: u64,
+    /// Digest over configuration semantics, excluding explanatory prose.
+    pub semantic_schema_sha256: String,
+    /// Direct references. Version 1 requires this to be empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
+}
 
 /// Stores metadata for a package's second `config` output.
 ///
