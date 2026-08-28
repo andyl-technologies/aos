@@ -58,6 +58,13 @@
     if isDarwinCross
     then builtins.getAttr "openjdk-${toString (major - 1)}" buildPackages
     else prevJdk;
+  nativeMig =
+    if isDarwinCross
+    then
+      import ./_darwin-mig.nix {
+        inherit fetchurl buildPackages;
+      }
+    else null;
   tag = "jdk-${version}+${build}";
   repo = "jdk${toString major}${repoSuffix}";
   extraCfgStr = builtins.concatStringsSep " " extraConfigureFlags;
@@ -91,6 +98,11 @@ in
         buildTools.file
         xorg-stubs
       ]
+      ++ (
+        if isDarwinCross
+        then [nativeMig buildTools.python3]
+        else []
+      )
       ++ extraBuildDeps;
     runtimeDeps = [
       zlib
@@ -149,33 +161,216 @@ in
         script =
           if isDarwinCross
           then ''
-            # Configure the emitted JDK for Darwin while retaining a native
-            # boot JDK. Darwin uses its CoreAudio port, so ALSA must not enter
-            # either the target inputs or configure result.
-            $CONFIG_SHELL configure \
-              --openjdk-target=${stdenv.hostPlatform.config} \
-              --with-boot-jdk=${bootJdk} \
-              --enable-headless-only \
-              --with-native-debug-symbols=none \
-              --disable-warnings-as-errors \
-              --with-zlib=system \
-              --with-libjpeg=bundled \
-              --with-giflib=bundled \
-              --with-libpng=bundled \
-              --with-lcms=bundled \
-              --with-cups-include=${cups}/include \
-              --with-freetype-include=${freetype}/include/freetype2 \
-              --with-freetype-lib=${freetype}/lib \
-              --x-includes=${xorg-stubs}/include \
-              --x-libraries=${xorg-stubs}/lib \
-              --with-version-build=${build} \
-              --with-version-opt=aos \
-              --with-version-pre= \
-              --with-extra-cflags="-Wno-error -fcommon -fno-lifetime-dse -fno-delete-null-pointer-checks" \
-              --with-extra-cxxflags="-Wno-error -fno-lifetime-dse -fno-delete-null-pointer-checks" \
-              --with-extra-ldflags="''${NIX_LDFLAGS:-}" \
-              --with-jobs=${jobsExpr} \
-              ${extraCfgStr}
+                        # flags-cflags computes OS definitions once from the Darwin target,
+                        # then reuses them while compiling the native Linux BuildJDK. Keep
+                        # the upstream build/target source split and correct the build-side
+                        # definitions before its BUILD flag set is materialized.
+                        flagsCflags=make/autoconf/flags-cflags.m4
+                        sed -i \
+                          '/^  FLAGS_SETUP_CFLAGS_CPU_DEP(\[BUILD\], \[OPENJDK_BUILD_\], \[BUILD_\])$/i\
+              if test "x$OPENJDK_BUILD_OS" = xlinux; then\
+                CFLAGS_OS_DEF_JVM="-DLINUX -D_FILE_OFFSET_BITS=64"\
+                CFLAGS_OS_DEF_JDK="-D_GNU_SOURCE -D_REENTRANT -D_FILE_OFFSET_BITS=64 -DLINUX"\
+              else\
+                AC_MSG_ERROR([AOS Darwin cross BuildJDK requires a Linux build OS])\
+              fi\
+            ' "$flagsCflags"
+            test "$(grep -c 'AOS Darwin cross BuildJDK requires' "$flagsCflags")" -eq 1
+
+            # OpenJDK generates its C++ precompiled header with CC plus
+            # `-x c++-header`. AOS intentionally gives the CXX wrapper the
+            # target libc++ isolation flags, so select that equivalent driver
+            # role instead of falling through into native LLVM's libc++.
+            if [ -f make/common/native/CompileFile.gmk ]; then
+              pchGmk=make/common/native/CompileFile.gmk
+            else
+              pchGmk=make/common/NativeCompilation.gmk
+            fi
+            sed -i \
+              's/$1_PCH_COMMAND := $$($1_CC)/$1_PCH_COMMAND := $$($1_CXX)/' \
+              "$pchGmk"
+            grep -q '^        $1_PCH_COMMAND := $$($1_CXX)' "$pchGmk"
+
+            # AOS deliberately builds the existing headless JDK variant. The
+                        # macOS port otherwise probes Xcode's proprietary Metal tools and
+                        # builds libosxui even when headless-only is enabled. Gate both
+                        # together so this feature boundary is honored without fake tools.
+                        toolchainM4=make/autoconf/toolchain.m4
+                        clientLibraries=make/modules/java.desktop/lib/ClientLibraries.gmk
+                        if [ -f "$toolchainM4" ] \
+                          && grep -q '^    UTIL_LOOKUP_TOOLCHAIN_PROGS(METAL, metal)$' "$toolchainM4"; then
+                          sed -i \
+                            '/^    UTIL_LOOKUP_TOOLCHAIN_PROGS(METAL, metal)$/i\    if test "x$ENABLE_HEADLESS_ONLY" = "xfalse"; then' \
+                            "$toolchainM4"
+                          sed -i \
+                            '/^    UTIL_LOOKUP_TOOLCHAIN_PROGS(METALLIB, metallib)$/,/^  fi$/{
+                              /^  fi$/i\    fi
+                            }' \
+                            "$toolchainM4"
+                          grep -q '^    if test "x$ENABLE_HEADLESS_ONLY" = "xfalse"; then$' \
+                            "$toolchainM4"
+                        fi
+                        if [ -f "$clientLibraries" ]; then
+                          sed -i \
+                            's/^ifeq ($(call isTargetOs, macosx), true)$/ifeq ($(call isTargetOs, macosx)+$(ENABLE_HEADLESS_ONLY), true+false)/' \
+                            "$clientLibraries"
+                          grep -q '^ifeq ($(call isTargetOs, macosx)+$(ENABLE_HEADLESS_ONLY), true+false)$' \
+                            "$clientLibraries"
+                        fi
+
+                        # OpenJDK clears Finder/resource-fork attributes from copied
+                        # image files. The build runs on Linux, so implement the same
+                        # list/clear operations through Python's native xattr API.
+                        darwinTools=$TMPDIR/darwin-tools
+                        mkdir -p "$darwinTools"
+                        cat > "$darwinTools/xattr" <<'EOF'
+                        #!${buildTools.python3}/bin/python3
+                        import os
+                        import sys
+
+
+                        def main():
+                            flags = sys.argv[1] if len(sys.argv) > 1 else ""
+                            operations = set(flags[1:]) if flags.startswith("-") else set()
+                            if (
+                                len(sys.argv) != 3
+                                or not operations.intersection({"c", "l"})
+                                or not operations.issubset({"c", "l", "s"})
+                            ):
+                                print("usage: xattr -c|-l [-s] path", file=sys.stderr)
+                                return 2
+
+                            path = sys.argv[2]
+                            follow_symlinks = "s" not in operations
+                            try:
+                                names = os.listxattr(path, follow_symlinks=follow_symlinks)
+                                if "l" in operations:
+                                    for name in names:
+                                        value = os.getxattr(
+                                            path, name, follow_symlinks=follow_symlinks
+                                        )
+                                        print(f"{name}: {value!r}")
+                                else:
+                                    for name in names:
+                                        os.removexattr(
+                                            path, name, follow_symlinks=follow_symlinks
+                                        )
+                            except OSError as error:
+                                print(f"xattr: {path}: {error}", file=sys.stderr)
+                                return 1
+                            return 0
+
+
+                        if __name__ == "__main__":
+                            sys.exit(main())
+                        EOF
+                        chmod +x "$darwinTools/xattr"
+
+                        # OpenJDK marks its .app directories with Finder's bundle bit.
+                        # Nix's Linux store serialization cannot represent macOS
+                        # FinderInfo xattrs, while the complete .app directory layout is
+                        # retained. Accept only that non-serializable metadata operation;
+                        # fail closed if a future build needs any other SetFile behavior.
+                        cat > "$darwinTools/SetFile" <<'EOF'
+                        #!${buildTools.bash}/bin/bash
+                        if [ "$#" -ne 3 ] || [ "$1" != "-a" ] || [ "$2" != "B" ]; then
+                          printf '%s\n' 'SetFile: only -a B <directory> is supported' >&2
+                          exit 2
+                        fi
+                        if [ ! -d "$3" ]; then
+                          printf 'SetFile: not a directory: %s\n' "$3" >&2
+                          exit 1
+                        fi
+                        exit 0
+                        EOF
+                        chmod +x "$darwinTools/SetFile"
+
+                        # OpenJDK requires its native BuildC compiler to match the target
+                        # Clang toolchain. Wrap AOS Clang with the same hermetic glibc and
+                        # GCC discovery that the native cc wrapper supplies to GCC.
+                        for compiler in clang clang++; do
+                          cat > "$darwinTools/build-$compiler" <<EOF
+                        #!${buildTools.bash}/bin/bash
+                        set -eu
+                        real_libc=\$(cat ${buildTools.bootstrapTools}/nix-support/orig-libc)
+                        real_libc_dev=\$(cat ${buildTools.bootstrapTools}/nix-support/orig-libc-dev)
+                        dynamic_linker=\$(cat ${buildTools.bootstrapTools}/nix-support/dynamic-linker)
+                        gcc_dir=\$(dirname "\$(${buildTools.gcc}/bin/gcc -print-libgcc-file-name)")
+                        linking=true
+                        for arg in "\$@"; do
+                          case "\$arg" in
+                            -c|-E|-S|-fsyntax-only) linking=false ;;
+                          esac
+                        done
+                        link_flags=()
+                        if \$linking; then
+                          link_flags=(
+                            -L"\$real_libc/lib"
+                            -Wl,-dynamic-linker="\$dynamic_linker"
+                            -Wl,-rpath,"\$real_libc/lib"
+                          )
+                        fi
+                        exec ${buildTools.llvm}/bin/$compiler \
+                          --gcc-install-dir="\$gcc_dir" \
+                          -idirafter "\$real_libc_dev/include" \
+                          -B"\$real_libc/lib" -B"\$gcc_dir" \
+                          "\''${link_flags[@]}" "\$@"
+                        EOF
+                          chmod +x "$darwinTools/build-$compiler"
+                        done
+
+                        # LLVM supplies native inspectors/editors for emitted Mach-O files.
+                        ln -s ${buildTools.llvm}/bin/llvm-otool "$darwinTools/otool"
+                        ln -s ${buildTools.llvm}/bin/llvm-install-name-tool \
+                          "$darwinTools/install_name_tool"
+                        export PATH="$darwinTools:$PATH"
+
+                        # The cross stdenv's global C++ search path describes the Darwin
+                        # target. It must not leak into BuildJDK/ADLC, while target c++
+                        # already receives its libc++ headers from the cc wrapper.
+                        export CPLUS_INCLUDE_PATH=
+
+                        # The native stdenv records -rpath-link for ELF linkers. Darwin's
+                        # ld64 has no equivalent option, so retain the target library
+                        # rpaths while removing only that Linux-specific search hint.
+                        darwinLdflags=
+                        for flag in ''${NIX_LDFLAGS:-}; do
+                          case "$flag" in
+                            -Wl,-rpath-link,*) ;;
+                            *) darwinLdflags="$darwinLdflags $flag" ;;
+                          esac
+                        done
+
+                        # Configure the emitted JDK for Darwin while retaining a native
+                        # boot JDK. Darwin uses its CoreAudio port, so ALSA must not enter
+                        # either the target inputs or configure result.
+                        $CONFIG_SHELL configure \
+                          BUILD_CC=$darwinTools/build-clang \
+                          BUILD_CXX=$darwinTools/build-clang++ \
+                          --openjdk-target=${stdenv.hostPlatform.config} \
+                          --with-toolchain-type=clang \
+                          --with-boot-jdk=${bootJdk} \
+                          --enable-headless-only \
+                          --with-native-debug-symbols=none \
+                          --disable-warnings-as-errors \
+                          --with-zlib=system \
+                          --with-libjpeg=bundled \
+                          --with-giflib=bundled \
+                          --with-libpng=bundled \
+                          --with-lcms=bundled \
+                          --with-freetype=bundled \
+                          --with-cups-include=${cups}/include \
+                          --x-includes=${xorg-stubs}/include \
+                          --x-libraries=${xorg-stubs}/lib \
+                          --with-version-build=${build} \
+                          --with-version-opt=aos \
+                          --with-version-pre= \
+                          --with-extra-cflags="-Wno-error -fcommon -fno-lifetime-dse -fno-delete-null-pointer-checks" \
+                          --with-extra-cxxflags="-Wno-error -fno-lifetime-dse -fno-delete-null-pointer-checks" \
+                          --with-extra-ldflags="$darwinLdflags" \
+                          --with-jobs=${jobsExpr} \
+                          ${extraCfgStr}
+                        grep -q '^ENABLE_HEADLESS_ONLY := true$' build/*/spec.gmk
           ''
           else ''
             $CONFIG_SHELL configure \
@@ -227,6 +422,11 @@ in
           then ''
             mkdir -p $out
             cp -a build/*/images/jdk/* $out/
+            test -x "$out/bin/java"
+            test -x "$out/bin/javac"
+            test -f "$out/lib/server/libjvm.dylib"
+            test ! -e "$out/lib/libosxui.dylib"
+            test ! -e "$out/lib/shaders.metallib"
           ''
           else ''
             mkdir -p $out

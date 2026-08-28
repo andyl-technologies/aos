@@ -2,9 +2,12 @@
 {
   mkDerivation,
   fetchurl,
+  stdenv,
+  buildPackages,
   gnumake,
 }: let
   version = "1.22";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
     pname = "jikes";
@@ -17,7 +20,13 @@ in
       hash = "sha256-DLAsdjvEQTSfbTjKzVKt92IwLM46COJp8fdfcm5uFOM=";
     };
 
-    buildDeps = [gnumake];
+    buildDeps =
+      [gnumake]
+      ++ (
+        if isDarwinCross
+        then [buildPackages.automake]
+        else []
+      );
     runtimeDeps = [];
 
     phases = [
@@ -30,9 +39,22 @@ in
       }
       {
         name = "configure";
-        script = ''
-          CXXFLAGS="-fpermissive" ./configure --prefix=$out
-        '';
+        script =
+          if isDarwinCross
+          then ''
+              # Jikes predates AArch64 and otherwise treats a target C++
+              # executable as a runnable configure probe. Refresh only the
+              # canonical triplet table and use the stdenv cross tuple.
+              cp ${buildPackages.automake}/share/automake-*/config.sub config.sub
+
+            # Jikes targets the pre-C++17 language where `register` remains
+            # accepted; modern Clang otherwise rejects its bundled inflater.
+            CXXFLAGS="-fpermissive -std=gnu++14" \
+              ./configure $configureFlags --prefix=$out
+          ''
+          else ''
+            CXXFLAGS="-fpermissive" ./configure --prefix=$out
+          '';
       }
       {
         name = "build";
