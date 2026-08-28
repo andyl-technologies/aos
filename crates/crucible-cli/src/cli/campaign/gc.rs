@@ -14,11 +14,15 @@ use crucible_daemon::{
 };
 use serde::Serialize;
 
-use crate::cli_campaign_store::{load_campaign_repository_store, load_campaign_store_graph};
+use crate::cli_campaign_store::{
+    MAX_STORE_VERIFY_LOGICAL_BYTES, MAX_STORE_VERIFY_PLACEMENTS, load_campaign_repository_store,
+    load_campaign_store_graph, verify_campaign_store_inventory,
+};
 
 const CAMPAIGN_GC_REPORT_SCHEMA: &str = "crucible.cli.campaign-store-gc.v1";
 const STORE_STATUS_REPORT_SCHEMA: &str = "crucible.cli.store-status.v1";
 const STORE_ENSURE_REPORT_SCHEMA: &str = "crucible.cli.store-ensure.v1";
+const STORE_VERIFY_REPORT_SCHEMA: &str = "crucible.cli.store-verify.v1";
 const MAXIMUM_OWNER_PATH_BYTES: usize = 4_095;
 const UNUSED_GC_ENDPOINT: &str = "/tmp/crucible-campaign-gc-owner.sock";
 
@@ -43,6 +47,7 @@ pub(super) fn run_store_invocation(cli: &Cli, args: &StoreArgs) -> Result<(), Cl
     let rendered = match &args.command {
         StoreCommand::Status(status) => run_store_status(status, cli.output_format())?,
         StoreCommand::Ensure(ensure) => run_store_ensure(ensure, cli.output_format())?,
+        StoreCommand::Verify(verify) => run_store_verify(verify, cli.output_format())?,
         StoreCommand::Gc(gc) => run_campaign_store_gc(gc, cli.output_format())?,
     };
     println!("{rendered}");
@@ -101,6 +106,26 @@ struct StoreEnsureReport {
     authenticated: bool,
 }
 
+#[derive(Serialize)]
+struct StoreVerifyReport {
+    schema: &'static str,
+    configuration: String,
+    maximum_placements: u64,
+    maximum_logical_bytes: u64,
+    placements: u64,
+    logical_bytes: u64,
+    physical: Vec<StoreVerifyPhysicalReport>,
+    authenticated: bool,
+}
+
+#[derive(Serialize)]
+struct StoreVerifyPhysicalReport {
+    backend: String,
+    generation: String,
+    placements: u64,
+    logical_bytes: u64,
+}
+
 fn run_store_status(args: &StoreStatusArgs, format: OutputFormat) -> Result<String, CliError> {
     let graph = load_campaign_store_graph(&args.deployment)?;
     let report = store_status_report(&graph);
@@ -128,6 +153,30 @@ fn run_store_ensure(args: &StoreEnsureArgs, format: OutputFormat) -> Result<Stri
     render_store_ensure(&report, format)
 }
 
+fn run_store_verify(args: &StoreVerifyArgs, format: OutputFormat) -> Result<String, CliError> {
+    let verified = verify_campaign_store_inventory(&args.deployment)?;
+    let report = StoreVerifyReport {
+        schema: STORE_VERIFY_REPORT_SCHEMA,
+        configuration: encode_bytes(&verified.configuration),
+        maximum_placements: MAX_STORE_VERIFY_PLACEMENTS,
+        maximum_logical_bytes: MAX_STORE_VERIFY_LOGICAL_BYTES,
+        placements: verified.placements,
+        logical_bytes: verified.logical_bytes,
+        physical: verified
+            .physical
+            .into_iter()
+            .map(|physical| StoreVerifyPhysicalReport {
+                backend: physical.backend,
+                generation: physical.generation,
+                placements: physical.placements,
+                logical_bytes: physical.logical_bytes,
+            })
+            .collect(),
+        authenticated: true,
+    };
+    render_store_verify(&report, format)
+}
+
 fn store_status_report(graph: &StoreGraph) -> StoreStatusReport {
     StoreStatusReport {
         schema: STORE_STATUS_REPORT_SCHEMA,
@@ -151,12 +200,11 @@ fn store_status_report(graph: &StoreGraph) -> StoreStatusReport {
 }
 
 fn store_configuration(graph: &StoreGraph) -> String {
-    graph
-        .configuration_id()
-        .as_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    encode_bytes(&graph.configuration_id().as_bytes())
+}
+
+fn encode_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 const fn store_node_kind(kind: StoreNodeKind) -> &'static str {
@@ -397,6 +445,69 @@ fn render_store_ensure(
     }
 }
 
+fn render_store_verify(
+    report: &StoreVerifyReport,
+    format: OutputFormat,
+) -> Result<String, CliError> {
+    match format {
+        OutputFormat::Jsonl => serde_json::to_string(report).map_err(|error| {
+            maintenance_error(format!("store verify JSON encoding failed: {error}"))
+        }),
+        OutputFormat::Json => serde_json::to_string_pretty(report).map_err(|error| {
+            maintenance_error(format!("store verify JSON encoding failed: {error}"))
+        }),
+        OutputFormat::Table => {
+            let mut lines = vec![
+                format!("{:<24} {}", "configuration", report.configuration),
+                format!("{:<24} {}", "maximum-placements", report.maximum_placements),
+                format!(
+                    "{:<24} {}",
+                    "maximum-logical-bytes", report.maximum_logical_bytes
+                ),
+                format!("{:<24} {}", "placements", report.placements),
+                format!("{:<24} {}", "logical-bytes", report.logical_bytes),
+                format!("{:<24} {}", "authenticated", report.authenticated),
+            ];
+            lines.extend(report.physical.iter().map(|physical| {
+                format!(
+                    "{:<24} {} generation={} placements={} logical-bytes={}",
+                    "physical",
+                    physical.backend,
+                    physical.generation,
+                    physical.placements,
+                    physical.logical_bytes,
+                )
+            }));
+            Ok(lines.join("\n"))
+        }
+        OutputFormat::Markdown => {
+            let mut lines = vec![
+                String::from("| field | value |"),
+                String::from("|---|---|"),
+                format!("| configuration | `{}` |", report.configuration),
+                format!("| maximum placements | {} |", report.maximum_placements),
+                format!(
+                    "| maximum logical bytes | {} |",
+                    report.maximum_logical_bytes
+                ),
+                format!("| placements | {} |", report.placements),
+                format!("| logical bytes | {} |", report.logical_bytes),
+                format!("| authenticated | {} |", report.authenticated),
+            ];
+            lines.extend(report.physical.iter().map(|physical| {
+                format!(
+                    "| physical `{}` | generation `{}` / {} placements / {} logical bytes |",
+                    physical.backend,
+                    physical.generation,
+                    physical.placements,
+                    physical.logical_bytes,
+                )
+            }));
+            Ok(lines.join("\n"))
+        }
+    }
+}
+
 const fn journal_phase(phase: CampaignGcJournalPhase) -> &'static str {
     match phase {
         CampaignGcJournalPhase::Planned => "planned",
@@ -538,7 +649,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn store_status_and_ensure_report_one_authenticated_graph_and_object() {
+    fn store_status_ensure_and_verify_authenticate_one_graph_and_inventory() {
         let fixture = GcFixture::new();
         let graph = load_campaign_store_graph(&fixture.store).expect("load inspection graph");
         let bytes = b"authenticated store ensure fixture";
@@ -576,6 +687,33 @@ mod tests {
         assert_eq!(ensured["logical_bytes"], bytes.len());
         assert_eq!(ensured["authenticated"], true);
 
+        let verified = run_store_verify(
+            &StoreVerifyArgs {
+                deployment: fixture.store.clone(),
+            },
+            OutputFormat::Jsonl,
+        )
+        .expect("authenticate stable physical inventory");
+        let verified: serde_json::Value =
+            serde_json::from_str(&verified).expect("decode verify report");
+        assert_eq!(verified["schema"], STORE_VERIFY_REPORT_SCHEMA);
+        assert_eq!(verified["maximum_placements"], MAX_STORE_VERIFY_PLACEMENTS);
+        assert_eq!(
+            verified["maximum_logical_bytes"],
+            MAX_STORE_VERIFY_LOGICAL_BYTES
+        );
+        assert_eq!(verified["placements"], 1);
+        assert_eq!(verified["logical_bytes"], bytes.len());
+        assert_eq!(verified["physical"][0]["backend"], "primary");
+        assert_eq!(
+            verified["physical"][0]["generation"]
+                .as_str()
+                .expect("physical generation")
+                .len(),
+            64
+        );
+        assert_eq!(verified["authenticated"], true);
+
         let encoded = content.encode();
         let digest = encoded.rsplit('.').next().expect("content digest");
         let object = fixture
@@ -594,6 +732,15 @@ mod tests {
         )
         .expect_err("corrupt object must fail at authenticated EOF");
         assert!(error.to_string().contains("authentication failed"));
+
+        let error = run_store_verify(
+            &StoreVerifyArgs {
+                deployment: fixture.store.clone(),
+            },
+            OutputFormat::Jsonl,
+        )
+        .expect_err("whole-inventory verification must reject corrupt placement bytes");
+        assert!(error.to_string().contains("authenticate physical node"));
     }
 
     #[test]
@@ -695,6 +842,7 @@ mod tests {
         assert_eq!(ids, BTreeSet::from(["state", "policy", "store", "journal"]));
         assert!(store.find_subcommand("status").is_some());
         assert!(store.find_subcommand("ensure").is_some());
+        assert!(store.find_subcommand("verify").is_some());
         assert!(gc.find_subcommand("plan").is_some());
         assert!(gc.find_subcommand("apply").is_some());
     }

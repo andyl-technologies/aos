@@ -382,8 +382,17 @@ enum StoreCommand {
     Status(StoreStatusArgs),
     /// Authenticate one complete content-addressed object through the graph.
     Ensure(StoreEnsureArgs),
+    /// Authenticate every bounded physical placement in one stable generation.
+    Verify(StoreVerifyArgs),
     /// Plan or apply stopped-owner campaign-store garbage collection.
     Gc(CampaignStoreGcArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreVerifyArgs {
+    /// Strict composed repository-store deployment file.
+    #[arg(value_name = "STORE")]
+    deployment: PathBuf,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
