@@ -8,6 +8,9 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+test-support = []
+
 [[bin]]
 name = "crucible-fleet-store"
 path = "src/bin/crucible-fleet-store.rs"

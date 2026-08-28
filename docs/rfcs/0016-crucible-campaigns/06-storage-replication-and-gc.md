@@ -490,8 +490,8 @@ map to `Unauthorized`, transient transport/service failures to `Unavailable`,
 and malformed or unsupported provider behavior to `Incompatible`. This
 checkpoint grants bounded unfinished-upload listing/abort and the optional
 strong-CAS committed-object, ref, and ref-inventory boundaries above. It does
-not grant automatic live-service conformance or daemon configuration wiring;
-those remain required before selecting either S3 boundary in production.
+not grant daemon configuration wiring; that remains required before selecting
+either S3 boundary in production.
 
 Directory and S3 persistent leaves run through one backend-neutral semantic
 conformance suite. For immutable objects it proves authenticated full, range,
@@ -500,9 +500,24 @@ and delete/restore generation behavior, including a wrong source that retains
 no object. For refs it proves ordered pagination, exact stale-CAS diagnostics,
 complete fenced inventory, and same-value ABA generation change. Backend-
 specific tests add filesystem interruption/corruption and S3 multipart,
-credential, provider-page, deadline, and conditional-operation failures. This
-shared in-process harness does not replace the still-required live deployment
-service conformance flight.
+credential, provider-page, deadline, and conditional-operation failures.
+`crucible-s3-store` also exposes an ignored, environment-gated live-service
+test that runs these exact blob/admin and ref/admin routines through the AWS SDK
+adapter. It requires an exclusively owned, unversioned bucket with no retained
+versions or outside writers, standard AWS credential-chain configuration,
+`CRUCIBLE_S3_TEST_ENDPOINT`, and `CRUCIBLE_S3_TEST_BUCKET`; `AWS_REGION` and
+`CRUCIBLE_S3_TEST_PREFIX` are optional. One invocation uses a unique prefix and
+removes it after success:
+
+```text
+nix develop -c cargo test --manifest-path crates/Cargo.toml \
+  -p crucible-s3-store --test live_conformance \
+  -- --ignored --exact live_s3_service_passes_blob_and_ref_conformance
+```
+
+Passing the live test is deployment evidence for the exact service policy, not
+a portable assertion that every nominally S3-compatible endpoint supplies
+strong CAS, listing, conditional delete, or unversioned retention semantics.
 
 - **[CSTORE-7]** The directory backend MUST leave either no object or a complete
   authenticated object after interruption; same-filesystem staging debris is

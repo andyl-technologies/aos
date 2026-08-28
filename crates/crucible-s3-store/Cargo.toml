@@ -13,3 +13,7 @@ aws-sdk-s3 = { workspace = true }
 crucible-cas = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+
+[dev-dependencies]
+aws-config = { workspace = true }
+crucible-cas = { workspace = true, features = ["test-support"] }

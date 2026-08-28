@@ -1,10 +1,26 @@
 //! Shared semantic conformance routines for persistent store leaves.
+//!
+//! This module is available only to this crate's tests or with the
+//! `test-support` feature. The routines intentionally perform mutations and
+//! panic on a semantic mismatch; callers must give them fresh, exclusively
+//! owned namespaces created for conformance testing.
+
+#![allow(clippy::expect_used)]
 
 use std::collections::BTreeMap;
 
 use super::*;
 
-pub(crate) fn assert_blob_leaf_conformance<B>(backend: &B)
+/// Exercises the complete persistent immutable-leaf semantic contract.
+///
+/// The supplied backend namespace must initially contain no committed logical
+/// objects and must be exclusively owned by this invocation.
+///
+/// # Panics
+///
+/// Panics when the backend violates authenticated I/O, replay, inventory,
+/// deletion, retained-object isolation, or ABA-generation semantics.
+pub fn assert_blob_leaf_conformance<B>(backend: &B)
 where
     B: ImmutableBlobBackend + BlobStoreAdmin,
 {
@@ -131,7 +147,16 @@ where
     assert_eq!(after_aba.summary.objects(), 2);
 }
 
-pub(crate) fn assert_ref_leaf_conformance<R>(refs: &R)
+/// Exercises the complete persistent mutable-ref semantic contract.
+///
+/// The supplied ref namespace must initially be empty and exclusively owned by
+/// this invocation.
+///
+/// # Panics
+///
+/// Panics when the backend violates exact CAS, ordered pagination, fenced
+/// inventory, stale-conflict, or ABA-generation semantics.
+pub fn assert_ref_leaf_conformance<R>(refs: &R)
 where
     R: MutableRefBackend + RefStoreAdmin,
 {
