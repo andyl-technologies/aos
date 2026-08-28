@@ -39,8 +39,11 @@ const MAX_OBJECT_KEY_BYTES: usize = 1_024;
 const MAX_PROVIDER_TOKEN_BYTES: usize = 4 * 1024;
 const MAX_LIVE_REF_NAMESPACES: usize = 1_024;
 
+/// Maximum committed S3 objects returned by one provider list call.
+pub const MAX_S3_OBJECT_LIST_ITEMS: u16 = 1_000;
+
 /// Maximum committed S3 ref objects returned by one provider list call.
-pub const MAX_S3_REF_LIST_ITEMS: u16 = 1_000;
+pub const MAX_S3_REF_LIST_ITEMS: u16 = MAX_S3_OBJECT_LIST_ITEMS;
 
 /// Opaque exact provider version used by a conditional replacement.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +74,36 @@ impl StoreS3ObjectVersion {
 pub struct StoreS3VersionedObject {
     bytes: Arc<[u8]>,
     version: StoreS3ObjectVersion,
+}
+
+/// Provider-authenticated length and version for one committed object.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreS3VersionedObjectMetadata {
+    logical_length: u64,
+    version: StoreS3ObjectVersion,
+}
+
+impl StoreS3VersionedObjectMetadata {
+    /// Builds one exact versioned metadata record.
+    #[must_use]
+    pub const fn new(logical_length: u64, version: StoreS3ObjectVersion) -> Self {
+        Self {
+            logical_length,
+            version,
+        }
+    }
+
+    /// Returns the provider-authenticated object length.
+    #[must_use]
+    pub const fn logical_length(&self) -> u64 {
+        self.logical_length
+    }
+
+    /// Returns the exact provider conditional-write version.
+    #[must_use]
+    pub const fn version(&self) -> &StoreS3ObjectVersion {
+        &self.version
+    }
 }
 
 impl StoreS3VersionedObject {
@@ -164,6 +197,16 @@ pub trait StoreS3ObjectScan {
         key: &str,
         maximum_bytes: u16,
     ) -> Result<Option<StoreS3VersionedObject>, StoreError>;
+
+    /// Reads exact metadata for one listed object under the remaining deadline.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified credential, availability, or protocol error.
+    fn head_versioned_object(
+        &self,
+        key: &str,
+    ) -> Result<Option<StoreS3VersionedObjectMetadata>, StoreError>;
 }
 
 impl StoreS3ObjectListPage {
@@ -181,7 +224,7 @@ impl StoreS3ObjectListPage {
     ) -> Result<Self, StoreError> {
         let strictly_ordered = keys.windows(2).all(|pair| pair[0] < pair[1]);
         if maximum_items == 0
-            || maximum_items > MAX_S3_REF_LIST_ITEMS
+            || maximum_items > MAX_S3_OBJECT_LIST_ITEMS
             || keys.len() > usize::from(maximum_items)
             || keys
                 .iter()
@@ -210,7 +253,7 @@ impl StoreS3ObjectListPage {
         self.next.as_ref()
     }
 
-    fn into_parts(self) -> (Vec<String>, Option<StoreS3ObjectListCursor>) {
+    pub(crate) fn into_parts(self) -> (Vec<String>, Option<StoreS3ObjectListCursor>) {
         (self.keys, self.next)
     }
 }
@@ -1042,6 +1085,24 @@ mod tests {
         ) -> Result<Option<StoreS3VersionedObject>, StoreError> {
             self.client
                 .get_small_versioned_object(&self.bucket, key, maximum_bytes)
+        }
+
+        fn head_versioned_object(
+            &self,
+            key: &str,
+        ) -> Result<Option<StoreS3VersionedObjectMetadata>, StoreError> {
+            Ok(self
+                .client
+                .objects
+                .lock()
+                .expect("object lock")
+                .get(&(self.bucket.clone(), key.to_string()))
+                .map(|(bytes, version)| {
+                    StoreS3VersionedObjectMetadata::new(
+                        bytes.len() as u64,
+                        StoreS3ObjectVersion::new(format!("etag-{version}")).expect("version"),
+                    )
+                }))
         }
     }
 

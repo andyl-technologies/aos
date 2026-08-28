@@ -154,7 +154,7 @@ This primitive does not compute reachability or confer deletion authority on
 `ImmutableBlobBackend`. The single-host daemon composes it with authenticated
 root reachability, the canonical store-graph identity, ref and operational-root
 generations, and the interruption-safe external journal specified below.
-Policy-aware tier eviction, transform/S3 administration, and the complete
+Policy-aware tier eviction, broader transform administration, and the complete
 operator flight remain mandatory before T-CAM-8.3 is complete.
 
 `BlobSource` is finite and reopenable: every `open` returns the same byte stream
@@ -362,6 +362,49 @@ This cleanup boundary is not a stable committed-object inventory: ordinary
 publication may continue while a page is listed and aborted, and the capability
 cannot list or delete completed objects. It MUST NOT be used as a GC fence.
 
+Committed-object administration is admitted only through a second, separately
+supplied strong capability. The ordinary S3 client cannot be promoted
+implicitly. The deployment MUST additionally prove strongly consistent ordered
+listing, versioned metadata, atomic conditional deletion of the exact ETag, and
+read-after-delete absence. The selected bucket MUST be unversioned and retain
+no delete markers or noncurrent versions; historical provider versions would
+otherwise escape current-key inventory and reclamation. The
+endpoint/bucket/prefix is single-daemon authoritative, with no external
+writers. At most 1,024 exact S3 blob namespaces are live in one process, and
+ordinary-only and administrable instances of the same namespace cannot coexist.
+
+The separate `BlobStoreAdmin` capability takes the exclusive publication fence
+and scans at most 65,536 committed keys in pages of at most 1,000. It accepts
+only exact canonical `<prefix>/objects/<ContentId>` keys, reads bounded versioned
+metadata for each key, rejects a logical length above the graph's admitted
+maximum, and charges one absolute SDK deadline across listing and metadata
+reads. Before and after the scan it authenticates the persistent state at
+`<prefix>/object-admin/state-v1` (or `object-admin/state-v1` for an empty
+prefix):
+
+```text
+"crucible.content-store.s3-object-inventory-state.v1\0"
+instance[32]
+generation:u64be
+checksum[32]
+```
+
+`checksum` is BLAKE3 over the exact preceding bytes prefixed by
+`crucible.content-store.s3-object-inventory-state-checksum.v1`. Creation uses
+an atomic absent precondition and exact read-back. The nonzero generation
+advances with exact ETag CAS and read-back before every cooperating publication
+that could create a committed object and before every planned deletion. A
+failed later provider operation may advance it conservatively. The standard
+`InventoryGeneration` formula binds the persistent random instance and counter,
+so restart and same-value ABA cannot recreate an earlier physical basis.
+
+Planned deletion first reads the exact key's version and bounded logical length,
+advances the state, issues one `If-Match` deletion, and verifies absence. A
+changed ETag, malformed listing or metadata, state race, missing strong
+capability, or uncertain provider outcome fails closed. This capability makes
+the S3 leaf eligible for generation-bound global-GC planning and apply; the
+ordinary S3 leaf remains usable but deliberately non-administrable.
+
 An optional `S3RefBackend` is admitted only through a separately supplied
 strong-CAS service capability. An ordinary immutable S3 client cannot be
 promoted implicitly. The deployment MUST have verified that its exact endpoint
@@ -433,7 +476,8 @@ conservatively, while a stale logical comparison does not. The standard
 `RefInventoryGeneration` formula above binds the persistent random instance and
 counter, so change-and-restore ABA remains distinct across restart. The
 terminal generation can participate in global-GC root planning and apply. It
-does not grant committed-object inventory or deletion for the S3 blob leaf.
+does not itself grant committed-object inventory or deletion for the S3 blob
+leaf; that authority is the separate boundary above.
 
 The concrete `crucible-s3-store` AWS SDK adapter owns a command queue of 1
 through 1,024 entries, an active-operation ceiling of 1 through 64, an
@@ -445,11 +489,9 @@ exhausted byte budget fails promptly. Endpoint credentials or service denial
 map to `Unauthorized`, transient transport/service failures to `Unavailable`,
 and malformed or unsupported provider behavior to `Incompatible`. This
 checkpoint grants bounded unfinished-upload listing/abort and the optional
-strong-CAS ref and ref-inventory boundaries above. It does not grant
-committed-object inventory/deletion, automatic live-service conformance, or
-daemon configuration wiring; those remain required before the S3 blob leaf
-participates in global GC or the S3 ref backend is selected as the production
-authoritative ref backend.
+strong-CAS committed-object, ref, and ref-inventory boundaries above. It does
+not grant automatic live-service conformance or daemon configuration wiring;
+those remain required before selecting either S3 boundary in production.
 
 - **[CSTORE-7]** The directory backend MUST leave either no object or a complete
   authenticated object after interruption; same-filesystem staging debris is
@@ -458,8 +500,9 @@ authoritative ref backend.
   upload without losing cleanup responsibility, enforce bounded transfer work
   and absolute operation deadlines, make provider-retained unfinished uploads
   resumably reclaimable through separate bounded maintenance authority,
-  authenticate downloaded logical bytes, and use conditional ref operations
-  only after the concrete service passes the ref conformance suite.
+  authenticate downloaded logical bytes, and use conditional ref or committed-
+  object administration only after the concrete service passes the applicable
+  conformance suite and provider-versioning constraints.
 
 ## 06.5 Store composition graph
 

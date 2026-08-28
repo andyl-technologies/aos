@@ -1465,8 +1465,15 @@ bounds, command deadline, stream interruption, and bounded restart-resumable
 orphan cleanup. Graph administration now retains a separate S3 cleanup
 capability that lists and idempotently aborts at most 1,000 unfinished uploads
 per call with an exact provider continuation; it validates a whole page as
-canonical keys before the first effect and cannot inventory or delete committed
-objects. The optional S3 ref backend now uses fixed domain-separated hashed keys
+canonical keys before the first effect and is independent of committed-object
+administration. An explicit strong S3 object-administration capability now
+fences publication, scans at most 65,536 exact committed keys in 1,000-key
+pages, charges one absolute list-plus-metadata deadline, and authenticates a
+persistent ETag-CAS/read-back monotonic generation across restart and ABA.
+Planned deletion advances that generation, conditionally deletes the exact
+provider version, and confirms absence. Exact namespace lifecycle admission
+forbids ordinary/admin bypass, external writers, and provider-retained object
+versions. The optional S3 ref backend now uses fixed domain-separated hashed keys
 with exact name/target bodies, provider ETag CAS with read-back evidence,
 strongly consistent bounded listing, one process-wide lifecycle per exact
 namespace, and one absolute deadline across a complete remote scan. Its
@@ -1478,9 +1485,9 @@ wrapper. Tests cover maximum ref names, stale conflicts, cross-instance races,
 malformed bodies, false committed versions, strict provider pages,
 non-resetting scan deadlines, publication and mutation exclusion,
 restart-stable generations, and same-value ABA. S3 committed-object
-inventory/deletion, automated live-service conformance, daemon configuration
-wiring, and the realistic operator flight remain open under T-CAM-5.7 and
-T-CAM-5.8.
+inventory/deletion is implemented at the graph capability boundary. Automated
+live-service conformance, daemon configuration wiring, and the realistic
+operator flight remain open under T-CAM-5.7 and T-CAM-5.8.
 Broader layered transforms remain open;
 therefore T-CAM-5.5 is not checked by this checkpoint.
 
@@ -1946,9 +1953,8 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   materialization selection is now
   restart-safe, exact-configuration/fact-bound, and consumed by both planning
   and apply; stale records cease to root checkpoint closures after unpin.
-  Broader-transform/S3 administration, policy-aware reachable-cache eviction,
-  and full
-  operator-flight tests remain open. Implement
+  Broader-transform administration, policy-aware reachable-cache eviction, and
+  full operator-flight tests remain open. Implement
   replay/debug, export/import, push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
   through common branch-request and campaign primitives and remove parallel
