@@ -3,6 +3,7 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreGraphics/CoreGraphics.h>
+#include <CoreServices/CoreServices.h>
 #include <CoreText/CoreText.h>
 
 CF_EXTERN_C_BEGIN

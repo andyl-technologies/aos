@@ -9,6 +9,8 @@ reexported-libraries:
     libraries:
       - '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'
       - '/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics'
+      - '/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices'
+      - '/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText'
 exports:
   - targets: [ x86_64-macos, arm64-macos ]
     symbols:
