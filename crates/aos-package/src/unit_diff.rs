@@ -323,6 +323,8 @@ pub struct UnitDiff {
     pub required_stops: BTreeSet<String>,
     /// Old helpers that must be started successfully immediately before stop.
     pub required_pre_stop_starts: BTreeSet<String>,
+    /// Routed sources quiesced under the old unit definitions.
+    pub quiesced_external_activation_sources: BTreeSet<String>,
     /// Retained routed sockets quiesced by a barrier and restored post-swap.
     pub restore_external_activation_sources: BTreeSet<String>,
     /// Present live, gone in candidate → stop (minus `X-StopOnRemoval=false`).
@@ -347,6 +349,23 @@ pub struct UnitDiff {
 }
 
 impl UnitDiff {
+    /// Restricts routed-source restoration to sources that were active before
+    /// the barrier while retaining required stops to close activation races.
+    pub fn retain_active_external_activation_sources(&mut self, active: &BTreeSet<String>) {
+        let routed = self
+            .service_root_barriers
+            .values()
+            .flat_map(|barrier| barrier.live_external_activation_sources.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let inactive = routed.difference(active).cloned().collect::<BTreeSet<_>>();
+
+        self.to_start.retain(|unit| !inactive.contains(unit));
+        self.quiesced_external_activation_sources
+            .retain(|unit| !inactive.contains(unit));
+        self.restore_external_activation_sources
+            .retain(|unit| !inactive.contains(unit));
+    }
+
     /// Replaces affected service-root member actions with an ordered, required
     /// old-member, old-helper, and owning-target stop barrier.
     pub fn normalize_service_root_lifecycle(&mut self) {
@@ -383,7 +402,9 @@ impl UnitDiff {
                 .cloned()
                 .chain([helper.clone(), barrier.target.clone()])
                 .collect::<BTreeSet<_>>();
-            self.to_stop.retain(|unit| !members.contains(unit));
+            let already_required = self.required_stops.clone();
+            self.to_stop
+                .retain(|unit| !members.contains(unit) || already_required.contains(unit));
             self.to_restart.retain(|unit| !members.contains(unit));
             self.to_reload.retain(|unit| !members.contains(unit));
             self.to_start.retain(|unit| !members.contains(unit));
@@ -393,8 +414,12 @@ impl UnitDiff {
             // Drain signed routed provider sockets before package-local
             // activation sources so neither can reactivate a workload.
             for source in &barrier.live_external_activation_sources {
-                self.to_stop.push(source.clone());
+                if !self.to_stop.contains(source) {
+                    self.to_stop.push(source.clone());
+                }
                 self.required_stops.insert(source.clone());
+                self.quiesced_external_activation_sources
+                    .insert(source.clone());
             }
 
             // Drain activation sources before workloads so none can be
@@ -897,11 +922,17 @@ fn build_service_root_barriers(
                 activation_sources(live, &barrier.target, &barrier.live_members);
             barrier.live_external_activation_sources =
                 routed_activation_sources(live, &barrier.target, &barrier.live_members);
-            let candidate_workloads = candidate_workloads(candidate, &barrier.target, &helper);
-            if barrier.candidate_target_present {
-                barrier.candidate_external_activation_sources =
-                    routed_activation_sources(candidate, &barrier.target, &candidate_workloads);
-            }
+            barrier.candidate_external_activation_sources = barrier
+                .live_external_activation_sources
+                .iter()
+                .filter(|source| {
+                    candidate
+                        .units
+                        .get(*source)
+                        .is_some_and(LogicalUnit::is_present)
+                })
+                .cloned()
+                .collect();
             (helper, barrier)
         })
         .collect()
@@ -994,19 +1025,6 @@ fn trusted_routed_service(unit: &LogicalUnit) -> Option<String> {
     let mut words = values[0].split_ascii_whitespace();
     let service = words.next()?;
     words.next().is_none().then(|| service.to_string())
-}
-
-fn candidate_workloads(units: &UnitMap, target: &str, helper: &str) -> BTreeSet<String> {
-    let helper_workloads = service_root_workloads(units, target, helper);
-    if !helper_workloads.is_empty() {
-        return helper_workloads;
-    }
-    let side_effects = generated_side_effects(units, target, helper);
-    target_part_of_members(units, target)
-        .into_iter()
-        .filter(|name| name.ends_with(".service"))
-        .filter(|name| name != helper && !side_effects.contains(name))
-        .collect()
 }
 
 fn activated_service(name: &str, unit: &LogicalUnit) -> Option<String> {
@@ -1483,7 +1501,10 @@ mod tests {
             barrier.live_external_activation_sources,
             BTreeSet::from(["provider.socket".to_string()])
         );
-        assert!(barrier.candidate_external_activation_sources.is_empty());
+        assert_eq!(
+            barrier.candidate_external_activation_sources,
+            BTreeSet::from(["provider.socket".to_string()])
+        );
         assert_eq!(
             barrier.live_side_effects,
             BTreeSet::from(["aos-pkg-web-mac.service".to_string()])
@@ -1511,8 +1532,26 @@ mod tests {
             diff.required_pre_stop_starts,
             BTreeSet::from([helper.to_string()])
         );
-        assert_eq!(diff.to_start, vec!["aos-pkg-web.target"]);
+        assert_eq!(diff.to_start, vec!["aos-pkg-web.target", "provider.socket"]);
+        assert_eq!(
+            diff.restore_external_activation_sources,
+            BTreeSet::from(["provider.socket".to_string()])
+        );
         assert!(diff.to_restart.is_empty());
+
+        std::fs::remove_file(candidate_units.join("provider.socket")).unwrap();
+        let mut removed_provider = compute_diff(live.path(), candidate.path());
+        removed_provider.normalize_service_root_lifecycle();
+        assert!(
+            removed_provider
+                .restore_external_activation_sources
+                .is_empty()
+        );
+        assert!(
+            !removed_provider
+                .to_start
+                .contains(&"provider.socket".to_string())
+        );
     }
 
     #[test]
@@ -1556,6 +1595,11 @@ mod tests {
                 "[Socket]\nService=other.service\n",
             );
         }
+        write(
+            &candidate_units,
+            "provider.socket.d/50-aos-capability-routes.conf",
+            "[Socket]\nService=other.service\n",
+        );
 
         let mut diff = compute_diff(live.path(), candidate.path());
         diff.normalize_service_root_lifecycle();
@@ -1576,6 +1620,13 @@ mod tests {
         );
         assert!(!diff.to_stop.contains(&"shared.socket".to_string()));
         assert!(!diff.to_start.contains(&"shared.socket".to_string()));
+
+        diff.retain_active_external_activation_sources(&BTreeSet::new());
+        assert!(diff.to_stop.contains(&"provider.socket".to_string()));
+        assert!(diff.required_stops.contains("provider.socket"));
+        assert!(!diff.to_start.contains(&"provider.socket".to_string()));
+        assert!(diff.quiesced_external_activation_sources.is_empty());
+        assert!(diff.restore_external_activation_sources.is_empty());
     }
 
     #[test]
