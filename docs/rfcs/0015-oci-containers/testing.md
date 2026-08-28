@@ -75,6 +75,29 @@ local Docker daemon is available. Docker is not introduced as a Nix or CI host
 dependency; the hermetic compatibility gate remains AOS-built nerdctl against
 containerd.
 
+The Phase-2 focused gate is `checks.container.runtime`. It executes the exact
+production init transaction against a rooted local store, checks marker and
+lock bytes/modes, repairs interrupted GC-root state, runs GC, audits the golden
+facade and collision manifest, inspects production metadata/config, excludes
+boot artifacts, and proves all published image outputs retain no Nix input
+references. Rust unit tests independently cover PID-1 marker matching, stale
+marker refusal, persisted and directly probed read-only state, package command
+classification, and top-level host-command admission.
+
+`tests/fleet/container-runtime.nix` is the privileged Phase-2 execution gate.
+It loads the production Docker archive into AOS-built containerd, races a named
+runtime `exec` against initialization, checks the exact current-PID readiness
+marker and GC roots, runs direct Nix GC and APM GC, and exercises a fully
+read-only named container. Its APM fixture is deliberately absent from the
+container store before install: APR generates a VM-local static cache, the
+container downloads its narinfo and NAR over HTTP, and the test proves store
+validity, execution, restart persistence, and removal afterward. The exact
+command is:
+
+```text
+nix build path:.#checks.x86_64-linux.fleet-container-runtime --no-link -L
+```
+
 The Phase-0 compatibility spike used Docker Engine 29.7.2 on `linux/amd64`.
 Docker loaded a hand-assembled OCI archive containing the complete 66-path
 `pkgs.aos` closure and ran `aos 0.1.0`. The equivalent AOS-built runtime

@@ -1,8 +1,9 @@
 //! Shared process entrypoint for the AOS multicall binaries.
 
+use std::ffi::OsStr;
 use std::process;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Parser;
 
 use crate::cli::{Cli, Commands};
@@ -70,6 +71,8 @@ pub(crate) async fn main() {
 /// they work even when `nix` is absent or the working directory is not a repo
 /// root.
 async fn run(cli: &Cli) -> Result<()> {
+    validate_container_runtime(&cli.command)?;
+
     match cli.color {
         crate::cli::ColorChoice::Auto if std::env::var_os("NO_COLOR").is_some() => {
             console::set_colors_enabled_stderr(false);
@@ -239,6 +242,43 @@ async fn run(cli: &Cli) -> Result<()> {
     }
 }
 
+/// Rejects entrypoints that necessarily operate on host boot or device state.
+///
+/// Package-manager activation paths are guarded within `aos-package`, where
+/// their complete command shape is available. This top-level guard owns only
+/// commands outside that package boundary: the QEMU lifecycle and the boot
+/// metadata agent. Repository builds and signed image downloads remain valid
+/// container workflows.
+fn validate_container_runtime(command: &Commands) -> Result<()> {
+    let runtime = std::env::var_os("AOS_RUNTIME");
+    validate_runtime(command, runtime.as_deref())?;
+
+    // Package commands synchronize inside `aos-package`, after its complete
+    // command shape has been classified. Every other admitted container
+    // command waits here so `docker exec aos ...` cannot race PID-1 setup.
+    if runtime.as_deref() == Some(OsStr::new("container"))
+        && !matches!(command, Commands::Package { .. })
+    {
+        aos_core::container_runtime::synchronize()?;
+    }
+
+    Ok(())
+}
+
+/// Applies the runtime boundary using an explicit value so tests do not mutate
+/// the process environment.
+fn validate_runtime(command: &Commands, runtime: Option<&OsStr>) -> Result<()> {
+    if runtime == Some(OsStr::new("container"))
+        && matches!(command, Commands::Vm { .. } | Commands::Metadata { .. })
+    {
+        bail!(
+            "this command requires host boot, virtualization, or device access unavailable in an AOS container; run it on an AOS machine or VM"
+        );
+    }
+
+    Ok(())
+}
+
 /// Maps an `anyhow::Error` to an appropriate exit code while printing a
 /// user-facing message.
 fn handle_error(cli: &Cli, err: anyhow::Error) -> i32 {
@@ -255,4 +295,53 @@ fn handle_error(cli: &Cli, err: anyhow::Error) -> i32 {
     // Fallback: unknown error type -- treat as build failure.
     printer.error(&format!("{err:#}"));
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).expect("test command line should parse")
+    }
+
+    #[test]
+    fn container_rejects_vm_and_boot_metadata_entrypoints() {
+        for args in [
+            ["aos", "vm", "run", "aos.qcow2"].as_slice(),
+            ["aos", "metadata", "detect"].as_slice(),
+        ] {
+            let cli = parse(args);
+            let error = validate_runtime(&cli.command, Some(OsStr::new("container")))
+                .expect_err("host command should be rejected");
+
+            assert_eq!(
+                error.to_string(),
+                "this command requires host boot, virtualization, or device access unavailable in an AOS container; run it on an AOS machine or VM"
+            );
+        }
+    }
+
+    #[test]
+    fn container_allows_image_downloads_and_repository_builds() {
+        for args in [
+            ["aos", "image", "list", "--registry", "core"].as_slice(),
+            ["aos", "build", "bash"].as_slice(),
+            ["aos", "system", "image"].as_slice(),
+        ] {
+            let cli = parse(args);
+            assert!(
+                validate_runtime(&cli.command, Some(OsStr::new("container"))).is_ok(),
+                "portable command should remain available: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_container_runtime_preserves_host_command_admission() {
+        let cli = parse(&["aos", "vm", "run", "aos.qcow2"]);
+
+        assert!(validate_runtime(&cli.command, None).is_ok());
+        assert!(validate_runtime(&cli.command, Some(OsStr::new("Container"))).is_ok());
+    }
 }

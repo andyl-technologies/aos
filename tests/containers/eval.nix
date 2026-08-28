@@ -17,9 +17,13 @@
     evaluator.evalContainer {inherit name modules;};
   tryEvaluate = modules:
     builtins.tryEval (builtins.deepSeq (evaluate "negative" modules) true);
+  mismatchedSystem =
+    if pkgs.stdenv.hostPlatform.system == "x86_64-linux"
+    then "aarch64-linux"
+    else "x86_64-linux";
 
   aos = evaluate "aos" [(definitionFor aosSystem)];
-  arm = evaluate "aos" [(definitionFor "aarch64-linux")];
+  mismatchedPlatform = tryEvaluate [(definitionFor mismatchedSystem)];
   duplicateLayer = tryEvaluate [
     (definitionFor aosSystem)
     {
@@ -42,6 +46,14 @@
   duplicateRoot = tryEvaluate [
     (definitionFor aosSystem)
     {config.packageRoots = lib.mkForce [pkgs.aos pkgs.aos];}
+  ];
+  emptyRoots = tryEvaluate [
+    (definitionFor aosSystem)
+    {config.packageRoots = lib.mkForce [];}
+  ];
+  duplicateFacadeCollision = tryEvaluate [
+    (definitionFor aosSystem)
+    {config.filesystem.allowedFacadeCollisions = lib.mkForce ["kill" "kill"];}
   ];
   hostFacade = tryEvaluate [
     (definitionFor aosSystem)
@@ -86,17 +98,31 @@ in
   assert aos.name == "aos";
   assert builtins.attrNames registered == ["aos"];
   assert aos.packageRoots == goldenRoots;
+  assert aos.packageManagement
+  == {
+    enable = true;
+    bakedGcRoots = true;
+  };
+  assert aos.filesystem.allowedFacadeCollisions == ["kill"];
+  assert aos.runtime.environment.PATH == "/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin";
+  assert aos.runtime.environment.NIX_REMOTE == "local";
+  assert aos.runtime.environment.XDG_DATA_HOME == "/root/.local/share";
+  assert aos.runtime.workingDirectory == "/work";
+  assert (builtins.head aos.filesystem.directories).path == "/root";
+  assert (builtins.head aos.filesystem.directories).mode == "0700";
   assert builtins.length aos.layers == 4;
   assert aos.platform.architecture
   == (
-    if aosSystem == "x86_64-linux"
+    if pkgs.stdenv.hostPlatform.system == "x86_64-linux"
     then "amd64"
     else "arm64"
   );
-  assert arm.platform.architecture == "arm64";
-  assert arm.platform.aosSystem == "aarch64-linux";
+  assert aos.platform.aosSystem == pkgs.stdenv.hostPlatform.system;
+  assert !mismatchedPlatform.success;
   assert !duplicateLayer.success;
   assert !duplicateRoot.success;
+  assert !emptyRoots.success;
+  assert !duplicateFacadeCollision.success;
   assert !emptyEntrypoint.success;
   assert !hostFacade.success;
   assert !baseImage.success;

@@ -201,7 +201,13 @@
         inherit lib pkgs container;
         oci = ociBuilders;
         systemIdentity = {
-          inherit (discoverSystems.server.config.aos.system) name version;
+          inherit
+            (discoverSystems.server.config.aos.system)
+            name
+            version
+            stateVersion
+            moduleAbi
+            ;
         };
       })
     containerConfigurations;
@@ -1124,6 +1130,31 @@ in {
         aosSystem = hostPlatform.system;
       };
       oci-builders = import ./tests/containers/oci-builders.nix {inherit pkgs lib;};
+      runtime = import ./tests/containers/runtime.nix {
+        inherit pkgs lib;
+        containerImage = containerImages.aos;
+        aosSystem = hostPlatform.system;
+        goldenRoots = discoverSystems.server.config.environment.systemPackages;
+        # These are negative exact-path assertions, not test dependencies. Drop
+        # string context so proving their absence does not build or retain the
+        # bootable system artifacts the container deliberately excludes.
+        forbiddenRuntimeRoots = map
+          (root: builtins.unsafeDiscardStringContext (builtins.toString root))
+          [
+            discoverSystems.server.config.system.build.kernel
+            discoverSystems.server.config.system.build.initrd
+            discoverSystems.server.config.system.build.toplevel
+          ];
+        systemIdentity = {
+          inherit
+            (discoverSystems.server.config.aos.system)
+            name
+            version
+            stateVersion
+            moduleAbi
+            ;
+        };
+      };
       aos-runtime-closure = containerImages.aos.checks.runtimeAudit;
     };
     config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};

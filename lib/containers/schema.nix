@@ -125,7 +125,12 @@ in {
       facade = mkOption {
         type = types.listOf facadeType;
         default = [];
-        description = "Collision-checked executable links exposed below /usr/bin.";
+        description = "Explicit executable links selected ahead of the generated golden-package facade.";
+      };
+      allowedFacadeCollisions = mkOption {
+        type = types.listOf safeName;
+        default = [];
+        description = "Reviewed command-name collisions allowed by the ordered golden-package facade.";
       };
       shell = mkOption {
         type = validatedBool;
@@ -250,6 +255,7 @@ in {
       layerNames = map (layer: layer.name) config.layers;
       directoryPaths = map (directory: directory.path) config.filesystem.directories;
       facadeNames = map (entry: entry.name) config.filesystem.facade;
+      allowedFacadeCollisions = config.filesystem.allowedFacadeCollisions;
       environmentNames = builtins.attrNames config.runtime.environment;
       environmentValues = builtins.attrValues config.runtime.environment;
       rootPaths = map builtins.toString config.packageRoots;
@@ -261,6 +267,10 @@ in {
         0
         (annotationKeys ++ annotationValues);
     in [
+      {
+        assertion = config.packageRoots != [];
+        message = "container baked package roots must not be empty";
+      }
       {
         assertion = config.runtime.entrypoint != [];
         message = "container runtime.entrypoint must be a non-empty exec-form argument list";
@@ -298,6 +308,12 @@ in {
       {
         assertion = builtins.length facadeNames == builtins.length (lib.unique facadeNames);
         message = "container executable facade names must be unique";
+      }
+      {
+        assertion =
+          builtins.length allowedFacadeCollisions
+          == builtins.length (lib.unique allowedFacadeCollisions);
+        message = "container allowed facade collision names must be unique";
       }
       {
         assertion = builtins.all environmentName.check environmentNames;

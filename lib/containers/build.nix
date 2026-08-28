@@ -45,6 +45,24 @@
     roots = auditRoots;
     inherit (container.budgets) maxClosureMiB maxDevelopmentPayloadMiB;
   };
+  referenceGraph = oci.mkReferenceGraph {
+    pname = "aos-container-${container.name}-runtime-reference-graph";
+    rootPaths = auditRoots;
+  };
+  bakedRootInventory = pkgs.writeTextFile {
+    name = "aos-container-${container.name}-baked-roots";
+    text =
+      builtins.concatStringsSep "\n" (map builtins.toString container.packageRoots)
+      + "\n";
+    destination = "/baked-roots";
+  };
+  facadeLayer = import ./facade-layer.nix {
+    inherit lib pkgs oci referenceGraph;
+    packageRoots = container.packageRoots;
+    explicit = container.filesystem.facade;
+    expectedCollisions = container.filesystem.allowedFacadeCollisions;
+    pname = "aos-container-${container.name}-golden-facade";
+  };
 
   configuredDirectoryPaths = map (directory: directory.path) container.filesystem.directories;
   standardDirectories =
@@ -64,6 +82,18 @@
         mode = "0755";
       }
       {
+        path = "/etc/pki";
+        mode = "0755";
+      }
+      {
+        path = "/etc/pki/tls";
+        mode = "0755";
+      }
+      {
+        path = "/etc/pki/tls/certs";
+        mode = "0755";
+      }
+      {
         path = "/etc/ssl";
         mode = "0755";
       }
@@ -80,6 +110,10 @@
         mode = "0755";
       }
       {
+        path = "/nix/store";
+        mode = "0755";
+      }
+      {
         path = "/nix/var";
         mode = "0755";
       }
@@ -89,6 +123,10 @@
       }
       {
         path = "/nix/var/nix/gcroots";
+        mode = "0755";
+      }
+      {
+        path = "/nix/var/nix/gcroots/aos-profiles";
         mode = "0755";
       }
       {
@@ -115,33 +153,33 @@
         path = "/var";
         mode = "0755";
       }
+      {
+        path = "/var/cache";
+        mode = "0755";
+      }
+      {
+        path = "/var/lib";
+        mode = "0755";
+      }
     ];
 
-  facadeSymlinks =
-    map (entry: {
-      path = "/usr/bin/${entry.name}";
-      inherit (entry) target;
-      requireExecutable = true;
-    })
-    container.filesystem.facade;
   compatibilitySymlinks =
     [
       {
-        path = "/usr/bin/env";
-        # AOS coreutils exposes `env` as a store-internal symlink to its
-        # multicall executable. Point at the regular file so facade admission
-        # remains fail-closed; argv[0] is still /usr/bin/env at execution.
-        target = "${pkgs.coreutils}/bin/coreutils";
-        requireExecutable = true;
-      }
-      {
-        path = "/usr/bin/sh";
-        target = "${pkgs.bash}/bin/bash";
-        requireExecutable = true;
-      }
-      {
         path = "/etc/ssl/certs/ca-certificates.crt";
         target = "${pkgs.ca-certificates}/etc/ssl/certs/ca-certificates.crt";
+      }
+      {
+        path = "/etc/ssl/certs/ca-bundle.crt";
+        target = "${pkgs.ca-certificates}/etc/ssl/certs/ca-certificates.crt";
+      }
+      {
+        path = "/etc/pki/tls/certs/ca-bundle.crt";
+        target = "${pkgs.ca-certificates}/etc/ssl/certs/ca-certificates.crt";
+      }
+      {
+        path = "/var/lib/profiles";
+        target = "/nix/var/nix/gcroots/aos-profiles";
       }
     ]
     ++ lib.optional container.filesystem.shell {
@@ -150,19 +188,12 @@
       requireExecutable = true;
     };
 
-  # Phase 2 replaces this exec-only shim with the idempotent Nix DB and baked
-  # GC-root initializer. Keeping the argv contract here makes the Phase-1 image
-  # structurally runnable without pretending package mutation is qualified yet.
-  initScript = ''
-    #!${pkgs.bash}/bin/bash
-    set -eu
-    if [ "$#" -eq 0 ]; then
-      set -- /usr/bin/aos --help
-    fi
-    exec "$@"
-  '';
+  initScript = import ./init-script.nix {
+    inherit lib pkgs;
+    defaultCommand = container.runtime.command;
+  };
   initSource = pkgs.writeTextFile {
-    name = "aos-container-${container.name}-phase1-init";
+    name = "aos-container-${container.name}-init";
     text = initScript;
     destination = "/init";
     executable = true;
@@ -177,7 +208,18 @@
     BUG_REPORT_URL="https://aos.dev/issues"
     AOS_CONTAINER=1
     AOS_SYSTEM=${container.platform.aosSystem}
+    AOS_STATE_VERSION=${systemIdentity.stateVersion}
+    AOS_MODULE_ABI=${toString systemIdentity.moduleAbi}
   '';
+  releaseAnnotations =
+    container.annotations
+    // {
+      "org.opencontainers.image.version" = systemIdentity.version;
+      "dev.andyl.aos.release.name" = systemIdentity.name;
+      "dev.andyl.aos.release.version" = systemIdentity.version;
+      "dev.andyl.aos.state-version" = systemIdentity.stateVersion;
+      "dev.andyl.aos.module-abi" = toString systemIdentity.moduleAbi;
+    };
 
   metadataLayer = oci.mkRootMetadataLayer {
     pname = "aos-container-${container.name}-root-metadata";
@@ -192,7 +234,12 @@
       {
         path = "/etc/nix/nix.conf";
         mode = "0644";
-        text = "build-users-group =\nexperimental-features = nix-command\n";
+        text = ''
+          build-users-group =
+          experimental-features = nix-command
+          sandbox = false
+          substituters =
+        '';
       }
       {
         path = "/etc/os-release";
@@ -210,25 +257,45 @@
         text = "root:!:1::::::\n";
       }
       {
+        path = "/aos-registration";
+        mode = "0444";
+        source = "${referenceGraph}/registration";
+      }
+      {
+        path = "/nix/var/nix/.aos-container-init.lock";
+        mode = "0600";
+        text = "";
+      }
+      {
+        path = "/usr/lib/aos-container/baked-roots";
+        mode = "0444";
+        source = "${bakedRootInventory}/baked-roots";
+      }
+      {
+        path = "/usr/lib/aos-container/store-paths";
+        mode = "0444";
+        source = "${referenceGraph}/store-paths";
+      }
+      {
         path = "/usr/bin/aos-container-init";
         mode = "0555";
         source = "${initSource}/init";
       }
     ];
-    symlinks = facadeSymlinks ++ compatibilitySymlinks;
+    symlinks = compatibilitySymlinks;
     storeLayers = closureLayers;
   };
 
   image = oci.mkImageLayout {
     pname = "aos-container-${container.name}-${container.platform.architecture}";
-    layers = closureLayers ++ [metadataLayer];
+    layers = closureLayers ++ [facadeLayer metadataLayer];
     inherit runtimeAudit;
     platform = {
       inherit (container.platform) os architecture;
     };
     referenceName = "${container.publication.repository}:latest";
-    annotations = container.annotations;
-    indexAnnotations = container.annotations;
+    annotations = releaseAnnotations;
+    indexAnnotations = releaseAnnotations;
     config = {
       entrypoint = container.runtime.entrypoint;
       cmd = container.runtime.command;
@@ -236,7 +303,7 @@
       user = container.runtime.user;
       workingDir = container.runtime.workingDirectory;
       stopSignal = container.runtime.stopSignal;
-      labels = container.annotations;
+      labels = releaseAnnotations;
     };
   };
   dockerArchive = oci.mkDockerArchive {
@@ -248,12 +315,13 @@
     pname = "aos-container-${container.name}-${container.platform.architecture}-index";
     images = [image];
     referenceName = "${container.publication.repository}:latest";
-    annotations = container.annotations;
+    annotations = releaseAnnotations;
   };
 
   metadataSpec = {
     schema = "aos.container.definition/v1";
-    inherit (container) name annotations;
+    inherit (container) name;
+    annotations = releaseAnnotations;
     inherit (container) platform runtime publication packageManagement budgets;
     packageRoots = map builtins.toString container.packageRoots;
     layers =
@@ -297,6 +365,6 @@ in {
   };
   inherit ociIndex;
   checks = {
-    inherit runtimeAudit;
+    inherit runtimeAudit referenceGraph facadeLayer metadataLayer;
   };
 }

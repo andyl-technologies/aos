@@ -183,7 +183,16 @@ in
 
           index_hex=$(sha256sum "$out/image-index.json" | cut -d ' ' -f 1)
           index_size=$(stat -c %s "$out/image-index.json")
-          cp --reflink=auto "$out/image-index.json" "$out/layout/blobs/sha256/$index_hex"
+          index_blob="$out/layout/blobs/sha256/$index_hex"
+          if [ -e "$index_blob" ]; then
+            # A one-platform composition can produce the exact index object
+            # already present in its input layout. Treat that as verified blob
+            # reuse instead of attempting to overwrite a read-only copied blob.
+            cmp "$out/image-index.json" "$index_blob" \
+              || { echo "existing index blob does not match its digest" >&2; exit 1; }
+          else
+            cp --reflink=auto "$out/image-index.json" "$index_blob"
+          fi
           jq -S -n \
             --arg mediaType ${lib.escapeShellArg common.indexMediaType} \
             --arg digest "sha256:$index_hex" \
