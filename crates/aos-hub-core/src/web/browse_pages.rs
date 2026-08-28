@@ -40,7 +40,9 @@ use crate::web::console_render::{
     ago, live_table, meter, page_with_session, table_raw_headers, urlencode, Pager,
     SessionIndicator, StateLine,
 };
-use crate::web::render::{escape, hash_value, hash_value_link, human_size, key_fingerprint, table};
+use crate::web::render::{
+    escape, hash_value, hash_value_link, human_size, key_fingerprint, table, trust_key_value,
+};
 use aos_registry_surface::manifest::{ImageCompression, ImageTarget, ImageVerificationState};
 
 /// Glyph palette for the partition grid: one glyph per release, assigned
@@ -147,11 +149,15 @@ impl RegistrySetup {
             .unwrap_or(display_name)
             .to_string();
         let registry_url = registry_url.map(|url| format!("{}/", url.trim_end_matches('/')));
-        let substituters = if caches.is_empty() {
-            registry_url.iter().cloned().collect()
+        let substituters = if let Some(url) = &registry_url {
+            // The canonical registry facade is deliberately also its Git
+            // origin and Nix binary cache. Physical cache routes remain in the
+            // signed topology below, but consumer setup needs only this one
+            // stable URL.
+            vec![url.trim_end_matches('/').to_string()]
         } else {
             let mut ordered: Vec<&(String, u32)> = caches.iter().collect();
-            ordered.sort_by_key(|(_, priority)| *priority);
+            ordered.sort_by_key(|(_, priority)| std::cmp::Reverse(*priority));
             ordered
                 .into_iter()
                 .map(|(url, _)| url.trim_end_matches('/').to_string())
@@ -487,7 +493,7 @@ pub fn registry_home(
                 vec![
                     format!("pinned {}", escape(name)),
                     hash_value(&key_fingerprint(blob)),
-                    format!("<code class=\"trust-key\">{}</code>", escape(key)),
+                    trust_key_value(key),
                 ]
             })
             .chain(roster.iter().map(|(id, key, status)| {
@@ -495,10 +501,7 @@ pub fn registry_home(
                     ("—".to_string(), "—".to_string())
                 } else {
                     let (_, blob) = key_name_and_blob(key);
-                    (
-                        hash_value(&key_fingerprint(blob)),
-                        format!("<code class=\"trust-key\">{}</code>", escape(key)),
-                    )
+                    (hash_value(&key_fingerprint(blob)), trust_key_value(key))
                 };
                 vec![
                     format!("roster {} ({})", escape(id), escape(status)),
@@ -3019,15 +3022,14 @@ mod tests {
         assert!(html.contains("SHA256:"));
         assert!(html.contains("aos.apm.registries.&quot;demo&quot;"));
         assert!(html.contains("trustKeys"));
-        // substituters point at the cache's committed delivery URL,
-        // not the registry URL — the registry serves the index, the cache serves
-        // nar/narinfo.
-        assert!(html.contains("substituters = https://cache.example"));
+        // One canonical registry URL serves Git, AOS, and stock-Nix clients;
+        // physical cache routes remain visible in the signed topology table.
+        assert!(html.contains("substituters = http://127.0.0.1:8420/demo"));
         assert!(html.contains("trusted-public-keys = demo:Ed25519:AAAA"));
         // Unvalidated caches say so; the health page is linked.
         assert!(html.contains("not yet validated"));
         assert!(html.contains("/demo/-/health"));
-        assert!(html.contains("class=\"trust-key\""));
+        assert!(html.contains("aria-label=\"Copy full trust key\""));
         assert!(html.contains("class=\"cache-url\""));
     }
 
@@ -3176,13 +3178,13 @@ mod tests {
         // Install snippet: apm is the consumer CLI.
         assert!(html.contains("apm install curl"));
         assert!(html.contains("apr add http://hub.example/demo/ --name demo"));
-        assert!(html.contains("substituters = https://cache.example/demo"));
+        assert!(html.contains("substituters = http://hub.example/demo"));
         assert!(html.contains("trusted-public-keys = demo:Ed25519:AAAA"));
         // A resolved dependency links to its package page; an unresolved one
         // falls back to its narinfo permalink.
         assert!(html.contains("Dependencies (2)"));
         assert!(html.contains("<a href=\"/demo/-/packages/zlib\">zlib</a>"));
-        assert!(html.contains("href=\"https://cache.example/demo/cccc.narinfo\""));
+        assert!(html.contains("href=\"http://hub.example/demo/cccc.narinfo\""));
         // Reverse dependency.
         assert!(html.contains("Required by (1)"));
         assert!(html.contains("<a href=\"/demo/-/packages/git\">git</a>"));
@@ -3192,7 +3194,7 @@ mod tests {
         assert!(html.contains("<th scope=\"row\">store path</th>"));
         assert!(html.contains("<th scope=\"row\">source drv</th>"));
         assert!(html.contains("<th scope=\"row\">NAR hash</th>"));
-        assert!(html.contains("href=\"https://cache.example/demo/aaaa.narinfo\""));
+        assert!(html.contains("href=\"http://hub.example/demo/aaaa.narinfo\""));
         assert!(html.contains("colspan=\"3\""));
         // Raw-metadata disclosure block.
         assert!(html.contains("<details class=\"raw-metadata\">"));
@@ -3208,8 +3210,8 @@ mod tests {
             "andyl-main:Ed25519:BBBB".into(),
         ];
         let caches = [
-            ("https://cache.example/secondary/".into(), 100),
-            ("https://cache.example/primary/".into(), 50),
+            ("https://cache.example/secondary/".into(), 50),
+            ("https://cache.example/primary/".into(), 100),
         ];
         let setup = setup(&registry, "https://cdn.example/andyl/main/", &caches);
         let detail = PackageDetail {
@@ -3238,9 +3240,8 @@ mod tests {
         ));
         assert!(html.contains("--trust-key andyl-main:Ed25519:BBBB"));
         assert!(html.contains("apm install minisign"));
-        assert!(html.contains(
-            "substituters = https://cache.example/primary https://cache.example/secondary"
-        ));
+        assert!(html.contains("substituters = https://cdn.example/andyl/main"));
+        assert!(!html.contains("substituters = https://cache.example"));
         assert!(!html.contains("apr add https://hub.example"));
     }
 
