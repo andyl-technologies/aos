@@ -119,6 +119,8 @@ in {
       port = mkOption {
         type = types.port;
         default = 10002;
+        readOnly = true;
+        description = "Signed HTTPS port admitted by the CloudCore expose firewall contract.";
       };
     };
     websocket = {
@@ -133,6 +135,8 @@ in {
       port = mkOption {
         type = types.port;
         default = 10000;
+        readOnly = true;
+        description = "Signed WebSocket port admitted by the CloudCore expose firewall contract.";
       };
     };
     tls = {
