@@ -111,6 +111,22 @@ in
         script =
           if splitDarwinRuntime
           then ''
+            # The preferred-language consumer uses either the modern CFLocale
+            # API or the legacy CFPreferences API, but upstream guards its pure
+            # locale-name canonicalizer with only the legacy probe.  Keep the
+            # definition available when the modern API is the selected path.
+            sed -i \
+              '/^#if HAVE_CFPREFERENCESCOPYAPPVALUE$/ { N; /\/\* Mac OS X 10\.4 or newer \*\// s/^#if HAVE_CFPREFERENCESCOPYAPPVALUE/#if HAVE_CFPREFERENCESCOPYAPPVALUE || HAVE_CFLOCALECOPYPREFERREDLANGUAGES/; }' \
+              gettext-runtime/intl/gnulib-lib/localename-unsafe.c
+
+            # Darwin's language-preference implementation calls the locale-name
+            # canonicalizer from libintl.  Gnulib makes that symbol external only
+            # when compiling as part of libintl; without the define it is static
+            # in localename-unsafe.c and the final libintl link fails.
+            sed -i \
+              's|^libgnu_la_CFLAGS = |libgnu_la_CFLAGS = -DIN_LIBINTL |' \
+              gettext-runtime/intl/gnulib-lib/Makefile.in
+
             ./configure \
               $configureFlags \
               --prefix=$out \
