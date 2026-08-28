@@ -690,7 +690,7 @@ construct a deletion fence. Both values retain the same content-derived
 cannot pair independently supplied leaves with an unrelated graph hash.
 
 The registered `crucible.content-store.graph-configuration` schemas v1 through
-v7 freeze that identity basis. New writers retain the byte-for-byte v1 body
+v8 freeze that identity basis. New writers retain the byte-for-byte v1 body
 when the graph has no compressed-directory, logical-quota, encrypted,
 compressed-encrypted, durability-policy, or namespaced nodes,
 emit v2 when it has a compressed-directory node but no logical quota or
@@ -698,7 +698,8 @@ encryption, emit v3 when it has a logical-quota node but no encryption, and
 emit v4 when it has any encrypted-directory node but no compressed-encrypted
 node. A graph with any compressed-encrypted-directory node but no durability
 policy emits v5. A graph with any durability-policy node but no namespaced node
-emits v6. A graph with any namespaced node emits v7. V2 uses
+emits v6. A graph with any namespaced node but no profile-validation node emits
+v7. A graph with any profile-validation node emits v8. V2 uses
 the same grammar and existing tags as v1, changes the magic suffix from `v1`
 to `v2`, and adds tag 11. V3 changes the suffix to `v3`, retains tags 1 through
 11, and adds tag 12. V4 changes the suffix to `v4`, retains tags 1 through 12,
@@ -706,6 +707,7 @@ and adds tag 13. V5 changes the suffix to `v5`, retains tags 1 through 13, and
 adds tag 14.
 V6 changes the suffix to `v6`, retains tags 1 through 14, and adds tag 15.
 V7 changes the suffix to `v7`, retains tags 1 through 15, and adds tag 16.
+V8 changes the suffix to `v8`, retains tags 1 through 16, and adds tag 17.
 Every persistent
 path is an absolute host-local Unix path; its opaque bytes, rather than a lossy
 Unicode rendering, enter the identity.
@@ -758,6 +760,8 @@ node tag 15 DurabilityPolicy:
                             || minimum_durable_placements:u16be
                             || allow_deferred_write:u8
 node tag 16 Namespaced: child:string_u16 || namespace:string_u16
+node tag 17 ProfileValidated:
+                         child:string_u16 || policy_id:string_u16
 ```
 
 Let `D` be `crucible.content-store.graph-configuration-id.v1` and `B` the
@@ -802,6 +806,45 @@ artifacts, exact RAM, disk extents, opaque device state, projections, logs, and
 traces. The profile and policy choose physical actions only. Sensitivity and
 retention claims are validated against the canonical object and its reachable
 root rather than trusted from a caller hint.
+
+The initial closed profile vocabulary is:
+
+```text
+SensitivityClass    := Metadata | Evidence | GuestState
+Reconstructibility  := Canonical | Rebuildable
+RetentionRole       := CampaignMetadata | Evidence | ExactState
+                     | ProjectionCache
+```
+
+The version-1 campaign policy ID is
+`crucible.campaign.object-profile.v1`. Non-Merkle campaign envelope kinds are
+decoded and their record-specific schema and child table are validated before
+assignment. Merkle envelope framing, schema, identity, and length are profiled
+here while the owning authenticated-map validator remains responsible for node
+prefix and child semantics.
+Configuration artifacts are `GuestState/Canonical/ExactState`; measurement,
+property, observation, objective, reproduction, and finding records are
+`Evidence/Canonical/Evidence`; expansion, continuation, guidance, coverage, and
+ranking projections are `Rebuildable/ProjectionCache`, with evidence
+sensitivity for coverage and ranking and metadata sensitivity otherwise.
+Remaining campaign records are `Metadata/Canonical/CampaignMetadata`. Opaque
+exact manifests, RAM, disk, and device-state extents derive
+`GuestState/Canonical/ExactState` directly from their authenticated content-ID
+kind; traces derive `Evidence/Canonical/Evidence`. The exact logical length is
+always taken from the authenticated byte stream. Reachable roots determine
+whether an object is retained; the derived role determines the operational
+retention policy applied to that authenticated member.
+
+A `ProfileValidated` node resolves that policy ID through an external
+non-serializable profiler capability. It authenticates and derives the complete
+profile before a put reaches its child, before a read or range is returned, and
+before `contains` reports presence. Profile and namespace boundaries may
+compose only as the unary prefix at the graph root; neither may sit below a
+cache, mirror, route, or deferred-write path. Pending write-back transfer and
+retention inventory repeat profile validation so administrative movement cannot
+bypass the ordinary boundary. The profiler implementation and mutable
+operational policy remain outside logical object identity; the non-secret
+policy ID enters graph configuration identity.
 
 `PutReceipt` records which store nodes verified an object and which durability
 conditions are satisfied. Receipts are operational and replaceable. A snapshot
@@ -1393,3 +1436,10 @@ logs, or placement receipts returned to ordinary operators.
   operational capability at construction, dominate the graph root, and
   authorize every exact logical operation and deferred-transfer/retention-root
   access before any child can observe the requested `ContentId`.
+- **[CSTORE-27]** An object-profile boundary MUST commit its non-secret policy
+  ID to graph identity, derive kind, exact length, sensitivity,
+  reconstructibility, and retention role from complete authenticated bytes or
+  the authenticated opaque content-ID kind, dominate every ordinary logical
+  action, and repeat validation for deferred transfer and retention-root
+  inventory. Separately held physical maintenance authority remains governed by
+  the plan/apply GC boundary.

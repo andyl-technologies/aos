@@ -58,6 +58,55 @@ impl StoreNamespaceAuthorizer for RecordingNamespaceAuthorizer {
     }
 }
 
+struct RecordingObjectProfiler {
+    allowed: AtomicBool,
+    calls: AtomicUsize,
+    returned_kind: Mutex<Option<ObjectKind>>,
+}
+
+impl RecordingObjectProfiler {
+    fn new(allowed: bool) -> Self {
+        Self {
+            allowed: AtomicBool::new(allowed),
+            calls: AtomicUsize::new(0),
+            returned_kind: Mutex::new(None),
+        }
+    }
+
+    fn set_allowed(&self, allowed: bool) {
+        self.allowed.store(allowed, Ordering::SeqCst);
+    }
+
+    fn set_returned_kind(&self, kind: Option<ObjectKind>) {
+        *self.returned_kind.lock().expect("profile kind lock") = kind;
+    }
+}
+
+impl StoreObjectProfiler for RecordingObjectProfiler {
+    fn derive_profile(
+        &self,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<ObjectProfile, StoreError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if !self.allowed.load(Ordering::SeqCst) {
+            return Err(StoreError::Unauthorized);
+        }
+        let kind = self
+            .returned_kind
+            .lock()
+            .expect("profile kind lock")
+            .unwrap_or(id.kind());
+        Ok(ObjectProfile::new(
+            kind,
+            source.logical_length(),
+            SensitivityClass::Evidence,
+            Reconstructibility::Canonical,
+            RetentionRole::Evidence,
+        ))
+    }
+}
+
 fn put_bytes(
     store: &dyn ImmutableBlobBackend,
     id: ContentId,
@@ -2445,6 +2494,295 @@ fn namespaced_graph_authorizes_every_operation_before_child_access() {
     assert_eq!(
         encode_hex(&graph.configuration_id().as_bytes()),
         "7f8907cc7694835950ccadf6b47458a019af583119e279e6757e102e74fc0d78"
+    );
+}
+
+#[test]
+fn profile_graph_derives_authenticated_classes_without_caller_hints() {
+    for invalid in ["", "/absolute", "a//b", "a/../b", "snowman-☃"] {
+        assert!(matches!(
+            StoreObjectProfilePolicyId::new(invalid),
+            Err(StoreError::InvalidComposition { .. })
+        ));
+    }
+
+    let policy = StoreObjectProfilePolicyId::new("crucible.campaign.object-profile.v1")
+        .expect("profile policy");
+    let profile = node_id("profile");
+    let memory = node_id("memory");
+    let config = |policy| StoreGraphConfig {
+        root: profile.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                profile.clone(),
+                StoreNodeSpec::ProfileValidated {
+                    child: memory.clone(),
+                    policy,
+                },
+            ),
+            (
+                memory.clone(),
+                StoreNodeSpec::Memory {
+                    max_logical_bytes: 1_024,
+                },
+            ),
+        ]),
+    };
+    assert!(matches!(
+        StoreGraph::build(config(policy.clone())),
+        Err(StoreError::Unauthorized)
+    ));
+
+    let profiler = Arc::new(RecordingObjectProfiler::new(false));
+    let mut profilers = StoreGraphObjectProfilers::new();
+    profilers
+        .insert(policy.clone(), profiler.clone())
+        .expect("profile capability");
+    assert!(matches!(
+        profilers.insert(policy.clone(), profiler.clone()),
+        Err(StoreError::InvalidComposition { .. })
+    ));
+    let keys = StoreGraphKeyring::new();
+    let authorizers = StoreGraphNamespaceAuthorizers::new();
+    let graph = StoreGraph::build_with_all_capabilities(
+        config(policy.clone()),
+        &keys,
+        &authorizers,
+        &profilers,
+    )
+    .expect("profile graph");
+    assert_eq!(graph.describe()[1].kind, StoreNodeKind::ProfileValidated);
+
+    let bytes = b"profiled trace";
+    let id = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
+    assert!(matches!(
+        put_bytes(&graph, id, bytes),
+        Err(StoreError::Unauthorized)
+    ));
+
+    profiler.set_allowed(true);
+    assert!(!graph.contains(id).expect("denied put left child empty"));
+    put_bytes(&graph, id, bytes).expect("profiled put");
+    assert!(graph.contains(id).expect("profiled contains"));
+    assert_eq!(
+        read_bytes(
+            &graph,
+            id,
+            Some(ByteRange::new(2, 5).expect("profiled range")),
+        )
+        .expect("profiled range read"),
+        b"ofile"
+    );
+    assert_eq!(profiler.calls.load(Ordering::SeqCst), 4);
+
+    profiler.set_returned_kind(Some(ObjectKind::Finding));
+    assert!(matches!(graph.contains(id), Err(StoreError::Incompatible)));
+
+    let other_policy = StoreObjectProfilePolicyId::new("crucible.campaign.object-profile.v2")
+        .expect("other profile policy");
+    let other_profiler = Arc::new(RecordingObjectProfiler::new(true));
+    let mut other_profilers = StoreGraphObjectProfilers::new();
+    other_profilers
+        .insert(other_policy.clone(), other_profiler)
+        .expect("other profile capability");
+    let other = StoreGraph::build_with_all_capabilities(
+        config(other_policy),
+        &keys,
+        &authorizers,
+        &other_profilers,
+    )
+    .expect("other profile graph");
+    assert_ne!(graph.configuration_id(), other.configuration_id());
+    assert_eq!(
+        encode_hex(&graph.configuration_id().as_bytes()),
+        "5b47533ebd3efc0261bd493bde4f11ec9009cf67614bd356784234c3c4bca12c"
+    );
+
+    let bypass = node_id("bypass");
+    assert!(matches!(
+        StoreGraph::build(StoreGraphConfig {
+            root: bypass.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+            nodes: BTreeMap::from([
+                (
+                    bypass,
+                    StoreNodeSpec::WriteThrough {
+                        children: vec![profile.clone(), memory.clone()],
+                    },
+                ),
+                (
+                    profile,
+                    StoreNodeSpec::ProfileValidated {
+                        child: memory.clone(),
+                        policy,
+                    },
+                ),
+                (
+                    memory,
+                    StoreNodeSpec::Memory {
+                        max_logical_bytes: 1_024,
+                    },
+                ),
+            ]),
+        }),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::InvalidProfileBoundary,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn profile_and_namespace_boundaries_compose_at_the_graph_root() {
+    let policy = StoreObjectProfilePolicyId::new("crucible.campaign.object-profile.v1")
+        .expect("profile policy");
+    let namespace = StoreNamespaceId::new("tenant-a/profiled").expect("namespace");
+    let profile = node_id("profile");
+    let namespaced = node_id("namespaced");
+    let memory = node_id("memory");
+    let profiler = Arc::new(RecordingObjectProfiler::new(true));
+    let authorizer = Arc::new(RecordingNamespaceAuthorizer::default());
+    authorizer.set_allowed(true);
+    let mut profilers = StoreGraphObjectProfilers::new();
+    profilers
+        .insert(policy.clone(), profiler)
+        .expect("profile capability");
+    let mut authorizers = StoreGraphNamespaceAuthorizers::new();
+    authorizers
+        .insert(namespace.clone(), authorizer)
+        .expect("namespace capability");
+    let graph = StoreGraph::build_with_all_capabilities(
+        StoreGraphConfig {
+            root: profile.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+            nodes: BTreeMap::from([
+                (
+                    profile,
+                    StoreNodeSpec::ProfileValidated {
+                        child: namespaced.clone(),
+                        policy,
+                    },
+                ),
+                (
+                    namespaced,
+                    StoreNodeSpec::Namespaced {
+                        child: memory.clone(),
+                        namespace,
+                    },
+                ),
+                (
+                    memory,
+                    StoreNodeSpec::Memory {
+                        max_logical_bytes: 1_024,
+                    },
+                ),
+            ]),
+        },
+        &StoreGraphKeyring::new(),
+        &authorizers,
+        &profilers,
+    )
+    .expect("composed boundaries");
+    let bytes = b"composed operational boundaries";
+    let id = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
+    put_bytes(&graph, id, bytes).expect("composed put");
+    assert_eq!(read_bytes(&graph, id, None).expect("composed read"), bytes);
+}
+
+#[test]
+fn profile_graph_validates_deferred_transfer_and_root_inventory() {
+    let temp = TempDir::new().expect("temporary directory");
+    let policy = StoreObjectProfilePolicyId::new("crucible.campaign.object-profile.v1")
+        .expect("profile policy");
+    let profile = node_id("profile");
+    let write_back = node_id("write-back");
+    let staging = node_id("staging");
+    let destination = node_id("destination");
+    let profiler = Arc::new(RecordingObjectProfiler::new(true));
+    let mut profilers = StoreGraphObjectProfilers::new();
+    profilers
+        .insert(policy.clone(), profiler.clone())
+        .expect("profile capability");
+    let graph = StoreGraph::build_with_all_capabilities(
+        StoreGraphConfig {
+            root: profile.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+            nodes: BTreeMap::from([
+                (
+                    profile,
+                    StoreNodeSpec::ProfileValidated {
+                        child: write_back.clone(),
+                        policy,
+                    },
+                ),
+                (
+                    write_back,
+                    StoreNodeSpec::WriteBack {
+                        staging: staging.clone(),
+                        destination: destination.clone(),
+                        journal_root: temp.path().join("journal"),
+                        maximum_pending_objects: 8,
+                        maximum_pending_bytes: 1_024,
+                    },
+                ),
+                (
+                    staging,
+                    StoreNodeSpec::Directory {
+                        root: temp.path().join("staging"),
+                    },
+                ),
+                (
+                    destination,
+                    StoreNodeSpec::Directory {
+                        root: temp.path().join("destination"),
+                    },
+                ),
+            ]),
+        },
+        &StoreGraphKeyring::new(),
+        &StoreGraphNamespaceAuthorizers::new(),
+        &profilers,
+    )
+    .expect("profiled write-back graph");
+    let bytes = b"profiled deferred finding";
+    let id = ContentId::for_bytes(ObjectKind::Finding, 1, bytes);
+    put_bytes(&graph, id, bytes).expect("profiled staging put");
+
+    profiler.set_allowed(false);
+    assert!(matches!(
+        graph.flush_write_back(1),
+        Err(StoreError::Unauthorized)
+    ));
+    {
+        let mut fence = graph
+            .acquire_write_back_retention_fence()
+            .expect("retention fence");
+        assert!(matches!(
+            fence.visit_roots(&mut |_root| Ok(())),
+            Err(StoreError::Unauthorized)
+        ));
+    }
+    let destination = DirectoryBlobBackend::new("inspection", temp.path().join("destination"));
+    assert!(!destination.contains(id).expect("destination remains empty"));
+
+    profiler.set_allowed(true);
+    assert_eq!(
+        graph
+            .flush_write_back(1)
+            .expect("profiled flush")
+            .completed(),
+        1
+    );
+    let mut fence = graph
+        .acquire_write_back_retention_fence()
+        .expect("empty retention fence");
+    assert_eq!(
+        fence
+            .visit_roots(&mut |_root| Ok(()))
+            .expect("empty inventory")
+            .roots(),
+        0
     );
 }
 

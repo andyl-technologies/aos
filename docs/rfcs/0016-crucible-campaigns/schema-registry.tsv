@@ -1,7 +1,7 @@
 # schema-name	version	owner	object-kind	compatibility-gates
 crucible.content-envelope	1	crucible-cas::content_envelope	envelope	gate:content-address,gate:campaign-store-equivalence
 crucible.content-id-text	1	crucible-cas::content_store	identity	gate:content-address,gate:campaign-store-equivalence
-crucible.content-store.graph-configuration	7	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
+crucible.content-store.graph-configuration	8	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
 crucible.directory-ref	1	crucible-cas::content_store	mutable-ref	gate:campaign-store-composition
 crucible.content-store.directory-inventory-state	1	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
 crucible.content-store.directory-ref-inventory-state	1	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
