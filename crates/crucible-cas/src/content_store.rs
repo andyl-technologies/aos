@@ -74,15 +74,18 @@ pub use profile::{
     StoreObjectProfilePolicyId, StoreObjectProfiler,
 };
 pub use s3::{
-    MAX_S3_MULTIPART_LIST_ITEMS, S3BlobBackend, S3MultipartCleanupAdmin, StoreGraphS3Clients,
-    StoreS3Client, StoreS3ConditionalPutOutcome, StoreS3EndpointId, StoreS3MultipartCleanupPage,
-    StoreS3MultipartListCursor, StoreS3MultipartListPage, StoreS3MultipartUpload,
-    StoreS3MultipartUploadRecord, StoreS3ObjectDownload, StoreS3UploadedPart,
+    MAX_S3_COMMITTED_OBJECT_VISITS, MAX_S3_MULTIPART_LIST_ITEMS, S3BlobBackend,
+    S3MultipartCleanupAdmin, StoreGraphS3Clients, StoreS3BlobAdminClient, StoreS3Client,
+    StoreS3ConditionalDeleteOutcome, StoreS3ConditionalPutOutcome, StoreS3EndpointId,
+    StoreS3MultipartCleanupPage, StoreS3MultipartListCursor, StoreS3MultipartListPage,
+    StoreS3MultipartUpload, StoreS3MultipartUploadRecord, StoreS3ObjectDownload,
+    StoreS3UploadedPart,
 };
 pub use s3_ref::{
-    MAX_S3_REF_LIST_ITEMS, S3RefBackend, StoreS3ConditionalWriteOutcome, StoreS3ObjectListCursor,
-    StoreS3ObjectListPage, StoreS3ObjectScan, StoreS3ObjectVersion, StoreS3RefCapability,
-    StoreS3StrongCasClient, StoreS3VersionedObject,
+    MAX_S3_OBJECT_LIST_ITEMS, MAX_S3_REF_LIST_ITEMS, S3RefBackend, StoreS3ConditionalWriteOutcome,
+    StoreS3ObjectListCursor, StoreS3ObjectListPage, StoreS3ObjectScan, StoreS3ObjectVersion,
+    StoreS3RefCapability, StoreS3StrongCasClient, StoreS3VersionedObject,
+    StoreS3VersionedObjectMetadata,
 };
 pub use write_back::{
     WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackRetentionGeneration,

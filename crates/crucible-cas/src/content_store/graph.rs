@@ -451,8 +451,10 @@ impl StoreWriteBackFlushSummary {
 /// physical placements. The daemon maintenance owner may retain this value and
 /// lend individual administrative boundaries to a generation-bound GC
 /// operation. A logical-quota boundary owns and replaces its child leaf's
-/// otherwise direct capability. S3 leaves add only bounded unfinished-upload
-/// cleanup; that weaker boundary cannot inventory or delete committed objects.
+/// otherwise direct capability. An S3 leaf contributes committed-object
+/// inventory/deletion only when graph construction receives its separate
+/// strong administration capability; bounded unfinished-upload cleanup remains
+/// available independently and is not itself a physical GC fence.
 pub struct StoreGraphAdmin {
     configuration: StoreGraphConfigurationId,
     physical: BTreeMap<StoreNodeId, Arc<dyn BlobStoreAdmin>>,
@@ -1557,15 +1559,33 @@ fn instantiate(
             maximum_logical_object_bytes,
             multipart_part_bytes,
         } => {
-            let leaf = Arc::new(S3BlobBackend::new(
-                id.as_str(),
-                endpoint.clone(),
-                bucket.clone(),
-                prefix.clone(),
-                *maximum_logical_object_bytes,
-                *multipart_part_bytes,
-                capabilities.s3_clients.resolve(endpoint)?,
-            )?);
+            let client = capabilities.s3_clients.resolve(endpoint)?;
+            let leaf = Arc::new(
+                match capabilities.s3_clients.resolve_administration(endpoint) {
+                    Some(administration) => S3BlobBackend::new_with_admin(
+                        id.as_str(),
+                        endpoint.clone(),
+                        bucket.clone(),
+                        prefix.clone(),
+                        *maximum_logical_object_bytes,
+                        *multipart_part_bytes,
+                        client,
+                        administration,
+                    ),
+                    None => S3BlobBackend::new(
+                        id.as_str(),
+                        endpoint.clone(),
+                        bucket.clone(),
+                        prefix.clone(),
+                        *maximum_logical_object_bytes,
+                        *multipart_part_bytes,
+                        client,
+                    ),
+                }?,
+            );
+            if leaf.capabilities().planned_delete {
+                state.physical.insert(id.clone(), leaf.clone());
+            }
             state
                 .s3_multipart_cleanup
                 .insert(id.clone(), Arc::new(leaf.multipart_cleanup_admin()));

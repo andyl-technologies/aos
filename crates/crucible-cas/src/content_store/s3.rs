@@ -18,6 +18,13 @@ use super::{
     validate_source,
 };
 
+mod blob_admin;
+
+pub use blob_admin::{
+    MAX_S3_COMMITTED_OBJECT_VISITS, StoreS3BlobAdminClient, StoreS3ConditionalDeleteOutcome,
+};
+use blob_admin::{S3BlobAdministration, S3BlobLifecycle, admit_blob_namespace};
+
 const MAX_ENDPOINT_ID_BYTES: usize = 512;
 const MAX_BUCKET_BYTES: usize = 63;
 const MAX_OBJECT_KEY_BYTES: usize = 1_024;
@@ -429,6 +436,7 @@ pub trait StoreS3Client: Send + Sync {
 #[derive(Default)]
 pub struct StoreGraphS3Clients {
     clients: BTreeMap<StoreS3EndpointId, Arc<dyn StoreS3Client>>,
+    administration: BTreeMap<StoreS3EndpointId, Arc<dyn StoreS3BlobAdminClient>>,
 }
 
 impl StoreGraphS3Clients {
@@ -437,6 +445,7 @@ impl StoreGraphS3Clients {
     pub const fn new() -> Self {
         Self {
             clients: BTreeMap::new(),
+            administration: BTreeMap::new(),
         }
     }
 
@@ -474,6 +483,38 @@ impl StoreGraphS3Clients {
             .cloned()
             .ok_or(StoreError::Unauthorized)
     }
+
+    /// Inserts separate committed-object administration for one endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::InvalidComposition`] for a duplicate identifier
+    /// or [`StoreError::Unauthorized`] when the client's identity differs.
+    pub fn insert_administration(
+        &mut self,
+        endpoint: StoreS3EndpointId,
+        client: Arc<dyn StoreS3BlobAdminClient>,
+    ) -> Result<(), StoreError> {
+        if client.endpoint_id() != &endpoint {
+            return Err(StoreError::Unauthorized);
+        }
+        match self.administration.entry(endpoint) {
+            Entry::Vacant(entry) => {
+                entry.insert(client);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(StoreError::InvalidComposition {
+                reason: "store S3 administration collection contains a duplicate identifier",
+            }),
+        }
+    }
+
+    pub(super) fn resolve_administration(
+        &self,
+        endpoint: &StoreS3EndpointId,
+    ) -> Option<Arc<dyn StoreS3BlobAdminClient>> {
+        self.administration.get(endpoint).cloned()
+    }
 }
 
 /// Durable S3-compatible immutable-object leaf.
@@ -485,6 +526,8 @@ pub struct S3BlobBackend {
     maximum_logical_object_bytes: u64,
     multipart_part_bytes: u64,
     client: Arc<dyn StoreS3Client>,
+    lifecycle: Arc<S3BlobLifecycle>,
+    administration: Option<S3BlobAdministration>,
 }
 
 /// Separate bounded authority for reclaiming unfinished multipart uploads.
@@ -564,6 +607,30 @@ impl S3BlobBackend {
         multipart_part_bytes: u64,
         client: Arc<dyn StoreS3Client>,
     ) -> Result<Self, StoreError> {
+        Self::new_inner(
+            name,
+            endpoint,
+            bucket,
+            prefix,
+            maximum_logical_object_bytes,
+            multipart_part_bytes,
+            client,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_inner(
+        name: impl Into<String>,
+        endpoint: StoreS3EndpointId,
+        bucket: impl Into<String>,
+        prefix: impl Into<String>,
+        maximum_logical_object_bytes: u64,
+        multipart_part_bytes: u64,
+        client: Arc<dyn StoreS3Client>,
+        admin_client: Option<Arc<dyn StoreS3BlobAdminClient>>,
+    ) -> Result<Self, StoreError> {
+        let name = name.into();
         let bucket = bucket.into();
         let prefix = prefix.into();
         validate_configuration(
@@ -576,14 +643,28 @@ impl S3BlobBackend {
         if client.endpoint_id() != &endpoint {
             return Err(StoreError::Unauthorized);
         }
+        let administrative = admin_client.is_some();
+        let lifecycle = admit_blob_namespace(
+            &name,
+            &endpoint,
+            &bucket,
+            &prefix,
+            maximum_logical_object_bytes,
+            administrative,
+        )?;
+        let administration = admin_client
+            .map(|client| S3BlobAdministration::new(&endpoint, client))
+            .transpose()?;
         Ok(Self {
-            name: name.into(),
+            name,
             endpoint,
             bucket,
             prefix,
             maximum_logical_object_bytes,
             multipart_part_bytes,
             client,
+            lifecycle,
+            administration,
         })
     }
 
@@ -752,8 +833,8 @@ impl ImmutableBlobBackend for S3BlobBackend {
             streaming_read: true,
             conditional_create: true,
             streaming_put: true,
-            repair_inventory: false,
-            planned_delete: false,
+            repair_inventory: self.administration.is_some(),
+            planned_delete: self.administration.is_some(),
         }
     }
 
@@ -786,6 +867,7 @@ impl ImmutableBlobBackend for S3BlobBackend {
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        let _publication = self.acquire_admin_publication_guard()?;
         let logical_length = source.logical_length();
         if logical_length > self.maximum_logical_object_bytes {
             return Err(StoreError::Quota);
@@ -794,6 +876,7 @@ impl ImmutableBlobBackend for S3BlobBackend {
         if self.contains(id)? {
             return self.authenticate_existing(id);
         }
+        self.advance_admin_generation()?;
         let outcome = if logical_length == 0 {
             self.client
                 .put_empty_if_absent(&self.bucket, &self.key(id))?
@@ -932,12 +1015,19 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::Cursor;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
 
     use super::*;
-    use crate::content_store::ObjectKind;
     use crate::content_store::graph::{
         StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeKind, StoreNodeSpec,
+    };
+    use crate::content_store::{
+        BlobStoreAdmin, ObjectKind, PlannedDeleteDisposition, StoreS3ConditionalWriteOutcome,
+        StoreS3ObjectListCursor, StoreS3ObjectListPage, StoreS3ObjectScan, StoreS3ObjectVersion,
+        StoreS3StrongCasClient, StoreS3VersionedObject, StoreS3VersionedObjectMetadata,
     };
 
     struct UploadState {
@@ -1201,6 +1291,268 @@ mod tests {
         }
     }
 
+    struct FakeBlobAdminClient {
+        ordinary: Arc<FakeS3Client>,
+        state: Mutex<BTreeMap<(String, String), (Arc<[u8]>, u64)>>,
+        next_version: AtomicU64,
+        malformed_scan: AtomicBool,
+        force_delete_conflict: AtomicBool,
+    }
+
+    impl FakeBlobAdminClient {
+        fn new(ordinary: Arc<FakeS3Client>) -> Self {
+            Self {
+                ordinary,
+                state: Mutex::new(BTreeMap::new()),
+                next_version: AtomicU64::new(1),
+                malformed_scan: AtomicBool::new(false),
+                force_delete_conflict: AtomicBool::new(false),
+            }
+        }
+
+        fn next_version(&self) -> (u64, StoreS3ObjectVersion) {
+            let version = self.next_version.fetch_add(1, Ordering::SeqCst);
+            (
+                version,
+                StoreS3ObjectVersion::new(format!("state-{version}")).expect("state version"),
+            )
+        }
+
+        fn ordinary_version(bytes: &[u8]) -> StoreS3ObjectVersion {
+            StoreS3ObjectVersion::new(format!("object-{}", blake3::hash(bytes).to_hex()))
+                .expect("object version")
+        }
+
+        fn metadata(
+            &self,
+            bucket: &str,
+            key: &str,
+        ) -> Result<Option<StoreS3VersionedObjectMetadata>, StoreError> {
+            self.ordinary.require_authorized()?;
+            if let Some((bytes, version)) = self
+                .state
+                .lock()
+                .expect("state lock")
+                .get(&(bucket.to_string(), key.to_string()))
+                .cloned()
+            {
+                return Ok(Some(StoreS3VersionedObjectMetadata::new(
+                    bytes.len() as u64,
+                    StoreS3ObjectVersion::new(format!("state-{version}"))?,
+                )));
+            }
+            Ok(self
+                .ordinary
+                .objects
+                .lock()
+                .expect("object lock")
+                .get(&(bucket.to_string(), key.to_string()))
+                .map(|bytes| {
+                    StoreS3VersionedObjectMetadata::new(
+                        bytes.len() as u64,
+                        Self::ordinary_version(bytes),
+                    )
+                }))
+        }
+    }
+
+    impl StoreS3StrongCasClient for FakeBlobAdminClient {
+        fn endpoint_id(&self) -> &StoreS3EndpointId {
+            &self.ordinary.endpoint
+        }
+
+        fn get_small_versioned_object(
+            &self,
+            bucket: &str,
+            key: &str,
+            maximum_bytes: u16,
+        ) -> Result<Option<StoreS3VersionedObject>, StoreError> {
+            self.ordinary.require_authorized()?;
+            self.state
+                .lock()
+                .expect("state lock")
+                .get(&(bucket.to_string(), key.to_string()))
+                .cloned()
+                .map(|(bytes, version)| {
+                    if bytes.len() > usize::from(maximum_bytes) {
+                        return Err(StoreError::Quota);
+                    }
+                    StoreS3VersionedObject::new(
+                        bytes,
+                        StoreS3ObjectVersion::new(format!("state-{version}"))?,
+                    )
+                })
+                .transpose()
+        }
+
+        fn put_small_if_absent(
+            &self,
+            bucket: &str,
+            key: &str,
+            bytes: Arc<[u8]>,
+        ) -> Result<StoreS3ConditionalWriteOutcome, StoreError> {
+            self.ordinary.require_authorized()?;
+            let mut state = self.state.lock().expect("state lock");
+            match state.entry((bucket.to_string(), key.to_string())) {
+                Entry::Occupied(_) => Ok(StoreS3ConditionalWriteOutcome::PreconditionFailed),
+                Entry::Vacant(entry) => {
+                    let (version, token) = self.next_version();
+                    entry.insert((bytes, version));
+                    Ok(StoreS3ConditionalWriteOutcome::Committed(token))
+                }
+            }
+        }
+
+        fn replace_small_if_version(
+            &self,
+            bucket: &str,
+            key: &str,
+            expected: &StoreS3ObjectVersion,
+            bytes: Arc<[u8]>,
+        ) -> Result<StoreS3ConditionalWriteOutcome, StoreError> {
+            self.ordinary.require_authorized()?;
+            let mut state = self.state.lock().expect("state lock");
+            let Some((current, version)) = state.get_mut(&(bucket.to_string(), key.to_string()))
+            else {
+                return Ok(StoreS3ConditionalWriteOutcome::PreconditionFailed);
+            };
+            if expected.as_str() != format!("state-{version}") {
+                return Ok(StoreS3ConditionalWriteOutcome::PreconditionFailed);
+            }
+            let (next, token) = self.next_version();
+            *current = bytes;
+            *version = next;
+            Ok(StoreS3ConditionalWriteOutcome::Committed(token))
+        }
+
+        fn begin_small_object_scan(
+            &self,
+            bucket: &str,
+            prefix: &str,
+        ) -> Result<Box<dyn StoreS3ObjectScan + '_>, StoreError> {
+            self.ordinary.require_authorized()?;
+            Ok(Box::new(FakeBlobAdminScan {
+                client: self,
+                bucket: bucket.to_string(),
+                prefix: prefix.to_string(),
+                after: None,
+                finished: false,
+            }))
+        }
+    }
+
+    impl StoreS3BlobAdminClient for FakeBlobAdminClient {
+        fn head_versioned_object(
+            &self,
+            bucket: &str,
+            key: &str,
+        ) -> Result<Option<StoreS3VersionedObjectMetadata>, StoreError> {
+            self.metadata(bucket, key)
+        }
+
+        fn delete_object_if_version(
+            &self,
+            bucket: &str,
+            key: &str,
+            expected: &StoreS3ObjectVersion,
+        ) -> Result<StoreS3ConditionalDeleteOutcome, StoreError> {
+            self.ordinary.require_authorized()?;
+            if self.force_delete_conflict.load(Ordering::SeqCst) {
+                return Ok(StoreS3ConditionalDeleteOutcome::PreconditionFailed);
+            }
+            let mut objects = self.ordinary.objects.lock().expect("object lock");
+            let location = (bucket.to_string(), key.to_string());
+            let Some(bytes) = objects.get(&location) else {
+                return Ok(StoreS3ConditionalDeleteOutcome::Deleted);
+            };
+            if &Self::ordinary_version(bytes) != expected {
+                return Ok(StoreS3ConditionalDeleteOutcome::PreconditionFailed);
+            }
+            objects.remove(&location);
+            Ok(StoreS3ConditionalDeleteOutcome::Deleted)
+        }
+    }
+
+    struct FakeBlobAdminScan<'a> {
+        client: &'a FakeBlobAdminClient,
+        bucket: String,
+        prefix: String,
+        after: Option<StoreS3ObjectListCursor>,
+        finished: bool,
+    }
+
+    impl StoreS3ObjectScan for FakeBlobAdminScan<'_> {
+        fn next_page(&mut self, maximum_items: u16) -> Result<StoreS3ObjectListPage, StoreError> {
+            if self.finished {
+                return Err(StoreError::Incompatible);
+            }
+            let mut keys = self
+                .client
+                .ordinary
+                .objects
+                .lock()
+                .expect("object lock")
+                .keys()
+                .filter(|(bucket, key)| bucket == &self.bucket && key.starts_with(&self.prefix))
+                .map(|(_bucket, key)| key.clone())
+                .filter(|key| {
+                    self.after
+                        .as_ref()
+                        .is_none_or(|after| key.as_str() > after.as_str())
+                })
+                .collect::<Vec<_>>();
+            keys.sort();
+            if self.client.malformed_scan.load(Ordering::SeqCst) && !keys.is_empty() {
+                keys[0] = "foreign/not-a-content-id".to_string();
+            }
+            let truncated = keys.len() > usize::from(maximum_items);
+            keys.truncate(usize::from(maximum_items));
+            let next = truncated
+                .then(|| keys.last().cloned())
+                .flatten()
+                .map(StoreS3ObjectListCursor::new)
+                .transpose()?;
+            let page =
+                StoreS3ObjectListPage::new(keys, next.clone(), self.after.as_ref(), maximum_items)?;
+            self.after = next;
+            self.finished = self.after.is_none();
+            Ok(page)
+        }
+
+        fn get_small_versioned_object(
+            &self,
+            key: &str,
+            maximum_bytes: u16,
+        ) -> Result<Option<StoreS3VersionedObject>, StoreError> {
+            self.client
+                .get_small_versioned_object(&self.bucket, key, maximum_bytes)
+        }
+
+        fn head_versioned_object(
+            &self,
+            key: &str,
+        ) -> Result<Option<StoreS3VersionedObjectMetadata>, StoreError> {
+            self.client.metadata(&self.bucket, key)
+        }
+    }
+
+    fn administrative_backend(
+        ordinary: Arc<FakeS3Client>,
+        administration: Arc<FakeBlobAdminClient>,
+    ) -> S3BlobBackend {
+        S3BlobBackend::new_with_admin(
+            "archive-admin",
+            ordinary.endpoint.clone(),
+            "campaign-archive",
+            "tenant-admin",
+            12 * 1024 * 1024,
+            5 * 1024 * 1024,
+            ordinary,
+            administration,
+        )
+        .expect("administrative S3 backend")
+    }
+
     fn backend(client: Arc<FakeS3Client>) -> S3BlobBackend {
         S3BlobBackend::new(
             "archive",
@@ -1212,6 +1564,159 @@ mod tests {
             client,
         )
         .expect("S3 backend")
+    }
+
+    #[test]
+    fn committed_inventory_is_restart_stable_aba_safe_and_deletable() {
+        let endpoint = StoreS3EndpointId::new("minio/administration").expect("endpoint");
+        let ordinary = Arc::new(FakeS3Client::new(endpoint));
+        let administration = Arc::new(FakeBlobAdminClient::new(ordinary.clone()));
+        let backend = administrative_backend(ordinary.clone(), administration.clone());
+        let first_bytes = b"first object".to_vec();
+        let second_bytes = b"second object".to_vec();
+        let first = ContentId::for_bytes(ObjectKind::CampaignFact, 1, &first_bytes);
+        let second = ContentId::for_bytes(ObjectKind::Observation, 1, &second_bytes);
+        backend
+            .put_if_absent(first, &BlobHandle::from_bytes(first_bytes.clone()))
+            .expect("put first object");
+
+        let mut initial_records = Vec::new();
+        let initial = backend
+            .acquire_inventory_fence()
+            .expect("initial inventory fence")
+            .visit_inventory(&mut |record| {
+                initial_records.push(record);
+                Ok(())
+            })
+            .expect("initial inventory");
+        assert_eq!(initial.objects(), 1);
+        assert_eq!(initial.logical_bytes(), first_bytes.len() as u64);
+        assert_eq!(initial_records[0].id(), first);
+
+        backend
+            .put_if_absent(first, &BlobHandle::from_bytes(first_bytes.clone()))
+            .expect("exact replay");
+        let after_replay = backend
+            .acquire_inventory_fence()
+            .expect("replay inventory fence")
+            .visit_inventory(&mut |_record| Ok(()))
+            .expect("replay inventory");
+        assert_eq!(after_replay, initial);
+
+        let restarted = administrative_backend(ordinary, administration);
+        let after_restart = restarted
+            .acquire_inventory_fence()
+            .expect("restart inventory fence")
+            .visit_inventory(&mut |_record| Ok(()))
+            .expect("restart inventory");
+        assert_eq!(after_restart, initial);
+
+        let mut deletion = restarted.acquire_inventory_fence().expect("deletion fence");
+        assert_eq!(
+            deletion.delete_candidate(first).expect("delete first"),
+            PlannedDeleteDisposition::Deleted
+        );
+        assert_eq!(
+            deletion.delete_candidate(first).expect("retry deletion"),
+            PlannedDeleteDisposition::AlreadyAbsent
+        );
+        drop(deletion);
+
+        restarted
+            .put_if_absent(first, &BlobHandle::from_bytes(first_bytes))
+            .expect("restore first object after ABA");
+        restarted
+            .put_if_absent(second, &BlobHandle::from_bytes(second_bytes))
+            .expect("put second object");
+        let restored = restarted
+            .acquire_inventory_fence()
+            .expect("restored inventory fence")
+            .visit_inventory(&mut |_record| Ok(()))
+            .expect("restored inventory");
+        assert_ne!(restored.generation(), initial.generation());
+        assert_eq!(restored.objects(), 2);
+    }
+
+    #[test]
+    fn committed_inventory_fails_closed_on_stale_delete_and_bad_listing() {
+        let endpoint = StoreS3EndpointId::new("minio/admin-fail-closed").expect("endpoint");
+        let ordinary = Arc::new(FakeS3Client::new(endpoint));
+        let administration = Arc::new(FakeBlobAdminClient::new(ordinary.clone()));
+        let backend = administrative_backend(ordinary, administration.clone());
+        let bytes = b"retained object";
+        let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
+        backend
+            .put_if_absent(id, &BlobHandle::from_bytes(bytes.to_vec()))
+            .expect("put object");
+
+        administration
+            .force_delete_conflict
+            .store(true, Ordering::SeqCst);
+        let mut fence = backend
+            .acquire_inventory_fence()
+            .expect("stale-delete fence");
+        assert!(matches!(
+            fence.delete_candidate(id),
+            Err(StoreError::Incompatible)
+        ));
+        drop(fence);
+        assert!(backend.contains(id).expect("object retained"));
+
+        administration
+            .force_delete_conflict
+            .store(false, Ordering::SeqCst);
+        administration.malformed_scan.store(true, Ordering::SeqCst);
+        let mut malformed = backend
+            .acquire_inventory_fence()
+            .expect("malformed inventory fence");
+        assert!(matches!(
+            malformed.visit_inventory(&mut |_record| Ok(())),
+            Err(StoreError::Incompatible)
+        ));
+        drop(malformed);
+
+        administration.malformed_scan.store(false, Ordering::SeqCst);
+        administration
+            .ordinary
+            .authorized
+            .store(false, Ordering::SeqCst);
+        assert!(matches!(
+            backend.acquire_inventory_fence(),
+            Err(StoreError::Unauthorized)
+        ));
+    }
+
+    #[test]
+    fn committed_inventory_excludes_cross_instance_publication() {
+        let endpoint = StoreS3EndpointId::new("minio/admin-publication").expect("endpoint");
+        let ordinary = Arc::new(FakeS3Client::new(endpoint));
+        let administration = Arc::new(FakeBlobAdminClient::new(ordinary.clone()));
+        let inventor = administrative_backend(ordinary.clone(), administration.clone());
+        let publisher = administrative_backend(ordinary, administration);
+        let fence = inventor.acquire_inventory_fence().expect("inventory fence");
+        let bytes = b"blocked publication".to_vec();
+        let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, &bytes);
+        let (started_sender, started_receiver) = mpsc::sync_channel(1);
+        let (finished_sender, finished_receiver) = mpsc::sync_channel(1);
+        let publisher_thread = thread::spawn(move || {
+            started_sender.send(()).expect("announce publication");
+            let result = publisher.put_if_absent(id, &BlobHandle::from_bytes(bytes));
+            finished_sender
+                .send(result)
+                .expect("return publication result");
+        });
+        started_receiver.recv().expect("publication started");
+        assert!(
+            finished_receiver
+                .recv_timeout(Duration::from_millis(50))
+                .is_err()
+        );
+        drop(fence);
+        finished_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("publication unblocked")
+            .expect("publication result");
+        publisher_thread.join().expect("publisher thread");
     }
 
     #[test]
@@ -1399,6 +1904,7 @@ mod tests {
     fn graph_binds_exact_endpoint_capability_and_canonical_configuration() {
         let endpoint = StoreS3EndpointId::new("minio/graph").expect("endpoint");
         let client = Arc::new(FakeS3Client::new(endpoint.clone()));
+        let administration = Arc::new(FakeBlobAdminClient::new(client.clone()));
         let mut clients = StoreGraphS3Clients::new();
         clients
             .insert(endpoint.clone(), client)
@@ -1423,7 +1929,7 @@ mod tests {
             Err(StoreError::Unauthorized)
         ));
         let (graph, admin) = StoreGraph::build_with_admin_and_all_capabilities(
-            config,
+            config.clone(),
             &super::super::StoreGraphKeyring::new(),
             &super::super::StoreGraphNamespaceAuthorizers::new(),
             &super::super::StoreGraphObjectProfilers::new(),
@@ -1439,5 +1945,37 @@ mod tests {
             super::super::encode_hex(&graph.configuration_id().as_bytes()),
             "09019301ef9ff104a49cf0a9e44b2b6c016daf668888ebff0575ceb9f8181342"
         );
+
+        clients
+            .insert_administration(
+                StoreS3EndpointId::new("minio/graph").expect("admin endpoint"),
+                administration,
+            )
+            .expect("S3 administration capability");
+        assert!(matches!(
+            StoreGraph::build_with_admin_and_all_capabilities(
+                config.clone(),
+                &super::super::StoreGraphKeyring::new(),
+                &super::super::StoreGraphNamespaceAuthorizers::new(),
+                &super::super::StoreGraphObjectProfilers::new(),
+                &super::super::StoreGraphPhysicalQuotaBinders::new(),
+                &clients,
+            ),
+            Err(StoreError::InvalidComposition { .. })
+        ));
+        drop(graph);
+        drop(admin);
+        let (_graph, admin) = StoreGraph::build_with_admin_and_all_capabilities(
+            config,
+            &super::super::StoreGraphKeyring::new(),
+            &super::super::StoreGraphNamespaceAuthorizers::new(),
+            &super::super::StoreGraphObjectProfilers::new(),
+            &super::super::StoreGraphPhysicalQuotaBinders::new(),
+            &clients,
+        )
+        .expect("administrable S3 graph");
+        assert_eq!(admin.physical().len(), 1);
+        assert_eq!(admin.physical()[0].node().as_str(), "archive");
+        assert_eq!(admin.s3_multipart_cleanup().len(), 1);
     }
 }

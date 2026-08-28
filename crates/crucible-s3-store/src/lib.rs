@@ -19,12 +19,13 @@ use std::time::Duration;
 use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::primitives::ByteStream;
 use crucible_cas::content_store::{
-    ContentId, MAX_S3_MULTIPART_LIST_ITEMS, MAX_S3_REF_LIST_ITEMS, StoreError, StoreS3Client,
+    ContentId, MAX_S3_MULTIPART_LIST_ITEMS, MAX_S3_OBJECT_LIST_ITEMS, StoreError,
+    StoreS3BlobAdminClient, StoreS3Client, StoreS3ConditionalDeleteOutcome,
     StoreS3ConditionalPutOutcome, StoreS3ConditionalWriteOutcome, StoreS3EndpointId,
     StoreS3MultipartListCursor, StoreS3MultipartListPage, StoreS3MultipartUpload,
     StoreS3MultipartUploadRecord, StoreS3ObjectDownload, StoreS3ObjectListCursor,
     StoreS3ObjectListPage, StoreS3ObjectScan, StoreS3ObjectVersion, StoreS3StrongCasClient,
-    StoreS3UploadedPart, StoreS3VersionedObject,
+    StoreS3UploadedPart, StoreS3VersionedObject, StoreS3VersionedObjectMetadata,
 };
 
 mod deadline;
@@ -131,9 +132,13 @@ pub struct AwsSdkS3Client {
 ///
 /// Construction is an operator assertion that the exact configured service
 /// has passed the deployment's strong-CAS service conformance procedure and
-/// that no writer outside the admitted single daemon mutates the selected ref namespace. The ordinary
-/// [`AwsSdkS3Client`] remains usable for immutable objects without making this
-/// stronger assertion.
+/// that no writer outside the admitted single daemon mutates the selected
+/// namespace. Use as committed-object administration additionally requires
+/// the selected bucket to be unversioned, with no retained delete markers or
+/// noncurrent versions, so current-key listing and deletion account for all
+/// retained object bytes. The
+/// ordinary [`AwsSdkS3Client`] remains usable for immutable objects without
+/// making these stronger assertions.
 pub struct AwsSdkS3StrongCasClient {
     client: Arc<AwsSdkS3Client>,
 }
@@ -517,7 +522,7 @@ impl StoreS3ObjectScan for AwsSdkS3StrongCasScan {
         if self.finished {
             return Err(StoreError::Incompatible);
         }
-        if maximum_items == 0 || maximum_items > MAX_S3_REF_LIST_ITEMS {
+        if maximum_items == 0 || maximum_items > MAX_S3_OBJECT_LIST_ITEMS {
             return Err(StoreError::Quota);
         }
         let mut retained = retained_lengths(&[self.bucket.len(), self.prefix.len()])?;
@@ -562,6 +567,55 @@ impl StoreS3ObjectScan for AwsSdkS3StrongCasScan {
                 response,
             }
         })
+    }
+
+    fn head_versioned_object(
+        &self,
+        key: &str,
+    ) -> Result<Option<StoreS3VersionedObjectMetadata>, StoreError> {
+        let (_bucket, key) = request_location(&self.bucket, key)?;
+        let bucket = self.bucket.clone();
+        let retained = retained_lengths(&[bucket.len(), key.len()])?;
+        self.client
+            .call_at(self.deadline, retained, |response| Command::HeadVersioned {
+                bucket,
+                key,
+                response,
+            })
+    }
+}
+
+impl StoreS3BlobAdminClient for AwsSdkS3StrongCasClient {
+    fn head_versioned_object(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<Option<StoreS3VersionedObjectMetadata>, StoreError> {
+        let (bucket, key) = request_location(bucket, key)?;
+        let retained = retained_lengths(&[bucket.len(), key.len()])?;
+        self.client
+            .call(retained, |response| Command::HeadVersioned {
+                bucket,
+                key,
+                response,
+            })
+    }
+
+    fn delete_object_if_version(
+        &self,
+        bucket: &str,
+        key: &str,
+        expected: &StoreS3ObjectVersion,
+    ) -> Result<StoreS3ConditionalDeleteOutcome, StoreError> {
+        let (bucket, key) = request_location(bucket, key)?;
+        let retained = retained_lengths(&[bucket.len(), key.len(), expected.as_str().len()])?;
+        self.client
+            .call(retained, |response| Command::DeleteIfVersion {
+                bucket,
+                key,
+                expected: expected.as_str().to_string(),
+                response,
+            })
     }
 }
 
@@ -678,6 +732,17 @@ enum Command {
         maximum_items: u16,
         response: SyncSender<Result<StoreS3ObjectListPage, StoreError>>,
     },
+    HeadVersioned {
+        bucket: String,
+        key: String,
+        response: SyncSender<Result<Option<StoreS3VersionedObjectMetadata>, StoreError>>,
+    },
+    DeleteIfVersion {
+        bucket: String,
+        key: String,
+        expected: String,
+        response: SyncSender<Result<StoreS3ConditionalDeleteOutcome, StoreError>>,
+    },
 }
 
 struct QueuedCommand {
@@ -754,7 +819,8 @@ impl Command {
                     add(after.upload_id_marker().as_str().len())?;
                 }
             }
-            Self::GetSmallVersioned { bucket, key, .. } => {
+            Self::GetSmallVersioned { bucket, key, .. }
+            | Self::HeadVersioned { bucket, key, .. } => {
                 add(bucket.len())?;
                 add(key.len())?;
             }
@@ -791,6 +857,16 @@ impl Command {
                 if let Some(after) = after {
                     add(after.as_str().len())?;
                 }
+            }
+            Self::DeleteIfVersion {
+                bucket,
+                key,
+                expected,
+                ..
+            } => {
+                add(bucket.len())?;
+                add(key.len())?;
+                add(expected.len())?;
             }
         }
         Ok(bytes)
@@ -830,6 +906,12 @@ impl Command {
                 let _ = response.send(Err(StoreError::Unavailable));
             }
             Self::ListSmallObjects { response, .. } => {
+                let _ = response.send(Err(StoreError::Unavailable));
+            }
+            Self::HeadVersioned { response, .. } => {
+                let _ = response.send(Err(StoreError::Unavailable));
+            }
+            Self::DeleteIfVersion { response, .. } => {
                 let _ = response.send(Err(StoreError::Unavailable));
             }
         }
@@ -1250,7 +1332,54 @@ async fn handle_command(client: aws_sdk_s3::Client, command: Command) {
             };
             let _ = response.send(result);
         }
+        Command::HeadVersioned {
+            bucket,
+            key,
+            response,
+        } => {
+            let result = match client.head_object().bucket(&bucket).key(&key).send().await {
+                Ok(output) => decode_versioned_metadata(&output).map(Some),
+                Err(error) if is_missing(&error) => Ok(None),
+                Err(error) => Err(classify_sdk_error(&error)),
+            };
+            let _ = response.send(result);
+        }
+        Command::DeleteIfVersion {
+            bucket,
+            key,
+            expected,
+            response,
+        } => {
+            let result = client
+                .delete_object()
+                .bucket(&bucket)
+                .key(&key)
+                .if_match(expected)
+                .send()
+                .await;
+            let _ = response.send(match result {
+                Ok(_) => Ok(StoreS3ConditionalDeleteOutcome::Deleted),
+                Err(error) if is_conditional_conflict(&error) => {
+                    Ok(StoreS3ConditionalDeleteOutcome::PreconditionFailed)
+                }
+                Err(error) => Err(classify_sdk_error(&error)),
+            });
+        }
     }
+}
+
+fn decode_versioned_metadata(
+    output: &aws_sdk_s3::operation::head_object::HeadObjectOutput,
+) -> Result<StoreS3VersionedObjectMetadata, StoreError> {
+    let logical_length = output
+        .content_length()
+        .ok_or(StoreError::Incompatible)
+        .and_then(|length| u64::try_from(length).map_err(|_| StoreError::Incompatible))?;
+    let version = output
+        .e_tag()
+        .ok_or(StoreError::Incompatible)
+        .and_then(StoreS3ObjectVersion::new)?;
+    Ok(StoreS3VersionedObjectMetadata::new(logical_length, version))
 }
 
 async fn decode_small_versioned_object(
@@ -1684,6 +1813,62 @@ mod tests {
     }
 
     #[test]
+    fn committed_inventory_metadata_shares_the_scan_deadline() {
+        let (commands, receiver) = mpsc::sync_channel::<QueuedCommand>(2);
+        let thread = thread::spawn(move || {
+            let list = receiver.recv().expect("list command");
+            thread::sleep(Duration::from_millis(150));
+            match list.command {
+                Command::ListSmallObjects {
+                    after, response, ..
+                } => {
+                    let page = StoreS3ObjectListPage::new(
+                        vec!["tenant/objects/object".to_string()],
+                        None,
+                        after.as_ref(),
+                        1,
+                    )
+                    .expect("object page");
+                    let _ = response.send(Ok(page));
+                }
+                _ => panic!("unexpected list command"),
+            }
+
+            let metadata = receiver.recv().expect("metadata command");
+            thread::sleep(Duration::from_millis(500));
+            match metadata.command {
+                Command::HeadVersioned { response, .. } => {
+                    let _ = response.send(Ok(Some(StoreS3VersionedObjectMetadata::new(
+                        6,
+                        StoreS3ObjectVersion::new("etag").expect("version"),
+                    ))));
+                }
+                _ => panic!("unexpected metadata command"),
+            }
+        });
+        let client = Arc::new(AwsSdkS3Client {
+            endpoint: endpoint(),
+            operation_timeout: Duration::from_millis(200),
+            worker: Arc::new(Worker {
+                commands: Mutex::new(Some(commands)),
+                thread: Mutex::new(Some(thread)),
+                budget: Arc::new(CommandBudget::new(MIN_RETAINED_COMMAND_BYTES)),
+            }),
+        });
+        let strong = AwsSdkS3StrongCasClient::from_conformant_service(client);
+        let started = Instant::now();
+        let mut scan = strong
+            .begin_small_object_scan("bucket", "tenant/objects/")
+            .expect("scan session");
+        scan.next_page(1).expect("object page before deadline");
+        assert!(matches!(
+            scan.head_versioned_object("tenant/objects/object"),
+            Err(StoreError::Unavailable)
+        ));
+        assert!(started.elapsed() < Duration::from_millis(300));
+    }
+
+    #[test]
     fn command_byte_budget_is_shared_and_released() {
         let budget = Arc::new(CommandBudget::new(10));
         let first = budget.reserve(7).expect("first reservation");
@@ -1780,6 +1965,21 @@ mod tests {
             .expect("bounded versioned object");
         assert_eq!(decoded.bytes(), b"ref");
         assert_eq!(decoded.version().as_str(), "etag-1");
+
+        let metadata = aws_sdk_s3::operation::head_object::HeadObjectOutput::builder()
+            .content_length(3)
+            .e_tag("etag-1")
+            .build();
+        let metadata = decode_versioned_metadata(&metadata).expect("versioned metadata");
+        assert_eq!(metadata.logical_length(), 3);
+        assert_eq!(metadata.version().as_str(), "etag-1");
+        let missing_version = aws_sdk_s3::operation::head_object::HeadObjectOutput::builder()
+            .content_length(3)
+            .build();
+        assert!(matches!(
+            decode_versioned_metadata(&missing_version),
+            Err(StoreError::Incompatible)
+        ));
 
         let listed = aws_sdk_s3::types::Object::builder()
             .key("tenant/refs/abc")
