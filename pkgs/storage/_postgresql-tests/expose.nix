@@ -28,9 +28,9 @@ in
     pkgs.runCommand "storage-postgresql-expose-contract" {} ''
       ${pkgs.grep}/bin/grep -qx 'Before=postgresql.service' \
         ${self.expose}/units/postgresql-init.service
-      ${pkgs.grep}/bin/grep -qx 'Requires=postgresql-init.service' \
+      ${pkgs.grep}/bin/grep -q '^Requires=.*postgresql-init.service' \
         ${self.expose}/units/postgresql.service
-      ${pkgs.grep}/bin/grep -qx 'ExecStart=.*/bin/aos-landlock-run.*-- /bin/postgresql-control prepare' \
+      ${pkgs.grep}/bin/grep -q '^ExecStart=.*-- /bin/postgresql-control prepare$' \
         ${self.expose}/units/postgresql-init.service
       if ${pkgs.grep}/bin/grep -Fq 'postgresql-control prepare' \
         ${self.expose}/units/postgresql.service; then
