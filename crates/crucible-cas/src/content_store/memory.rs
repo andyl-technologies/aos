@@ -258,6 +258,10 @@ impl Default for MemoryRefBackend {
 }
 
 impl MutableRefBackend for MemoryRefBackend {
+    fn capabilities(&self) -> RefBackendCapabilities {
+        RefBackendCapabilities { durable: false }
+    }
+
     fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError> {
         let guard = self.publication.read().map_err(|_| StoreError::Poisoned {
             operation: "memory-ref-publication-guard",

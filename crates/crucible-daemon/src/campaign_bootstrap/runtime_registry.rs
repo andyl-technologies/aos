@@ -660,6 +660,7 @@ fn runtime_control_failure(error: &CampaignLocalServiceError) -> CampaignService
         | CampaignLocalServiceError::StateInUse
         | CampaignLocalServiceError::InvalidStateLock
         | CampaignLocalServiceError::InvalidStateSubdirectory
+        | CampaignLocalServiceError::InvalidRepositoryStore
         | CampaignLocalServiceError::InvalidPolicyFile
         | CampaignLocalServiceError::InvalidComponentAuthorityFile
         | CampaignLocalServiceError::Policy(_)

@@ -661,10 +661,11 @@ crucible serve --listen 127.0.0.1:0 --trusted-unauthenticated-bind \
   --campaign-socket-mode 600
 ```
 
-The three campaign paths are an all-or-none profile. The daemon uses its exact
-effective UID/GID as the filesystem and peer-policy owner, takes one durable
-repository lock before opening the socket, and stops the lifecycle and campaign
-services plus the attached campaign runtime as one signal-driven lifecycle.
+The three campaign paths are an all-or-none directory profile. The daemon uses
+its exact effective UID/GID as the filesystem and peer-policy owner, takes one
+durable repository lock before opening the socket, and stops the lifecycle and
+campaign services plus the attached campaign runtime as one signal-driven
+lifecycle.
 The executor socket is an absolute, dot-free, exact-owner mode-`0600` Unix
 socket in an exact-owner, non-group/other-writable directory. Startup and the
 embedded post-bind owner share one endpoint capability that authenticates the
@@ -673,7 +674,19 @@ UID/GID before capability negotiation or planner/executor work. The connector
 uses a nonblocking absolute 30-second default deadline rather than allowing a
 full executor backlog to pin attachment indefinitely. Restart reopens the same
 object/ref directories while stale-socket recovery remains exact-owner
-conditional.
+conditional. Embedded deployment owners may instead supply one consumed
+repository-store capability containing a durable conditionally creating
+immutable backend or composed graph and a durable conditional-ref backend.
+Preparation authenticates policy and component authorities before taking the
+same state-root lifetime lock, then retains the supplied capabilities without
+creating the default `objects` or `refs` directories or exposing the resulting
+repository. Restart reconstructs the exact external capabilities and reuses the
+same state-root lock. A volatile blob or ref implementation fails admission.
+The shipped `crucible serve` flag profile remains directory-backed until a
+strict deployment schema can bind S3 endpoint policy, credentials, graph,
+maintenance authority, and ref namespace without serializing secrets into
+campaign identity.
+
 The separately hosted or daemon-packaged executor endpoint has one coupled
 lifecycle owner: a shutdown closes assignment admission, signals active
 attempts, interrupts connections, and joins both connection and semantic

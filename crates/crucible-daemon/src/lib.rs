@@ -129,8 +129,9 @@ pub use campaign_attachment::{
     PreparedCanonicalCampaignRuntime, prepare_canonical_campaign_runtime,
 };
 pub use campaign_bootstrap::{
-    CampaignLocalService, CampaignLocalServiceConfig, CampaignLocalServiceError,
-    CampaignLocalServiceMode, CampaignRuntimeAttachmentHandle, PreparedCampaignLocalService,
+    CampaignLocalRepositoryStore, CampaignLocalService, CampaignLocalServiceConfig,
+    CampaignLocalServiceError, CampaignLocalServiceMode, CampaignRuntimeAttachmentHandle,
+    PreparedCampaignLocalService,
 };
 pub use campaign_endpoint::{
     CampaignLoopbackEndpointConfig, CampaignLoopbackEndpointError, ExecutorLoopbackEndpointConfig,

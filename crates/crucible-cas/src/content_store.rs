@@ -606,6 +606,13 @@ pub struct BackendCapabilities {
     pub planned_delete: bool,
 }
 
+/// Capabilities advertised by one authoritative mutable-ref backend.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RefBackendCapabilities {
+    /// The ref namespace and successful comparisons survive process restart.
+    pub durable: bool,
+}
+
 /// Physical placement evidence returned after a logical put.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlacementReceipt {
@@ -1078,6 +1085,9 @@ pub trait ImmutableBlobBackend: Send + Sync {
 
 /// Authoritative mutable-reference backend.
 pub trait MutableRefBackend: Send + Sync {
+    /// Returns capabilities enforced for every successful ref operation.
+    fn capabilities(&self) -> RefBackendCapabilities;
+
     /// Acquires shared authority for one children-before-ref publication.
     ///
     /// The returned guard must remain live from before the transaction's first

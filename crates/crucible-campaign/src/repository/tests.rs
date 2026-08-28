@@ -93,6 +93,10 @@ impl ConflictAfterCreateRefBackend {
 }
 
 impl MutableRefBackend for ConflictAfterCreateRefBackend {
+    fn capabilities(&self) -> crucible_cas::content_store::RefBackendCapabilities {
+        self.inner.capabilities()
+    }
+
     fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError> {
         self.inner.acquire_publication_guard()
     }
