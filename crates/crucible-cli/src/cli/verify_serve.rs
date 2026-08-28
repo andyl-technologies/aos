@@ -15,6 +15,10 @@ use packaged_executor::prepare_cli_packaged_executor;
 use super::cli_campaign_import::apply_campaign_import_manifests;
 use super::cli_campaign_store::load_campaign_repository_store;
 
+const DEFAULT_CAMPAIGN_MAINTENANCE_WRITE_BACK_TRANSFERS: u32 = 64;
+const DEFAULT_CAMPAIGN_MAINTENANCE_S3_NODES: u16 = 8;
+const DEFAULT_CAMPAIGN_MAINTENANCE_S3_UPLOADS: u16 = 128;
+
 pub(super) async fn run_control_client_verify_workflow_async<C>(
     client: &C,
     verify_plan: &VerifyInvocationPlan,
@@ -1108,11 +1112,16 @@ pub(super) fn open_local_campaign_service(
                 serve_error(format!("campaign service configuration error: {error}"))
             })?;
     }
-    let prepared = match args.campaign_store.as_deref() {
+    let mut prepared = match args.campaign_store.as_deref() {
         Some(path) => config.prepare_with_store(load_campaign_repository_store(path)?),
         None => config.prepare(),
     }
     .map_err(|error| serve_error(format!("campaign service bootstrap error: {error}")))?;
+    if let Some(maintenance) = campaign_store_maintenance_config(args)? {
+        prepared = prepared
+            .with_store_maintenance(maintenance)
+            .map_err(|error| serve_error(format!("campaign maintenance error: {error}")))?;
+    }
     let runtime_control_planner = if args.campaign_component_authority.is_some() && !args.read_only
     {
         Some(
@@ -1444,6 +1453,7 @@ pub(super) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError
             "--campaign-socket, --campaign-state, and --campaign-policy must be provided together",
         ));
     }
+    let _ = campaign_store_maintenance_config(args)?;
     validate_campaign_runtime_attachments(args)?;
     if args.campaign_packaged_executor.is_some() && !args.production_qemu {
         return Err(usage_error(
@@ -1484,6 +1494,43 @@ pub(super) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError
     }
     let _ = debug_authorization_policy(args)?;
     Ok(())
+}
+
+fn campaign_store_maintenance_config(
+    args: &ServeArgs,
+) -> Result<Option<crucible_daemon::CampaignStoreMaintenanceConfig>, CliError> {
+    let bounds_present = args.campaign_maintenance_write_back_transfers.is_some()
+        || args.campaign_maintenance_s3_nodes.is_some()
+        || args.campaign_maintenance_s3_uploads.is_some();
+    let Some(interval_ms) = args.campaign_maintenance_interval_ms else {
+        if bounds_present {
+            return Err(usage_error(
+                "campaign maintenance bounds require --campaign-maintenance-interval-ms",
+            ));
+        }
+        return Ok(None);
+    };
+    if args.campaign_store.is_none() {
+        return Err(usage_error(
+            "--campaign-maintenance-interval-ms requires --campaign-store",
+        ));
+    }
+    if args.read_only {
+        return Err(usage_error(
+            "--campaign-maintenance-interval-ms conflicts with --read-only",
+        ));
+    }
+    crucible_daemon::CampaignStoreMaintenanceConfig::new(
+        Duration::from_millis(interval_ms),
+        args.campaign_maintenance_write_back_transfers
+            .unwrap_or(DEFAULT_CAMPAIGN_MAINTENANCE_WRITE_BACK_TRANSFERS),
+        args.campaign_maintenance_s3_nodes
+            .unwrap_or(DEFAULT_CAMPAIGN_MAINTENANCE_S3_NODES),
+        args.campaign_maintenance_s3_uploads
+            .unwrap_or(DEFAULT_CAMPAIGN_MAINTENANCE_S3_UPLOADS),
+    )
+    .map(Some)
+    .map_err(|error| usage_error(error.to_string()))
 }
 
 fn validate_campaign_runtime_attachments(args: &ServeArgs) -> Result<(), CliError> {

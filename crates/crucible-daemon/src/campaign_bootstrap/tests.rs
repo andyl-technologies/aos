@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, Permissions};
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::os::unix::net::UnixStream;
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -26,8 +26,13 @@ use crucible_campaign::{
     SubmitAttemptRequest, SubmitAttemptResponse, WatchExecutorCapacityRequest,
 };
 use crucible_cas::content_store::{
-    DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend, ObjectKind,
-    StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
+    BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend,
+    MemoryRefBackend, ObjectKind, StoreError, StoreGraph, StoreGraphConfig, StoreGraphKeyring,
+    StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders,
+    StoreGraphS3Clients, StoreNodeId, StoreNodeSpec, StoreS3Client, StoreS3ConditionalPutOutcome,
+    StoreS3EndpointId, StoreS3MultipartListCursor, StoreS3MultipartListPage,
+    StoreS3MultipartUpload, StoreS3MultipartUploadRecord, StoreS3ObjectDownload,
+    StoreS3UploadedPart,
 };
 use crucible_qemu::{
     LinuxQemuAttemptHostConfig, QemuChildProcessContract, QemuLaunchResourceRequirements,
@@ -56,6 +61,189 @@ struct UnusedPackagedHostOwner;
 
 #[derive(Clone, Debug)]
 struct UnusedPackagedCancellation;
+
+struct FailingMaintenanceS3Client {
+    endpoint: StoreS3EndpointId,
+}
+
+struct PagedMaintenanceS3Client {
+    endpoint: StoreS3EndpointId,
+    pages: Mutex<BTreeMap<String, u32>>,
+    aborted: Mutex<u64>,
+}
+
+impl PagedMaintenanceS3Client {
+    fn completed(&self) -> bool {
+        let pages = self.pages.lock().expect("paged maintenance lock");
+        pages.len() == 2 && pages.values().all(|calls| *calls >= 2)
+    }
+
+    fn aborted(&self) -> u64 {
+        *self.aborted.lock().expect("paged abort lock")
+    }
+}
+
+impl StoreS3Client for FailingMaintenanceS3Client {
+    fn endpoint_id(&self) -> &StoreS3EndpointId {
+        &self.endpoint
+    }
+
+    fn head_object(&self, _bucket: &str, _key: &str) -> Result<Option<u64>, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn get_object(&self, _bucket: &str, _key: &str) -> Result<StoreS3ObjectDownload, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn put_empty_if_absent(
+        &self,
+        _bucket: &str,
+        _key: &str,
+    ) -> Result<StoreS3ConditionalPutOutcome, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn begin_multipart(
+        &self,
+        _bucket: &str,
+        _key: &str,
+    ) -> Result<StoreS3MultipartUpload, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn upload_part(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _upload: &StoreS3MultipartUpload,
+        _part_number: u32,
+        _bytes: Arc<[u8]>,
+    ) -> Result<StoreS3UploadedPart, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn complete_multipart_if_absent(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _upload: &StoreS3MultipartUpload,
+        _parts: &[StoreS3UploadedPart],
+    ) -> Result<StoreS3ConditionalPutOutcome, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn abort_multipart(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _upload: &StoreS3MultipartUpload,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn list_multipart_uploads(
+        &self,
+        _bucket: &str,
+        _prefix: &str,
+        _after: Option<&StoreS3MultipartListCursor>,
+        _maximum_items: u16,
+    ) -> Result<StoreS3MultipartListPage, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+}
+
+impl StoreS3Client for PagedMaintenanceS3Client {
+    fn endpoint_id(&self) -> &StoreS3EndpointId {
+        &self.endpoint
+    }
+
+    fn head_object(&self, _bucket: &str, _key: &str) -> Result<Option<u64>, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn get_object(&self, _bucket: &str, _key: &str) -> Result<StoreS3ObjectDownload, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn put_empty_if_absent(
+        &self,
+        _bucket: &str,
+        _key: &str,
+    ) -> Result<StoreS3ConditionalPutOutcome, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn begin_multipart(
+        &self,
+        _bucket: &str,
+        _key: &str,
+    ) -> Result<StoreS3MultipartUpload, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn upload_part(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _upload: &StoreS3MultipartUpload,
+        _part_number: u32,
+        _bytes: Arc<[u8]>,
+    ) -> Result<StoreS3UploadedPart, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn complete_multipart_if_absent(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _upload: &StoreS3MultipartUpload,
+        _parts: &[StoreS3UploadedPart],
+    ) -> Result<StoreS3ConditionalPutOutcome, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn abort_multipart(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _upload: &StoreS3MultipartUpload,
+    ) -> Result<(), StoreError> {
+        let mut aborted = self.aborted.lock().expect("paged abort lock");
+        *aborted = aborted.saturating_add(1);
+        Ok(())
+    }
+
+    fn list_multipart_uploads(
+        &self,
+        _bucket: &str,
+        prefix: &str,
+        after: Option<&StoreS3MultipartListCursor>,
+        maximum_items: u16,
+    ) -> Result<StoreS3MultipartListPage, StoreError> {
+        let mut pages = self.pages.lock().expect("paged maintenance lock");
+        let calls = pages.entry(prefix.to_owned()).or_default();
+        let id = ContentId::for_bytes(ObjectKind::Finding, 1, prefix.as_bytes());
+        let key = format!("{prefix}{id}");
+        let upload = StoreS3MultipartUpload::new(format!("upload-{prefix}"))?;
+        let page = match (*calls, after) {
+            (0, None) => {
+                let record = StoreS3MultipartUploadRecord::new(key.clone(), upload.clone())?;
+                let next = StoreS3MultipartListCursor::new(key, upload)?;
+                StoreS3MultipartListPage::new(vec![record], Some(next), None, maximum_items)?
+            }
+            (1, Some(cursor))
+                if cursor.key_marker() == key && cursor.upload_id_marker() == &upload =>
+            {
+                StoreS3MultipartListPage::new(Vec::new(), None, after, maximum_items)?
+            }
+            (2.., None) => StoreS3MultipartListPage::new(Vec::new(), None, None, maximum_items)?,
+            _ => return Err(StoreError::Incompatible),
+        };
+        *calls = calls.saturating_add(1);
+        Ok(page)
+    }
+}
 
 impl QemuAttemptCancellationSignal for UnusedPackagedCancellation {
     fn signal(&self) -> Result<(), QemuVmRealizationError> {
@@ -1185,6 +1373,244 @@ fn managed_service_retains_ref_maintenance_authority_for_its_lifetime() {
 }
 
 #[test]
+fn managed_store_maintenance_flushes_write_back_and_stops_promptly() {
+    let (directory, config) = fixture();
+    let write_back = StoreNodeId::new("maintained-write-back").expect("write-back node");
+    let staging = StoreNodeId::new("maintained-staging").expect("staging node");
+    let destination = StoreNodeId::new("maintained-destination").expect("destination node");
+    let destination_root = directory.path().join("maintained-destination");
+    let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: write_back.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+        nodes: BTreeMap::from([
+            (
+                write_back,
+                StoreNodeSpec::WriteBack {
+                    staging: staging.clone(),
+                    destination: destination.clone(),
+                    journal_root: directory.path().join("maintained-journal"),
+                    maximum_pending_objects: 8,
+                    maximum_pending_bytes: 1_024,
+                },
+            ),
+            (
+                staging,
+                StoreNodeSpec::Directory {
+                    root: directory.path().join("maintained-staging"),
+                },
+            ),
+            (
+                destination,
+                StoreNodeSpec::Directory {
+                    root: destination_root.clone(),
+                },
+            ),
+        ]),
+    })
+    .expect("maintained write-back graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(DirectoryRefBackend::new(
+        directory.path().join("maintained-write-back-refs"),
+    ));
+    let store =
+        CampaignLocalRepositoryStore::new_with_maintenance(Arc::clone(&graph), refs, maintenance)
+            .expect("maintained write-back store");
+    let bytes = b"managed maintenance transfer";
+    let id = ContentId::for_bytes(ObjectKind::Finding, 1, bytes);
+    graph
+        .put_if_absent(id, &BlobHandle::from_bytes(bytes.to_vec()))
+        .expect("stage managed transfer");
+    let maintenance = CampaignStoreMaintenanceConfig::new(Duration::from_millis(100), 1, 1, 1)
+        .expect("managed maintenance policy");
+    let service = config
+        .prepare_with_store(store)
+        .expect("prepare maintained write-back service")
+        .with_store_maintenance(maintenance)
+        .expect("enable maintained write-back service")
+        .bind()
+        .expect("bind maintained write-back service");
+    let destination = DirectoryBlobBackend::new("maintained-check", destination_root);
+    let mut transferred = false;
+    for _ in 0..200 {
+        if destination
+            .contains(id)
+            .expect("inspect maintained destination")
+        {
+            transferred = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        transferred,
+        "maintenance did not flush the pending transfer"
+    );
+
+    let (dropped, observed) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        drop(service);
+        dropped.send(()).expect("report maintenance shutdown");
+    });
+    observed
+        .recv_timeout(Duration::from_secs(1))
+        .expect("maintenance shutdown must interrupt its interval wait");
+}
+
+#[test]
+fn managed_store_maintenance_failure_stops_the_service_with_exact_operation() {
+    let (directory, config) = fixture();
+    let endpoint = StoreS3EndpointId::new("campaign/failing-maintenance")
+        .expect("failing maintenance endpoint");
+    let client = Arc::new(FailingMaintenanceS3Client {
+        endpoint: endpoint.clone(),
+    });
+    let mut clients = StoreGraphS3Clients::new();
+    clients
+        .insert(endpoint.clone(), client)
+        .expect("failing S3 capability");
+    let root = StoreNodeId::new("failing-maintenance-s3").expect("S3 node");
+    let (graph, maintenance) = StoreGraph::build_with_admin_and_all_capabilities(
+        StoreGraphConfig {
+            root: root.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+            nodes: BTreeMap::from([(
+                root.clone(),
+                StoreNodeSpec::S3 {
+                    endpoint,
+                    bucket: String::from("campaign-maintenance"),
+                    prefix: String::from("objects"),
+                    maximum_logical_object_bytes: 64 * 1024 * 1024,
+                    multipart_part_bytes: 5 * 1024 * 1024,
+                },
+            )]),
+        },
+        &StoreGraphKeyring::new(),
+        &StoreGraphNamespaceAuthorizers::new(),
+        &StoreGraphObjectProfilers::new(),
+        &StoreGraphPhysicalQuotaBinders::new(),
+        &clients,
+    )
+    .expect("failing maintained S3 graph");
+    let refs = Arc::new(DirectoryRefBackend::new(
+        directory.path().join("failing-maintenance-refs"),
+    ));
+    let store =
+        CampaignLocalRepositoryStore::new_with_maintenance(Arc::new(graph), refs, maintenance)
+            .expect("failing maintained S3 store");
+    let service = config
+        .prepare_with_store(store)
+        .expect("prepare failing maintained service")
+        .with_store_maintenance(
+            CampaignStoreMaintenanceConfig::new(Duration::from_millis(100), 1, 1, 1)
+                .expect("failing maintenance policy"),
+        )
+        .expect("enable failing maintained service")
+        .bind()
+        .expect("bind failing maintained service");
+
+    assert!(matches!(
+        service.serve(),
+        Err(CampaignLocalServiceError::StoreMaintenanceFailed {
+            operation: "cleanup-S3-multipart",
+            boundary,
+            source: StoreError::Unavailable,
+        }) if boundary == root.as_str()
+    ));
+}
+
+#[test]
+fn managed_store_maintenance_round_robins_and_resumes_exact_s3_cursors() {
+    let (directory, config) = fixture();
+    let endpoint =
+        StoreS3EndpointId::new("campaign/paged-maintenance").expect("paged maintenance endpoint");
+    let client = Arc::new(PagedMaintenanceS3Client {
+        endpoint: endpoint.clone(),
+        pages: Mutex::new(BTreeMap::new()),
+        aborted: Mutex::new(0),
+    });
+    let mut clients = StoreGraphS3Clients::new();
+    clients
+        .insert(endpoint.clone(), client.clone())
+        .expect("paged S3 capability");
+    let root = StoreNodeId::new("paged-write-through").expect("write-through node");
+    let first = StoreNodeId::new("paged-s3-a").expect("first S3 node");
+    let second = StoreNodeId::new("paged-s3-b").expect("second S3 node");
+    let (graph, maintenance) = StoreGraph::build_with_admin_and_all_capabilities(
+        StoreGraphConfig {
+            root: root.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+            nodes: BTreeMap::from([
+                (
+                    root,
+                    StoreNodeSpec::WriteThrough {
+                        children: vec![first.clone(), second.clone()],
+                    },
+                ),
+                (
+                    first,
+                    StoreNodeSpec::S3 {
+                        endpoint: endpoint.clone(),
+                        bucket: String::from("campaign-maintenance"),
+                        prefix: String::from("first"),
+                        maximum_logical_object_bytes: 64 * 1024 * 1024,
+                        multipart_part_bytes: 5 * 1024 * 1024,
+                    },
+                ),
+                (
+                    second,
+                    StoreNodeSpec::S3 {
+                        endpoint,
+                        bucket: String::from("campaign-maintenance"),
+                        prefix: String::from("second"),
+                        maximum_logical_object_bytes: 64 * 1024 * 1024,
+                        multipart_part_bytes: 5 * 1024 * 1024,
+                    },
+                ),
+            ]),
+        },
+        &StoreGraphKeyring::new(),
+        &StoreGraphNamespaceAuthorizers::new(),
+        &StoreGraphObjectProfilers::new(),
+        &StoreGraphPhysicalQuotaBinders::new(),
+        &clients,
+    )
+    .expect("paged maintained S3 graph");
+    let refs = Arc::new(DirectoryRefBackend::new(
+        directory.path().join("paged-maintenance-refs"),
+    ));
+    let store =
+        CampaignLocalRepositoryStore::new_with_maintenance(Arc::new(graph), refs, maintenance)
+            .expect("paged maintained S3 store");
+    let service = config
+        .prepare_with_store(store)
+        .expect("prepare paged maintained service")
+        .with_store_maintenance(
+            CampaignStoreMaintenanceConfig::new(Duration::from_millis(100), 1, 1, 1)
+                .expect("paged maintenance policy"),
+        )
+        .expect("enable paged maintained service")
+        .bind()
+        .expect("bind paged maintained service");
+    let shutdown = service.shutdown_handle();
+    let owner = thread::spawn(move || service.serve());
+    let mut completed = false;
+    for _ in 0..200 {
+        if client.completed() {
+            completed = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    shutdown.shutdown();
+    owner
+        .join()
+        .expect("join paged maintained service")
+        .expect("paged maintenance service result");
+    assert!(completed, "maintenance did not resume both exact cursors");
+    assert_eq!(client.aborted(), 2);
+}
+
+#[test]
 fn external_store_rejects_a_nondurable_immutable_backend() {
     let blobs = Arc::new(MemoryBlobBackend::new("volatile-campaign", 1024 * 1024));
     let refs = Arc::new(MemoryRefBackend::new());
@@ -1336,6 +1762,12 @@ fn prepared_read_only_owner_rejects_artifact_import() {
     assert!(matches!(
         prepared.import_generator(&generator),
         Err(CampaignLocalServiceError::ArtifactImportReadOnly)
+    ));
+    let maintenance = CampaignStoreMaintenanceConfig::new(Duration::from_millis(100), 1, 1, 1)
+        .expect("maintenance policy");
+    assert!(matches!(
+        prepared.with_store_maintenance(maintenance),
+        Err(CampaignLocalServiceError::StoreMaintenanceReadOnly)
     ));
     assert!(!read_only.endpoint().path().exists());
 }

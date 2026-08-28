@@ -27,14 +27,17 @@ impl CampaignLocalService {
     pub fn serve(self) -> Result<CampaignLoopbackServerReport, CampaignLocalServiceError> {
         let Self {
             server,
-            runtime_registry,
             executor,
+            mut maintenance,
+            runtime_registry,
         } = self;
         let executor_monitor = match spawn_executor_monitor(&server, executor.as_ref()) {
             Ok(monitor) => monitor,
             Err(source) => {
+                let maintenance_result = shutdown_maintenance(&mut maintenance);
                 let runtime_result = runtime_registry.close_and_join();
                 let executor_result = shutdown_executor(executor);
+                maintenance_result?;
                 executor_result?;
                 runtime_result?;
                 return Err(CampaignLocalServiceError::PackagedExecutorMonitorSpawn { source });
@@ -42,11 +45,13 @@ impl CampaignLocalService {
         };
 
         let result = server.serve().map_err(CampaignLocalServiceError::Listener);
+        let maintenance_result = shutdown_maintenance(&mut maintenance);
         let runtime_result = runtime_registry.close_and_join();
         let executor_result = shutdown_executor(executor);
         let executor_monitor_result = join_executor_monitor(executor_monitor);
 
         executor_monitor_result?;
+        maintenance_result?;
         executor_result?;
         runtime_result?;
         result
@@ -69,6 +74,28 @@ fn spawn_executor_monitor(
                 })
         })
         .transpose()
+}
+
+fn shutdown_maintenance(
+    maintenance: &mut Option<CampaignStoreMaintenanceOwner>,
+) -> Result<(), CampaignLocalServiceError> {
+    maintenance
+        .as_mut()
+        .map(CampaignStoreMaintenanceOwner::close_and_join)
+        .transpose()
+        .map_err(|error| match error {
+            maintenance::MaintenanceJoinError::Operation(failure) => {
+                CampaignLocalServiceError::StoreMaintenanceFailed {
+                    operation: failure.operation,
+                    boundary: failure.boundary,
+                    source: failure.source,
+                }
+            }
+            maintenance::MaintenanceJoinError::Panicked => {
+                CampaignLocalServiceError::StoreMaintenancePanicked
+            }
+        })
+        .map(|_| ())
 }
 
 fn shutdown_executor(

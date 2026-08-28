@@ -755,6 +755,39 @@ provider rereads and reauthenticates this exact file when credentials refresh;
 secret buffers are cleared on drop and neither secrets nor their paths enter
 graph identity. Memory remains absent from both durable deployment versions.
 
+An operator may add
+`--campaign-maintenance-interval-ms MILLISECONDS` to a writable
+`crucible serve --campaign-store` invocation. The interval is 100 ms through
+24 hours. Each completed pass waits one complete interval before starting the
+next; shutdown interrupts an idle interval wait, while an in-flight store
+operation retains authority until its separately configured finite backend
+deadline completes. The optional per-pass flags and defaults are:
+
+```text
+flag                                               default   closed range
+--campaign-maintenance-write-back-transfers        64        1..=65,536
+--campaign-maintenance-s3-nodes                     8         1..=256
+--campaign-maintenance-s3-uploads                   128       1..=1,000
+```
+
+The single attempt-owned worker visits write-back nodes and pending IDs in
+canonical graph order, then visits at most the configured number of S3 leaves
+in persistent round-robin order. Each S3 leaf receives at most one resumable
+provider page per pass; a non-EOF cursor is retained by exact node ID for the
+next pass. The first write-back or unfinished-upload failure requests sticky
+CampaignService shutdown and is returned with its exact operation, graph
+boundary, and classified `StoreError`; it is never silently converted into a
+successful pass. Worker panic likewise shuts down the service. Normal service
+shutdown joins the worker before releasing graph/ref administration or the
+repository lock.
+
+This scheduler receives only ordinary graph write-back authority and the
+weaker unfinished-upload cleanup capabilities. It cannot borrow the retained
+committed-object or ref-inventory/delete capabilities and MUST NOT perform
+destructive GC. Generation-bound GC remains an explicit owner operation that
+also authenticates exact refs, pins, assignment ledgers, and in-flight
+publication/transfer roots before plan/apply.
+
 The first write-back layer requires durable streaming staging and destination
 children. A put authenticates its complete source, publishes the staging child,
 and appends a checksummed pending record to the durable

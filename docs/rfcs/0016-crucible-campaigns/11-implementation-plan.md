@@ -1519,9 +1519,16 @@ ref administration through shutdown; and treats strong-CAS conformance as an
 operator-owned deployment assertion rather than an inferred provider property.
 Focused regressions cover v1 compatibility, capability mismatch and ordering,
 insecure endpoints, credential expiry, namespace overlap, physical
-administration retention, and construction without network I/O. Bounded
-maintenance scheduling and porcelain, a hermetic live-service fixture, and the
-realistic operator flight remain open under Phase 5 and T-CAM-5.8.
+administration retention, and construction without network I/O. The managed
+service now optionally schedules one joined fixed-cadence worker with separate
+global write-back, round-robin S3-node, and per-node unfinished-upload bounds.
+Configuration fails before deployment I/O, idle waits are interruptible,
+successful cursors resume by exact node ID, and the first backend failure or
+worker panic visibly stops the CampaignService. The worker cannot borrow
+committed-object/ref delete authority; destructive GC still requires exact
+ledger, pin, publication, and transfer roots. Destructive GC porcelain, a
+hermetic live-service fixture, and the realistic operator flight remain open
+under Phase 5 and T-CAM-5.8.
 Broader layered transforms remain open;
 therefore T-CAM-5.5 is not checked by this checkpoint.
 
