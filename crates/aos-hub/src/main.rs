@@ -246,9 +246,9 @@ struct WorkerArgs {
     external_url: Option<String>,
     /// Public HTTPS origin that exposes the instance-default storage binding.
     ///
-    /// Public registries placed on that binding automatically use their
-    /// placement prefix below this origin as the canonical Git URL. Explicit
-    /// delivery-route advertisements override this default.
+    /// Public registries with a canonical-slug placement on that binding use
+    /// `<origin>/<slug>/` as the canonical Git URL. Explicit delivery-route
+    /// advertisements override this default.
     #[arg(long, env = "HUB_DEFAULT_PUBLIC_DELIVERY_URL")]
     default_public_delivery_url: Option<String>,
     /// Immutable source/build identity exposed for deployment verification.
