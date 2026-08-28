@@ -519,7 +519,7 @@ in
 
       runtime-contract = import ./_postgresql-tests/lifecycle.nix {
         inherit testing self;
-        inherit (pkgs) coreutils util-linux;
+        inherit (pkgs) coreutils grep sed;
       };
 
       module-contract = import ./_postgresql-tests/module.nix {
