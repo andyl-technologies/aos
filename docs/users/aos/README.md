@@ -75,6 +75,10 @@ multicall binary, so `aos package` is equivalent to `apm` and
   validation, firewall policy, and credential references.
 - [Configure k3s](k3s.md) covers worker, control-plane, and combined roles plus
   CNI/CSI composition and token references.
+- [Configure Cilium](cilium.md) covers its authenticated CNI and Kubernetes
+  resource contribution.
+- [Configure Longhorn](longhorn.md) covers its authenticated CSI and
+  Kubernetes resource contribution.
 - [Deploy AOS in production](deployment.md) covers golden-image qualification,
   platform import, bare metal, and fleet promotion.
 - [Maintain the source tree](../../maintainers/) covers Nix builds, image
