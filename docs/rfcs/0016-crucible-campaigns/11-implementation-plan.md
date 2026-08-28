@@ -1337,7 +1337,7 @@ Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
 - [x] **T-CAM-5.6** Implement packed logical-object storage with crash-safe
   index generations, range authentication, concurrent-reader-safe repacking,
   logical/physical accounting, and page/extent IDs independent of pack layout.
-- [ ] **T-CAM-5.7** Implement directory and S3-compatible leaf backends through
+- [x] **T-CAM-5.7** Implement directory and S3-compatible leaf backends through
   the same conformance harness, including conditional refs, multipart
   interruption, corruption, credential expiry, and latency/failure injection.
 - [ ] **T-CAM-5.8** Complete the §14 Phase 5 hibernate/restart/resume, backend
@@ -1492,9 +1492,13 @@ deletion, and stale-generation rejection after a concurrent publication.
 Directory and S3 blob/ref implementations now also invoke the same reusable
 persistent-leaf conformance harness for authenticated full/range/empty I/O,
 replay, fenced inventory and deletion, ordered ref pagination, stale CAS, and
-ABA generation behavior; backend-specific fault suites remain additive.
-Automated live-service conformance, daemon configuration wiring, and the
-realistic operator flight remain open under T-CAM-5.7 and T-CAM-5.8.
+ABA generation behavior; backend-specific fault suites remain additive. The AWS
+SDK adapter's ignored environment-gated integration test runs those exact
+routines against one exclusively owned unversioned live-service namespace and
+cleans its unique prefix after success. This completes T-CAM-5.7's backend and
+fault-conformance implementation. Daemon configuration wiring, a hermetic
+service fixture, and the realistic operator flight remain open under Phase 5
+and T-CAM-5.8.
 Broader layered transforms remain open;
 therefore T-CAM-5.5 is not checked by this checkpoint.
 

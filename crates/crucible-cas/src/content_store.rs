@@ -40,8 +40,8 @@ mod s3;
 mod s3_ref;
 mod write_back;
 
-#[cfg(test)]
-mod conformance;
+#[cfg(any(test, feature = "test-support"))]
+pub mod conformance;
 
 pub use admin::{
     BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,

@@ -2311,6 +2311,7 @@ dependencies = [
 name = "crucible-s3-store"
 version = "0.1.0"
 dependencies = [
+ "aws-config",
  "aws-sdk-s3",
  "crucible-cas",
  "thiserror 2.0.18",
