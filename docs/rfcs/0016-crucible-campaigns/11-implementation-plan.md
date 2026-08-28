@@ -1571,7 +1571,7 @@ QEMU now additionally owns a process-lifetime reversible RCU admission/drain
 barrier. Holding at the exact paused/device-flush boundary gates every new
 outer reader and callback submission through a race-closed
 two-phase admission, retains the exact reader/admission/callback/drain state,
-and parks rejected entrants until release. The version-4 template coordinator
+and parks rejected entrants until release. The version-5 template coordinator
 holds this barrier with the plugin callback barrier and acknowledges readiness
 bit 4 only while the complete retained RCU state is quiescent. The RCU worker
 still needs an exact child disposition/reinitializer, so bit 8 remains clear.
@@ -1581,8 +1581,9 @@ GLib dispatch, AioHandler lifecycle and callbacks, coroutine scheduling,
 bottom-half and timer creation, mutation, and callback dispatch. Holding at the
 exact paused/device-flush boundary parks later producers, lets already-admitted
 work and its nested mutations finish, leaves queued sources parked, and keeps
-OOB QMP responsive through nonblocking event-loop admission. The version-4
-template coordinator retains this barrier with the plugin and RCU barriers,
+OOB QMP responsive through nonblocking event-loop admission. The version-5
+template coordinator retains this barrier with the plugin, RCU, and native
+block barriers,
 and the typed client validates its exact bounded inventories and derived
 quiescence. This closes readiness bit 3 while the barrier is retained and
 quiescent. Child descriptor, context, coroutine, and clock reconstruction stay
@@ -1641,10 +1642,12 @@ zero in-flight I/O, and every rooted backend remaining drained. The typed Rust
 control surface rejects contradictory schemas, bounds, and action
 postconditions, while the live gate proves stable released state and no state
 retention after an invalid hold. This is a concrete block-side quiescence
-prerequisite only. Immutable external-snapshot root authentication, overlay
-rotation, graph-mutation exclusion, child reconstruction, and ordered template
-composition remain open; readiness bit 5 stays clear and T-CAM-6.2 remains
-unchecked.
+prerequisite only. The version-5 template coordinator now schedules acquisition
+and release on the main AioContext, holds the drain before parking asynchronous
+sources, and releases asynchronous sources before block I/O admission reopens.
+Immutable external-snapshot root authentication, overlay rotation,
+graph-mutation exclusion, and child reconstruction remain open; readiness bit 5
+stays clear and T-CAM-6.2 remains unchecked.
 The GPL plugin now also seals a version-1 fixed resource manifest after callback,
 wake-descriptor, and fault-admission setup but before successful readiness. It
 binds the exact process/plugin generation, closed required/optional resource and
@@ -1671,17 +1674,21 @@ template transaction, or reconstruct child resources. Readiness bit 6 therefore
 remains clear and T-CAM-6.2 remains unchecked.
 Patched QEMU now also owns the versioned `PrepareForkTemplate`
 transaction. Its serialized OOB coordinator starts only at the exact
-paused/device-flush boundary, retains the plugin callback, RCU, and complete
-asynchronous-source barriers while admitted work drains, and lets the
+paused/device-flush boundary, asynchronously acquires native all-block drain on
+the main AioContext, then retains the plugin callback, RCU, asynchronous-source,
+and block barriers while admitted work drains, and lets the
 Apache client query or abort that retained state without blocking QMP. A
 quiescent transaction is reported as `prepared`
 only when all nine readiness bits are present in the same generation; otherwise
 QEMU releases every acquired barrier and reports exact rollback as `blocked`.
-Standalone plugin, RCU, or bottom-half/timer hold/release cannot steal
-coordinator-owned state, and a plugin release failure leaves every barrier
-retained for a later query/abort retry. The current coordinator acknowledges
+Rollback reopens asynchronous sources before scheduling main-loop block release.
+Standalone plugin, RCU, bottom-half/timer, or block hold/release cannot steal
+coordinator-owned state in any pending or held phase, and a release failure
+leaves every barrier retained for a later prepare/query/abort retry. The current
+coordinator acknowledges
 RCU bit 4 and AIO bit 3 only while their complete retained barriers are
-quiescent. Plugin-ring bit 6, block bit 5, mapping/descriptor bit 7, and
+quiescent. Native block quiescence does not authenticate an immutable snapshot,
+so plugin-ring bit 6, block bit 5, mapping/descriptor bit 7, and
 child-reinitialization bit 8 remain clear, every fully drained preparation rolls
 back, no fork operation exists, and T-CAM-6.2 remains unchecked.
 QEMU now also exposes a version-1, 65,536-entry POSIX `QemuMutex` and

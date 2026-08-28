@@ -2065,6 +2065,32 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   the block drain.
 - **Risk:** F.
 
+### crucible-hot-fork-block-template-coordinator — order retained block quiescence
+
+- **Patch:** `0130-crucible-hot-fork-block-template-coordinator.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the version-5 OOB template coordinator schedules native
+  all-block drain acquisition and release on the main AioContext. It retains the
+  block drain before admitting RCU, asynchronous-source, and plugin holds;
+  rollback releases plugin, asynchronous-source, and RCU admission before block
+  I/O admission reopens. Pending acquisition and release remain serialized
+  transaction phases, and standalone mutation of any owned barrier is rejected.
+  OOB query uses the mutex-protected block inventory without invoking a
+  main-loop-only operation.
+- **Micro-test:** the block unit test queries retained state from a second QEMU
+  thread and requires the exact generation, inventory, and quiescence observed
+  by the main thread. The strict Rust schema accepts only exact pending, held,
+  release, and rollback shapes, binds the nested block report, and rejects any
+  attempt to derive block-snapshot proof bit 5 from native drain alone. The live
+  gate requires the exact version-5 idle shape and the same standalone block
+  report by value.
+- **Inertness:** no drain is acquired until an authorized template prepare at
+  the exact paused/device-flush boundary. This patch does not create or
+  authenticate an immutable external-snapshot root, rotate overlays, reconstruct
+  child block graphs, or call `fork(2)`. Proof bit 5 remains clear, so the
+  coordinator rolls the otherwise quiescent transaction back as blocked.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

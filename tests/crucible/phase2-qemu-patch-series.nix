@@ -902,6 +902,13 @@
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "a process-lifetime QEMU-native all-block drain section quiesces every rooted BlockBackend without synchronously waiting for already-issued I/O, retains the drain until explicit release, reports bounded exact backend and in-flight aggregates, and deliberately leaves block proof bit 5 clear until an immutable external-snapshot root is authenticated";
     }
+    {
+      file = "0130-crucible-hot-fork-block-template-coordinator.patch";
+      catalogName = "crucible-hot-fork-block-template-coordinator";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "the version-5 template coordinator asynchronously acquires QEMU's native all-block drain on the main AioContext before parking asynchronous sources, releases asynchronous sources before scheduling main-loop block release, rejects standalone barrier mutation while any transaction phase is reserved, and keeps block proof bit 5 clear until an immutable external-snapshot root is authenticated";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
