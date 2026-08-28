@@ -23,12 +23,14 @@
   needsDownloadRustc ? false,
   useBootstrapToml ? false,
   disableLld ? false,
+  disableDarwinLld ? disableLld,
 }: let
   configFileName =
     if useBootstrapToml
     then "bootstrap.toml"
     else "config.toml";
   pname = "rust-${builtins.replaceStrings ["."] ["_"] (builtins.substring 0 4 version)}";
+  llvmMajor = builtins.elemAt (builtins.match "([0-9]+).*" llvm.version) 0;
   src = fetchurl {
     urls = [
       "https://static.rust-lang.org/dist/rustc-${version}-src.tar.gz"
@@ -56,10 +58,14 @@ in
         openssl
         zlib
         needsDownloadRustc
-        disableLld
         ;
+      disableLld = disableDarwinLld;
       nativeRust = buildPackages.${prevRust.pname};
-      nativeLlvm = buildPackages.${llvm.pname};
+      # LLVM releases intentionally share pname = "llvm". Select the native
+      # counterpart by major version so a historical Rust compiler never
+      # builds its wrapper against the current default LLVM headers.
+      nativeLlvm = buildPackages.${"llvm-${llvmMajor}"};
+      targetLlvm = llvm;
       description = "Rust ${version} — Darwin-hosted bootstrap chain intermediate";
     }
   else

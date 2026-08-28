@@ -16,6 +16,7 @@
   openssl,
   stdenv,
   buildPackages,
+  llvm-17,
 }: let
   version = "1.74.0";
   mrustcVersion = "0.11.2";
@@ -49,8 +50,13 @@ in
       configFileName = "config.toml";
       nativeRust = buildPackages.rust-1_74;
       nativeLlvm = buildPackages.llvm-17;
+      targetLlvm = llvm-17;
       needsDownloadRustc = false;
       disableLld = false;
+      # Rust 1.74 predates bootstrap's top-level change-id configuration key.
+      supportsChangeId = false;
+      # Rust 1.74 also predates the target split-debuginfo bootstrap key.
+      supportsSplitDebuginfo = false;
       description = "Rust 1.74.0 — Darwin-hosted bootstrap root built with native Rust 1.74";
     }
   else

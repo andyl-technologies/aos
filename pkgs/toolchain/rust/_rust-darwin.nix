@@ -30,10 +30,20 @@
   profiler ? false,
   needsDownloadRustc ? false,
   disableLld ? false,
+  supportsChangeId ? true,
+  # Bootstrap accepted target split-debuginfo starting in Rust 1.78.
+  supportsSplitDebuginfo ? builtins.compareVersions version "1.78.0" >= 0,
+  # Older bootstrap tools use the ambient zlib/OpenSSL search path while
+  # constructing native stage tools, before switching to the target linker.
+  needsNativeCryptoBuildDeps ? builtins.compareVersions version "1.93.0" < 0,
+  # Cargo 1.79 through 1.92 can omit libz-sys's native -lz edge while linking
+  # its Linux build script even though flate2 selected the system-zlib backend.
+  needsNativeZlibLink ? builtins.compareVersions version "1.79.0" >= 0 && builtins.compareVersions version "1.93.0" < 0,
   description,
   buildTool ? null,
 }: let
   buildTriple = stdenv.buildPlatform.config;
+  buildTripleEnv = builtins.replaceStrings ["-"] ["_"] buildTriple;
   hostTriple = stdenv.hostPlatform.config;
   targetList = builtins.toJSON ([hostTriple] ++ additionalTargets);
   toolList = builtins.toJSON tools;
@@ -42,17 +52,22 @@ in
   mkDerivation {
     inherit pname version src outputs;
 
-    buildDeps = [
-      gnumake
-      cmake
-      ninja
-      pkg-config
-      python3
-      buildPackages.bash
-      buildPackages.which
-      nativeRust
-      nativeLlvm
-    ];
+    buildDeps =
+      [
+        gnumake
+        cmake
+        ninja
+        pkg-config
+        python3
+        buildPackages.bash
+        buildPackages.which
+      ]
+      ++ (
+        if needsNativeCryptoBuildDeps
+        then [buildPackages.openssl buildPackages.zlib]
+        else []
+      )
+      ++ [nativeRust nativeLlvm];
     runtimeDeps =
       [zlib openssl]
       ++ (
@@ -66,7 +81,41 @@ in
         name = "unpack";
         script = ''
           tar xf $src
-          cd rustc-${version}-src
+          cd rustc-${version}-src${
+            if builtins.compareVersions version "1.76.0" < 0
+            then "\n          patch -p1 < ${./rust-compiler-rt-darwin-cfi-order.patch}"
+            else ""
+          }
+          ${
+            if
+              builtins.compareVersions version "1.75.0"
+              >= 0
+              && builtins.compareVersions version "1.77.0" < 0
+            then "patch --fuzz=0 -p1 < ${./rust-bootstrap-vendored-remap.patch}"
+            else ""
+          }
+          ${
+            if
+              builtins.compareVersions version "1.74.0"
+              >= 0
+              && builtins.compareVersions version "1.93.0" < 0
+            then ''
+                  secure_transport_sources=$(find vendor -path '*/curl/lib/vtls/sectransp.c' -print)
+                  [ -n "$secure_transport_sources" ]
+                  while IFS= read -r secure_transport_source; do
+                    secure_transport_root=$(dirname "$(dirname "$(dirname "$(dirname "$secure_transport_source")")")")
+                    patch --fuzz=0 -d "$secure_transport_root" -p1 < ${./rust-curl-securetransport-fcntl.patch}
+                    checksum_file="$secure_transport_root/.cargo-checksum.json"
+                    [ "$(grep -o '"curl/lib/vtls/sectransp.c":"[0-9a-f]\{64\}"' "$checksum_file" | wc -l)" -eq 1 ]
+                    secure_transport_checksum=$(sha256sum "$secure_transport_source" | cut -d ' ' -f 1)
+                    sed -i "s/\"curl\/lib\/vtls\/sectransp.c\":\"[0-9a-f]\\{64\\}\"/\"curl\/lib\/vtls\/sectransp.c\":\"$secure_transport_checksum\"/" "$checksum_file"
+                    [ "$(grep -o '"curl/lib/vtls/sectransp.c":"[0-9a-f]\{64\}"' "$checksum_file" | cut -d '"' -f 4)" = "$secure_transport_checksum" ]
+                  done <<EOF
+              $secure_transport_sources
+              EOF
+            ''
+            else ""
+          }
         '';
       }
       {
@@ -98,20 +147,101 @@ in
           done
           export AOS_HARDENING_ENABLE="\$native_hardening"
           unset AOS_TARGET_ARCH AOS_TARGET_PLATFORM
-          unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
+          unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH${
+            if needsNativeCryptoBuildDeps
+            then "\nexport LIBRARY_PATH=\"${buildPackages.openssl}/lib:${buildPackages.zlib}/lib\""
+            else " LIBRARY_PATH"
+          }
           unset MACOSX_DEPLOYMENT_TARGET NIX_CFLAGS_COMPILE SDKROOT
           # The stage-1 Linux rustc links the native shared LLVM, and x.py
           # replaces LD_LIBRARY_PATH with its stage sysroot when executing it.
           # Preserve only that native runtime search path in the executable;
           # the inherited NIX_LDFLAGS points at Darwin libraries and ld64.
           export NIX_LDFLAGS="-Wl,-rpath,${nativeLlvm}/lib"
-          exec "$native_compiler" "\$@"
+          ${
+            if needsNativeCryptoBuildDeps
+            then ''
+              translated_args=()
+              for arg in "\$@"; do
+                case "\$arg" in
+                  "${openssl}"/*)
+                    arg="${buildPackages.openssl}/\''${arg#"${openssl}/"}"
+                    ;;
+                  "${zlib}"/*)
+                    arg="${buildPackages.zlib}/\''${arg#"${zlib}/"}"
+                    ;;
+                esac
+                translated_args+=("\$arg")
+              done
+              ${
+                if needsNativeZlibLink
+                then ''
+                  linking=1
+                  for arg in "\$@"; do
+                    case "\$arg" in
+                      -c|-E|-S) linking=0 ;;
+                    esac
+                  done
+                  if [ "\$linking" -eq 1 ]; then
+                    translated_args+=("-lz")
+                  fi
+                ''
+                else ""
+              }
+              exec "$native_compiler" "\''${translated_args[@]}"
+            ''
+            else ''
+              exec "$native_compiler" "\$@"
+            ''
+          }
           EOF
             chmod +x "$wrapper"
           }
           mkdir -p .aos-build-tools
           write_build_compiler "${buildPackages.cc}/bin/cc" .aos-build-tools/cc-for-build
           write_build_compiler "${buildPackages.cc}/bin/c++" .aos-build-tools/cxx-for-build
+
+          # Every supported bootstrap generation accepts a target linker,
+          # while target-local rustflags were added only after Rust 1.79.
+          # Keep the direct C++ runtime dependencies required by the external
+          # LLVM dylib in a version-stable linker wrapper.
+          cat > .aos-build-tools/linker-for-host <<EOF
+          #!${buildPackages.bash}/bin/bash
+          translated_args=()
+          for arg in "\$@"; do
+            case "\$arg" in
+              "${nativeLlvm}"/*)
+                # Rust 1.77 and later reuse the build compiler's external-LLVM
+                # link metadata while emitting the Darwin-hosted compiler.
+                # Redirect that equivalent native store prefix to the target
+                # LLVM; passing the ELF libLLVM to ld64 is never valid.
+                arg="${
+            if targetLlvm != null
+            then targetLlvm
+            else nativeLlvm
+          }/\''${arg#"${nativeLlvm}/"}"
+                ;;
+              -lLLVM-*)
+                # The native package exposes libLLVM-MAJOR.so while Darwin's
+                # canonical shared output is libLLVM.dylib.  Rust 1.77 emits
+                # the native soname after correctly selecting the target
+                # llvm-config, so bind the equivalent target dylib directly.
+                arg="${
+            if targetLlvm != null
+            then targetLlvm
+            else nativeLlvm
+          }/lib/libLLVM.dylib"
+                ;;
+            esac
+            translated_args+=("\$arg")
+          done
+          exec "$CC" "\''${translated_args[@]}" ${
+            if targetLlvm != null
+            then "-L${targetLlvm}/lib -L${targetLlvm}/lib/darwin"
+            else ""
+          } -lc++abi -lunwind
+          EOF
+          chmod +x .aos-build-tools/linker-for-host
 
           ${
             if targetLlvm != null
@@ -155,7 +285,11 @@ in
           }
 
           cat > ${configFileName} <<TOML
-          change-id = ${toString changeId}
+          ${
+            if supportsChangeId
+            then "change-id = ${toString changeId}"
+            else ""
+          }
 
           [llvm]
           link-shared = true
@@ -184,6 +318,9 @@ in
 
           [rust]
           channel = "stable"
+          # Stable bootstrap defaults optimized compiler builtins on. Keep
+          # that version-stable policy instead of the newer target-local key,
+          # which Rust 1.74 through 1.77 do not recognize.
           codegen-units = 0
           rpath = true
           omit-git-hash = true
@@ -210,25 +347,18 @@ in
           [target.${hostTriple}]
           cc = "$CC"
           cxx = "$CXX"
-          linker = "$CC"
+          linker = "$PWD/.aos-build-tools/linker-for-host"
           ar = "$AR"
           ranlib = "$RANLIB"
-          optimized-compiler-builtins = true
-          split-debuginfo = "unpacked"
+          ${
+            if supportsSplitDebuginfo
+            then ''split-debuginfo = "unpacked"''
+            else ""
+          }
           ${
             if targetLlvm != null
             then ''
               llvm-config = "$PWD/.aos-build-tools/llvm-config-for-host"
-              rustflags = [
-                "-Lnative=${targetLlvm}/lib",
-                "-Lnative=${targetLlvm}/lib/darwin",
-                # The target LLVM's libc++ dylib loads libc++abi and libunwind
-                # at runtime but does not reexport them.  rustc links with the
-                # C driver and -nodefaultlibs, so make those direct C++ runtime
-                # dependencies visible while linking rustc_codegen_llvm.
-                "-Clink-arg=-lc++abi",
-                "-Clink-arg=-lunwind",
-              ]
             ''
             else ""
           }
@@ -245,19 +375,45 @@ in
             ''
             else ""
           }
-          TOML
+          TOML${
+            if disableLld
+            then ''
+
+              [ "$(grep -Ec '^[[:space:]]*lld = false$' ${configFileName})" -eq 1 ]
+              [ "$(grep -Ec '^[[:space:]]*use-lld = false$' ${configFileName})" -eq 1 ]
+            ''
+            else ""
+          }
         '';
       }
       {
         name = "build";
         script = ''
           export PATH="$PWD/.fake-bin:$PATH"
-          export RUST_BACKTRACE=1
+          export RUST_BACKTRACE=1${
+            if needsNativeCryptoBuildDeps
+            then
+              "\n          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=\"$PWD/.aos-build-tools/cc-for-build\""
+              + (
+                if needsNativeZlibLink
+                then ''
+
+                  # cc-rs build dependencies can be compiled while Cargo itself is a
+                  # Darwin target tool.  Pin the build triple explicitly so they never
+                  # fall back to the ambient target compiler (and its Darwin SDK/PAC
+                  # policy) for Linux helper objects.
+                  export CC_${buildTripleEnv}="$PWD/.aos-build-tools/cc-for-build"
+                  export CXX_${buildTripleEnv}="$PWD/.aos-build-tools/cxx-for-build"
+                  export AR_${buildTripleEnv}="${nativeLlvm}/bin/llvm-ar"''
+                else ""
+              )
+            else ""
+          }
           export LD_LIBRARY_PATH="${nativeLlvm}/lib''${LD_LIBRARY_PATH:+:''${LD_LIBRARY_PATH}}"
 
-          # Cargo and its native dependencies are host artifacts.  Their build
-          # scripts run on Linux but link the resulting binaries to Darwin
-          # OpenSSL and zlib through the cross compiler.
+          # Cargo itself is a Darwin artifact, while the build scripts that
+          # produce it execute on Linux.  The build-compiler wrapper maps only
+          # explicit target OpenSSL/zlib paths back to their native equivalents.
           export OPENSSL_DIR=${openssl}
           export OPENSSL_LIB_DIR=${openssl}/lib
           export OPENSSL_INCLUDE_DIR=${openssl}/include
@@ -273,7 +429,21 @@ in
       {
         name = "install";
         script = ''
-          export PATH="$PWD/.fake-bin:$PATH"
+          export PATH="$PWD/.fake-bin:$PATH"${
+            if needsNativeCryptoBuildDeps
+            then
+              "\n          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=\"$PWD/.aos-build-tools/cc-for-build\""
+              + (
+                if needsNativeZlibLink
+                then ''
+
+                  export CC_${buildTripleEnv}="$PWD/.aos-build-tools/cc-for-build"
+                  export CXX_${buildTripleEnv}="$PWD/.aos-build-tools/cxx-for-build"
+                  export AR_${buildTripleEnv}="${nativeLlvm}/bin/llvm-ar"''
+                else ""
+              )
+            else ""
+          }
           export LD_LIBRARY_PATH="${nativeLlvm}/lib''${LD_LIBRARY_PATH:+:''${LD_LIBRARY_PATH}}"
           export OPENSSL_DIR=${openssl}
           export OPENSSL_LIB_DIR=${openssl}/lib
@@ -283,7 +453,33 @@ in
 
           # Stage 2 is still built entirely by the Linux stage-1 compiler; no
           # Mach-O executable is run during installation.
-          python3 x.py install --stage 2
+          python3 x.py install --stage 2${
+            if
+              builtins.compareVersions version "1.75.0"
+              >= 0
+              && builtins.compareVersions version "1.78.0" < 0
+            then ''
+
+              # Rust 1.75 through 1.77 bootstrap Cargo builds shipped
+              # proc-macro dylibs before compiler-managed remap flags take
+              # effect. Rewrite only the
+              # equal-length source-root prefix so Mach-O offsets remain stable.
+              old_source_root="/build/rustc-${version}-src"
+              remapped_source_root="/rustc/${version}/src______"
+              [ "''${#old_source_root}" -eq "''${#remapped_source_root}" ]
+              if ! grep -R -a -l -m1 -F "$old_source_root" "$out" >/dev/null; then
+                echo "Rust output did not contain its expected bootstrap source root" >&2
+                exit 1
+              fi
+              find "$out" -type f -exec sed -i \
+                "s|$old_source_root|$remapped_source_root|g" {} +
+              if grep -R -a -l -m1 -F "$old_source_root" "$out" >/dev/null; then
+                echo "Rust output retains its bootstrap source root" >&2
+                exit 1
+              fi
+            ''
+            else ""
+          }
 
           test -x "$out/bin/rustc"
           test -x "$out/bin/cargo"

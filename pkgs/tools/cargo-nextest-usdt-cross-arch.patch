@@ -1,0 +1,84 @@
+diff --git a/build.rs b/build.rs
+index a23eca7..09564cf 100644
+--- a/build.rs
++++ b/build.rs
+@@ -29,11 +29,15 @@ fn main() {
+     println!("cargo:rustc-check-cfg=cfg(usdt_backend_linker)");
+     println!("cargo:rustc-check-cfg=cfg(usdt_backend_standard)");
+ 
+-    let backend = match env::var("CARGO_CFG_TARGET_OS").ok().as_deref() {
+-        Some("macos") => Backend::Linker,
+-        Some("illumos") | Some("solaris") | Some("freebsd") => Backend::Standard,
+-        Some("linux") => Backend::Stap3,
+-        _ => Backend::NoOp,
++    println!("cargo:rerun-if-env-changed=USDT_TARGET");
++    let backend = match env::var("USDT_TARGET").ok().as_deref() {
++        Some(target) if target.ends_with("-darwin") => Backend::Linker,
++        _ => match env::var("CARGO_CFG_TARGET_OS").ok().as_deref() {
++            Some("macos") => Backend::Linker,
++            Some("illumos") | Some("solaris") | Some("freebsd") => Backend::Standard,
++            Some("linux") => Backend::Stap3,
++            _ => Backend::NoOp,
++        },
+     };
+ 
+     match backend {
+diff --git a/src/common.rs b/src/common.rs
+index 03a474b..4449ba6 100644
+--- a/src/common.rs
++++ b/src/common.rs
+@@ -104,15 +104,21 @@ fn shared_slice_elem_type(reference: &syn::TypeReference) -> Option<&syn::Type>
+ // Return code to destructure a probe arguments into identifiers, and to pass those to ASM
+ // registers.
+ pub fn construct_probe_args(types: &[DataType]) -> (TokenStream, TokenStream) {
+-    // x86_64 passes the first 6 arguments in registers, with the rest on the stack.
++    // A proc macro's cfg describes the machine on which the macro executes,
++    // while USDT_TARGET describes the code it emits. They differ during cross compilation.
++    let target = std::env::var("USDT_TARGET")
++        .expect("the package must set USDT_TARGET for USDT probe generation");
++    let abi_regs = if target.starts_with("x86_64-") {
++        ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
++    } else if target.starts_with("aarch64-") {
++        ["x0", "x1", "x2", "x3", "x4", "x5"]
++    } else {
++        panic!("USDT only supports x86_64 and ARM64 architectures, not {target}");
++    };
++
++    // x86_64 passes the first 6 arguments in registers, with the rest on the stack.
+     // We limit this to 6 arguments in all cases for now, as handling those stack
+     // arguments would be challenging with the current `asm!` macro implementation.
+-    #[cfg(target_arch = "x86_64")]
+-    let abi_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
+-    #[cfg(target_arch = "aarch64")]
+-    let abi_regs = ["x0", "x1", "x2", "x3", "x4", "x5"];
+-    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+-    compile_error!("USDT only supports x86_64 and ARM64 architectures");
+ 
+     assert!(
+         types.len() <= abi_regs.len(),
+diff --git a/src/linker.rs b/src/linker.rs
+index d60b4dc..980815f 100644
+--- a/src/linker.rs
++++ b/src/linker.rs
+@@ -149,12 +149,14 @@ fn compile_probe(
+     let (unpacked_args, in_regs) = common::construct_probe_args(types);
+     let type_check_fn =
+         common::construct_type_check(&provider.name, probe_name, &provider.use_statements, types);
+-
+-    #[cfg(target_arch = "x86_64")]
+-    let call_instruction = quote! { "call {extern_probe_fn}" };
+-    #[cfg(target_arch = "aarch64")]
+-    let call_instruction = quote! { "bl {extern_probe_fn}" };
+-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+-    compile_error!("USDT only supports x86_64 and AArch64 architectures");
++    let target = std::env::var("USDT_TARGET")
++        .expect("the package must set USDT_TARGET for USDT probe generation");
++    let call_instruction = if target.starts_with("x86_64-") {
++        quote! { "call {extern_probe_fn}" }
++    } else if target.starts_with("aarch64-") {
++        quote! { "bl {extern_probe_fn}" }
++    } else {
++        panic!("USDT only supports x86_64 and ARM64 architectures, not {target}");
++    };
+ 
+     let impl_block = quote! {

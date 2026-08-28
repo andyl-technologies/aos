@@ -20,6 +20,8 @@ in
     import ./_go-darwin.nix {
       inherit mkDerivation pname version src stdenv;
       nativeGo = buildPackages.go-1_4;
+      nativeCc = buildPackages.cc;
+      legacyCBootstrap = true;
       description = "Go 1.4 bootstrap — Darwin-hosted toolchain built with native Go 1.4";
     }
   else
