@@ -118,6 +118,7 @@ impl FaultActionSink for CampaignBackend {
     }
 }
 
+// crucible-lint: allow rust-allow -- campaign bindings keep every identity and mapping input explicit.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn transition_binding(
     id: &str,
