@@ -88,7 +88,7 @@ in
       version = testing.mkToolCheck {
         pname = "tool-cilium";
         tool = self;
-        command = "cilium-dbg version --client";
+        command = "cilium-dbg version";
       };
     };
 

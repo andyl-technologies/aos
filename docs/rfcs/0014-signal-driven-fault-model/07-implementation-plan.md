@@ -658,6 +658,18 @@ when all of the following are true:
 9. The complete workspace test suite and all RFC-0010 determinism, live QEMU,
    checkpoint, replay, packaging, and hermetic-build gates remain green.
 
+Requirement 6 is certified by the exact
+`cross_domain_fleet_search_minimizes_and_locked_replays_without_explorer`
+runtime test and the final gate's
+`evidence/cross-domain-fleet-campaign.result` artifact. The test executes one
+admitted plan containing shared-power, vibration, movement, interference, and
+satellite-contact causes; routed-network, contact, durability, CPU, memory,
+interrupt, and clock effects; the canonical finite signal-fault decision
+format; failure-preserving schedule minimization; and a resolved-effect trace
+recorded from that minimized schedule. A fresh runtime then reproduces the
+failure from the locked trace without receiving a search override or invoking
+the explorer.
+
 There is no “partially implemented” RFC status. Before this gate passes,
 RFC-0014 remains design-only and none of its new schema is released. After it
 passes, the old fault system is gone and the new network, storage, and node fault

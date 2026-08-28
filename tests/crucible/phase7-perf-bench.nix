@@ -56,7 +56,10 @@
     (builtins.readFile ../../crates/crucible-harness/src/perf/gate.rs)
     (builtins.readFile ../../crates/crucible-harness/src/perf/corpus.rs)
   ];
-  perfGate = builtins.readFile ../../crates/crucible-harness/tests/gate_perf_bench.rs;
+  perfGate = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-harness/tests/gate_perf_bench.rs)
+    (builtins.readFile ../../crates/crucible-harness/tests/gate_perf_bench/syscall_accounting.rs)
+  ];
   perfHotPathIo = builtins.readFile ../../crates/crucible-harness/tests/gate_perf_bench/hot_path_io.rs;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
   gateCatalog = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
@@ -287,6 +290,10 @@
       {
         label = "coverage ratchet";
         needle = "gate_perf_bench_coverage_ratchet_rejects_decrease";
+      }
+      {
+        label = "no per-quantum IPC";
+        needle = "advance_path_accounts_for_futex_and_eventfd_kernel_entries";
       }
       {
         label = "snapshot latency tracks changed state";

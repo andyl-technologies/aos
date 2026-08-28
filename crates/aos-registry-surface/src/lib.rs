@@ -13,6 +13,7 @@
 //!
 //! - [`object`] — SHA-256 loose objects: inflate, hash-verify, and parse
 //!   commits, trees, and tags.
+//! - [`object_bundle`] — bounded OID-sharded loose-object transport bundles.
 //! - [`pack_index`] — bounded SHA-256 pack-index structural and checksum
 //!   validation.
 //! - [`keymap`] — machine paths, mutability, and HTTP response metadata shared
@@ -40,6 +41,7 @@
 pub mod keymap;
 pub mod manifest;
 pub mod object;
+pub mod object_bundle;
 pub mod pack_index;
 pub mod refs;
 pub mod sshsig;

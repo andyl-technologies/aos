@@ -18,7 +18,7 @@
   pkgs,
   lib,
 }: let
-  aos = import ../../. {};
+  aos = import ../../. {system = pkgs.stdenv.buildPlatform.system;};
 
   # --- Assertion enforcement ------------------------------------------
   #

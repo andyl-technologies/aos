@@ -32,6 +32,7 @@
     lib.removeSuffix "\";"
     (lib.removePrefix prefix (firstLineWith label prefix content));
   crucibleVersion = sourceStringConst "Crucible package version" "  version = \"" cruciblePackageNix;
+  pluginCargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
   guestHostProtocolVersion =
     sourceConst
@@ -137,6 +138,9 @@
     ]
     ++ lib.optionals (manifest.crucible.cargoDeps.hash != crucibleCargoDepsHash) [
       "release manifest cargo deps hash ${manifest.crucible.cargoDeps.hash} does not match package hash ${crucibleCargoDepsHash}"
+    ]
+    ++ lib.optionals (pluginCargoDepsHash != crucibleCargoDepsHash) [
+      "crucible-qemu-plugin cargo deps hash ${pluginCargoDepsHash} does not match Crucible workspace hash ${crucibleCargoDepsHash}"
     ]
     ++ lib.optionals (manifest.crucible.cargoDeps.kind != "fetchCargoVendor") [
       "release manifest cargo deps kind is not fetchCargoVendor"

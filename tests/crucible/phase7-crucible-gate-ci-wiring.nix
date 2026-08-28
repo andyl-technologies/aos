@@ -522,7 +522,7 @@
     ++ failuresFor "flake.nix" flake [
       {
         label = "flake exposes fleet checks";
-        needle = ''// prefixAttrs "fleet" aos.checks.fleet'';
+        needle = ''// flattenAttrs "fleet" aos.checks.fleet'';
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

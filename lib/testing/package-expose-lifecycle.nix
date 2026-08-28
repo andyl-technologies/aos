@@ -139,7 +139,6 @@
         host-paths = [];
         syscalls = "restricted";
       };
-      requires = [];
     };
   };
 
@@ -180,7 +179,6 @@
           unit = "expose-lifecycle-provider.socket";
         }
       ];
-      requires = [];
     };
   };
 
@@ -225,7 +223,6 @@
           unit = "expose-lifecycle-consumer.service";
         }
       ];
-      requires = [];
     };
   };
 
@@ -260,7 +257,6 @@
         host-paths = [];
         syscalls = "restricted";
       };
-      requires = [];
     };
   };
 
@@ -301,7 +297,6 @@
         ];
         syscalls = "restricted";
       };
-      requires = [];
     };
   };
 
@@ -342,7 +337,6 @@
         ];
         syscalls = "restricted";
       };
-      requires = [];
     };
   };
 
@@ -417,7 +411,6 @@
         host-paths = [];
         syscalls = "restricted";
       };
-      requires = [];
     };
   };
 

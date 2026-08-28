@@ -162,7 +162,6 @@
           kernel-modules = [];
           syscalls = "restricted";
         };
-        requires = [];
       };
     };
   in

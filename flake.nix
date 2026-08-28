@@ -18,13 +18,24 @@
         names
       );
 
-    prefixAttrs = prefix: attrs:
-      builtins.listToAttrs (
-        map (name: {
-          name = "${prefix}-${name}";
+    flattenAttrPairs = prefix: attrs:
+      builtins.concatMap (
+        name: let
           value = attrs.${name};
-        }) (builtins.attrNames attrs)
-      );
+          prefixedName = "${prefix}-${name}";
+        in
+          if builtins.isAttrs value && !(value ? type && value.type == "derivation")
+          then flattenAttrPairs prefixedName value
+          else [
+            {
+              name = prefixedName;
+              inherit value;
+            }
+          ]
+      ) (builtins.attrNames attrs);
+
+    flattenAttrs = prefix: attrs:
+      builtins.listToAttrs (flattenAttrPairs prefix attrs);
 
     aosFor = system: import ./. {inherit system;};
 
@@ -206,20 +217,20 @@
           };
 
           eval = aos.checks.eval;
-          build = aos.checks.build;
           rust-cargo-artifacts = aos.checks.rust.cargo-artifacts;
           rust-aos = aos.checks.rust.aos;
           rust-crucible-controller = aos.checks.rust.crucible-controller;
           rust-crucible-qemu-plugin = aos.checks.rust.crucible-qemu-plugin;
           rust-crucible-guest = aos.checks.rust.crucible-guest;
         }
+        // flattenAttrs "build" aos.checks.build
         # Per-system module checks: server-boot-basics, edge-boot-basics, etc.
-        // prefixAttrs "server" aos.systems.server.checks
-        // prefixAttrs "edge" aos.systems.edge.checks
+        // flattenAttrs "server" aos.systems.server.checks
+        // flattenAttrs "edge" aos.systems.edge.checks
         # Package integration checks
-        // prefixAttrs "integration" aos.checks.integration
+        // flattenAttrs "integration" aos.checks.integration
         # Fleet tests (multi-VM)
-        // prefixAttrs "fleet" aos.checks.fleet
+        // flattenAttrs "fleet" aos.checks.fleet
     );
   };
 }

@@ -31,6 +31,19 @@ pub struct SyncResult {
     pub packages_removed: usize,
 }
 
+/// Formats the human-readable package delta for one completed registry sync.
+fn format_sync_summary(registry: &str, result: &SyncResult) -> String {
+    format!(
+        "Registry '{}': done ({} packages; {} added, {} updated, {} removed; commit {})",
+        registry,
+        result.packages_count,
+        result.packages_added,
+        result.packages_updated,
+        result.packages_removed,
+        &result.new_commit[..result.new_commit.len().min(12)],
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -213,13 +226,7 @@ pub async fn run(
                         "removed": sync_result.packages_removed,
                     }));
                 } else {
-                    printer.success(&format!(
-                        "Registry '{}': done ({} packages, {} updated, commit {})",
-                        reg_config.name,
-                        sync_result.packages_count,
-                        sync_result.packages_updated,
-                        &sync_result.new_commit[..sync_result.new_commit.len().min(12)],
-                    ));
+                    printer.success(&format_sync_summary(&reg_config.name, &sync_result));
                 }
             }
             Err(e) => {
@@ -319,4 +326,27 @@ fn running_as_root() -> bool {
     // SAFETY: `geteuid` is always successful and takes no arguments — it has
     // no preconditions and cannot produce undefined behavior.
     unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_sync_summary, SyncResult};
+
+    #[test]
+    fn sync_summary_reports_every_package_delta() {
+        let result = SyncResult {
+            new_commit: String::from(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            ),
+            packages_count: 1,
+            packages_added: 0,
+            packages_updated: 1,
+            packages_removed: 2,
+        };
+
+        assert_eq!(
+            format_sync_summary("stable", &result),
+            "Registry 'stable': done (1 packages; 0 added, 1 updated, 2 removed; commit 0123456789ab)"
+        );
+    }
 }

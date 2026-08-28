@@ -408,7 +408,7 @@ fn GatewayCreateForm(
             carry_forward_consumer_scopes: Vec::new(),
             expected_resource_version: String::new(),
             idempotency_key: idempotency_key.clone(),
-            update_mask: vec!["revision".to_string()],
+            update_mask: Vec::new(),
         };
         busy.set(true);
         error.set(None);

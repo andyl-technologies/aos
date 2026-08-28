@@ -496,7 +496,7 @@ impl CacheBackend for HttpBackend {
     async fn create_object_uploads(
         &self,
         uploads: &[(String, u64)],
-    ) -> Result<std::collections::HashMap<String, String>> {
+    ) -> Result<std::collections::HashMap<String, super::ObjectUploadAdmission>> {
         let empty = std::collections::HashMap::new();
         if uploads.is_empty() {
             return Ok(empty);
@@ -544,6 +544,8 @@ impl CacheBackend for HttpBackend {
             path: String,
             #[serde(default, rename = "uploadUrl")]
             upload_url: String,
+            #[serde(default, rename = "uploadTicketId")]
+            upload_ticket_id: String,
         }
         #[derive(Deserialize)]
         struct Resp {
@@ -552,16 +554,29 @@ impl CacheBackend for HttpBackend {
         }
         let resp: Resp =
             serde_json::from_slice(&body).context("parsing batch mint-credentials response")?;
-        let map: std::collections::HashMap<String, String> = resp
+        let map: std::collections::HashMap<String, super::ObjectUploadAdmission> = resp
             .uploads
             .into_iter()
             .filter(|u| !u.upload_url.is_empty())
-            .map(|u| (u.path, u.upload_url))
+            .map(|u| {
+                let requires_observation = !u.upload_url.starts_with(&format!(
+                    "{}/aos.hub.v1.BinaryCacheService/UploadObject/",
+                    self.origin
+                ));
+                (
+                    u.path,
+                    super::ObjectUploadAdmission {
+                        upload_url: u.upload_url,
+                        upload_ticket_id: u.upload_ticket_id,
+                        requires_observation,
+                    },
+                )
+            })
             .collect();
         Ok(map)
     }
 
-    async fn register_narinfos(&self, narinfos: &[(String, String)]) -> Result<()> {
+    async fn register_narinfos(&self, narinfos: &[super::UploadedNarinfo]) -> Result<()> {
         if narinfos.is_empty() {
             return Ok(());
         }
@@ -569,9 +584,34 @@ impl CacheBackend for HttpBackend {
             // AOS pack-mode servers synthesise narinfo from registered paths.
             return Ok(());
         }
-        for (store_hash, content) in narinfos {
-            self.put_narinfo(store_hash, content).await?;
-        }
+        let url = format!(
+            "{}/aos.hub.v1.BinaryCacheService/RegisterCacheNarinfos",
+            self.origin
+        );
+        let entries = narinfos
+            .iter()
+            .map(|narinfo| {
+                serde_json::json!({
+                    "storeHash": narinfo.store_hash,
+                    "narinfo": narinfo.narinfo,
+                    "narUploadTicketId": narinfo.nar_upload_ticket_id,
+                })
+            })
+            .collect::<Vec<_>>();
+        let body = serde_json::json!({
+            "deliveryUrl": self.base_url,
+            "narinfos": entries,
+        })
+        .to_string();
+        let mut req = TransferRequest::post(&url, body.into_bytes());
+        add_connect_json_headers(&mut req);
+        let result = self.engine.execute(self.add_headers(req)).await?;
+        anyhow::ensure!(
+            result.status < 400,
+            "registering cache narinfos failed with HTTP {}: {}",
+            result.status,
+            result.body_string().unwrap_or_default()
+        );
         Ok(())
     }
 

@@ -1,24 +1,26 @@
-//! The Cloudflare Workers read-path target for the AOS registry hub (RFC-0004).
+//! The Cloudflare Workers runtime for the AOS registry hub (RFC-0004).
 //!
 //! RFC-0004 specifies a Cloudflare Workers deployment of the registry hub —
 //! `wasm32-unknown-unknown` via `workers-rs`, with a colocated-SQLite system of record, R2
 //! as zero-egress storage, KV for sessions, and Cron Triggers driving the
 //! indexer ("Architecture and runtime targets"). The native hub is a sync
 //! axum + tokio + rusqlite binary that cannot compile to wasm32, so this is a
-//! **separate Worker crate** implementing the RFC's phase-1 Cloudflare
-//! deployment: **read the index + serve typed routes**. It deliberately reuses
-//! the pure, shared crates rather than porting the native hub:
+//! **separate Worker crate** implementing the RFC's Cloudflare deployment. It
+//! deliberately reuses the pure, shared crates rather than porting the native
+//! hub:
 //!
 //! - [`aos_registry_surface`] — the wasm-clean reader (objects, tags, refs,
 //!   Ed25519 verification) the native hub indexer and `apm` already run, reused
 //!   verbatim in the Cron indexer ([`indexer`]).
 //! - [`aos_hub_core`] — the shared `Database` (schema `MIGRATIONS` + read
-//!   queries) the native hub runs, driven over the [`sqldobackend`] so the
-//!   Worker's read path and indexer cannot drift from the hub's.
+//!   queries) the native hub runs. Application requests execute in
+//!   resource-affine Durable Objects over [`remotebackend`], while the
+//!   authoritative `HubDb` owns checked transactions through
+//!   [`sqldobackend`].
 //! - The shared machine-object classification in [`aos_hub_core::keymap`] — re-exported
 //!   through [`keymap`] for Worker object-key mapping.
 //!
-//! # What is and isn't here (yet)
+//! # Request and storage architecture
 //!
 //! The data layer is shared with the native hub
 //! (`aos_hub_core::Database` over the [`sqldobackend`]), and the **entire
@@ -57,11 +59,15 @@
 //! runtimes. Registries whose canonical paths contain slashes are offered to
 //! the shared nested dispatcher before delivery-route and facade routing.
 //!
-//! Worker-local: only the Cron-trigger indexer ([`indexer`]). The `fetch`
-//! handler bridges every request to the shared router; the schema is migrated
-//! inside the `HubDb` Durable Object on first use (no external init step), and
-//! the root admin is bootstrapped over a seal-gated `HubDb` endpoint. See
-//! `README.md` and the RFC.
+//! The outer `fetch` handler assigns public requests to deterministic control,
+//! tenant, registry, or cache execution objects. Those objects bridge to the
+//! shared router and make only short, seal-gated SQL calls to `HubDb`; they do
+//! not copy relational state. Internal and administrative endpoints remain
+//! pinned to `HubDb`. The schema is migrated there on first use (no external
+//! init step), and the root admin is bootstrapped over a seal-gated endpoint.
+//! Cron and queue handlers run outside the database object and likewise keep
+//! provider or network I/O outside its serialized request turn. See `README.md`
+//! and the RFC.
 //!
 //! # Module map
 //!
@@ -82,9 +88,14 @@
 //! - `sqldobackend` — the [`aos_hub_core::backend::Backend`] over the `HubDb`
 //!   Durable Object's colocated SQLite system of record.
 //! - `handlers` — the Wrangler binding names.
-//! - `indexer` — the Cron-trigger indexer: lists public registries and runs the
-//!   shared [`aos_hub_core::indexer`] over each registry's R2 [`surface`]
-//!   fetcher (driven inside `HubDb` over `sqldobackend`).
+//! - `indexer` — the queued reconciler: runs the shared
+//!   [`aos_hub_core::indexer`] over each registry's R2 [`surface`] fetcher in
+//!   the queue isolate while short SQL operations cross through `remotebackend`.
+//! - `remotebackend` — the seal-gated SQL transport used by background jobs;
+//!   checked batches remain atomic inside `HubDb`, while provider I/O does not
+//!   occupy the database object's request turn.
+//! - `requestshard` — deterministic public-request affinity and staged
+//!   `off`/`read`/`on` cutover classification.
 //! - `bridge` — the hand-rolled `worker`⇄`axum` bridge that runs the shared
 //!   Connect-JSON router for the RPC surface (no `axum-cloudflare-adapter`).
 //! - `surface` — the R2-backed [`aos_hub_core::fetch::SurfaceProvider`]
@@ -138,6 +149,10 @@ pub mod indexer;
 pub mod placeholder;
 pub(crate) mod r2_adapter;
 #[cfg(target_arch = "wasm32")]
+mod remotebackend;
+mod remoteprotocol;
+mod requestshard;
+#[cfg(target_arch = "wasm32")]
 pub mod secretversions;
 #[cfg(target_arch = "wasm32")]
 pub mod sqldobackend;
@@ -149,6 +164,56 @@ pub mod tracinglog;
 pub mod workerkv;
 #[cfg(target_arch = "wasm32")]
 pub mod workerqueue;
+
+/// Derives the stable identity of one registry's current index input.
+///
+/// Queue envelopes deliberately have unique operation IDs, but several publish
+/// or maintenance events may request the same derived index. Fencing builds by
+/// the configuration version and publication identity coalesces those
+/// duplicates while still admitting a new build whenever either input changes.
+fn registry_index_build_id(
+    registry_id: i64,
+    registry_resource_version: i64,
+    publication_id: Option<&str>,
+) -> String {
+    use sha2::{Digest as _, Sha256};
+
+    let mut digest = Sha256::new();
+    digest.update(b"aos-registry-index-build-v1\0");
+    digest.update(registry_id.to_be_bytes());
+    digest.update(registry_resource_version.to_be_bytes());
+    match publication_id {
+        Some(publication_id) => {
+            digest.update([1]);
+            digest.update(publication_id.as_bytes());
+        }
+        None => digest.update([0]),
+    }
+    hex::encode(digest.finalize())
+}
+
+#[cfg(test)]
+mod index_build_identity_tests {
+    use super::registry_index_build_id;
+
+    #[test]
+    fn identity_coalesces_duplicates_and_tracks_both_input_versions() {
+        let original = registry_index_build_id(7, 3, Some("publication-a"));
+        assert_eq!(
+            original,
+            registry_index_build_id(7, 3, Some("publication-a"))
+        );
+        assert_ne!(
+            original,
+            registry_index_build_id(7, 4, Some("publication-a"))
+        );
+        assert_ne!(
+            original,
+            registry_index_build_id(7, 3, Some("publication-b"))
+        );
+        assert_ne!(original, registry_index_build_id(7, 3, None));
+    }
+}
 
 #[cfg(target_arch = "wasm32")]
 mod entry {
@@ -170,9 +235,10 @@ mod entry {
 
     use std::sync::Arc;
 
-    use wasm_bindgen::{JsCast, JsValue};
+    use futures_util::{lock::Mutex, stream, StreamExt};
+    use wasm_bindgen::JsCast;
     use worker::{
-        durable_object, Context, DurableObject, Env, Method, Request, RequestInit, Response,
+        durable_object, Cache, Context, DurableObject, Env, MessageExt, Method, Request, Response,
         Result, ScheduleContext, ScheduledEvent, State,
     };
 
@@ -183,6 +249,7 @@ mod entry {
     #[cfg(feature = "do-e2e")]
     use aos_hub_core::domain::{Permission, Principal, Role, Scope};
     use aos_hub_core::fetch::SurfaceProvider as _;
+    use aos_hub_core::kv::KvStore as _;
     use aos_hub_core::ratelimit::RateLimiter;
     use aos_hub_core::service::RpcService;
     use aos_hub_core::web::console::{console_router, ConsoleDeps};
@@ -213,8 +280,12 @@ mod entry {
     const HUB_ROUTE_PUBLICATION_PUBLIC_KEY: &str = "HUB_ROUTE_PUBLICATION_PUBLIC_KEY";
     /// The Wrangler `[vars]` entry holding the hub's externally-reachable URL.
     const HUB_EXTERNAL_URL: &str = "HUB_EXTERNAL_URL";
+    /// Optional public origin exposing the instance-default R2 binding.
+    const HUB_DEFAULT_PUBLIC_DELIVERY_URL: &str = "HUB_DEFAULT_PUBLIC_DELIVERY_URL";
     /// Immutable source/build identity used to attest the active deployment.
     const HUB_DEPLOYMENT_ID: &str = "HUB_DEPLOYMENT_ID";
+    /// Staged request-execution cutover: `off`, `read`, or `on`.
+    const HUB_REQUEST_SHARDING: &str = "HUB_REQUEST_SHARDING";
     /// Non-cacheable endpoint exposing [`HUB_DEPLOYMENT_ID`].
     const DEPLOYMENT_ID_PATH: &str = "/.well-known/aos-deployment";
     /// Required `[vars]` entry naming the deployment's default R2 bucket.
@@ -225,6 +296,29 @@ mod entry {
     const HUB_DNS_JSON_ENDPOINT: &str = "HUB_DNS_JSON_ENDPOINT";
     /// Optional repository-owned native egress-router endpoint.
     const HUB_EGRESS_GATEWAY_URL: &str = "HUB_EGRESS_GATEWAY_URL";
+
+    fn default_public_delivery_url(env: &Env) -> Result<Option<String>> {
+        let Ok(value) = env.var(HUB_DEFAULT_PUBLIC_DELIVERY_URL) else {
+            return Ok(None);
+        };
+        let value = value.to_string();
+        let parsed = url::Url::parse(&value).map_err(|error| {
+            worker::Error::RustError(format!(
+                "{HUB_DEFAULT_PUBLIC_DELIVERY_URL} is invalid: {error}"
+            ))
+        })?;
+        if parsed.scheme() != "https"
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err(worker::Error::RustError(format!(
+                "{HUB_DEFAULT_PUBLIC_DELIVERY_URL} must be HTTPS without credentials, query, or fragment"
+            )));
+        }
+        Ok(Some(value))
+    }
     /// Optional shared authentication key for the egress router.
     const HUB_EGRESS_GATEWAY_KEY: &str = "HUB_EGRESS_GATEWAY_KEY";
     /// Scoped Cloudflare API token used by the control-plane observer.
@@ -240,6 +334,158 @@ mod entry {
     /// Optional `[vars]` entry: the verified sender address the Email Service
     /// binding sends `from`. Required to use the [`EMAIL_BINDING`].
     const HUB_EMAIL_FROM: &str = "HUB_EMAIL_FROM";
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum RequestShardingMode {
+        Off,
+        ReadOnly,
+        On,
+    }
+
+    fn request_sharding_mode(env: &Env) -> Result<RequestShardingMode> {
+        match env
+            .var(HUB_REQUEST_SHARDING)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| "off".to_string())
+            .as_str()
+        {
+            "off" => Ok(RequestShardingMode::Off),
+            "read" => Ok(RequestShardingMode::ReadOnly),
+            "on" => Ok(RequestShardingMode::On),
+            value => Err(worker::Error::RustError(format!(
+                "{HUB_REQUEST_SHARDING} must be off, read, or on; got {value:?}"
+            ))),
+        }
+    }
+
+    fn request_shard_binding(kind: crate::requestshard::RequestShardKind) -> &'static str {
+        use crate::requestshard::RequestShardKind;
+
+        match kind {
+            RequestShardKind::Control => crate::handlers::bindings::HUB_CONTROL_SHARDS,
+            RequestShardKind::Tenant => crate::handlers::bindings::HUB_TENANT_SHARDS,
+            RequestShardKind::Registry => crate::handlers::bindings::HUB_REGISTRY_SHARDS,
+            RequestShardKind::Cache => crate::handlers::bindings::HUB_CACHE_SHARDS,
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum AnonymousBrowseTarget {
+        Instance,
+        Registry(String),
+    }
+
+    fn anonymous_browse_target(req: &Request) -> Result<Option<AnonymousBrowseTarget>> {
+        let url = req.url()?;
+        let headers = req.headers();
+        let accept = headers.get("accept")?;
+        let authorization_present = headers.has("authorization")?;
+        let session_cookie_present = headers
+            .get("cookie")?
+            .is_some_and(|cookie| cookie.contains("__Host-aos_session="));
+        let route = crate::requestshard::anonymous_browse_route(
+            req.method().as_ref(),
+            url.path(),
+            accept.as_deref(),
+            authorization_present,
+            session_cookie_present,
+        );
+        Ok(route.map(|route| match route {
+            crate::requestshard::AnonymousBrowseRoute::Instance => AnonymousBrowseTarget::Instance,
+            crate::requestshard::AnonymousBrowseRoute::Registry(slug) => {
+                AnonymousBrowseTarget::Registry(slug.to_string())
+            }
+        }))
+    }
+
+    fn anonymous_browse_cache_key(req: &Request, env: &Env) -> Result<Option<String>> {
+        if req.method() != Method::Get {
+            return Ok(None);
+        }
+        if req.url()?.query().is_some() {
+            return Ok(None);
+        }
+        browse_cache_key_url(req.url()?, env).map(Some)
+    }
+
+    fn browse_cache_key_url(mut url: url::Url, env: &Env) -> Result<String> {
+        let deployment = env
+            .var(HUB_DEPLOYMENT_ID)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        url.query_pairs_mut()
+            .append_pair("__aos_browse_deployment", &deployment);
+        Ok(url.to_string())
+    }
+
+    async fn purge_registry_browse_cache(env: &Env, slug: &str) -> Result<()> {
+        let origin = env
+            .var(HUB_EXTERNAL_URL)
+            .map_err(|_| worker::Error::RustError(format!("{HUB_EXTERNAL_URL} is required")))?;
+        let mut url = url::Url::parse(&origin.to_string())
+            .map_err(|error| worker::Error::RustError(format!("browse cache origin: {error}")))?;
+        let cache = Cache::default();
+        for path in [
+            "/".to_string(),
+            format!("/{slug}/"),
+            format!("/{slug}/-/packages"),
+            format!("/{slug}/-/images"),
+            format!("/{slug}/-/channels"),
+            format!("/{slug}/-/releases"),
+            format!("/{slug}/-/health"),
+        ] {
+            url.set_path(&path);
+            url.set_query(None);
+            let key = browse_cache_key_url(url.clone(), env)?;
+            let _ = cache.delete(key, false).await?;
+        }
+        Ok(())
+    }
+
+    async fn request_execution_route(
+        req: &Request,
+        env: &Env,
+    ) -> Result<Option<crate::requestshard::RequestShardRoute>> {
+        if anonymous_browse_target(req)?.is_some() {
+            return Ok(None);
+        }
+        let mode = request_sharding_mode(env)?;
+        if mode == RequestShardingMode::Off {
+            return Ok(None);
+        }
+        let url = req.url()?;
+        let path = url.path();
+        if path.starts_with("/_internal/") || path.starts_with("/_admin/") {
+            return Ok(None);
+        }
+        let request_method = req.method();
+        let method = request_method.as_ref();
+        let authority = url.host_str().unwrap_or_default();
+        let initial = crate::requestshard::classify_request(method, path, authority, None);
+        let content_length = req
+            .headers()
+            .get("content-length")?
+            .and_then(|value| value.parse::<usize>().ok());
+        let json_content = req
+            .headers()
+            .get("content-type")?
+            .is_some_and(|value| value.starts_with("application/json"));
+        let body = if !initial.resource_specific
+            && method == "POST"
+            && json_content
+            && content_length.is_some_and(|length| length <= 512 * 1024)
+        {
+            let mut cloned = req.clone()?;
+            cloned.bytes().await.ok()
+        } else {
+            None
+        };
+        let route = crate::requestshard::classify_request(method, path, authority, body.as_deref());
+        if mode == RequestShardingMode::ReadOnly && !route.read_only {
+            return Ok(None);
+        }
+        Ok(Some(route))
+    }
 
     fn worker_egress(env: &Env) -> worker::Result<Arc<WorkerEgressClient>> {
         match (
@@ -296,7 +542,7 @@ mod entry {
             crate::e2e_surface::DoE2eSurfaceProvider::new(state.storage().sql())
                 .map_err(|error| worker::Error::RustError(format!("e2e storage: {error:#}")))?,
         );
-        let service = Arc::new(RpcService::new(
+        let mut service = RpcService::new(
             Arc::clone(&db),
             jwt_keys.clone(),
             external_url.clone(),
@@ -309,7 +555,11 @@ mod entry {
                 aos_hub_core::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(&db)),
             ),
             None,
-        ));
+        );
+        if let Some(delivery_url) = default_public_delivery_url(env)? {
+            service = service.with_default_public_delivery_url(delivery_url);
+        }
+        let service = Arc::new(service);
         let egress = worker_egress(env)?;
         let sealer = sealer_from_secret(&env.secret(HUB_SEAL_KEY)?.to_string())
             .map_err(|error| worker::Error::RustError(format!("e2e sealer: {error:#}")))?;
@@ -335,7 +585,7 @@ mod entry {
         Ok((router, service, console_deps))
     }
 
-    /// Build the shared `axum` router over HubDb SQLite and R2 bindings.
+    /// Builds the shared `axum` router over a database backend and R2 bindings.
     ///
     /// Constructs the runtime-neutral pieces once — a non-migrating [`Database`]
     /// over the colocated-SQLite [`crate::sqldobackend`] (the schema is applied by the operator
@@ -362,15 +612,22 @@ mod entry {
     /// `HUB_SEAL_KEY` secret is absent or empty, or the rate-limiter table cannot
     /// be ensured.
     ///
-    /// The caller constructs `db` from the colocated
-    /// [`SqlDoBackend`](crate::sqldobackend) inside the
-    /// [`HubDb`](crate::hubdb) Durable Object. Everything else (JWT, rate-limit
-    /// bindings, surface, lease, reindexer, and KV projections) is built from
-    /// `env`.
+    /// The authoritative `HubDb` caller supplies a colocated
+    /// [`SqlDoBackend`](crate::sqldobackend). Resource-affine execution objects
+    /// supply the seal-gated [`RemoteHubBackend`](crate::remotebackend), which
+    /// keeps transaction ownership in `HubDb`. Everything else (JWT,
+    /// rate-limit bindings, surface, lease, reindexer, and KV projections) is
+    /// built from `env`.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum RouterRuntimeKind {
+        Colocated,
+        ExecutionShard,
+    }
+
     async fn router_from(
         env: &Env,
-        _request_origin: &str,
         db: Arc<Database>,
+        runtime_kind: RouterRuntimeKind,
     ) -> Result<(
         Router,
         Arc<RpcService>,
@@ -390,13 +647,15 @@ mod entry {
                 "{HUB_DEFAULT_BUCKET} must not be empty"
             )));
         }
-        db.ensure_instance_default_binding("deployment_r2", None, Some(&default_bucket))
-            .await
-            .map_err(|error| {
-                worker::Error::RustError(format!(
-                    "provisioning instance-default binding: {error:#}"
-                ))
-            })?;
+        if runtime_kind == RouterRuntimeKind::Colocated {
+            db.ensure_instance_default_binding("deployment_r2", None, Some(&default_bucket))
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "provisioning instance-default binding: {error:#}"
+                    ))
+                })?;
+        }
 
         let secret = env.secret(HUB_JWT_SECRET)?.to_string();
         if secret.is_empty() {
@@ -451,14 +710,16 @@ mod entry {
                 ))
             })?,
         );
-        route_reservation_keyring
-            .validate_referenced_versions(&db)
-            .await
-            .map_err(|error| {
-                worker::Error::RustError(format!(
-                    "{HUB_ROUTE_RESERVATION_KEYRING} cannot open this database: {error:#}"
-                ))
-            })?;
+        if runtime_kind == RouterRuntimeKind::Colocated {
+            route_reservation_keyring
+                .validate_referenced_versions(&db)
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "{HUB_ROUTE_RESERVATION_KEYRING} cannot open this database: {error:#}"
+                    ))
+                })?;
+        }
         let delivery_attestation_verifier = env
             .secret(HUB_DELIVERY_ATTESTATION_KEY)
             .ok()
@@ -622,51 +883,51 @@ mod entry {
                 crate::workerqueue::WorkerQueue::from_env(env)?,
             )));
 
-        let service = Arc::new(
-            RpcService::new(
-                Arc::clone(&db),
-                jwt_keys.clone(),
-                external_url.clone(),
-                Arc::clone(&ratelimit),
-                Arc::clone(&surface),
-                Arc::clone(&surface_write),
-                Arc::clone(&lease),
-                Arc::clone(&reindexer),
-                Arc::new(
-                    aos_hub_core::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(
-                        &db,
-                    ))
+        let mut service = RpcService::new(
+            Arc::clone(&db),
+            jwt_keys.clone(),
+            external_url.clone(),
+            Arc::clone(&ratelimit),
+            Arc::clone(&surface),
+            Arc::clone(&surface_write),
+            Arc::clone(&lease),
+            Arc::clone(&reindexer),
+            Arc::new(
+                aos_hub_core::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(&db))
                     .with_wakeup(Arc::new(crate::workerqueue::WorkerQueue::from_env(env)?)),
-                ),
-                Some(Arc::clone(&sealer)),
-            )
-            .with_secret_versions(Arc::clone(&secret_versions))
-            .with_origin_fetch(Arc::new(crate::surface::WorkerOriginFetch::new(
-                Arc::clone(&egress),
-            )))
-            .with_domain_probe_terminator(domain_probe_terminator)
-            .with_identity_domain_verifier(Arc::new(
-                aos_hub_core::topology_probe::DnsJsonIdentityDomainVerifier::new(
-                    Arc::clone(&route_http),
-                    dns_endpoint.to_string(),
-                ),
-            ))
-            .with_route_reservation_keyring(route_reservation_keyring)
-            // RFC-0004 ch.14 Phase C: read-through cache hot point-key state
-            // (sessions/tokens/config/routing) off the relational read path via Workers
-            // KV (the `SESSIONS` namespace). When the binding is absent the
-            // service falls back to the database (the pre-Phase-C path).
-            .with_kv(Arc::new(crate::workerkv::WorkerKv::new(
-                env.kv(crate::handlers::bindings::KV_SESSIONS)?,
-            ))),
-        );
+            ),
+            Some(Arc::clone(&sealer)),
+        )
+        .with_secret_versions(Arc::clone(&secret_versions))
+        .with_origin_fetch(Arc::new(crate::surface::WorkerOriginFetch::new(
+            Arc::clone(&egress),
+        )))
+        .with_domain_probe_terminator(domain_probe_terminator)
+        .with_identity_domain_verifier(Arc::new(
+            aos_hub_core::topology_probe::DnsJsonIdentityDomainVerifier::new(
+                Arc::clone(&route_http),
+                dns_endpoint.to_string(),
+            ),
+        ))
+        .with_route_reservation_keyring(route_reservation_keyring)
+        // RFC-0004 ch.14 Phase C: read-through cache hot point-key state
+        // (sessions/tokens/config/routing) off the relational read path via Workers
+        // KV (the `SESSIONS` namespace). When the binding is absent the
+        // service falls back to the database (the pre-Phase-C path).
+        .with_kv(Arc::new(crate::workerkv::WorkerKv::new(
+            env.kv(crate::handlers::bindings::KV_SESSIONS)?,
+        )));
+        if let Some(delivery_url) = default_public_delivery_url(env)? {
+            service = service.with_default_public_delivery_url(delivery_url);
+        }
+        let service = Arc::new(service);
 
         // Seed the editable site chrome (title/banner/footer) from HubDb once per
         // isolate, so a fresh isolate reflects persisted branding. A branding
         // save updates the live chrome via `set_site_chrome`; other isolates
         // pick it up on recycle. Guarded so the hot path reads HubDb at most once
         // per isolate.
-        {
+        if runtime_kind == RouterRuntimeKind::Colocated {
             use std::sync::atomic::{AtomicBool, Ordering};
             static SEEDED: AtomicBool = AtomicBool::new(false);
             if !SEEDED.swap(true, Ordering::Relaxed) {
@@ -728,7 +989,7 @@ mod entry {
     /// no unauthenticated init path. A handler error is logged and returned as a
     /// `500` so a binding/back-end failure never panics the isolate.
     #[worker::event(fetch, respond_with_errors)]
-    async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         // Route the shared core's `tracing` events to the console so handler
         // errors land in Workers Logs (idempotent; see `crate::tracinglog`).
         crate::tracinglog::init();
@@ -766,42 +1027,145 @@ mod entry {
             };
         }
 
-        // The request's own `scheme://host`, the fallback canonical URL when
-        // The **`HubDb` colocated-SQLite Durable Object is the only system of
-        // record**. The
-        // worker forwards the request to `HubDb`, whose SQLite runs in the DO's
-        // own thread (no
-        // per-request session cost). The DO runs the shared router over
-        // `SqlDoBackend`. Pinned to WNAM (the hub's home) via a location hint so a
-        // fresh instance lands near the readership; the package data plane
-        // (NAR/narinfo on R2/CDN) is globally replicated independently.
+        let browse_target = anonymous_browse_target(&req)?;
+        let browse_cache_key = match browse_target.as_ref() {
+            Some(_) => anonymous_browse_cache_key(&req, &env)?,
+            None => None,
+        };
+        if let Some(cache_key) = browse_cache_key.as_ref() {
+            if let Some(response) = Cache::default().get(cache_key, false).await? {
+                let headers = response.headers().clone();
+                headers.set("cache-control", "private, no-store")?;
+                headers.set("server-timing", "hubedgecache;dur=0;desc=\"hit\"")?;
+                headers.set("x-aos-browse-cache", "hit")?;
+                return Ok(response.with_headers(headers));
+            }
+        }
+
+        // `HubDb` remains the only relational system of record. During the
+        // staged execution-shard cutover, the outer Worker routes application
+        // work to a control singleton or a resource-affine tenant, registry, or
+        // cache object. Those objects run the shared router and use short,
+        // seal-gated SQL calls into HubDb. `off` (and internal/admin requests)
+        // retains the legacy direct HubDb path; `read` moves only read methods;
+        // `on` moves the complete public request surface.
         let database_instance = env
             .var("HUB_DATABASE_INSTANCE")
             .map(|value| value.to_string())
             .unwrap_or_else(|_| "hub".to_string());
+        let route = request_execution_route(&req, &env).await?;
+        let (binding, instance_name, timing_name, shard_kind) = match route.as_ref() {
+            Some(route) => (
+                request_shard_binding(route.kind),
+                route.instance_name(&database_instance),
+                "hubshard",
+                route.kind.as_str(),
+            ),
+            None => (
+                crate::handlers::bindings::HUB_DB,
+                database_instance,
+                "hubdb",
+                "database",
+            ),
+        };
+        let invalidates_browse = req.url().ok().is_some_and(|url| {
+            crate::requestshard::invalidates_browse_directory(req.method().as_ref(), url.path())
+        });
         let stub = env
-            .durable_object(crate::handlers::bindings::HUB_DB)?
-            .id_from_name(&database_instance)
+            .durable_object(binding)?
+            .id_from_name(&instance_name)
             .and_then(|id| id.get_stub_with_location_hint("wnam"))?;
+        let started_at = worker::Date::now().as_millis();
         let resp = stub.fetch_with_request(req).await?;
+        let duration_ms = worker::Date::now().as_millis().saturating_sub(started_at);
+        let prior_timing = resp
+            .headers()
+            .get("server-timing")?
+            .filter(|value| !value.is_empty());
+        let timing = prior_timing
+            .map(|prior| format!("{prior}, {timing_name};dur={duration_ms}"))
+            .unwrap_or_else(|| format!("{timing_name};dur={duration_ms}"));
+        // Responses returned by Durable Object fetches carry the Fetch API's
+        // immutable header guard. Replace that view with an owned header copy
+        // before adding edge timing and routing evidence, while preserving the
+        // original response body, status, and encoding configuration.
+        let headers = resp.headers().clone();
+        headers.set("server-timing", &timing)?;
+        headers.set("x-aos-hub-shard", shard_kind)?;
+        let mut resp = resp.with_headers(headers);
+        if let Some(cache_key) = browse_cache_key {
+            let content_is_html = resp
+                .headers()
+                .get("content-type")?
+                .is_some_and(|value| value.starts_with("text/html"));
+            if resp.status_code() == 200 && content_is_html && !resp.headers().has("set-cookie")? {
+                let cached = resp.cloned()?;
+                let cached_headers = cached.headers().clone();
+                cached_headers.set("cache-control", "public, max-age=10")?;
+                cached_headers.set("x-aos-browse-cache", "stored")?;
+                let cached = cached.with_headers(cached_headers);
+                ctx.wait_until(async move {
+                    if let Err(error) = Cache::default().put(cache_key, cached).await {
+                        worker::console_error!("browse cache put: {error}");
+                    }
+                });
+                let response_headers = resp.headers().clone();
+                response_headers.set("cache-control", "private, no-store")?;
+                response_headers.set("x-aos-browse-cache", "miss")?;
+                resp = resp.with_headers(response_headers);
+            }
+        }
+        if invalidates_browse && (200..300).contains(&resp.status_code()) {
+            let kv =
+                crate::workerkv::WorkerKv::new(env.kv(crate::handlers::bindings::KV_SESSIONS)?);
+            let root_cache_key = env
+                .var(HUB_EXTERNAL_URL)
+                .ok()
+                .and_then(|origin| url::Url::parse(&origin.to_string()).ok())
+                .and_then(|mut url| {
+                    url.set_path("/");
+                    url.set_query(None);
+                    browse_cache_key_url(url, &env).ok()
+                });
+            ctx.wait_until(async move {
+                if let Err(error) = kv.delete(aos_hub_core::directory::DIRECTORY_KEY).await {
+                    worker::console_error!("browse directory invalidation: {error:#}");
+                }
+                if let Some(cache_key) = root_cache_key {
+                    if let Err(error) = Cache::default().delete(cache_key, false).await {
+                        worker::console_error!("browse root cache invalidation: {error}");
+                    }
+                }
+            });
+        }
+        worker::console_log!(
+            "hub_edge_request status={} route={shard_kind} dispatch_ms={duration_ms}",
+            resp.status_code()
+        );
 
         Ok(resp)
     }
 
-    /// The Cron-triggered indexer: re-walk every live registry placement into
-    /// the HubDb derived index, reusing the pure verifier.
+    /// Enqueues one short maintenance dispatcher for each Cron tick.
     ///
     /// Bound to a Cron schedule in `wrangler.toml`; mirrors the native hub's
-    /// scheduled re-index. Failures of an individual registry are logged and do
-    /// not abort the run (see [`crate::indexer::index_all`]).
+    /// scheduled maintenance. The dispatcher reads topology only long enough
+    /// to fan out bounded per-resource queue jobs; provider I/O never runs in
+    /// the scheduled event.
     #[worker::event(scheduled)]
     async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
         crate::tracinglog::init();
-        // RFC-0004 ch.14 Phase E: the maintenance pass runs **inside `HubDb`**
-        // over its colocated SQLite system of record. The
-        // worker forwards the Cron tick to the DO's seal-gated `/_internal/cron`.
-        if let Err(err) = forward_internal(&env, "/_internal/cron", None).await {
-            worker::console_error!("scheduled: forward to HubDb failed: {err:#}");
+        use aos_hub_core::jobs::Queue as _;
+        let result = match crate::workerqueue::WorkerQueue::from_env(&env) {
+            Ok(queue) => {
+                queue
+                    .enqueue(&aos_hub_core::jobs::Job::DispatchMaintenance)
+                    .await
+            }
+            Err(error) => Err(anyhow::anyhow!("maintenance queue binding: {error}")),
+        };
+        if let Err(error) = result {
+            worker::console_error!("scheduled: enqueue maintenance: {error:#}");
         }
     }
 
@@ -809,210 +1173,186 @@ mod entry {
     /// ch.14 Phase D).
     ///
     /// Decodes each [`Job`](aos_hub_core::jobs::Job) in the batch and runs it.
-    /// Supported jobs execute inside HubDb and return success only after their
-    /// durable outcome is recorded. Unsupported, decode, and execution failures
-    /// make the internal endpoint non-2xx, so the entire batch is retried.
+    /// Supported jobs execute network/provider work in the queue isolate and
+    /// send short SQL operations to HubDb. Messages are acknowledged independently so
+    /// one transient or malformed job cannot replay successful neighbors.
     #[worker::event(queue)]
     async fn queue(
-        batch: worker::MessageBatch<aos_hub_core::jobs::Job>,
+        batch: worker::MessageBatch<aos_hub_core::jobs::JobEnvelope>,
         env: Env,
         _ctx: Context,
     ) -> Result<()> {
         crate::tracinglog::init();
-        // RFC-0004 ch.14 Phase E: jobs run **inside `HubDb`** over its colocated
-        // SQLite. The worker forwards each decoded job to the DO's
-        // seal-gated `/_internal/job`. A decode failure retries the batch.
-        let messages = match batch.messages() {
-            Ok(messages) => messages,
-            Err(err) => {
-                worker::console_error!("queue: failed to decode batch: {err}");
-                batch.retry_all();
-                return Ok(());
-            }
-        };
-        let mut failed = false;
-        for message in &messages {
-            let body = match serde_json::to_string(message.body()) {
-                Ok(body) => body,
-                Err(err) => {
-                    worker::console_error!("queue: re-encode job: {err}");
-                    failed = true;
-                    continue;
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum QueuedJobBody {
+            Versioned(aos_hub_core::jobs::JobEnvelope),
+            Legacy(aos_hub_core::jobs::Job),
+        }
+
+        // Raw iteration keeps decode failures scoped to their own message. The
+        // queue's configured retry limit moves a persistent poison message to
+        // the dead-letter queue without replaying successfully acknowledged
+        // jobs from the same delivery batch.
+        stream::iter(batch.raw_iter())
+            .for_each_concurrent(4, |message| {
+                let env = &env;
+                async move {
+                    let message_id = message.id();
+                    let queued_at = message.timestamp().as_millis();
+                    let queue_age_ms = worker::Date::now().as_millis().saturating_sub(queued_at);
+                    let envelope =
+                        match serde_wasm_bindgen::from_value(message.body()) {
+                            Ok(QueuedJobBody::Versioned(envelope)) => envelope,
+                            Ok(QueuedJobBody::Legacy(job)) => {
+                                aos_hub_core::jobs::JobEnvelope::from_legacy(job, &message_id)
+                            }
+                            Err(error) => {
+                                worker::console_error!(
+                                    "queue: message={message_id} age_ms={queue_age_ms} decode failed: {error}"
+                                );
+                                message.retry();
+                                return;
+                            }
+                        };
+                    let operation_id = envelope.operation_id.clone();
+                    match run_job_envelope(&envelope, None, env).await {
+                        Ok(()) => {
+                            worker::console_log!(
+                                "queue: message={message_id} operation={operation_id} age_ms={queue_age_ms} acknowledged"
+                            );
+                            message.ack();
+                        }
+                        Err(error) => {
+                            worker::console_error!(
+                                "queue: message={message_id} operation={operation_id} age_ms={queue_age_ms} failed: {error:#}"
+                            );
+                            message.retry();
+                        }
+                    }
                 }
-            };
-            if let Err(err) = forward_internal(&env, "/_internal/job", Some(body)).await {
-                worker::console_error!("queue: forward job to HubDb failed: {err:#}");
-                failed = true;
-            }
-        }
-        if failed {
-            batch.retry_all();
-        } else {
-            batch.ack_all();
-        }
+            })
+            .await;
         Ok(())
     }
 
-    /// Forwards an internal control-plane request (Cron tick or a single queue
-    /// job) to the `HubDb` Durable Object's seal-gated `/_internal/*` endpoint,
-    /// so the work runs over the colocated SQLite system of record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the seal secret or `HUB_DB` binding is unavailable, the
-    /// DO cannot be reached, or it responds non-200.
-    async fn forward_internal(env: &Env, path: &str, body: Option<String>) -> Result<()> {
-        let seal = env.secret(HUB_SEAL_KEY)?.to_string();
-        let database_instance = env
-            .var("HUB_DATABASE_INSTANCE")
-            .map(|value| value.to_string())
-            .unwrap_or_else(|_| "hub".to_string());
-        let stub = env
-            .durable_object(crate::handlers::bindings::HUB_DB)?
-            .id_from_name(&database_instance)
-            .and_then(|id| id.get_stub_with_location_hint("wnam"))?;
-        let headers = worker::Headers::new();
-        headers.set("x-hub-seal", &seal)?;
-        let mut init = RequestInit::new();
-        init.with_method(Method::Post).with_headers(headers);
-        if let Some(body) = body {
-            init.with_body(Some(JsValue::from_str(&body)));
+    fn job_backend(state: Option<&State>, env: &Env) -> Box<dyn aos_hub_core::backend::Backend> {
+        match state {
+            Some(state) => Box::new(crate::sqldobackend::SqlDoBackend::new(state.storage())),
+            None => Box::new(crate::remotebackend::RemoteHubBackend::new(env)),
         }
-        let req = Request::new_with_init(&format!("https://hub{path}"), &init)?;
-        let mut resp = stub.fetch_with_request(req).await?;
-        if resp.status_code() != 200 {
-            let detail = resp.text().await.unwrap_or_default();
-            return Err(worker::Error::RustError(format!(
-                "HubDb {path}: {} {detail}",
-                resp.status_code()
-            )));
-        }
-        Ok(())
     }
 
-    /// Runs the Cron maintenance pass inside `HubDb` over its colocated SQLite:
-    /// re-index every registry's surface, rescan caches, and rebuild the KV
-    /// directory projection. Indexing, scanning, GC, and directory failures are
-    /// logged independently; webhook materialization or delivery failure fails
-    /// the Cron request so the platform retries it.
-    async fn run_cron(state: &State, env: &Env) -> Result<()> {
-        let make = || -> Box<dyn aos_hub_core::backend::Backend> {
-            Box::new(crate::sqldobackend::SqlDoBackend::new(state.storage()))
-        };
-        // Drain already-committed notifications before longer maintenance.
-        // A second pass below catches events raised by indexing in this tick.
-        run_webhook_batch(make(), env).await?;
-        let now = (worker::Date::now().as_millis() / 1000) as i64;
-        aos_hub_core::db::Database::attach(make())
-            .prune_expired_invitation_secrets(now, 1_000)
+    async fn rebuild_worker_directory(db: &Database, env: &Env) -> Result<()> {
+        let namespace = env.kv(crate::handlers::bindings::KV_SESSIONS)?;
+        let kv = crate::workerkv::WorkerKv::new(namespace);
+        aos_hub_core::directory::rebuild(db, &kv)
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                worker::Error::RustError(format!("rebuild registry directory: {error:#}"))
+            })
+    }
+
+    /// Fans a maintenance tick out into independent bounded queue jobs.
+    ///
+    /// This database-only pass intentionally performs no provider, webhook,
+    /// DNS, or KV I/O. A slow registry or cache therefore cannot hold the
+    /// global database object for the duration of every other maintenance job.
+    async fn run_cron(
+        state: Option<&State>,
+        env: &Env,
+        parent: &aos_hub_core::jobs::JobEnvelope,
+    ) -> Result<()> {
+        let now = now_for_worker();
+        let db = aos_hub_core::db::Database::attach(job_backend(state, env));
+        db.prune_expired_invitation_secrets(now, 1_000)
             .await
             .map_err(|error| {
                 worker::Error::RustError(format!("prune expired invitation credentials: {error:#}"))
             })?;
-        run_domain_probes(make(), env).await;
-        let secret_versions = match crate::secretversions::from_env(env) {
-            Ok(resolver) => resolver,
-            Err(err) => {
-                worker::console_error!("cron: secret-version resolver unavailable: {err}");
-                return Err(err);
-            }
-        };
-        let egress = match worker_egress(env) {
-            Ok(client) => client,
-            Err(error) => {
-                worker::console_error!("cron: invalid egress configuration: {error}");
-                return Err(error);
-            }
-        };
-        if let Ok(bucket) = env.bucket(crate::handlers::bindings::R2) {
-            if let Err(err) = crate::indexer::index_all(
-                make(),
-                bucket,
-                Arc::clone(&secret_versions),
-                Arc::clone(&egress),
-            )
-            .await
-            {
-                worker::console_error!("cron index failed: {err:#}");
-            }
-        }
-        if let Ok(bucket) = env.bucket(crate::handlers::bindings::R2) {
-            if let Err(err) = crate::indexer::rescan_all(
-                make(),
-                bucket,
-                Arc::clone(&secret_versions),
-                Arc::clone(&egress),
-            )
-            .await
-            {
-                worker::console_error!("cron rescan failed: {err:#}");
-            }
-        }
-        if let Ok(bucket) = env.bucket(crate::handlers::bindings::R2) {
-            let db = Arc::new(aos_hub_core::db::Database::attach(make()));
-            let writers: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> =
-                Arc::new(crate::surface::R2SurfaceWriteProvider::new(
-                    bucket,
-                    Arc::clone(&db),
-                    Arc::clone(&secret_versions),
-                    Arc::clone(&egress),
-                ));
-            let controller =
-                aos_hub_core::gc_controller::CacheGcDeletionController::new(db, writers);
-            if let Err(err) = controller.run_due(now, 100).await {
-                worker::console_error!("physical cache deletion controller failed: {err:#}");
-            }
-        }
-        if let Ok(kv_ns) = env.kv(crate::handlers::bindings::KV_SESSIONS) {
-            let db = aos_hub_core::db::Database::attach(make());
-            let kv = crate::workerkv::WorkerKv::new(kv_ns);
-            if let Err(err) = aos_hub_core::directory::rebuild(&db, &kv).await {
-                worker::console_error!("cron directory rebuild failed: {err:#}");
-            }
-        }
-        run_webhook_batch(make(), env).await?;
-        Ok(())
-    }
-
-    async fn run_webhook_batch(
-        backend: Box<dyn aos_hub_core::backend::Backend>,
-        env: &Env,
-    ) -> Result<()> {
-        let db = aos_hub_core::db::Database::attach(backend);
-        let (_, delivery_ids) = db
+        let (_, newly_materialized_delivery_ids) = db
             .materialize_topology_events_with_delivery_ids()
             .await
             .map_err(|error| {
                 worker::Error::RustError(format!("materialize webhook deliveries: {error:#}"))
             })?;
-        let queue_error = if delivery_ids.is_empty() {
-            None
-        } else {
-            use aos_hub_core::jobs::Queue as _;
-            let jobs = delivery_ids
+        let due_delivery_ids = db.list_due_delivery_ids(now, 100).await.map_err(|error| {
+            worker::Error::RustError(format!("list due webhook deliveries: {error:#}"))
+        })?;
+        let registries = db
+            .list_registries()
+            .await
+            .map_err(|error| worker::Error::RustError(format!("list registries: {error:#}")))?;
+        let caches = db
+            .list_binary_caches()
+            .await
+            .map_err(|error| worker::Error::RustError(format!("list caches: {error:#}")))?;
+
+        let mut jobs = vec![
+            aos_hub_core::jobs::Job::RunTopologyProbes,
+            aos_hub_core::jobs::Job::RecoverCacheWrites,
+            aos_hub_core::jobs::Job::RunCacheGc,
+            aos_hub_core::jobs::Job::RebuildDirectory,
+        ];
+        jobs.extend(
+            registries
                 .into_iter()
-                .map(|delivery_id| aos_hub_core::jobs::Job::DeliverWebhook { delivery_id })
-                .collect::<Vec<_>>();
-            crate::workerqueue::WorkerQueue::from_env(env)?
-                .enqueue_all(&jobs)
-                .await
-                .err()
-        };
-        let now = aos_hub_core::clock::now_unix_secs();
-        for delivery in db
-            .claim_due_deliveries(now, 25, 60)
+                .map(|registry| aos_hub_core::jobs::Job::Reindex {
+                    registry_id: registry.id,
+                }),
+        );
+        jobs.extend(
+            caches
+                .into_iter()
+                .filter(|cache| cache.deleted_at.is_none())
+                .map(|cache| aos_hub_core::jobs::Job::RescanCache { cache_id: cache.id }),
+        );
+        let delivery_ids = newly_materialized_delivery_ids
+            .into_iter()
+            .chain(due_delivery_ids)
+            .collect::<std::collections::BTreeSet<_>>();
+        jobs.extend(
+            delivery_ids
+                .into_iter()
+                .map(|delivery_id| aos_hub_core::jobs::Job::DeliverWebhook { delivery_id }),
+        );
+
+        let envelopes = jobs
+            .into_iter()
+            .map(|job| {
+                let cursor = match &job {
+                    aos_hub_core::jobs::Job::RunTopologyProbes => "topology".to_string(),
+                    aos_hub_core::jobs::Job::RecoverCacheWrites => "cache-recovery".to_string(),
+                    aos_hub_core::jobs::Job::RunCacheGc => "cache-gc".to_string(),
+                    aos_hub_core::jobs::Job::RebuildDirectory => "directory".to_string(),
+                    aos_hub_core::jobs::Job::Reindex { registry_id } => {
+                        format!("registry:{registry_id}")
+                    }
+                    aos_hub_core::jobs::Job::RescanCache { cache_id } => {
+                        format!("cache:{cache_id}")
+                    }
+                    aos_hub_core::jobs::Job::DeliverWebhook { delivery_id } => {
+                        format!("webhook:{delivery_id}")
+                    }
+                    _ => "maintenance".to_string(),
+                };
+                parent.continued(job, cursor)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()
+            .map_err(|error| {
+                worker::Error::RustError(format!("build maintenance jobs: {error:#}"))
+            })?;
+        crate::workerqueue::WorkerQueue::from_env(env)?
+            .enqueue_envelopes(&envelopes)
             .await
             .map_err(|error| {
-                worker::Error::RustError(format!("claim webhook deliveries: {error:#}"))
-            })?
-        {
-            deliver_webhook(&db, env, &delivery).await?;
-        }
-        if let Some(error) = queue_error {
-            return Err(worker::Error::RustError(format!(
-                "enqueue webhook deliveries: {error:#}"
-            )));
-        }
+                worker::Error::RustError(format!("enqueue maintenance jobs: {error:#}"))
+            })?;
+        worker::console_log!(
+            "maintenance dispatch enqueued {} bounded jobs",
+            envelopes.len()
+        );
         Ok(())
     }
 
@@ -1142,15 +1482,176 @@ mod entry {
         aos_hub_core::clock::now_unix_secs()
     }
 
-    /// Runs a single deferred [`Job`](aos_hub_core::jobs::Job) inside `HubDb` over
-    /// its colocated SQLite (the queue consumer's per-job body, Phase E).
-    async fn run_job(job: &aos_hub_core::jobs::Job, state: &State, env: &Env) -> Result<()> {
-        use aos_hub_core::jobs::Job;
-        let make = || -> Box<dyn aos_hub_core::backend::Backend> {
-            Box::new(crate::sqldobackend::SqlDoBackend::new(state.storage()))
+    /// Claims, executes, and durably completes one versioned queue operation.
+    async fn run_job_envelope(
+        envelope: &aos_hub_core::jobs::JobEnvelope,
+        state: Option<&State>,
+        env: &Env,
+    ) -> Result<()> {
+        use aos_hub_core::db::WorkerJobClaim;
+
+        envelope
+            .validate()
+            .map_err(|error| worker::Error::RustError(format!("invalid envelope: {error:#}")))?;
+        let payload_digest = envelope
+            .payload_digest()
+            .map_err(|error| worker::Error::RustError(format!("job payload digest: {error:#}")))?;
+        let now = now_for_worker();
+        let db = aos_hub_core::db::Database::attach(job_backend(state, env));
+        let claim = db
+            .claim_worker_job(
+                &envelope.operation_id,
+                envelope.kind(),
+                &payload_digest,
+                now,
+                900,
+            )
+            .await
+            .map_err(|error| worker::Error::RustError(format!("claim job: {error:#}")))?;
+        let (claim_token, attempt) = match claim {
+            WorkerJobClaim::Acquired {
+                claim_token,
+                attempt,
+            } => (claim_token, attempt),
+            WorkerJobClaim::Completed => {
+                worker::console_log!(
+                    "job operation={} kind={} duplicate completed",
+                    envelope.operation_id,
+                    envelope.kind()
+                );
+                return Ok(());
+            }
+            WorkerJobClaim::Busy => {
+                return Err(worker::Error::RustError(format!(
+                    "job operation {} is already running",
+                    envelope.operation_id
+                )))
+            }
         };
-        match job {
+        worker::console_log!(
+            "job operation={} kind={} attempt={} started",
+            envelope.operation_id,
+            envelope.kind(),
+            attempt
+        );
+
+        match run_job(envelope, state, env).await {
+            Ok(()) => db
+                .complete_worker_job(&envelope.operation_id, &claim_token, now_for_worker())
+                .await
+                .map_err(|error| worker::Error::RustError(format!("complete job: {error:#}"))),
+            Err(error) => {
+                let detail = bounded_job_error(&format!("{error:#}"));
+                if let Err(release_error) = db
+                    .release_worker_job(
+                        &envelope.operation_id,
+                        &claim_token,
+                        &detail,
+                        now_for_worker(),
+                    )
+                    .await
+                {
+                    return Err(worker::Error::RustError(format!(
+                        "{error:#}; releasing job claim failed: {release_error:#}"
+                    )));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn bounded_job_error(error: &str) -> String {
+        const MAX_BYTES: usize = 8_192;
+        if error.len() <= MAX_BYTES {
+            return error.to_string();
+        }
+        let mut end = MAX_BYTES;
+        while !error.is_char_boundary(end) {
+            end -= 1;
+        }
+        error[..end].to_string()
+    }
+
+    /// Runs one deferred [`Job`](aos_hub_core::jobs::Job) in its caller's isolate.
+    ///
+    /// Queue callers use the remote SQL backend; the retained internal endpoint
+    /// uses colocated SQL for compatibility and runtime tests.
+    async fn run_job(
+        envelope: &aos_hub_core::jobs::JobEnvelope,
+        state: Option<&State>,
+        env: &Env,
+    ) -> Result<()> {
+        use aos_hub_core::jobs::Job;
+        let make = || job_backend(state, env);
+        match &envelope.job {
+            Job::DispatchMaintenance => run_cron(state, env, envelope).await?,
             Job::RunTopologyProbes => run_domain_probes(make(), env).await,
+            Job::RecoverCacheWrites => {
+                let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "job recover cache writes R2 binding: {error}"
+                    ))
+                })?;
+                let secret_versions = crate::secretversions::from_env(env).map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "job recover cache writes secret versions: {error}"
+                    ))
+                })?;
+                let egress = worker_egress(env)?;
+                let db = Arc::new(aos_hub_core::db::Database::attach(make()));
+                let provider = crate::surface::R2SurfaceProvider::new(
+                    bucket.clone(),
+                    Arc::clone(&db),
+                    Arc::clone(&secret_versions),
+                    Arc::clone(&egress),
+                );
+                let writers = crate::surface::R2SurfaceWriteProvider::new(
+                    bucket,
+                    Arc::clone(&db),
+                    secret_versions,
+                    egress,
+                );
+                let now = now_for_worker();
+                aos_hub_core::cache_scan::reap_due_cache_tombstones(&db, now)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!("job recover cache tombstones: {error:#}"))
+                    })?;
+                aos_hub_core::cache_scan::recover_expired_cache_writes(
+                    &db,
+                    &provider,
+                    &writers,
+                    now,
+                    aos_hub_core::cache_scan::MAX_CLEANUP_ITEMS_PER_PASS,
+                )
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!("job recover expired cache writes: {error:#}"))
+                })?;
+            }
+            Job::RunCacheGc => {
+                let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
+                    worker::Error::RustError(format!("job cache GC R2 binding: {error}"))
+                })?;
+                let secret_versions = crate::secretversions::from_env(env).map_err(|error| {
+                    worker::Error::RustError(format!("job cache GC secret versions: {error}"))
+                })?;
+                let egress = worker_egress(env)?;
+                let db = Arc::new(aos_hub_core::db::Database::attach(make()));
+                let writers: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> =
+                    Arc::new(crate::surface::R2SurfaceWriteProvider::new(
+                        bucket,
+                        Arc::clone(&db),
+                        secret_versions,
+                        egress,
+                    ));
+                aos_hub_core::gc_controller::CacheGcDeletionController::new(db, writers)
+                    .run_due(now_for_worker(), 25)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!("job cache GC: {error:#}"))
+                    })?;
+            }
             Job::RebuildDirectory => {
                 let kv_ns = env
                     .kv(crate::handlers::bindings::KV_SESSIONS)
@@ -1192,11 +1693,106 @@ mod entry {
                         };
                         let reindexer =
                             WorkerReindexer::new(bucket, Arc::clone(&db), secret_versions, egress);
-                        if let Err(err) = reindexer.reindex(&registry).await {
+                        let publication_state = db
+                            .registry_publication_state(*registry_id)
+                            .await
+                            .map_err(|error| {
+                            worker::Error::RustError(format!(
+                                "job reindex {registry_id} publication state: {error:#}"
+                            ))
+                        })?;
+                        let build_id = crate::registry_index_build_id(
+                            *registry_id,
+                            registry.resource_version,
+                            publication_state
+                                .as_ref()
+                                .and_then(|state| state.current_publication_id.as_deref()),
+                        );
+                        let claim = db
+                            .claim_registry_index_build(
+                                *registry_id,
+                                &build_id,
+                                now_for_worker(),
+                                900,
+                            )
+                            .await
+                            .map_err(|error| {
+                                worker::Error::RustError(format!(
+                                    "job reindex {registry_id} generation claim: {error:#}"
+                                ))
+                            })?;
+                        let (owner_token, base_generation, target_generation) = match claim {
+                            aos_hub_core::db::RegistryIndexBuildClaim::Acquired {
+                                owner_token,
+                                base_generation,
+                                target_generation,
+                            } => (owner_token, base_generation, target_generation),
+                            aos_hub_core::db::RegistryIndexBuildClaim::Busy => {
+                                worker::console_log!(
+                                    "job reindex {registry_id}: another generation is building"
+                                );
+                                return Ok(());
+                            }
+                            aos_hub_core::db::RegistryIndexBuildClaim::AlreadyFinished => {
+                                worker::console_log!(
+                                    "job reindex {registry_id}: generation already finished"
+                                );
+                                rebuild_worker_directory(db.as_ref(), env).await?;
+                                purge_registry_browse_cache(env, &registry.slug).await?;
+                                return Ok(());
+                            }
+                        };
+                        if let Err(error) = reindexer.reindex(&registry).await {
+                            let detail = bounded_job_error(&format!("{error:#}"));
+                            if let Err(failure_error) = db
+                                .fail_registry_index_build(
+                                    *registry_id,
+                                    &build_id,
+                                    &owner_token,
+                                    &detail,
+                                    now_for_worker(),
+                                )
+                                .await
+                            {
+                                return Err(worker::Error::RustError(format!(
+                                    "job reindex {registry_id}: {error:#}; recording generation failure: {failure_error:#}"
+                                )));
+                            }
                             return Err(worker::Error::RustError(format!(
-                                "job reindex {registry_id}: {err:#}"
+                                "job reindex {registry_id}: {error:#}"
                             )));
                         }
+                        let status = db
+                            .index_status(*registry_id)
+                            .await
+                            .map_err(|error| {
+                                worker::Error::RustError(format!(
+                                    "job reindex {registry_id} generation status: {error:#}"
+                                ))
+                            })?
+                            .ok_or_else(|| {
+                                worker::Error::RustError(format!(
+                                    "job reindex {registry_id} generation status disappeared"
+                                ))
+                            })?;
+                        db.complete_registry_index_build(
+                            *registry_id,
+                            &build_id,
+                            &owner_token,
+                            base_generation,
+                            target_generation,
+                            status.generation,
+                            status.content_digest.as_deref(),
+                            now_for_worker(),
+                        )
+                        .await
+                        .map_err(|error| {
+                            worker::Error::RustError(format!(
+                                "job reindex {registry_id} generation completion: {error:#}"
+                            ))
+                        })?;
+                        rebuild_worker_directory(db.as_ref(), env).await?;
+                        purge_registry_browse_cache(env, &registry.slug).await?;
                     }
                     Ok(None) => worker::console_log!("job reindex {registry_id}: registry gone"),
                     Err(err) => {
@@ -1205,6 +1801,45 @@ mod entry {
                         )))
                     }
                 }
+            }
+            Job::RescanCache { cache_id } => {
+                let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
+                    worker::Error::RustError(format!("job rescan cache R2 binding: {error}"))
+                })?;
+                let secret_versions = crate::secretversions::from_env(env).map_err(|error| {
+                    worker::Error::RustError(format!("job rescan cache secret versions: {error}"))
+                })?;
+                let egress = worker_egress(env)?;
+                let db = Arc::new(aos_hub_core::db::Database::attach(make()));
+                let Some(cache) = db.binary_cache_by_id(*cache_id).await.map_err(|error| {
+                    worker::Error::RustError(format!("job rescan cache load {cache_id}: {error:#}"))
+                })?
+                else {
+                    worker::console_log!("job rescan cache {cache_id}: cache gone");
+                    return Ok(());
+                };
+                if cache.deleted_at.is_some() {
+                    worker::console_log!("job rescan cache {cache_id}: cache deleted");
+                    return Ok(());
+                }
+                let provider = crate::surface::R2SurfaceProvider::new(
+                    bucket,
+                    Arc::clone(&db),
+                    secret_versions,
+                    egress,
+                );
+                let stats = aos_hub_core::cache_scan::rescan_cache(&db, &provider, &cache)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!("job rescan cache {cache_id}: {error:#}"))
+                    })?;
+                worker::console_log!(
+                    "job rescan cache {}: +{} -{} ={}",
+                    cache_id,
+                    stats.added,
+                    stats.removed,
+                    stats.unchanged
+                );
             }
             Job::ResetIndex { registry_id } => {
                 let db = aos_hub_core::db::Database::attach(make());
@@ -1468,12 +2103,20 @@ mod entry {
                 let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
                     Arc::clone(&db),
                     Arc::new(crate::surface::R2SurfaceProvider::new(
+                        bucket.clone(),
+                        Arc::clone(&db),
+                        Arc::clone(&secret_versions),
+                        Arc::clone(&egress),
+                    )),
+                )
+                .with_writes(Arc::new(
+                    crate::surface::R2SurfaceWriteProvider::new(
                         bucket,
                         Arc::clone(&db),
                         secret_versions,
                         Arc::clone(&egress),
-                    )),
-                );
+                    ),
+                ));
                 if let Err(error) = placement_scans.run_due(5).await {
                     worker::console_error!("placement scans: {error:#}");
                 }
@@ -1484,24 +2127,217 @@ mod entry {
         }
     }
 
+    /// Cached shared-router dependencies for one request-execution shard.
+    #[derive(Clone)]
+    struct HubShardRuntime {
+        router: Router,
+        service: Arc<RpcService>,
+        console_deps: ConsoleDeps,
+        remote_sql_metrics: crate::remotebackend::RemoteSqlMetrics,
+        delivery_attestation_verifier:
+            Option<Arc<aos_hub_core::delivery_attestation::DeliveryAttestationVerifier>>,
+    }
+
+    async fn shard_request_runtime(
+        env: &Env,
+        runtime: &Mutex<Option<HubShardRuntime>>,
+    ) -> Result<HubShardRuntime> {
+        let mut runtime = runtime.lock().await;
+        if let Some(runtime) = runtime.as_ref() {
+            return Ok(runtime.clone());
+        }
+
+        let remote_sql_metrics = crate::remotebackend::RemoteSqlMetrics::default();
+        let db = Arc::new(Database::attach(Box::new(
+            crate::remotebackend::RemoteHubBackend::with_metrics(env, remote_sql_metrics.clone()),
+        )));
+        let (router, service, console_deps, delivery_attestation_verifier) =
+            router_from(env, db, RouterRuntimeKind::ExecutionShard).await?;
+        let initialized = HubShardRuntime {
+            router,
+            service,
+            console_deps,
+            remote_sql_metrics,
+            delivery_attestation_verifier,
+        };
+        *runtime = Some(initialized.clone());
+        Ok(initialized)
+    }
+
+    async fn execute_sharded_request(
+        shard: &'static str,
+        env: &Env,
+        runtime: &Mutex<Option<HubShardRuntime>>,
+        req: Request,
+    ) -> Result<Response> {
+        crate::tracinglog::init();
+        let path = req
+            .url()
+            .ok()
+            .map(|url| url.path().to_string())
+            .unwrap_or_else(|| "<invalid>".to_string());
+        if path.starts_with("/_internal/") || path.starts_with("/_admin/") {
+            return Response::error("not found", 404);
+        }
+        let method = format!("{:?}", req.method());
+        let runtime = shard_request_runtime(env, runtime).await?;
+        let started_at = worker::Date::now().as_millis();
+        let sql_before = runtime.remote_sql_metrics.snapshot();
+        let response = crate::bridge::dispatch(
+            runtime.router,
+            runtime.service.as_ref(),
+            runtime.console_deps,
+            runtime.delivery_attestation_verifier.as_deref(),
+            req,
+        )
+        .await?;
+        let duration_ms = worker::Date::now().as_millis().saturating_sub(started_at);
+        let sql = runtime.remote_sql_metrics.snapshot().since(sql_before);
+        let existing_timing = response
+            .headers()
+            .get("server-timing")?
+            .filter(|value| !value.is_empty());
+        let shard_timing = format!(
+            "hubexec;dur={duration_ms}, hubsql;dur={};desc=\"{} calls\"",
+            sql.duration_ms, sql.calls
+        );
+        let timing = existing_timing
+            .map(|existing| format!("{existing}, {shard_timing}"))
+            .unwrap_or(shard_timing);
+        // A nested dispatcher may return a Fetch-backed response with immutable
+        // headers. Always install a mutable copy before appending diagnostics.
+        let headers = response.headers().clone();
+        headers.set("server-timing", &timing)?;
+        let response = response.with_headers(headers);
+        worker::console_log!(
+            "hub_shard_request shard={shard} method={method} path={path} status={} duration_ms={duration_ms} sql_calls={} sql_ms={} sql_rows_read={}",
+            response.status_code(),
+            sql.calls,
+            sql.duration_ms,
+            sql.rows_read,
+        );
+        Ok(response)
+    }
+
+    /// Instance-wide request-execution shard.
+    #[durable_object]
+    pub struct HubControlShard {
+        env: Env,
+        runtime: Mutex<Option<HubShardRuntime>>,
+    }
+
+    impl DurableObject for HubControlShard {
+        fn new(_state: State, env: Env) -> Self {
+            Self {
+                env,
+                runtime: Mutex::new(None),
+            }
+        }
+
+        async fn fetch(&self, req: Request) -> Result<Response> {
+            execute_sharded_request("control", &self.env, &self.runtime, req).await
+        }
+    }
+
+    /// Resource-affine tenant request-execution shard.
+    #[durable_object]
+    pub struct HubTenantShard {
+        env: Env,
+        runtime: Mutex<Option<HubShardRuntime>>,
+    }
+
+    impl DurableObject for HubTenantShard {
+        fn new(_state: State, env: Env) -> Self {
+            Self {
+                env,
+                runtime: Mutex::new(None),
+            }
+        }
+
+        async fn fetch(&self, req: Request) -> Result<Response> {
+            execute_sharded_request("tenant", &self.env, &self.runtime, req).await
+        }
+    }
+
+    /// Resource-affine registry request-execution shard.
+    #[durable_object]
+    pub struct HubRegistryShard {
+        env: Env,
+        runtime: Mutex<Option<HubShardRuntime>>,
+    }
+
+    impl DurableObject for HubRegistryShard {
+        fn new(_state: State, env: Env) -> Self {
+            Self {
+                env,
+                runtime: Mutex::new(None),
+            }
+        }
+
+        async fn fetch(&self, req: Request) -> Result<Response> {
+            execute_sharded_request("registry", &self.env, &self.runtime, req).await
+        }
+    }
+
+    /// Resource-affine binary-cache request-execution shard.
+    #[durable_object]
+    pub struct HubCacheShard {
+        env: Env,
+        runtime: Mutex<Option<HubShardRuntime>>,
+    }
+
+    impl DurableObject for HubCacheShard {
+        fn new(_state: State, env: Env) -> Self {
+            Self {
+                env,
+                runtime: Mutex::new(None),
+            }
+        }
+
+        async fn fetch(&self, req: Request) -> Result<Response> {
+            execute_sharded_request("cache", &self.env, &self.runtime, req).await
+        }
+    }
+
     /// The colocated-SQLite system-of-record Durable Object.
     ///
-    /// The `fetch` handler forwards every request to this DO (a single global
-    /// instance, `id_from_name("hub")`). The DO runs
-    /// the **same shared router** ([`router_from`]) over a
+    /// Internal and administrative requests are forwarded directly to this
+    /// DO. Public requests may also run here when execution sharding is off or
+    /// in read-only cutover mode. The DO runs the **same shared router**
+    /// ([`router_from`]) over a
     /// [`SqlDoBackend`](crate::sqldobackend) whose SQLite lives in the DO's own
     /// thread — so the request makes one hop to the DO's region and every query
     /// is local to the object. The schema is the shared
     /// `MIGRATIONS`, applied to the DO's SQLite on first use (`ensure_migrated`).
+    #[cfg(not(feature = "do-e2e"))]
+    #[derive(Clone)]
+    struct HubRequestRuntime {
+        router: Router,
+        service: Arc<RpcService>,
+        console_deps: ConsoleDeps,
+        sql_metrics: crate::sqldobackend::SqlDoMetrics,
+        delivery_attestation_verifier:
+            Option<Arc<aos_hub_core::delivery_attestation::DeliveryAttestationVerifier>>,
+    }
+
     #[durable_object]
     pub struct HubDb {
         state: State,
         env: Env,
+        migrated: Mutex<bool>,
+        #[cfg(not(feature = "do-e2e"))]
+        request_runtime: Mutex<Option<HubRequestRuntime>>,
     }
 
     impl DurableObject for HubDb {
         fn new(state: State, env: Env) -> Self {
-            HubDb { state, env }
+            HubDb {
+                state,
+                env,
+                migrated: Mutex::new(false),
+                #[cfg(not(feature = "do-e2e"))]
+                request_runtime: Mutex::new(None),
+            }
         }
 
         async fn fetch(&self, mut req: Request) -> Result<Response> {
@@ -1509,8 +2345,7 @@ mod entry {
             // Worker, so they must install their own tracing subscriber.
             crate::tracinglog::init();
 
-            let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage());
-            if let Err(err) = crate::sqldobackend::ensure_migrated(&backend).await {
+            if let Err(err) = self.ensure_migrated().await {
                 return Response::error(format!("hubdb migrate: {err:#}"), 500);
             }
             // Live-workerd bootstrap (`do-e2e` only, never production). This
@@ -1536,13 +2371,11 @@ mod entry {
                     return self.e2e_managed_registry_bootstrap(&body).await;
                 }
             }
-            // Seal-gated control-plane (RFC-0004 ch.14 Phase E): the worker's
-            // `scheduled`/`queue` handlers forward the Cron tick and each job to
-            // `/_internal/{cron,job}` so maintenance runs over the colocated
-            // SQLite, and the operator's `worker install` creates the instance
-            // root admin via `/_admin/bootstrap-root`. All require the `x-hub-seal`
-            // secret, so an external caller forwarded through the worker cannot
-            // reach them.
+            // Seal-gated control-plane (RFC-0004 ch.14 Phase E). Background
+            // queue isolates use `/_internal/sql` for short database operations;
+            // the cron/job endpoints remain compatible administrative entry
+            // points. Root bootstrap uses `/_admin/bootstrap-root`. All require
+            // `x-hub-seal`, so forwarded external callers cannot reach them.
             {
                 let path = req
                     .url()
@@ -1552,6 +2385,7 @@ mod entry {
                 if req.method() == Method::Post
                     && (path == "/_internal/cron"
                         || path == "/_internal/job"
+                        || path == crate::remotebackend::REMOTE_SQL_PATH
                         || path == "/_admin/bootstrap-root")
                 {
                     let want = self
@@ -1568,8 +2402,32 @@ mod entry {
                     if want.is_empty() || got != want {
                         return Response::error("forbidden", 403);
                     }
+                    if path == crate::remotebackend::REMOTE_SQL_PATH {
+                        let body = match req.bytes().await {
+                            Ok(body) => body,
+                            Err(error) => {
+                                return Response::error(format!("remote SQL body: {error}"), 400)
+                            }
+                        };
+                        let operation = match crate::remoteprotocol::decode_request(&body) {
+                            Ok(operation) => operation,
+                            Err(error) => {
+                                return Response::error(format!("remote SQL decode: {error}"), 400)
+                            }
+                        };
+                        let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage());
+                        return match crate::remotebackend::execute_remote_sql(&backend, operation)
+                            .await
+                        {
+                            Ok(response) => Response::from_json(&response),
+                            Err(error) => Response::error(format!("remote SQL: {error:#}"), 500),
+                        };
+                    }
                     if path == "/_internal/cron" {
-                        return match run_cron(&self.state, &self.env).await {
+                        let envelope = aos_hub_core::jobs::JobEnvelope::new(
+                            aos_hub_core::jobs::Job::DispatchMaintenance,
+                        );
+                        return match run_cron(Some(&self.state), &self.env, &envelope).await {
                             Ok(()) => Response::ok("ok"),
                             Err(error) => Response::error(format!("cron: {error}"), 500),
                         };
@@ -1599,49 +2457,106 @@ mod entry {
                             Err(err) => Response::error(format!("bootstrap-root: {err:#}"), 500),
                         };
                     }
-                    let job: aos_hub_core::jobs::Job = match req.json().await {
-                        Ok(job) => job,
+                    let envelope: aos_hub_core::jobs::JobEnvelope = match req.json().await {
+                        Ok(envelope) => envelope,
                         Err(err) => return Response::error(format!("job decode: {err}"), 400),
                     };
-                    return match run_job(&job, &self.state, &self.env).await {
+                    return match run_job_envelope(&envelope, Some(&self.state), &self.env).await {
                         Ok(()) => Response::ok("ok"),
                         Err(error) => Response::error(format!("job: {error}"), 500),
                     };
                 }
             }
-            let db = Arc::new(Database::attach(Box::new(backend)));
-            #[cfg(not(feature = "do-e2e"))]
-            let request_origin = req
-                .url()
-                .ok()
-                .map(|u| {
-                    let scheme = u.scheme();
-                    match (u.host_str(), u.port()) {
-                        (Some(host), Some(port)) => format!("{scheme}://{host}:{port}"),
-                        (Some(host), None) => format!("{scheme}://{host}"),
-                        (None, _) => String::new(),
-                    }
-                })
-                .unwrap_or_default();
             #[cfg(feature = "do-e2e")]
             {
+                let db = Arc::new(Database::attach(Box::new(
+                    crate::sqldobackend::SqlDoBackend::new(self.state.storage()),
+                )));
                 let (router, service, console_deps) =
                     router_from_do_e2e(&self.state, &self.env, db).await?;
                 return crate::bridge::dispatch(router, &service, console_deps, None, req).await;
             }
             // The DO runs the same shared router as the native shell.
             #[cfg(not(feature = "do-e2e"))]
+            {
+                let runtime = self.request_runtime().await?;
+                let method = format!("{:?}", req.method());
+                let path = req
+                    .url()
+                    .ok()
+                    .map(|url| url.path().to_string())
+                    .unwrap_or_else(|| "<invalid>".to_string());
+                let started_at = worker::Date::now().as_millis();
+                let sql_before = runtime.sql_metrics.snapshot();
+                let result = crate::bridge::dispatch(
+                    runtime.router,
+                    runtime.service.as_ref(),
+                    runtime.console_deps,
+                    runtime.delivery_attestation_verifier.as_deref(),
+                    req,
+                )
+                .await;
+                let duration_ms = worker::Date::now().as_millis().saturating_sub(started_at);
+                let sql = runtime.sql_metrics.snapshot().since(sql_before);
+                let status = result
+                    .as_ref()
+                    .map(worker::Response::status_code)
+                    .unwrap_or(500);
+                worker::console_log!(
+                    "hub_do_request method={method} path={path} status={status} duration_ms={duration_ms} sql_statements={} sql_queries={} sql_mutations={} sql_transactions={} sql_changes_queries={} sql_rows_read={} sql_rows_written={}",
+                    sql.statements,
+                    sql.queries,
+                    sql.mutations,
+                    sql.transactions,
+                    sql.affected_count_queries,
+                    sql.rows_read,
+                    sql.rows_written,
+                );
+                result
+            }
+        }
+    }
+
+    impl HubDb {
+        /// Applies and validates the colocated schema once per object activation.
+        async fn ensure_migrated(&self) -> anyhow::Result<()> {
+            let mut migrated = self.migrated.lock().await;
+            if *migrated {
+                return Ok(());
+            }
+
+            let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage());
+            crate::sqldobackend::ensure_migrated(&backend).await?;
+            *migrated = true;
+            Ok(())
+        }
+
+        /// Builds immutable request dependencies once per object activation.
+        #[cfg(not(feature = "do-e2e"))]
+        async fn request_runtime(&self) -> Result<HubRequestRuntime> {
+            let mut runtime = self.request_runtime.lock().await;
+            if let Some(runtime) = runtime.as_ref() {
+                return Ok(runtime.clone());
+            }
+
+            let sql_metrics = crate::sqldobackend::SqlDoMetrics::default();
+            let db = Arc::new(Database::attach(Box::new(
+                crate::sqldobackend::SqlDoBackend::with_metrics(
+                    self.state.storage(),
+                    sql_metrics.clone(),
+                ),
+            )));
             let (router, service, console_deps, delivery_attestation_verifier) =
-                router_from(&self.env, &request_origin, db).await?;
-            #[cfg(not(feature = "do-e2e"))]
-            crate::bridge::dispatch(
+                router_from(&self.env, db, RouterRuntimeKind::Colocated).await?;
+            let initialized = HubRequestRuntime {
                 router,
-                &service,
+                service,
                 console_deps,
-                delivery_attestation_verifier.as_deref(),
-                req,
-            )
-            .await
+                sql_metrics,
+                delivery_attestation_verifier,
+            };
+            *runtime = Some(initialized.clone());
+            Ok(initialized)
         }
     }
 
