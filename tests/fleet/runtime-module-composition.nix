@@ -489,13 +489,18 @@ in {
 
       runtime.reboot_without_metadata()
       wait_for_activation()
-      assert current_generation() == configured
+      rebooted = current_generation()
+      assert rebooted != configured, (configured, rebooted)
       assert_package_configuration()
       assert_payloads_immutable()
       reboot_manifest = json.loads(runtime.succeed(
           "cat /run/aos/manifest.json"
       ))
       assert reboot_manifest["inputs"]["runtime_modules"] == runtime_input
+      assert reboot_manifest["inputs"]["host_nix"] == platform_host_input
+      assert reboot_manifest["inputs"]["instance_facts"] == platform_facts_input
+      assert reboot_manifest["inputs"]["expected_current_generation"] == configured
+      configured = rebooted
       assert runtime.succeed(
           f"{SHA256SUM} /var/lib/aos-provisioning/current/host.nix"
       ).split()[0] == platform_hash
@@ -535,7 +540,8 @@ in {
 
       runtime.reboot_without_metadata()
       wait_for_activation()
-      assert current_generation() == cleared
+      rebooted_cleared = current_generation()
+      assert rebooted_cleared != cleared, (cleared, rebooted_cleared)
       status = runtime.succeed(f"{APM} config status 2>&1")
       assert cleared_runtime_input["store_path"] in status, status
       assert "(0 entrypoints," in status, status
@@ -545,6 +551,10 @@ in {
           reboot_manifest["inputs"]["runtime_modules"]
           == cleared_runtime_input
       )
+      assert reboot_manifest["inputs"]["host_nix"] == platform_host_input
+      assert reboot_manifest["inputs"]["instance_facts"] == platform_facts_input
+      assert reboot_manifest["inputs"]["expected_current_generation"] == cleared
+      cleared = rebooted_cleared
       runtime.fail("test -e /etc/runtime-modules/operator.conf")
       runtime.fail("systemctl is-active --quiet nginx.service")
       runtime.fail("systemctl is-active --quiet envoy.service")
