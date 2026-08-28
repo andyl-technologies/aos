@@ -547,6 +547,14 @@ pub const SCHEMA_IDENTITY: &str = "aos-hub/topology-hard-cutover/2";
 /// repository-owned migration to [`SCHEMA_IDENTITY`].
 pub const PREVIOUS_SCHEMA_IDENTITY: &str = "aos-hub/topology-hard-cutover/1";
 
+/// SQLite compatibility transformer from the immediately preceding topology
+/// identity to the current relational vocabulary.
+///
+/// This script is intentionally outside [`MIGRATIONS`]: fresh v2 databases
+/// already use the final names, while a v1 database must run the transformer
+/// before any pending v2 migration can reference those names.
+pub const TOPOLOGY_V1_TO_V2_SQLITE: &str = include_str!("topology_v1_to_v2.sql");
+
 /// Returns every migration's individual SQL statements, in order.
 ///
 /// Splits the [`MIGRATIONS`] scripts at statement boundaries via
@@ -3485,6 +3493,20 @@ impl Database {
         };
         if current > target {
             bail!("hub database schema {current} is newer than this build supports ({target})");
+        }
+        if legacy_identity {
+            anyhow::ensure!(
+                self.backend.dialect() == Dialect::Sqlite,
+                "topology schema identity v1 requires the offline transformer on non-SQLite databases"
+            );
+            let statements = crate::backend::split_statements(TOPOLOGY_V1_TO_V2_SQLITE)
+                .into_iter()
+                .map(|sql| Statement::new(sql, Vec::new()))
+                .collect::<Vec<_>>();
+            self.backend
+                .batch(&statements)
+                .await
+                .context("transforming topology schema identity v1 to v2 vocabulary")?;
         }
         if current == target && legacy_identity {
             let migration = MIGRATIONS
@@ -25251,6 +25273,35 @@ mod tests {
     use rusqlite::Connection;
     use uuid::Uuid;
 
+    /// Reverses the transformer's identifier DDL to construct a v1-shaped
+    /// database without retaining a second 160-KiB baseline fixture.
+    fn topology_v2_to_v1_identifier_sql() -> String {
+        crate::backend::split_statements(TOPOLOGY_V1_TO_V2_SQLITE)
+            .into_iter()
+            .take_while(|statement| !statement.contains("DROP INDEX"))
+            .filter_map(|statement| {
+                statement
+                    .find("ALTER TABLE ")
+                    .map(|offset| statement[offset..].to_string())
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|statement| {
+                let words = statement.split_whitespace().collect::<Vec<_>>();
+                if words.get(3) == Some(&"RENAME") && words.get(4) == Some(&"COLUMN") {
+                    format!(
+                        "ALTER TABLE {} RENAME COLUMN {} TO {}",
+                        words[2], words[7], words[5]
+                    )
+                } else {
+                    format!("ALTER TABLE {} RENAME TO {}", words[5], words[2])
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(";\n")
+    }
+
     #[test]
     fn generated_relational_ids_are_positive_and_worker_exact() {
         assert_eq!(portable_relational_id(Uuid::from_u128(0)), 1);
@@ -25994,9 +26045,10 @@ source_nar_hash = ""
         connection
             .execute_batch("CREATE TABLE schema_version(version INTEGER NOT NULL);")
             .unwrap();
-        for migration in MIGRATIONS {
-            connection.execute_batch(migration).unwrap();
-        }
+        connection.execute_batch(MIGRATIONS[0]).unwrap();
+        connection
+            .execute_batch(&topology_v2_to_v1_identifier_sql())
+            .unwrap();
         connection
             .execute(
                 "UPDATE hub_schema_identity SET identity = ?1",

@@ -43,7 +43,9 @@ use async_trait::async_trait;
 use worker::{SqlStorage, SqlStorageValue, Storage};
 
 use aos_hub_core::backend::{prepare, split_statements, Backend, CheckedStatement, Statement};
-use aos_hub_core::db::{MIGRATIONS, PREVIOUS_SCHEMA_IDENTITY, SCHEMA_IDENTITY};
+use aos_hub_core::db::{
+    MIGRATIONS, PREVIOUS_SCHEMA_IDENTITY, SCHEMA_IDENTITY, TOPOLOGY_V1_TO_V2_SQLITE,
+};
 use aos_hub_core::dialect::Dialect;
 use aos_hub_core::value::{Row, Value};
 
@@ -309,6 +311,13 @@ pub(crate) async fn ensure_migrated(backend: &SqlDoBackend) -> Result<()> {
             "HubDb schema {applied} is newer than this Worker supports ({})",
             MIGRATIONS.len()
         );
+    }
+    if previous_identity {
+        let statements = split_statements(TOPOLOGY_V1_TO_V2_SQLITE)
+            .into_iter()
+            .map(|sql| Statement::new(sql, Vec::new()))
+            .collect::<Vec<_>>();
+        backend.batch(&statements).await?;
     }
     if applied == MIGRATIONS.len() && previous_identity {
         let migration = MIGRATIONS
