@@ -43,7 +43,7 @@ use async_trait::async_trait;
 use worker::{SqlStorage, SqlStorageValue, Storage};
 
 use aos_hub_core::backend::{prepare, split_statements, Backend, CheckedStatement, Statement};
-use aos_hub_core::db::{MIGRATIONS, SCHEMA_IDENTITY};
+use aos_hub_core::db::{MIGRATIONS, PREVIOUS_SCHEMA_IDENTITY, SCHEMA_IDENTITY};
 use aos_hub_core::dialect::Dialect;
 use aos_hub_core::value::{Row, Value};
 
@@ -299,14 +299,33 @@ pub(crate) async fn ensure_migrated(backend: &SqlDoBackend) -> Result<()> {
         .and_then(|row| row.get::<i64>(0).ok())
         .unwrap_or(0)
         .max(0) as usize;
-    if applied != 0 {
-        require_schema_identity(backend).await?;
-    }
+    let previous_identity = if applied == 0 {
+        false
+    } else {
+        require_schema_identity(backend, true).await?
+    };
     if applied > MIGRATIONS.len() {
         anyhow::bail!(
             "HubDb schema {applied} is newer than this Worker supports ({})",
             MIGRATIONS.len()
         );
+    }
+    if applied == MIGRATIONS.len() && previous_identity {
+        let migration = MIGRATIONS
+            .last()
+            .ok_or_else(|| anyhow!("HubDb has no identity-adoption migration"))?;
+        let mut statements = split_statements(migration)
+            .into_iter()
+            .map(|sql| Statement::new(sql, Vec::new()))
+            .collect::<Vec<_>>();
+        statements.push(Statement::new(
+            "INSERT INTO _do_migrations (id, applied) VALUES (0, ?1) \
+             ON CONFLICT(id) DO UPDATE SET applied = ?1",
+            vec![Value::Int(MIGRATIONS.len() as i64)],
+        ));
+        backend.batch(&statements).await?;
+        require_schema_identity(backend, false).await?;
+        return Ok(());
     }
     if applied == MIGRATIONS.len() {
         return Ok(());
@@ -327,11 +346,11 @@ pub(crate) async fn ensure_migrated(backend: &SqlDoBackend) -> Result<()> {
         // every statement back, leaving the migration safe to retry.
         backend.batch(&statements).await?;
     }
-    require_schema_identity(backend).await?;
+    require_schema_identity(backend, false).await?;
     Ok(())
 }
 
-async fn require_schema_identity(backend: &SqlDoBackend) -> Result<()> {
+async fn require_schema_identity(backend: &SqlDoBackend, allow_previous: bool) -> Result<bool> {
     let row = backend
         .query("SELECT identity FROM hub_schema_identity", &[])
         .await
@@ -345,10 +364,10 @@ async fn require_schema_identity(backend: &SqlDoBackend) -> Result<()> {
         .ok_or_else(|| anyhow!("topology schema identity row is missing"))?;
     let identity: String = row.get(0)?;
     anyhow::ensure!(
-        identity == SCHEMA_IDENTITY,
+        identity == SCHEMA_IDENTITY || (allow_previous && identity == PREVIOUS_SCHEMA_IDENTITY),
         "unsupported Hub schema identity '{identity}'; expected '{SCHEMA_IDENTITY}'"
     );
-    Ok(())
+    Ok(identity == PREVIOUS_SCHEMA_IDENTITY)
 }
 
 /// Converts a bound [`Value`] into the [`SqlStorageValue`] the DO engine binds.
