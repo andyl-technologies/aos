@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   pkg-config,
+  libtool,
   cyrus-sasl,
   krb5,
   openssl,
@@ -21,8 +22,8 @@ in
       hash = "sha256-wGXwSq1Cc3rr1gsv5JOXBKyEQma8CuqhYJ8MrZh75RY=";
     };
 
-    buildDeps = [gnumake pkg-config];
-    runtimeDeps = [cyrus-sasl krb5 openssl];
+    buildDeps = [gnumake pkg-config libtool];
+    runtimeDeps = [cyrus-sasl krb5 openssl libtool];
     propagatedDeps = [];
 
     phases = [
@@ -49,6 +50,13 @@ in
       {
         name = "build";
         script = ''
+          # OpenLDAP uses soelim only to flatten pre-generated manual pages.
+          # Supply the same hermetic passthrough used by other AOS packages;
+          # no host groff tooling is consulted.
+          mkdir -p .aos-build-tools
+          printf '#!%s\nexec cat "$@"\n' "$CONFIG_SHELL" > .aos-build-tools/soelim
+          chmod +x .aos-build-tools/soelim
+          export PATH="$PWD/.aos-build-tools:$PATH"
           make -j$NIX_BUILD_CORES depend
           make -j$NIX_BUILD_CORES
         '';
