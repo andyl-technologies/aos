@@ -6,7 +6,6 @@
   coreutils,
   grep,
   iproute2,
-  util-linux,
 }:
 testing.mkVMTest {
   name = "storage-garage-runtime-contract";
@@ -16,7 +15,6 @@ testing.mkVMTest {
     coreutils
     grep
     iproute2
-    util-linux
   ];
   memory = 1536;
   testScript = ''
@@ -50,7 +48,7 @@ testing.mkVMTest {
     grep -Eq 'replication_factor|invalid type' /tmp/invalid.out
 
     start_garage() {
-      setpriv --reuid=804 --regid=804 --clear-groups \
+      chroot --userspec=804:804 / \
         env GARAGE_RPC_SECRET_FILE=/run/garage/rpc-secret \
         garage -c ${renderedConfig} server >/tmp/garage.log 2>&1 &
       server_pid=$!

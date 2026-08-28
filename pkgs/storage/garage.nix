@@ -349,7 +349,6 @@ in
         coreutils = pkgs.coreutils;
         grep = pkgs.grep;
         iproute2 = pkgs.iproute2;
-        util-linux = pkgs.util-linux;
       };
     };
 
