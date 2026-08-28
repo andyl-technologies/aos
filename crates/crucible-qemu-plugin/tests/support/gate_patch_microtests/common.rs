@@ -145,6 +145,9 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0129-crucible-hot-fork-block-drain-barrier.patch",
     "0130-crucible-hot-fork-block-template-coordinator.patch",
     "0131-crucible-hot-fork-block-graph-barrier.patch",
+    "0132-crucible-bind-hot-fork-block-snapshot-roots.patch",
+    "0133-crucible-authenticate-fault-result-payloads.patch",
+    "0134-crucible-clock-impulse-read-error-policies.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

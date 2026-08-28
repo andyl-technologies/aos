@@ -469,7 +469,7 @@ in
             quit_qemu "$TMPDIR/patched-save.sock"
             grep -a -Fq CRUCFVM1 "$patched_image" \
               || fail "patched snapshot omitted the authenticated aggregate fault envelope"
-            grep -a -Fq CRUCCVS3 "$patched_image" \
+            grep -a -Fq CRUCCVS4 "$patched_image" \
               || fail "patched snapshot omitted the clock VMState section"
 
             run_qemu ${qemuPackage}/bin/qemu-system-x86_64 patched-load \
@@ -514,7 +514,7 @@ in
             save_snapshot "$TMPDIR/stock.sock" stock
             quit_qemu "$TMPDIR/stock.sock"
             if grep -a -Fq CRUCFVM1 "$stock_image" ||
-               grep -a -Fq CRUCCVS3 "$stock_image"; then
+               grep -a -Fq CRUCCVS4 "$stock_image"; then
               fail "stock QEMU emitted Crucible fault VMState"
             fi
           '';

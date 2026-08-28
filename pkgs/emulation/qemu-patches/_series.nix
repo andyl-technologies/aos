@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "de56110cd64e44e19305b9234842cf2d7dfbead7f2d6398a64b2915782125bf8";
+  patchBranchBundleSha256 = "86b723b401e8101423bf7106d51f025311d2dd42b693c99c9832b49cdea8f3ac";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "18de7c2f3183eec56d9969e1404049d7a3477590";
+  patchBranchHeadCommit = "68a21ce058346c61d2332f214efa2a66ace0222d";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1255,6 +1255,26 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "while the retained block graph and drain barriers are quiescent, the template coordinator binds every writable rooted backend to an exact guest-allocation-empty active overlay over an immediate read-only snapshot, with exact backend, node, content, size, backend-generation, and graph-generation identity, and acknowledges immutable writable-root proof bit 5; branch-private child overlay reconstruction remains open";
+    }
+    {
+      file = "0133-crucible-authenticate-fault-result-payloads.patch";
+      branchSubject = "crucible: authenticate every fault result payload";
+      branchCommit = "011f1423524a9388c1827390a07009fb3572432e";
+      branchTree = "be12ece0704a78de8902646460604695e463ac0d";
+      catalogName = "crucible-authenticate-fault-result-payloads";
+      class = "F";
+      enforces = "QFP-RESULT,FAULT-ORDER";
+      capability = "every queued fault result authenticates the exact payload retained beside it, including prepare-time rejection evidence, so the host can classify a typed rejection without losing transaction ownership";
+    }
+    {
+      file = "0134-crucible-clock-impulse-read-error-policies.patch";
+      branchSubject = "crucible: honor clock impulse and read-error policies";
+      branchCommit = "68a21ce058346c61d2332f214efa2a66ace0222d";
+      branchTree = "05be4bbf628e689b672aaa4a278b3901c63c36b5";
+      catalogName = "crucible-clock-impulse-read-error-policies";
+      class = "F";
+      enforces = "QFP-CLOCK-TRANSFORM,QFP-CLOCK-SOURCE,FAULT-ORDER";
+      capability = "impulse clock transforms retain their effective monotonicity and overdue-timer policies in versioned clock VMState, while an x86 TSC read-error transition raises a deterministic guest #GP and internal projections retain the last source value";
     }
   ];
   catalogOnlyCapabilities = [

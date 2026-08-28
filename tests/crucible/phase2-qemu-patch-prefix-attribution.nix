@@ -603,6 +603,14 @@
       kind = "recorded";
       symbols = [];
     };
+    "0133-crucible-authenticate-fault-result-payloads.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0134-crucible-clock-impulse-read-error-policies.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

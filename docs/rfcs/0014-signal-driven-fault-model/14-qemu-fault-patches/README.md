@@ -80,6 +80,8 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0111-crucible-accelerator-service-schema`](62-accelerator-service-schema.md) | Admit the typed ratio-valued accelerator capacity field through the closed QEMU schema | Feature-contract correctness |
 | [`0112-crucible-compile-affected-clock-sources`](63-compile-affected-clock-sources.md) | Recompile and rearm only clock sources selected by the committed rule | Transactional clock-source correctness |
 | [`0113-crucible-restore-accelerator-rule-indexes`](64-restore-accelerator-rule-indexes.md) | Rebuild persistent accelerator rule indexes from the authenticated staged node ledger during VMState restore | Fresh-process continuation correctness |
+| [`0133-crucible-authenticate-fault-result-payloads`](65-authenticate-fault-result-payloads.md) | Hash the exact retained payload for every queued fault result, including typed rejections | Transactional result correctness |
+| [`0134-crucible-clock-impulse-read-error-policies`](66-clock-impulse-read-error-policies.md) | Persist effective impulse policies in clock VMState and expose deterministic x86 TSC read-error behavior | Guest-clock correctness |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order

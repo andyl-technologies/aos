@@ -406,6 +406,8 @@ in
           run_exact_qemu_test \
             fault_action_sink::tests::typed_prepare_reserves_only_the_exact_evidence_capacity
           run_exact_qemu_test \
+            fault_action_sink::tests::authenticated_typed_prepare_rejection_is_not_a_fatal_commit_error
+          run_exact_qemu_test \
             fault_action_sink::tests::dynamic_prepare_limit_preserves_authored_coordinates
           run_exact_qemu_test \
             supervision::host_io_runtime::tests::preparation_result_is_admitted_before_exact_storage_allocation
@@ -984,6 +986,15 @@ in
           grep -Fxq 'accelerator_service_occurrences=3' "$hardware_result"
           grep -Fxq 'accelerator_mutation=tpu-result-42-to-43' "$hardware_result"
           grep -Fxq 'fresh_plugin_restore=true' "$hardware_result"
+          grep -Fxq 'typed_rejection_payload_authenticated=true' "$hardware_result"
+          grep -Fxq 'hardware_variant_matrix=23-exact-live-qemu-cases' \
+            "$hardware_result"
+          grep '^hardware_variant_case=' "$hardware_result" | cut -d= -f2- \
+            > "$TMPDIR/hardware-variant-cases"
+          test "$(wc -l < "$TMPDIR/hardware-variant-cases")" -eq 23
+          test "$(sort -u "$TMPDIR/hardware-variant-cases" | wc -l)" -eq 23
+          cmp tests/crucible/phase2-qemu-live-fault-hardware-cases.txt \
+            "$TMPDIR/hardware-variant-cases"
 
           node_effect_rows="$TMPDIR/causal-node-production-effect-rows"
           grep '^production_effect_row=' "$lifecycle_matrix_result" > "$node_effect_rows"
@@ -1080,6 +1091,14 @@ in
             "${patchMicrotests}/per-patch/0113-crucible-restore-accelerator-rule-indexes.patch.result"
           grep -Fxq 'live_evidence=live-restored-accelerator-rule-indexes' \
             "${patchMicrotests}/per-patch/0113-crucible-restore-accelerator-rule-indexes.patch.result"
+          grep -Fxq 'patch=0133-crucible-authenticate-fault-result-payloads.patch' \
+            "${patchMicrotests}/per-patch/0133-crucible-authenticate-fault-result-payloads.patch.result"
+          grep -Fxq 'live_evidence=live-authenticated-typed-rejection-payload' \
+            "${patchMicrotests}/per-patch/0133-crucible-authenticate-fault-result-payloads.patch.result"
+          grep -Fxq 'patch=0134-crucible-clock-impulse-read-error-policies.patch' \
+            "${patchMicrotests}/per-patch/0134-crucible-clock-impulse-read-error-policies.patch.result"
+          grep -Fxq 'live_evidence=live-clock-impulse-and-read-error-policies' \
+            "${patchMicrotests}/per-patch/0134-crucible-clock-impulse-read-error-policies.patch.result"
 
           checkpoint_result=${checkpointMaterialization}/result
           grep -Fxq PASS "$checkpoint_result"
@@ -1126,6 +1145,8 @@ in
             "$out/evidence/causal-node-production-effects.txt"
           cp "$TMPDIR/causal-all-production-effect-rows" \
             "$out/evidence/causal-all-production-effects.txt"
+          cp "$TMPDIR/hardware-variant-cases" \
+            "$out/evidence/hardware-variant-cases.txt"
           cp "$TMPDIR/rfc0014-taxonomy-ledger.tsv" \
             "$out/evidence/rfc0014-taxonomy-ledger.tsv"
 
@@ -1166,6 +1187,8 @@ in
           causal_node_production_effect_artifact=evidence/causal-node-production-effects.txt
           causal_all_production_effects=exact-registry-identity
           causal_all_production_effect_artifact=evidence/causal-all-production-effects.txt
+          live_hardware_variant_matrix=23-exact-clock-and-accelerator-cases
+          live_hardware_variant_artifact=evidence/hardware-variant-cases.txt
           executable_taxonomy_rows=226
           executable_taxonomy_section_counts=wired-76,radio-52,satellite-20,node-41,storage-37
           executable_taxonomy_ledger=exact-section-identity-and-registered-effects
