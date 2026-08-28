@@ -6,6 +6,10 @@ exports:
   - targets: [ x86_64-macos, arm64-macos ]
     symbols:
       - _AudioConvertHostTimeToNanos
+      - _AudioDeviceCreateIOProcID
+      - _AudioDeviceDestroyIOProcID
+      - _AudioDeviceStart
+      - _AudioDeviceStop
       - _AudioGetCurrentHostTime
       - _AudioObjectAddPropertyListener
       - _AudioObjectGetPropertyData

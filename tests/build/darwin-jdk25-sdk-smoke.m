@@ -16,11 +16,27 @@
 _Static_assert(sizeof(AudioStreamBasicDescription) == 40, "ASBD ABI");
 _Static_assert(sizeof(AudioBuffer) == 16, "AudioBuffer ABI");
 _Static_assert(sizeof(AudioBufferList) == 24, "AudioBufferList ABI");
+_Static_assert(sizeof(AudioValueRange) == 16, "AudioValueRange ABI");
 _Static_assert(sizeof(AudioTimeStamp) == 64, "AudioTimeStamp ABI");
 _Static_assert(sizeof(MIDIPacket) == 268, "MIDIPacket ABI");
 _Static_assert(sizeof(MIDIPacketList) == 272, "MIDIPacketList ABI");
 _Static_assert(sizeof(CVSMPTETime) == 24, "CVSMPTETime ABI");
 _Static_assert(sizeof(CVTimeStamp) == 80, "CVTimeStamp ABI");
+_Static_assert(kAudioDeviceUnknown == 0, "unknown audio device value");
+_Static_assert(kLinearPCMFormatFlagIsFloat == 1, "linear PCM float flag");
+_Static_assert(kAudioObjectPropertyElementMain == 0, "main audio element");
+_Static_assert(kAudioDevicePropertyBufferFrameSizeRange == 0x66737a23, "buffer range selector");
+_Static_assert(kAudioDevicePropertyStreamFormat == 0x73666d74, "stream format selector");
+_Static_assert(kAudioDevicePropertyDeviceIsRunning == 0x676f696e, "device running selector");
+_Static_assert(kAudioHardwareNotRunningError == 0x73746f70, "not running error");
+_Static_assert(kAudioHardwareUnspecifiedError == 0x77686174, "unspecified audio error");
+_Static_assert(kAudioHardwareIllegalOperationError == 0x6e6f7065, "illegal operation error");
+_Static_assert(kAudioHardwareBadObjectError == 0x216f626a, "bad audio object error");
+_Static_assert(kAudioHardwareBadDeviceError == 0x21646576, "bad audio device error");
+_Static_assert(kAudioHardwareBadStreamError == 0x21737472, "bad audio stream error");
+_Static_assert(kAudioHardwareUnsupportedOperationError == 0x756e6f70, "unsupported audio operation");
+_Static_assert(kAudioDeviceUnsupportedFormatError == 0x21646174, "unsupported audio format");
+_Static_assert(kAudioDevicePermissionsError == 0x21686f67, "audio permission error");
 
 static void proxy_result(
   void *client,
@@ -30,6 +46,25 @@ static void proxy_result(
   (void)client;
   (void)proxyList;
   (void)error;
+}
+
+static OSStatus audio_device_io(
+  AudioObjectID device,
+  const AudioTimeStamp *now,
+  const AudioBufferList *inputData,
+  const AudioTimeStamp *inputTime,
+  AudioBufferList *outputData,
+  const AudioTimeStamp *outputTime,
+  void *clientData
+) {
+  (void)device;
+  (void)now;
+  (void)inputData;
+  (void)inputTime;
+  (void)outputData;
+  (void)outputTime;
+  (void)clientData;
+  return kAudioHardwareNoError;
 }
 
 const void *aos_jdk25_data_exports[] = {
@@ -77,6 +112,10 @@ const void *aos_jdk25_function_exports[] = {
   AOS_FUNCTION(AudioObjectSetPropertyData),
   AOS_FUNCTION(AudioObjectAddPropertyListener),
   AOS_FUNCTION(AudioObjectRemovePropertyListener),
+  AOS_FUNCTION(AudioDeviceCreateIOProcID),
+  AOS_FUNCTION(AudioDeviceDestroyIOProcID),
+  AOS_FUNCTION(AudioDeviceStart),
+  AOS_FUNCTION(AudioDeviceStop),
   AOS_FUNCTION(AudioComponentFindNext),
   AOS_FUNCTION(AudioComponentInstanceNew),
   AOS_FUNCTION(AudioComponentInstanceDispose),
@@ -152,7 +191,10 @@ int main(void) {
   );
   SecKeychainRef keychain = NULL;
   OSStatus status = SecKeychainOpen("aos.keychain", &keychain);
+  AudioValueRange range = { 0.0, 1.0 };
+  AudioDeviceIOProcID ioProc = audio_device_io;
   return home == nil && settings == NULL && proxies == NULL && source == NULL &&
     keychain == NULL && status == 0 && aos_jdk25_data_exports[0] == NULL &&
-    aos_jdk25_function_exports[0] == NULL && jdk25Classes[0] == Nil;
+    aos_jdk25_function_exports[0] == NULL && jdk25Classes[0] == Nil &&
+    range.mMinimum == range.mMaximum && ioProc == NULL;
 }

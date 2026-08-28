@@ -14,6 +14,10 @@ OSStatus AudioObjectGetPropertyData(AudioObjectID, const AudioObjectPropertyAddr
 OSStatus AudioObjectSetPropertyData(AudioObjectID, const AudioObjectPropertyAddress *, UInt32, const void *, UInt32, const void *);
 OSStatus AudioObjectAddPropertyListener(AudioObjectID, const AudioObjectPropertyAddress *, AudioObjectPropertyListenerProc, void *);
 OSStatus AudioObjectRemovePropertyListener(AudioObjectID, const AudioObjectPropertyAddress *, AudioObjectPropertyListenerProc, void *);
+OSStatus AudioDeviceCreateIOProcID(AudioObjectID, AudioDeviceIOProc, void *, AudioDeviceIOProcID *);
+OSStatus AudioDeviceDestroyIOProcID(AudioObjectID, AudioDeviceIOProcID);
+OSStatus AudioDeviceStart(AudioObjectID, AudioDeviceIOProcID);
+OSStatus AudioDeviceStop(AudioObjectID, AudioDeviceIOProcID);
 
 #if defined(__cplusplus)
 }
