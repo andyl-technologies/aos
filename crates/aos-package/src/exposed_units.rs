@@ -3132,6 +3132,10 @@ async fn apply_systemd_changes(
                 }
             }
         }
+        for source in &attached_diff.restore_external_activation_sources {
+            let outcome = client.start_unit(source).await?;
+            ensure_job_done("restore", source, outcome)?;
+        }
         let restarted_units = attached_diff
             .to_restart
             .iter()
@@ -3166,6 +3170,18 @@ async fn stop_service_root_barriers_before_swap(
         .iter()
         .filter(|unit| attached_diff.required_stops.contains(*unit))
     {
+        if attached_diff.required_pre_stop_starts.contains(unit) {
+            match client.start_unit(unit).await {
+                Ok(outcome) => ensure_job_done("prepare", unit, outcome)?,
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!(
+                            "preparing exposed package service-root helper {unit} before cleanup"
+                        )
+                    });
+                }
+            }
+        }
         match client.stop_unit(unit).await {
             Ok(outcome) => ensure_job_done("stop", unit, outcome)?,
             Err(err) => {
@@ -6899,7 +6915,13 @@ mod tests {
                     web_helper.to_string(),
                     unit_diff::ServiceRootBarrier {
                         target: "aos-pkg-web.target".to_string(),
+                        live_external_activation_sources: BTreeSet::from([
+                            "provider.socket".to_string()
+                        ]),
                         live_members: BTreeSet::from(["web.service".to_string()]),
+                        candidate_external_activation_sources: BTreeSet::from([
+                            "provider.socket".to_string()
+                        ]),
                         candidate_members: BTreeSet::from(["web.service".to_string()]),
                         candidate_target_present: true,
                         ..Default::default()
@@ -6931,6 +6953,7 @@ mod tests {
                 "api.service",
                 api_helper,
                 "aos-pkg-api.target",
+                "provider.socket",
                 "web.service",
                 web_helper,
                 "aos-pkg-web.target",
@@ -6938,7 +6961,15 @@ mod tests {
         );
         assert!(diff.to_restart.is_empty());
         assert!(diff.to_reload.is_empty());
-        assert_eq!(diff.to_start, vec!["aos-pkg-web.target"]);
+        assert_eq!(diff.to_start, vec!["aos-pkg-web.target", "provider.socket"]);
+        assert_eq!(
+            diff.restore_external_activation_sources,
+            BTreeSet::from(["provider.socket".to_string()])
+        );
+        assert_eq!(
+            diff.required_pre_stop_starts,
+            BTreeSet::from([api_helper.to_string(), web_helper.to_string()])
+        );
     }
 
     #[test]
