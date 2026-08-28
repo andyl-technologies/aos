@@ -88,7 +88,6 @@ shape-line|crates/crucible-qemu-plugin/src/coverage.rs|1157
 shape-line|crates/crucible-qemu-plugin/src/coverage/tests.rs|673
 shape-line|crates/crucible-qemu-plugin/src/fault_command.rs|2453
 shape-line|crates/crucible-qemu-plugin/src/fault_command/bridge.rs|1300
-shape-line|crates/crucible-qemu-plugin/src/fault_command/clock_evidence.rs|866
 shape-line|crates/crucible-qemu-plugin/src/fault_command/instruction_evidence.rs|1822
 shape-line|crates/crucible-qemu-plugin/src/fault_command_test.rs|1185
 shape-line|crates/crucible-qemu-plugin/src/idle_loop.rs|1198
@@ -117,7 +116,6 @@ shape-line|crates/crucible-qemu/examples/crucible-qemu-live-fault-hardware.rs|69
 shape-line|crates/crucible-qemu/examples/crucible-qemu-live-terminal-targets.rs|640
 shape-line|crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs|860
 shape-line|crates/crucible-qemu/src/determinism_boundary.rs|1568
-shape-line|crates/crucible-qemu/src/fault_action_sink.rs|883
 shape-line|crates/crucible-qemu/src/fault_capability.rs|1779
 shape-line|crates/crucible-qemu/src/gdbstub_proxy.rs|672
 shape-line|crates/crucible-qemu/src/host_setup.rs|1643

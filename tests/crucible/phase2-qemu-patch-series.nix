@@ -790,6 +790,20 @@
       enforces = "QFP-ACCEL-SERVICE,FAULT-RESTORE";
       capability = "fresh-process VMState restore rebuilds each accelerator lifecycle, result, memory, and service rule index from the authenticated staged node-rule ledger before commit, preserving persistent accelerator behavior without duplicating rule ownership";
     }
+    {
+      file = "0114-crucible-authenticate-fault-result-payloads.patch";
+      catalogName = "crucible-authenticate-fault-result-payloads";
+      class = "F";
+      enforces = "QFP-RESULT,FAULT-ORDER";
+      capability = "every queued fault result authenticates the exact payload retained beside it, including prepare-time rejection evidence, so the host can classify a typed rejection without losing transaction ownership";
+    }
+    {
+      file = "0115-crucible-clock-impulse-read-error-policies.patch";
+      catalogName = "crucible-clock-impulse-read-error-policies";
+      class = "F";
+      enforces = "QFP-CLOCK-TRANSFORM,QFP-CLOCK-SOURCE,FAULT-ORDER";
+      capability = "impulse clock transforms retain their effective monotonicity and overdue-timer policies in versioned clock VMState, while an x86 TSC read-error transition raises a deterministic guest #GP and internal projections retain the last source value";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

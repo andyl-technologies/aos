@@ -533,6 +533,17 @@ produce live patched-QEMU architectural or device evidence.
   rebuild accelerator lifecycle, result, memory, and service indexes from the
   authenticated staged node-rule ledger during VMState restore and prove that
   a pre-checkpoint service rule governs all three fresh-process guest jobs.
+- [x] **T-QEMU-0114** Implement
+  [`crucible-authenticate-fault-result-payloads`](14-qemu-fault-patches/65-authenticate-fault-result-payloads.md):
+  authenticate the exact payload retained for every queued result, including
+  typed prepare-time rejection evidence, and prove the host classifies the
+  rejection without losing adapter transaction ownership.
+- [x] **T-QEMU-0115** Implement
+  [`crucible-clock-impulse-read-error-policies`](14-qemu-fault-patches/66-clock-impulse-read-error-policies.md):
+  retain effective impulse monotonicity and overdue-timer policy in versioned
+  clock VMState, expose x86 TSC read-error capability, and convert an authored
+  guest read failure into a deterministic architectural `#GP` while internal
+  projections stay stable.
 - [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result

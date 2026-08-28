@@ -270,3 +270,34 @@ fn streaming_result_evidence_hash_preserves_the_canonical_identity() {
         ContentHash::from_bytes(&prior_material)
     );
 }
+
+#[test]
+fn authenticated_typed_prepare_rejection_is_not_a_fatal_commit_error() {
+    let payload = b"unsupported-clock-source-transition".to_vec();
+    let header = crucible_shmem::FaultResultHeaderV1 {
+        abi_major: FAULT_COMMAND_ABI_MAJOR,
+        abi_minor: FAULT_COMMAND_ABI_MINOR,
+        command_kind: FaultCommandKind::ClockSourceState as u16,
+        status: FaultResultStatus::UnsupportedCapability,
+        semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+        command_sequence: 7,
+        observed_icount: 11,
+        applied_icount: 0,
+        capability_version: 1,
+        phase: FaultBoundaryPhase::NodeBoundary,
+        before_hash: [1; 32],
+        after_hash: [1; 32],
+        evidence_hash: Sha256::digest(&payload).into(),
+        result_payload_hash: *blake3::hash(&payload).as_bytes(),
+        result_offset: 0,
+        result_length: u32::try_from(payload.len())
+            .unwrap_or_else(|error| panic!("test payload length: {error}")),
+    };
+    let expected = result_evidence_hash(&header, &payload);
+    let result = DequeuedFaultResult::Valid { header, payload };
+
+    assert_eq!(
+        typed_preparation_rejection_evidence(&result),
+        Ok(Some(expected))
+    );
+}

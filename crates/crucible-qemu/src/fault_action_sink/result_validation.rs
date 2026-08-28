@@ -127,6 +127,28 @@ pub(crate) fn validate_typed_node_result(
         .map(|(evidence, _result_buffer)| evidence)
 }
 
+/// Authenticates a typed PREPARE result and identifies rejection evidence.
+///
+/// A prepared result returns `None`; every other authenticated status returns
+/// the canonical evidence identity needed for an adapter rejection.
+///
+/// # Errors
+///
+/// Returns a fatal commit error when the result is absent, malformed, or its
+/// evidence digest does not authenticate.
+pub(crate) fn typed_preparation_rejection_evidence(
+    result: &DequeuedFaultResult,
+) -> Result<Option<ContentHash>, FaultActionCommitError> {
+    let DequeuedFaultResult::Valid { header, payload } = result else {
+        return Err(FaultActionCommitError::Fatal(
+            FaultRuntimeError::IncompleteAdapterState,
+        ));
+    };
+    verify_qemu_evidence_hash(header, payload)?;
+    Ok((header.status != FaultResultStatus::Prepared)
+        .then(|| result_evidence_hash(header, payload)))
+}
+
 pub(super) fn validate_typed_node_result_decoded(
     request: &NodeFaultPayloadV1,
     request_payload: &[u8],

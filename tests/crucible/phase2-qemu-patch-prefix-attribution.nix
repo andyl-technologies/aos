@@ -524,6 +524,14 @@
       kind = "recorded";
       symbols = [];
     };
+    "0114-crucible-authenticate-fault-result-payloads.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0115-crucible-clock-impulse-read-error-policies.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
