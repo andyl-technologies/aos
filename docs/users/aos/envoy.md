@@ -63,7 +63,7 @@ signed optional handles `tls-certificate`, `tls-private-key`, and
   envoy.credentials = {
     tls-certificate.ref = "system-credential:envoy-certificate";
     tls-private-key.ref = "system-credential:envoy-private-key";
-    validation-ca.ref = "tpm2-credstore:envoy-validation-ca";
+    validation-ca.ref = "system-credential:envoy-validation-ca";
   };
 }
 ```

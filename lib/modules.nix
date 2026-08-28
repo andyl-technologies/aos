@@ -630,6 +630,9 @@
     # seed evaluation; full stage-2 evaluation remains fail-closed.
     enforceRuntimeDeclarations ? true,
   }: let
+    serviceTypes = import ./service-types.nix {
+      inherit types mkOption;
+    };
     moduleLib =
       if lib == {}
       then
@@ -639,6 +642,7 @@
         // strings
         // {
           inherit types;
+          inherit serviceTypes;
           inherit
             mkOption
             mkIf

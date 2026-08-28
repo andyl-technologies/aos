@@ -152,6 +152,13 @@
     inherit (modules) mkOption;
   };
 
+  # Version-stable primitive contracts shared by independently authenticated
+  # package modules. Logical service schemas remain package-owned.
+  serviceTypes = import ./service-types.nix {
+    inherit types;
+    inherit (modules) mkOption;
+  };
+
   platformMod = import ./platform.nix;
   derivations = import ./derivations.nix {inherit system bash;};
   hardening = import ./hardening.nix;
@@ -171,6 +178,7 @@
     // strings
     // {
       inherit types system;
+      inherit serviceTypes;
       inherit
         (platformMod)
         mkPlatform

@@ -17,21 +17,7 @@
   labelNameRegex = "([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?";
   labelValueRegex = "([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?";
   taintRegex = "${labelNameRegex}(=${labelValueRegex})?:(NoSchedule|PreferNoSchedule|NoExecute)";
-  secretRefType = types.submodule ({name, ...}: {
-    config._module.strict = true;
-    options = {
-      name = mkOption {
-        type = types.strMatching "[A-Za-z0-9_.-]+";
-        default = name;
-        readOnly = true;
-        description = "The systemd credential handle.";
-      };
-      ref = mkOption {
-        type = types.strMatching "(tpm2-credstore|desired-toml|system-credential)(:[A-Za-z0-9_.-]+)?";
-        description = "The opaque credential resolver reference.";
-      };
-    };
-  });
+  secretRefType = lib.serviceTypes.namedSecretRef;
   cniIntegrationType = types.submodule ({...}: {
     config._module.strict = true;
     options = {

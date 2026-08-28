@@ -14,8 +14,7 @@
 }: let
   cfg = config.nginx;
 
-  positiveInt = lib.types.addCheck lib.types.int (value: value > 0);
-  nonNegativeInt = lib.types.addCheck lib.types.int (value: value >= 0);
+  inherit (lib.serviceTypes) positiveInt nonNegativeInt;
   size = lib.types.strMatching "[0-9]+[kKmMgG]?";
   duration = lib.types.strMatching "[0-9]+(ms|s|m|h|d)";
   token = lib.types.strMatching "[^{};[:space:]]+";
@@ -23,14 +22,7 @@
   upstreamAddress = lib.types.strMatching "[^{};[:space:]]+";
   confinedDirectives = lib.types.strMatching "[^{}]*";
   documentRoot = lib.types.strMatching "/var/lib/aos-pkg-nginx/www(/[^\n\r]*)?";
-  secretRef = lib.types.submodule ({...}: {
-    config._module.strict = true;
-    options.ref = lib.mkOption {
-      type = lib.types.nullOr (lib.types.strMatching "(tpm2-credstore|desired-toml|system-credential)(:[A-Za-z0-9_.-]+)?");
-      default = null;
-      description = "Opaque AOS secret reference; secret bytes never enter Nix evaluation.";
-    };
-  });
+  secretRef = lib.serviceTypes.optionalSecretRef;
 
   quote = value: ''"${builtins.replaceStrings ["\\" "\"" "\n" "\r"] ["\\\\" "\\\"" "\\n" ""] value}"'';
   indent = prefix: text:
