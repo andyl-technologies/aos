@@ -312,7 +312,7 @@ in
           EnvironmentFile = "/etc/aos/packages/envoy/service.env";
           ExecCondition = "${bash}/bin/bash -c 'test \"$ENVOY_ENABLED\" = 1'";
           ExecStartPre = "/bin/envoy --mode validate --config-path /etc/aos/packages/envoy/bootstrap.json";
-          ExecStart = "/bin/envoy --config-path /etc/aos/packages/envoy/bootstrap.json";
+          ExecStart = "/bin/envoy --disable-hot-restart --config-path /etc/aos/packages/envoy/bootstrap.json";
           Restart = "on-failure";
           RestartSec = "2s";
           StateDirectory = "aos-pkg-envoy";
@@ -974,7 +974,7 @@ in
               exit 1
             fi
             ${pkgs.grep}/bin/grep -F -- '-- /bin/envoy --mode validate' ${self.expose}/units/envoy.service
-            ${pkgs.grep}/bin/grep -F -- '-- /bin/envoy --config-path' ${self.expose}/units/envoy.service
+            ${pkgs.grep}/bin/grep -F -- '-- /bin/envoy --disable-hot-restart --config-path' ${self.expose}/units/envoy.service
             if ${pkgs.grep}/bin/grep -Fq -- '--log-format-prefix-with-location' ${self.expose}/units/envoy.service; then
               echo "Envoy service uses an unsupported log-format flag" >&2
               exit 1

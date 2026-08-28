@@ -44,6 +44,8 @@ Cross-references and duplicate listener sockets fail evaluation.
 The administration access log defaults to
 `/var/log/aos-pkg-envoy/admin-access.log`, in Envoy's systemd-managed log
 directory. Set `envoy.admin.accessLogPath` to `/dev/null` to disable it.
+The service disables Envoy's shared-memory hot restart because systemd owns
+restart and configuration-reload lifecycle for the sandboxed process.
 
 Listener ports are runtime values and do not silently expand the package's
 signed network permissions. Add externally reachable ports explicitly through
