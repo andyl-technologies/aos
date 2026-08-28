@@ -1627,21 +1627,31 @@ authenticates the complete current semantic pin projection, requires the target
 configuration to be `Exact`, loads the complete `ExactCheckpointId` root and
 metadata through the exact-checkpoint store, and requires the checkpoint's
 modeled configuration identity to equal the pin target before the first journal
-write. The selected value binds the campaign name, configuration, latest
-accepted pin fact, and exact-checkpoint root. It is operational owner state and
-does not advance the campaign ref or alter modeled campaign identity.
+write. Authentication is representation-independent: compatibility schema-v2/
+v3 single-node roots and schema-v4 production root-manifest/index closures are
+both admitted, while operations that require the compatibility-only node model
+fail closed for a production root. The selected value binds the campaign name,
+configuration, latest accepted pin fact, and exact-checkpoint root. It is
+operational owner state and does not advance the campaign ref or alter modeled
+campaign identity.
 
 The packaged owner authenticates at most 65,536 distinct checkpoint roots from
-the durable assignment ledger before executor admission and retains the
-content-address-least root for each modeled configuration. Every later durable
-`Paused` transition sends its exact root through a 256-entry bounded channel;
-the semantic worker backpressures rather than dropping retention evidence. A
-fixed one-second reconciliation cadence reprojects at most 65,536 current exact
-pins across the configured campaign set, so a pin accepted after its checkpoint
-is still selected. Repository/checkpoint I/O and journal writes occur outside
-the supervisor actor. Catalog, projection, journal, or worker failure stops the
-packaged executor visibly; restart rebuilds the catalog from the durable ledger
-and exactly reopens prior selections.
+the durable assignment ledger before executor admission and retains every
+admitted root in a bounded per-configuration catalog. Selection chooses the
+content-address-least currently retained root for each modeled configuration.
+Every later durable `Paused` transition sends its exact root through a
+256-entry bounded channel; the semantic worker backpressures rather than
+dropping retention evidence. A successful replay-oracle promotion sends an
+exact source-to-promoted replacement only after the authoritative ledger CAS.
+The catalog authenticates the promoted root in either admitted representation,
+requires the same modeled configuration, removes the raw source root, and
+reprojects the journal in the same daemon run; it does not wait for restart to
+discover the replacement. A fixed one-second reconciliation cadence reprojects
+at most 65,536 current exact pins across the configured campaign set, so a pin
+accepted after its checkpoint is still selected. Repository/checkpoint I/O and
+journal writes occur outside the supervisor actor. Catalog, projection,
+journal, or worker failure stops the packaged executor visibly; restart rebuilds
+the catalog from the durable ledger and exactly reopens prior selections.
 
 Resume treats that record as a selection, not as timeless authorization. It
 loads the record under the journal fence, releases the fence before blob I/O,

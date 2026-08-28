@@ -244,10 +244,11 @@ pub use exact_checkpoint_store::{
     AttemptCheckpointPublication, AttemptCheckpointResult, CapturedAttemptCheckpoint,
     CapturedExactCheckpoint, EXACT_CHECKPOINT_ROOT_SCHEMA, EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
     ExactCheckpointId, ExactCheckpointPublication, ExactCheckpointStore, ExactCheckpointStoreError,
-    LoadedExactCheckpoint, LoadedProductionExactCheckpoint, PrepareReplayOraclePromotionError,
-    PreparedAttemptCheckpoint, PreparedExactCheckpoint, PreparedProductionExactCheckpoint,
-    PreparedReplayOraclePromotion, ProductionExactCheckpointPublication,
-    QEMU_VM_SNAPSHOT_METADATA_SCHEMA_VERSION, QEMU_VMSTATE_SCHEMA_VERSION,
+    LoadedAttemptCheckpoint, LoadedExactCheckpoint, LoadedProductionExactCheckpoint,
+    PrepareReplayOraclePromotionError, PreparedAttemptCheckpoint, PreparedExactCheckpoint,
+    PreparedProductionExactCheckpoint, PreparedReplayOraclePromotion,
+    ProductionExactCheckpointPublication, QEMU_VM_SNAPSHOT_METADATA_SCHEMA_VERSION,
+    QEMU_VMSTATE_SCHEMA_VERSION,
 };
 pub use exact_pin_retention::{
     DirectoryExactPinMaterializationStore, EXACT_PIN_MATERIALIZATION_DIRECTORY,

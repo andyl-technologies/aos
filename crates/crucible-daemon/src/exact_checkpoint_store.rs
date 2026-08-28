@@ -250,6 +250,20 @@ pub struct LoadedExactCheckpoint {
     vmstate: BlobHandle,
 }
 
+/// One authenticated attempt checkpoint in either supported root representation.
+///
+/// Single-node compatibility roots retain one [`QemuVmSnapshot`] and VMState
+/// stream. Production roots retain the complete portable multi-node closure.
+/// Callers that need only the exact scenario/configuration basis can remain
+/// representation-independent, while launch and replay code must explicitly
+/// select the representation it implements.
+pub enum LoadedAttemptCheckpoint {
+    /// Version-two or version-three single-node checkpoint.
+    SingleNode(Box<LoadedExactCheckpoint>),
+    /// Version-four production multi-node checkpoint.
+    Production(Box<LoadedProductionExactCheckpoint>),
+}
+
 /// One live exact capture paired with its reopenable opaque VMState stream.
 ///
 /// The QEMU session constructs this value only after pausing at an authenticated
@@ -637,6 +651,62 @@ impl LoadedExactCheckpoint {
         destination: &mut dyn Write,
     ) -> Result<u64, ExactCheckpointStoreError> {
         self.vmstate.copy_to(destination).map_err(Into::into)
+    }
+}
+
+impl LoadedAttemptCheckpoint {
+    /// Returns the authenticated checkpoint root.
+    #[must_use]
+    pub const fn root(&self) -> ExactCheckpointId {
+        match self {
+            Self::SingleNode(checkpoint) => checkpoint.root(),
+            Self::Production(checkpoint) => checkpoint.root(),
+        }
+    }
+
+    /// Returns the exact scenario materialized by the checkpoint.
+    #[must_use]
+    pub fn scenario(&self) -> ContentHash {
+        match self {
+            Self::SingleNode(checkpoint) => checkpoint.snapshot().checkpoint().scenario_ref,
+            Self::Production(checkpoint) => checkpoint.scenario(),
+        }
+    }
+
+    /// Returns the exact modeled configuration materialized by the checkpoint.
+    #[must_use]
+    pub fn configuration(&self) -> ContentHash {
+        match self {
+            Self::SingleNode(checkpoint) => checkpoint.snapshot().checkpoint().configuration,
+            Self::Production(checkpoint) => checkpoint.configuration(),
+        }
+    }
+
+    /// Returns the single-node checkpoint, when this is a compatibility root.
+    #[must_use]
+    pub const fn as_single_node(&self) -> Option<&LoadedExactCheckpoint> {
+        match self {
+            Self::SingleNode(checkpoint) => Some(checkpoint),
+            Self::Production(_) => None,
+        }
+    }
+
+    /// Returns the production checkpoint, when this is a multi-node root.
+    #[must_use]
+    pub const fn as_production(&self) -> Option<&LoadedProductionExactCheckpoint> {
+        match self {
+            Self::SingleNode(_) => None,
+            Self::Production(checkpoint) => Some(checkpoint),
+        }
+    }
+
+    /// Consumes this value as a single-node checkpoint.
+    #[must_use]
+    pub fn into_single_node(self) -> Option<LoadedExactCheckpoint> {
+        match self {
+            Self::SingleNode(checkpoint) => Some(*checkpoint),
+            Self::Production(_) => None,
+        }
     }
 }
 
@@ -1120,6 +1190,36 @@ impl ExactCheckpointStore {
             vmstate_id,
             vmstate,
         })
+    }
+
+    /// Loads either supported attempt-checkpoint representation.
+    ///
+    /// Dispatch is bound to the typed root's canonical schema version. Each
+    /// representation-specific loader then reauthenticates the envelope kind,
+    /// version, content identity, semantic basis, and complete bounded index or
+    /// child structure before this method returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported root version or any absence,
+    /// corruption, identity, semantic-basis, child/index, or size failure from
+    /// the selected representation-specific loader.
+    pub fn load_attempt_checkpoint(
+        &self,
+        root: ExactCheckpointId,
+    ) -> Result<LoadedAttemptCheckpoint, ExactCheckpointStoreError> {
+        match root.content_id().schema_version() {
+            LEGACY_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
+            | SINGLE_NODE_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION => self
+                .load(root)
+                .map(Box::new)
+                .map(LoadedAttemptCheckpoint::SingleNode),
+            EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION => self
+                .load_production_closure(root)
+                .map(Box::new)
+                .map(LoadedAttemptCheckpoint::Production),
+            _ => Err(invalid_root("unsupported attempt checkpoint root version")),
+        }
     }
 }
 

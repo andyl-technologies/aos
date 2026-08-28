@@ -379,6 +379,20 @@ pub struct PublishedPausedCheckpointPromotion {
     promoted: ExactCheckpointId,
 }
 
+impl PublishedPausedCheckpointPromotion {
+    /// Returns the raw durable root replaced by this publication.
+    #[must_use]
+    pub const fn source(&self) -> ExactCheckpointId {
+        self.source
+    }
+
+    /// Returns the replay-validated replacement root.
+    #[must_use]
+    pub const fn promoted(&self) -> ExactCheckpointId {
+        self.promoted
+    }
+}
+
 /// Result of the short supervisor staging phase.
 #[derive(Debug)]
 pub enum PausedCheckpointPromotionStageOutcome {

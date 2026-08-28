@@ -1465,6 +1465,15 @@ mod tests {
             .copy_object_to(last, &mut observed)
             .expect("copy last indexed object");
         assert_eq!(observed, expected_last);
+
+        let loaded = store
+            .load_attempt_checkpoint(root)
+            .expect("load representation-independent attempt checkpoint");
+        assert_eq!(loaded.root(), root);
+        assert_eq!(loaded.scenario(), scenario);
+        assert_eq!(loaded.configuration(), configuration);
+        assert!(loaded.as_single_node().is_none());
+        assert!(loaded.as_production().is_some());
     }
 
     #[test]

@@ -81,6 +81,14 @@ const POOL_POISONED: u8 = 2;
 /// invisible to its operational retention owner.
 pub(crate) trait PausedCheckpointObserver: Send + Sync {
     fn checkpoint_paused(&self, checkpoint: ExactCheckpointId) -> Result<(), ()>;
+
+    fn checkpoint_promoted(
+        &self,
+        _source: ExactCheckpointId,
+        promoted: ExactCheckpointId,
+    ) -> Result<(), ()> {
+        self.checkpoint_paused(promoted)
+    }
 }
 
 /// Cloneable checked component service backed by one fixed worker pool.
@@ -1566,6 +1574,21 @@ fn observe_paused_checkpoint<L, V>(
         return true;
     };
     if observer.checkpoint_paused(checkpoint).is_err() {
+        shared.poison();
+        return false;
+    }
+    true
+}
+
+fn observe_promoted_checkpoint<L, V>(
+    shared: &SharedExecutor<L, V>,
+    source: ExactCheckpointId,
+    promoted: ExactCheckpointId,
+) -> bool {
+    let Some(observer) = shared.checkpoint_observer.as_ref() else {
+        return true;
+    };
+    if observer.checkpoint_promoted(source, promoted).is_err() {
         shared.poison();
         return false;
     }

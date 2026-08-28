@@ -494,7 +494,12 @@ where
     };
 
     check_cancellation(cancellation)?;
-    let loaded = selection.authenticate_current(repository, checkpoints)?;
+    let loaded = selection
+        .authenticate_current(repository, checkpoints)?
+        .into_single_node()
+        .ok_or(ExactPinRetentionError::ProductionOperationUnsupported {
+            operation: "materialize-selected-single-node-checkpoint",
+        })?;
     let (vmstate_binding, snapshot) = materialize_loaded_checkpoint(
         selection.checkpoint(),
         &loaded,
