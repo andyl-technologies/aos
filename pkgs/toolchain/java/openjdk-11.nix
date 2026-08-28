@@ -51,13 +51,15 @@ in
     build = "9";
     srcHash = "sha256-pmnvno57buWNPlFZ31f9Eqp0KBn7voYvKLncdJ9H8E4=";
     prevJdk = openjdk-10;
-    # JDK 10's module reader is not safe while the JDK 11 make graph runs
-    # concurrent boot-compiler batches.  It still throws
-    # ConcurrentModificationException with 16 jobs and the javac server
-    # disabled, so serialize this bootstrap boundary completely.
+    # The JDK 10 jrtfs snapshot patch prevents re-entrant child-list mutation,
+    # but does not make the old module reader safe for arbitrary concurrent
+    # callers. Keep this bootstrap boundary serialized.
     buildJobs = 1;
-    # JDK 10's javac server has a ConcurrentModificationException bug in
-    # jrtfs when multiple threads access the module system simultaneously.
-    # Disable the javac server to avoid the race condition.
-    extraConfigureFlags = ["--enable-javac-server=no"];
+    # Avoid sharing the JDK 10 module reader across compiler requests. Cap the
+    # boot JVM at AVX2 as well: its HotSpot defaults to AVX-512 on newer CPUs
+    # and can crash in libjvm while compiling a large module batch.
+    extraConfigureFlags = [
+      "--enable-javac-server=no"
+      "--with-boot-jdk-jvmargs=-XX:UseAVX=2"
+    ];
   }
