@@ -873,15 +873,19 @@ in
           qmp_pair "$patched_socket" \
             '{"exec-oob":"crucible-hot-fork-template","arguments":{"action":"query"}}' \
             "$out/template-coordinator-query.json"
-          jq -e -s --slurpfile bh "$out/bh-timer-barrier-query.json" '
+          jq -e -s \
+            --slurpfile bh "$out/bh-timer-barrier-query.json" \
+            --slurpfile block "$out/block-barrier-query.json" '
             [.[] | select(has("return")) | .return |
              select(has("transaction-active"))] as $reports |
             ($bh | map(select(has("return"))) | .[-1].return) as $bh_report |
+            ($block | map(select(has("return"))) | .[-1].return) as $block_report |
             ($reports | length) == 2 and $reports[0] == $reports[1] and
             ($reports[0] as $report |
             ($report | keys | sort) == [
               "acknowledged-proofs",
               "bh-timer-barrier",
+              "block-barrier",
               "generation",
               "missing-proofs",
               "outcome",
@@ -893,7 +897,7 @@ in
               "schema-version",
               "transaction-active"
             ] and
-            $report."schema-version" == 4 and
+            $report."schema-version" == 5 and
             $report.generation == 0 and
             $report.outcome == "idle" and
             $report."transaction-active" == false and
@@ -916,6 +920,7 @@ in
             $report."rcu-barrier".held == false and
             $report."rcu-barrier".quiescent == false and
             $report."bh-timer-barrier" == $bh_report and
+            $report."block-barrier" == $block_report and
             $report."rollback-complete" == true and
             $report.ready == false)
           ' "$out/template-coordinator-query.json" >/dev/null \
@@ -939,7 +944,8 @@ in
             $reports[0].ready == false and
             $reports[0]."plugin-barrier".held == false and
             $reports[0]."rcu-barrier".held == false and
-            $reports[0]."bh-timer-barrier".held == false
+            $reports[0]."bh-timer-barrier".held == false and
+            $reports[0]."block-barrier".held == false
           ' "$out/template-coordinator-after-rejection.json" >/dev/null \
             || { cat "$out/template-coordinator-after-rejection.json" >&2; fail "QEMU retained state after rejecting template preparation"; }
 
@@ -1177,7 +1183,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0129-crucible-hot-fork-block-drain-barrier.patch
+          patch=0130-crucible-hot-fork-block-template-coordinator.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -1220,6 +1226,7 @@ in
           block_barrier_released_stable=true
           block_barrier_hold_without_exact_boundary_rejected=true
           block_snapshot_proof_acknowledged=false
+          block_barrier_template_bound=true
           plugin_resource_inventory_schema_version=1
           plugin_resource_inventory_stable=true
           plugin_resource_inventory_unregistered_shape=true
@@ -1228,7 +1235,7 @@ in
           plugin_barrier_unregistered_shape=true
           plugin_barrier_release_unregistered_rejected=true
           plugin_ring_proof_acknowledged=false
-          template_coordinator_schema_version=4
+          template_coordinator_schema_version=5
           template_coordinator_idle_stable=true
           template_coordinator_unregistered_shape=true
           template_prepare_without_exact_boundary_rejected=true

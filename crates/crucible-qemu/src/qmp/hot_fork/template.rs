@@ -3,9 +3,10 @@
 use serde_json::Value;
 
 use super::{
-    QMP_HOT_FORK_REQUIRED_PROOFS, QmpHotForkBhTimerBarrierState, QmpHotForkPluginBarrierState,
-    QmpHotForkProof, QmpHotForkRcuBarrierState,
+    QMP_HOT_FORK_REQUIRED_PROOFS, QmpHotForkBhTimerBarrierState, QmpHotForkBlockBarrierState,
+    QmpHotForkPluginBarrierState, QmpHotForkProof, QmpHotForkRcuBarrierState,
     bh_timer_barrier::parse_hot_fork_bh_timer_barrier_state_for,
+    block_barrier::parse_hot_fork_block_barrier_state_for,
     plugin::parse_hot_fork_plugin_barrier_state_for,
     rcu_barrier::parse_hot_fork_rcu_barrier_state_for,
 };
@@ -14,10 +15,11 @@ use crate::qmp::{QmpCommandKind, QmpError};
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 4;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 5;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
+const QMP_HOT_FORK_BLOCK_PROOF: u64 = 1_u64 << 5;
 
 /// Exact outcome of one hot-fork template coordinator operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +47,7 @@ pub struct QmpHotForkTemplateState {
     plugin_barrier: QmpHotForkPluginBarrierState,
     rcu_barrier: QmpHotForkRcuBarrierState,
     bh_timer_barrier: QmpHotForkBhTimerBarrierState,
+    block_barrier: QmpHotForkBlockBarrierState,
     rollback_complete: bool,
     ready: bool,
 }
@@ -104,6 +107,12 @@ impl QmpHotForkTemplateState {
         self.bh_timer_barrier
     }
 
+    /// Returns the retained native all-block drain state.
+    #[must_use]
+    pub const fn block_barrier(self) -> QmpHotForkBlockBarrierState {
+        self.block_barrier
+    }
+
     /// Returns whether QEMU attests that no transaction barrier remains acquired.
     #[must_use]
     pub const fn rollback_complete(self) -> bool {
@@ -136,6 +145,7 @@ pub(crate) fn parse_hot_fork_template_state(
         "plugin-barrier",
         "rcu-barrier",
         "bh-timer-barrier",
+        "block-barrier",
         "rollback-complete",
         "ready",
     ];
@@ -187,6 +197,10 @@ pub(crate) fn parse_hot_fork_template_state(
         QmpCommandKind::HotForkTemplate,
         object.get("bh-timer-barrier").ok_or_else(&malformed)?,
     )?;
+    let block_barrier = parse_hot_fork_block_barrier_state_for(
+        QmpCommandKind::HotForkTemplate,
+        object.get("block-barrier").ok_or_else(&malformed)?,
+    )?;
     let rollback_complete = object
         .get("rollback-complete")
         .and_then(Value::as_bool)
@@ -199,47 +213,52 @@ pub(crate) fn parse_hot_fork_template_state(
     let proofs_valid = schema_version == u64::from(QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION)
         && required_proofs == QMP_HOT_FORK_REQUIRED_PROOFS
         && acknowledged_proofs & !required_proofs == 0
+        && acknowledged_proofs & QMP_HOT_FORK_BLOCK_PROOF == 0
         && missing_proofs == required_proofs & !acknowledged_proofs;
     let expected_ready = outcome == QmpHotForkTemplateOutcome::Prepared
         && transaction_active
         && plugin_barrier.quiescent()
         && rcu_barrier.quiescent()
         && bh_timer_barrier.quiescent()
+        && block_barrier.quiescent()
         && missing_proofs == 0;
     let expected_rollback = !transaction_active
         && !plugin_barrier.held()
         && !rcu_barrier.held()
-        && !bh_timer_barrier.held();
+        && !bh_timer_barrier.held()
+        && !block_barrier.held();
     let rcu_proof_valid = (acknowledged_proofs & QMP_HOT_FORK_RCU_PROOF != 0)
         == (transaction_active && rcu_barrier.quiescent());
     let aio_proof_valid = (acknowledged_proofs & QMP_HOT_FORK_AIO_PROOF != 0)
         == (transaction_active && bh_timer_barrier.quiescent());
+    let ordinary_barriers_unheld =
+        !plugin_barrier.held() && !rcu_barrier.held() && !bh_timer_barrier.held();
+    let all_barriers_held = plugin_barrier.held()
+        && !plugin_barrier.teardown_closed()
+        && rcu_barrier.held()
+        && bh_timer_barrier.held()
+        && block_barrier.held();
     let shape_valid = match outcome {
         QmpHotForkTemplateOutcome::Idle => {
             !transaction_active
                 && rollback_complete
-                && !plugin_barrier.held()
-                && !rcu_barrier.held()
-                && !bh_timer_barrier.held()
+                && ordinary_barriers_unheld
+                && !block_barrier.held()
                 && !ready
         }
         QmpHotForkTemplateOutcome::Draining => {
             generation != 0
                 && transaction_active
                 && !rollback_complete
-                && plugin_barrier.held()
-                && !plugin_barrier.teardown_closed()
-                && rcu_barrier.held()
-                && bh_timer_barrier.held()
+                && (all_barriers_held || ordinary_barriers_unheld)
                 && !ready
         }
         QmpHotForkTemplateOutcome::Blocked => {
             generation != 0
                 && !transaction_active
                 && rollback_complete
-                && !plugin_barrier.held()
-                && !rcu_barrier.held()
-                && !bh_timer_barrier.held()
+                && ordinary_barriers_unheld
+                && !block_barrier.held()
                 && missing_proofs != 0
                 && !ready
         }
@@ -250,15 +269,15 @@ pub(crate) fn parse_hot_fork_template_state(
                 && plugin_barrier.quiescent()
                 && rcu_barrier.quiescent()
                 && bh_timer_barrier.quiescent()
+                && block_barrier.quiescent()
                 && ready
         }
         QmpHotForkTemplateOutcome::Aborted => {
             generation != 0
                 && !transaction_active
                 && rollback_complete
-                && !plugin_barrier.held()
-                && !rcu_barrier.held()
-                && !bh_timer_barrier.held()
+                && ordinary_barriers_unheld
+                && !block_barrier.held()
                 && !ready
         }
     };
@@ -281,6 +300,7 @@ pub(crate) fn parse_hot_fork_template_state(
         plugin_barrier,
         rcu_barrier,
         bh_timer_barrier,
+        block_barrier,
         rollback_complete,
         ready,
     })

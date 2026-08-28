@@ -1679,7 +1679,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-template-coordinator";
         liveEvidence = ''
-          grep -Fxq 'template_coordinator_schema_version=4' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=5' "$live_result"
           grep -Fxq 'template_coordinator_idle_stable=true' "$live_result"
           grep -Fxq 'template_coordinator_unregistered_shape=true' "$live_result"
           grep -Fxq 'template_prepare_without_exact_boundary_rejected=true' "$live_result"
@@ -1700,7 +1700,7 @@
           grep -Fxq 'rcu_barrier_released_stable=true' "$live_result"
           grep -Fxq 'rcu_barrier_hold_without_exact_boundary_rejected=true' "$live_result"
           grep -Fxq 'rcu_barrier_quiescence_proof_bound=true' "$live_result"
-          grep -Fxq 'template_coordinator_schema_version=4' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=5' "$live_result"
           grep -Fxq 'rcu_proof_acknowledged=false' "$live_result"
           grep -Fxq 'template_ready=false' "$live_result"
         '';
@@ -1717,7 +1717,7 @@
           grep -Fxq 'bh_timer_barrier_released_stable=true' "$live_result"
           grep -Fxq 'bh_timer_barrier_hold_without_exact_boundary_rejected=true' "$live_result"
           grep -Fxq 'bh_timer_barrier_template_bound=true' "$live_result"
-          grep -Fxq 'template_coordinator_schema_version=4' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=5' "$live_result"
           grep -Fxq 'aio_proof_acknowledged=false' "$live_result"
           grep -Fxq 'template_ready=false' "$live_result"
         '';
@@ -1734,7 +1734,7 @@
           grep -Fxq 'bh_timer_barrier_released_stable=true' "$live_result"
           grep -Fxq 'bh_timer_barrier_hold_without_exact_boundary_rejected=true' "$live_result"
           grep -Fxq 'bh_timer_barrier_template_bound=true' "$live_result"
-          grep -Fxq 'template_coordinator_schema_version=4' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=5' "$live_result"
           grep -Fxq 'aio_proof_acknowledged=false' "$live_result"
           grep -Fxq 'template_ready=false' "$live_result"
         '';
@@ -1750,6 +1750,21 @@
           grep -Fxq 'block_barrier_schema_version=1' "$live_result"
           grep -Fxq 'block_barrier_released_stable=true' "$live_result"
           grep -Fxq 'block_barrier_hold_without_exact_boundary_rejected=true' "$live_result"
+          grep -Fxq 'block_snapshot_proof_acknowledged=false' "$live_result"
+          grep -Fxq 'template_ready=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0130-crucible-hot-fork-block-template-coordinator.patch";
+      check = certifyExactPatch {
+        patchName = "0130-crucible-hot-fork-block-template-coordinator.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-block-template-coordinator";
+        liveEvidence = ''
+          grep -Fxq 'patch=0130-crucible-hot-fork-block-template-coordinator.patch' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=5' "$live_result"
+          grep -Fxq 'block_barrier_template_bound=true' "$live_result"
           grep -Fxq 'block_snapshot_proof_acknowledged=false' "$live_result"
           grep -Fxq 'template_ready=false' "$live_result"
         '';

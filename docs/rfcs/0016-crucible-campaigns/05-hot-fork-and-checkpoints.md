@@ -674,7 +674,7 @@ races and is sufficient for proof bit 3 while retained and quiescent. It does
 not choose child-side descriptor, context, coroutine, or clock disposition;
 those obligations remain separately represented by proof bits 7 and 8.
 
-The retained `PrepareForkTemplate` checkpoint is the version-4 OOB
+The retained `PrepareForkTemplate` checkpoint is the version-5 OOB
 `crucible-hot-fork-template` coordinator:
 
 ```text
@@ -684,7 +684,7 @@ CrucibleHotForkTemplateOutcome =
     idle | draining | blocked | prepared | aborted
 
 CrucibleHotForkTemplateState {
-    schema-version: u32 = 4,
+    schema-version: u32 = 5,
     generation: u64,
     outcome: CrucibleHotForkTemplateOutcome,
     transaction-active: bool,
@@ -694,43 +694,54 @@ CrucibleHotForkTemplateState {
     plugin-barrier: CrucibleHotForkPluginBarrierState,
     rcu-barrier: CrucibleHotForkRcuBarrierState,
     bh-timer-barrier: CrucibleHotForkBhTimerBarrierState,
+    block-barrier: CrucibleHotForkBlockBarrierState,
     rollback-complete: bool,
     ready: bool,
 }
 ```
 
 `prepare` starts only at the authenticated exact paused/device-flush boundary.
-QEMU serializes the transaction, acquires the RCU admission barrier, the
-bottom-half/timer source barrier, and the plugin callback barrier, and retains
-them while previously admitted work drains. A repeated `prepare` reevaluates
-the retained transaction. Once all three barriers are quiescent, QEMU
+QEMU serializes the transaction and schedules native all-block drain acquisition
+on the main AioContext. OOB calls observe `draining` while that transition is
+pending. Once block roots are quiesced, the coordinator acquires the RCU
+admission barrier, the bottom-half/timer source barrier, and the plugin callback
+barrier, and retains all four while previously admitted work drains. A repeated
+`prepare` reevaluates the retained transaction. Once all four barriers are
+quiescent, QEMU
 either reports `prepared` only when all nine required bits are present in the
 same transaction, or releases every acquired barrier and reports `blocked`.
-`query` is observational. `abort` releases an active transaction and reports
-`aborted`; aborting an idle coordinator reports `idle`. Standalone plugin hold
-or release cannot mutate a barrier owned by the coordinator. A failed release
-does not discard coordinator ownership: the command fails and the caller must
-retry query/abort while QEMU continues to own the retained state.
+Rollback releases plugin, asynchronous-source, and RCU admission before it
+schedules native block release on the main AioContext; this ordering prevents
+new AIO work from entering while the block layer is still drained. `query` is
+observational. `abort` requests rollback and eventually reports `aborted`;
+aborting an idle coordinator reports `idle`. Standalone mutation of any one of
+the four barriers is rejected while any asynchronous transaction phase is
+reserved. A failed release does not discard coordinator ownership: later
+prepare/abort calls retry it, while query continues to observe the retained
+draining state.
 
 `missing-proofs` MUST equal `required-proofs & ~acknowledged-proofs`.
 `rollback-complete` is true exactly when no transaction is active and none of
-the three barriers is held. `ready` is true exactly for an active `prepared`
-transaction whose plugin, RCU, and asynchronous-source barriers are quiescent
-and whose missing bitmap is zero.
+the four barriers is held. `ready` is true exactly for an active `prepared`
+transaction whose plugin, RCU, asynchronous-source, and block barriers are
+quiescent and whose missing bitmap is zero.
 Proof bit 4 is present exactly while the transaction remains active and its
 complete RCU barrier is quiescent. Proof bit 3 is present exactly while the
 transaction remains active and its complete asynchronous-source barrier is
-quiescent. Version 4 still does not compose the remaining plugin-ring, block,
-descriptor/mapping, or child-reinitialization barriers; therefore it rolls a
-drained transaction back as `blocked` and cannot advertise a usable hot-fork
-template.
+quiescent. Native block quiescence is a prerequisite, not proof of an immutable
+block snapshot: version 5 MUST keep proof bit 5 clear until the coordinator also
+authenticates an immutable external-snapshot root and child root identity.
+Version 5 still does not compose that snapshot proof or the remaining
+plugin-ring, descriptor/mapping, or child-reinitialization barriers; therefore
+it rolls a drained transaction back as `blocked` and cannot advertise a usable
+hot-fork template.
 
 The standalone AioContext, AIO-handler, and block-backend responses remain
 observational. The retained asynchronous-source barrier composes the context,
 handler, coroutine, bottom-half, and timer admission classes and derives proof
-bit 3 only while they are complete and quiescent. The standalone retained block
-drain supplies only QEMU-native I/O quiescence; the future coordinator must
-still compose immutable block write-root identity, descriptor/mapping, and
+bit 3 only while they are complete and quiescent. The coordinator now composes
+the retained native block drain only as QEMU-native I/O quiescence; it must still
+compose immutable block write-root identity, descriptor/mapping, and
 child-reinitialization proofs before a retained template can authorize
 `fork(2)`.
 
@@ -826,7 +837,7 @@ before the inventory entry is removed.
 This response is still observational. It does not prevent a timer from being
 armed, canceled, or fired after the query, retain a timer-list or AIO barrier
 across `fork(2)`, select a child disposition, or reinitialize clock state. It
-therefore MUST NOT acknowledge proof bit 3. The version-4 coordinator supplies
+therefore MUST NOT acknowledge proof bit 3. The version-5 coordinator supplies
 the required retained timer and AIO/BH composition; this standalone inventory
 still cannot promote the proof by itself.
 

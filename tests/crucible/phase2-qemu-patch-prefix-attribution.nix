@@ -591,6 +591,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0130-crucible-hot-fork-block-template-coordinator.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

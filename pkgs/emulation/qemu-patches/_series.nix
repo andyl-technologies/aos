@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "9923d27f70de4e6eb62b91c28a6bce00b86988225ef4e4d8fdbe72a097c5dea6";
+  patchBranchBundleSha256 = "8405c3a82418d3c2ece83cb8dd92421a95c14d3bddcc26111ac1726d32391431";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "b46c7cd35f6e46ac5265fa8221f185dc45b3ec78";
+  patchBranchHeadCommit = "a1f44c51a961b0c4672b9c402bdd9990b10e4584";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1225,6 +1225,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "a process-lifetime QEMU-native all-block drain section quiesces every rooted BlockBackend without synchronously waiting for already-issued I/O, retains the drain until explicit release, reports bounded exact backend and in-flight aggregates, and deliberately leaves block proof bit 5 clear until an immutable external-snapshot root is authenticated";
+    }
+    {
+      file = "0130-crucible-hot-fork-block-template-coordinator.patch";
+      branchSubject = "crucible: coordinate block drain for hot fork";
+      branchCommit = "a1f44c51a961b0c4672b9c402bdd9990b10e4584";
+      branchTree = "2a6cae9969159274a4a051c76e26c4969a2d5d31";
+      catalogName = "crucible-hot-fork-block-template-coordinator";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "the version-5 template coordinator asynchronously acquires QEMU's native all-block drain on the main AioContext before parking asynchronous sources, releases asynchronous sources before scheduling main-loop block release, rejects standalone barrier mutation while any transaction phase is reserved, and keeps block proof bit 5 clear until an immutable external-snapshot root is authenticated";
     }
   ];
   catalogOnlyCapabilities = [

@@ -90,7 +90,13 @@ impl QmpHotForkBlockBarrierState {
 pub(crate) fn parse_hot_fork_block_barrier_state(
     value: &Value,
 ) -> Result<QmpHotForkBlockBarrierState, QmpError> {
-    let command = QmpCommandKind::HotForkBlockBarrier;
+    parse_hot_fork_block_barrier_state_for(QmpCommandKind::HotForkBlockBarrier, value)
+}
+
+pub(crate) fn parse_hot_fork_block_barrier_state_for(
+    command: QmpCommandKind,
+    value: &Value,
+) -> Result<QmpHotForkBlockBarrierState, QmpError> {
     let malformed = || QmpError::MalformedTypedResponse {
         command,
         response: value.to_string(),
