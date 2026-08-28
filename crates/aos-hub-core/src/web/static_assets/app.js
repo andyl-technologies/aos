@@ -662,10 +662,11 @@
       var button = event.target.closest && event.target.closest("[data-copy-value]");
       if (!button) return;
       navigator.clipboard.writeText(button.getAttribute("data-copy-value")).then(function () {
-        var previous = button.textContent;
-        button.textContent = "copied";
+        button.classList.add("copied");
+        button.setAttribute("aria-label", "Copied");
         setTimeout(function () {
-          button.textContent = previous;
+          button.classList.remove("copied");
+          button.setAttribute("aria-label", "Copy full hash");
         }, 1200);
       });
     });
