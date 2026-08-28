@@ -1057,6 +1057,30 @@
     bash = self.bash;
     zlib = self.zlib;
   };
+  darwinDtraceCompiler = import ./darwin/_darwin-dtrace-compiler.nix {
+    inherit mkDerivation fetchurl;
+    llvm = resolvedBuildPackages.llvm;
+    gcc = resolvedBuildPackages.gcc;
+    glibc = resolvedBuildPackages.glibc;
+    zlib = resolvedBuildPackages.zlib;
+  };
+  appleLibTapi = import ./darwin/_apple-libtapi.nix {
+    inherit mkDerivation fetchurl;
+    cmake = resolvedBuildPackages.cmake;
+    ninja = resolvedBuildPackages.ninja;
+    python3 = resolvedBuildPackages.python3;
+  };
+  darwinCctoolsLinker = import ./darwin/_darwin-cctools-linker.nix {
+    inherit mkDerivation fetchurl;
+    gnumake = resolvedBuildPackages.gnumake;
+    llvm = resolvedBuildPackages.llvm;
+    gcc = resolvedBuildPackages.gcc;
+    glibc = resolvedBuildPackages.glibc;
+    appleLibTapi = resolvedBuildPackages.appleLibTapi;
+    darwinDtraceCompiler = resolvedBuildPackages.darwinDtraceCompiler;
+    libbsd = resolvedBuildPackages.libbsd;
+    util-linux = resolvedBuildPackages.util-linux;
+  };
   # Discovered factory modules are callable package constructors, not
   # derivations. Keep them in `pkgs` for their consumers, but never advertise
   # them as buildable `pkg-*` flake outputs or aggregate build dependencies.
@@ -1181,6 +1205,10 @@
         then withDefaultMaintainers stdenv.darwinRuntimes
         else null;
       darwinRuntimes = self.darwin-runtimes;
+      java-native-foundation =
+        if stdenv.hostPlatform.isDarwin
+        then discoveredPackages.java-native-foundation
+        else null;
 
       # --- stdenv packages (linked, not rebuilt) ---
       gcc =
@@ -1205,6 +1233,9 @@
         then darwinBinutils
         else stdenv.binutils
       );
+      inherit darwinDtraceCompiler;
+      inherit appleLibTapi;
+      inherit darwinCctoolsLinker;
       cc =
         withDistributionMeta {
           description = "AOS C and C++ compiler wrapper toolchain";

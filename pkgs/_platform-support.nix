@@ -289,6 +289,7 @@ let
     "bazel-8"
     "bazel-9"
     "envoy"
+    "java-native-foundation"
     "openjdk"
     "openjdk-10"
     "openjdk-11"
@@ -558,8 +559,11 @@ let
     "build-support/_expose-module.nix" = "target-independent-source";
     "build-support/_expose-renderer.nix" = "native-build-helper";
     "build-support/_generated-expose-config-module.nix" = "target-independent-source";
+    "darwin/_apple-libtapi.nix" = "linux-only-build-helper";
     "darwin/_darwin-binutils.nix" = "cross-build-helper";
     "darwin/_darwin-cc.nix" = "cross-build-helper";
+    "darwin/_darwin-cctools-linker.nix" = "linux-only-build-helper";
+    "darwin/_darwin-dtrace-compiler.nix" = "linux-only-build-helper";
     "darwin/_darwin-gcc.nix" = "cross-build-helper";
     "emulation/_darwin-signer.nix" = "linux-only-build-helper";
     "emulation/_darling-sources.nix" = "linux-only-source";
@@ -571,6 +575,7 @@ let
     "kubernetes/_source.nix" = "mixed-source";
     "toolchain/_bazel.nix" = "native-build-helper";
     "toolchain/go/_go-darwin.nix" = "cross-build-helper";
+    "toolchain/java/_darwin-mig.nix" = "linux-only-build-helper";
     "toolchain/java/_openjdk-bootstrap.nix" = "native-build-helper";
     "toolchain/llvm/_llvm.nix" = "cross-build-helper";
     "toolchain/rust/_rust-darwin-build-tool.nix" = "cross-build-helper";
