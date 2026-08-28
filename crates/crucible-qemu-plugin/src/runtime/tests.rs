@@ -864,6 +864,7 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
         manifest.struct_size,
         std::mem::size_of::<crate::QemuPluginResourceManifest>() as u32
     );
+    assert_eq!(manifest.worker_mask, PLUGIN_WORKER_REQUIRED);
     assert_eq!(manifest.process_generation, 1);
     assert_eq!(manifest.plugin_id, 41);
     assert_eq!(manifest.resource_mask, PLUGIN_RESOURCE_REQUIRED);
@@ -916,6 +917,40 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     reservation.publish(runtime.0);
     assert!(active_runtime_is_published());
     join_host(host);
+}
+
+#[test]
+fn live_install_seals_the_optional_fingerprint_worker() {
+    let _runtime_state = isolate_runtime_state_for_test();
+    reset_capability_call_counts();
+    let fixture = LiveInstallFixture::new();
+    let host = fixture.spawn_host(SETUP_ACK_STATUS_READY);
+    let mut reservation =
+        reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
+    let runtime = install_live_runtime(
+        42,
+        fixture.fingerprint_args(),
+        test_state(),
+        test_capabilities(),
+        &SuccessfulCallbackRegistrar,
+        &mut reservation,
+    )
+    .unwrap_or_else(|error| panic!("fingerprint runtime should complete: {error}"));
+
+    let manifest = registered_resource_manifest()
+        .unwrap_or_else(|| panic!("fingerprint resource manifest should be sealed"));
+    assert_eq!(
+        manifest.worker_mask,
+        PLUGIN_WORKER_REQUIRED | PLUGIN_WORKER_FINGERPRINT
+    );
+    assert_eq!(
+        manifest.resource_mask & PLUGIN_RESOURCE_FINGERPRINT,
+        PLUGIN_RESOURCE_FINGERPRINT
+    );
+
+    drop(runtime);
+    host.join()
+        .unwrap_or_else(|_panic| panic!("fingerprint setup host should join"));
 }
 
 #[test]

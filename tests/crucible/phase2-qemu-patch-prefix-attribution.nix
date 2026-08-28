@@ -615,6 +615,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0136-crucible-seal-hot-fork-plugin-workers.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

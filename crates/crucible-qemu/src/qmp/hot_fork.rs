@@ -85,7 +85,7 @@ pub const QMP_HOT_FORK_AIO_HANDLER_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned allocated-block-backend inventory contract.
 pub const QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned plugin-resource inventory contract.
-pub const QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION: u32 = 1;
+pub const QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION: u32 = 2;
 /// Version of the QEMU-owned plugin callback-and-ring barrier contract.
 pub const QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION: u32 = 2;
 /// Version of the QEMU-owned allocated-bottom-half inventory contract.
@@ -131,6 +131,12 @@ const QMP_HOT_FORK_PLUGIN_CALLBACK_REQUIRED: u64 = ((1_u64 << 12) - 1) & !(1_u64
 const QMP_HOT_FORK_PLUGIN_CALLBACK_ALL: u64 = (1_u64 << 14) - 1;
 const QMP_HOT_FORK_PLUGIN_CALLBACK_TB_TRANSLATION: u64 = 1_u64 << 12;
 const QMP_HOT_FORK_PLUGIN_CALLBACK_FLUSH: u64 = 1_u64 << 13;
+const QMP_HOT_FORK_PLUGIN_WORKER_RUN_CONTROL: u64 = 1_u64 << 0;
+const QMP_HOT_FORK_PLUGIN_WORKER_TEARDOWN: u64 = 1_u64 << 1;
+const QMP_HOT_FORK_PLUGIN_WORKER_FINGERPRINT: u64 = 1_u64 << 2;
+const QMP_HOT_FORK_PLUGIN_WORKER_REQUIRED: u64 =
+    QMP_HOT_FORK_PLUGIN_WORKER_RUN_CONTROL | QMP_HOT_FORK_PLUGIN_WORKER_TEARDOWN;
+const QMP_HOT_FORK_PLUGIN_WORKER_ALL: u64 = (1_u64 << 3) - 1;
 
 /// One independently acknowledged hot-fork readiness proof.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

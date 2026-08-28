@@ -903,7 +903,7 @@ pub(crate) struct LiveInstallCapabilities {
     pub(crate) fault_commands: crate::fault_command::QemuFaultCommandApis,
 }
 
-const PLUGIN_RESOURCE_MANIFEST_VERSION: u32 = 1;
+const PLUGIN_RESOURCE_MANIFEST_VERSION: u32 = 2;
 const PLUGIN_RESOURCE_REQUIRED: u64 = (1_u64 << 10) - 1;
 const PLUGIN_RESOURCE_COVERAGE: u64 = 1_u64 << 10;
 const PLUGIN_RESOURCE_WHITEBOX: u64 = 1_u64 << 11;
@@ -913,6 +913,10 @@ const PLUGIN_RESOURCE_APP_RANDOM: u64 = 1_u64 << 14;
 const PLUGIN_CALLBACK_REQUIRED: u64 = ((1_u64 << 12) - 1) & !(1_u64 << 1);
 const PLUGIN_CALLBACK_TB_TRANSLATION: u64 = 1_u64 << 12;
 const PLUGIN_CALLBACK_FLUSH: u64 = 1_u64 << 13;
+const PLUGIN_WORKER_RUN_CONTROL: u64 = 1_u64 << 0;
+const PLUGIN_WORKER_TEARDOWN: u64 = 1_u64 << 1;
+const PLUGIN_WORKER_FINGERPRINT: u64 = 1_u64 << 2;
+const PLUGIN_WORKER_REQUIRED: u64 = PLUGIN_WORKER_RUN_CONTROL | PLUGIN_WORKER_TEARDOWN;
 
 fn plugin_resource_manifest(
     plugin_id: QemuPluginId,
@@ -930,6 +934,7 @@ fn plugin_resource_manifest(
 
     let mut resource_mask = PLUGIN_RESOURCE_REQUIRED;
     let mut callback_mask = PLUGIN_CALLBACK_REQUIRED;
+    let mut worker_mask = PLUGIN_WORKER_REQUIRED;
     if args.coverage().is_on() {
         resource_mask |= PLUGIN_RESOURCE_COVERAGE;
         callback_mask |= PLUGIN_CALLBACK_TB_TRANSLATION | PLUGIN_CALLBACK_FLUSH;
@@ -940,6 +945,7 @@ fn plugin_resource_manifest(
     }
     if args.fingerprint().is_on() {
         resource_mask |= PLUGIN_RESOURCE_FINGERPRINT;
+        worker_mask |= PLUGIN_WORKER_FINGERPRINT;
     }
     if args.state_dump().is_some() {
         resource_mask |= PLUGIN_RESOURCE_STATE_DUMP;
@@ -955,6 +961,7 @@ fn plugin_resource_manifest(
         plugin_id,
         resource_mask,
         callback_mask,
+        worker_mask,
         shmem_device: setup.shared_memory_device(),
         shmem_inode: setup.shared_memory_inode(),
         shmem_length: setup.mapped_region().region_len(),

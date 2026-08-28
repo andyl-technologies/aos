@@ -677,6 +677,7 @@ in
               "control-fd",
               "coverage",
               "fingerprint",
+              "fingerprint-worker",
               "generation",
               "node-count",
               "observed-callback-mask",
@@ -684,17 +685,20 @@ in
               "process-generation",
               "registered",
               "resource-mask",
+              "run-control-worker",
               "schema-version",
               "shmem-device",
               "shmem-inode",
               "shmem-length",
               "slot-index",
               "state-dump",
+              "teardown-worker",
               "wake-fd",
-              "whitebox"
+              "whitebox",
+              "worker-mask"
             ] and
             $report == {
-              "schema-version": 1,
+              "schema-version": 2,
               "generation": 0,
               "registered": false,
               "complete": false,
@@ -702,6 +706,7 @@ in
               "plugin-id": 0,
               "resource-mask": 0,
               "callback-mask": 0,
+              "worker-mask": 0,
               "observed-callback-mask": 0,
               "callback-mask-consistent": true,
               "shmem-device": 0,
@@ -714,6 +719,9 @@ in
               "coverage": false,
               "whitebox": false,
               "fingerprint": false,
+              "run-control-worker": false,
+              "teardown-worker": false,
+              "fingerprint-worker": false,
               "state-dump": false,
               "app-random": false
             }
@@ -1220,7 +1228,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0135-crucible-freeze-hot-fork-rings.patch
+          patch=0136-crucible-seal-hot-fork-plugin-workers.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -1267,7 +1275,7 @@ in
           block_snapshot_proof_acknowledged=false
           block_snapshot_binding_argument_bound=true
           block_barrier_template_bound=true
-          plugin_resource_inventory_schema_version=1
+          plugin_resource_inventory_schema_version=2
           plugin_resource_inventory_stable=true
           plugin_resource_inventory_unregistered_shape=true
           plugin_barrier_schema_version=2

@@ -2198,6 +2198,24 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   child dispositions, or acknowledge proof bit 6.
 - **Risk:** F.
 
+### crucible-hot-fork-plugin-worker-manifest — seal plugin workers
+
+- **Patch:** `0136-crucible-seal-hot-fork-plugin-workers.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the version-2 resource manifest adds a closed worker mask.
+  The RUN control reader and sole teardown worker are mandatory; the
+  fingerprint digest worker is present exactly when fingerprint resources are
+  enabled. QEMU rejects missing, unknown, or feature-inconsistent workers and
+  exposes the sealed set through the exact OOB resource inventory.
+- **Micro-test:** Rust parser fixtures accept the mandatory worker set and
+  reject missing or feature-inconsistent workers; the live unregistered QMP
+  shape pins all worker fields to zero/false, and patch regeneration proves the
+  C header, validator, and QAPI move together.
+- **Inertness:** the manifest is observational and installed only by the
+  Crucible plugin. It does not park worker operations, clone ring bytes,
+  reconstruct workers in a child, or acknowledge proof bit 6.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

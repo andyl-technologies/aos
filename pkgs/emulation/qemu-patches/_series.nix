@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "a6559d791911adcea0978ea8a46c1ed891a3fd29331f3f1a04e82f00ddd15b9a";
+  patchBranchBundleSha256 = "452cc72dd43d7b305d12af29060e999689224082b1e0a4b215d67f3e75c5e527";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "2fc133444c3b0d0d2084410731de07811efbd049";
+  patchBranchHeadCommit = "170469474567397bb09807e542e31cc85aa2ef1e";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1285,6 +1285,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "the retained plugin barrier also holds every ABI-v19 shared-memory ring producer, reports exact ring and already-admitted producer counts, and requires both callback and ring admission to drain before quiescence; worker parking, ring cloning, and child reconstruction remain open under proof bit 6";
+    }
+    {
+      file = "0136-crucible-seal-hot-fork-plugin-workers.patch";
+      branchSubject = "crucible: seal hot-fork plugin workers";
+      branchCommit = "170469474567397bb09807e542e31cc85aa2ef1e";
+      branchTree = "48b53def2473604b0c7a9cef23e640f0b4481a17";
+      catalogName = "crucible-hot-fork-plugin-worker-manifest";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "the version-2 plugin resource manifest seals the mandatory run-control and teardown workers plus the fingerprint digest worker exactly when fingerprinting is enabled, giving future parking and child reconstruction a closed worker set without yet acknowledging proof bit 6";
     }
   ];
   catalogOnlyCapabilities = [
