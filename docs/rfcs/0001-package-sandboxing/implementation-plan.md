@@ -449,11 +449,12 @@ the prior generation's units.
 - [x] **Root = volatile per-service overlay via `RootDirectory=`** (D5/D6): the
       authenticated payload is an ordinary immutable closure member, inheriting
       NAR hashing + the registry tag-signature chain + gc-rooting. A generated
-      host-side `aos-pkg-<package>-roots.service` unit mounts that payload as the
+      host-side `aos-pkg-<package>-service-roots.service` unit mounts that payload as the
       lower layer with `aos-service-root prepare` and creates distinct `upper`,
       `work`, and `merged` directories below
       `/run/aos/service-roots/<package>/<unit>` before each workload. This needs
-      no image build, loop device, or udev ordering, and systemd-created mount
+      only the exact `CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN` helper capability
+      set, no image build, loop device, or udev ordering, and systemd-created mount
       targets never mutate the store. Bake k3s and other infrastructure; fetch
       workloads (the standing default). Install and upgrade root the payload
       and `expose.images`; the lifecycle VM asserts the active payload identity

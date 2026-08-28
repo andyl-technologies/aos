@@ -139,10 +139,12 @@ to podman-systemd (quadlet) or per-unit hardening. The landing (Decision 17):
 a package genuinely needs an init tree. The default confined non-verity root is
 a **per-service volatile overlay under `/run`**, with the authenticated package
 store path as its immutable lower layer. The host-side
-`aos-pkg-<package>-roots.service` preparation unit invokes
+`aos-pkg-<package>-service-roots.service` preparation unit invokes
 `aos-service-root prepare` to create
 `/run/aos/service-roots/<package>/<unit>/{upper,work,merged}` and completes
-before the workload; `RootDirectory=` names the merged path. This needs no
+before the workload; `RootDirectory=` names the merged path. The trusted helper
+is bounded to `CAP_DAC_OVERRIDE`, `CAP_MKNOD`, and `CAP_SYS_ADMIN`, the minimal
+set required for OverlayFS's private work directory, whiteouts, and mount. This needs no
 image build, loop device, or udev ordering and prevents systemd mount-point
 preparation from writing into the store. The signed-verity **`RootImage=` path
 is now IN SCOPE**: the
