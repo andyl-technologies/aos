@@ -15,7 +15,7 @@ use crate::qmp::{QmpCommandKind, QmpError};
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 6;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 7;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
@@ -37,7 +37,7 @@ pub enum QmpHotForkTemplateOutcome {
 }
 
 /// Exact state returned by QEMU's retained template-preparation coordinator.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QmpHotForkTemplateState {
     generation: u64,
     outcome: QmpHotForkTemplateOutcome,
@@ -55,73 +55,73 @@ pub struct QmpHotForkTemplateState {
 impl QmpHotForkTemplateState {
     /// Returns the process-local transaction generation.
     #[must_use]
-    pub const fn generation(self) -> u64 {
+    pub const fn generation(&self) -> u64 {
         self.generation
     }
 
     /// Returns the exact result of the requested coordinator operation.
     #[must_use]
-    pub const fn outcome(self) -> QmpHotForkTemplateOutcome {
+    pub const fn outcome(&self) -> QmpHotForkTemplateOutcome {
         self.outcome
     }
 
     /// Returns whether QEMU still owns acquired subsystem-barrier state.
     #[must_use]
-    pub const fn transaction_active(self) -> bool {
+    pub const fn transaction_active(&self) -> bool {
         self.transaction_active
     }
 
     /// Returns the exact currently acknowledged proof bitmap.
     #[must_use]
-    pub const fn acknowledged_proofs(self) -> u64 {
+    pub const fn acknowledged_proofs(&self) -> u64 {
         self.acknowledged_proofs
     }
 
     /// Returns whether this retained transaction acknowledges one proof.
     #[must_use]
-    pub const fn acknowledges(self, proof: QmpHotForkProof) -> bool {
+    pub const fn acknowledges(&self, proof: QmpHotForkProof) -> bool {
         self.acknowledged_proofs & proof.mask() != 0
     }
 
     /// Returns the exact required proof bits QEMU could not acknowledge.
     #[must_use]
-    pub const fn missing_proofs(self) -> u64 {
+    pub const fn missing_proofs(&self) -> u64 {
         self.missing_proofs
     }
 
     /// Returns the plugin callback barrier after the operation and any rollback.
     #[must_use]
-    pub const fn plugin_barrier(self) -> QmpHotForkPluginBarrierState {
+    pub const fn plugin_barrier(&self) -> QmpHotForkPluginBarrierState {
         self.plugin_barrier
     }
 
     /// Returns the retained RCU admission/drain barrier state.
     #[must_use]
-    pub const fn rcu_barrier(self) -> QmpHotForkRcuBarrierState {
+    pub const fn rcu_barrier(&self) -> QmpHotForkRcuBarrierState {
         self.rcu_barrier
     }
 
     /// Returns the retained asynchronous-source barrier state.
     #[must_use]
-    pub const fn bh_timer_barrier(self) -> QmpHotForkBhTimerBarrierState {
+    pub const fn bh_timer_barrier(&self) -> QmpHotForkBhTimerBarrierState {
         self.bh_timer_barrier
     }
 
     /// Returns the retained block-graph writer and native drain state.
     #[must_use]
-    pub const fn block_barrier(self) -> QmpHotForkBlockBarrierState {
-        self.block_barrier
+    pub const fn block_barrier(&self) -> &QmpHotForkBlockBarrierState {
+        &self.block_barrier
     }
 
     /// Returns whether QEMU attests that no transaction barrier remains acquired.
     #[must_use]
-    pub const fn rollback_complete(self) -> bool {
+    pub const fn rollback_complete(&self) -> bool {
         self.rollback_complete
     }
 
     /// Returns whether every proof is present in one retained prepared transaction.
     #[must_use]
-    pub const fn ready(self) -> bool {
+    pub const fn ready(&self) -> bool {
         self.ready
     }
 }
@@ -213,7 +213,6 @@ pub(crate) fn parse_hot_fork_template_state(
     let proofs_valid = schema_version == u64::from(QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION)
         && required_proofs == QMP_HOT_FORK_REQUIRED_PROOFS
         && acknowledged_proofs & !required_proofs == 0
-        && acknowledged_proofs & QMP_HOT_FORK_BLOCK_PROOF == 0
         && missing_proofs == required_proofs & !acknowledged_proofs;
     let expected_ready = outcome == QmpHotForkTemplateOutcome::Prepared
         && transaction_active
@@ -221,23 +220,28 @@ pub(crate) fn parse_hot_fork_template_state(
         && rcu_barrier.quiescent()
         && bh_timer_barrier.quiescent()
         && block_barrier.quiescent()
+        && block_barrier.snapshot_complete()
         && missing_proofs == 0;
     let expected_rollback = !transaction_active
         && !plugin_barrier.held()
         && !rcu_barrier.held()
         && !bh_timer_barrier.held()
-        && !block_barrier.held();
+        && !block_barrier.held()
+        && !block_barrier.snapshot_bound();
     let rcu_proof_valid = (acknowledged_proofs & QMP_HOT_FORK_RCU_PROOF != 0)
         == (transaction_active && rcu_barrier.quiescent());
     let aio_proof_valid = (acknowledged_proofs & QMP_HOT_FORK_AIO_PROOF != 0)
         == (transaction_active && bh_timer_barrier.quiescent());
+    let block_proof_valid = (acknowledged_proofs & QMP_HOT_FORK_BLOCK_PROOF != 0)
+        == (transaction_active && block_barrier.snapshot_complete());
     let ordinary_barriers_unheld =
         !plugin_barrier.held() && !rcu_barrier.held() && !bh_timer_barrier.held();
     let all_barriers_held = plugin_barrier.held()
         && !plugin_barrier.teardown_closed()
         && rcu_barrier.held()
         && bh_timer_barrier.held()
-        && block_barrier.held();
+        && block_barrier.held()
+        && block_barrier.snapshot_complete();
     let shape_valid = match outcome {
         QmpHotForkTemplateOutcome::Idle => {
             !transaction_active
@@ -270,6 +274,7 @@ pub(crate) fn parse_hot_fork_template_state(
                 && rcu_barrier.quiescent()
                 && bh_timer_barrier.quiescent()
                 && block_barrier.quiescent()
+                && block_barrier.snapshot_complete()
                 && ready
         }
         QmpHotForkTemplateOutcome::Aborted => {
@@ -286,6 +291,7 @@ pub(crate) fn parse_hot_fork_template_state(
         || rollback_complete != expected_rollback
         || !rcu_proof_valid
         || !aio_proof_valid
+        || !block_proof_valid
         || !shape_valid
     {
         return Err(malformed());

@@ -32,10 +32,11 @@ pub use hot_fork::{
     QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND, QMP_HOT_FORK_BH_TIMER_BARRIER_SCHEMA_VERSION,
     QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_MAX, QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_BLOCK_BACKEND_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
-    QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX,
-    QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES,
-    QMP_HOT_FORK_MUTEX_INVENTORY_MAX, QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION,
+    QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES,
+    QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION,
+    QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES, QMP_HOT_FORK_MUTEX_INVENTORY_MAX,
+    QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
+    QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION,
     QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
     QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_RCU_INVENTORY_MAX,
     QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_READINESS_SCHEMA_VERSION,
@@ -51,12 +52,13 @@ pub use hot_fork::{
     QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QmpHotForkAioContext, QmpHotForkAioHandler,
     QmpHotForkAioHandlerInventory, QmpHotForkAioInventory, QmpHotForkBhTimerBarrierState,
     QmpHotForkBlockBackend, QmpHotForkBlockBackendInventory, QmpHotForkBlockBarrierState,
-    QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory, QmpHotForkMutex, QmpHotForkMutexInventory,
-    QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory, QmpHotForkProof,
-    QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
-    QmpHotForkTemplateOutcome, QmpHotForkTemplateState, QmpHotForkThread,
-    QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock,
-    QmpHotForkTimerInventory,
+    QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
+    QmpHotForkBlockSnapshotRoot, QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory,
+    QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkPluginBarrierState,
+    QmpHotForkPluginResourceInventory, QmpHotForkProof, QmpHotForkRcuBarrierState,
+    QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness, QmpHotForkTemplateOutcome,
+    QmpHotForkTemplateState, QmpHotForkThread, QmpHotForkThreadDisposition,
+    QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock, QmpHotForkTimerInventory,
 };
 use hot_fork::{
     parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,
@@ -772,8 +774,14 @@ where
     /// subsystem barrier cannot be acquired or rolled back, another owner holds
     /// the plugin barrier, or the response violates the closed transaction
     /// schema and state relationships.
-    pub fn prepare_hot_fork_template(&mut self) -> Result<QmpHotForkTemplateState, QmpError> {
-        self.hot_fork_template(HotForkTemplateAction::Prepare)
+    pub fn prepare_hot_fork_template(
+        &mut self,
+        block_snapshot_bindings: &[QmpHotForkBlockSnapshotBinding],
+    ) -> Result<QmpHotForkTemplateState, QmpError> {
+        self.hot_fork_template(
+            HotForkTemplateAction::Prepare,
+            Some(block_snapshot_bindings),
+        )
     }
 
     /// Observes QEMU's retained hot-fork template transaction.
@@ -783,7 +791,7 @@ where
     /// Returns [`QmpError`] when the exchange fails, coordinator ownership was
     /// lost, or the response violates the closed transaction schema.
     pub fn query_hot_fork_template(&mut self) -> Result<QmpHotForkTemplateState, QmpError> {
-        self.hot_fork_template(HotForkTemplateAction::Query)
+        self.hot_fork_template(HotForkTemplateAction::Query, None)
     }
 
     /// Aborts QEMU's retained hot-fork template transaction.
@@ -794,14 +802,18 @@ where
     /// the response violates the closed transaction schema and abort
     /// postcondition.
     pub fn abort_hot_fork_template(&mut self) -> Result<QmpHotForkTemplateState, QmpError> {
-        self.hot_fork_template(HotForkTemplateAction::Abort)
+        self.hot_fork_template(HotForkTemplateAction::Abort, None)
     }
 
     fn hot_fork_template(
         &mut self,
         action: HotForkTemplateAction,
+        block_snapshot_bindings: Option<&[QmpHotForkBlockSnapshotBinding]>,
     ) -> Result<QmpHotForkTemplateState, QmpError> {
-        let response = self.send_command_return(QmpCommand::HotForkTemplate { action })?;
+        let response = self.send_command_return(QmpCommand::HotForkTemplate {
+            action,
+            block_snapshot_bindings,
+        })?;
         let state = parse_hot_fork_template_state(&response.value)?;
         let postcondition_holds = match action {
             HotForkTemplateAction::Prepare => matches!(
@@ -1667,6 +1679,7 @@ enum QmpCommand<'a> {
     },
     HotForkTemplate {
         action: HotForkTemplateAction,
+        block_snapshot_bindings: Option<&'a [QmpHotForkBlockSnapshotBinding]>,
     },
     QueryHotForkBottomHalfInventory,
     QueryHotForkMutexInventory,
@@ -1813,12 +1826,31 @@ impl QmpCommand<'_> {
                     "action": action.wire_name(),
                 },
             }),
-            Self::HotForkTemplate { action } => json!({
-                "exec-oob": QMP_HOT_FORK_TEMPLATE_COMMAND,
-                "arguments": {
-                    "action": action.wire_name(),
-                },
-            }),
+            Self::HotForkTemplate {
+                action,
+                block_snapshot_bindings,
+            } => {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(
+                    String::from("action"),
+                    Value::String(action.wire_name().to_owned()),
+                );
+                if let Some(bindings) = block_snapshot_bindings {
+                    arguments.insert(
+                        String::from("block-snapshot-bindings"),
+                        Value::Array(
+                            bindings
+                                .iter()
+                                .map(QmpHotForkBlockSnapshotBinding::wire_value)
+                                .collect(),
+                        ),
+                    );
+                }
+                json!({
+                    "exec-oob": QMP_HOT_FORK_TEMPLATE_COMMAND,
+                    "arguments": Value::Object(arguments),
+                })
+            }
             Self::QueryHotForkBottomHalfInventory => json!({
                 "exec-oob": QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND,
             }),

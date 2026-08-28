@@ -8,11 +8,11 @@ use crucible::Checkpoint;
 use super::{
     QmpClient, QmpCommandComplete, QmpError, QmpHotForkAioHandlerInventory, QmpHotForkAioInventory,
     QmpHotForkBhTimerBarrierState, QmpHotForkBlockBackendInventory, QmpHotForkBlockBarrierState,
-    QmpHotForkBottomHalfInventory, QmpHotForkMutexInventory, QmpHotForkPluginBarrierState,
-    QmpHotForkPluginResourceInventory, QmpHotForkRcuBarrierState, QmpHotForkRcuInventory,
-    QmpHotForkReadiness, QmpHotForkTemplateState, QmpHotForkThreadInventory,
-    QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind,
-    QmpSnapshotTag, QmpTimeoutStream,
+    QmpHotForkBlockSnapshotBinding, QmpHotForkBottomHalfInventory, QmpHotForkMutexInventory,
+    QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory, QmpHotForkRcuBarrierState,
+    QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkTemplateState,
+    QmpHotForkThreadInventory, QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy,
+    QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use crate::{
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
@@ -402,9 +402,10 @@ where
     /// transaction schema.
     pub fn prepare_hot_fork_template(
         &mut self,
+        block_snapshot_bindings: &[QmpHotForkBlockSnapshotBinding],
     ) -> Result<QmpHotForkTemplateState, QemuNodeChannelError> {
         self.client
-            .prepare_hot_fork_template()
+            .prepare_hot_fork_template(block_snapshot_bindings)
             .map_err(QemuNodeChannelError::from)
     }
 

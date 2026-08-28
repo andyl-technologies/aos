@@ -23,7 +23,9 @@ pub use bh_timer_barrier::{
 pub(crate) use block_barrier::parse_hot_fork_block_barrier_state;
 pub use block_barrier::{
     QMP_HOT_FORK_BLOCK_BARRIER_COMMAND, QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION,
-    QmpHotForkBlockBarrierState,
+    QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES, QmpHotForkBlockBarrierState,
+    QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
+    QmpHotForkBlockSnapshotRoot,
 };
 pub use plugin::{QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory};
 pub(super) use plugin::{

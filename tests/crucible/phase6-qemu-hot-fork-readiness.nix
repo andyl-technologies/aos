@@ -608,9 +608,17 @@ in
               "quiescent",
               "rooted-backends",
               "schema-version",
-              "writable-backends"
+              "snapshot-backend-generation",
+              "snapshot-bound",
+              "snapshot-complete",
+              "snapshot-generation",
+              "snapshot-graph-mutation-generation",
+              "snapshot-owner-thread-id",
+              "snapshot-roots",
+              "writable-backends",
+              "writable-rooted-backends"
             ] and
-            $report."schema-version" == 2 and
+            $report."schema-version" == 3 and
             $report.generation == 0 and
             $report."owner-thread-id" == 0 and
             ($report."graph-barrier-generation" | type) == "number" and
@@ -622,10 +630,20 @@ in
             $report."graph-writer-active" == false and
             $report."graph-waiting-writers" == 0 and
             $report."graph-stable" == false and
+            $report."snapshot-generation" == 0 and
+            $report."snapshot-backend-generation" == 0 and
+            $report."snapshot-graph-mutation-generation" == 0 and
+            $report."snapshot-owner-thread-id" == 0 and
+            $report."snapshot-bound" == false and
+            $report."snapshot-complete" == false and
+            $report."snapshot-roots" == [] and
             $report.complete == true and
             $report."backend-count" == $inventory_report."backend-count" and
             $report."rooted-backends" == $inventory_report."rooted-backends" and
             $report."writable-backends" == $inventory_report."writable-backends" and
+            $report."writable-rooted-backends" ==
+              ([ $inventory_report.backends[] |
+                 select(."root-present" and ."write-permission") ] | length) and
             $report."quiesced-rooted-backends" >= 0 and
             $report."quiesced-rooted-backends" <= $report."rooted-backends" and
             $report."in-flight" == $inventory_report."in-flight" and
@@ -910,7 +928,7 @@ in
               "schema-version",
               "transaction-active"
             ] and
-            $report."schema-version" == 6 and
+            $report."schema-version" == 7 and
             $report.generation == 0 and
             $report.outcome == "idle" and
             $report."transaction-active" == false and
@@ -939,7 +957,7 @@ in
           ' "$out/template-coordinator-query.json" >/dev/null \
             || { cat "$out/template-coordinator-query.json" >&2; fail "QEMU template coordinator idle state was not exact and stable"; }
           qmp "$patched_socket" \
-            '{"exec-oob":"crucible-hot-fork-template","arguments":{"action":"prepare"}}' \
+            '{"exec-oob":"crucible-hot-fork-template","arguments":{"action":"prepare","block-snapshot-bindings":[]}}' \
             "$out/template-coordinator-prepare.json"
           jq -e -s 'any(.[]; has("error"))' "$out/template-coordinator-prepare.json" >/dev/null \
             || { cat "$out/template-coordinator-prepare.json" >&2; fail "QEMU prepared a hot-fork template outside the exact boundary"; }
@@ -1196,7 +1214,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0131-crucible-hot-fork-block-graph-barrier.patch
+          patch=0132-crucible-bind-hot-fork-block-snapshot-roots.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -1235,12 +1253,13 @@ in
           block_backend_inventory_stable=true
           block_backends_context_bound=true
           block_backends_vmstate_observed=true
-          block_barrier_schema_version=2
+          block_barrier_schema_version=3
           block_barrier_released_stable=true
           block_barrier_hold_without_exact_boundary_rejected=true
           block_graph_writer_admission_retained=true
           block_graph_generation_bound=true
           block_snapshot_proof_acknowledged=false
+          block_snapshot_binding_argument_bound=true
           block_barrier_template_bound=true
           plugin_resource_inventory_schema_version=1
           plugin_resource_inventory_stable=true
@@ -1250,7 +1269,7 @@ in
           plugin_barrier_unregistered_shape=true
           plugin_barrier_release_unregistered_rejected=true
           plugin_ring_proof_acknowledged=false
-          template_coordinator_schema_version=6
+          template_coordinator_schema_version=7
           template_coordinator_idle_stable=true
           template_coordinator_unregistered_shape=true
           template_prepare_without_exact_boundary_rejected=true

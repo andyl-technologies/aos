@@ -2121,6 +2121,37 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   coordinator therefore still rolls back as blocked.
 - **Risk:** F.
 
+### crucible-hot-fork-block-snapshot-roots — bind immutable writable roots
+
+- **Patch:** `0132-crucible-bind-hot-fork-block-snapshot-roots.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** while the version-3 native block drain and graph-writer
+  barriers are retained and quiescent, the version-7 template coordinator
+  binds every writable rooted backend to an exact guest-allocation-empty active
+  overlay whose immediate backing node is read-only. The Apache host supplies
+  an already-authenticated lowercase BLAKE3 content ID; QEMU binds it to exact
+  backend and node names, process-local backend identity, virtual size, backend
+  generation, captured graph-mutation generation, and coordinator owner. The
+  complete sorted binding is retained by value and revalidated on every query.
+  An active transaction acknowledges block-snapshot proof bit 5 exactly while
+  that binding remains complete.
+- **Micro-test:** the native block unit test builds a real qcow2 snapshot plus
+  empty active overlay, names and opens the graph edge under one writable
+  backend, retains the block barrier, binds the exact root, and requires release
+  to clear the binding. Strict Rust construction and decoding enforce the same
+  identifier, hash, count, generation, owner, ordering, empty-overlay, and
+  read-only relationships. The live gate uses a real snapshot/overlay pair and
+  requires proof bit 5 only while the retained transaction reports the exact
+  bound root.
+- **Inertness:** ordinary QEMU block creation and execution are unchanged.
+  Binding is reachable only through an authorized template prepare at the
+  exact paused/device-flush boundary after native drain and graph-writer
+  exclusion become quiescent. The patch neither creates snapshot bytes nor
+  reconstructs child descriptors, block graphs, or branch-private overlays;
+  proof bits 7 and 8 remain clear, the coordinator rolls back as blocked, and
+  no process fork is authorized.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
