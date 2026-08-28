@@ -13,6 +13,7 @@ mod packaged_executor;
 use packaged_executor::prepare_cli_packaged_executor;
 
 use super::cli_campaign_import::apply_campaign_import_manifests;
+use super::cli_campaign_store::load_campaign_repository_store;
 
 pub(super) async fn run_control_client_verify_workflow_async<C>(
     client: &C,
@@ -1107,9 +1108,11 @@ pub(super) fn open_local_campaign_service(
                 serve_error(format!("campaign service configuration error: {error}"))
             })?;
     }
-    let prepared = config
-        .prepare()
-        .map_err(|error| serve_error(format!("campaign service bootstrap error: {error}")))?;
+    let prepared = match args.campaign_store.as_deref() {
+        Some(path) => config.prepare_with_store(load_campaign_repository_store(path)?),
+        None => config.prepare(),
+    }
+    .map_err(|error| serve_error(format!("campaign service bootstrap error: {error}")))?;
     let runtime_control_planner = if args.campaign_component_authority.is_some() && !args.read_only
     {
         Some(

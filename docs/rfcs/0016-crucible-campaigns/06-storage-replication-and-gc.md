@@ -576,6 +576,88 @@ routes but must define unambiguous read, write, durability, promotion, and
 eviction behavior for every admitted object kind. A write-back layer is valid
 only with a durable transfer journal whose protected roots participate in GC.
 
+`crucible serve --campaign-store PATH` loads the registered
+`crucible.campaign-repository-store` version-one TOML deployment. The file is
+an absolute, lexically normalized, exact-owner mode-`0600` regular file of at
+most 256 KiB; unknown fields and other schema versions fail closed. Its closed
+top-level fields are:
+
+```toml
+schema = "crucible.campaign-repository-store"
+version = 1
+root = "profile"
+admitted_kinds = [
+  "campaign-fact", "campaign-snapshot", "merkle-node", "scenario",
+  "configuration", "policy", "exact-manifest", "ram-extent",
+  "disk-extent", "device-state", "observation", "finding", "projection",
+  "trace",
+]
+ref_directory = "/var/lib/crucible/campaign-refs"
+physical_quota_policies = []
+
+[[keys]]
+id = "campaign-key-2026"
+path = "/etc/crucible/campaign-store-key.bin"
+
+[[namespaces]]
+id = "campaign/local"
+operations = ["contains", "read", "put"]
+object_kinds = [
+  "campaign-fact", "campaign-snapshot", "merkle-node", "scenario",
+  "configuration", "policy", "exact-manifest", "ram-extent",
+  "disk-extent", "device-state", "observation", "finding", "projection",
+  "trace",
+]
+
+[[nodes]]
+id = "leaf"
+[nodes.spec]
+kind = "encrypted-directory"
+root = "/var/lib/crucible/campaign-objects"
+maximum_logical_object_bytes = 67108864
+key_id = "campaign-key-2026"
+
+[[nodes]]
+id = "profile"
+[nodes.spec]
+kind = "profile-validated"
+child = "leaf"
+policy = "crucible.campaign.object-profile.v1"
+```
+
+`admitted_kinds` MUST contain every listed campaign kind exactly once so a
+successful startup cannot defer an unsupported repository operation until
+later. `nodes` uses a unique `id` plus one closed `[nodes.spec]` variant. Version
+one admits `directory`, `compressed-directory`, `encrypted-directory`,
+`compressed-encrypted-directory`, `packed`, `verified`, `routed`, `tiered`,
+`read-through`, `write-through`, `write-back`, `durability-policy`, `metrics`,
+`logical-quota`, `physical-quota`, `namespaced`, and `profile-validated` with
+the same fields and bounds as `StoreNodeSpec`. `routes` and durability
+`requirements` are string-keyed TOML tables using the stable `ObjectKind`
+spellings. Every child is a node-ID string. The graph validator still rejects
+cycles, missing/unreachable nodes, incomplete routes or durability maps,
+invalid tier/write policies, and unsafe capability placement.
+
+Every physical, journal, quota-state, and ref path is absolute, normalized,
+already present, exact effective UID/GID owned, and not group/other writable.
+Each `keys` entry names an exact 32-byte, nonzero, exact-owner mode-`0600` key
+file; bytes remain outside graph identity and key mismatch fails on the first
+authenticated leaf operation after restart. Each `namespaces` entry grants
+exactly `contains`, `read`, and `put`, each once, across the complete 14-kind
+campaign object profile shown above. The resulting static policy is resolved
+outside graph identity. A
+`profile-validated` node can resolve the built-in canonical campaign profile;
+other policy IDs fail closed. Each listed physical-quota policy resolves the
+safe Linux ext4 binder, which independently authenticates the node's project
+assignment and hard limits. The separate ref directory constructs the durable
+conditional directory backend and never enters the immutable graph.
+
+Memory and S3 nodes are deliberately absent from version one: memory cannot
+satisfy durable daemon admission, while S3 requires an async credential/client
+lifecycle, strong-CAS evidence for remote refs, and retained maintenance
+authority. Adding those is a schema-versioned extension rather than an
+unrecognized field or a credential embedded in canonical graph identity.
+
 The first write-back layer requires durable streaming staging and destination
 children. A put authenticates its complete source, publishes the staging child,
 and appends a checksummed pending record to the durable

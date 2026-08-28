@@ -1502,10 +1502,14 @@ cleans its unique prefix after success. This completes T-CAM-5.7's backend and
 fault-conformance implementation. The managed local daemon now also accepts a
 consumed durable immutable/ref store capability: it checks both halves before
 locking state, retains the same exact-owner lifecycle without creating default
-leaf directories, and restarts over a reconstructed composed graph. The default
-CLI profile remains directory-backed; strict public S3/graph deployment-file
-parsing, a hermetic service fixture, and the realistic operator flight remain
-open under Phase 5 and T-CAM-5.8.
+leaf directories, and restarts over a reconstructed composed graph. The CLI's
+strict version-one repository-store deployment now exposes the complete local
+graph vocabulary, protected encryption-key files, static namespace policy,
+campaign object profiling, Linux physical-quota binding, and a separate durable
+ref directory. Its exact-kind, unknown-field, permission, no-default-leaf, and
+wrong-key restart regressions are executable. S3/remote-ref client ownership,
+retained graph-maintenance authority, a hermetic service fixture, and the
+realistic operator flight remain open under Phase 5 and T-CAM-5.8.
 Broader layered transforms remain open;
 therefore T-CAM-5.5 is not checked by this checkpoint.
 
