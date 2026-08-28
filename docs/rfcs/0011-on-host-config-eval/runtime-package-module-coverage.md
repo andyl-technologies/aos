@@ -17,7 +17,7 @@ upstream distribution includes a daemon.
 - [x] k3s worker, control-plane, and combined roles
 - [x] AOS registry server
 - [x] containerd standalone role
-- [ ] kubelet standalone role
+- [x] kubelet standalone role classified as subordinate rather than exposed
 - [x] etcd
 - [x] PostgreSQL
 - [x] MariaDB
@@ -35,11 +35,11 @@ validation, documentation, and focused lifecycle coverage.
 
 ## Composable integration packages
 
-- [ ] Shared versioned Kubernetes resource/addon interface
-- [ ] Cilium integration package
-- [ ] Longhorn integration package spanning manager, engine, and instance
+- [x] Shared versioned Kubernetes resource/addon interface
+- [x] Cilium integration package
+- [x] Longhorn integration package spanning manager, engine, and instance
       manager
-- [ ] Concrete nginx site/profile contributor acceptance coverage
+- [x] Concrete nginx site/profile contributor acceptance coverage
 
 Integration packages own their package-prefixed roots and may write only to an
 owner-advertised contribution surface. They never enable the owning service or
@@ -67,9 +67,12 @@ unit overrides.
 ## Intentionally static or subordinate payloads
 
 No singleton package module is added for CLIs, libraries, build helpers,
-security helpers, QEMU, Firecracker, swtpm, Crucible, runc, CNI binaries, or the
-raw k3s payload. Those are invoked by an owning service, orchestration resource,
-or existing system module.
+security helpers, QEMU, Firecracker, swtpm, Crucible, runc, CNI binaries, the
+raw k3s payload, or the standalone kubelet binary. Those are invoked by an
+owning service, orchestration resource, or existing system module. Kubernetes
+node lifecycle is owned by the typed k3s roles or EdgeCore; exposing the same
+kubelet payload as a second independently enabled node agent would create
+competing CRI, cgroup, pod-state, and node-registration authorities.
 
 ## Acceptance baseline
 

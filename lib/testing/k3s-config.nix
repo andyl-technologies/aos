@@ -7,6 +7,7 @@
     package,
     name,
     host,
+    additionalPackageModules ? [],
   }:
     lib.evalModules {
       modules = [
@@ -24,28 +25,72 @@
         }
       ];
       operatorModules = [host];
-      packageModules = [
-        {
-          inherit name;
-          authorization = {
-            owns = ["k3s"];
-            contributes = {};
-          };
-          configRoot = ../../pkgs/kubernetes/_k3s-config;
-          module = ../../pkgs/kubernetes/_k3s-config/module.nix;
-          outputs = {
-            self = builtins.toString package;
-            dependencies = {};
-          };
-        }
-      ];
+      packageModules =
+        [
+          {
+            inherit name;
+            authorization = {
+              owns = ["k3s"];
+              contributes = {};
+            };
+            configRoot = ../../pkgs/kubernetes/_k3s-config;
+            module = ../../pkgs/kubernetes/_k3s-config/module.nix;
+            outputs = {
+              self = builtins.toString package;
+              dependencies = {};
+            };
+          }
+        ]
+        ++ additionalPackageModules;
     };
 
   token = {ref = "system-credential:k3s-token";};
   worker = evaluateRole {
     package = pkgs.k3s-worker;
     name = "k3s-worker";
+    additionalPackageModules = [
+      {
+        name = "cilium";
+        authorization = {
+          owns = ["cilium"];
+          contributes.k3s = [
+            "integrations.cni.cilium"
+            "integrations.resources.cilium"
+          ];
+        };
+        configRoot = ../../pkgs/kubernetes/_cilium-config;
+        module = ../../pkgs/kubernetes/_cilium-config/module.nix;
+        outputs = {
+          self = builtins.toString pkgs.cilium;
+          dependencies = {};
+        };
+      }
+      {
+        name = "longhorn-manager";
+        authorization = {
+          owns = ["longhorn"];
+          contributes.k3s = [
+            "integrations.csi.longhorn"
+            "integrations.resources.longhorn"
+          ];
+        };
+        configRoot = ../../pkgs/storage/_longhorn-config;
+        module = ../../pkgs/storage/_longhorn-config/module.nix;
+        outputs = {
+          self = builtins.toString pkgs.longhorn-manager;
+          dependencies = {
+            longhorn-engine = builtins.toString pkgs.longhorn-engine;
+            longhorn-instance-manager = builtins.toString pkgs.longhorn-instance-manager;
+          };
+        };
+      }
+    ];
     host = {
+      cilium.enable = true;
+      longhorn = {
+        enable = true;
+        defaultReplicaCount = 2;
+      };
       k3s = {
         enable = true;
         serverUrl = "https://server.example:6443";
@@ -53,14 +98,6 @@
         node = {
           name = "worker-1";
           labels."node-role.kubernetes.io/worker" = "true";
-        };
-        integrations = {
-          cni.cilium = {
-            disableFlannel = true;
-            disableNetworkPolicy = true;
-            disableKubeProxy = true;
-          };
-          csi.local.nodeLabels."storage.aos.io/local" = "true";
         };
       };
     };
@@ -98,6 +135,7 @@
   allAssertionsHold = evaluated:
     builtins.all (assertion: assertion.assertion) evaluated.assertions;
   workerEnv = worker.config."k3s-worker".config.env;
+  workerAddons = worker.config."k3s-worker".config.addons;
   controlPlaneEnv = controlPlane.config."k3s-control-plane".config.env;
   combinedEnv = combined.config."k3s-combined".config.env;
 
@@ -127,8 +165,19 @@
       message = "external CNI may disable kube-proxy";
     }
     {
-      assertion = lib.hasInfix "storage.aos.io/local=true" workerEnv.K3S_NODE_LABEL;
+      assertion = lib.hasInfix "node.longhorn.io/create-default-disk=true" workerEnv.K3S_NODE_LABEL;
       message = "CSI integration labels must compose with operator labels";
+    }
+    {
+      assertion =
+        workerAddons.schema
+        == "aos.kubernetes-resources/v1"
+        && builtins.length workerAddons.resources == 2
+        && (builtins.head workerAddons.resources).name == "cilium"
+        && (builtins.elemAt workerAddons.resources 1).name == "longhorn"
+        && lib.hasInfix "version: 1.17.3" (builtins.head workerAddons.resources).content
+        && lib.hasInfix "version: 1.8.1" (builtins.elemAt workerAddons.resources 1).content;
+      message = "Kubernetes resource contributions must render in a versioned deterministic bundle";
     }
     {
       assertion = worker.config."k3s-worker".credentials.token.ref == token.ref;
@@ -188,6 +237,8 @@ in
           for expose in "$workerExpose" "$controlPlaneExpose" "$combinedExpose"; do
             test -f "$expose/manifest.json"
             grep -q '"path":"/etc/aos/packages/k3s-' "$expose/manifest.json"
+            grep -q '"name":"addons"' "$expose/manifest.json"
+            grep -q '"required":\["resources","schema"\]' "$expose/manifest.json"
             grep -q '"name":"token"' "$expose/manifest.json"
             grep -q '"source":"/run/credstore/k3s-[^"]*/token"' "$expose/manifest.json"
             grep -q '"encrypted":false' "$expose/manifest.json"
