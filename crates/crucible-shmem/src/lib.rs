@@ -81,7 +81,8 @@
 //! ```text
 //! offset  size  field
 //! 0       8     read_idx
-//! 8       56    read-cacheline padding
+//! 8       8     consumer_state
+//! 16      48    read-cacheline padding
 //! 64      8     write_idx
 //! 72      8     producer_state
 //! 80      48    write-cacheline padding
@@ -162,7 +163,7 @@ pub use mapped_setup_region::{
     MappedFaultResultTransportMut, MappedGuestIntrospectionConsumerRingMut,
     MappedGuestIntrospectionProducerRingMut, MappedHostAcceleratorRingsMut,
     MappedHostGuestIntrospectionRingsMut, MappedNodeRingPairMut, MappedPluginAcceleratorRingsMut,
-    MappedPluginGuestIntrospectionRingsMut, MappedRingProducerBarrierSnapshot,
+    MappedPluginGuestIntrospectionRingsMut, MappedRingIoBarrierSnapshot,
     MappedSelectableReplyRingMut, MappedSetupRegion, MappedSetupRegionAccessError,
     MappedWhiteboxMarkerRingMut, SetupRegionMapError, mmap_setup_region,
 };
@@ -197,7 +198,10 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// canonical backpressure-retention state.
 /// Version 18 appends one single-entry host-to-plugin selectable-reply ring per
 /// logical VM without changing any prior section offset.
-pub const ABI_VERSION: u32 = 19;
+/// Version 19 assigns producer cache-line padding to reversible hot-fork
+/// producer admission. Version 20 assigns consumer cache-line padding to the
+/// matching reversible consumer admission barrier.
+pub const ABI_VERSION: u32 = 20;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///

@@ -958,6 +958,13 @@
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "the version-3 plugin barrier reports the sealed worker mask, exact parked worker classes, and bounded operations admitted before the hold, and requires every worker to park before subsystem quiescence without yet cloning queued work or acknowledging proof bit 6";
     }
+    {
+      file = "0138-crucible-drain-hot-fork-ring-consumers.patch";
+      catalogName = "crucible-hot-fork-ring-consumer-barrier";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "the version-4 plugin barrier reports shared-ring consumers admitted before the hold and requires every producer and consumer to drain before subsystem quiescence without yet cloning queued bytes or acknowledging proof bit 6";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

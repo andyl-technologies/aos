@@ -1,23 +1,24 @@
-//! Aggregate hot-fork producer admission for every mapped shared-memory ring.
+//! Aggregate hot-fork producer and consumer admission for mapped rings.
 
 use super::*;
 
-/// Exact aggregate state of every ring producer barrier in one setup region.
+/// Exact aggregate state of every ring I/O barrier in one setup region.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MappedRingProducerBarrierSnapshot {
+pub struct MappedRingIoBarrierSnapshot {
     ring_count: u64,
     held_rings: u64,
     producers_in_flight: u64,
+    consumers_in_flight: u64,
 }
 
-impl MappedRingProducerBarrierSnapshot {
+impl MappedRingIoBarrierSnapshot {
     /// Returns the exact number of ring headers in the validated region layout.
     #[must_use]
     pub const fn ring_count(self) -> u64 {
         self.ring_count
     }
 
-    /// Returns the number of rings whose reversible producer barrier is held.
+    /// Returns the number of rings whose producer and consumer barriers are held.
     #[must_use]
     pub const fn held_rings(self) -> u64 {
         self.held_rings
@@ -29,10 +30,19 @@ impl MappedRingProducerBarrierSnapshot {
         self.producers_in_flight
     }
 
-    /// Returns whether every ring is held and every admitted producer returned.
+    /// Returns the checked aggregate of already-admitted consumer operations.
+    #[must_use]
+    pub const fn consumers_in_flight(self) -> u64 {
+        self.consumers_in_flight
+    }
+
+    /// Returns whether every ring is held and every admitted I/O operation returned.
     #[must_use]
     pub const fn quiescent(self) -> bool {
-        self.ring_count != 0 && self.held_rings == self.ring_count && self.producers_in_flight == 0
+        self.ring_count != 0
+            && self.held_rings == self.ring_count
+            && self.producers_in_flight == 0
+            && self.consumers_in_flight == 0
     }
 }
 
@@ -44,46 +54,46 @@ enum BarrierAction {
 }
 
 impl MappedSetupRegion {
-    /// Holds producer admission for every ring in the validated setup region.
+    /// Holds producer and consumer admission for every validated ring.
     ///
     /// # Errors
     ///
     /// Returns [`MappedSetupRegionAccessError`] when the live header or a ring
     /// segment no longer matches the mapped region's validated ABI geometry.
-    pub fn hold_hot_fork_ring_producers(
+    pub fn hold_hot_fork_ring_io(
         &self,
-    ) -> Result<MappedRingProducerBarrierSnapshot, MappedSetupRegionAccessError> {
-        self.apply_ring_producer_barrier(BarrierAction::Hold)
+    ) -> Result<MappedRingIoBarrierSnapshot, MappedSetupRegionAccessError> {
+        self.apply_ring_io_barrier(BarrierAction::Hold)
     }
 
-    /// Observes producer admission for every ring in the validated setup region.
+    /// Observes producer and consumer admission for every validated ring.
     ///
     /// # Errors
     ///
     /// Returns [`MappedSetupRegionAccessError`] when the live header or a ring
     /// segment no longer matches the mapped region's validated ABI geometry.
-    pub fn hot_fork_ring_producer_snapshot(
+    pub fn hot_fork_ring_io_snapshot(
         &self,
-    ) -> Result<MappedRingProducerBarrierSnapshot, MappedSetupRegionAccessError> {
-        self.apply_ring_producer_barrier(BarrierAction::Query)
+    ) -> Result<MappedRingIoBarrierSnapshot, MappedSetupRegionAccessError> {
+        self.apply_ring_io_barrier(BarrierAction::Query)
     }
 
-    /// Releases producer admission for every ring in the validated setup region.
+    /// Releases consumer and producer admission for every validated ring.
     ///
     /// # Errors
     ///
     /// Returns [`MappedSetupRegionAccessError`] when the live header or a ring
     /// segment no longer matches the mapped region's validated ABI geometry.
-    pub fn release_hot_fork_ring_producers(
+    pub fn release_hot_fork_ring_io(
         &self,
-    ) -> Result<MappedRingProducerBarrierSnapshot, MappedSetupRegionAccessError> {
-        self.apply_ring_producer_barrier(BarrierAction::Release)
+    ) -> Result<MappedRingIoBarrierSnapshot, MappedSetupRegionAccessError> {
+        self.apply_ring_io_barrier(BarrierAction::Release)
     }
 
-    fn apply_ring_producer_barrier(
+    fn apply_ring_io_barrier(
         &self,
         action: BarrierAction,
-    ) -> Result<MappedRingProducerBarrierSnapshot, MappedSetupRegionAccessError> {
+    ) -> Result<MappedRingIoBarrierSnapshot, MappedSetupRegionAccessError> {
         let layout = self
             .layout()
             .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
@@ -107,6 +117,7 @@ impl MappedSetupRegion {
         let mut ring_count = 0_u64;
         let mut held_rings = 0_u64;
         let mut producers_in_flight = 0_u64;
+        let mut consumers_in_flight = 0_u64;
         for &(segment, count, base) in &segments {
             for index in 0..count {
                 let offset = mapped_segment_offset(
@@ -120,23 +131,39 @@ impl MappedSetupRegion {
                 // SAFETY: the complete segment geometry was validated before
                 // any mutation and this immutable borrow uses only atomics.
                 let ring = unsafe { &*self.base_ptr().add(offset).cast::<RingHeader>() };
-                let snapshot = match action {
-                    BarrierAction::Hold => ring.hold_hot_fork_producers(),
-                    BarrierAction::Query => ring.producer_barrier_snapshot(),
-                    BarrierAction::Release => ring.release_hot_fork_producers(),
+                let (producer, consumer) = match action {
+                    BarrierAction::Hold => (
+                        ring.hold_hot_fork_producers(),
+                        ring.hold_hot_fork_consumers(),
+                    ),
+                    BarrierAction::Query => (
+                        ring.producer_barrier_snapshot(),
+                        ring.consumer_barrier_snapshot(),
+                    ),
+                    BarrierAction::Release => {
+                        // Reopen consumers first so already-queued content can
+                        // drain before producers publish new entries.
+                        let consumer = ring.release_hot_fork_consumers();
+                        let producer = ring.release_hot_fork_producers();
+                        (producer, consumer)
+                    }
                 };
                 ring_count += 1;
-                held_rings += u64::from(snapshot.held());
+                held_rings += u64::from(producer.held() && consumer.held());
                 producers_in_flight = producers_in_flight
-                    .checked_add(snapshot.in_flight())
+                    .checked_add(producer.in_flight())
+                    .unwrap_or_else(|| std::process::abort());
+                consumers_in_flight = consumers_in_flight
+                    .checked_add(consumer.in_flight())
                     .unwrap_or_else(|| std::process::abort());
             }
         }
 
-        Ok(MappedRingProducerBarrierSnapshot {
+        Ok(MappedRingIoBarrierSnapshot {
             ring_count,
             held_rings,
             producers_in_flight,
+            consumers_in_flight,
         })
     }
 }

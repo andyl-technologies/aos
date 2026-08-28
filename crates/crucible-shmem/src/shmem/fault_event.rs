@@ -393,8 +393,9 @@ pub fn fault_event_pending(
 ///
 /// # Errors
 ///
-/// Returns [`FaultEventError`] for corrupt transport geometry, cursor state,
-/// slot framing, event headers, or payload authentication.
+/// Returns [`FaultEventError`] when consumer admission is held, or for corrupt
+/// transport geometry, cursor state, slot framing, event headers, or payload
+/// authentication.
 pub fn dequeue_fault_event(
     ring: &RingHeader,
     slots: &mut [FaultEventSlotV1],
@@ -402,6 +403,9 @@ pub fn dequeue_fault_event(
     arena: &[u8],
     arena_region_offset: u64,
 ) -> Result<Option<DequeuedFaultEvent>, FaultEventError> {
+    let _consumer = ring
+        .enter_consumer()
+        .ok_or(FaultTransportError::ConsumerBarrierHeld)?;
     let Some((read, index)) = consumer_ring_slot(ring, slots.len())? else {
         return Ok(None);
     };

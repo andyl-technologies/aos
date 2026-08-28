@@ -2,14 +2,41 @@
 
 use super::*;
 
-const RING_PRODUCER_HELD: u64 = 1_u64 << 63;
-const RING_PRODUCER_COUNT_MASK: u64 = !RING_PRODUCER_HELD;
+const RING_ADMISSION_HELD: u64 = 1_u64 << 63;
+const RING_ADMISSION_COUNT_MASK: u64 = !RING_ADMISSION_HELD;
 
 /// One exact view of a ring's reversible producer-admission barrier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RingProducerBarrierSnapshot {
     held: bool,
     in_flight: u64,
+}
+
+/// One exact view of a ring's reversible consumer-admission barrier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RingConsumerBarrierSnapshot {
+    held: bool,
+    in_flight: u64,
+}
+
+impl RingConsumerBarrierSnapshot {
+    /// Returns whether later consumer operations are rejected.
+    #[must_use]
+    pub const fn held(self) -> bool {
+        self.held
+    }
+
+    /// Returns the number of consumer operations admitted before the hold.
+    #[must_use]
+    pub const fn in_flight(self) -> u64 {
+        self.in_flight
+    }
+
+    /// Returns whether this ring is held with no admitted consumer remaining.
+    #[must_use]
+    pub const fn quiescent(self) -> bool {
+        self.held && self.in_flight == 0
+    }
 }
 
 impl RingProducerBarrierSnapshot {
@@ -39,7 +66,20 @@ pub(crate) struct RingProducerAdmission<'a> {
 impl Drop for RingProducerAdmission<'_> {
     fn drop(&mut self) {
         let previous = self.ring.producer_state.fetch_sub(1, Ordering::SeqCst);
-        if previous & RING_PRODUCER_COUNT_MASK == 0 {
+        if previous & RING_ADMISSION_COUNT_MASK == 0 {
+            std::process::abort();
+        }
+    }
+}
+
+pub(crate) struct RingConsumerAdmission<'a> {
+    ring: &'a RingHeader,
+}
+
+impl Drop for RingConsumerAdmission<'_> {
+    fn drop(&mut self) {
+        let previous = self.ring.consumer_state.fetch_sub(1, Ordering::SeqCst);
+        if previous & RING_ADMISSION_COUNT_MASK == 0 {
             std::process::abort();
         }
     }
@@ -49,7 +89,8 @@ impl Drop for RingProducerAdmission<'_> {
 #[repr(C, align(128))]
 pub struct RingHeader {
     pub(super) read_idx: AtomicU64,
-    _pad_read: [u8; 56],
+    consumer_state: AtomicU64,
+    _pad_read: [u8; 48],
     pub(super) write_idx: AtomicU64,
     producer_state: AtomicU64,
     _pad_write: [u8; 48],
@@ -59,7 +100,8 @@ impl Clone for RingHeader {
     fn clone(&self) -> Self {
         Self {
             read_idx: AtomicU64::new(self.read_idx.load(Ordering::Acquire)),
-            _pad_read: [0; 56],
+            consumer_state: AtomicU64::new(0),
+            _pad_read: [0; 48],
             write_idx: AtomicU64::new(self.write_idx.load(Ordering::Acquire)),
             // Admission counts are process-local coordination, not logical
             // ring content. A future hot-fork clone must install its own
@@ -72,6 +114,9 @@ impl Clone for RingHeader {
 
 /// Byte offset of [`RingHeader`]'s consumer-owned read index.
 pub const RING_HEADER_READ_IDX_OFFSET: usize = core::mem::offset_of!(RingHeader, read_idx);
+/// Byte offset of [`RingHeader`]'s consumer-admission state.
+pub const RING_HEADER_CONSUMER_STATE_OFFSET: usize =
+    core::mem::offset_of!(RingHeader, consumer_state);
 /// Byte offset of [`RingHeader`]'s consumer cache-line padding.
 pub const RING_HEADER_PAD_READ_OFFSET: usize = core::mem::offset_of!(RingHeader, _pad_read);
 /// Byte offset of [`RingHeader`]'s producer-owned write index.
@@ -87,7 +132,8 @@ pub const RING_HEADER_SIZE: usize = core::mem::size_of::<RingHeader>();
 pub const RING_HEADER_ALIGN: usize = core::mem::align_of::<RingHeader>();
 
 const _: () = assert!(RING_HEADER_READ_IDX_OFFSET == 0);
-const _: () = assert!(RING_HEADER_PAD_READ_OFFSET == 8);
+const _: () = assert!(RING_HEADER_CONSUMER_STATE_OFFSET == 8);
+const _: () = assert!(RING_HEADER_PAD_READ_OFFSET == 16);
 const _: () = assert!(RING_HEADER_WRITE_IDX_OFFSET == 64);
 const _: () = assert!(RING_HEADER_PRODUCER_STATE_OFFSET == 72);
 const _: () = assert!(RING_HEADER_PAD_WRITE_OFFSET == 80);
@@ -100,7 +146,8 @@ impl RingHeader {
     pub const fn new() -> Self {
         Self {
             read_idx: AtomicU64::new(0),
-            _pad_read: [0; 56],
+            consumer_state: AtomicU64::new(0),
+            _pad_read: [0; 48],
             write_idx: AtomicU64::new(0),
             producer_state: AtomicU64::new(0),
             _pad_write: [0; 48],
@@ -115,7 +162,7 @@ impl RingHeader {
     #[must_use]
     pub fn hold_hot_fork_producers(&self) -> RingProducerBarrierSnapshot {
         self.producer_state
-            .fetch_or(RING_PRODUCER_HELD, Ordering::SeqCst);
+            .fetch_or(RING_ADMISSION_HELD, Ordering::SeqCst);
         self.producer_barrier_snapshot()
     }
 
@@ -123,7 +170,7 @@ impl RingHeader {
     #[must_use]
     pub fn release_hot_fork_producers(&self) -> RingProducerBarrierSnapshot {
         self.producer_state
-            .fetch_and(!RING_PRODUCER_HELD, Ordering::SeqCst);
+            .fetch_and(!RING_ADMISSION_HELD, Ordering::SeqCst);
         self.producer_barrier_snapshot()
     }
 
@@ -132,8 +179,38 @@ impl RingHeader {
     pub fn producer_barrier_snapshot(&self) -> RingProducerBarrierSnapshot {
         let state = self.producer_state.load(Ordering::SeqCst);
         RingProducerBarrierSnapshot {
-            held: state & RING_PRODUCER_HELD != 0,
-            in_flight: state & RING_PRODUCER_COUNT_MASK,
+            held: state & RING_ADMISSION_HELD != 0,
+            in_flight: state & RING_ADMISSION_COUNT_MASK,
+        }
+    }
+
+    /// Holds the reversible hot-fork consumer barrier for this ring.
+    ///
+    /// Consumers admitted before the hold remain counted until their
+    /// operation returns. Consumers racing the hold cannot advance the shared
+    /// read index after the held bit becomes visible.
+    #[must_use]
+    pub fn hold_hot_fork_consumers(&self) -> RingConsumerBarrierSnapshot {
+        self.consumer_state
+            .fetch_or(RING_ADMISSION_HELD, Ordering::SeqCst);
+        self.consumer_barrier_snapshot()
+    }
+
+    /// Releases the reversible hot-fork consumer barrier for this ring.
+    #[must_use]
+    pub fn release_hot_fork_consumers(&self) -> RingConsumerBarrierSnapshot {
+        self.consumer_state
+            .fetch_and(!RING_ADMISSION_HELD, Ordering::SeqCst);
+        self.consumer_barrier_snapshot()
+    }
+
+    /// Returns one exact consumer-admission snapshot for this ring.
+    #[must_use]
+    pub fn consumer_barrier_snapshot(&self) -> RingConsumerBarrierSnapshot {
+        let state = self.consumer_state.load(Ordering::SeqCst);
+        RingConsumerBarrierSnapshot {
+            held: state & RING_ADMISSION_HELD != 0,
+            in_flight: state & RING_ADMISSION_COUNT_MASK,
         }
     }
 
@@ -324,6 +401,10 @@ impl RingHeader {
         self.enter_producer_with_hook(|| {})
     }
 
+    pub(crate) fn enter_consumer(&self) -> Option<RingConsumerAdmission<'_>> {
+        self.enter_consumer_with_hook(|| {})
+    }
+
     fn enter_producer_with_hook(
         &self,
         after_initial_load: impl FnOnce(),
@@ -331,14 +412,14 @@ impl RingHeader {
         let mut observed = self.producer_state.load(Ordering::SeqCst);
         after_initial_load();
         loop {
-            if observed & RING_PRODUCER_HELD != 0 {
+            if observed & RING_ADMISSION_HELD != 0 {
                 return None;
             }
-            let count = observed & RING_PRODUCER_COUNT_MASK;
+            let count = observed & RING_ADMISSION_COUNT_MASK;
             let Some(next_count) = count.checked_add(1) else {
                 std::process::abort();
             };
-            if next_count > RING_PRODUCER_COUNT_MASK {
+            if next_count > RING_ADMISSION_COUNT_MASK {
                 std::process::abort();
             }
             match self.producer_state.compare_exchange(
@@ -348,6 +429,35 @@ impl RingHeader {
                 Ordering::SeqCst,
             ) {
                 Ok(_previous) => return Some(RingProducerAdmission { ring: self }),
+                Err(actual) => observed = actual,
+            }
+        }
+    }
+
+    fn enter_consumer_with_hook(
+        &self,
+        after_initial_load: impl FnOnce(),
+    ) -> Option<RingConsumerAdmission<'_>> {
+        let mut observed = self.consumer_state.load(Ordering::SeqCst);
+        after_initial_load();
+        loop {
+            if observed & RING_ADMISSION_HELD != 0 {
+                return None;
+            }
+            let count = observed & RING_ADMISSION_COUNT_MASK;
+            let Some(next_count) = count.checked_add(1) else {
+                std::process::abort();
+            };
+            if next_count > RING_ADMISSION_COUNT_MASK {
+                std::process::abort();
+            }
+            match self.consumer_state.compare_exchange(
+                observed,
+                next_count,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_previous) => return Some(RingConsumerAdmission { ring: self }),
                 Err(actual) => observed = actual,
             }
         }
@@ -402,6 +512,9 @@ impl RingHeader {
     /// Returns [`SpscRingError`] when `entries` has invalid capacity or the ring
     /// indices describe more live entries than the capacity can hold.
     pub fn dequeue(&self, entries: &[FrameEntry]) -> Result<Option<FrameEntry>, SpscRingError> {
+        let _consumer = self
+            .enter_consumer()
+            .ok_or(SpscRingError::ConsumerBarrierHeld)?;
         let capacity = validated_capacity(entries)?;
         let head = self.read_idx.load(Ordering::Relaxed);
         let tail = self.write_idx.load(Ordering::Acquire);
@@ -419,12 +532,16 @@ impl RingHeader {
     ///
     /// # Errors
     ///
-    /// Returns [`SpscRingError`] when the coverage slice has invalid capacity or
-    /// the shared indices describe more live entries than the queue can hold.
+    /// Returns [`SpscRingError`] when consumer admission is held, the coverage
+    /// slice has invalid capacity, or the shared indices describe more live
+    /// entries than the queue can hold.
     pub fn dequeue_coverage(
         &self,
         entries: &[CoverageEntry],
     ) -> Result<Option<CoverageEntry>, SpscRingError> {
+        let _consumer = self
+            .enter_consumer()
+            .ok_or(SpscRingError::ConsumerBarrierHeld)?;
         let capacity = validated_capacity(entries)?;
         let head = self.read_idx.load(Ordering::Relaxed);
         let tail = self.write_idx.load(Ordering::Acquire);
@@ -442,12 +559,16 @@ impl RingHeader {
     ///
     /// # Errors
     ///
-    /// Returns [`SpscRingError`] when the marker slice has invalid capacity or
-    /// the shared indices describe more live entries than the queue can hold.
+    /// Returns [`SpscRingError`] when consumer admission is held, the marker
+    /// slice has invalid capacity, or the shared indices describe more live
+    /// entries than the queue can hold.
     pub fn dequeue_whitebox_marker(
         &self,
         entries: &[WhiteboxMarkerEntry],
     ) -> Result<Option<WhiteboxMarkerEntry>, SpscRingError> {
+        let _consumer = self
+            .enter_consumer()
+            .ok_or(SpscRingError::ConsumerBarrierHeld)?;
         let capacity = validated_capacity(entries)?;
         let head = self.read_idx.load(Ordering::Relaxed);
         let tail = self.write_idx.load(Ordering::Acquire);
@@ -485,14 +606,18 @@ impl RingHeader {
     ///
     /// # Errors
     ///
-    /// Returns [`SpscRingError`] when the entry slice has invalid capacity,
-    /// shared indices describe more live entries than the queue can hold, or
-    /// the next untrusted cross-process entry is malformed. A malformed entry
-    /// is not consumed, allowing the caller to treat the channel as failed.
+    /// Returns [`SpscRingError`] when consumer admission is held, the entry
+    /// slice has invalid capacity, shared indices describe more live entries
+    /// than the queue can hold, or the next untrusted cross-process entry is
+    /// malformed. A malformed entry is not consumed, allowing the caller to
+    /// treat the channel as failed.
     pub fn dequeue_guest_introspection(
         &self,
         entries: &[GuestIntrospectionEntry],
     ) -> Result<Option<GuestIntrospectionEntry>, SpscRingError> {
+        let _consumer = self
+            .enter_consumer()
+            .ok_or(SpscRingError::ConsumerBarrierHeld)?;
         let capacity = validated_capacity(entries)?;
         let head = self.read_idx.load(Ordering::Relaxed);
         let tail = self.write_idx.load(Ordering::Acquire);
@@ -511,12 +636,16 @@ impl RingHeader {
     ///
     /// # Errors
     ///
-    /// Returns [`SpscRingError`] when geometry or indices are invalid, or the
-    /// next cross-process entry is malformed. Malformed entries remain queued.
+    /// Returns [`SpscRingError`] when consumer admission is held, geometry or
+    /// indices are invalid, or the next cross-process entry is malformed.
+    /// Malformed entries remain queued.
     pub fn dequeue_accelerator(
         &self,
         entries: &[AcceleratorEntry],
     ) -> Result<Option<AcceleratorEntry>, SpscRingError> {
+        let _consumer = self
+            .enter_consumer()
+            .ok_or(SpscRingError::ConsumerBarrierHeld)?;
         let capacity = validated_capacity(entries)?;
         let head = self.read_idx.load(Ordering::Relaxed);
         let tail = self.write_idx.load(Ordering::Acquire);
@@ -557,13 +686,17 @@ impl RingHeader {
     ///
     /// # Errors
     ///
-    /// Returns [`SpscRingError`] when the queue changed unexpectedly, is empty,
-    /// or its next validated entry does not carry `expected_sequence`.
+    /// Returns [`SpscRingError`] when consumer admission is held, the queue
+    /// changed unexpectedly, is empty, or its next validated entry does not
+    /// carry `expected_sequence`.
     pub fn commit_guest_introspection(
         &self,
         entries: &[GuestIntrospectionEntry],
         expected_sequence: u64,
     ) -> Result<(), SpscRingError> {
+        let _consumer = self
+            .enter_consumer()
+            .ok_or(SpscRingError::ConsumerBarrierHeld)?;
         let capacity = validated_capacity(entries)?;
         let head = self.read_idx.load(Ordering::Relaxed);
         let tail = self.write_idx.load(Ordering::Acquire);
@@ -660,6 +793,10 @@ impl RingHeader {
         self.producer_state.load(Ordering::SeqCst)
     }
 
+    pub(crate) fn consumer_state_raw(&self) -> u64 {
+        self.consumer_state.load(Ordering::SeqCst)
+    }
+
     /// Returns `true` when the cache-line padding bytes are zero.
     #[must_use]
     pub fn padding_bytes_are_zero(&self) -> bool {
@@ -683,7 +820,7 @@ pub use coverage_entry::*;
 pub use snapshot::{SnapshotFrameEntry, SpscRingSnapshot};
 
 #[cfg(test)]
-mod producer_barrier_tests {
+mod admission_barrier_tests {
     use std::sync::{Arc, Barrier};
 
     use super::*;
@@ -734,5 +871,54 @@ mod producer_barrier_tests {
             .unwrap_or_else(|_panic| panic!("producer thread should finish"));
         assert!(!admitted);
         assert!(ring.producer_barrier_snapshot().quiescent());
+    }
+
+    #[test]
+    fn hold_rejects_late_consumers_without_advancing_the_ring() {
+        let ring = RingHeader::new();
+        let frame = FrameEntry::new(11, 0, 1, b"packet")
+            .unwrap_or_else(|error| panic!("valid frame should build: {error}"));
+        let mut entries = vec![FrameEntry::default(); 2];
+        ring.enqueue(&mut entries, &frame)
+            .unwrap_or_else(|error| panic!("open producer gate should enqueue: {error}"));
+
+        assert!(ring.hold_hot_fork_consumers().quiescent());
+        assert_eq!(
+            ring.dequeue(&entries),
+            Err(SpscRingError::ConsumerBarrierHeld)
+        );
+        assert_eq!(ring.read_index(), 0);
+
+        let released = ring.release_hot_fork_consumers();
+        assert!(!released.held());
+        assert_eq!(ring.dequeue(&entries), Ok(Some(frame)));
+        assert_eq!(ring.read_index(), 1);
+    }
+
+    #[test]
+    fn hold_between_load_and_admission_cas_rejects_racing_consumer() {
+        let ring = Arc::new(RingHeader::new());
+        let loaded = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let racing_ring = Arc::clone(&ring);
+        let racing_loaded = Arc::clone(&loaded);
+        let racing_resume = Arc::clone(&resume);
+        let consumer = std::thread::spawn(move || {
+            racing_ring
+                .enter_consumer_with_hook(|| {
+                    racing_loaded.wait();
+                    racing_resume.wait();
+                })
+                .is_some()
+        });
+
+        loaded.wait();
+        assert!(ring.hold_hot_fork_consumers().quiescent());
+        resume.wait();
+        let admitted = consumer
+            .join()
+            .unwrap_or_else(|_panic| panic!("consumer thread should finish"));
+        assert!(!admitted);
+        assert!(ring.consumer_barrier_snapshot().quiescent());
     }
 }

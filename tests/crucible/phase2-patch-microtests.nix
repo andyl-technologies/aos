@@ -1663,7 +1663,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-plugin-callback-barrier";
         liveEvidence = ''
-          grep -Fxq 'plugin_barrier_schema_version=3' "$live_result"
+          grep -Fxq 'plugin_barrier_schema_version=4' "$live_result"
           grep -Fxq 'plugin_barrier_stable=true' "$live_result"
           grep -Fxq 'plugin_barrier_unregistered_shape=true' "$live_result"
           grep -Fxq 'plugin_barrier_release_unregistered_rejected=true' "$live_result"
@@ -1846,8 +1846,8 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-ring-producer-barrier";
         liveEvidence = ''
-          grep -Fxq 'patch=0137-crucible-park-hot-fork-plugin-workers.patch' "$live_result"
-          grep -Fxq 'plugin_barrier_schema_version=3' "$live_result"
+          grep -Fxq 'patch=0138-crucible-drain-hot-fork-ring-consumers.patch' "$live_result"
+          grep -Fxq 'plugin_barrier_schema_version=4' "$live_result"
           grep -Fxq 'plugin_barrier_unregistered_shape=true' "$live_result"
           grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
           grep -Fxq 'template_coordinator_schema_version=8' "$live_result"
@@ -1865,7 +1865,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-plugin-worker-manifest";
         liveEvidence = ''
-          grep -Fxq 'patch=0137-crucible-park-hot-fork-plugin-workers.patch' "$live_result"
+          grep -Fxq 'patch=0138-crucible-drain-hot-fork-ring-consumers.patch' "$live_result"
           grep -Fxq 'plugin_resource_inventory_schema_version=2' "$live_result"
           grep -Fxq 'plugin_resource_inventory_unregistered_shape=true' "$live_result"
           grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
@@ -1883,8 +1883,8 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-plugin-worker-barrier";
         liveEvidence = ''
-          grep -Fxq 'patch=0137-crucible-park-hot-fork-plugin-workers.patch' "$live_result"
-          grep -Fxq 'plugin_barrier_schema_version=3' "$live_result"
+          grep -Fxq 'patch=0138-crucible-drain-hot-fork-ring-consumers.patch' "$live_result"
+          grep -Fxq 'plugin_barrier_schema_version=4' "$live_result"
           grep -Fxq 'plugin_worker_mask_bound=true' "$live_result"
           grep -Fxq 'plugin_worker_parking_bound=true' "$live_result"
           grep -Fxq 'plugin_worker_queue_cloning=false' "$live_result"
@@ -1895,6 +1895,26 @@
             ${patchDir}/0137-crucible-park-hot-fork-plugin-workers.patch
           grep -Fq 'manifest.worker_mask ==' \
             ${patchDir}/0137-crucible-park-hot-fork-plugin-workers.patch
+        '';
+      };
+    }
+    {
+      patch = "0138-crucible-drain-hot-fork-ring-consumers.patch";
+      check = certifyExactPatch {
+        patchName = "0138-crucible-drain-hot-fork-ring-consumers.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-ring-consumer-barrier";
+        liveEvidence = ''
+          grep -Fxq 'patch=0138-crucible-drain-hot-fork-ring-consumers.patch' "$live_result"
+          grep -Fxq 'plugin_barrier_schema_version=4' "$live_result"
+          grep -Fxq 'plugin_ring_consumer_admission_bound=true' "$live_result"
+          grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
+          grep -Fq 'ring_consumers_in_flight' \
+            ${patchDir}/0138-crucible-drain-hot-fork-ring-consumers.patch
+          grep -Fq 'report->ring_consumers_in_flight == 0' \
+            ${patchDir}/0138-crucible-drain-hot-fork-ring-consumers.patch
+          grep -Fq "'ring-consumers-in-flight': 'uint64'" \
+            ${patchDir}/0138-crucible-drain-hot-fork-ring-consumers.patch
         '';
       };
     }

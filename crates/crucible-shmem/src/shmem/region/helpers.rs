@@ -309,6 +309,11 @@ pub(super) fn write_ring_header_bytes(bytes: &mut [u8], ring_header: &RingHeader
     write_u64_at(bytes, RING_HEADER_READ_IDX_OFFSET, ring_header.read_index());
     write_u64_at(
         bytes,
+        RING_HEADER_CONSUMER_STATE_OFFSET,
+        ring_header.consumer_state_raw(),
+    );
+    write_u64_at(
+        bytes,
         RING_HEADER_WRITE_IDX_OFFSET,
         ring_header.write_index(),
     );

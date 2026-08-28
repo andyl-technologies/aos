@@ -234,6 +234,9 @@ pub enum SpscRingError {
     /// The reversible hot-fork barrier rejects a new producer publication.
     #[error("SPSC ring producer admission is held for hot fork")]
     ProducerBarrierHeld,
+    /// The reversible hot-fork barrier rejects a new consumer operation.
+    #[error("SPSC ring consumer admission is held for hot fork")]
+    ConsumerBarrierHeld,
     /// The backing entry slice is empty or not power-of-two sized.
     #[error("SPSC ring capacity {capacity} is not a nonzero power of two")]
     InvalidCapacity {

@@ -87,7 +87,7 @@
       }
       {
         label = "ABI version";
-        needle = "pub const ABI_VERSION: u32 = 19;";
+        needle = "pub const ABI_VERSION: u32 = 20;";
       }
       {
         label = "physical slot capacity";
@@ -178,8 +178,12 @@
         needle = "pub const RING_HEADER_SIZE";
       }
       {
+        label = "ring header consumer admission offset";
+        needle = "RING_HEADER_CONSUMER_STATE_OFFSET == 8";
+      }
+      {
         label = "ring header read padding offset";
-        needle = "RING_HEADER_PAD_READ_OFFSET == 8";
+        needle = "RING_HEADER_PAD_READ_OFFSET == 16";
       }
       {
         label = "ring header write padding offset";

@@ -947,6 +947,7 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     assert!(held.ring_count > 0);
     assert_eq!(held.rings_held, held.ring_count);
     assert_eq!(held.ring_producers_in_flight, 0);
+    assert_eq!(held.ring_consumers_in_flight, 0);
     assert_eq!(held.worker_mask, WORKER_REQUIRED);
     assert_eq!(held.parked_worker_mask, 0);
     assert_eq!(held.worker_operations_in_flight, 0);
@@ -960,6 +961,7 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     assert_eq!(released.ring_count, held.ring_count);
     assert_eq!(released.rings_held, 0);
     assert_eq!(released.ring_producers_in_flight, 0);
+    assert_eq!(released.ring_consumers_in_flight, 0);
     assert_eq!(released.worker_mask, WORKER_REQUIRED);
     assert_eq!(released.parked_worker_mask, 0);
     assert_eq!(released.worker_operations_in_flight, 0);

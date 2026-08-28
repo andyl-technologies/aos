@@ -2234,6 +2234,22 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   child workers, or acknowledge proof bit 6.
 - **Risk:** F.
 
+### crucible-hot-fork-ring-consumer-barrier — drain shared-ring consumers
+
+- **Patch:** `0138-crucible-drain-hot-fork-ring-consumers.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the version-4 plugin barrier adds the aggregate count of ring
+  consumers admitted before the hold. Quiescence requires every ABI-v20 ring's
+  producer and consumer barriers to be held and both admitted-operation counts
+  to reach zero, making its queued bytes and indices stable for a later clone.
+- **Micro-test:** shared-memory fixtures race consumer admission with the hold,
+  reject dequeue while held, and prove mapped aggregate hold/release covers
+  both endpoints; strict QMP fixtures reject false consumer quiescence.
+- **Inertness:** the barrier remains reachable only through the authorized
+  hot-fork command. It does not clone queued bytes, bind those bytes into a
+  child mapping, reconstruct workers, or acknowledge proof bit 6.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
