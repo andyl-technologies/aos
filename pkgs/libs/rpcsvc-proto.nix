@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   gettext,
+  gcc,
 }: let
   version = "1.4.4";
 in
@@ -21,6 +22,7 @@ in
     buildDeps = [
       gnumake
       gettext
+      gcc
     ];
     runtimeDeps = [gettext];
     propagatedDeps = [];
