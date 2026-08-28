@@ -1067,6 +1067,29 @@
     if targetMismatch.success
     then throw "expose renderer must reject expose.target values that are not bound to the package name"
     else "ok";
+  foreignOwnershipTargetRejected = field: let
+    attempted = builtins.tryEval (
+      (pkg.overrideAttrs (_: {
+        expose = {
+          units."expose-smoke-foreign-ownership.service" = {
+            "${field}" = ["aos-pkg-victim.target"];
+            serviceConfig = {
+              Type = "oneshot";
+              ExecStart = "${pkgs.bash}/bin/bash -c true";
+            };
+          };
+          permissions.network = "private";
+        };
+      }))
+      .expose
+      .outPath
+    );
+  in
+    if attempted.success
+    then throw "expose renderer must reject foreign synthesized package targets in ${field}"
+    else "ok";
+  foreignPartOfTargetRejected = foreignOwnershipTargetRejected "partOf";
+  foreignWantedByTargetRejected = foreignOwnershipTargetRejected "wantedBy";
   privilegedExecPrefix = builtins.tryEval (
     (pkg.overrideAttrs (_: {
       expose = {
@@ -1626,6 +1649,8 @@ in
     inherit
       reservedCollisionRejected
       targetMismatchRejected
+      foreignPartOfTargetRejected
+      foreignWantedByTargetRejected
       verityTupleMissingRejected
       privilegedExecPrefixRejected
       landlockScriptDerivedExecRejected
@@ -2212,6 +2237,8 @@ in
             "$overriddenExposePath/units/expose-smoke-override.service"
           test "$reservedCollisionRejected" = ok
           test "$targetMismatchRejected" = ok
+          test "$foreignPartOfTargetRejected" = ok
+          test "$foreignWantedByTargetRejected" = ok
           test "$privilegedExecPrefixRejected" = ok
           test "$landlockScriptDerivedExecRejected" = ok
           test "$landlockShellExecPrefixRejected" = ok

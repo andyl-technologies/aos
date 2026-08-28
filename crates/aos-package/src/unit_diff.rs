@@ -963,12 +963,20 @@ fn build_service_root_barriers(
 }
 
 fn target_part_of_members(units: &UnitMap, target: &str) -> BTreeSet<String> {
+    let wanted = units
+        .units
+        .get(target)
+        .filter(|unit| unit.is_present())
+        .map(|unit| unit_section_words(unit, "Wants"))
+        .unwrap_or_default();
+
     units
         .units
         .iter()
         .filter(|(name, unit)| {
             unit.is_present()
                 && *name != target
+                && wanted.contains(*name)
                 && unit_section_words(unit, "PartOf").contains(target)
         })
         .map(|(name, _)| name.clone())
@@ -998,18 +1006,14 @@ fn service_root_workloads(units: &UnitMap, target: &str, helper: &str) -> BTreeS
 }
 
 fn activation_sources(units: &UnitMap, target: &str) -> BTreeSet<String> {
-    units
-        .units
-        .iter()
-        .filter(|(_, unit)| unit.is_present())
-        .filter(|(_, unit)| unit_section_words(unit, "PartOf").contains(target))
-        .filter(|(name, _)| {
+    target_part_of_members(units, target)
+        .into_iter()
+        .filter(|name| {
             name.ends_with(".socket")
                 || name.ends_with(".timer")
                 || name.ends_with(".path")
                 || name.ends_with(".automount")
         })
-        .map(|(name, _)| name.clone())
         .collect()
 }
 
@@ -1473,7 +1477,7 @@ mod tests {
         write(
             &live_units,
             "aos-pkg-web.target",
-            "[Unit]\nWants=aos-pkg-web.slice web.socket web.service aos-pkg-web-mac.service provider.socket\n",
+            "[Unit]\nWants=aos-pkg-web.slice web.socket web.service aos-pkg-web-mac.service data.automount data.mount cache.swap provider.socket\n",
         );
         write(
             &live_units,
@@ -1703,6 +1707,50 @@ mod tests {
         let diff = compute_diff(live.path(), candidate.path());
 
         assert!(diff.service_root_barriers.is_empty());
+    }
+
+    #[test]
+    fn service_root_barrier_ignores_foreign_part_of_without_owned_wants() {
+        let live = TempDir::new().unwrap();
+        let candidate = TempDir::new().unwrap();
+        let live_units = units_dir(live.path());
+        let candidate_units = units_dir(candidate.path());
+        let helper = "aos-pkg-victim-service-roots.service";
+        let target = "aos-pkg-victim.target";
+
+        for units in [&live_units, &candidate_units] {
+            write(units, target, "[Unit]\nWants=victim.service\n");
+            write(
+                units,
+                "victim.service",
+                "[Unit]\nPartOf=aos-pkg-victim.target\nRequires=aos-pkg-victim-service-roots.service\nAfter=aos-pkg-victim-service-roots.service\n[Service]\nExecStart=/bin/victim\n",
+            );
+            write(
+                units,
+                "attacker.service",
+                "[Unit]\nPartOf=aos-pkg-victim.target\n[Service]\nExecStart=/bin/attacker\n",
+            );
+        }
+        write(
+            &live_units,
+            helper,
+            "[Unit]\nPartOf=aos-pkg-victim.target\nBefore=victim.service\n[Service]\nType=oneshot\nExecStart=/bin/old\n",
+        );
+        write(
+            &candidate_units,
+            helper,
+            "[Unit]\nPartOf=aos-pkg-victim.target\nBefore=victim.service\n[Service]\nType=oneshot\nExecStart=/bin/new\n",
+        );
+
+        let mut diff = compute_diff(live.path(), candidate.path());
+        let barrier = &diff.service_root_barriers[helper];
+        assert!(!barrier.live_members.contains("attacker.service"));
+        assert!(!barrier.live_remaining_members.contains("attacker.service"));
+        assert!(!barrier.candidate_members.contains("attacker.service"));
+
+        diff.normalize_service_root_lifecycle();
+        assert!(!diff.to_stop.contains(&"attacker.service".to_string()));
+        assert!(!diff.required_stops.contains("attacker.service"));
     }
 
     #[test]
