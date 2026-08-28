@@ -393,6 +393,14 @@
         label = "current ABI also rejects future region headers";
         needle = "abi_version: ABI_VERSION + 1";
       }
+      {
+        label = "held ring image clone and private-mapping restore";
+        needle = "hot_fork_ring_image_round_trips_queued_bytes_into_a_held_private_mapping";
+      }
+      {
+        label = "ring image rejects an open or active endpoint";
+        needle = "hot-fork-ring-image-open-or-active-header";
+      }
     ]
     ++ forbiddenFor "crates/crucible-shmem/tests/gate_abi_conformance.rs" shmemGate [
       {
@@ -852,6 +860,16 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible-shmem \
               --test preemption_mailbox \
+              -- --test-threads=1
+
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-shmem-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-shmem \
+              --test setup_validation \
+              hot_fork_ring_image_round_trips_queued_bytes_into_a_held_private_mapping \
               -- --test-threads=1
 
             cargo run \
@@ -1417,7 +1435,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            rust_tests=crucible-shmem::gate_abi_conformance,crucible-shmem::preemption_mailbox
+            rust_tests=crucible-shmem::gate_abi_conformance,crucible-shmem::preemption_mailbox,crucible-shmem::hot_fork_ring_image
             generated_header_diff=checked
             bilateral_static_asserts=compiled
             golden_vector_roundtrip=rust,c

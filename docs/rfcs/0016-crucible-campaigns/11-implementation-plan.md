@@ -1832,11 +1832,16 @@ ring, and closes later operations by the RUN-control, teardown, and optional
 fingerprint workers without blocking QMP. The response exposes exact callback
 and aggregate ring-producer and ring-consumer counts plus sealed, parked, and
 active worker state until all admitted work drains. Release reopens rings and
-callbacks before waking workers and cannot reopen permanent teardown closure. This is a
-retained T-CAM-6.2 subsystem barrier, but it still does not clone retained ring
-bytes or worker-local queued work, retain a complete child disposition, or
-reconstruct child resources. Readiness bit 6 therefore remains clear and
-T-CAM-6.2 remains unchecked.
+callbacks before waking workers and cannot reopen permanent teardown closure.
+The host can now capture the resulting queue-backed ranges into a
+caller-bounded canonical v1 image and restore their exact held headers,
+cursors, slots, and fault arenas into an identical inactive branch-private
+mapping. Decode rejects changed geometry, open/active endpoints, impossible
+cursors, trailing bytes, and a changed transfer digest before restore.
+This remains a retained T-CAM-6.2 subsystem primitive: node slots, fingerprint
+samples, worker-local queued work, fork-child remapping, host-continuation
+pairing, and final release are not composed yet. Readiness bit 6 therefore
+remains clear and T-CAM-6.2 remains unchecked.
 Patched QEMU now also owns the versioned `PrepareForkTemplate`
 transaction. Its serialized OOB coordinator starts only at the exact
 paused/device-flush boundary, asynchronously closes graph-writer admission and
