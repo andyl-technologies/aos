@@ -92,9 +92,10 @@ The default R2 bucket is `<name>-surfaces`, the default KV title is
 convention.
 
 When the default R2 bucket has a public custom domain, pass its HTTPS origin as
-`--default-public-delivery-url`. The Worker then advertises every public
-registry's complete reconciled default placement directly through that origin,
-including registries created before or after deployment:
+`--default-public-delivery-url`. The Worker then advertises a public registry's
+complete reconciled default placement directly through that origin only when
+the placement prefix equals the registry's canonical Hub slug. For example,
+registry `acme/main` is delivered at `<origin>/acme/main/`:
 
 ```sh
 ./result/bin/aos-hub worker deploy \
