@@ -505,9 +505,6 @@ in
     # --- Fetch-specific ---
     depsHash = "sha256-cePFC9tnY+0qSwbE9nqDUV5Idj+ppFTSYNy4nTJQP9k=";
     fetchPostPatch = "";
-    fetchEnv = {
-      CARGO_BAZEL_REPIN = "true";
-    };
     postFetch = ''
       # Drop prebuilt JDK/Android toolchains Bazel recreates locally.
       rm -rf "$bazelOut/external/remotejdk"* "$bazelOut/external/local_jdk"

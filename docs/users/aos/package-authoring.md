@@ -193,6 +193,13 @@ hostnames, verify that the pinned payloads are byte-identical and select the
 hostname already used by the dependency closure instead of widening its
 network-origin set.
 
+When upstream commits a Cargo lockfile and generated Bazel crate repositories,
+fetch that checked-in graph without setting `CARGO_BAZEL_REPIN`. Repinning asks
+rules_rust to resolve compatible versions against the current registry index,
+so the result can change even when the package source revision does not. Run a
+repin only while intentionally updating the source and commit the regenerated
+lock and repository definitions before calculating the new dependency hash.
+
 ## Expose the runtime interface
 
 The `expose` attribute is the contract used by APM. It renders a separate
