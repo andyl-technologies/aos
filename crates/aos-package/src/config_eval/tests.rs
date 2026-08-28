@@ -1396,6 +1396,60 @@ fn retained_manifest_abi_bands_gate_cross_abi_rollback() {
     );
 }
 
+#[test]
+fn cross_abi_replay_uses_exact_retained_runtime_entrypoints() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("runtime-modules");
+    std::fs::create_dir_all(root.join("nested")).unwrap();
+    std::fs::write(root.join("20-services.nix"), b"{}\n").unwrap();
+    std::fs::write(root.join("nested/10-packages.nix"), b"{}\n").unwrap();
+    std::fs::write(root.join("_helper.nix"), b"{}\n").unwrap();
+
+    let expected_hash = format!("sha256:{}", "a".repeat(64));
+    let mut source: materialize::ConfigManifest = serde_json::from_str(include_str!(
+        "../../tests/fixtures/config_manifest/manifest.json"
+    ))
+    .unwrap();
+    source.inputs.runtime_modules = Some(materialize::RuntimeModulesInput {
+        schema: "aos.runtime-module-set/v1".to_string(),
+        trust_mode: "local-root".to_string(),
+        store_path: root.to_string_lossy().into_owned(),
+        nar_hash: expected_hash.clone(),
+        entrypoints: vec![
+            "20-services.nix".to_string(),
+            "nested/10-packages.nix".to_string(),
+        ],
+        signer_key: None,
+    });
+
+    let replayed = super::retained_runtime_modules_with(&source, |observed| {
+        assert_eq!(observed, root);
+        Ok(expected_hash.clone())
+    })
+    .unwrap();
+    assert_eq!(
+        replayed,
+        vec![
+            root.join("20-services.nix"),
+            root.join("nested/10-packages.nix"),
+        ]
+    );
+    assert!(!replayed.contains(&root.join("_helper.nix")));
+
+    let error =
+        super::retained_runtime_modules_with(&source, |_| Ok(format!("sha256:{}", "b".repeat(64))))
+            .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("does not match manifest NAR hash")
+    );
+
+    std::fs::remove_file(root.join("nested/10-packages.nix")).unwrap();
+    let error = super::retained_runtime_modules_with(&source, |_| Ok(expected_hash)).unwrap_err();
+    assert!(error.to_string().contains("entrypoint is absent"));
+}
+
 fn retained_identity_inputs(
     host_nix: &std::path::Path,
 ) -> (

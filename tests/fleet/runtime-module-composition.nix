@@ -531,5 +531,23 @@ in {
       assert runtime.succeed(
           f"{SHA256SUM} /var/lib/aos-provisioning/current/host.nix"
       ).split()[0] == platform_hash
+
+      # Same-ABI rollback must reactivate the selected generation's immutable
+      # runtime module set, not the currently empty authoring worktree or the
+      # runtime descriptor from the generation being left behind.
+      runtime.succeed(
+          f"{APM} rollback --system --generation {configured}", timeout=600
+      )
+      assert current_generation() == configured
+      rollback_manifest = json.loads(runtime.succeed("cat /run/aos/manifest.json"))
+      assert rollback_manifest["inputs"]["runtime_modules"] == runtime_input
+      assert rollback_manifest["inputs"]["host_nix"] == platform_host_input
+      assert rollback_manifest["inputs"]["instance_facts"] == platform_facts_input
+      status = runtime.succeed(f"{APM} config status 2>&1")
+      assert runtime_input["store_path"] in status, status
+      assert "(2 entrypoints," in status, status
+      assert "worktree: /var/lib/aos/config/modules.d (0 entrypoints)" in status, status
+      assert runtime.succeed(f"{APM} config list 2>&1") == ""
+      assert_package_configuration()
     '';
 }

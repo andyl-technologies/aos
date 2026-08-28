@@ -2550,11 +2550,23 @@ pub fn reeval_cross_abi(
 pub(crate) fn retained_runtime_modules(
     manifest: &materialize::ConfigManifest,
 ) -> Result<Vec<PathBuf>> {
+    retained_runtime_modules_with(manifest, retained_store_path_nar_hash)
+}
+
+/// Resolves the descriptor's exact entrypoint list with an injectable NAR
+/// hasher so replay invariants remain testable without mutating `/nix/store`.
+fn retained_runtime_modules_with<F>(
+    manifest: &materialize::ConfigManifest,
+    nar_hash: F,
+) -> Result<Vec<PathBuf>>
+where
+    F: FnOnce(&Path) -> Result<String>,
+{
     let Some(runtime) = &manifest.inputs.runtime_modules else {
         return Ok(Vec::new());
     };
     let root = Path::new(&runtime.store_path);
-    let actual = retained_store_path_nar_hash(root)
+    let actual = nar_hash(root)
         .with_context(|| format!("hashing retained runtime module set {}", root.display()))?;
     anyhow::ensure!(
         crate::verify::sha256_hashes_equal(&actual, &runtime.nar_hash)?,
