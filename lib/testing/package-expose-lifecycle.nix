@@ -785,9 +785,9 @@ in
       assert vm.succeed(
           "cat /var/lib/aos-pkg-expose-lifecycle-private/userns"
       ).strip() != host_userns
-      assert "${privatePackage}" in vm.succeed(
+      assert vm.succeed(
           "systemctl show -p RootDirectory --value expose-lifecycle-private.service"
-      )
+      ).strip() == "/run/aos/service-roots/expose-lifecycle-private/expose-lifecycle-private.service/merged"
       assert "yes" in vm.succeed(
           "systemctl show -p PrivateNetwork --value expose-lifecycle-private.service"
       )
@@ -841,9 +841,9 @@ in
       assert vm.succeed(
           "cat /var/lib/aos-pkg-expose-lifecycle-socket/userns"
       ).strip() != host_userns
-      assert "${socketConsumerPackage}" in vm.succeed(
+      assert vm.succeed(
           "systemctl show -p RootDirectory --value expose-lifecycle-consumer.service"
-      )
+      ).strip() == "/run/aos/service-roots/expose-lifecycle-socket-consumer/expose-lifecycle-consumer.service/merged"
       assert "yes" in vm.succeed(
           "systemctl show -p PrivateNetwork --value expose-lifecycle-consumer.service"
       )

@@ -1123,6 +1123,7 @@ in rec {
       packageName
       (checkedExpose.target or "aos-pkg-${packageName}.target");
     hostPathsUnit = "aos-pkg-${packageName}-host-paths.service";
+    serviceRootsUnit = "aos-pkg-${packageName}-service-roots.service";
     modulesUnit = "aos-pkg-${packageName}-modules.service";
     sysctlUnit = "aos-pkg-${packageName}-sysctl.service";
     firewallUnit = "aos-pkg-${packageName}-firewall.service";
@@ -1216,11 +1217,12 @@ in rec {
         permissionKernelModules;
     sideEffectUnitNames =
       lib.optional (prepareHostPathDirectories != []) hostPathsUnit
+      ++ lib.optional (overlayRootServiceNames != []) serviceRootsUnit
       ++ [modulesUnit sysctlUnit firewallUnit]
       ++ lib.optional (network == "private-outbound") netnsUnit
       ++ lib.optional (confinementClass != "unconfined") macUnit
       ++ lib.optional ebpfEnabled ebpfUnit;
-    reservedUnitNames = [target hostPathsUnit modulesUnit sysctlUnit firewallUnit netnsUnit macUnit ebpfUnit packageSlice];
+    reservedUnitNames = [target hostPathsUnit serviceRootsUnit modulesUnit sysctlUnit firewallUnit netnsUnit macUnit ebpfUnit packageSlice];
     capabilities = permissions.capabilities or [];
     tcpBind = permissions.tcp-bind or [];
     tcpConnect = permissions.tcp-connect or [];
@@ -1279,6 +1281,11 @@ in rec {
       label = confinementLabel;
       holes = confinementHoles;
     };
+    overlayRootServiceNames =
+      if confinementClass == "unconfined" || verityImage != null
+      then []
+      else builtins.filter (unitName: lib.hasSuffix ".service" unitName) authoredUnitNames;
+    serviceOverlayRoot = unitName: "/run/aos/service-roots/${packageName}/${unitName}/merged";
     manifestKernel = kernel // {modules = kernelModules;};
     manifestPermissions =
       permissions
@@ -1364,6 +1371,12 @@ in rec {
       (drv != null)
       "mkDerivation expose for package '${packageName}' needs the payload derivation to render RootDirectory"
       drv;
+    serviceRootsPrepareCommand =
+      "${pkgs.aos-service-root}/bin/aos-service-root prepare "
+      + builtins.concatStringsSep " " ([packageName (builtins.toString payloadRoot)] ++ overlayRootServiceNames);
+    serviceRootsCleanupCommand =
+      "${pkgs.aos-service-root}/bin/aos-service-root cleanup "
+      + builtins.concatStringsSep " " ([packageName (builtins.toString payloadRoot)] ++ overlayRootServiceNames);
     addressFamilies = uniqueUnits (
       ["AF_UNIX" "AF_INET" "AF_INET6"]
       ++ lib.optional (network == "host" || builtins.elem "CAP_NET_ADMIN" capabilities) "AF_NETLINK"
@@ -1654,9 +1667,9 @@ in rec {
                   RestrictSUIDSGID = true;
                 }
                 // (
-                  if verityRootConfig == null
-                  then {RootDirectory = "${payloadRoot}";}
-                  else verityRootConfig
+                  if verityRootConfig != null
+                  then verityRootConfig
+                  else {RootDirectory = serviceOverlayRoot unitName;}
                 )
               )
               // lib.optionalAttrs (unconfined && checkedAuthoredServiceConfig ? StateDirectory) {
@@ -2077,6 +2090,27 @@ in rec {
             Type = "oneshot";
             RemainAfterExit = true;
             ExecStart = hostPathsCommand;
+          };
+        };
+      }
+      // lib.optionalAttrs (overlayRootServiceNames != []) {
+        "${serviceRootsUnit}" = {
+          description = "Prepare volatile service roots for ${packageName}";
+          wantedBy = [target];
+          partOf = [target];
+          before = overlayRootServiceNames;
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = serviceRootsPrepareCommand;
+            ExecStop = serviceRootsCleanupCommand;
+            ExecStopPost = serviceRootsCleanupCommand;
+            NoNewPrivileges = false;
+            PrivateMounts = false;
+            CapabilityBoundingSet = "CAP_SYS_ADMIN";
+            AmbientCapabilities = "CAP_SYS_ADMIN";
+            RestrictAddressFamilies = ["AF_UNIX"];
+            UMask = "0077";
           };
         };
       }

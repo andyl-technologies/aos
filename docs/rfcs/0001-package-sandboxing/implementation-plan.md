@@ -94,7 +94,7 @@ reframes how the phases below are read:
 | **P3** | Per-unit sandboxing materialization + confinement label + **the Decision 17 validation spike** (the gate) | P1, P2 | D2, D4, D10, D17; D1(b) | ☑ |
 | **P4** | Preset enablement (image `disable *`; Ignition per-host preset; every-boot `aos-preset.service`) | P2 | D8 (enable half) | ☑ |
 | **P5** | `apm install` + install-at-boot + **declarative reconciliation (install + prune)** + upgrade/rollback + **layered config** (TPM2 creds / schema'd artifact / EnvironmentFile) + **hot-reload plumbing** | P3, P4 | D8 (install half), D9, D11, D16, D24, D25 | ☑ |
-| **P6** | Container roots (`RootDirectory=` store path) + the three network modes | P3 | D3, D5, D6 | ☑ |
+| **P6** | Container roots (volatile per-service overlay `RootDirectory=` with authenticated store lower) + the three network modes | P3 | D3, D5, D6 | ☑ |
 | **P7** | Dissolve `modules/roles/` into `pkgs/` `expose`; `modules/` shrinks to policy | P1–P6 green per package | D14; migration.md | ☑ |
 | **P8** | Layered enforcement: Landlock + generated MAC + eBPF-LSM, full systemd hardening baseline, per-package `systemd-analyze security` CI gate, per-package UID identity | P3 | D2, D10, D20 | ☑ |
 | **P9** | Runtime integrity & attestation: dm-verity package roots (`RootImage=`+`RootHashSignature=` vs the `.platform` keyring), measure package+manifest into PCR 15, TPM quote + registry golden-measurements catalog | P6, P8 (+ RFC-0006) | D5, D6, D21, D22 | ☑ |
@@ -257,8 +257,11 @@ approach against the two proving packages before anything builds on it.
 **Deliverables.**
 
 - [x] **Manifest → directive materialization** (the P0 table), with the package
-      root delivered as a **store path via `RootDirectory=`** (D5; no image, no
-      loop device, no udev ordering). `ProtectSystem=strict` + `MountAPIVFS=` +
+      payload delivered as the immutable lower layer of a **per-service
+      volatile overlay `RootDirectory=`** (D5; no image, no loop device, no
+      udev ordering). A host-side preparation unit creates distinct `upper`,
+      `work`, and `merged` directories under `/run` before the workload.
+      `ProtectSystem=strict` + `MountAPIVFS=` +
       `TemporaryFileSystem=` for scratch; persistent state in `StateDirectory=`.
 - [x] **`kernel-modules` as an allowlisted, host-fulfilled permission (D2).**
       `aos-pkg-<name>-modules.service` loads **only** modules in the host
@@ -443,13 +446,18 @@ the prior generation's units.
 
 **Deliverables.**
 
-- [x] **Root = store path via `RootDirectory=`** (D5/D6): an ordinary closure
-      member, inheriting NAR hashing + the registry tag-signature chain +
-      gc-rooting; no image build, no loop device, no udev ordering. Bake k3s and
-      other infrastructure; fetch workloads (the standing default). Rendered
-      expose services set `RootDirectory=` to the payload store path, install /
-      upgrade root those artifacts and `expose.images`, and the lifecycle VM
-      asserts the active package root.
+- [x] **Root = volatile per-service overlay via `RootDirectory=`** (D5/D6): the
+      authenticated payload is an ordinary immutable closure member, inheriting
+      NAR hashing + the registry tag-signature chain + gc-rooting. A generated
+      host-side `aos-pkg-<package>-roots.service` unit mounts that payload as the
+      lower layer with `aos-service-root prepare` and creates distinct `upper`,
+      `work`, and `merged` directories below
+      `/run/aos/service-roots/<package>/<unit>` before each workload. This needs
+      no image build, loop device, or udev ordering, and systemd-created mount
+      targets never mutate the store. Bake k3s and other infrastructure; fetch
+      workloads (the standing default). Install and upgrade root the payload
+      and `expose.images`; the lifecycle VM asserts the active payload identity
+      and volatile-root ordering.
 - [x] **Networking modes (D3).** *inbound-only private* (default): host-owned
       socket units pass **named** fds into the sandboxed `PrivateNetwork=`
       service; the socket unit intentionally stays in the host namespace.
@@ -491,8 +499,9 @@ the prior generation's units.
 
 > The verity-signed `RootImage=` package root is **no longer deferred** — it is
 > built in **Phase 9** ([`attestation.md`](attestation.md)) under the budget
-> mandate. Phase 6 ships the `RootDirectory=` store-path root; Phase 9 adds the
-> signed-verity image on top of the same closure.
+> mandate. Phase 6 ships the volatile overlay `RootDirectory=` root backed by
+> the authenticated payload store path; Phase 9 adds the signed-verity image on
+> top of the same closure. `RootImage=` services do not use the overlay path.
 
 **Closes.** D3, D5, D6.
 
@@ -712,10 +721,12 @@ Full spec: [`attestation.md`](attestation.md).
 `RootImage=` roots; a consolidated composefs/EROFS digest per package generation
 is left as a future size/dedup optimization, not the MVP integrity boundary.
 Package activation measures every explicitly exposed package, including
-non-verity `RootDirectory=` packages, by using `root_digest` as the measurement
-input. For verity packages `root_digest` equals `root_hash`; otherwise the
-registry derives it from the package NAR hash and seeded bundled metadata
-derives a stable package-root digest before writing the golden catalog. The
+non-verity overlay-backed `RootDirectory=` packages, by using `root_digest` as
+the measurement input. The volatile upper/work/merged directories are not a
+new package identity. For verity packages `root_digest` equals `root_hash`;
+otherwise the registry derives it from the immutable payload NAR hash and
+seeded bundled metadata derives a stable package-root digest before writing the
+golden catalog. The
 package event log is an AOS JSONL CEL profile with monotonic `sequence_number`,
 PCR index, SHA-256 digest list, event size, and measured event content; the
 verifier rejects malformed sequence numbers while retaining legacy JSONL log
@@ -841,7 +852,7 @@ Every tracked decision and where it is discharged. Statuses are from
 | D2 kernel-modules as allowlisted permission | RESOLVED | P0 (schema) + P3 (load) |
 | D3 networking modes | RESOLVED | P0 (schema) + P3 (validate) + P6 (build) |
 | D4 nspawn-in-VM / lifecycle test | RESOLVED (mooted; per-unit test remains) | P3 |
-| D5 package roots / `RootDirectory=` default / signed `RootImage=` path | RESOLVED | P6 |
+| D5 package roots / volatile overlay `RootDirectory=` default / signed `RootImage=` path | RESOLVED | P6 |
 | D6 bake vs fetch | RESOLVED by D5 | P6 |
 | D7 machined/portabled/importd disabled | RESOLVED (stay) | P11 |
 | D8 install-at-boot + enable | RESOLVED (presets + install/reconcile) | P4 (enable) + P5 (install) |
